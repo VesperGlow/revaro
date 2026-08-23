@@ -87,7 +87,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
 		limiter: newLoginLimiter(), s3Origin: s3Origin,
 		shareSlots: make(chan struct{}, 8), blockUploadSlots: make(chan struct{}, 4),
-		audioMergeSlots: make(chan struct{}, 1), audioMergeJobs: make(map[string]*audioMergeJob),
+		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
 	}
 	// Audio merges run in memory and cannot survive a process restart. Their
 	// pending output row has no uploads record (browser uploads always do), so
@@ -162,6 +162,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/uploads/{id}/complete", s.completeUpload)
 			r.Delete("/uploads/{id}", s.abortUpload)
 			r.Post("/audio-merges", s.createAudioMerge)
+			r.Get("/audio-merges", s.listAudioMerges)
 			r.Get("/audio-merges/{id}", s.getAudioMerge)
 			r.Delete("/audio-merges/{id}", s.cancelAudioMerge)
 		})

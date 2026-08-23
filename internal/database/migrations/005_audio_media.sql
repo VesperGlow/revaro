@@ -1,6 +1,5 @@
--- Audiobook-style metadata for merged audio. The downloadable master stays
--- in files; stream_object_key points to a browser-compatible AAC companion
--- (or to the master itself when the selected output is already AAC).
+-- Audiobook-style metadata for merged audio. The downloadable lossless master
+-- is also the Range-streamed playback source; no lossy companion is generated.
 
 CREATE TABLE audio_media (
     file_id TEXT PRIMARY KEY,

@@ -90,9 +90,9 @@ func (s *Server) audioMediaStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream := f
-	stream.Name = filepath.Base(f.Name) + ".stream.m4a"
+	stream.Name = filepath.Base(f.Name)
 	stream.Size = size
-	stream.MimeType = "audio/mp4"
+	stream.MimeType = responseMime(f)
 	stream.ETag = etag
 	stream.objectKey = key
 	w.Header().Set("Cache-Control", "private, max-age=3600")
@@ -103,7 +103,7 @@ func (s *Server) audioMediaStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Type", "audio/mp4")
+	w.Header().Set("Content-Type", stream.MimeType)
 	w.Header().Set("Content-Disposition", "inline")
 	var modtime time.Time
 	if parsed, err := time.Parse(time.RFC3339Nano, f.UpdatedAt); err == nil {

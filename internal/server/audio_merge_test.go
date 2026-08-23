@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -161,16 +160,19 @@ func TestAudioMergeOutputFormats(t *testing.T) {
 				t.Fatalf("audio metadata=%+v", media)
 			}
 			streamRR := a.request("GET", media.StreamURL, nil, true)
-			if streamRR.Code != http.StatusOK || streamRR.Header().Get("Content-Type") != "audio/mp4" {
+			if streamRR.Code != http.StatusOK || streamRR.Header().Get("Content-Type") != tc.mime {
 				t.Fatalf("audio stream=%d type=%q: %s", streamRR.Code, streamRR.Header().Get("Content-Type"), streamRR.Body.String())
 			}
-			streamPath := t.TempDir() + "/stream.m4a"
+			if !bytes.Equal(streamRR.Body.Bytes(), data) || media.StreamSize != merged.Size {
+				t.Fatal("Range playback source is not the merged master")
+			}
+			streamPath := t.TempDir() + "/stream" + tc.extension
 			if err := os.WriteFile(streamPath, streamRR.Body.Bytes(), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			streamCodec, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", streamPath).Output()
-			if err != nil || strings.TrimSpace(string(streamCodec)) != "aac" {
-				t.Fatalf("browser stream codec=%q err=%v", streamCodec, err)
+			if err != nil || strings.TrimSpace(string(streamCodec)) != tc.codec {
+				t.Fatalf("direct stream codec=%q want=%q err=%v", streamCodec, tc.codec, err)
 			}
 			rangeRR := a.requestH("GET", media.StreamURL, nil, true, map[string]string{"Range": "bytes=0-63"})
 			if rangeRR.Code != http.StatusPartialContent || rangeRR.Body.Len() != 64 || rangeRR.Header().Get("Accept-Ranges") != "bytes" {
@@ -262,9 +264,10 @@ func TestAudioMergeEmbedsAndServesCover(t *testing.T) {
 	a.srv.cfg.DataDir = t.TempDir()
 	first := a.readyFile(t, "01 夜晚.wav", audioFixture(t, "wav", 280))
 	second := a.readyFile(t, "02 雨声.wav", audioFixture(t, "wav", 560))
+	coverFile := a.readyFile(t, "cover.jpg", audioCoverFixture(t))
 	createdRR := a.request("POST", "/api/audio-merges", map[string]any{
 		"parent_id": RootID, "name": "带封面的 ASMR.m4a", "format": "alac",
-		"file_ids": []string{first.ID, second.ID}, "cover_jpeg": base64.StdEncoding.EncodeToString(audioCoverFixture(t)),
+		"file_ids": []string{first.ID, second.ID}, "cover_file_id": coverFile.ID,
 	}, true)
 	if createdRR.Code != http.StatusAccepted {
 		t.Fatalf("create audio merge=%d: %s", createdRR.Code, createdRR.Body.String())
@@ -305,6 +308,52 @@ func TestAudioMergeEmbedsAndServesCover(t *testing.T) {
 	probe, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name:stream_disposition=attached_pic", "-of", "json", path).Output()
 	if err != nil || !bytes.Contains(probe, []byte(`"codec_name": "mjpeg"`)) || !bytes.Contains(probe, []byte(`"attached_pic": 1`)) {
 		t.Fatalf("embedded cover missing: err=%v probe=%s", err, probe)
+	}
+}
+
+func TestAudioCoverFileMustBeInOutputDirectory(t *testing.T) {
+	a := newTestApp(t)
+	cover := a.readyFile(t, "cover.jpg", audioCoverFixture(t))
+	if data, err := a.srv.audioCoverFromFile(context.Background(), RootID, cover.ID); err != nil || len(data) == 0 {
+		t.Fatalf("read directory cover: bytes=%d err=%v", len(data), err)
+	}
+	directoryID := ids.New()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.Exec(`INSERT INTO files(id,parent_id,name,kind,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, directoryID, RootID, "nested", "directory", "ready", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE files SET parent_id=? WHERE id=?`, directoryID, cover.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.srv.audioCoverFromFile(context.Background(), RootID, cover.ID); err == nil {
+		t.Fatal("cover outside the output directory was accepted")
+	}
+}
+
+func TestAudioMergeListsMultipleBackgroundJobs(t *testing.T) {
+	a := newTestApp(t)
+	if capacity := cap(a.srv.audioMergeSlots); capacity != 2 {
+		t.Fatalf("audio merge concurrency=%d want=2", capacity)
+	}
+	older := &audioMergeJob{ID: ids.New(), Status: "done", Progress: 100, OutputName: "older.flac", OutputFormat: "flac", ParentID: RootID, InputCount: 2, CreatedAt: "2026-08-23T01:00:00Z", UpdatedAt: "2026-08-23T01:01:00Z"}
+	newer := &audioMergeJob{ID: ids.New(), Status: "queued", Progress: 1, OutputName: "newer.m4a", OutputFormat: "alac", ParentID: RootID, InputCount: 7, CreatedAt: "2026-08-23T02:00:00Z", UpdatedAt: "2026-08-23T02:00:00Z"}
+	a.srv.audioMergeJobs[older.ID] = older
+	a.srv.audioMergeJobs[newer.ID] = newer
+	rr := a.request("GET", "/api/audio-merges", nil, true)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list audio merges=%d: %s", rr.Code, rr.Body.String())
+	}
+	listed := decode[struct {
+		Items []audioMergeSnapshot `json:"items"`
+	}](t, rr)
+	if len(listed.Items) != 2 || listed.Items[0].ID != newer.ID || listed.Items[1].ID != older.ID || listed.Items[0].ParentID != RootID {
+		t.Fatalf("audio merge list=%+v", listed.Items)
+	}
+	if removed := a.request("DELETE", "/api/audio-merges/"+older.ID, nil, true); removed.Code != http.StatusNoContent {
+		t.Fatalf("remove finished audio merge=%d", removed.Code)
+	}
+	if _, ok := a.srv.audioMergeJobs[older.ID]; ok {
+		t.Fatal("finished audio merge remained in task history")
 	}
 }
 

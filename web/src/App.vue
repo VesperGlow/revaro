@@ -10,7 +10,7 @@ import FileBrowserHeader from './components/FileBrowserHeader.vue'
 import FileGrid from './components/FileGrid.vue'
 import FileTable from './components/FileTable.vue'
 import MediaPreview from './components/MediaPreview.vue'
-import { isAudio, isBook, isEditable, isImage, isMedia } from './fileTypes'
+import { isAudio, isBook, isEditable, isImage, isMedia, thumbSRC } from './fileTypes'
 import { formatDate, formatSize } from './format'
 import ReaderView from './Reader.vue'
 import type { AudioMergeFormat, AudioMergeResponse, FolderOption, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
@@ -54,7 +54,8 @@ const avatar = reactive({ busy:false, error:'' })
 const twoFactor = reactive({ enabled:false, recoveryRemaining:0, loading:false, busy:false, stage:'idle' as 'idle'|'setup', currentPassword:'', code:'', secret:'', uri:'', qrDataURL:'', recoveryCodes:[] as string[], copied:false, error:'' })
 const share = reactive({ active:false, url:'', createdAt:'', busy:false, error:'', copied:false })
 const editor = reactive({ isNew:false, readonly:false, fileId:'', name:'', originalName:'', content:'', original:'', etag:'', mode:'edit' as 'edit'|'split'|'preview', busy:false, error:'' })
-const audioMerge = reactive({ name:'', format:'flac' as AudioMergeFormat, order:[] as DriveFile[], coverData:'', coverPreview:'', coverName:'', jobId:'', outputFileId:'', status:'idle' as 'idle'|AudioMergeResponse['status'], progress:0, message:'', error:'', busy:false })
+const audioMerge = reactive({ name:'', format:'flac' as AudioMergeFormat, order:[] as DriveFile[], coverData:'', coverFileId:'', coverPreview:'', coverName:'', error:'', busy:false })
+const audioMergeJobs = ref<AudioMergeResponse[]>([])
 const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
 const fileInput = ref<HTMLInputElement|null>(null)
 const avatarInput = ref<HTMLInputElement|null>(null)
@@ -76,6 +77,7 @@ const selectedBytes = computed(() => selectedItems.value.reduce((total,item) => 
 const selectedFiles = computed(() => selectedItems.value.filter(item => item.kind==='file'))
 const selectedAudioFiles = computed(() => selectedItems.value.filter(isAudio))
 const canMergeSelectedAudio = computed(() => selectedItems.value.length>=2&&selectedItems.value.length===selectedAudioFiles.value.length)
+const audioCoverCandidates = computed(() => items.value.filter(item=>isImage(item)&&item.size<=16*1024*1024&&!(/\.avif$/i.test(item.name)||item.mime_type==='image/avif')))
 const singleSelected = computed(() => selectedItems.value.length===1?selectedItems.value[0]:null)
 
 function askDialog(options:{title:string;message:string;confirmLabel?:string;cancelLabel?:string;tone?:'default'|'danger';input?:boolean;value?:string;placeholder?:string}){
@@ -132,7 +134,7 @@ async function submitLogin() {
   }
   finally{login.busy=false}
 }
-async function logout(){await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0)}
+async function logout(){await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];window.clearTimeout(audioMergePollTimer)}
 function showAccount(){account.username=user.value||'';account.currentPassword='';account.password='';account.confirmPassword='';account.error='';accountPanel.value=null;usernameEditing.value=false;usernameSaving.value=false;usernameError.value='';avatar.error='';resetTwoFactor();openModal('account');loadTwoFactorStatus()}
 async function startUsernameEdit(){
   if(usernameSaving.value)return
@@ -419,16 +421,19 @@ function defaultAudioMergeName(files:DriveFile[],format:AudioMergeFormat){
   return `${folderName||`${firstName} 等`}${audioMergeExtension(format)}`
 }
 function showAudioMerge(){
-  if(audioMerge.jobId&& !['done','failed','cancelled'].includes(audioMerge.status)){openModal('audioMerge');return}
   if(!canMergeSelectedAudio.value)return
   audioMerge.format='flac';audioMerge.name=defaultAudioMergeName(selectedAudioFiles.value,audioMerge.format)
   audioMerge.order=[...selectedAudioFiles.value]
   clearAudioCover()
-  audioMerge.jobId='';audioMerge.outputFileId='';audioMerge.status='idle';audioMerge.progress=0;audioMerge.message='';audioMerge.error='';audioMerge.busy=false
+  const suggested=[...audioCoverCandidates.value].sort((a,b)=>coverSuggestionScore(b)-coverSuggestionScore(a))[0]
+  if(suggested)selectDirectoryCover(suggested)
+  audioMerge.error='';audioMerge.busy=false
   openModal('audioMerge')
 }
+function coverSuggestionScore(item:DriveFile){const name=item.name.toLowerCase();return /(^|[\s_.-])(cover|folder|front|封面)([\s_.-]|$)/i.test(name)?3:/^(00|01)[\s_.-]/.test(name)?2:1}
 function chooseAudioCover(){audioCoverInput.value?.click()}
-function clearAudioCover(){audioMerge.coverData='';audioMerge.coverPreview='';audioMerge.coverName=''}
+function clearAudioCover(){audioMerge.coverData='';audioMerge.coverFileId='';audioMerge.coverPreview='';audioMerge.coverName=''}
+function selectDirectoryCover(item:DriveFile){audioMerge.coverData='';audioMerge.coverFileId=item.id;audioMerge.coverPreview=thumbSRC(item);audioMerge.coverName=item.name;audioMerge.error=''}
 async function setAudioCover(file:File){
   audioMerge.error=''
   if(!['image/jpeg','image/png','image/webp','image/gif'].includes(file.type)){audioMerge.error='封面请选择 JPG、PNG、WebP 或 GIF 图片';return}
@@ -445,7 +450,7 @@ async function setAudioCover(file:File){
     if(blob.size>2*1024*1024)blob=await encode(.72)
     if(blob.size>2*1024*1024)throw new Error('封面处理后仍超过 2 MiB，请换一张图片')
     const dataURL=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error('无法读取封面图片'));reader.readAsDataURL(blob)})
-    audioMerge.coverData=dataURL.slice(dataURL.indexOf(',')+1);audioMerge.coverPreview=dataURL;audioMerge.coverName=file.name
+    audioMerge.coverData=dataURL.slice(dataURL.indexOf(',')+1);audioMerge.coverFileId='';audioMerge.coverPreview=dataURL;audioMerge.coverName=file.name
   }catch(e){audioMerge.error=(e as Error).message}
   finally{if(sourceURL)URL.revokeObjectURL(sourceURL)}
 }
@@ -460,9 +465,6 @@ function moveAudioMergeInput(index:number,delta:number){
   ;[next[index],next[target]]=[next[target],next[index]]
   audioMerge.order=next
 }
-function applyAudioMergeStatus(data:AudioMergeResponse){
-  audioMerge.jobId=data.id;audioMerge.outputFileId=data.output_file_id||'';audioMerge.status=data.status;audioMerge.progress=data.progress;audioMerge.message=data.message;audioMerge.error=data.error||'';audioMerge.name=data.output_name;audioMerge.format=data.output_format
-}
 async function startAudioMerge(){
   audioMerge.error=''
   let name=audioMerge.name.trim()
@@ -471,51 +473,39 @@ async function startAudioMerge(){
   if(!name.toLowerCase().endsWith(extension))name=name.replace(/\.(?:flac|m4a)$/i,'')+extension
   audioMerge.name=name;audioMerge.busy=true
   try{
-    const data=await api<AudioMergeResponse>('/api/audio-merges',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name,format:audioMerge.format,file_ids:audioMerge.order.map(item=>item.id),cover_jpeg:audioMerge.coverData})})
-    applyAudioMergeStatus(data);localStorage.setItem('revaro-audio-merge-job',data.id);clearSelection();scheduleAudioMergePoll(500)
+    const data=await api<AudioMergeResponse>('/api/audio-merges',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name,format:audioMerge.format,file_ids:audioMerge.order.map(item=>item.id),cover_jpeg:audioMerge.coverData,cover_file_id:audioMerge.coverFileId})})
+    audioMergeJobs.value=[data,...audioMergeJobs.value.filter(job=>job.id!==data.id)];clearSelection();closeModal();notify(`「${data.output_name}」已加入后台队列`,'success');scheduleAudioMergePoll(350)
   }catch(e){audioMerge.error=(e as Error).message}
   finally{audioMerge.busy=false}
 }
 function scheduleAudioMergePoll(delay=1000){
   window.clearTimeout(audioMergePollTimer)
-  if(audioMerge.jobId)audioMergePollTimer=window.setTimeout(()=>void pollAudioMerge(),delay)
+  if(audioMergeJobs.value.some(job=>!audioMergeTerminal(job.status)))audioMergePollTimer=window.setTimeout(()=>void refreshAudioMergeJobs(),delay)
 }
-async function pollAudioMerge(){
-  if(!audioMerge.jobId)return
+function audioMergeTerminal(status:AudioMergeResponse['status']){return status==='done'||status==='failed'||status==='cancelled'}
+async function refreshAudioMergeJobs(){
   try{
-    const data=await api<AudioMergeResponse>(`/api/audio-merges/${audioMerge.jobId}`)
-    applyAudioMergeStatus(data)
-    if(['done','failed','cancelled'].includes(data.status)){
-      localStorage.removeItem('revaro-audio-merge-job')
-      if(data.status==='done'){
-        if(!trashMode.value)await openFolder(currentId.value)
-        notify(`「${data.output_name}」合并完成`,'success')
-      }else if(data.status==='failed')notify(data.error||'音频合并失败')
-      return
+    const previous=new Map(audioMergeJobs.value.map(job=>[job.id,job.status]))
+    const data=await api<{items:AudioMergeResponse[]}>('/api/audio-merges')
+    audioMergeJobs.value=data.items
+    for(const job of data.items){
+      const before=previous.get(job.id)
+      if(before&&!audioMergeTerminal(before)&&audioMergeTerminal(job.status)){
+        if(job.status==='done')notify(`「${job.output_name}」合并完成`,'success')
+        else if(job.status==='failed')notify(job.error||`「${job.output_name}」合并失败`)
+      }
     }
     scheduleAudioMergePoll()
-  }catch(e){
-    const err=e as ApiError
-    if(err.status===404){localStorage.removeItem('revaro-audio-merge-job');audioMerge.jobId='';audioMerge.status='idle';return}
-    scheduleAudioMergePoll(3000)
-  }
+  }catch{scheduleAudioMergePoll(3000)}
 }
-async function restoreAudioMergeJob(){
-  const id=localStorage.getItem('revaro-audio-merge-job')
-  if(!id)return
-  audioMerge.jobId=id
-  await pollAudioMerge()
+async function cancelAudioMerge(job:AudioMergeResponse){
+  if(audioMergeTerminal(job.status))return
+  try{await api(`/api/audio-merges/${job.id}`,{method:'DELETE'});job.status='cancelling';job.message='正在取消合并';scheduleAudioMergePoll(300)}catch(e){notify((e as Error).message)}
 }
-async function cancelAudioMerge(){
-  if(!audioMerge.jobId||['done','failed','cancelled'].includes(audioMerge.status))return
-  audioMerge.busy=true
-  try{await api(`/api/audio-merges/${audioMerge.jobId}`,{method:'DELETE'});audioMerge.status='cancelling';audioMerge.message='正在取消合并';scheduleAudioMergePoll(300)}
-  catch(e){audioMerge.error=(e as Error).message}
-  finally{audioMerge.busy=false}
-}
-function resetAudioMerge(){
-  window.clearTimeout(audioMergePollTimer);localStorage.removeItem('revaro-audio-merge-job')
-  audioMerge.jobId='';audioMerge.outputFileId='';audioMerge.status='idle';audioMerge.progress=0;audioMerge.message='';audioMerge.error=''
+async function clearAudioMerges(){
+  const finished=audioMergeJobs.value.filter(job=>audioMergeTerminal(job.status))
+  await Promise.all(finished.map(job=>api(`/api/audio-merges/${job.id}`,{method:'DELETE'}).catch(()=>undefined)))
+  audioMergeJobs.value=audioMergeJobs.value.filter(job=>!audioMergeTerminal(job.status))
 }
 
 function chooseFiles(){fileInput.value?.click()}
@@ -649,7 +639,7 @@ async function retry(task:UploadTask){await abortRemote(task);task.status='queue
 function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled'].includes(tasks[i].status))tasks.splice(i,1)}
 // 完成记录保留在上传进度中，等用户主动清除。
 function scheduleAutoClear(){}
-onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value)void restoreAudioMergeJob()})})
+onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value)void refreshAudioMergeJobs()})})
 onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
 </script>
 
@@ -671,7 +661,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
   </main>
 
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
-    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @logout="logout" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" />
+    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @logout="logout" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" />
     <section class="content" @click="clearSelectionFromBlank">
       <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :view-mode="viewMode" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @set-view="setViewMode" @new-document="newDocument" @create-folder="createFolder" @upload="chooseFiles" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}">
@@ -702,53 +692,43 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
       <section v-else-if="modal==='move'" class="modal folder-modal"><header><div><p class="eyebrow dark">MOVE</p><h2>移动</h2><p class="move-target" :title="moveTargets.length===1?moveTargets[0]?.name:undefined">{{ moveTargets.length===1?`「${moveTargets[0]?.name}」`:`${moveTargets.length} 项` }}</p></div><button @click="closeModal">×</button></header><div v-if="modalBusy" class="state small"><div class="spinner"></div></div><div v-else class="folder-list"><button v-for="folder in folders" :key="folder.id" :style="{paddingLeft:`${18+folder.depth*22}px`}" @click="moveTo(folder.id)"><span>▰</span>{{ folder.name }}</button></div></section>
       <section v-else-if="modal==='audioMerge'" class="modal audio-merge-modal">
         <header><div><p class="eyebrow dark">AUDIO MERGE</p><h2>合并音频</h2><p>FLAC / ALAC 真无损，或选择 AAC 节省空间</p></div><button aria-label="关闭" @click="closeModal">×</button></header>
-        <template v-if="audioMerge.status==='idle'">
-          <div class="audio-merge-layout">
-            <section class="merge-settings-panel">
-              <fieldset class="merge-format-field">
-                <legend>输出格式</legend><div class="merge-format-options">
-                  <button type="button" :class="{active:audioMerge.format==='flac'}" @click="setAudioMergeFormat('flac')"><span>FLAC</span><strong>无损 · 通用</strong><small>下载母版为 .flac</small></button>
-                  <button type="button" :class="{active:audioMerge.format==='alac'}" @click="setAudioMergeFormat('alac')"><span>ALAC</span><strong>无损 · Apple</strong><small>下载母版为 .m4a</small></button>
-                  <button type="button" :class="{active:audioMerge.format==='aac'}" @click="setAudioMergeFormat('aac')"><span>AAC</span><strong>有损 · 192k</strong><small>体积小，直接流播</small></button>
-                </div>
-              </fieldset>
-              <label>输出文件名<input v-model="audioMerge.name" maxlength="1024" :placeholder="`合并音频${audioMergeExtension(audioMerge.format)}`" @keydown.enter.prevent="startAudioMerge"></label>
-              <div class="merge-cover-field">
-                <strong>封面</strong>
-                <button type="button" class="merge-cover-picker" @click="chooseAudioCover">
-                  <img v-if="audioMerge.coverPreview" :src="audioMerge.coverPreview" alt="音频封面预览">
-                  <span v-else>＋</span>
-                  <div><b>{{ audioMerge.coverName||'添加封面' }}</b><small>会嵌入母版并显示在播放器</small></div>
-                </button>
-                <button v-if="audioMerge.coverPreview" type="button" class="merge-cover-remove" @click="clearAudioCover">移除封面</button>
-                <input ref="audioCoverInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="e=>{const el=e.target as HTMLInputElement;if(el.files?.[0])setAudioCover(el.files[0]);el.value=''}">
+        <div class="audio-merge-layout">
+          <section class="merge-settings-panel">
+            <fieldset class="merge-format-field">
+              <legend>输出格式</legend><div class="merge-format-options">
+                <button type="button" :class="{active:audioMerge.format==='flac'}" @click="setAudioMergeFormat('flac')"><span>FLAC</span><strong>无损 · 通用</strong><small>下载母版为 .flac</small></button>
+                <button type="button" :class="{active:audioMerge.format==='alac'}" @click="setAudioMergeFormat('alac')"><span>ALAC</span><strong>无损 · Apple</strong><small>下载母版为 .m4a</small></button>
+                <button type="button" :class="{active:audioMerge.format==='aac'}" @click="setAudioMergeFormat('aac')"><span>AAC</span><strong>有损 · 192k</strong><small>体积小，直接流播</small></button>
               </div>
-              <p class="lossless-note"><strong>播放说明</strong>无损母版保留下载；播放器使用可拖动进度的 AAC Range 流。MP3 / AAC 源无法恢复此前丢失的细节。</p>
-            </section>
-            <section class="merge-order-panel">
-              <div class="merge-order-heading"><div><strong>播放顺序</strong><small>每个文件会保留为一个分节</small></div><span>{{ audioMerge.order.length }} 段 · {{ formatSize(audioMerge.order.reduce((sum,item)=>sum+item.size,0)) }}</span></div>
-              <div class="merge-order-list">
-                <article v-for="(item,index) in audioMerge.order" :key="item.id">
-                  <b>{{ index+1 }}</b><div><strong :title="item.name">{{ item.name }}</strong><small>{{ formatSize(item.size) }}</small></div>
-                  <span class="merge-order-actions"><button :disabled="index===0" title="上移" aria-label="上移" @click="moveAudioMergeInput(index,-1)">↑</button><button :disabled="index===audioMerge.order.length-1" title="下移" aria-label="下移" @click="moveAudioMergeInput(index,1)">↓</button></span>
-                </article>
+            </fieldset>
+            <label>输出文件名<input v-model="audioMerge.name" maxlength="1024" :placeholder="`合并音频${audioMergeExtension(audioMerge.format)}`" @keydown.enter.prevent="startAudioMerge"></label>
+            <div class="merge-cover-field">
+              <strong>封面 <small v-if="audioCoverCandidates.length">已识别当前目录 {{ audioCoverCandidates.length }} 张图片</small></strong>
+              <div v-if="audioCoverCandidates.length" class="merge-cover-candidates">
+                <button v-for="candidate in audioCoverCandidates" :key="candidate.id" type="button" :class="{active:audioMerge.coverFileId===candidate.id}" :title="candidate.name" @click="selectDirectoryCover(candidate)"><img :src="thumbSRC(candidate)" :alt="candidate.name"><span>{{ candidate.name }}</span></button>
               </div>
-            </section>
-          </div>
-          <p v-if="audioMerge.error" class="form-error merge-error">{{ audioMerge.error }}</p>
-          <footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="audioMerge.busy" @click="startAudioMerge">{{ audioMerge.busy?'正在创建…':'开始合并' }}</button></footer>
-        </template>
-        <template v-else>
-          <div class="merge-job-state" :class="audioMerge.status">
-            <div class="merge-job-icon"><span v-if="audioMerge.status==='done'">✓</span><span v-else-if="audioMerge.status==='failed'">!</span><span v-else-if="audioMerge.status==='cancelled'">×</span><div v-else class="spinner"></div></div>
-            <div><strong>{{ audioMerge.message }}</strong><p>{{ audioMerge.status==='done'?`已保存为「${audioMerge.name}」`:audioMerge.status==='failed'||audioMerge.status==='cancelled'?'源文件没有被修改':'可以关闭窗口，任务会继续在后台运行' }}</p></div>
-          </div>
-          <div class="merge-progress"><i :class="audioMerge.status" :style="{width:`${audioMerge.progress}%`}"></i></div>
-          <div class="merge-progress-meta"><span>{{ audioMerge.error||`${audioMerge.order.length||'多'} 段音频` }}</span><b>{{ audioMerge.progress }}%</b></div>
-          <footer v-if="audioMerge.status==='done'"><button class="primary" @click="closeModal">完成</button></footer>
-          <footer v-else-if="audioMerge.status==='failed'||audioMerge.status==='cancelled'"><button class="secondary" @click="closeModal">关闭</button><button class="primary" @click="resetAudioMerge">重新设置</button></footer>
-          <footer v-else><button class="secondary" @click="closeModal">后台运行</button><button class="danger-text" :disabled="audioMerge.busy||audioMerge.status==='cancelling'" @click="cancelAudioMerge">{{ audioMerge.status==='cancelling'?'正在取消…':'取消合并' }}</button></footer>
-        </template>
+              <button type="button" class="merge-cover-picker" @click="chooseAudioCover">
+                <img v-if="audioMerge.coverPreview" :src="audioMerge.coverPreview" alt="音频封面预览">
+                <span v-else>＋</span>
+                <div><b>{{ audioMerge.coverName||'上传其他封面' }}</b><small>{{ audioMerge.coverPreview?'点击可换成本地图片':'没有合适图片时从设备上传' }}</small></div>
+              </button>
+              <button v-if="audioMerge.coverPreview" type="button" class="merge-cover-remove" @click="clearAudioCover">移除封面</button>
+              <input ref="audioCoverInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="e=>{const el=e.target as HTMLInputElement;if(el.files?.[0])setAudioCover(el.files[0]);el.value=''}">
+            </div>
+            <p class="lossless-note"><strong>播放说明</strong>播放器直接 Range 播放合并后的原始 FLAC / ALAC `.m4a`，不会额外生成 AAC 副本。能否解码 ALAC 取决于浏览器本身。</p>
+          </section>
+          <section class="merge-order-panel">
+            <div class="merge-order-heading"><div><strong>播放顺序</strong><small>每个文件会保留为一个分节</small></div><span>{{ audioMerge.order.length }} 段 · {{ formatSize(audioMerge.order.reduce((sum,item)=>sum+item.size,0)) }}</span></div>
+            <div class="merge-order-list">
+              <article v-for="(item,index) in audioMerge.order" :key="item.id">
+                <b>{{ index+1 }}</b><div><strong :title="item.name">{{ item.name }}</strong><small>{{ formatSize(item.size) }}</small></div>
+                <span class="merge-order-actions"><button :disabled="index===0" title="上移" aria-label="上移" @click="moveAudioMergeInput(index,-1)">↑</button><button :disabled="index===audioMerge.order.length-1" title="下移" aria-label="下移" @click="moveAudioMergeInput(index,1)">↓</button></span>
+              </article>
+            </div>
+          </section>
+        </div>
+        <p v-if="audioMerge.error" class="form-error merge-error">{{ audioMerge.error }}</p>
+        <footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="audioMerge.busy" @click="startAudioMerge">{{ audioMerge.busy?'正在创建…':'开始合并' }}</button></footer>
       </section>
       <section v-else-if="modal==='account'" class="modal account-modal">
         <header><div><p class="eyebrow dark">PROFILE & SECURITY</p><h2>账户设置</h2></div><button @click="closeModal">×</button></header>

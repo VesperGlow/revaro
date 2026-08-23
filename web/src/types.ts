@@ -28,6 +28,7 @@ export interface AudioMergeResponse {
   output_name:string
   output_format:AudioMergeFormat
   output_file_id?:string
+  parent_id:string
   input_count:number
   created_at:string
   updated_at:string

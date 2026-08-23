@@ -1346,10 +1346,8 @@ func TestGarbageCollectorReclaimsOrphanedThumbnails(t *testing.T) {
 func TestGarbageCollectorKeepsAudioStreamAndCover(t *testing.T) {
 	a := newTestAppWithBlockSize(t, 8)
 	master := a.readyFile(t, "book.flac", []byte("lossless-master"))
-	streamKey, streamManifest, err := a.store.Store(context.Background(), bytes.NewReader([]byte("streaming-aac-companion")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	streamKey := master.objectKey
+	streamManifest := a.store.manifests[streamKey]
 	coverKey := thumbnailKey(master.objectKey)
 	a.store.raw[coverKey] = []byte("jpeg-cover")
 	a.store.age(coverKey, time.Now().Add(-48*time.Hour))

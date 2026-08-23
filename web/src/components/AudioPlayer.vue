@@ -92,7 +92,7 @@ onBeforeUnmount(()=>{window.clearTimeout(saveTimer)})
         <img v-if="media?.has_cover" :src="media.cover_url" :alt="`${item.name} 封面`">
         <span v-else>♫</span>
       </div>
-      <div class="audio-title"><strong>{{ item.name }}</strong><small>{{ formatSize(item.size) }} · {{ media?'AAC Range 流式播放':'原文件 Range 播放' }}</small></div>
+      <div class="audio-title"><strong>{{ item.name }}</strong><small>{{ formatSize(item.size) }} · 原文件 Range 流式播放</small></div>
       <div class="audio-chapter-current"><span>正在播放</span><strong>{{ currentChapter?.title||item.name }}</strong><small>第 {{ currentChapterIndex+1 }} / {{ chapters.length }} 节</small></div>
       <div class="audio-track-wrap">
         <div class="audio-track-buffer" :style="{width:`${buffered}%`}"></div>

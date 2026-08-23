@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,12 +27,17 @@ import (
 const maxAudioMergeInputs = 256
 const audioMergeTimeout = 24 * time.Hour
 const maxAudioCoverBytes = 2 << 20
+const maxAudioCoverSourceBytes = 16 << 20
 const audioCoverMaxDim = 1200
 
 var audioSourceExts = map[string]bool{
 	".mp3": true, ".wav": true, ".flac": true, ".m4a": true, ".aac": true,
 	".ogg": true, ".oga": true, ".opus": true, ".wma": true, ".aif": true,
 	".aiff": true, ".ape": true,
+}
+
+var audioCoverSourceExts = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true, ".bmp": true,
 }
 
 type audioOutputProfile struct {
@@ -68,6 +74,7 @@ type audioMergeJob struct {
 	OutputName   string
 	OutputFormat string
 	OutputFileID string
+	ParentID     string
 	InputCount   int
 	CreatedAt    string
 	UpdatedAt    string
@@ -83,6 +90,7 @@ type audioMergeSnapshot struct {
 	OutputName   string `json:"output_name"`
 	OutputFormat string `json:"output_format"`
 	OutputFileID string `json:"output_file_id,omitempty"`
+	ParentID     string `json:"parent_id"`
 	InputCount   int    `json:"input_count"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
@@ -94,6 +102,7 @@ func (j *audioMergeJob) snapshot() audioMergeSnapshot {
 	return audioMergeSnapshot{
 		ID: j.ID, Status: j.Status, Progress: j.Progress, Message: j.Message,
 		Error: j.Error, OutputName: j.OutputName, OutputFormat: j.OutputFormat, OutputFileID: j.OutputFileID,
+		ParentID:   j.ParentID,
 		InputCount: j.InputCount, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt,
 	}
 }
@@ -142,11 +151,38 @@ func decodeAudioCover(encoded string) ([]byte, error) {
 	if err != nil || len(raw) == 0 || len(raw) > maxAudioCoverBytes*4 {
 		return nil, errors.New("cover image is invalid")
 	}
+	return normalizeAudioCover(raw)
+}
+
+func normalizeAudioCover(raw []byte) ([]byte, error) {
 	normalized, err := resizeToJPEG(raw, audioCoverMaxDim)
 	if err != nil || len(normalized) == 0 || len(normalized) > maxAudioCoverBytes {
 		return nil, errors.New("cover image is invalid or too large")
 	}
 	return normalized, nil
+}
+
+func (s *Server) audioCoverFromFile(ctx context.Context, parentID, fileID string) ([]byte, error) {
+	if fileID == "" {
+		return nil, nil
+	}
+	f, err := s.file(ctx, fileID)
+	if err != nil || f.Kind != "file" || f.Status != "ready" || f.DeletedAt != "" || f.ParentID == nil || *f.ParentID != parentID || !audioCoverSourceExts[strings.ToLower(filepath.Ext(f.Name))] {
+		return nil, errors.New("cover must be a supported image from the output directory")
+	}
+	if f.Size <= 0 || f.Size > maxAudioCoverSourceBytes {
+		return nil, errors.New("cover source image is too large")
+	}
+	r, err := s.openMergeSource(ctx, f)
+	if err != nil {
+		return nil, errors.New("cover source image could not be read")
+	}
+	defer r.Close()
+	raw, err := io.ReadAll(io.LimitReader(r, maxAudioCoverSourceBytes+1))
+	if err != nil || len(raw) == 0 || len(raw) > maxAudioCoverSourceBytes {
+		return nil, errors.New("cover source image could not be read")
+	}
+	return normalizeAudioCover(raw)
 }
 
 func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +192,7 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		FileIDs   []string `json:"file_ids"`
 		Format    string   `json:"format"`
 		CoverJPEG string   `json:"cover_jpeg"`
+		CoverFile string   `json:"cover_file_id"`
 	}
 	if decodeJSON(w, r, &in) != nil {
 		return
@@ -210,7 +247,14 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
 		return
 	}
+	if in.CoverJPEG != "" && in.CoverFile != "" {
+		problem(w, http.StatusBadRequest, "choose either an uploaded cover or a directory image")
+		return
+	}
 	cover, err := decodeAudioCover(in.CoverJPEG)
+	if err == nil && in.CoverFile != "" {
+		cover, err = s.audioCoverFromFile(r.Context(), in.ParentID, in.CoverFile)
+	}
 	if err != nil {
 		problem(w, http.StatusBadRequest, err.Error())
 		return
@@ -231,7 +275,7 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), audioMergeTimeout)
 	job := &audioMergeJob{
 		ID: ids.New(), Status: "queued", Progress: 1, Message: "等待合并任务开始",
-		OutputName: in.Name, OutputFormat: profile.Format, OutputFileID: outputID, InputCount: len(inputs),
+		OutputName: in.Name, OutputFormat: profile.Format, OutputFileID: outputID, ParentID: in.ParentID, InputCount: len(inputs),
 		CreatedAt: now, UpdatedAt: now, cancel: cancel,
 	}
 	s.audioMergeMu.Lock()
@@ -239,6 +283,21 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 	s.audioMergeMu.Unlock()
 	go s.runAudioMerge(ctx, job, inputs, profile, cover)
 	writeJSON(w, http.StatusAccepted, job.snapshot())
+}
+
+func (s *Server) listAudioMerges(w http.ResponseWriter, _ *http.Request) {
+	s.audioMergeMu.RLock()
+	jobs := make([]*audioMergeJob, 0, len(s.audioMergeJobs))
+	for _, job := range s.audioMergeJobs {
+		jobs = append(jobs, job)
+	}
+	s.audioMergeMu.RUnlock()
+	snapshots := make([]audioMergeSnapshot, 0, len(jobs))
+	for _, job := range jobs {
+		snapshots = append(snapshots, job.snapshot())
+	}
+	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].CreatedAt > snapshots[j].CreatedAt })
+	writeJSON(w, http.StatusOK, map[string]any{"items": snapshots})
 }
 
 func (s *Server) getAudioMerge(w http.ResponseWriter, r *http.Request) {
@@ -261,7 +320,11 @@ func (s *Server) cancelAudioMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := job.snapshot()
-	if snapshot.Status != "done" && snapshot.Status != "failed" && snapshot.Status != "cancelled" {
+	if snapshot.Status == "done" || snapshot.Status == "failed" || snapshot.Status == "cancelled" {
+		s.audioMergeMu.Lock()
+		delete(s.audioMergeJobs, job.ID)
+		s.audioMergeMu.Unlock()
+	} else {
 		job.update("cancelling", snapshot.Progress, "正在取消合并")
 		job.cancel()
 	}
@@ -377,34 +440,15 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 			return fmt.Errorf("write audio cover: %w", err)
 		}
 	}
-	needsCompanion := profile.Codec != "aac"
-	masterProgressEnd := 86
-	if needsCompanion {
-		masterProgressEnd = 72
-	}
 	outputPath := filepath.Join(workDir, "merged"+profile.Extension)
-	if err := runAudioFFmpeg(ctx, s.cfg.FFmpegPath, paths, metadataPath, coverPath, job.OutputName, durations, probes, profile, outputPath, masterProgressEnd, job); err != nil {
+	if err := runAudioFFmpeg(ctx, s.cfg.FFmpegPath, paths, metadataPath, coverPath, job.OutputName, durations, probes, profile, outputPath, 86, job); err != nil {
 		return err
-	}
-	streamPath := outputPath
-	if needsCompanion {
-		streamPath = filepath.Join(workDir, "stream.m4a")
-		if err := runAudioStreamFFmpeg(ctx, s.cfg.FFmpegPath, outputPath, durationMilliseconds(durations), streamPath, job); err != nil {
-			return err
-		}
 	}
 
 	job.update("saving", 88, "正在写入 Revaro 块存储")
-	key, masterSize, masterETag, err := s.storeAudioArtifact(ctx, outputPath, 88, 95, "正在保存无损母版", job)
+	key, masterSize, masterETag, err := s.storeAudioArtifact(ctx, outputPath, 88, 99, "正在保存合并音频", job)
 	if err != nil {
 		return fmt.Errorf("store merged audio: %w", err)
-	}
-	streamKey, streamSize, streamETag := key, masterSize, masterETag
-	if streamPath != outputPath {
-		streamKey, streamSize, streamETag, err = s.storeAudioArtifact(ctx, streamPath, 95, 99, "正在保存流式播放版本", job)
-		if err != nil {
-			return fmt.Errorf("store audio stream: %w", err)
-		}
 	}
 	if len(cover) > 0 {
 		thumb, err := resizeToJPEG(cover, thumbMaxDim)
@@ -433,7 +477,7 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 		return errors.New("merged audio placeholder was removed")
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		job.OutputFileID, durationMilliseconds(durations), string(chaptersJSON), streamKey, streamSize, streamETag, len(cover) > 0, now, now)
+		job.OutputFileID, durationMilliseconds(durations), string(chaptersJSON), key, masterSize, masterETag, len(cover) > 0, now, now)
 	if err != nil {
 		return fmt.Errorf("commit audio chapters and stream: %w", err)
 	}
@@ -691,46 +735,6 @@ func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadata
 		return fmt.Errorf("ffmpeg: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	job.update("merging", progressEnd, "音频母版编码完成")
-	return nil
-}
-
-func runAudioStreamFFmpeg(ctx context.Context, ffmpeg, inputPath string, durationMS int64, outputPath string, job *audioMergeJob) error {
-	args := []string{
-		"-hide_banner", "-loglevel", "error", "-y", "-i", inputPath,
-		"-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "192k",
-		"-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "ipod", outputPath,
-	}
-	cmd := exec.CommandContext(ctx, ffmpeg, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	job.update("merging", 72, "正在生成浏览器流式播放版本")
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "out_time_us=") && durationMS > 0 {
-			micros, parseErr := strconv.ParseInt(strings.TrimPrefix(line, "out_time_us="), 10, 64)
-			if parseErr == nil {
-				progress := 72 + int(micros*14/(durationMS*1000))
-				job.update("merging", min(progress, 86), "正在生成浏览器流式播放版本")
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return err
-	}
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("ffmpeg stream: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	job.update("merging", 86, "流式播放版本编码完成")
 	return nil
 }
 
