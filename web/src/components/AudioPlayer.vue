@@ -9,6 +9,7 @@ import type { AudioChapter, AudioHLSResponse, AudioMediaResponse, AudioSubtitle 
 const props=defineProps<{item:DriveFile}>()
 const audio=ref<HTMLAudioElement|null>(null)
 const chapterList=ref<HTMLElement|null>(null)
+const subtitleList=ref<HTMLElement|null>(null)
 const media=ref<AudioMediaResponse|null>(null)
 const loading=ref(true)
 const waiting=ref(false)
@@ -46,13 +47,11 @@ const currentChapterIndex=computed(()=>{
 })
 const currentChapter=computed(()=>chapters.value[currentChapterIndex.value])
 const subtitles=computed<AudioSubtitle[]>(()=>media.value?.subtitles||[])
-const currentSubtitleIndex=computed(()=>subtitles.value.findIndex(cue=>currentTime.value>=cue.start&&currentTime.value<cue.end))
-const visibleSubtitles=computed(()=>{
-  if(!subtitles.value.length)return []
-  let anchor=currentSubtitleIndex.value
-  if(anchor<0){anchor=subtitles.value.findIndex(cue=>cue.start>currentTime.value);if(anchor<0)anchor=subtitles.value.length-1}
-  const start=Math.max(0,Math.min(anchor-2,subtitles.value.length-5))
-  return subtitles.value.slice(start,start+5)
+const subtitleFocusIndex=computed(()=>{
+	if(!subtitles.value.length)return -1
+	let focus=0
+	for(let index=0;index<subtitles.value.length;index+=1){if(subtitles.value[index].start<=currentTime.value)focus=index;else break}
+	return focus
 })
 const displayedTime=computed(()=>seekPreview.value??currentTime.value)
 const progress=computed(()=>duration.value?Math.min(100,displayedTime.value/duration.value*100):0)
@@ -223,6 +222,10 @@ watch(currentChapterIndex,index=>void nextTick().then(()=>{
   chapterList.value?.querySelector<HTMLElement>(`[data-chapter-index="${index}"]`)?.scrollIntoView({block:'nearest'})
   updateChapterScrollbar()
 }))
+watch(subtitleFocusIndex,index=>{
+  if(index<0)return
+  void nextTick().then(()=>subtitleList.value?.querySelector<HTMLElement>(`[data-subtitle-index="${index}"]`)?.scrollIntoView({behavior:'smooth',block:'center'}))
+})
 onBeforeUnmount(()=>{
   window.clearTimeout(saveTimer);chapterResizeObserver?.disconnect();hlsGeneration++
   const session=hlsSessionId;hlsSessionId='';resetLocalHLS()
@@ -244,8 +247,8 @@ onBeforeUnmount(()=>{
         <section class="audio-subtitle-panel">
           <header><strong>字幕</strong><span>{{ subtitles.length }} 条</span></header>
           <div class="audio-subtitle-stage">
-            <div v-if="subtitles.length" class="audio-subtitle-lines">
-              <button v-for="cue in visibleSubtitles" :key="cue.id" :class="{active:cue.id-1===currentSubtitleIndex}" @click="seek(cue.start,true)"><small>{{ formatTime(cue.start) }}</small><span>{{ cue.text }}</span></button>
+            <div v-if="subtitles.length" ref="subtitleList" class="audio-subtitle-lines">
+              <button v-for="(cue,index) in subtitles" :key="cue.id" :data-subtitle-index="index" :class="{active:index===subtitleFocusIndex,near:Math.abs(index-subtitleFocusIndex)===1,mid:Math.abs(index-subtitleFocusIndex)===2}" :aria-label="`${formatTime(cue.start)} ${cue.text}`" @click="seek(cue.start,true)"><span>{{ cue.text }}</span></button>
             </div>
             <div v-else class="audio-subtitle-empty"><b>CC</b><strong>没有内嵌字幕</strong><small>合并 M4A 时会自动识别每段同名的 VTT</small></div>
           </div>
