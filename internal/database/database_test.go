@@ -60,6 +60,11 @@ func TestOpenIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var initialVersions int
+	if err := db1.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&initialVersions); err != nil {
+		db1.Close()
+		t.Fatal(err)
+	}
 	db1.Close()
 	// 重复打开（模拟重启）：迁移不重复应用
 	db2, err := Open(path)
@@ -71,8 +76,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 	if err := db2.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 6 {
-		t.Fatalf("migrations reapplied on reopen: %d", versions)
+	if versions != initialVersions {
+		t.Fatalf("migrations reapplied on reopen: before=%d after=%d", initialVersions, versions)
 	}
 }
 
