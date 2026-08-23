@@ -91,7 +91,6 @@ function updateSeekHover(event:PointerEvent){
   seekHover.value={visible:true,time:ratio*duration.value,percent:ratio*100}
 }
 function hideSeekHover(){seekHover.value.visible=false}
-function seekRelative(delta:number){seek(currentTime.value+delta)}
 function previousChapter(){
   const chapter=currentChapter.value
   if(!chapter)return seek(0)
@@ -243,9 +242,7 @@ onBeforeUnmount(()=>{
       <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span><span>-{{ formatTime(Math.max(0,duration-displayedTime)) }}</span></div>
       <div class="audio-controls">
         <button title="上一节" aria-label="上一节" @click="previousChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6 9 12l10 6Z"/></svg></button>
-        <button class="audio-skip" title="后退 15 秒" aria-label="后退 15 秒" @click="seekRelative(-15)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8V4m0 0H1m4 0-2.2 2.1A9 9 0 1 0 5 18"/></svg><small>15</small></button>
         <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback"><span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path v-if="playing" d="M8 6v12M16 6v12"/><path v-else class="play-shape" d="m9 6 9 6-9 6Z"/></svg></button>
-        <button class="audio-skip" title="前进 30 秒" aria-label="前进 30 秒" @click="seekRelative(30)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8V4m0 0h4m-4 0 2.2 2.1A9 9 0 1 1 19 18"/></svg><small>30</small></button>
         <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l10 6-10 6Z"/></svg></button>
       </div>
       <div class="audio-player-options">

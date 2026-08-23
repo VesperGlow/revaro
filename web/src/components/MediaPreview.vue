@@ -65,7 +65,7 @@ onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
     <header class="preview-bar">
       <div><strong>{{ selected.name }}</strong><small>{{ formatSize(selected.size) }} · {{ selected.mime_type||'媒体文件' }}</small></div>
       <span v-if="galleryIndex>=0" class="preview-count">{{ galleryIndex+1 }} / {{ galleryItems.length }}</span>
-      <button aria-label="关闭预览" @click="$emit('close')">×</button>
+      <button aria-label="关闭预览" @click="$emit('close')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </header>
     <div ref="stageEl" class="preview-stage" :class="{swipeable:stageSwipeable}" @click="onStageClick" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerEnd" @pointercancel="onPointerEnd">
       <button v-if="hasGalleryNavigation" class="preview-nav preview-prev" aria-label="上一项" @click.stop="change(-1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
