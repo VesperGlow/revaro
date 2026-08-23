@@ -219,6 +219,7 @@ func TestNormalizeAudioLayoutDoesNotSilentlyDownmix(t *testing.T) {
 
 func TestAudioMergeValidatesSelection(t *testing.T) {
 	a := newTestApp(t)
+	a.srv.cfg.FFmpegPath = "definitely-missing-ffmpeg"
 	audio := a.readyFile(t, "voice.wav", []byte("not needed for validation"))
 	document := a.readyFile(t, "notes.txt", []byte("text"))
 

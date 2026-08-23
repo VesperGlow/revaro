@@ -155,10 +155,6 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "merged audio filename does not match the selected format")
 		return
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
-		return
-	}
 	parent, err := s.file(r.Context(), in.ParentID)
 	if err != nil || parent.Kind != "directory" || parent.Status != "ready" {
 		problem(w, http.StatusBadRequest, "parent directory is invalid")
@@ -184,6 +180,10 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		}
 		totalSize += f.Size
 		inputs = append(inputs, f)
+	}
+	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
+		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
+		return
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
