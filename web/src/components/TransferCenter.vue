@@ -48,7 +48,7 @@ onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside
       <div v-if="!uploads.length" class="transfer-empty"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 28V12m0 0-4 4m4-4 4 4"/></svg><p>还没有上传任务</p></div>
       <div v-else class="transfer-list">
         <article v-for="task in uploads" :key="task.id">
-          <span class="task-direction upload">↑</span><div><strong>{{ task.file.name }}</strong><small>{{ formatSize(task.file.size) }} · {{ uploadStatus(task) }}</small><i><b :class="task.status" :style="{width:`${task.progress}%`}"></b></i></div><em>{{ task.progress }}%</em>
+          <span class="task-direction upload">↑</span><div><strong :title="task.relativePath||task.file.name">{{ task.relativePath||task.file.name }}</strong><small>{{ formatSize(task.file.size) }} · {{ uploadStatus(task) }}</small><i><b :class="task.status" :style="{width:`${task.progress}%`}"></b></i></div><em>{{ task.progress }}%</em>
           <button v-if="task.status==='queued'||task.status==='uploading'" title="取消上传" @click="$emit('cancel',task)">×</button><button v-else-if="task.status==='failed'" @click="$emit('retry',task)">重试</button>
         </article>
       </div>

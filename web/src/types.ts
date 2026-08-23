@@ -1,6 +1,8 @@
 export interface UploadTask {
   id:string
   file:File
+  parentId:string
+  relativePath?:string
   progress:number
   status:'queued'|'uploading'|'done'|'failed'|'cancelled'
   error:string

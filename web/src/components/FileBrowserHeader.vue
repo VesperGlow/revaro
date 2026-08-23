@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
 
@@ -20,12 +20,14 @@ const emit=defineEmits<{
   setView:[mode:'list'|'grid']
   newDocument:[]
   createFolder:[]
-  upload:[]
+  uploadFiles:[]
+  uploadFolder:[]
   leaveTrash:[]
   emptyTrash:[]
 }>()
 
 const createMenu=ref<HTMLDetailsElement|null>(null)
+const uploadMenu=ref<HTMLDetailsElement|null>(null)
 const parentBreadcrumbs=computed(()=>props.breadcrumbs.slice(0,-1))
 
 function runCreate(action:'document'|'folder'){
@@ -33,6 +35,22 @@ function runCreate(action:'document'|'folder'){
   if(action==='document')emit('newDocument')
   else emit('createFolder')
 }
+function runUpload(action:'files'|'folder'){
+  uploadMenu.value?.removeAttribute('open')
+  if(action==='files')emit('uploadFiles')
+  else emit('uploadFolder')
+}
+function closeMenus(event:PointerEvent){
+  const target=event.target as Node|null
+  if(target&&!createMenu.value?.contains(target))createMenu.value?.removeAttribute('open')
+  if(target&&!uploadMenu.value?.contains(target))uploadMenu.value?.removeAttribute('open')
+}
+function closeMenusWithEscape(event:KeyboardEvent){
+  if(event.key!=='Escape')return
+  createMenu.value?.removeAttribute('open');uploadMenu.value?.removeAttribute('open')
+}
+onMounted(()=>{window.addEventListener('pointerdown',closeMenus);window.addEventListener('keydown',closeMenusWithEscape)})
+onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window.removeEventListener('keydown',closeMenusWithEscape)})
 </script>
 
 <template>
@@ -77,7 +95,13 @@ function runCreate(action:'document'|'folder'){
           <button @click="runCreate('folder')"><span>▰</span><div><b>新建文件夹</b><small>整理当前目录</small></div></button>
         </div>
       </details>
-      <button class="primary upload-action" @click="$emit('upload')">↑ 上传文件</button>
+      <details ref="uploadMenu" class="upload-menu">
+        <summary class="primary upload-action"><span>↑</span> 上传 <i>⌄</i></summary>
+        <div class="upload-menu-popover">
+          <button @click="runUpload('files')"><span>↥</span><div><b>上传文件</b><small>可一次选择多个文件</small></div></button>
+          <button @click="runUpload('folder')"><span>▰</span><div><b>上传文件夹</b><small>保留完整目录结构</small></div></button>
+        </div>
+      </details>
     </div>
   </div>
 </template>

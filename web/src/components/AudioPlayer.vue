@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
@@ -9,6 +9,7 @@ import type { AudioChapter, AudioHLSResponse, AudioMediaResponse } from '../type
 
 const props=defineProps<{item:DriveFile}>()
 const audio=ref<HTMLAudioElement|null>(null)
+const chapterList=ref<HTMLElement|null>(null)
 const media=ref<AudioMediaResponse|null>(null)
 const loading=ref(true)
 const waiting=ref(false)
@@ -23,16 +24,21 @@ const compatibilityStarting=ref(false)
 const hlsOffset=ref(0)
 const seekPreview=ref<number|null>(null)
 const seekHover=ref({visible:false,time:0,percent:0})
+const chapterScrollbar=ref({visible:false,top:0,height:0})
 const savedVolume=Number(localStorage.getItem('revaro-audio-volume')??0.85)
 const volume=ref(Number.isFinite(savedVolume)?Math.max(0,Math.min(1,savedVolume)):0.85)
 const muted=ref(localStorage.getItem('revaro-audio-muted')==='true')
 let saveTimer=0
 let restoredPosition=false
+let autoplayRequested=true
 let hls:HlsInstance|null=null
 let hlsSessionId=''
 let hlsGeneration=0
+let chapterResizeObserver:ResizeObserver|null=null
 
-const source=computed(()=>media.value?.stream_url||previewURL(props.item))
+// Keep the initial source stable so chapter metadata arriving later does not
+// reload media that already started from the user's file click.
+const source=previewURL(props.item)
 const duration=computed(()=>media.value?.duration||nativeDuration.value||0)
 const chapters=computed<AudioChapter[]>(()=>media.value?.chapters?.length?media.value.chapters:[{id:1,title:props.item.name.replace(/\.[^.]+$/,''),start:0,end:duration.value}])
 const currentChapterIndex=computed(()=>{
@@ -49,9 +55,19 @@ function formatTime(seconds:number){
   const value=Math.floor(seconds);const hours=Math.floor(value/3600);const minutes=Math.floor(value%3600/60);const secs=value%60
   return hours?`${hours}:${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}`:`${minutes}:${String(secs).padStart(2,'0')}`
 }
+function updateChapterScrollbar(){
+  const el=chapterList.value
+  if(!el)return
+  const visible=el.scrollHeight>el.clientHeight+1
+  const height=visible?Math.max(30,el.clientHeight*el.clientHeight/el.scrollHeight):0
+  const travel=Math.max(0,el.clientHeight-height)
+  const top=visible&&el.scrollHeight>el.clientHeight?el.scrollTop/(el.scrollHeight-el.clientHeight)*travel:0
+  const current=chapterScrollbar.value
+  if(current.visible!==visible||Math.abs(current.top-top)>.5||Math.abs(current.height-height)>.5)chapterScrollbar.value={visible,top,height}
+}
 async function togglePlayback(){
   if(!audio.value||compatibilityStarting.value)return
-  if(audio.value.paused){try{await audio.value.play()}catch{if(!compatibilityStarting.value)error.value='浏览器无法开始播放，请重试'}}else audio.value.pause()
+  if(audio.value.paused){autoplayRequested=true;try{await audio.value.play()}catch{if(!compatibilityStarting.value)error.value='浏览器无法开始播放，请重试'}}else{autoplayRequested=false;audio.value.pause()}
 }
 function seek(time:number,play=false){
   if(!audio.value||!Number.isFinite(time))return
@@ -182,15 +198,26 @@ function onAudioError(){
   if(compatibilityMode.value||compatibilityStarting.value)return
   const saved=Number(localStorage.getItem(positionKey.value)||0)
   const start=currentTime.value>0?currentTime.value:(saved>0&&saved<duration.value-5?saved:0)
-  void startCompatibilityStream(start,playing.value)
+  void startCompatibilityStream(start,autoplayRequested||playing.value)
 }
 
-onMounted(async()=>{
-  try{media.value=await api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`)}catch{/* 普通音频继续走原始 Range 预览 */}
-  await nextTick();applyVolume();audio.value?.load()
+onMounted(()=>{
+  // Run play immediately after mounting, while mobile browsers still treat it
+  // as part of the click that opened the audio preview.
+  applyVolume();audio.value?.load();void audio.value?.play().catch(()=>{})
+  void api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`).then(value=>{media.value=value}).catch(()=>{/* 普通音频继续走原始 Range 预览 */})
+  void nextTick().then(()=>{
+    updateChapterScrollbar()
+    if(chapterList.value&&'ResizeObserver' in window){chapterResizeObserver=new ResizeObserver(updateChapterScrollbar);chapterResizeObserver.observe(chapterList.value)}
+  })
 })
+watch(()=>chapters.value.length,()=>void nextTick().then(updateChapterScrollbar))
+watch(currentChapterIndex,index=>void nextTick().then(()=>{
+  chapterList.value?.querySelector<HTMLElement>(`[data-chapter-index="${index}"]`)?.scrollIntoView({block:'nearest'})
+  updateChapterScrollbar()
+}))
 onBeforeUnmount(()=>{
-  window.clearTimeout(saveTimer);hlsGeneration++
+  window.clearTimeout(saveTimer);chapterResizeObserver?.disconnect();hlsGeneration++
   const session=hlsSessionId;hlsSessionId='';resetLocalHLS()
   if(session)void fetch(`/api/audio/hls/${session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
 })
@@ -227,14 +254,17 @@ onBeforeUnmount(()=>{
         <div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div>
       </div>
       <p v-if="error" class="audio-player-error">{{ error }}</p>
-      <audio ref="audio" :src="compatibilityMode?undefined:source" preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="playing=false" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
+      <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="playing=false" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
     </section>
     <aside class="audio-chapters">
       <header><div><strong>分节</strong><small>保留合并前的文件名</small></div><span>{{ chapters.length }} 节</span></header>
-      <div class="audio-chapter-list">
-        <button v-for="(chapter,index) in chapters" :key="chapter.id" :class="{active:index===currentChapterIndex}" @click="seek(chapter.start,true)">
-          <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></i>
-        </button>
+      <div class="audio-chapter-scroll-area">
+        <div ref="chapterList" class="audio-chapter-list" @scroll.passive="updateChapterScrollbar">
+          <button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :class="{active:index===currentChapterIndex}" @click="seek(chapter.start,true)">
+            <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></i>
+          </button>
+        </div>
+        <span v-if="chapterScrollbar.visible" class="audio-chapter-scrollbar" :style="{height:`${chapterScrollbar.height}px`,transform:`translateY(${chapterScrollbar.top}px)`}" aria-hidden="true"></span>
       </div>
     </aside>
   </div>

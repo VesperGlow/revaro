@@ -58,6 +58,7 @@ const audioMerge = reactive({ name:'', format:'flac' as AudioMergeFormat, order:
 const audioMergeJobs = ref<AudioMergeResponse[]>([])
 const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
 const fileInput = ref<HTMLInputElement|null>(null)
+const folderInput = ref<HTMLInputElement|null>(null)
 const avatarInput = ref<HTMLInputElement|null>(null)
 const audioCoverInput = ref<HTMLInputElement|null>(null)
 const viewMode = ref<'list'|'grid'>('list')
@@ -66,6 +67,7 @@ let dialogResolve:((value:string|boolean|null)=>void)|null=null
 let activeUploads = 0
 let toastTimer = 0
 let audioMergePollTimer = 0
+let uploadRefreshTimer = 0
 
 const editorDirty = computed(() => editor.content !== editor.original || editor.name !== editor.originalName)
 const editorBytes = computed(() => new Blob([editor.content]).size)
@@ -509,7 +511,57 @@ async function clearAudioMerges(){
 }
 
 function chooseFiles(){fileInput.value?.click()}
-function acceptFiles(list:FileList|File[]){for(const file of Array.from(list)){tasks.push({id:crypto.randomUUID(),file,progress:0,status:'queued',error:'',cancelled:false,requests:[]})}pumpQueue()}
+function chooseFolder(){folderInput.value?.click()}
+function queueFiles(files:File[],parentId:string,relativePaths?:Map<File,string>){
+  for(const file of files)tasks.push({id:crypto.randomUUID(),file,parentId,relativePath:relativePaths?.get(file),progress:0,status:'queued',error:'',cancelled:false,requests:[]})
+}
+function acceptFiles(list:FileList|File[]){queueFiles(Array.from(list),currentId.value);pumpQueue()}
+async function ensureUploadDirectory(parentId:string,name:string){
+  try{return await api<DriveFile>('/api/directories',{method:'POST',body:JSON.stringify({parent_id:parentId,name})})}
+  catch(e){
+    if((e as ApiError).status!==409)throw e
+    const data=await api<{items:DriveFile[]}>(`/api/files/${parentId}/children`)
+    const existing=data.items.find(item=>item.name===name)
+    if(existing?.kind==='directory')return existing
+    throw new Error(`“${name}”与已有文件重名，无法创建上传目录`,{cause:e})
+  }
+}
+async function acceptFolder(list:FileList){
+  const files=Array.from(list)
+  if(!files.length)return
+  const destination=currentId.value
+  const relativePaths=new Map<File,string>()
+  const fileDirectories=new Map<File,string>()
+  const directoryPaths=new Set<string>()
+  for(const file of files){
+    const raw=(file.webkitRelativePath||file.name).replaceAll('\\','/')
+    const parts=raw.split('/').filter(Boolean)
+    if(parts.some(part=>part==='.'||part==='..')){notify('文件夹中包含无效路径');return}
+    const directory=parts.slice(0,-1).join('/')
+    relativePaths.set(file,raw);fileDirectories.set(file,directory)
+    for(let depth=1;depth<parts.length;depth++)directoryPaths.add(parts.slice(0,depth).join('/'))
+  }
+  const folderIds=new Map<string,string>([['',destination]])
+  try{
+    for(const path of [...directoryPaths].sort((a,b)=>a.split('/').length-b.split('/').length)){
+      const split=path.lastIndexOf('/')
+      const parentPath=split<0?'':path.slice(0,split)
+      const name=split<0?path:path.slice(split+1)
+      const parentId=folderIds.get(parentPath)
+      if(!parentId)throw new Error(`无法解析目录“${path}”`)
+      const folder=await ensureUploadDirectory(parentId,name)
+      folderIds.set(path,folder.id)
+    }
+    for(const file of files){
+      const parentId=folderIds.get(fileDirectories.get(file)||'')
+      if(!parentId)throw new Error(`无法解析“${relativePaths.get(file)||file.name}”的上传位置`)
+      queueFiles([file],parentId,relativePaths)
+    }
+    await openFolder(currentId.value)
+    notify(`已保留目录结构，开始上传 ${files.length} 个文件`,'success')
+    pumpQueue()
+  }catch(e){notify((e as Error).message)}
+}
 function onDrop(event:DragEvent){dragActive.value=false;if(!trashMode.value&&event.dataTransfer?.files.length)acceptFiles(event.dataTransfer.files)}
 function pumpQueue(){while(activeUploads<FILE_CONCURRENCY){const task=tasks.find(t=>t.status==='queued');if(!task)return;activeUploads++;runUpload(task).finally(()=>{activeUploads--;pumpQueue()})}}
 interface BlockSpec { id:string; size:number; offset:number }
@@ -522,7 +574,7 @@ const hashJobs=new Map<string,HashJob>()
 async function runUpload(task:UploadTask){
   task.status='uploading';task.error='';task.cancelled=false;task.progress=0
   try{
-    const created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})
+    const created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})
     task.uploadId=created.upload_id
     if(task.cancelled){await abortRemote(task);return}
     // 1) 在 Worker 中用 FastCDC 分块并计算 SHA-256；旧服务端回退为固定分块。
@@ -537,7 +589,7 @@ async function runUpload(task:UploadTask){
     if(task.cancelled){await abortRemote(task);return}
     // 4) 完成上传；409 时按缺失列表修复并重试。
     await completeWithRepair(task,created.upload_id,blocks)
-    task.progress=100;task.status='done';await openFolder(currentId.value);scheduleAutoClear()
+    task.progress=100;task.status='done';scheduleUploadRefresh();scheduleAutoClear()
   }catch(e){if(task.cancelled){task.status='cancelled';scheduleAutoClear()}else{task.status='failed';task.error=(e as Error).message}}
 }
 
@@ -639,8 +691,9 @@ async function retry(task:UploadTask){await abortRemote(task);task.status='queue
 function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled'].includes(tasks[i].status))tasks.splice(i,1)}
 // 完成记录保留在上传进度中，等用户主动清除。
 function scheduleAutoClear(){}
+function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
 onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value)void refreshAudioMergeJobs()})})
-onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
+onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(uploadRefreshTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
 </script>
 
 <template>
@@ -663,8 +716,9 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
     <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @logout="logout" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" />
     <section class="content" @click="clearSelectionFromBlank">
-      <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :view-mode="viewMode" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @set-view="setViewMode" @new-document="newDocument" @create-folder="createFolder" @upload="chooseFiles" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
+      <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :view-mode="viewMode" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @set-view="setViewMode" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}">
+      <input ref="folderInput" hidden type="file" multiple webkitdirectory @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFolder(el.files);el.value=''}">
       <div v-if="selectedItems.length&&!modal" class="selection-toolbar" role="toolbar" aria-label="所选项目操作">
         <button class="selection-close" title="取消选择" aria-label="取消选择" @click="clearSelection">×</button><span class="selection-summary"><b>{{ selectedItems.length }} 项</b><small>已选择 {{ formatSize(selectedBytes) }}</small></span>
         <div v-if="trashMode" class="selection-actions"><button @click="restoreSelected"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg><span>恢复</span></button><button class="danger" @click="purgeSelected"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg><span>永久删除</span></button></div>
