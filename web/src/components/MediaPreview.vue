@@ -70,11 +70,13 @@ onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
       <button v-if="hasGalleryNavigation" class="preview-nav preview-next" aria-label="下一项" @click.stop="change(1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
     </div>
     <footer class="preview-commandbar">
-      <div class="preview-file-meta"><strong :title="selected.name">{{ selected.name }}</strong><small>{{ formatSize(selected.size) }} · {{ selected.mime_type||'媒体文件' }}</small></div>
-      <div class="preview-file-actions">
-        <button @click="$emit('download',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg><span>下载</span></button>
-        <button @click="$emit('move',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3Z"/><path d="m14 13 2 2 2-2"/></svg><span>移动</span></button>
-        <button @click="$emit('copy',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span>复制</span></button>
+      <div class="preview-command-content">
+        <div class="preview-file-meta"><strong :title="selected.name">{{ selected.name }}</strong><small>{{ formatSize(selected.size) }} · {{ selected.mime_type||'媒体文件' }}</small></div>
+        <div class="preview-file-actions">
+          <button @click="$emit('download',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg><span>下载</span></button>
+          <button @click="$emit('move',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3Z"/><path d="m14 13 2 2 2-2"/></svg><span>移动</span></button>
+          <button @click="$emit('copy',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span>复制</span></button>
+        </div>
       </div>
     </footer>
   </section>

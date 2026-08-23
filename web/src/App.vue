@@ -877,16 +877,15 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
       </section>
       <section v-else-if="modal==='editor'" class="document-editor">
         <header class="editor-header">
-          <div class="editor-title"><span>▤</span><div><input v-if="editor.isNew" v-model="editor.name" aria-label="文档文件名" maxlength="1024"><strong v-else :title="editor.name">{{ editor.name }}</strong><small>{{ editor.isNew?'保存在当前文件夹':editor.readonly?'回收站只读预览':'文本编辑器' }}</small></div></div>
+          <div class="editor-title"><span>▤</span><div><input v-if="editor.isNew" v-model="editor.name" aria-label="文档文件名" maxlength="1024"><strong v-else :title="editor.name">{{ editor.name }}</strong><small>{{ editor.isNew?'保存在当前文件夹':editor.readonly?'回收站只读预览':'文本编辑器' }}</small></div><span class="editor-meta"><b>{{ editorBytes.toLocaleString() }} 字节</b><span> · UTF-8 · 最大 1 MiB</span></span></div>
           <div v-if="editorIsMarkdown&&!editor.readonly" class="editor-tabs" role="group" aria-label="编辑器视图"><button :class="{active:editor.mode==='edit'}" @click="editor.mode='edit'">编辑</button><button :class="{active:editor.mode==='split'}" @click="editor.mode='split'">分栏</button><button :class="{active:editor.mode==='preview'}" @click="editor.mode='preview'">预览</button></div>
-          <div class="editor-actions"><template v-if="!editor.readonly"><span v-if="editor.isNew||editorDirty" class="unsaved-dot">未保存</span><button class="primary" :disabled="editor.busy||(!editor.isNew&&!editorDirty)" @click="saveDocument">{{ editor.busy?'保存中…':'保存' }}</button></template><button class="editor-close" aria-label="关闭编辑器" @click="closeEditor">×</button></div>
+          <div class="editor-actions"><span v-if="editor.error" class="editor-header-message error">{{ editor.error }}</span><span v-else-if="editor.readonly" class="editor-header-message">只读</span><template v-if="!editor.readonly"><span v-if="editor.isNew||editorDirty" class="unsaved-dot">未保存</span><button class="primary" :disabled="editor.busy||(!editor.isNew&&!editorDirty)" @click="saveDocument">{{ editor.busy?'保存中…':'保存' }}</button></template><button class="editor-close" aria-label="关闭编辑器" @click="closeEditor">×</button></div>
         </header>
         <div v-if="editor.busy&&!editor.content" class="state editor-loading"><div class="spinner"></div><p>正在打开文档…</p></div>
         <div v-else class="editor-workspace" :class="[`mode-${editor.mode}`,{markdown:editorIsMarkdown}]">
           <textarea v-if="editor.mode!=='preview'" v-model="editor.content" :readonly="editor.readonly" autofocus spellcheck="false" aria-label="文档内容" @keydown.ctrl.s.prevent="saveDocument" @keydown.meta.s.prevent="saveDocument"></textarea>
           <article v-if="editorIsMarkdown&&editor.mode!=='edit'" class="markdown-preview" v-html="renderedMarkdown"></article>
         </div>
-        <footer class="editor-status"><span>{{ editorBytes.toLocaleString() }} 字节 · UTF-8 · 最大 1 MiB</span><span v-if="editor.error" class="form-error">{{ editor.error }}</span><span v-else-if="editor.readonly">只读预览 · 恢复后可编辑</span><span v-else>Ctrl / ⌘ + S 保存</span></footer>
       </section>
       <section v-else-if="modal==='share'" class="modal share-modal">
         <header><div class="share-title"><span>↗</span><div><h2>分享文件</h2><p :title="selected?.name">{{ selected?.name }}</p></div></div><button @click="closeModal">×</button></header>
