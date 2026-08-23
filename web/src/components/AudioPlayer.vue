@@ -21,6 +21,11 @@ const error=ref('')
 const compatibilityMode=ref(false)
 const compatibilityStarting=ref(false)
 const hlsOffset=ref(0)
+const seekPreview=ref<number|null>(null)
+const seekHover=ref({visible:false,time:0,percent:0})
+const savedVolume=Number(localStorage.getItem('revaro-audio-volume')??0.85)
+const volume=ref(Number.isFinite(savedVolume)?Math.max(0,Math.min(1,savedVolume)):0.85)
+const muted=ref(localStorage.getItem('revaro-audio-muted')==='true')
 let saveTimer=0
 let restoredPosition=false
 let hls:HlsInstance|null=null
@@ -35,7 +40,8 @@ const currentChapterIndex=computed(()=>{
   return Math.max(0,index)
 })
 const currentChapter=computed(()=>chapters.value[currentChapterIndex.value])
-const progress=computed(()=>duration.value?Math.min(100,currentTime.value/duration.value*100):0)
+const displayedTime=computed(()=>seekPreview.value??currentTime.value)
+const progress=computed(()=>duration.value?Math.min(100,displayedTime.value/duration.value*100):0)
 const positionKey=computed(()=>`revaro-audio-position:${props.item.id}`)
 
 function formatTime(seconds:number){
@@ -61,7 +67,14 @@ function seek(time:number,play=false){
   }
   if(play)void audio.value.play().catch(()=>{})
 }
-function seekFromSlider(event:Event){seek(Number((event.target as HTMLInputElement).value),playing.value)}
+function previewSeek(event:Event){seekPreview.value=Number((event.target as HTMLInputElement).value)}
+function commitSeek(event:Event){const target=Number((event.target as HTMLInputElement).value);seekPreview.value=null;seek(target,playing.value)}
+function updateSeekHover(event:PointerEvent){
+  const bounds=(event.currentTarget as HTMLElement).getBoundingClientRect()
+  const ratio=Math.max(0,Math.min(1,(event.clientX-bounds.left)/bounds.width))
+  seekHover.value={visible:true,time:ratio*duration.value,percent:ratio*100}
+}
+function hideSeekHover(){seekHover.value.visible=false}
 function seekRelative(delta:number){seek(currentTime.value+delta)}
 function previousChapter(){
   const chapter=currentChapter.value
@@ -95,6 +108,13 @@ function onTimeUpdate(){
   window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>localStorage.setItem(positionKey.value,String(Math.floor(currentTime.value))),500)
 }
 function setRate(event:Event){rate.value=Number((event.target as HTMLSelectElement).value);if(audio.value)audio.value.playbackRate=rate.value}
+function applyVolume(){if(audio.value){audio.value.volume=volume.value;audio.value.muted=muted.value}}
+function setVolume(event:Event){
+  volume.value=Number((event.target as HTMLInputElement).value)
+  muted.value=volume.value===0
+  localStorage.setItem('revaro-audio-volume',String(volume.value));localStorage.setItem('revaro-audio-muted',String(muted.value));applyVolume()
+}
+function toggleMute(){muted.value=!muted.value;localStorage.setItem('revaro-audio-muted',String(muted.value));applyVolume()}
 
 async function removeHLSSession(id:string){
   if(!id)return
@@ -132,7 +152,7 @@ async function startCompatibilityStream(start:number,autoplay=false){
       player.on(Hls.Events.MEDIA_ATTACHED,()=>player.loadSource(response.playlist_url))
       player.on(Hls.Events.MANIFEST_PARSED,()=>{
         compatibilityStarting.value=false;loading.value=false;waiting.value=false
-        el.playbackRate=rate.value
+        el.playbackRate=rate.value;applyVolume()
         if(autoplay)void el.play().catch(()=>{})
       })
       player.on(Hls.Events.ERROR,(_event,data)=>{
@@ -142,7 +162,7 @@ async function startCompatibilityStream(start:number,autoplay=false){
       })
       player.attachMedia(el)
     }else if(el.canPlayType('application/vnd.apple.mpegurl')){
-      el.src=response.playlist_url;el.load()
+      el.src=response.playlist_url;el.load();applyVolume()
       compatibilityStarting.value=false
       if(autoplay)void el.play().catch(()=>{})
     }else{
@@ -167,7 +187,7 @@ function onAudioError(){
 
 onMounted(async()=>{
   try{media.value=await api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`)}catch{/* 普通音频继续走原始 Range 预览 */}
-  await nextTick();audio.value?.load()
+  await nextTick();applyVolume();audio.value?.load()
 })
 onBeforeUnmount(()=>{
   window.clearTimeout(saveTimer);hlsGeneration++
@@ -189,17 +209,23 @@ onBeforeUnmount(()=>{
         <div class="audio-track-buffer" :style="{width:`${buffered}%`}"></div>
         <div class="audio-track-played" :style="{width:`${progress}%`}"></div>
         <i v-for="chapter in chapters.slice(1)" :key="chapter.id" :style="{left:`${duration?chapter.start/duration*100:0}%`}"></i>
-        <input :value="currentTime" type="range" min="0" :max="duration||0" step="0.1" aria-label="播放进度" @change="seekFromSlider">
+        <span class="audio-track-thumb" :style="{left:`${progress}%`}"></span>
+        <output v-if="seekHover.visible" class="audio-seek-tooltip" :style="{left:`${seekHover.percent}%`}">{{ formatTime(seekHover.time) }}</output>
+        <input :value="displayedTime" type="range" min="0" :max="duration||0" step="0.1" aria-label="播放进度" @input="previewSeek" @change="commitSeek" @pointermove="updateSeekHover" @pointerleave="hideSeekHover">
       </div>
-      <div class="audio-time"><span>{{ formatTime(currentTime) }}</span><span>-{{ formatTime(Math.max(0,duration-currentTime)) }}</span></div>
+      <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span><span>-{{ formatTime(Math.max(0,duration-displayedTime)) }}</span></div>
       <div class="audio-controls">
-        <button title="上一节" aria-label="上一节" @click="previousChapter">│◀</button>
-        <button title="后退 15 秒" aria-label="后退 15 秒" @click="seekRelative(-15)">↶<small>15</small></button>
-        <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback">{{ waiting||compatibilityStarting?'…':playing?'Ⅱ':'▶' }}</button>
-        <button title="前进 30 秒" aria-label="前进 30 秒" @click="seekRelative(30)">↷<small>30</small></button>
-        <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter">▶│</button>
+        <button title="上一节" aria-label="上一节" @click="previousChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6 9 12l10 6Z"/></svg></button>
+        <button class="audio-skip" title="后退 15 秒" aria-label="后退 15 秒" @click="seekRelative(-15)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8V4m0 0H1m4 0-2.2 2.1A9 9 0 1 0 5 18"/></svg><small>15</small></button>
+        <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback"><span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path v-if="playing" d="M8 6v12M16 6v12"/><path v-else class="play-shape" d="m9 6 9 6-9 6Z"/></svg></button>
+        <button class="audio-skip" title="前进 30 秒" aria-label="前进 30 秒" @click="seekRelative(30)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8V4m0 0h4m-4 0 2.2 2.1A9 9 0 1 1 19 18"/></svg><small>30</small></button>
+        <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l10 6-10 6Z"/></svg></button>
       </div>
-      <div class="audio-player-options"><label>倍速<select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label><span v-if="compatibilityStarting">浏览器无法直放，正在启动兼容流…</span><span v-else-if="waiting">正在缓冲需要的片段…</span><span v-else>无需完整下载即可播放和跳转</span></div>
+      <div class="audio-player-options">
+        <label class="audio-rate"><span>倍速</span><select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label>
+        <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
+        <div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div>
+      </div>
       <p v-if="error" class="audio-player-error">{{ error }}</p>
       <audio ref="audio" :src="compatibilityMode?undefined:source" preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="playing=false" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
     </section>
@@ -207,7 +233,7 @@ onBeforeUnmount(()=>{
       <header><div><strong>分节</strong><small>保留合并前的文件名</small></div><span>{{ chapters.length }} 节</span></header>
       <div class="audio-chapter-list">
         <button v-for="(chapter,index) in chapters" :key="chapter.id" :class="{active:index===currentChapterIndex}" @click="seek(chapter.start,true)">
-          <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i>{{ index===currentChapterIndex&&playing?'▮▮':'▶' }}</i>
+          <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></i>
         </button>
       </div>
     </aside>

@@ -61,7 +61,7 @@ onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
 </script>
 
 <template>
-  <section class="preview-modal" @click.self="$emit('close')">
+  <section class="preview-modal" :class="{'audio-preview':isAudio(selected)}" @click.self="$emit('close')">
     <header class="preview-bar">
       <div><strong>{{ selected.name }}</strong><small>{{ formatSize(selected.size) }} · {{ selected.mime_type||'媒体文件' }}</small></div>
       <span v-if="galleryIndex>=0" class="preview-count">{{ galleryIndex+1 }} / {{ galleryItems.length }}</span>
