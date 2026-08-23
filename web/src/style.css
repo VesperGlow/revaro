@@ -547,5 +547,6 @@ button img,.ui-image{pointer-events:none;-webkit-touch-callout:none;-webkit-user
 /* Pin the file information and actions to the viewport's true center. */
 .preview-commandbar{display:block;position:relative}
 .preview-command-content{display:flex;align-items:stretch;position:absolute;top:50%;left:50%;width:max-content;max-width:calc(100% - 32px);height:100%;min-width:0;transform:translate(-50%,-50%)}
+.preview-command-content .preview-file-meta{justify-content:center}
 @media(max-width:720px){.editor-meta>span{display:none}.editor-meta{padding-left:8px}.editor-header-message{display:none}}
 @media(max-width:520px){.preview-command-content{max-width:calc(100% - 12px)}.editor-title{gap:7px}.editor-title>span:first-child{width:36px;height:36px}.editor-meta{padding-left:7px;font-size:9px}}
