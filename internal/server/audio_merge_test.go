@@ -3,7 +3,11 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +19,20 @@ import (
 
 	"github.com/VesperGlow/revaro/internal/ids"
 )
+
+type audioMediaTestResponse struct {
+	Duration   float64 `json:"duration"`
+	StreamURL  string  `json:"stream_url"`
+	CoverURL   string  `json:"cover_url"`
+	HasCover   bool    `json:"has_cover"`
+	StreamSize int64   `json:"stream_size"`
+	Chapters   []struct {
+		ID    int     `json:"id"`
+		Title string  `json:"title"`
+		Start float64 `json:"start"`
+		End   float64 `json:"end"`
+	} `json:"chapters"`
+}
 
 func audioFixture(t *testing.T, format string, frequency int) []byte {
 	t.Helper()
@@ -134,6 +152,30 @@ func TestAudioMergeOutputFormats(t *testing.T) {
 			if tc.chapters && (len(info.Chapters) != 2 || info.Chapters[0].Tags.Title != "01 耳语" || info.Chapters[1].Tags.Title != "02 敲击") {
 				t.Fatalf("ordered chapters missing: %+v", info.Chapters)
 			}
+			mediaRR := a.request("GET", "/api/files/"+merged.ID+"/audio", nil, true)
+			if mediaRR.Code != http.StatusOK {
+				t.Fatalf("audio metadata=%d: %s", mediaRR.Code, mediaRR.Body.String())
+			}
+			media := decode[audioMediaTestResponse](t, mediaRR)
+			if media.Duration <= 0 || media.StreamSize <= 0 || len(media.Chapters) != 2 || media.Chapters[0].Title != "01 耳语" || media.Chapters[1].Title != "02 敲击" {
+				t.Fatalf("audio metadata=%+v", media)
+			}
+			streamRR := a.request("GET", media.StreamURL, nil, true)
+			if streamRR.Code != http.StatusOK || streamRR.Header().Get("Content-Type") != "audio/mp4" {
+				t.Fatalf("audio stream=%d type=%q: %s", streamRR.Code, streamRR.Header().Get("Content-Type"), streamRR.Body.String())
+			}
+			streamPath := t.TempDir() + "/stream.m4a"
+			if err := os.WriteFile(streamPath, streamRR.Body.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			streamCodec, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", streamPath).Output()
+			if err != nil || strings.TrimSpace(string(streamCodec)) != "aac" {
+				t.Fatalf("browser stream codec=%q err=%v", streamCodec, err)
+			}
+			rangeRR := a.requestH("GET", media.StreamURL, nil, true, map[string]string{"Range": "bytes=0-63"})
+			if rangeRR.Code != http.StatusPartialContent || rangeRR.Body.Len() != 64 || rangeRR.Header().Get("Accept-Ranges") != "bytes" {
+				t.Fatalf("audio stream range=%d len=%d accept=%q", rangeRR.Code, rangeRR.Body.Len(), rangeRR.Header().Get("Accept-Ranges"))
+			}
 		})
 	}
 }
@@ -194,6 +236,75 @@ func TestAudioMergeLosslessFormatsArePCMExact(t *testing.T) {
 				t.Fatalf("%s changed decoded PCM: got %d bytes, want %d", tc.format, len(actual), len(expected))
 			}
 		})
+	}
+}
+
+func audioCoverFixture(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 96, 96))
+	for y := 0; y < 96; y++ {
+		for x := 0; x < 96; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(40 + x), G: uint8(70 + y), B: 180, A: 255})
+		}
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: 88}); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func TestAudioMergeEmbedsAndServesCover(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not available")
+	}
+	a := newTestApp(t)
+	a.srv.cfg.DataDir = t.TempDir()
+	first := a.readyFile(t, "01 夜晚.wav", audioFixture(t, "wav", 280))
+	second := a.readyFile(t, "02 雨声.wav", audioFixture(t, "wav", 560))
+	createdRR := a.request("POST", "/api/audio-merges", map[string]any{
+		"parent_id": RootID, "name": "带封面的 ASMR.m4a", "format": "alac",
+		"file_ids": []string{first.ID, second.ID}, "cover_jpeg": base64.StdEncoding.EncodeToString(audioCoverFixture(t)),
+	}, true)
+	if createdRR.Code != http.StatusAccepted {
+		t.Fatalf("create audio merge=%d: %s", createdRR.Code, createdRR.Body.String())
+	}
+	job := waitAudioMerge(t, a, decode[audioMergeSnapshot](t, createdRR))
+	if job.Status != "done" {
+		t.Fatalf("covered merge failed: %+v", job)
+	}
+	mediaRR := a.request("GET", "/api/files/"+job.OutputFileID+"/audio", nil, true)
+	if mediaRR.Code != http.StatusOK {
+		t.Fatalf("audio metadata=%d: %s", mediaRR.Code, mediaRR.Body.String())
+	}
+	media := decode[audioMediaTestResponse](t, mediaRR)
+	if !media.HasCover || media.CoverURL == "" {
+		t.Fatalf("cover metadata missing: %+v", media)
+	}
+	thumbRR := a.request("GET", media.CoverURL, nil, true)
+	if thumbRR.Code != http.StatusOK || thumbRR.Header().Get("Content-Type") != "image/jpeg" || thumbRR.Body.Len() == 0 {
+		t.Fatalf("cover thumbnail=%d type=%q len=%d", thumbRR.Code, thumbRR.Header().Get("Content-Type"), thumbRR.Body.Len())
+	}
+	merged, err := a.srv.file(context.Background(), job.OutputFileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := a.store.Open(context.Background(), merged.objectKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/covered.m4a"
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name:stream_disposition=attached_pic", "-of", "json", path).Output()
+	if err != nil || !bytes.Contains(probe, []byte(`"codec_name": "mjpeg"`)) || !bytes.Contains(probe, []byte(`"attached_pic": 1`)) {
+		t.Fatalf("embedded cover missing: err=%v probe=%s", err, probe)
 	}
 }
 

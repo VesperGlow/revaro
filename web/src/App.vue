@@ -54,10 +54,11 @@ const avatar = reactive({ busy:false, error:'' })
 const twoFactor = reactive({ enabled:false, recoveryRemaining:0, loading:false, busy:false, stage:'idle' as 'idle'|'setup', currentPassword:'', code:'', secret:'', uri:'', qrDataURL:'', recoveryCodes:[] as string[], copied:false, error:'' })
 const share = reactive({ active:false, url:'', createdAt:'', busy:false, error:'', copied:false })
 const editor = reactive({ isNew:false, readonly:false, fileId:'', name:'', originalName:'', content:'', original:'', etag:'', mode:'edit' as 'edit'|'split'|'preview', busy:false, error:'' })
-const audioMerge = reactive({ name:'', format:'flac' as AudioMergeFormat, order:[] as DriveFile[], jobId:'', outputFileId:'', status:'idle' as 'idle'|AudioMergeResponse['status'], progress:0, message:'', error:'', busy:false })
+const audioMerge = reactive({ name:'', format:'flac' as AudioMergeFormat, order:[] as DriveFile[], coverData:'', coverPreview:'', coverName:'', jobId:'', outputFileId:'', status:'idle' as 'idle'|AudioMergeResponse['status'], progress:0, message:'', error:'', busy:false })
 const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
 const fileInput = ref<HTMLInputElement|null>(null)
 const avatarInput = ref<HTMLInputElement|null>(null)
+const audioCoverInput = ref<HTMLInputElement|null>(null)
 const viewMode = ref<'list'|'grid'>('list')
 const dialog = reactive({open:false,title:'',message:'',confirmLabel:'确定',cancelLabel:'取消',tone:'default' as 'default'|'danger',input:false,value:'',placeholder:''})
 let dialogResolve:((value:string|boolean|null)=>void)|null=null
@@ -422,8 +423,31 @@ function showAudioMerge(){
   if(!canMergeSelectedAudio.value)return
   audioMerge.format='flac';audioMerge.name=defaultAudioMergeName(selectedAudioFiles.value,audioMerge.format)
   audioMerge.order=[...selectedAudioFiles.value]
+  clearAudioCover()
   audioMerge.jobId='';audioMerge.outputFileId='';audioMerge.status='idle';audioMerge.progress=0;audioMerge.message='';audioMerge.error='';audioMerge.busy=false
   openModal('audioMerge')
+}
+function chooseAudioCover(){audioCoverInput.value?.click()}
+function clearAudioCover(){audioMerge.coverData='';audioMerge.coverPreview='';audioMerge.coverName=''}
+async function setAudioCover(file:File){
+  audioMerge.error=''
+  if(!['image/jpeg','image/png','image/webp','image/gif'].includes(file.type)){audioMerge.error='封面请选择 JPG、PNG、WebP 或 GIF 图片';return}
+  if(file.size>16*1024*1024){audioMerge.error='封面源图片不能超过 16 MiB';return}
+  let sourceURL=''
+  try{
+    sourceURL=URL.createObjectURL(file)
+    const image=await new Promise<HTMLImageElement>((resolve,reject)=>{const el=new Image();el.onload=()=>resolve(el);el.onerror=()=>reject(new Error('无法读取封面图片'));el.src=sourceURL})
+    const scale=Math.min(1,1200/Math.max(image.naturalWidth,image.naturalHeight))
+    const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale))
+    canvas.getContext('2d')?.drawImage(image,0,0,canvas.width,canvas.height)
+    const encode=(quality:number)=>new Promise<Blob>((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(new Error('无法处理封面图片')),'image/jpeg',quality))
+    let blob=await encode(.88)
+    if(blob.size>2*1024*1024)blob=await encode(.72)
+    if(blob.size>2*1024*1024)throw new Error('封面处理后仍超过 2 MiB，请换一张图片')
+    const dataURL=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error('无法读取封面图片'));reader.readAsDataURL(blob)})
+    audioMerge.coverData=dataURL.slice(dataURL.indexOf(',')+1);audioMerge.coverPreview=dataURL;audioMerge.coverName=file.name
+  }catch(e){audioMerge.error=(e as Error).message}
+  finally{if(sourceURL)URL.revokeObjectURL(sourceURL)}
 }
 function setAudioMergeFormat(format:AudioMergeFormat){
   const base=audioMerge.name.replace(/\.(?:flac|m4a)$/i,'')
@@ -447,7 +471,7 @@ async function startAudioMerge(){
   if(!name.toLowerCase().endsWith(extension))name=name.replace(/\.(?:flac|m4a)$/i,'')+extension
   audioMerge.name=name;audioMerge.busy=true
   try{
-    const data=await api<AudioMergeResponse>('/api/audio-merges',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name,format:audioMerge.format,file_ids:audioMerge.order.map(item=>item.id)})})
+    const data=await api<AudioMergeResponse>('/api/audio-merges',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name,format:audioMerge.format,file_ids:audioMerge.order.map(item=>item.id),cover_jpeg:audioMerge.coverData})})
     applyAudioMergeStatus(data);localStorage.setItem('revaro-audio-merge-job',data.id);clearSelection();scheduleAudioMergePoll(500)
   }catch(e){audioMerge.error=(e as Error).message}
   finally{audioMerge.busy=false}
@@ -679,21 +703,37 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
       <section v-else-if="modal==='audioMerge'" class="modal audio-merge-modal">
         <header><div><p class="eyebrow dark">AUDIO MERGE</p><h2>合并音频</h2><p>FLAC / ALAC 真无损，或选择 AAC 节省空间</p></div><button aria-label="关闭" @click="closeModal">×</button></header>
         <template v-if="audioMerge.status==='idle'">
-          <fieldset class="merge-format-field">
-            <legend>输出格式</legend><div class="merge-format-options">
-              <button type="button" :class="{active:audioMerge.format==='flac'}" @click="setAudioMergeFormat('flac')"><span>FLAC</span><strong>无损 · 默认</strong><small>通用性最好，输出 .flac</small></button>
-              <button type="button" :class="{active:audioMerge.format==='alac'}" @click="setAudioMergeFormat('alac')"><span>ALAC</span><strong>无损 · Apple</strong><small>M4A 容器，可保留章节</small></button>
-              <button type="button" :class="{active:audioMerge.format==='aac'}" @click="setAudioMergeFormat('aac')"><span>AAC</span><strong>有损 · 192k</strong><small>体积更小，可保留章节</small></button>
-            </div>
-          </fieldset>
-          <p class="lossless-note"><strong>无损说明</strong> WAV / FLAC 等无损源使用 FLAC 或 ALAC 时不会再次有损压缩；MP3 / AAC 源无法恢复此前已经丢失的细节。</p>
-          <label>输出文件名<input v-model="audioMerge.name" maxlength="1024" :placeholder="`合并音频${audioMergeExtension(audioMerge.format)}`" @keydown.enter.prevent="startAudioMerge"></label>
-          <div class="merge-order-heading"><div><strong>播放顺序</strong><small>从上到下依次合并，可用箭头调整</small></div><span>{{ audioMerge.order.length }} 段 · {{ formatSize(audioMerge.order.reduce((sum,item)=>sum+item.size,0)) }}</span></div>
-          <div class="merge-order-list">
-            <article v-for="(item,index) in audioMerge.order" :key="item.id">
-              <b>{{ index+1 }}</b><div><strong :title="item.name">{{ item.name }}</strong><small>{{ formatSize(item.size) }}</small></div>
-              <span class="merge-order-actions"><button :disabled="index===0" title="上移" aria-label="上移" @click="moveAudioMergeInput(index,-1)">↑</button><button :disabled="index===audioMerge.order.length-1" title="下移" aria-label="下移" @click="moveAudioMergeInput(index,1)">↓</button></span>
-            </article>
+          <div class="audio-merge-layout">
+            <section class="merge-settings-panel">
+              <fieldset class="merge-format-field">
+                <legend>输出格式</legend><div class="merge-format-options">
+                  <button type="button" :class="{active:audioMerge.format==='flac'}" @click="setAudioMergeFormat('flac')"><span>FLAC</span><strong>无损 · 通用</strong><small>下载母版为 .flac</small></button>
+                  <button type="button" :class="{active:audioMerge.format==='alac'}" @click="setAudioMergeFormat('alac')"><span>ALAC</span><strong>无损 · Apple</strong><small>下载母版为 .m4a</small></button>
+                  <button type="button" :class="{active:audioMerge.format==='aac'}" @click="setAudioMergeFormat('aac')"><span>AAC</span><strong>有损 · 192k</strong><small>体积小，直接流播</small></button>
+                </div>
+              </fieldset>
+              <label>输出文件名<input v-model="audioMerge.name" maxlength="1024" :placeholder="`合并音频${audioMergeExtension(audioMerge.format)}`" @keydown.enter.prevent="startAudioMerge"></label>
+              <div class="merge-cover-field">
+                <strong>封面</strong>
+                <button type="button" class="merge-cover-picker" @click="chooseAudioCover">
+                  <img v-if="audioMerge.coverPreview" :src="audioMerge.coverPreview" alt="音频封面预览">
+                  <span v-else>＋</span>
+                  <div><b>{{ audioMerge.coverName||'添加封面' }}</b><small>会嵌入母版并显示在播放器</small></div>
+                </button>
+                <button v-if="audioMerge.coverPreview" type="button" class="merge-cover-remove" @click="clearAudioCover">移除封面</button>
+                <input ref="audioCoverInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="e=>{const el=e.target as HTMLInputElement;if(el.files?.[0])setAudioCover(el.files[0]);el.value=''}">
+              </div>
+              <p class="lossless-note"><strong>播放说明</strong>无损母版保留下载；播放器使用可拖动进度的 AAC Range 流。MP3 / AAC 源无法恢复此前丢失的细节。</p>
+            </section>
+            <section class="merge-order-panel">
+              <div class="merge-order-heading"><div><strong>播放顺序</strong><small>每个文件会保留为一个分节</small></div><span>{{ audioMerge.order.length }} 段 · {{ formatSize(audioMerge.order.reduce((sum,item)=>sum+item.size,0)) }}</span></div>
+              <div class="merge-order-list">
+                <article v-for="(item,index) in audioMerge.order" :key="item.id">
+                  <b>{{ index+1 }}</b><div><strong :title="item.name">{{ item.name }}</strong><small>{{ formatSize(item.size) }}</small></div>
+                  <span class="merge-order-actions"><button :disabled="index===0" title="上移" aria-label="上移" @click="moveAudioMergeInput(index,-1)">↑</button><button :disabled="index===audioMerge.order.length-1" title="下移" aria-label="下移" @click="moveAudioMergeInput(index,1)">↓</button></span>
+                </article>
+              </div>
+            </section>
           </div>
           <p v-if="audioMerge.error" class="form-error merge-error">{{ audioMerge.error }}</p>
           <footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="audioMerge.busy" @click="startAudioMerge">{{ audioMerge.busy?'正在创建…':'开始合并' }}</button></footer>

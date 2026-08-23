@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { DriveFile } from '../api'
 import { isAudio, isImage, isVideo, previewURL } from '../fileTypes'
 import { formatSize } from '../format'
+import AudioPlayer from './AudioPlayer.vue'
 
 const props=defineProps<{selected:DriveFile;items:DriveFile[]}>()
 const emit=defineEmits<{close:[];change:[item:DriveFile];download:[item:DriveFile]}>()
@@ -70,7 +71,7 @@ onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
       <button v-if="hasGalleryNavigation" class="preview-nav preview-prev" aria-label="上一项" @click.stop="change(-1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
       <img v-if="isImage(selected)" :key="selected.id" :src="previewURL(selected)" :alt="selected.name" :style="swipeStyle">
       <video v-else-if="isVideo(selected)" :key="selected.id" :src="previewURL(selected)" controls autoplay playsinline preload="metadata">你的浏览器不支持这个视频格式。</video>
-      <div v-else-if="isAudio(selected)" class="audio-player-card"><span>♫</span><strong>{{ selected.name }}</strong><small>{{ formatSize(selected.size) }}</small><audio :key="selected.id" :src="previewURL(selected)" controls autoplay preload="metadata">你的浏览器不支持这个音频格式。</audio></div>
+      <AudioPlayer v-else-if="isAudio(selected)" :key="selected.id" :item="selected" />
       <button v-if="hasGalleryNavigation" class="preview-nav preview-next" aria-label="下一项" @click.stop="change(1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
     </div>
     <footer class="preview-toolbar"><button class="preview-download" @click="$emit('download',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>{{ downloadLabel }}</button></footer>

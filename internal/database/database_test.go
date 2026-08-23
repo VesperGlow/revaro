@@ -71,7 +71,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 	if err := db2.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 4 {
+	if versions != 5 {
 		t.Fatalf("migrations reapplied on reopen: %d", versions)
 	}
 }

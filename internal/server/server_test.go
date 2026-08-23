@@ -1343,6 +1343,35 @@ func TestGarbageCollectorReclaimsOrphanedThumbnails(t *testing.T) {
 	}
 }
 
+func TestGarbageCollectorKeepsAudioStreamAndCover(t *testing.T) {
+	a := newTestAppWithBlockSize(t, 8)
+	master := a.readyFile(t, "book.flac", []byte("lossless-master"))
+	streamKey, streamManifest, err := a.store.Store(context.Background(), bytes.NewReader([]byte("streaming-aac-companion")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverKey := thumbnailKey(master.objectKey)
+	a.store.raw[coverKey] = []byte("jpeg-cover")
+	a.store.age(coverKey, time.Now().Add(-48*time.Hour))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		master.ID, 1000, `[{"title":"Part 1","start_ms":0,"end_ms":1000}]`, streamKey, streamManifest.Size, streamManifest.ID(), true, now, now); err != nil {
+		t.Fatal(err)
+	}
+	a.srv.CollectGarbage(context.Background())
+	if _, ok := a.store.manifests[streamKey]; !ok {
+		t.Fatal("referenced audio stream manifest was collected")
+	}
+	for _, block := range streamManifest.Blocks {
+		if _, ok := a.store.blocks[block.ID]; !ok {
+			t.Fatalf("referenced audio stream block %s was collected", block.ID)
+		}
+	}
+	if _, ok := a.store.raw[coverKey]; !ok {
+		t.Fatal("referenced audio cover was collected")
+	}
+}
+
 func TestSafeDeliveryMimeBlocksActiveWebContent(t *testing.T) {
 	for _, value := range []string{"text/html; charset=utf-8", "image/svg+xml", "application/javascript", "application/xhtml+xml"} {
 		if got := safeDeliveryMime(value); got != "application/octet-stream" {

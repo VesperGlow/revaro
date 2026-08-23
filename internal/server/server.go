@@ -133,6 +133,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/children", s.children)
 			r.Get("/files/{id}/download", s.download)
 			r.Get("/files/{id}/preview", s.preview)
+			r.Get("/files/{id}/audio", s.audioMediaInfo)
+			r.Get("/files/{id}/audio/stream", s.audioMediaStream)
 			r.Get("/files/{id}/content", s.getDocument)
 			r.Put("/files/{id}/content", s.updateDocument)
 			r.Get("/files/{id}/book", s.bookInfo)
@@ -1943,6 +1945,28 @@ func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, ma
 		}
 	}
 	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	mediaRows, err := s.db.QueryContext(ctx, `SELECT am.stream_object_key,f.object_key,am.has_cover FROM audio_media am JOIN files f ON f.id=am.file_id`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer mediaRows.Close()
+	for mediaRows.Next() {
+		var streamKey, masterKey string
+		var hasCover bool
+		if err := mediaRows.Scan(&streamKey, &masterKey, &hasCover); err != nil {
+			return nil, nil, err
+		}
+		objects[streamKey] = true
+		if hasCover {
+			thumbnails[thumbnailKey(masterKey)] = true
+		}
+	}
+	if err := mediaRows.Err(); err != nil {
 		return nil, nil, err
 	}
 	return objects, thumbnails, nil

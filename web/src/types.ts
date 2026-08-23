@@ -17,6 +17,8 @@ export interface TOTPStatusResponse { enabled:boolean; recovery_codes:number }
 export interface TOTPSetupResponse { secret:string; uri:string; qr_data_url:string }
 export interface TOTPRecoveryResponse { enabled:boolean; recovery_codes:string[] }
 export type AudioMergeFormat = 'flac'|'alac'|'aac'
+export interface AudioChapter { id:number; title:string; start:number; end:number }
+export interface AudioMediaResponse { duration:number; chapters:AudioChapter[]; stream_url:string; cover_url:string; has_cover:boolean; stream_size:number }
 export interface AudioMergeResponse {
   id:string
   status:'queued'|'preparing'|'merging'|'saving'|'cancelling'|'done'|'failed'|'cancelled'
