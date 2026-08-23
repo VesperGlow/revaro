@@ -161,7 +161,6 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/download", s.download)
 			r.Get("/files/{id}/preview", s.preview)
 			r.Get("/files/{id}/audio", s.audioMediaInfo)
-			r.Patch("/files/{id}/audio/chapters/{chapterID}", s.renameAudioChapter)
 			r.Get("/files/{id}/audio/stream", s.audioMediaStream)
 			r.Post("/files/{id}/audio/hls", s.startAudioHLS)
 			r.Get("/audio/hls/{session}/{asset}", s.audioHLSAsset)

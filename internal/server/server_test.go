@@ -1370,25 +1370,13 @@ func TestGarbageCollectorKeepsAudioStreamAndCover(t *testing.T) {
 	}
 }
 
-func TestRenameAudioChapterAndCopyPreservesMetadata(t *testing.T) {
+func TestCopyPreservesAudioMetadata(t *testing.T) {
 	a := newTestApp(t)
 	audio := a.readyFile(t, "album.m4a", []byte("audio-master"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	chapters := `[{"title":"第一节","start_ms":0,"end_ms":10000},{"title":"第二节","start_ms":10000,"end_ms":25000}]`
 	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, audio.ID, 25000, chapters, audio.objectKey, audio.Size, audio.ETag, false, now, now); err != nil {
 		t.Fatal(err)
-	}
-
-	rename := a.request("PATCH", "/api/files/"+audio.ID+"/audio/chapters/2", map[string]any{"title": "  新的第二节  "}, true)
-	if rename.Code != http.StatusOK {
-		t.Fatalf("rename chapter=%d: %s", rename.Code, rename.Body.String())
-	}
-	chapter := decode[audioChapterResponse](t, rename)
-	if chapter.Title != "新的第二节" || chapter.Start != 10 || chapter.End != 25 {
-		t.Fatalf("renamed chapter=%+v", chapter)
-	}
-	if invalid := a.request("PATCH", "/api/files/"+audio.ID+"/audio/chapters/9", map[string]any{"title": "missing"}, true); invalid.Code != http.StatusNotFound {
-		t.Fatalf("missing chapter=%d: %s", invalid.Code, invalid.Body.String())
 	}
 
 	copyRR := a.request("POST", "/api/files/"+audio.ID+"/copy", map[string]any{"parent_id": RootID}, true)
@@ -1410,7 +1398,7 @@ func TestRenameAudioChapterAndCopyPreservesMetadata(t *testing.T) {
 	info := decode[struct {
 		Chapters []audioChapterResponse `json:"chapters"`
 	}](t, infoRR)
-	if len(info.Chapters) != 2 || info.Chapters[1].Title != "新的第二节" {
+	if len(info.Chapters) != 2 || info.Chapters[1].Title != "第二节" {
 		t.Fatalf("copied chapters=%+v", info.Chapters)
 	}
 }

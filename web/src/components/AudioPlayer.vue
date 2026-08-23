@@ -24,10 +24,6 @@ const hlsOffset=ref(0)
 const seekPreview=ref<number|null>(null)
 const seekHover=ref({visible:false,time:0,percent:0})
 const chapterScrollbar=ref({visible:false,top:0,height:0})
-const editingChapterIndex=ref<number|null>(null)
-const chapterTitle=ref('')
-const chapterSaving=ref(false)
-const chapterError=ref('')
 const savedVolume=Number(localStorage.getItem('revaro-audio-volume')??0.85)
 const volume=ref(Number.isFinite(savedVolume)?Math.max(0,Math.min(1,savedVolume)):0.85)
 const muted=ref(localStorage.getItem('revaro-audio-muted')==='true')
@@ -103,22 +99,6 @@ function previousChapter(){
 function nextChapter(){
   const chapter=chapters.value[currentChapterIndex.value+1]
   if(chapter)seek(chapter.start,true)
-}
-function editChapter(index:number){
-  if(!media.value?.chapters?.[index])return
-  editingChapterIndex.value=index;chapterTitle.value=media.value.chapters[index].title;chapterError.value=''
-}
-function closeChapterEditor(){if(!chapterSaving.value){editingChapterIndex.value=null;chapterError.value=''}}
-async function saveChapterTitle(){
-  const index=editingChapterIndex.value
-  const title=chapterTitle.value.trim()
-  if(index===null||!media.value?.chapters?.[index])return
-  if(!title){chapterError.value='章节名不能为空';return}
-  chapterSaving.value=true;chapterError.value=''
-  try{
-    const updated=await api<AudioChapter>(`/api/files/${props.item.id}/audio/chapters/${media.value.chapters[index].id}`,{method:'PATCH',body:JSON.stringify({title})})
-    media.value.chapters[index]={...media.value.chapters[index],...updated};editingChapterIndex.value=null
-  }catch(caught){chapterError.value=caught instanceof Error?caught.message:'章节名保存失败'}finally{chapterSaving.value=false}
 }
 function updateBuffer(){
   const el=audio.value
@@ -272,23 +252,15 @@ onBeforeUnmount(()=>{
       <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="playing=false" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
     </section>
     <aside class="audio-chapters">
-      <header><div><strong>分节</strong><small>{{ media?.chapters?.length?'点击铅笔可修改名称':'当前音频没有可编辑章节' }}</small></div><span>{{ chapters.length }} 节</span></header>
+      <header><div><strong>分节</strong><small>保留合并前的文件名</small></div><span>{{ chapters.length }} 节</span></header>
       <div class="audio-chapter-scroll-area">
         <div ref="chapterList" class="audio-chapter-list" @scroll.passive="updateChapterScrollbar">
           <button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :class="{active:index===currentChapterIndex}" @click="seek(chapter.start,true)">
-            <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg><span v-if="media?.chapters?.length" class="chapter-edit-trigger" role="button" tabindex="0" title="修改章节名" aria-label="修改章节名" @click.stop="editChapter(index)" @keydown.enter.stop.prevent="editChapter(index)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-1 5 5-1L19 9l-4-4Z"/><path d="m13 7 4 4"/></svg></span></i>
+            <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></i>
           </button>
         </div>
         <span v-if="chapterScrollbar.visible" class="audio-chapter-scrollbar" :style="{height:`${chapterScrollbar.height}px`,transform:`translateY(${chapterScrollbar.top}px)`}" aria-hidden="true"></span>
       </div>
     </aside>
-    <div v-if="editingChapterIndex!==null" class="chapter-editor-backdrop" @click.self="closeChapterEditor">
-      <form class="chapter-editor" @submit.prevent="saveChapterTitle">
-        <header><div><strong>修改章节名</strong><small>只更新 Revaro 中的章节信息</small></div><button type="button" aria-label="关闭" @click="closeChapterEditor">×</button></header>
-        <input v-model="chapterTitle" maxlength="255" autofocus aria-label="章节名">
-        <p v-if="chapterError">{{ chapterError }}</p>
-        <footer><button type="button" @click="closeChapterEditor">取消</button><button type="submit" class="primary" :disabled="chapterSaving">{{ chapterSaving?'保存中…':'保存' }}</button></footer>
-      </form>
-    </div>
   </div>
 </template>
