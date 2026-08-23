@@ -609,10 +609,15 @@ func TestTrashRestoresTreeAndProtectsContentFromGC(t *testing.T) {
 	}
 	trashRR := a.request("GET", "/api/trash", nil, true)
 	trash := decode[struct {
-		Items []File `json:"items"`
+		Items      []File `json:"items"`
+		TotalBytes int64  `json:"total_bytes"`
+		FileCount  int64  `json:"file_count"`
 	}](t, trashRR)
 	if len(trash.Items) != 1 || trash.Items[0].ID != parent.ID || trash.Items[0].DeletedAt == "" {
 		t.Fatalf("trash roots=%+v", trash.Items)
+	}
+	if trash.TotalBytes != int64(len("recover me")) || trash.FileCount != 1 {
+		t.Fatalf("trash recursive stats=%+v", trash)
 	}
 	if rr := a.request("POST", "/api/trash/"+parent.ID+"/restore", nil, true); rr.Code != http.StatusNoContent {
 		t.Fatalf("restore=%d: %s", rr.Code, rr.Body.String())
@@ -823,17 +828,31 @@ func TestMediaPreviewAndStorageStats(t *testing.T) {
 		{"song.wav", "application/octet-stream", 4096},
 		{"animated.gif", "image/gif", 1024},
 	}
+	created := make([]File, 0, len(files))
 	for _, f := range files {
-		a.readyFile(t, f.name, bytes.Repeat([]byte("x"), int(f.size)))
+		created = append(created, a.readyFile(t, f.name, bytes.Repeat([]byte("x"), int(f.size))))
+	}
+	folderRR := a.request("POST", "/api/directories", map[string]any{"parent_id": RootID, "name": "Nested"}, true)
+	folder := decode[File](t, folderRR)
+	if moved := a.request("PATCH", "/api/files/"+created[1].ID, map[string]any{"parent_id": folder.ID}, true); moved.Code != http.StatusOK {
+		t.Fatalf("move nested media=%d: %s", moved.Code, moved.Body.String())
 	}
 	rr := a.request("GET", "/api/files/"+RootID+"/children", nil, true)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("children=%d: %s", rr.Code, rr.Body.String())
 	}
 	items := decode[struct {
-		Items []File `json:"items"`
+		Items      []File `json:"items"`
+		TotalBytes int64  `json:"total_bytes"`
+		FileCount  int64  `json:"file_count"`
 	}](t, rr)
+	if items.TotalBytes != 7168 || items.FileCount != 3 {
+		t.Fatalf("recursive directory stats=%+v", items)
+	}
 	for _, item := range items.Items {
+		if item.Kind != "file" {
+			continue
+		}
 		preview := a.request("GET", "/api/files/"+item.ID+"/preview", nil, true)
 		if preview.Code != http.StatusFound {
 			t.Fatalf("preview %s=%d: %s", item.Name, preview.Code, preview.Body.String())

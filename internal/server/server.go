@@ -679,7 +679,24 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, f)
 	}
-	writeJSON(w, 200, map[string]any{"items": out})
+	if err := rows.Err(); err != nil {
+		problem(w, 500, "database error")
+		return
+	}
+	if err := rows.Close(); err != nil {
+		problem(w, 500, "database error")
+		return
+	}
+	var totalBytes, fileCount int64
+	if err := s.db.QueryRowContext(r.Context(), `WITH RECURSIVE tree(id,kind,size,status) AS (
+		SELECT id,kind,size,status FROM files WHERE id=? AND deleted_at IS NULL
+		UNION ALL
+		SELECT f.id,f.kind,f.size,f.status FROM files f JOIN tree t ON f.parent_id=t.id WHERE f.deleted_at IS NULL
+	) SELECT COALESCE(SUM(size),0),COUNT(*) FROM tree WHERE kind='file' AND status='ready'`, parent.ID).Scan(&totalBytes, &fileCount); err != nil {
+		problem(w, 500, "could not calculate directory usage")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": out, "total_bytes": totalBytes, "file_count": fileCount})
 }
 
 func (s *Server) storageStats(w http.ResponseWriter, r *http.Request) {
@@ -996,7 +1013,16 @@ func (s *Server) trash(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "could not read trash")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	if err := rows.Close(); err != nil {
+		problem(w, 500, "could not read trash")
+		return
+	}
+	var totalBytes, fileCount int64
+	if err := s.db.QueryRowContext(r.Context(), `SELECT COALESCE(SUM(size),0),COUNT(*) FROM files WHERE kind='file' AND status='ready' AND deleted_at IS NOT NULL`).Scan(&totalBytes, &fileCount); err != nil {
+		problem(w, 500, "could not calculate trash usage")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "total_bytes": totalBytes, "file_count": fileCount})
 }
 
 func (s *Server) restoreTrash(w http.ResponseWriter, r *http.Request) {

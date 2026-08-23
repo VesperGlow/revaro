@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive } from 'vue'
+import { onBeforeUnmount, reactive } from 'vue'
 import type { DriveFile } from '../api'
 import { isAudio, isBook, isEditable, isEpub, isImage, isVideo, previewURL, thumbSRC } from '../fileTypes'
 import { formatDate, formatSize } from '../format'
@@ -11,6 +11,11 @@ const emit=defineEmits<{open:[item:DriveFile];select:[item:DriveFile]}>()
 const thumbFallbackTried=reactive<Record<string,boolean>>({})
 const imageBroken=reactive<Record<string,boolean>>({})
 const coverBroken=reactive<Record<string,boolean>>({})
+let holdTimer=0
+let heldId=''
+let heldResetTimer=0
+let holdX=0
+let holdY=0
 
 function thumbFallback(event:Event,item:DriveFile){
   const image=event.target as HTMLImageElement
@@ -22,11 +27,34 @@ function thumbFallback(event:Event,item:DriveFile){
 function canOpen(item:DriveFile){return !props.trashMode||item.kind==='file'}
 function openItem(item:DriveFile){emit('open',item)}
 function hasPreview(item:DriveFile){return (isImage(item)&&!imageBroken[item.id])||isVideo(item)||(isEpub(item)&&!coverBroken[item.id])}
+function isTouch(){return window.matchMedia('(hover: none), (pointer: coarse)').matches}
+function cancelHold(){window.clearTimeout(holdTimer);holdTimer=0}
+function startHold(item:DriveFile,event:PointerEvent){
+  if(event.pointerType!=='touch'&&event.pointerType!=='pen')return
+  cancelHold()
+  window.clearTimeout(heldResetTimer)
+  heldId=''
+  holdX=event.clientX
+  holdY=event.clientY
+  holdTimer=window.setTimeout(()=>{
+    heldId=item.id
+    emit('select',item)
+    if('vibrate' in navigator)navigator.vibrate(18)
+  },480)
+}
+function moveHold(event:PointerEvent){if(Math.hypot(event.clientX-holdX,event.clientY-holdY)>12)cancelHold()}
+function finishHold(){cancelHold();if(heldId)heldResetTimer=window.setTimeout(()=>heldId='',500)}
+function activate(item:DriveFile){
+  if(heldId===item.id){heldId='';return}
+  if(isTouch()&&props.selectedIds.size){emit('select',item);return}
+  openItem(item)
+}
+onBeforeUnmount(()=>{cancelHold();window.clearTimeout(heldResetTimer)})
 </script>
 
 <template>
-  <div class="file-grid">
-    <article v-for="item in items" :key="item.id" class="file-card" :class="{mutedrow:item.status!=='ready',selected:selectedIds.has(item.id),'preview-tile':hasPreview(item)}" role="button" tabindex="0" :aria-label="`${item.name}，${selectedIds.has(item.id)?'已选择':'未选择'}`" @click="openItem(item)" @keydown.enter.prevent="openItem(item)" @keydown.space.prevent="$emit('select',item)">
+  <div class="file-grid" :class="{'selection-mode':selectedIds.size>0}">
+    <article v-for="item in items" :key="item.id" class="file-card" :class="{mutedrow:item.status!=='ready',selected:selectedIds.has(item.id),'preview-tile':hasPreview(item)}" role="button" tabindex="0" :aria-label="`${item.name}，${selectedIds.has(item.id)?'已选择':'未选择'}`" @click="activate(item)" @pointerdown="startHold(item,$event)" @pointerup="finishHold" @pointercancel="finishHold" @pointermove="moveHold" @contextmenu.prevent @keydown.enter.prevent="openItem(item)" @keydown.space.prevent="$emit('select',item)">
       <button class="card-select" :class="{active:selectedIds.has(item.id)}" :title="selectedIds.has(item.id)?'取消选择':'选择项目'" :aria-label="selectedIds.has(item.id)?'取消选择':'选择项目'" :aria-pressed="selectedIds.has(item.id)" @click.stop="$emit('select',item)" @keydown.stop>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
       </button>

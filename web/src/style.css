@@ -429,7 +429,12 @@ button img,.ui-image{pointer-events:none;-webkit-touch-callout:none;-webkit-user
 .large-video{display:grid;place-items:center;width:72px;height:72px;border:2px solid #fff;border-radius:50%;background:#17203380;color:#fff;box-shadow:0 5px 20px #0004;backdrop-filter:blur(5px)}
 .large-video svg{width:34px;height:34px;fill:currentColor;stroke:none}
 
-@media(hover:none),(pointer:coarse){.card-select{opacity:1}.preview-tile .card-info{opacity:1;transform:translateY(0)}}
+@media(hover:none),(pointer:coarse){
+  .card-select,.file-card:hover .card-select,.card-select:focus-visible{opacity:0}
+  .card-select.active,.selection-mode .card-select{opacity:1}
+  .preview-tile .card-info,.preview-tile:hover .card-info,.preview-tile:focus-visible .card-info{opacity:0;transform:translateY(100%)}
+  .preview-tile.selected .card-info{opacity:1;transform:translateY(0)}
+}
 @media(max-width:850px){
   .file-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
   .file-card{border-radius:5px}
