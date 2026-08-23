@@ -54,6 +54,9 @@ type Server struct {
 	s3Origin         string // S3_PUBLIC_ENDPOINT 的 scheme://host，用于收窄 CSP
 	shareSlots       chan struct{}
 	blockUploadSlots chan struct{}
+	audioMergeSlots  chan struct{}
+	audioMergeMu     sync.RWMutex
+	audioMergeJobs   map[string]*audioMergeJob
 }
 
 type File struct {
@@ -80,11 +83,21 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	if u, err := url.Parse(cfg.S3PublicEndpoint); err == nil && u.Host != "" {
 		s3Origin = u.Scheme + "://" + u.Host
 	}
-	return &Server{
+	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
 		limiter: newLoginLimiter(), s3Origin: s3Origin,
 		shareSlots: make(chan struct{}, 8), blockUploadSlots: make(chan struct{}, 4),
+		audioMergeSlots: make(chan struct{}, 1), audioMergeJobs: make(map[string]*audioMergeJob),
 	}
+	// Audio merges run in memory and cannot survive a process restart. Their
+	// pending output row has no uploads record (browser uploads always do), so
+	// remove only those abandoned placeholders before serving the file list.
+	if result, err := db.Exec(`DELETE FROM files WHERE kind='file' AND status='pending' AND mime_type IN ('audio/mp4','audio/flac') AND object_key IS NULL AND NOT EXISTS (SELECT 1 FROM uploads WHERE uploads.file_id=files.id)`); err != nil {
+		logger.Error("interrupted audio merge cleanup failed", "error", err)
+	} else if removed, _ := result.RowsAffected(); removed > 0 {
+		logger.Info("interrupted audio merges cleaned", "files", removed)
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -146,6 +159,9 @@ func (s *Server) Handler() http.Handler {
 			r.Put("/uploads/{id}/blocks/{blockID}", s.putUploadBlock)
 			r.Post("/uploads/{id}/complete", s.completeUpload)
 			r.Delete("/uploads/{id}", s.abortUpload)
+			r.Post("/audio-merges", s.createAudioMerge)
+			r.Get("/audio-merges/{id}", s.getAudioMerge)
+			r.Delete("/audio-merges/{id}", s.cancelAudioMerge)
 		})
 	})
 	r.Handle("/*", webui.Handler())
