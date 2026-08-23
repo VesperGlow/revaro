@@ -20,7 +20,8 @@ export interface TOTPSetupResponse { secret:string; uri:string; qr_data_url:stri
 export interface TOTPRecoveryResponse { enabled:boolean; recovery_codes:string[] }
 export type AudioMergeFormat = 'flac'|'alac'|'aac'
 export interface AudioChapter { id:number; title:string; start:number; end:number }
-export interface AudioMediaResponse { duration:number; chapters:AudioChapter[]; stream_url:string; cover_url:string; has_cover:boolean; stream_size:number }
+export interface AudioSubtitle { id:number; start:number; end:number; text:string }
+export interface AudioMediaResponse { duration:number; chapters:AudioChapter[]; subtitles:AudioSubtitle[]; stream_url:string; cover_url:string; has_cover:boolean; stream_size:number }
 export interface AudioHLSResponse { session_id:string; playlist_url:string; start:number }
 export interface AudioMergeResponse {
   id:string

@@ -31,6 +31,12 @@ type audioMediaTestResponse struct {
 		Start float64 `json:"start"`
 		End   float64 `json:"end"`
 	} `json:"chapters"`
+	Subtitles []struct {
+		ID    int     `json:"id"`
+		Start float64 `json:"start"`
+		End   float64 `json:"end"`
+		Text  string  `json:"text"`
+	} `json:"subtitles"`
 }
 
 type audioHLSTestResponse struct {
@@ -185,6 +191,79 @@ func TestAudioMergeOutputFormats(t *testing.T) {
 				t.Fatalf("audio stream range=%d len=%d accept=%q", rangeRR.Code, rangeRR.Body.Len(), rangeRR.Header().Get("Accept-Ranges"))
 			}
 		})
+	}
+}
+
+func TestAudioMergeEmbedsMatchingWebVTT(t *testing.T) {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not available")
+	}
+	a := newTestApp(t)
+	a.srv.cfg.DataDir = t.TempDir()
+	first := a.readyFile(t, "01 耳语.wav", audioFixture(t, "wav", 440))
+	second := a.readyFile(t, "02 敲击.wav", audioFixture(t, "wav", 880))
+	a.readyFile(t, "01 耳语.vtt", []byte("WEBVTT\n\n00:00:00.020 --> 00:00:00.120\n第一段字幕\n"))
+	a.readyFile(t, "02 敲击.VTT", []byte("\ufeffWEBVTT\n\ncue-1\n00:00:00.030 --> 00:00:00.200\n<b>第二段字幕</b> &amp; 继续\n"))
+
+	createdRR := a.request("POST", "/api/audio-merges", map[string]any{
+		"parent_id": RootID, "name": "带字幕.m4a", "format": "alac", "file_ids": []string{first.ID, second.ID},
+	}, true)
+	if createdRR.Code != http.StatusAccepted {
+		t.Fatalf("create subtitle merge=%d: %s", createdRR.Code, createdRR.Body.String())
+	}
+	job := waitAudioMerge(t, a, decode[audioMergeSnapshot](t, createdRR))
+	if job.Status != "done" {
+		t.Fatalf("subtitle merge failed: %+v", job)
+	}
+	merged, err := a.srv.file(context.Background(), job.OutputFileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := a.store.Open(context.Background(), merged.objectKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/subtitled.m4a"
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_name,codec_type", "-of", "json", path).Output()
+	if err != nil {
+		t.Fatalf("probe subtitled M4A: %v", err)
+	}
+	var streams struct {
+		Streams []struct {
+			CodecName string `json:"codec_name"`
+			CodecType string `json:"codec_type"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(probe, &streams); err != nil {
+		t.Fatal(err)
+	}
+	hasALAC, hasMovText := false, false
+	for _, stream := range streams.Streams {
+		hasALAC = hasALAC || stream.CodecType == "audio" && stream.CodecName == "alac"
+		hasMovText = hasMovText || stream.CodecType == "subtitle" && stream.CodecName == "mov_text"
+	}
+	if !hasALAC || !hasMovText {
+		t.Fatalf("unexpected M4A streams: %+v", streams.Streams)
+	}
+	extracted, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:s:0", "-f", "webvtt", "pipe:1").Output()
+	if err != nil || !strings.Contains(string(extracted), "第一段字幕") || !strings.Contains(string(extracted), "第二段字幕 & 继续") {
+		t.Fatalf("embedded subtitles missing: err=%v output=%s", err, extracted)
+	}
+	mediaRR := a.request("GET", "/api/files/"+merged.ID+"/audio", nil, true)
+	if mediaRR.Code != http.StatusOK {
+		t.Fatalf("audio metadata=%d: %s", mediaRR.Code, mediaRR.Body.String())
+	}
+	media := decode[audioMediaTestResponse](t, mediaRR)
+	if len(media.Subtitles) != 2 || media.Subtitles[0].Text != "第一段字幕" || media.Subtitles[1].Text != "第二段字幕 & 继续" || media.Subtitles[1].Start < 0.25 {
+		t.Fatalf("shifted subtitle metadata=%+v", media.Subtitles)
 	}
 }
 

@@ -17,11 +17,24 @@ type storedAudioChapter struct {
 	EndMS   int64  `json:"end_ms"`
 }
 
+type storedAudioSubtitle struct {
+	StartMS int64  `json:"start_ms"`
+	EndMS   int64  `json:"end_ms"`
+	Text    string `json:"text"`
+}
+
 type audioChapterResponse struct {
 	ID    int     `json:"id"`
 	Title string  `json:"title"`
 	Start float64 `json:"start"`
 	End   float64 `json:"end"`
+}
+
+type audioSubtitleResponse struct {
+	ID    int     `json:"id"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
 }
 
 func (s *Server) audioMediaInfo(w http.ResponseWriter, r *http.Request) {
@@ -31,10 +44,10 @@ func (s *Server) audioMediaInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var durationMS, streamSize int64
-	var chaptersJSON, streamKey, streamETag string
+	var chaptersJSON, subtitlesJSON, streamKey, streamETag string
 	var hasCover bool
-	err = s.db.QueryRowContext(r.Context(), `SELECT duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover FROM audio_media WHERE file_id=?`, f.ID).
-		Scan(&durationMS, &chaptersJSON, &streamKey, &streamSize, &streamETag, &hasCover)
+	err = s.db.QueryRowContext(r.Context(), `SELECT duration_ms,chapters_json,subtitles_json,stream_object_key,stream_size,stream_etag,has_cover FROM audio_media WHERE file_id=?`, f.ID).
+		Scan(&durationMS, &chaptersJSON, &subtitlesJSON, &streamKey, &streamSize, &streamETag, &hasCover)
 	if errors.Is(err, sql.ErrNoRows) {
 		problem(w, http.StatusNotFound, "chapter metadata is not available for this audio")
 		return
@@ -55,9 +68,22 @@ func (s *Server) audioMediaInfo(w http.ResponseWriter, r *http.Request) {
 			Start: float64(chapter.StartMS) / 1000, End: float64(chapter.EndMS) / 1000,
 		})
 	}
+	var storedSubtitles []storedAudioSubtitle
+	if err := json.Unmarshal([]byte(subtitlesJSON), &storedSubtitles); err != nil {
+		problem(w, http.StatusInternalServerError, "audio subtitle metadata is invalid")
+		return
+	}
+	subtitles := make([]audioSubtitleResponse, 0, len(storedSubtitles))
+	for index, cue := range storedSubtitles {
+		subtitles = append(subtitles, audioSubtitleResponse{
+			ID: index + 1, Start: float64(cue.StartMS) / 1000,
+			End: float64(cue.EndMS) / 1000, Text: cue.Text,
+		})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"duration":    float64(durationMS) / 1000,
 		"chapters":    chapters,
+		"subtitles":   subtitles,
 		"stream_url":  "/api/files/" + f.ID + "/audio/stream",
 		"cover_url":   coverURL(f.ID, f.ETag, hasCover),
 		"has_cover":   hasCover,

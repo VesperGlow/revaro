@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
@@ -29,6 +31,9 @@ const audioMergeTimeout = 24 * time.Hour
 const maxAudioCoverBytes = 2 << 20
 const maxAudioCoverSourceBytes = 16 << 20
 const audioCoverMaxDim = 1200
+const maxAudioSubtitleBytes = 8 << 20
+const maxMergedAudioSubtitleBytes = 32 << 20
+const maxAudioSubtitleCues = 100000
 
 var audioSourceExts = map[string]bool{
 	".mp3": true, ".wav": true, ".flac": true, ".m4a": true, ".aac": true,
@@ -48,6 +53,7 @@ type audioOutputProfile struct {
 	Container   string
 	Lossless    bool
 	Chapters    bool
+	Subtitles   bool
 	EncoderArgs []string
 }
 
@@ -56,13 +62,17 @@ func audioOutput(format string) (audioOutputProfile, bool) {
 	case "", "flac":
 		return audioOutputProfile{Format: "flac", Extension: ".flac", MimeType: "audio/flac", Codec: "flac", Container: "flac", Lossless: true, EncoderArgs: []string{"-compression_level", "8"}}, true
 	case "alac":
-		return audioOutputProfile{Format: "alac", Extension: ".m4a", MimeType: "audio/mp4", Codec: "alac", Container: "ipod", Lossless: true, Chapters: true, EncoderArgs: []string{"-movflags", "+faststart"}}, true
+		return audioOutputProfile{Format: "alac", Extension: ".m4a", MimeType: "audio/mp4", Codec: "alac", Container: "ipod", Lossless: true, Chapters: true, Subtitles: true, EncoderArgs: []string{"-movflags", "+faststart"}}, true
 	case "aac":
-		return audioOutputProfile{Format: "aac", Extension: ".m4a", MimeType: "audio/mp4", Codec: "aac", Container: "ipod", Chapters: true, EncoderArgs: []string{"-b:a", "192k", "-movflags", "+faststart"}}, true
+		return audioOutputProfile{Format: "aac", Extension: ".m4a", MimeType: "audio/mp4", Codec: "aac", Container: "ipod", Chapters: true, Subtitles: true, EncoderArgs: []string{"-b:a", "192k", "-movflags", "+faststart"}}, true
 	default:
 		return audioOutputProfile{}, false
 	}
 }
+
+type audioMergeUserError struct{ message string }
+
+func (e audioMergeUserError) Error() string { return e.message }
 
 type audioMergeJob struct {
 	mu           sync.Mutex
@@ -185,6 +195,219 @@ func (s *Server) audioCoverFromFile(ctx context.Context, parentID, fileID string
 	return normalizeAudioCover(raw)
 }
 
+func (s *Server) findAudioSubtitles(ctx context.Context, inputs []File) ([]*File, error) {
+	matched := make([]*File, len(inputs))
+	for index, input := range inputs {
+		if input.ParentID == nil {
+			continue
+		}
+		expected := strings.TrimSuffix(input.Name, filepath.Ext(input.Name)) + ".vtt"
+		subtitle, err := scanFile(s.db.QueryRowContext(ctx, `SELECT `+fileColumns+` FROM files WHERE parent_id=? AND kind='file' AND status='ready' AND deleted_at IS NULL AND name=? COLLATE NOCASE ORDER BY CASE WHEN name=? THEN 0 ELSE 1 END LIMIT 1`, *input.ParentID, expected, expected))
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		matched[index] = &subtitle
+	}
+	return matched, nil
+}
+
+func (s *Server) prepareMergedSubtitles(ctx context.Context, sources []*File, durations []time.Duration) ([]storedAudioSubtitle, error) {
+	merged := make([]storedAudioSubtitle, 0)
+	var offset int64
+	var mergedTextBytes int
+	for index, duration := range durations {
+		if index >= len(sources) || sources[index] == nil {
+			offset += duration.Milliseconds()
+			continue
+		}
+		source := *sources[index]
+		if source.Size <= 0 || source.Size > maxAudioSubtitleBytes {
+			return nil, audioMergeUserError{message: fmt.Sprintf("字幕「%s」为空或超过 8 MiB", source.Name)}
+		}
+		reader, err := s.openMergeSource(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("open subtitle %s: %w", source.ID, err)
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(reader, maxAudioSubtitleBytes+1))
+		closeErr := reader.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read subtitle %s: %w", source.ID, readErr)
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if len(raw) > maxAudioSubtitleBytes {
+			return nil, audioMergeUserError{message: fmt.Sprintf("字幕「%s」超过 8 MiB", source.Name)}
+		}
+		cues, err := parseWebVTT(raw, duration)
+		if err != nil {
+			return nil, audioMergeUserError{message: fmt.Sprintf("字幕「%s」不是有效的 WebVTT：%v", source.Name, err)}
+		}
+		if len(cues) == 0 {
+			return nil, audioMergeUserError{message: fmt.Sprintf("字幕「%s」没有可用的字幕条目", source.Name)}
+		}
+		if len(merged)+len(cues) > maxAudioSubtitleCues {
+			return nil, audioMergeUserError{message: "合并后的字幕条目超过 100000 条"}
+		}
+		for _, cue := range cues {
+			mergedTextBytes += len(cue.Text)
+			if mergedTextBytes > maxMergedAudioSubtitleBytes {
+				return nil, audioMergeUserError{message: "合并后的字幕文本超过 32 MiB"}
+			}
+			cue.StartMS += offset
+			cue.EndMS += offset
+			merged = append(merged, cue)
+		}
+		offset += duration.Milliseconds()
+	}
+	return merged, nil
+}
+
+func parseWebVTT(raw []byte, duration time.Duration) ([]storedAudioSubtitle, error) {
+	text := strings.TrimPrefix(string(raw), "\ufeff")
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 || !strings.HasPrefix(strings.TrimSpace(lines[0]), "WEBVTT") {
+		return nil, errors.New("缺少 WEBVTT 文件头")
+	}
+	index := 1
+	for index < len(lines) && strings.TrimSpace(lines[index]) != "" {
+		index++
+	}
+	limit := max(duration.Milliseconds(), 1)
+	cues := make([]storedAudioSubtitle, 0)
+	for index < len(lines) {
+		for index < len(lines) && strings.TrimSpace(lines[index]) == "" {
+			index++
+		}
+		if index >= len(lines) {
+			break
+		}
+		start := index
+		for index < len(lines) && strings.TrimSpace(lines[index]) != "" {
+			index++
+		}
+		block := lines[start:index]
+		first := strings.TrimSpace(block[0])
+		if first == "STYLE" || first == "REGION" || strings.HasPrefix(first, "NOTE") {
+			continue
+		}
+		timingIndex := -1
+		for candidate := 0; candidate < len(block) && candidate < 2; candidate++ {
+			if strings.Contains(block[candidate], "-->") {
+				timingIndex = candidate
+				break
+			}
+		}
+		if timingIndex < 0 {
+			return nil, fmt.Errorf("第 %d 行附近缺少时间轴", start+1)
+		}
+		timing := strings.SplitN(block[timingIndex], "-->", 2)
+		right := strings.Fields(strings.TrimSpace(timing[1]))
+		if len(right) == 0 {
+			return nil, fmt.Errorf("第 %d 行的结束时间无效", start+timingIndex+1)
+		}
+		startMS, err := parseWebVTTTimestamp(strings.TrimSpace(timing[0]))
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 行的开始时间无效", start+timingIndex+1)
+		}
+		endMS, err := parseWebVTTTimestamp(right[0])
+		if err != nil || endMS <= startMS {
+			return nil, fmt.Errorf("第 %d 行的结束时间无效", start+timingIndex+1)
+		}
+		if startMS >= limit {
+			continue
+		}
+		endMS = min(endMS, limit)
+		payload := strings.TrimSpace(strings.Join(block[timingIndex+1:], "\n"))
+		plain := plainVTTText(payload)
+		if plain == "" {
+			continue
+		}
+		cues = append(cues, storedAudioSubtitle{StartMS: startMS, EndMS: endMS, Text: plain})
+	}
+	return cues, nil
+}
+
+func parseWebVTTTimestamp(value string) (int64, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 && len(parts) != 3 {
+		return 0, errors.New("invalid timestamp")
+	}
+	secondsPart := strings.Split(parts[len(parts)-1], ".")
+	if len(secondsPart) != 2 || len(secondsPart[1]) != 3 {
+		return 0, errors.New("invalid timestamp")
+	}
+	seconds, err := strconv.Atoi(secondsPart[0])
+	if err != nil || seconds < 0 || seconds >= 60 {
+		return 0, errors.New("invalid timestamp")
+	}
+	millis, err := strconv.Atoi(secondsPart[1])
+	if err != nil || millis < 0 || millis >= 1000 {
+		return 0, errors.New("invalid timestamp")
+	}
+	minutes, err := strconv.Atoi(parts[len(parts)-2])
+	if err != nil || minutes < 0 || minutes >= 60 {
+		return 0, errors.New("invalid timestamp")
+	}
+	hours := 0
+	if len(parts) == 3 {
+		hours, err = strconv.Atoi(parts[0])
+		if err != nil || hours < 0 {
+			return 0, errors.New("invalid timestamp")
+		}
+	}
+	return int64(((hours*60+minutes)*60+seconds)*1000 + millis), nil
+}
+
+func plainVTTText(value string) string {
+	var body strings.Builder
+	inTag := false
+	for _, r := range value {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			if inTag {
+				inTag = false
+			} else {
+				body.WriteRune(r)
+			}
+		default:
+			if !inTag {
+				body.WriteRune(r)
+			}
+		}
+	}
+	return strings.TrimSpace(html.UnescapeString(body.String()))
+}
+
+func writeMergedWebVTT(workDir string, cues []storedAudioSubtitle) (string, error) {
+	var body strings.Builder
+	body.WriteString("WEBVTT\n\n")
+	for index, cue := range cues {
+		fmt.Fprintf(&body, "%d\n%s --> %s\n%s\n\n", index+1, formatWebVTTTimestamp(cue.StartMS), formatWebVTTTimestamp(cue.EndMS), cue.Text)
+	}
+	path := filepath.Join(workDir, "subtitles.vtt")
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		return "", fmt.Errorf("write merged subtitles: %w", err)
+	}
+	return path, nil
+}
+
+func formatWebVTTTimestamp(milliseconds int64) string {
+	if milliseconds < 0 {
+		milliseconds = 0
+	}
+	hours := milliseconds / 3600000
+	minutes := milliseconds / 60000 % 60
+	seconds := milliseconds / 1000 % 60
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", hours, minutes, seconds, milliseconds%1000)
+}
+
 func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		ParentID  string   `json:"parent_id"`
@@ -259,6 +482,11 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	subtitles, err := s.findAudioSubtitles(r.Context(), inputs)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not match audio subtitles")
+		return
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	outputID := ids.New()
@@ -281,7 +509,7 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 	s.audioMergeMu.Lock()
 	s.audioMergeJobs[job.ID] = job
 	s.audioMergeMu.Unlock()
-	go s.runAudioMerge(ctx, job, inputs, profile, cover)
+	go s.runAudioMerge(ctx, job, inputs, subtitles, profile, cover)
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
 
@@ -331,9 +559,9 @@ func (s *Server) cancelAudioMerge(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) runAudioMerge(ctx context.Context, job *audioMergeJob, inputs []File, profile audioOutputProfile, cover []byte) {
+func (s *Server) runAudioMerge(ctx context.Context, job *audioMergeJob, inputs []File, subtitles []*File, profile audioOutputProfile, cover []byte) {
 	defer job.cancel()
-	err := s.executeAudioMerge(ctx, job, inputs, profile, cover)
+	err := s.executeAudioMerge(ctx, job, inputs, subtitles, profile, cover)
 	if err == nil {
 		job.finish("done", "合并完成", "")
 		s.log.Info("audio merge completed", "job", job.ID, "file", job.OutputFileID, "format", profile.Format, "inputs", len(inputs))
@@ -344,7 +572,12 @@ func (s *Server) runAudioMerge(ctx context.Context, job *audioMergeJob, inputs [
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			job.finish("failed", "合并失败", "合并任务运行时间超过 24 小时")
 		} else {
-			job.finish("failed", "合并失败", "音频格式不兼容、文件损坏或临时空间不足")
+			var userError audioMergeUserError
+			if errors.As(err, &userError) {
+				job.finish("failed", "合并失败", userError.Error())
+			} else {
+				job.finish("failed", "合并失败", "音频格式不兼容、文件损坏或临时空间不足")
+			}
 		}
 		s.log.Error("audio merge failed", "job", job.ID, "output", job.OutputName, "error", err)
 	}
@@ -355,7 +588,7 @@ func (s *Server) runAudioMerge(ctx context.Context, job *audioMergeJob, inputs [
 	})
 }
 
-func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inputs []File, profile audioOutputProfile, cover []byte) error {
+func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inputs []File, subtitleSources []*File, profile audioOutputProfile, cover []byte) error {
 	select {
 	case s.audioMergeSlots <- struct{}{}:
 		defer func() { <-s.audioMergeSlots }()
@@ -440,8 +673,22 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 			return fmt.Errorf("write audio cover: %w", err)
 		}
 	}
+	storedSubtitles := make([]storedAudioSubtitle, 0)
+	subtitlePath := ""
+	if profile.Subtitles {
+		storedSubtitles, err = s.prepareMergedSubtitles(ctx, subtitleSources, durations)
+		if err != nil {
+			return err
+		}
+		if len(storedSubtitles) > 0 {
+			subtitlePath, err = writeMergedWebVTT(workDir, storedSubtitles)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	outputPath := filepath.Join(workDir, "merged"+profile.Extension)
-	if err := runAudioFFmpeg(ctx, s.cfg.FFmpegPath, paths, metadataPath, coverPath, job.OutputName, durations, probes, profile, outputPath, 86, job); err != nil {
+	if err := runAudioFFmpeg(ctx, s.cfg.FFmpegPath, paths, metadataPath, coverPath, subtitlePath, job.OutputName, durations, probes, profile, outputPath, 86, job); err != nil {
 		return err
 	}
 
@@ -463,6 +710,10 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 	if err != nil {
 		return fmt.Errorf("encode audio chapters: %w", err)
 	}
+	subtitlesJSON, err := json.Marshal(storedSubtitles)
+	if err != nil {
+		return fmt.Errorf("encode audio subtitles: %w", err)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -476,8 +727,8 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 	if changed, _ := result.RowsAffected(); changed == 0 {
 		return errors.New("merged audio placeholder was removed")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		job.OutputFileID, durationMilliseconds(durations), string(chaptersJSON), key, masterSize, masterETag, len(cover) > 0, now, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO audio_media(file_id,duration_ms,chapters_json,subtitles_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		job.OutputFileID, durationMilliseconds(durations), string(chaptersJSON), string(subtitlesJSON), key, masterSize, masterETag, len(cover) > 0, now, now)
 	if err != nil {
 		return fmt.Errorf("commit audio chapters and stream: %w", err)
 	}
@@ -653,23 +904,28 @@ func escapeFFMetadata(value string) string {
 	return replacer.Replace(value)
 }
 
-func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadataPath, coverPath, outputName string, durations []time.Duration, probes []audioProbe, profile audioOutputProfile, outputPath string, progressEnd int, job *audioMergeJob) error {
+func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadataPath, coverPath, subtitlePath, outputName string, durations []time.Duration, probes []audioProbe, profile audioOutputProfile, outputPath string, progressEnd int, job *audioMergeJob) error {
 	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
 	for _, path := range paths {
 		args = append(args, "-i", path)
 	}
+	nextInputIndex := len(paths)
 	metadataIndex := -1
 	if metadataPath != "" {
-		metadataIndex = len(paths)
+		metadataIndex = nextInputIndex
+		nextInputIndex++
 		args = append(args, "-f", "ffmetadata", "-i", metadataPath)
 	}
 	coverIndex := -1
 	if coverPath != "" {
-		coverIndex = len(paths)
-		if metadataIndex >= 0 {
-			coverIndex++
-		}
+		coverIndex = nextInputIndex
+		nextInputIndex++
 		args = append(args, "-i", coverPath)
+	}
+	subtitleIndex := -1
+	if subtitlePath != "" {
+		subtitleIndex = nextInputIndex
+		args = append(args, "-i", subtitlePath)
 	}
 	parts := make([]string, 0, len(paths)+1)
 	labels := make([]string, 0, len(paths))
@@ -696,6 +952,9 @@ func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadata
 		args = append(args, "-map", strconv.Itoa(coverIndex)+":v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic", "-metadata:s:v:0", "title=Cover", "-metadata:s:v:0", "comment=Cover (front)")
 	} else {
 		args = append(args, "-vn")
+	}
+	if subtitleIndex >= 0 {
+		args = append(args, "-map", strconv.Itoa(subtitleIndex)+":s:0", "-c:s", "mov_text", "-metadata:s:s:0", "language=und", "-metadata:s:s:0", "title=字幕", "-disposition:s:0", "default")
 	}
 	args = append(args, "-metadata", "title="+strings.TrimSuffix(outputName, filepath.Ext(outputName)), "-c:a", profile.Codec)
 	args = append(args, profile.EncoderArgs...)

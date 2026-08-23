@@ -81,6 +81,7 @@ const selectedFiles = computed(() => selectedItems.value.filter(item => item.kin
 const selectedAudioFiles = computed(() => selectedItems.value.filter(isAudio))
 const canMergeSelectedAudio = computed(() => selectedItems.value.length>=2&&selectedItems.value.length===selectedAudioFiles.value.length)
 const audioCoverCandidates = computed(() => items.value.filter(item=>isImage(item)&&item.size<=16*1024*1024&&!(/\.avif$/i.test(item.name)||item.mime_type==='image/avif')))
+const audioMergeSubtitleCount = computed(() => audioMerge.order.filter(item=>audioSubtitleFor(item)).length)
 const singleSelected = computed(() => selectedItems.value.length===1?selectedItems.value[0]:null)
 
 function askDialog(options:{title:string;message:string;confirmLabel?:string;cancelLabel?:string;tone?:'default'|'danger';input?:boolean;value?:string;placeholder?:string}){
@@ -428,6 +429,11 @@ function downloadSelected(){
 }
 
 function audioMergeExtension(format:AudioMergeFormat){return format==='flac'?'.flac':'.m4a'}
+function audioSubtitleFor(item:DriveFile){
+  const expected=item.name.replace(/\.[^.]+$/,'.vtt')
+  return items.value.find(candidate=>candidate.kind==='file'&&candidate.status==='ready'&&candidate.name===expected)
+    ||items.value.find(candidate=>candidate.kind==='file'&&candidate.status==='ready'&&candidate.name.toLowerCase()===expected.toLowerCase())
+}
 function defaultAudioMergeName(files:DriveFile[],format:AudioMergeFormat){
   const folderName=currentId.value!==ROOT?current.value?.name.trim():''
   const firstName=files[0]?.name.replace(/\.[^.]+$/,'')||'合并音频'
@@ -780,13 +786,13 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
               <button v-if="audioMerge.coverPreview" type="button" class="merge-cover-remove" @click="clearAudioCover">移除封面</button>
               <input ref="audioCoverInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="e=>{const el=e.target as HTMLInputElement;if(el.files?.[0])setAudioCover(el.files[0]);el.value=''}">
             </div>
-            <p class="lossless-note"><strong>播放说明</strong>优先 Range 播放原始母版；浏览器无法解码 ALAC 等格式时，会临时启动 FFmpeg HLS 兼容流。下载文件仍是所选的 FLAC / ALAC 母版，兼容流闲置后自动清理。</p>
+            <p class="lossless-note"><strong>{{ audioMerge.format==='flac'?'字幕说明':'字幕与播放说明' }}</strong><template v-if="audioMerge.format==='flac'">FLAC 不支持内嵌字幕；已识别 {{ audioMergeSubtitleCount }} / {{ audioMerge.order.length }} 个同名 VTT，切换 ALAC 或 AAC 后会自动合并并写入字幕轨。</template><template v-else>将内嵌 {{ audioMergeSubtitleCount }} / {{ audioMerge.order.length }} 个同名 VTT；各段字幕会随音频顺序自动校准时间轴。浏览器无法解码 ALAC 时会临时启动 FFmpeg HLS 兼容流。</template></p>
           </section>
           <section class="merge-order-panel">
             <div class="merge-order-heading"><div><strong>播放顺序</strong><small>每个文件会保留为一个分节</small></div><span>{{ audioMerge.order.length }} 段 · {{ formatSize(audioMerge.order.reduce((sum,item)=>sum+item.size,0)) }}</span></div>
             <div class="merge-order-list">
               <article v-for="(item,index) in audioMerge.order" :key="item.id">
-                <b>{{ index+1 }}</b><div><strong :title="item.name">{{ item.name }}</strong><small>{{ formatSize(item.size) }}</small></div>
+                <b>{{ index+1 }}</b><div><strong :title="item.name">{{ item.name }}</strong><small>{{ formatSize(item.size) }}</small><span v-if="audioSubtitleFor(item)" class="merge-subtitle-match" :class="{disabled:audioMerge.format==='flac'}" :title="audioSubtitleFor(item)?.name"><i>CC</i>{{ audioMerge.format==='flac'?'已找到但 FLAC 不会打包':'将打包' }} · {{ audioSubtitleFor(item)?.name }}</span><span v-else class="merge-subtitle-match missing"><i>CC</i>未找到同名 .vtt</span></div>
                 <span class="merge-order-actions"><button :disabled="index===0" title="上移" aria-label="上移" @click="moveAudioMergeInput(index,-1)">↑</button><button :disabled="index===audioMerge.order.length-1" title="下移" aria-label="下移" @click="moveAudioMergeInput(index,1)">↓</button></span>
               </article>
             </div>
