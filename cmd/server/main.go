@@ -65,6 +65,7 @@ func main() {
 	}
 	log.Info("S3 connection ready", "bucket", cfg.S3Bucket, "provider", provider, "proxy_transfers", cfg.ProxyTransfers)
 	app := server.New(db, store, authService, cfg, log)
+	defer app.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// One-time re-store of whole objects created before block storage.

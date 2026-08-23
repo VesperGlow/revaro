@@ -10,7 +10,10 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@svta/cml-cmcd": "2.5.0",
     "dompurify": "3.4.14",
+    "eventemitter3": "5.0.4",
+    "hls.js": "1.7.1",
     "marked": "17.0.5",
     "vue": "3.5.41"
   },

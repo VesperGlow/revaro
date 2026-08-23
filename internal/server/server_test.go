@@ -280,7 +280,7 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 		t.Fatalf("login status %d: %s", resp.Code, resp.Body.String())
 	}
 	app.cookie = resp.Result().Cookies()[0]
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { app.srv.Close(); db.Close() })
 	return app
 }
 

@@ -715,7 +715,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
               <button v-if="audioMerge.coverPreview" type="button" class="merge-cover-remove" @click="clearAudioCover">移除封面</button>
               <input ref="audioCoverInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="e=>{const el=e.target as HTMLInputElement;if(el.files?.[0])setAudioCover(el.files[0]);el.value=''}">
             </div>
-            <p class="lossless-note"><strong>播放说明</strong>播放器直接 Range 播放合并后的原始 FLAC / ALAC `.m4a`，不会额外生成 AAC 副本。能否解码 ALAC 取决于浏览器本身。</p>
+            <p class="lossless-note"><strong>播放说明</strong>优先 Range 播放原始母版；浏览器无法解码 ALAC 等格式时，会临时启动 FFmpeg HLS 兼容流。下载文件仍是所选的 FLAC / ALAC 母版，兼容流闲置后自动清理。</p>
           </section>
           <section class="merge-order-panel">
             <div class="merge-order-heading"><div><strong>播放顺序</strong><small>每个文件会保留为一个分节</small></div><span>{{ audioMerge.order.length }} 段 · {{ formatSize(audioMerge.order.reduce((sum,item)=>sum+item.size,0)) }}</span></div>

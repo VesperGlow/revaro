@@ -33,6 +33,12 @@ type audioMediaTestResponse struct {
 	} `json:"chapters"`
 }
 
+type audioHLSTestResponse struct {
+	SessionID   string  `json:"session_id"`
+	PlaylistURL string  `json:"playlist_url"`
+	Start       float64 `json:"start"`
+}
+
 func audioFixture(t *testing.T, format string, frequency int) []byte {
 	t.Helper()
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
@@ -179,6 +185,60 @@ func TestAudioMergeOutputFormats(t *testing.T) {
 				t.Fatalf("audio stream range=%d len=%d accept=%q", rangeRR.Code, rangeRR.Body.Len(), rangeRR.Header().Get("Accept-Ranges"))
 			}
 		})
+	}
+}
+
+func TestAudioHLSFallbackStreamsAndCleansUp(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not available")
+	}
+	a := newTestApp(t)
+	a.srv.cfg.DataDir = t.TempDir()
+	first := a.readyFile(t, "01 耳语.wav", audioFixture(t, "wav", 440))
+	second := a.readyFile(t, "02 敲击.mp3", audioFixture(t, "mp3", 880))
+	createdRR := a.request("POST", "/api/audio-merges", map[string]any{
+		"parent_id": RootID, "name": "HLS fallback.m4a", "format": "alac", "file_ids": []string{first.ID, second.ID},
+	}, true)
+	if createdRR.Code != http.StatusAccepted {
+		t.Fatalf("create merge=%d: %s", createdRR.Code, createdRR.Body.String())
+	}
+	job := waitAudioMerge(t, a, decode[audioMergeSnapshot](t, createdRR))
+	if job.Status != "done" {
+		t.Fatalf("merge failed: %+v", job)
+	}
+	startRR := a.request("POST", "/api/files/"+job.OutputFileID+"/audio/hls", map[string]any{"start": 0.1}, true)
+	if startRR.Code != http.StatusCreated {
+		t.Fatalf("start HLS=%d: %s", startRR.Code, startRR.Body.String())
+	}
+	started := decode[audioHLSTestResponse](t, startRR)
+	if started.SessionID == "" || started.PlaylistURL == "" || started.Start != 0.1 {
+		t.Fatalf("invalid HLS response: %+v", started)
+	}
+	playlistRR := a.request("GET", started.PlaylistURL, nil, true)
+	if playlistRR.Code != http.StatusOK || playlistRR.Header().Get("Content-Type") != "application/vnd.apple.mpegurl" {
+		t.Fatalf("playlist=%d type=%q: %s", playlistRR.Code, playlistRR.Header().Get("Content-Type"), playlistRR.Body.String())
+	}
+	var segment string
+	for _, line := range strings.Split(playlistRR.Body.String(), "\n") {
+		if strings.HasPrefix(line, "segment-") && strings.HasSuffix(line, ".ts") {
+			segment = line
+			break
+		}
+	}
+	if segment == "" {
+		t.Fatalf("playlist has no media segment: %s", playlistRR.Body.String())
+	}
+	segmentRR := a.request("GET", "/api/audio/hls/"+started.SessionID+"/"+segment, nil, true)
+	if segmentRR.Code != http.StatusOK || segmentRR.Header().Get("Content-Type") != "video/mp2t" || segmentRR.Body.Len() == 0 {
+		t.Fatalf("segment=%d type=%q bytes=%d", segmentRR.Code, segmentRR.Header().Get("Content-Type"), segmentRR.Body.Len())
+	}
+	stopRR := a.request("DELETE", "/api/audio/hls/"+started.SessionID, nil, true)
+	if stopRR.Code != http.StatusNoContent {
+		t.Fatalf("stop HLS=%d: %s", stopRR.Code, stopRR.Body.String())
+	}
+	missingRR := a.request("GET", started.PlaylistURL, nil, true)
+	if missingRR.Code != http.StatusNotFound {
+		t.Fatalf("stopped playlist=%d", missingRR.Code)
 	}
 }
 

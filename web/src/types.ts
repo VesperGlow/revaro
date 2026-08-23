@@ -19,6 +19,7 @@ export interface TOTPRecoveryResponse { enabled:boolean; recovery_codes:string[]
 export type AudioMergeFormat = 'flac'|'alac'|'aac'
 export interface AudioChapter { id:number; title:string; start:number; end:number }
 export interface AudioMediaResponse { duration:number; chapters:AudioChapter[]; stream_url:string; cover_url:string; has_cover:boolean; stream_size:number }
+export interface AudioHLSResponse { session_id:string; playlist_url:string; start:number }
 export interface AudioMergeResponse {
   id:string
   status:'queued'|'preparing'|'merging'|'saving'|'cancelling'|'done'|'failed'|'cancelled'

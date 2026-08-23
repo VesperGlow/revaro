@@ -57,6 +57,11 @@ type Server struct {
 	audioMergeSlots  chan struct{}
 	audioMergeMu     sync.RWMutex
 	audioMergeJobs   map[string]*audioMergeJob
+	audioHLSSlots    chan struct{}
+	audioHLSMu       sync.RWMutex
+	audioHLSSessions map[string]*audioHLSSession
+	audioHLSCtx      context.Context
+	audioHLSCancel   context.CancelFunc
 }
 
 type File struct {
@@ -83,11 +88,14 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	if u, err := url.Parse(cfg.S3PublicEndpoint); err == nil && u.Host != "" {
 		s3Origin = u.Scheme + "://" + u.Host
 	}
+	hlsCtx, hlsCancel := context.WithCancel(context.Background())
 	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
 		limiter: newLoginLimiter(), s3Origin: s3Origin,
 		shareSlots: make(chan struct{}, 8), blockUploadSlots: make(chan struct{}, 4),
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
+		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
+		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
 	// Audio merges run in memory and cannot survive a process restart. Their
 	// pending output row has no uploads record (browser uploads always do), so
@@ -97,7 +105,26 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	} else if removed, _ := result.RowsAffected(); removed > 0 {
 		logger.Info("interrupted audio merges cleaned", "files", removed)
 	}
+	go s.cleanupAudioHLSSessions()
 	return s
+}
+
+// Close stops transient playback transcoders and removes their temporary HLS
+// segments. Persisted files and merge jobs are not affected.
+func (s *Server) Close() {
+	if s.audioHLSCancel != nil {
+		s.audioHLSCancel()
+	}
+	s.audioHLSMu.Lock()
+	sessions := make([]*audioHLSSession, 0, len(s.audioHLSSessions))
+	for _, session := range s.audioHLSSessions {
+		sessions = append(sessions, session)
+	}
+	s.audioHLSSessions = make(map[string]*audioHLSSession)
+	s.audioHLSMu.Unlock()
+	for _, session := range sessions {
+		session.stop()
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -135,6 +162,9 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/preview", s.preview)
 			r.Get("/files/{id}/audio", s.audioMediaInfo)
 			r.Get("/files/{id}/audio/stream", s.audioMediaStream)
+			r.Post("/files/{id}/audio/hls", s.startAudioHLS)
+			r.Get("/audio/hls/{session}/{asset}", s.audioHLSAsset)
+			r.Delete("/audio/hls/{session}", s.stopAudioHLS)
 			r.Get("/files/{id}/content", s.getDocument)
 			r.Put("/files/{id}/content", s.updateDocument)
 			r.Get("/files/{id}/book", s.bookInfo)
@@ -193,7 +223,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	}
 	csp := "default-src 'self'; script-src 'self'; img-src " + imgSrc + "; media-src " + mediaSrc +
 		"; style-src 'self' 'unsafe-inline'; connect-src " + connectSrc +
-		"; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors 'none'"
+		"; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
