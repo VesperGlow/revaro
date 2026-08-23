@@ -1,6 +1,6 @@
 # revaro
 
-revaro 是一个轻量、单用户、自托管的私人 S3 网盘，存储层采用 Seafile 式的**内容寻址块存储**：每个文件由 FastCDC 按内容切成可变大小的块，块以 SHA-256 内容寻址存入 S3，同一内容跨文件或跨版本只存一份；在文件中间插入内容也不会让后续所有块边界整体错位。块列表写入 JSON 清单（Seafile "fs object" 的等价物），SQLite 里的文件树只保存指向清单的键。Go 服务处理认证、SQLite 元数据和 S3 控制面；浏览器在 Worker 中分块、哈希，通常把块直传 S3；UpCloud endpoint 会自动改为经 Go 服务走私网转存，无需开放对象存储公网访问。UpCloud 下载也经 Go 服务转发；其他存储的单块文件仍走短期 Presigned URL 直连，多块文件由服务端流式拼接（支持 Range）。内置**阅读器**：EPUB/TXT 在服务端解析清洗，前端按章分段、按视口分栏分页，支持目录、滑动翻页、进度与字号/明暗偏好。内置**缩略图管线**：图片与 EPUB 封面由服务端重采样、视频由 ffmpeg 抽帧，持久化缓存。内置编辑器读写不超过 1 MiB 的文本文件时会经过应用服务，以便校验 UTF-8、大小和并发修改。
+revaro 是一个轻量、单用户、自托管的私人 S3 网盘，存储层采用 Seafile 式的**内容寻址块存储**：每个文件由 FastCDC 按内容切成可变大小的块，块以 SHA-256 内容寻址存入 S3，同一内容跨文件或跨版本只存一份；在文件中间插入内容也不会让后续所有块边界整体错位。块列表写入 JSON 清单（Seafile "fs object" 的等价物），SQLite 里的文件树只保存指向清单的键。Go 服务处理认证、SQLite 元数据和 S3 控制面；浏览器在 Worker 中分块、哈希，通常把块直传 S3；UpCloud endpoint 会自动改为经 Go 服务走私网转存，无需开放对象存储公网访问。UpCloud 下载也经 Go 服务转发；其他存储的单块文件仍走短期 Presigned URL 直连，多块文件由服务端流式拼接（支持 Range）。服务端还内置**磁力 / BitTorrent 离线下载**：校验完成的 BT 分片直接暂存到同一对象存储，任务可跨重启恢复，完成后按 FastCDC 导入网盘并立即停止上传，不继续做种。内置**阅读器**：EPUB/TXT 在服务端解析清洗，前端按章分段、按视口分栏分页，支持目录、滑动翻页、进度与字号/明暗偏好。内置**缩略图管线**：图片与 EPUB 封面由服务端重采样、视频由 ffmpeg 抽帧，持久化缓存。内置编辑器读写不超过 1 MiB 的文本文件时会经过应用服务，以便校验 UTF-8、大小和并发修改。
 
 ## 架构
 
@@ -10,6 +10,7 @@ flowchart LR
     G --> D[(SQLite)]
     G -->|控制面 / UpCloud 私网传输| S[(S3 Bucket)]
     B <-.->|其他 S3 的 Presigned 直传| S
+    P[BT 公网节点] -->|分片| G
 ```
 
 - 用户路径与 S3 Object Key 完全解耦。文件内容以 `blocks/aa/<sha256>` 块对象存储，块列表以 `manifests/bb/<sha256>` 清单对象存储；同一内容（块级或整文件级）在 S3 中只存一份。
@@ -46,7 +47,9 @@ docker pull ghcr.io/vesperglow/revaro:latest
 
 每次 `main` 更新会发布 `latest` 和完整 commit SHA 标签；`v*` Git tag 还会发布对应版本标签。若 GHCR Package 尚未设为 Public，请先登录 GHCR，或在 GitHub Package 设置中将其改为公开。
 
-生产环境应将 `APP_BASE_URL` 改为实际 HTTPS 地址（`COOKIE_SECURE` 会据此自动启用），使用高熵密码，并将 Bucket CORS 的来源改为同一个 HTTPS Origin。Compose 默认只监听 `127.0.0.1`，应通过同机 HTTPS 反向代理对外提供服务；自带 MinIO 主要用于单机部署和本地体验，也可以删除 `minio` / `minio-init` 服务并指向已有 S3-compatible 存储。
+生产环境应将 `APP_BASE_URL` 改为实际 HTTPS 地址（`COOKIE_SECURE` 会据此自动启用），使用高熵密码，并将 Bucket CORS 的来源改为同一个 HTTPS Origin。Compose 的 Web 管理端口默认只监听 `127.0.0.1`，应通过同机 HTTPS 反向代理对外提供服务；自带 MinIO 主要用于单机部署和本地体验，也可以删除 `minio` / `minio-init` 服务并指向已有 S3-compatible 存储。
+
+内置 BT 默认额外公开宿主机 `51413/tcp` 与 `51413/udp`，以便接受入站节点连接；Web 管理端口仍只绑定 `127.0.0.1`。云防火墙需要放行对应的 TCP/UDP 端口。若不需要离线下载，设置 `BT_ENABLED=false`，并从 Compose 中移除这两条端口映射。
 
 ## 从源码构建
 
@@ -101,6 +104,12 @@ set -a; . ./.env; set +a
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
 | `GC_INTERVAL` | `1h` | 周期孤儿对象回收间隔；`0` 表示禁用周期扫描（回收站到期删除仍会触发一次回收） |
 | `FFMPEG_PATH` | `ffmpeg` | 视频缩略图抽帧使用的 ffmpeg 可执行文件路径 |
+| `BT_ENABLED` | `true` | 启用内置磁力 / `.torrent` 离线下载 |
+| `BT_LISTEN_PORT` | `51413` | 容器内 BT TCP/UDP 监听端口；Compose 的宿主机端口由 `BT_PORT` 设置 |
+| `BT_MAX_FILES` | `10000` | 单个种子允许的最大文件数 |
+| `BT_MAX_TOTAL_SIZE` | `1099511627776` | 单个种子允许的最大总大小（默认 1 TiB） |
+| `BT_METADATA_TIMEOUT` | `30m` | 磁力链接等待元数据的最长时间 |
+| `BT_STALE_AFTER` | `48h` | 失败任务及其临时分片的保留时间 |
 
 ### UpCloud 私网模式
 
@@ -209,6 +218,18 @@ Bucket 必须保持私有。直连模式的浏览器访问依赖 Presigned URL�
 | `GET` / `DELETE` | `/api/audio-merges/{id}` | 查询进度、取消任务或清除已完成记录 |
 | `GET` | `/api/files/{id}/audio` | 获取合并音频的章节、封面和流式播放信息 |
 | `GET` | `/api/files/{id}/audio/stream` | 支持 HTTP Range 的浏览器兼容音频流 |
+| `POST` / `GET` | `/api/downloads` | 创建磁力或 `.torrent` 离线下载、列出任务 |
+| `GET` / `DELETE` | `/api/downloads/{id}` | 获取文件列表与进度、删除任务及临时分片 |
+| `POST` | `/api/downloads/{id}/start` | 选择种子内文件并开始下载 |
+| `POST` | `/api/downloads/{id}/pause`、`/resume` | 暂停或继续下载 |
+
+## 内置磁力与 BT 下载
+
+顶部“离线下载”中心接受 `magnet:` 链接和最大 4 MiB 的 `.torrent` 文件。元数据就绪后可以逐项勾选种子内文件；任务显示有效下载速度、活动节点数和进度，支持暂停、继续及删除。多文件种子会以种子名称创建根目录，内部相对路径保持不变；单文件种子直接进入当前目录。同名项目不会被覆盖，导入会失败并保留错误记录。
+
+未校验的数据只写入 `APP_DATA_DIR/torrent-cache` 的有界临时缓存；每个通过 BT piece hash 校验的分片会作为 `bt-temp/<infohash>/<piece>` 对象写入 S3，并在 SQLite 中建立索引。服务重启后会从这些对象继续，不要求本地磁盘容纳整份下载。全部选中文件完成后，服务端从已校验分片流式读取，走普通 FastCDC 内容寻址管线生成 `blocks/` 与 `manifests/`，原子写入文件树，随后删除 `bt-temp/` 分片并从 swarm 退出。这里没有完成后的做种模式。
+
+为了防止恶意种子把服务当作内网探测器，BT 节点、HTTP Tracker 与 WebSeed 的私有、回环、链路本地、CGNAT 和保留地址都会被拒绝。离线下载仍会访问公网第三方节点，部署者应遵守所在地法律和内容授权要求；应用不会绕过 Tracker、站点或内容本身的访问控制。
 
 ## 公开分享
 
@@ -313,6 +334,7 @@ docker compose start revaro
 - 回收站项目仍占用对象存储空间；永久删除后内容对象进入异步垃圾回收，直到下一次宽限期后的回收才释放空间。
 - 阅读器不解析 PDF/MOBI；EPUB 上限 128 MiB、TXT 上限 16 MiB，且解析缓存为单实例内存（最多 3 本）。
 - 视频缩略图和音频合并依赖容器内置的 ffmpeg（可用 `FFMPEG_PATH` 指定）；超过 512 MiB 的视频不生成缩略图。
+- BT 目前支持 BitTorrent v1/兼容磁力任务的下载与选文件，不提供完成后做种、RSS、Tracker 登录或远程下载规则；边界 piece 可能包含未选文件的少量相邻数据，这是 BT 分片模型的正常现象。
 
 ## 测试
 

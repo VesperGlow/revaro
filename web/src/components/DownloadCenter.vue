@@ -1,0 +1,126 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { api } from '../api'
+import { formatSize } from '../format'
+import type { DownloadJob } from '../types'
+
+const props=defineProps<{jobs:DownloadJob[];parentId:string}>()
+const emit=defineEmits<{changed:[]}>()
+
+const terminal=(job:DownloadJob)=>job.status==='done'||job.status==='failed'||job.status==='cancelled'
+const activeJobs=computed(()=>props.jobs.filter(job=>!terminal(job)))
+const overallProgress=computed(()=>{
+  const total=activeJobs.value.reduce((sum,job)=>sum+Math.max(1,job.selected_size),0)
+  return total?Math.round(activeJobs.value.reduce((sum,job)=>sum+Math.min(job.completed_size,Math.max(1,job.selected_size)),0)/total*100):0
+})
+const circumference=100.53
+const dashOffset=computed(()=>circumference*(1-overallProgress.value/100))
+const center=ref<HTMLDetailsElement|null>(null)
+const modalOpen=ref(false)
+const mode=ref<'magnet'|'torrent'>('magnet')
+const magnet=ref('')
+const torrentFile=ref<File|null>(null)
+const detail=ref<DownloadJob|null>(null)
+const selected=ref<Set<number>>(new Set())
+const selectionJobId=ref('')
+const busy=ref(false)
+const error=ref('')
+let metadataTimer=0
+
+const selectedFiles=computed(()=>detail.value?.files?.filter(file=>selected.value.has(file.index))||[])
+const selectedSize=computed(()=>selectedFiles.value.reduce((sum,file)=>sum+file.size,0))
+const progress=(job:DownloadJob)=>job.selected_size?Math.min(100,Math.round(job.completed_size/job.selected_size*100)):0
+const statusText=(job:DownloadJob)=>job.status==='metadata'?'正在获取元数据':job.status==='waiting'?'等待选择文件':job.status==='queued'?'准备下载':job.status==='downloading'?`${formatSize(job.download_speed)}/s · ${job.peers} 个节点`:job.status==='paused'?'已暂停':job.status==='importing'?'正在导入网盘':job.status==='done'?'已完成':job.status==='cancelled'?'已取消':job.error||'失败'
+
+function closeFromOutside(event:PointerEvent){const target=event.target;if(center.value?.open&&target instanceof Node&&!center.value.contains(target))center.value.open=false}
+function closeFromEscape(event:KeyboardEvent){if(event.key==='Escape'){if(modalOpen.value)closeModal();else if(center.value?.open){center.value.open=false;center.value.querySelector<HTMLElement>('summary')?.focus()}}}
+function resetForm(){mode.value='magnet';magnet.value='';torrentFile.value=null;detail.value=null;selected.value=new Set();selectionJobId.value='';error.value='';busy.value=false}
+function openCreate(){resetForm();modalOpen.value=true;if(center.value)center.value.open=false}
+function closeModal(){if(busy.value)return;modalOpen.value=false;window.clearTimeout(metadataTimer)}
+function pickTorrent(event:Event){torrentFile.value=(event.target as HTMLInputElement).files?.[0]||null;error.value=''}
+function fileBase64(file:File){return new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error('无法读取 .torrent 文件'));reader.onload=()=>{const bytes=new Uint8Array(reader.result as ArrayBuffer);let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));resolve(btoa(binary))};reader.readAsArrayBuffer(file)})}
+function initializeSelection(job:DownloadJob){if(job.status!=='waiting'||selectionJobId.value===job.id)return;selected.value=new Set((job.files||[]).map(file=>file.index));selectionJobId.value=job.id}
+async function loadDetail(id:string){
+  try{const job=await api<DownloadJob>(`/api/downloads/${id}`);detail.value=job;initializeSelection(job);emit('changed');if(job.status==='metadata')metadataTimer=window.setTimeout(()=>void loadDetail(id),800)}
+  catch(e){error.value=(e as Error).message}
+}
+async function createTask(){
+  error.value=''
+  if(mode.value==='magnet'&&!magnet.value.trim()){error.value='请粘贴磁力链接';return}
+  if(mode.value==='torrent'&&!torrentFile.value){error.value='请选择 .torrent 文件';return}
+  busy.value=true
+  try{
+    const body:Record<string,string>={parent_id:props.parentId}
+    if(mode.value==='magnet')body.magnet=magnet.value.trim()
+    else body.torrent_base64=await fileBase64(torrentFile.value!)
+    const job=await api<DownloadJob>('/api/downloads',{method:'POST',body:JSON.stringify(body)})
+    detail.value=job;initializeSelection(job);emit('changed')
+    if(job.status==='metadata')metadataTimer=window.setTimeout(()=>void loadDetail(job.id),500)
+  }catch(e){error.value=(e as Error).message}
+  finally{busy.value=false}
+}
+async function openJob(job:DownloadJob){modalOpen.value=true;detail.value=null;error.value='';busy.value=true;selectionJobId.value='';try{await loadDetail(job.id)}finally{busy.value=false};if(center.value)center.value.open=false}
+async function startTask(){if(!detail.value||!selected.value.size)return;busy.value=true;error.value='';try{await api(`/api/downloads/${detail.value.id}/start`,{method:'POST',body:JSON.stringify({file_indices:[...selected.value]})});modalOpen.value=false;emit('changed')}catch(e){error.value=(e as Error).message}finally{busy.value=false}}
+async function taskAction(job:DownloadJob,action:'pause'|'resume'){try{await api(`/api/downloads/${job.id}/${action}`,{method:'POST'});emit('changed')}catch(e){window.alert((e as Error).message)}}
+async function removeTask(job:DownloadJob){if(!window.confirm(`删除离线下载任务“${job.name||'获取元数据中'}”？${job.status==='done'?'网盘中已导入的文件不会被删除。':'已下载的临时分片会一并清理。'}`))return;try{await api(`/api/downloads/${job.id}`,{method:'DELETE'},30*60*1000);emit('changed')}catch(e){window.alert((e as Error).message)}}
+function toggleAll(){const files=detail.value?.files||[];selected.value=selected.value.size===files.length?new Set():new Set(files.map(file=>file.index))}
+function toggleFile(index:number){const next=new Set(selected.value);if(next.has(index))next.delete(index);else next.add(index);selected.value=next}
+
+onMounted(()=>{document.addEventListener('pointerdown',closeFromOutside);document.addEventListener('keydown',closeFromEscape)})
+onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside);document.removeEventListener('keydown',closeFromEscape);window.clearTimeout(metadataTimer)})
+</script>
+
+<template>
+  <details ref="center" class="download-center">
+    <summary :title="activeJobs.length?`${activeJobs.length} 个离线下载任务`:'离线下载'" aria-label="打开离线下载">
+      <svg class="download-ring" viewBox="0 0 40 40" aria-hidden="true"><circle class="ring-track" cx="20" cy="20" r="16"/><circle v-if="activeJobs.length" class="ring-value" cx="20" cy="20" r="16" :style="{strokeDashoffset:dashOffset}"/><path d="M20 11v15m0 0-5-5m5 5 5-5M12 30h16"/></svg>
+      <span v-if="activeJobs.length" class="download-count">{{ activeJobs.length }}</span>
+    </summary>
+    <section class="download-popover">
+      <header><div><strong>离线下载</strong><small>{{ activeJobs.length?`${activeJobs.length} 项后台运行`:'磁力与 BT 种子' }}</small></div><button class="add" @click.prevent="openCreate">＋ 新建</button></header>
+      <div v-if="!jobs.length" class="download-empty"><span>⌄</span><p>还没有离线下载</p><button @click="openCreate">添加磁力链接</button></div>
+      <div v-else class="download-list">
+        <article v-for="job in jobs" :key="job.id">
+          <button class="task-main" @click="job.status==='waiting'&&openJob(job)"><span class="task-icon">↓</span><span class="task-copy"><strong :title="job.name">{{ job.name||'获取种子元数据…' }}</strong><small>{{ formatSize(job.selected_size||job.completed_size) }} · {{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${progress(job)}%`}"></b></i></span><em>{{ progress(job) }}%</em></button>
+          <span class="task-actions"><button v-if="job.status==='downloading'||job.status==='queued'" title="暂停" @click="taskAction(job,'pause')">Ⅱ</button><button v-else-if="job.status==='paused'" title="继续" @click="taskAction(job,'resume')">▶</button><button v-else-if="job.status==='waiting'" title="选择文件" @click="openJob(job)">选择</button><button title="删除任务" @click="removeTask(job)">×</button></span>
+        </article>
+      </div>
+    </section>
+  </details>
+
+  <Teleport to="body">
+    <div v-if="modalOpen" class="download-backdrop" @mousedown.self="closeModal">
+      <section class="download-dialog" role="dialog" aria-modal="true" aria-label="新建离线下载">
+        <header><div><strong>{{ detail?'选择下载文件':'新建离线下载' }}</strong><small>保存到网盘目录 · 完成后不会做种</small></div><button aria-label="关闭" @click="closeModal">×</button></header>
+        <template v-if="!detail">
+          <div class="source-tabs"><button :class="{active:mode==='magnet'}" @click="mode='magnet'">磁力链接</button><button :class="{active:mode==='torrent'}" @click="mode='torrent'">.torrent 文件</button></div>
+          <label v-if="mode==='magnet'" class="source-field"><span>磁力链接</span><textarea v-model="magnet" rows="5" maxlength="16384" placeholder="magnet:?xt=urn:btih:…"></textarea></label>
+          <label v-else class="torrent-picker"><input type="file" accept=".torrent,application/x-bittorrent" @change="pickTorrent"><span>{{ torrentFile?.name||'选择 .torrent 文件' }}</span><small>最大 4 MiB</small></label>
+          <p class="privacy-note">只连接公网节点、Tracker 与 WebSeed；内网和本机地址会被拦截。</p>
+          <p v-if="error" class="download-error">{{ error }}</p>
+          <footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="busy" @click="createTask">{{ busy?'正在创建…':'解析种子' }}</button></footer>
+        </template>
+        <template v-else-if="detail.status==='metadata'">
+          <div class="metadata-wait"><span class="download-spinner"></span><strong>正在获取种子元数据</strong><p>磁力链接需要先从公网节点取得文件列表。</p></div>
+        </template>
+        <template v-else-if="detail.status==='waiting'">
+          <div class="torrent-summary"><div><strong>{{ detail.name }}</strong><small>{{ detail.files?.length||0 }} 个文件 · 已选 {{ formatSize(selectedSize) }}</small></div><button @click="toggleAll">{{ selected.size===(detail.files?.length||0)?'全不选':'全选' }}</button></div>
+          <div class="torrent-files"><label v-for="file in detail.files" :key="file.index"><input type="checkbox" :checked="selected.has(file.index)" @change="toggleFile(file.index)"><span :title="file.path">{{ file.path }}</span><small>{{ formatSize(file.size) }}</small></label></div>
+          <p v-if="error" class="download-error">{{ error }}</p>
+          <footer><button class="secondary" @click="closeModal">稍后选择</button><button class="primary" :disabled="busy||!selected.size" @click="startTask">{{ busy?'正在启动…':`下载 ${selected.size} 个文件` }}</button></footer>
+        </template>
+        <template v-else>
+          <div class="metadata-wait"><strong>{{ detail.status==='failed'?'任务失败':'任务已经开始' }}</strong><p>{{ detail.error||statusText(detail) }}</p></div><footer><button class="primary" @click="closeModal">关闭</button></footer>
+        </template>
+      </section>
+    </div>
+  </Teleport>
+</template>
+
+<style scoped>
+.download-center{position:relative}.download-center summary{position:relative;display:grid;place-items:center;width:44px;height:44px;border-radius:50%;cursor:pointer;list-style:none}.download-center summary::-webkit-details-marker{display:none}.download-center summary:hover{background:#f1f5f9}.download-ring{width:40px;height:40px;fill:none;stroke:#3d5f7e;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.ring-track,.ring-value{stroke-width:2.6}.ring-track{stroke:#dce6ef}.ring-value{stroke:#0ea5e9;stroke-dasharray:100.53;transform:rotate(-90deg);transform-box:fill-box;transform-origin:center}.download-ring>path{stroke-width:1.7}.download-count{position:absolute;right:-2px;top:-1px;display:grid;place-items:center;min-width:17px;height:17px;padding:0 4px;border:2px solid #fff;border-radius:9px;background:#0284c7;color:#fff;font-size:9px;font-weight:800}
+.download-popover{position:absolute;z-index:45;top:52px;right:-12px;width:min(450px,calc(100vw - 24px));max-height:62vh;overflow:hidden;border:1px solid #dfe6ee;border-radius:17px;background:#fff;box-shadow:0 24px 70px #0f172a2e}.download-popover:before{content:"";position:absolute;right:26px;top:-7px;width:12px;height:12px;border-left:1px solid #dfe6ee;border-top:1px solid #dfe6ee;background:#fff;transform:rotate(45deg)}.download-popover>header,.download-dialog>header{display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:0 17px;border-bottom:1px solid #edf1f5}.download-popover header div,.download-dialog header div{display:flex;flex-direction:column;gap:3px}.download-popover header strong,.download-dialog header strong{font-size:14px}.download-popover header small,.download-dialog header small{color:#94a3b8;font-size:10px}.download-popover header .add{border:0;border-radius:9px;background:#e0f2fe;color:#0369a1;padding:7px 10px;font-size:11px;font-weight:750}
+.download-list{max-height:calc(62vh - 58px);overflow:auto}.download-list article{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;border-bottom:1px solid #eef2f6}.task-main{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:10px;min-width:0;padding:13px 8px 13px 15px;border:0;background:transparent;text-align:left}.task-main:not(:disabled){cursor:pointer}.task-icon{display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:#e0f2fe;color:#0284c7;font-weight:850}.task-copy{display:flex;min-width:0;flex-direction:column;gap:4px}.task-copy strong,.task-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.task-copy strong{font-size:12px}.task-copy small{color:#8795a8;font-size:10px}.task-copy i{height:3px;overflow:hidden;border-radius:3px;background:#e8edf3}.task-copy i b{display:block;height:100%;background:#0ea5e9}.task-copy i b.done{background:#22c55e}.task-copy i b.failed{background:#ef4444}.task-main em{color:#64748b;font-size:10px;font-style:normal}.task-actions{display:flex;align-items:center;padding-right:10px}.task-actions button{min-width:27px;border:0;background:transparent;color:#64748b;font-size:11px}.download-empty{display:grid;place-items:center;padding:30px;color:#94a3b8}.download-empty span{font-size:38px}.download-empty p{margin:4px 0 12px;font-size:12px}.download-empty button{border:0;border-radius:9px;background:#e0f2fe;color:#0369a1;padding:8px 11px;font-weight:700}
+.download-backdrop{position:fixed;z-index:120;inset:0;display:grid;place-items:center;padding:18px;background:#0f172a80;backdrop-filter:blur(5px)}.download-dialog{width:min(640px,100%);max-height:min(760px,calc(100vh - 36px));overflow:hidden;border:1px solid #dfe6ee;border-radius:20px;background:#fff;box-shadow:0 30px 90px #02061755}.download-dialog>header{padding:0 20px}.download-dialog>header button{border:0;background:transparent;color:#64748b;font-size:24px}.source-tabs{display:flex;margin:20px 20px 12px;padding:4px;border-radius:12px;background:#f1f5f9}.source-tabs button{flex:1;padding:9px;border:0;border-radius:9px;background:transparent;color:#64748b;font-weight:700}.source-tabs button.active{background:#fff;color:#0369a1;box-shadow:0 2px 10px #0f172a14}.source-field{display:flex;flex-direction:column;gap:7px;margin:0 20px}.source-field span{font-size:12px;font-weight:750}.source-field textarea{resize:vertical;min-height:110px;padding:12px;border:1px solid #d8e1ea;border-radius:11px;font:12px/1.5 ui-monospace,SFMono-Regular,monospace}.torrent-picker{display:grid;place-items:center;margin:20px;padding:28px;border:1px dashed #a8bfd2;border-radius:14px;background:#f8fbfd;color:#0369a1;cursor:pointer}.torrent-picker input{position:absolute;opacity:0;pointer-events:none}.torrent-picker span{font-size:13px;font-weight:750}.torrent-picker small{margin-top:4px;color:#94a3b8}.privacy-note,.download-error{margin:12px 20px;font-size:11px}.privacy-note{color:#64748b}.download-error{color:#dc2626}.download-dialog footer{display:flex;justify-content:flex-end;gap:9px;padding:16px 20px;border-top:1px solid #edf1f5}.download-dialog footer button{padding:9px 14px;border-radius:10px}.download-dialog footer .secondary{border:1px solid #d8e1ea;background:#fff}.download-dialog footer .primary{border:0;background:#1677b8;color:#fff;font-weight:750}.download-dialog footer .primary:disabled{opacity:.55}.metadata-wait{display:grid;place-items:center;padding:48px 24px}.metadata-wait strong{margin-top:12px}.metadata-wait p{margin:7px 0 0;color:#64748b;font-size:12px}.download-spinner{width:30px;height:30px;border:3px solid #dbeafe;border-top-color:#0284c7;border-radius:50%;animation:download-spin .8s linear infinite}@keyframes download-spin{to{transform:rotate(360deg)}}.torrent-summary{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #edf1f5}.torrent-summary div{display:flex;min-width:0;flex-direction:column;gap:4px}.torrent-summary strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.torrent-summary small{color:#64748b;font-size:11px}.torrent-summary button{border:0;background:transparent;color:#0369a1;font-size:11px}.torrent-files{max-height:min(440px,calc(100vh - 260px));overflow:auto}.torrent-files label{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid #f0f3f6;cursor:pointer}.torrent-files span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.torrent-files small{color:#94a3b8;font-size:10px}
+@media(max-width:850px){.download-popover{position:fixed;top:66px;right:10px}.download-center summary{width:40px;height:40px}.download-backdrop{align-items:end;padding:0}.download-dialog{max-height:88vh;border-radius:20px 20px 0 0}.torrent-files{max-height:46vh}}
+</style>

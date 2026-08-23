@@ -28,5 +28,5 @@ RUN apk add --no-cache ca-certificates tzdata ffmpeg \
 COPY --from=backend /out/revaro /usr/local/bin/revaro
 USER revaro
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 8080 51413/tcp 51413/udp
 ENTRYPOINT ["/usr/local/bin/revaro"]

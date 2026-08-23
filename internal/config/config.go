@@ -36,6 +36,12 @@ type Config struct {
 	TrashRetention time.Duration
 	GCInterval     time.Duration
 	FFmpegPath     string
+	BTEnabled      bool
+	BTListenPort   int
+	BTMaxFiles     int
+	BTMaxTotalSize int64
+	BTMetadataWait time.Duration
+	BTStaleAfter   time.Duration
 }
 
 func Load() (Config, error) {
@@ -78,6 +84,28 @@ func Load() (Config, error) {
 	if c.GCInterval, err = durationEnv("GC_INTERVAL", time.Hour); err != nil {
 		return c, err
 	}
+	if c.BTEnabled, err = boolEnv("BT_ENABLED", true); err != nil {
+		return c, err
+	}
+	btPort, err := int64Env("BT_LISTEN_PORT", 51413)
+	if err != nil {
+		return c, err
+	}
+	c.BTListenPort = int(btPort)
+	btFiles, err := int64Env("BT_MAX_FILES", 10000)
+	if err != nil {
+		return c, err
+	}
+	c.BTMaxFiles = int(btFiles)
+	if c.BTMaxTotalSize, err = int64Env("BT_MAX_TOTAL_SIZE", 1<<40); err != nil {
+		return c, err
+	}
+	if c.BTMetadataWait, err = durationEnv("BT_METADATA_TIMEOUT", 30*time.Minute); err != nil {
+		return c, err
+	}
+	if c.BTStaleAfter, err = durationEnv("BT_STALE_AFTER", 48*time.Hour); err != nil {
+		return c, err
+	}
 	if c.BlockSize, err = int64Env("BLOCK_SIZE", 4*1024*1024); err != nil {
 		return c, err
 	}
@@ -108,6 +136,18 @@ func Load() (Config, error) {
 	}
 	if c.GCInterval < 0 {
 		return c, errors.New("GC_INTERVAL must not be negative")
+	}
+	if c.BTListenPort < 1024 || c.BTListenPort > 65535 {
+		return c, errors.New("BT_LISTEN_PORT must be between 1024 and 65535")
+	}
+	if c.BTMaxFiles < 1 || c.BTMaxFiles > 100000 {
+		return c, errors.New("BT_MAX_FILES must be between 1 and 100000")
+	}
+	if c.BTMaxTotalSize < 1 || c.BTMaxTotalSize > 1<<40 {
+		return c, errors.New("BT_MAX_TOTAL_SIZE must be between 1 byte and 1 TiB")
+	}
+	if c.BTMetadataWait <= 0 || c.BTStaleAfter <= 0 {
+		return c, errors.New("BT_METADATA_TIMEOUT and BT_STALE_AFTER must be positive")
 	}
 	base, err := url.Parse(c.BaseURL)
 	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") {

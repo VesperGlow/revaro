@@ -62,6 +62,7 @@ type Server struct {
 	audioHLSSessions map[string]*audioHLSSession
 	audioHLSCtx      context.Context
 	audioHLSCancel   context.CancelFunc
+	downloads        *downloadManager
 }
 
 type File struct {
@@ -97,6 +98,14 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
+	if cfg.BTEnabled {
+		manager, err := newDownloadManager(s)
+		if err != nil {
+			logger.Error("built-in torrent engine unavailable", "error", err)
+		} else {
+			s.downloads = manager
+		}
+	}
 	// Audio merges run in memory and cannot survive a process restart. Their
 	// pending output row has no uploads record (browser uploads always do), so
 	// remove only those abandoned placeholders before serving the file list.
@@ -112,6 +121,9 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 // Close stops transient playback transcoders and removes their temporary HLS
 // segments. Persisted files and merge jobs are not affected.
 func (s *Server) Close() {
+	if s.downloads != nil {
+		s.downloads.Close()
+	}
 	if s.audioHLSCancel != nil {
 		s.audioHLSCancel()
 	}
@@ -196,6 +208,13 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/audio-merges", s.listAudioMerges)
 			r.Get("/audio-merges/{id}", s.getAudioMerge)
 			r.Delete("/audio-merges/{id}", s.cancelAudioMerge)
+			r.Post("/downloads", s.createDownload)
+			r.Get("/downloads", s.listDownloads)
+			r.Get("/downloads/{id}", s.getDownload)
+			r.Post("/downloads/{id}/start", s.startDownload)
+			r.Post("/downloads/{id}/pause", s.pauseDownload)
+			r.Post("/downloads/{id}/resume", s.resumeDownload)
+			r.Delete("/downloads/{id}", s.deleteDownload)
 		})
 	})
 	r.Handle("/*", webui.Handler())

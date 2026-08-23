@@ -37,3 +37,26 @@ export interface AudioMergeResponse {
   created_at:string
   updated_at:string
 }
+
+export type DownloadStatus = 'metadata'|'waiting'|'queued'|'downloading'|'paused'|'importing'|'done'|'failed'|'cancelled'
+export interface DownloadFile {
+  index:number
+  path:string
+  size:number
+  selected:boolean
+}
+export interface DownloadJob {
+  id:string
+  parent_id:string
+  info_hash?:string
+  name:string
+  status:DownloadStatus
+  selected_size:number
+  completed_size:number
+  download_speed:number
+  peers:number
+  error?:string
+  created_at:string
+  updated_at:string
+  files?:DownloadFile[]
+}

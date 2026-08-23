@@ -13,7 +13,7 @@ import MediaPreview from './components/MediaPreview.vue'
 import { isAudio, isBook, isEditable, isImage, isMedia, thumbSRC } from './fileTypes'
 import { formatDate, formatSize } from './format'
 import ReaderView from './Reader.vue'
-import type { AudioMergeFormat, AudioMergeResponse, FolderOption, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
+import type { AudioMergeFormat, AudioMergeResponse, DownloadJob, FolderOption, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_CONCURRENCY = 3
@@ -57,6 +57,7 @@ const share = reactive({ active:false, url:'', createdAt:'', busy:false, error:'
 const editor = reactive({ isNew:false, readonly:false, fileId:'', name:'', originalName:'', content:'', original:'', etag:'', mode:'edit' as 'edit'|'split'|'preview', busy:false, error:'' })
 const audioMerge = reactive({ name:'', format:'flac' as AudioMergeFormat, order:[] as DriveFile[], coverData:'', coverFileId:'', coverPreview:'', coverName:'', error:'', busy:false })
 const audioMergeJobs = ref<AudioMergeResponse[]>([])
+const downloadJobs = ref<DownloadJob[]>([])
 const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
 const fileInput = ref<HTMLInputElement|null>(null)
 const folderInput = ref<HTMLInputElement|null>(null)
@@ -68,6 +69,7 @@ let dialogResolve:((value:string|boolean|null)=>void)|null=null
 let activeUploads = 0
 let toastTimer = 0
 let audioMergePollTimer = 0
+let downloadPollTimer = 0
 let uploadRefreshTimer = 0
 
 const editorDirty = computed(() => editor.content !== editor.original || editor.name !== editor.originalName)
@@ -129,7 +131,7 @@ async function submitLogin() {
   login.busy=true;login.error='';login.notice=''
   try {
     const me=await api<ProfileResponse>('/api/auth/login',{method:'POST',body:JSON.stringify({username:login.username,password:login.password,second_factor:login.secondFactor})})
-    user.value=me.username;hasAvatar.value=me.has_avatar;login.password='';login.secondFactor='';login.totpRequired=false;await openFolder(ROOT)
+    user.value=me.username;hasAvatar.value=me.has_avatar;login.password='';login.secondFactor='';login.totpRequired=false;await openFolder(ROOT);void refreshAudioMergeJobs();void refreshDownloadJobs()
   }catch(e){
     const code=((e as ApiError).data as {error?:{code?:string}}|null)?.error?.code
     if(code==='totp_required'){login.totpRequired=true;login.error='请输入身份验证器验证码或恢复码'}
@@ -138,7 +140,7 @@ async function submitLogin() {
   }
   finally{login.busy=false}
 }
-async function logout(){await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];window.clearTimeout(audioMergePollTimer)}
+async function logout(){await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];downloadJobs.value=[];window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer)}
 function showAccount(){account.username=user.value||'';account.currentPassword='';account.password='';account.confirmPassword='';account.error='';accountPanel.value=null;usernameEditing.value=false;usernameSaving.value=false;usernameError.value='';avatar.error='';resetTwoFactor();openModal('account');loadTwoFactorStatus()}
 async function startUsernameEdit(){
   if(usernameSaving.value)return
@@ -540,6 +542,30 @@ async function clearAudioMerges(){
   audioMergeJobs.value=audioMergeJobs.value.filter(job=>!audioMergeTerminal(job.status))
 }
 
+function downloadTerminal(status:DownloadJob['status']){return status==='done'||status==='failed'||status==='cancelled'}
+function scheduleDownloadPoll(delay=1000){
+  window.clearTimeout(downloadPollTimer)
+  if(downloadJobs.value.some(job=>!downloadTerminal(job.status)&&job.status!=='waiting'&&job.status!=='paused'))downloadPollTimer=window.setTimeout(()=>void refreshDownloadJobs(),delay)
+}
+async function refreshDownloadJobs(){
+  try{
+    const previous=new Map(downloadJobs.value.map(job=>[job.id,job.status]))
+    const data=await api<{items:DownloadJob[]}>('/api/downloads')
+    downloadJobs.value=data.items
+    let refreshFolder=false
+    for(const job of data.items){
+      const before=previous.get(job.id)
+      if(before&&before!=='done'&&job.status==='done'){
+        notify(`「${job.name}」已下载到网盘`,'success')
+        if(job.parent_id===currentId.value)refreshFolder=true
+      }else if(before&&!downloadTerminal(before)&&job.status==='failed')notify(job.error||`「${job.name}」下载失败`)
+    }
+    if(refreshFolder)void openFolder(currentId.value)
+    scheduleDownloadPoll()
+  }catch{scheduleDownloadPoll(3000)}
+}
+function downloadsChanged(){void refreshDownloadJobs()}
+
 function chooseFiles(){fileInput.value?.click()}
 function chooseFolder(){folderInput.value?.click()}
 function queueFiles(files:File[],parentId:string,relativePaths?:Map<File,string>){
@@ -722,8 +748,8 @@ function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled
 // 完成记录保留在上传进度中，等用户主动清除。
 function scheduleAutoClear(){}
 function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
-onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value)void refreshAudioMergeJobs()})})
-onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(uploadRefreshTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
+onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){void refreshAudioMergeJobs();void refreshDownloadJobs()}})})
+onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(uploadRefreshTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
 </script>
 
 <template>
@@ -744,7 +770,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
   </main>
 
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
-    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @logout="logout" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" />
+    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" :downloads="downloadJobs" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @logout="logout" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" @downloads-changed="downloadsChanged" />
     <section class="content" @click="clearSelectionFromBlank">
       <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :view-mode="viewMode" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @set-view="setViewMode" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}">

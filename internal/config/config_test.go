@@ -24,6 +24,9 @@ func TestLoadDefaults(t *testing.T) {
 	if c.FFmpegPath != "ffmpeg" {
 		t.Fatalf("ffmpeg default=%q", c.FFmpegPath)
 	}
+	if !c.BTEnabled || c.BTListenPort != 51413 || c.BTMaxFiles != 10000 || c.BTMaxTotalSize != 1<<40 || c.BTMetadataWait != 30*time.Minute || c.BTStaleAfter != 48*time.Hour {
+		t.Fatalf("torrent defaults: %+v", c)
+	}
 	if c.CookieSecure {
 		t.Fatal("cookie must default to insecure for http base URL")
 	}
@@ -118,6 +121,12 @@ func TestLoadValidations(t *testing.T) {
 		{"bad gc interval", func(t *testing.T) { t.Setenv("GC_INTERVAL", "-1s") }},
 		{"bad bool", func(t *testing.T) { t.Setenv("S3_PATH_STYLE", "maybe") }},
 		{"bad proxy bool", func(t *testing.T) { t.Setenv("S3_PROXY_TRANSFERS", "maybe") }},
+		{"bad torrent bool", func(t *testing.T) { t.Setenv("BT_ENABLED", "maybe") }},
+		{"bad torrent port", func(t *testing.T) { t.Setenv("BT_LISTEN_PORT", "80") }},
+		{"bad torrent file limit", func(t *testing.T) { t.Setenv("BT_MAX_FILES", "0") }},
+		{"bad torrent size limit", func(t *testing.T) { t.Setenv("BT_MAX_TOTAL_SIZE", "0") }},
+		{"bad torrent metadata timeout", func(t *testing.T) { t.Setenv("BT_METADATA_TIMEOUT", "0s") }},
+		{"bad torrent stale timeout", func(t *testing.T) { t.Setenv("BT_STALE_AFTER", "0s") }},
 		{"oversized proxied block", func(t *testing.T) {
 			t.Setenv("S3_PROXY_TRANSFERS", "true")
 			t.Setenv("FASTCDC_MAX_SIZE", "134217728")
@@ -140,6 +149,12 @@ func TestLoadValidations(t *testing.T) {
 			t.Setenv("S3_PATH_STYLE", "false")
 			t.Setenv("S3_PROXY_TRANSFERS", "false")
 			t.Setenv("PRESIGN_EXPIRES", "15m")
+			t.Setenv("BT_ENABLED", "true")
+			t.Setenv("BT_LISTEN_PORT", "51413")
+			t.Setenv("BT_MAX_FILES", "10000")
+			t.Setenv("BT_MAX_TOTAL_SIZE", "1099511627776")
+			t.Setenv("BT_METADATA_TIMEOUT", "30m")
+			t.Setenv("BT_STALE_AFTER", "48h")
 			t.Setenv("S3_ENDPOINT", "http://minio:9000")
 			tc.mutate(t)
 			if _, err := Load(); err == nil {
