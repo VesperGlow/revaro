@@ -161,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/download", s.download)
 			r.Get("/files/{id}/preview", s.preview)
 			r.Get("/files/{id}/audio", s.audioMediaInfo)
+			r.Patch("/files/{id}/audio/chapters/{chapterID}", s.renameAudioChapter)
 			r.Get("/files/{id}/audio/stream", s.audioMediaStream)
 			r.Post("/files/{id}/audio/hls", s.startAudioHLS)
 			r.Get("/audio/hls/{session}/{asset}", s.audioHLSAsset)
@@ -181,6 +182,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/directories", s.createDirectory)
 			r.Post("/documents", s.createDocument)
 			r.Patch("/files/{id}", s.patchFile)
+			r.Post("/files/{id}/copy", s.copyFile)
 			r.Delete("/files/{id}", s.deleteFile)
 			r.Get("/trash", s.trash)
 			r.Delete("/trash", s.emptyTrash)
@@ -1002,6 +1004,91 @@ func (s *Server) patchFile(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, _ := s.file(r.Context(), id)
 	writeJSON(w, 200, updated)
+}
+
+func (s *Server) copyFile(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ParentID string `json:"parent_id"`
+	}
+	if decodeJSON(w, r, &in) != nil {
+		return
+	}
+	source, err := s.file(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || source.Kind != "file" || source.Status != "ready" {
+		problem(w, http.StatusNotFound, "ready file not found")
+		return
+	}
+	parent, err := s.file(r.Context(), in.ParentID)
+	if err != nil || parent.Kind != "directory" || parent.Status != "ready" {
+		problem(w, http.StatusBadRequest, "target directory is invalid")
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not start copy")
+		return
+	}
+	defer tx.Rollback()
+	name, err := availableCopyName(r.Context(), tx, in.ParentID, source.Name)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not choose a copy name")
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	copyID := ids.New()
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		copyID, in.ParentID, name, "file", source.objectKey, source.Size, source.MimeType, source.ETag, "ready", now, now)
+	if isConflict(err) {
+		problem(w, http.StatusConflict, "an item with that name already exists")
+		return
+	}
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not copy file")
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) SELECT ?,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,?,? FROM audio_media WHERE file_id=?`, copyID, now, now, source.ID); err != nil {
+		problem(w, http.StatusInternalServerError, "could not copy audio metadata")
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		problem(w, http.StatusInternalServerError, "could not finish copy")
+		return
+	}
+	copied, err := s.file(r.Context(), copyID)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "copied file could not be read")
+		return
+	}
+	writeJSON(w, http.StatusCreated, copied)
+}
+
+func availableCopyName(ctx context.Context, tx *sql.Tx, parentID, original string) (string, error) {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM files WHERE parent_id=? AND name=? AND deleted_at IS NULL)`, parentID, original).Scan(&exists); err != nil {
+		return "", err
+	}
+	if exists == 0 {
+		return original, nil
+	}
+	ext := filepath.Ext(original)
+	stem := strings.TrimSuffix(original, ext)
+	for index := 1; index <= 9999; index++ {
+		suffix := " - 副本"
+		if index > 1 {
+			suffix += " " + strconv.Itoa(index)
+		}
+		candidate := stem + suffix + ext
+		if validateName(candidate) != nil {
+			return "", errors.New("copy name is too long")
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM files WHERE parent_id=? AND name=? AND deleted_at IS NULL)`, parentID, candidate).Scan(&exists); err != nil {
+			return "", err
+		}
+		if exists == 0 {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("too many copies with the same name")
 }
 
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {

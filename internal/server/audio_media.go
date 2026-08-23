@@ -6,7 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -63,6 +66,67 @@ func (s *Server) audioMediaInfo(w http.ResponseWriter, r *http.Request) {
 		"has_cover":   hasCover,
 		"stream_size": streamSize,
 	})
+}
+
+func (s *Server) renameAudioChapter(w http.ResponseWriter, r *http.Request) {
+	f, err := s.file(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || f.Kind != "file" || f.Status != "ready" || !isAudioSource(f) {
+		problem(w, http.StatusNotFound, "ready audio file not found")
+		return
+	}
+	chapterID, err := strconv.Atoi(chi.URLParam(r, "chapterID"))
+	if err != nil || chapterID < 1 {
+		problem(w, http.StatusBadRequest, "invalid chapter id")
+		return
+	}
+	var in struct {
+		Title string `json:"title"`
+	}
+	if decodeJSON(w, r, &in) != nil {
+		return
+	}
+	in.Title = strings.TrimSpace(in.Title)
+	if in.Title == "" || len(in.Title) > 1024 || utf8.RuneCountInString(in.Title) > 255 {
+		problem(w, http.StatusBadRequest, "chapter title must be between 1 and 255 characters")
+		return
+	}
+	for _, char := range in.Title {
+		if char < 32 || char == 127 {
+			problem(w, http.StatusBadRequest, "chapter title contains control characters")
+			return
+		}
+	}
+	var chaptersJSON string
+	err = s.db.QueryRowContext(r.Context(), `SELECT chapters_json FROM audio_media WHERE file_id=?`, f.ID).Scan(&chaptersJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		problem(w, http.StatusNotFound, "chapter metadata is not available for this audio")
+		return
+	}
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not read audio metadata")
+		return
+	}
+	var chapters []storedAudioChapter
+	if err := json.Unmarshal([]byte(chaptersJSON), &chapters); err != nil {
+		problem(w, http.StatusInternalServerError, "audio chapter metadata is invalid")
+		return
+	}
+	if chapterID > len(chapters) {
+		problem(w, http.StatusNotFound, "audio chapter not found")
+		return
+	}
+	chapters[chapterID-1].Title = in.Title
+	updatedJSON, err := json.Marshal(chapters)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not encode audio metadata")
+		return
+	}
+	if _, err = s.db.ExecContext(r.Context(), `UPDATE audio_media SET chapters_json=?,updated_at=? WHERE file_id=?`, string(updatedJSON), time.Now().UTC().Format(time.RFC3339Nano), f.ID); err != nil {
+		problem(w, http.StatusInternalServerError, "could not update audio chapter")
+		return
+	}
+	chapter := chapters[chapterID-1]
+	writeJSON(w, http.StatusOK, audioChapterResponse{ID: chapterID, Title: chapter.Title, Start: float64(chapter.StartMS) / 1000, End: float64(chapter.EndMS) / 1000})
 }
 
 func coverURL(fileID, etag string, hasCover bool) string {

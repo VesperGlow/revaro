@@ -96,7 +96,7 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
         </div>
       </details>
       <details ref="uploadMenu" class="upload-menu">
-        <summary class="primary upload-action"><span>↑</span> 上传 <svg class="upload-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>
+        <summary class="primary upload-action">上传 <svg class="upload-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>
         <div class="upload-menu-popover">
           <button @click="runUpload('files')"><span>↥</span><div><b>上传文件</b><small>可一次选择多个文件</small></div></button>
           <button @click="runUpload('folder')"><span>▰</span><div><b>上传文件夹</b><small>保留完整目录结构</small></div></button>

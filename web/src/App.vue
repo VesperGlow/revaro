@@ -38,6 +38,7 @@ const trashMode = ref(false)
 const selected = ref<DriveFile|null>(null)
 const selectedIds = ref<Set<string>>(new Set())
 const moveTargets = ref<DriveFile[]>([])
+const transferMode = ref<'move'|'copy'>('move')
 type ModalName = 'rename'|'move'|'preview'|'share'|'account'|'editor'|'reader'|'audioMerge'
 const modal = ref<ModalName|null>(null)
 const readerFile = ref<DriveFile|null>(null)
@@ -327,8 +328,13 @@ async function showMove(item:DriveFile){await showMoveTargets([item])}
 async function showMoveSelected(){await showMoveTargets([...selectedItems.value])}
 async function showMoveTargets(targets:DriveFile[]){
   if(!targets.length)return
+  transferMode.value='move'
   moveTargets.value=targets;selected.value=targets[0];modalBusy.value=true;openModal('move');folders.value=[]
   try{folders.value=await loadFolderTree(new Set(targets.map(item=>item.id)))}catch(e){notify((e as Error).message);closeModal()}finally{modalBusy.value=false}
+}
+async function showCopy(item:DriveFile){
+  transferMode.value='copy';moveTargets.value=[item];selected.value=item;modalBusy.value=true;openModal('move');folders.value=[]
+  try{folders.value=await loadFolderTree()}catch(e){notify((e as Error).message);closeModal()}finally{modalBusy.value=false}
 }
 async function loadFolderTree(excludedIds=new Set<string>()):Promise<FolderOption[]>{
   const result:FolderOption[]=[{id:ROOT,name:'我的文件',depth:0}]
@@ -345,19 +351,24 @@ async function loadFolderTree(excludedIds=new Set<string>()):Promise<FolderOptio
   }
   return result
 }
-async function moveTo(parentId:string){
+async function transferTo(parentId:string){
   const targets=[...moveTargets.value]
   if(!targets.length)return
   modalBusy.value=true
-  let moved=0
+  let completed=0
   const errors:string[]=[]
   for(const item of targets){
-    try{await api(`/api/files/${item.id}`,{method:'PATCH',body:JSON.stringify({parent_id:parentId})});moved++}
+    try{
+      if(transferMode.value==='copy')await api(`/api/files/${item.id}/copy`,{method:'POST',body:JSON.stringify({parent_id:parentId})})
+      else await api(`/api/files/${item.id}`,{method:'PATCH',body:JSON.stringify({parent_id:parentId})})
+      completed++
+    }
     catch(e){errors.push(`${item.name}：${(e as Error).message}`)}
   }
   closeModal();await openFolder(currentId.value);moveTargets.value=[]
-  if(errors.length)notify(`已移动 ${moved} 项，${errors.length} 项失败：${errors[0]}`)
-  else notify(`已移动 ${moved} 项`,'success')
+  const verb=transferMode.value==='copy'?'复制':'移动'
+  if(errors.length)notify(`已${verb} ${completed} 项，${errors.length} 项失败：${errors[0]}`)
+  else notify(`已${verb} ${completed} 项`,'success')
   modalBusy.value=false
 }
 function showPreview(item:DriveFile){selected.value=item;openModal('preview')}
@@ -743,7 +754,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
 
     <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),editing:modal==='editor',reading:modal==='reader'}" @click.self="closeBackdrop">
       <section v-if="modal==='rename'" class="modal"><header><div><p class="eyebrow dark">EDIT</p><h2>重命名</h2></div><button @click="closeModal">×</button></header><label>新名称<input v-model="renameValue" maxlength="1024" @keyup.enter="saveRename"></label><footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="modalBusy" @click="saveRename">保存</button></footer></section>
-      <section v-else-if="modal==='move'" class="modal folder-modal"><header><div><p class="eyebrow dark">MOVE</p><h2>移动</h2><p class="move-target" :title="moveTargets.length===1?moveTargets[0]?.name:undefined">{{ moveTargets.length===1?`「${moveTargets[0]?.name}」`:`${moveTargets.length} 项` }}</p></div><button @click="closeModal">×</button></header><div v-if="modalBusy" class="state small"><div class="spinner"></div></div><div v-else class="folder-list"><button v-for="folder in folders" :key="folder.id" :style="{paddingLeft:`${18+folder.depth*22}px`}" @click="moveTo(folder.id)"><span>▰</span>{{ folder.name }}</button></div></section>
+      <section v-else-if="modal==='move'" class="modal folder-modal"><header><div><p class="eyebrow dark">{{ transferMode==='copy'?'COPY':'MOVE' }}</p><h2>{{ transferMode==='copy'?'复制到':'移动到' }}</h2><p class="move-target" :title="moveTargets.length===1?moveTargets[0]?.name:undefined">{{ moveTargets.length===1?`「${moveTargets[0]?.name}」`:`${moveTargets.length} 项` }}</p></div><button @click="closeModal">×</button></header><div v-if="modalBusy" class="state small"><div class="spinner"></div></div><div v-else class="folder-list"><button v-for="folder in folders" :key="folder.id" :style="{paddingLeft:`${18+folder.depth*22}px`}" @click="transferTo(folder.id)"><span>▰</span>{{ folder.name }}</button></div></section>
       <section v-else-if="modal==='audioMerge'" class="modal audio-merge-modal">
         <header><div><p class="eyebrow dark">AUDIO MERGE</p><h2>合并音频</h2><p>FLAC / ALAC 真无损，或选择 AAC 节省空间</p></div><button aria-label="关闭" @click="closeModal">×</button></header>
         <div class="audio-merge-layout">
@@ -889,7 +900,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
         </template>
         <template v-else><p class="share-description">创建后，无需登录即可通过链接读取这个文件。你可以随时重新生成或停止分享。</p><button class="primary share-create" :disabled="share.busy" @click="createShare(false)">创建公开链接</button><p v-if="share.error" class="form-error">{{ share.error }}</p></template>
       </section>
-      <MediaPreview v-else-if="modal==='preview'&&selected" :selected="selected" :items="items" @close="closeModal" @change="selected=$event" @download="download" />
+      <MediaPreview v-else-if="modal==='preview'&&selected" :selected="selected" :items="items" @close="closeModal" @change="selected=$event" @download="download" @move="showMove" @copy="showCopy" />
     </div>
     <ReaderView v-if="modal==='reader'&&readerFile" :file="readerFile" @close="closeModal" />
     <AppDialog v-if="dialog.open" :title="dialog.title" :message="dialog.message" :confirm-label="dialog.confirmLabel" :cancel-label="dialog.cancelLabel" :tone="dialog.tone" :input="dialog.input" :value="dialog.value" :placeholder="dialog.placeholder" @update:value="dialog.value=$event" @confirm="finishDialog(true)" @cancel="finishDialog(false)" />
