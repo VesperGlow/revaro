@@ -24,7 +24,6 @@ const hlsOffset=ref(0)
 const seekPreview=ref<number|null>(null)
 const seekHover=ref({visible:false,time:0,percent:0})
 const chapterScrollbar=ref({visible:false,top:0,height:0})
-const sideView=ref<'subtitles'|'chapters'>('subtitles')
 const savedVolume=Number(localStorage.getItem('revaro-audio-volume')??0.85)
 const volume=ref(Number.isFinite(savedVolume)?Math.max(0,Math.min(1,savedVolume)):0.85)
 const muted=ref(localStorage.getItem('revaro-audio-muted')==='true')
@@ -224,13 +223,6 @@ watch(currentChapterIndex,index=>void nextTick().then(()=>{
   chapterList.value?.querySelector<HTMLElement>(`[data-chapter-index="${index}"]`)?.scrollIntoView({block:'nearest'})
   updateChapterScrollbar()
 }))
-watch(sideView,view=>{
-  if(view!=='chapters'){chapterResizeObserver?.disconnect();chapterResizeObserver=null;return}
-  void nextTick().then(()=>{
-    updateChapterScrollbar()
-    if(chapterList.value&&'ResizeObserver' in window&&!chapterResizeObserver){chapterResizeObserver=new ResizeObserver(updateChapterScrollbar);chapterResizeObserver.observe(chapterList.value)}
-  })
-})
 onBeforeUnmount(()=>{
   window.clearTimeout(saveTimer);chapterResizeObserver?.disconnect();hlsGeneration++
   const session=hlsSessionId;hlsSessionId='';resetLocalHLS()
@@ -240,57 +232,59 @@ onBeforeUnmount(()=>{
 
 <template>
   <div class="chapter-audio-player">
-    <div class="audio-upper">
-      <section class="audio-now-playing">
-        <div class="audio-cover">
-          <img v-if="media?.has_cover" :src="media.cover_url" :alt="`${item.name} 封面`">
-          <span v-else>♫</span>
+    <main class="audio-main">
+      <div class="audio-upper">
+        <section class="audio-now-playing">
+          <div class="audio-cover">
+            <img v-if="media?.has_cover" :src="media.cover_url" :alt="`${item.name} 封面`">
+            <span v-else>♫</span>
+          </div>
+          <div class="audio-chapter-current"><span>正在播放</span><strong>{{ currentChapter?.title||item.name }}</strong><small>第 {{ currentChapterIndex+1 }} / {{ chapters.length }} 节</small></div>
+        </section>
+        <section class="audio-subtitle-panel">
+          <header><strong>字幕</strong><span>{{ subtitles.length }} 条</span></header>
+          <div class="audio-subtitle-stage">
+            <div v-if="subtitles.length" class="audio-subtitle-lines">
+              <button v-for="cue in visibleSubtitles" :key="cue.id" :class="{active:cue.id-1===currentSubtitleIndex}" @click="seek(cue.start,true)"><small>{{ formatTime(cue.start) }}</small><span>{{ cue.text }}</span></button>
+            </div>
+            <div v-else class="audio-subtitle-empty"><b>CC</b><strong>没有内嵌字幕</strong><small>合并 M4A 时会自动识别每段同名的 VTT</small></div>
+          </div>
+        </section>
+      </div>
+      <section class="audio-playback">
+        <div class="audio-track-wrap">
+          <div class="audio-track-buffer" :style="{width:`${buffered}%`}"></div>
+          <div class="audio-track-played" :style="{width:`${progress}%`}"></div>
+          <i v-for="chapter in chapters.slice(1)" :key="chapter.id" :style="{left:`${duration?chapter.start/duration*100:0}%`}"></i>
+          <span class="audio-track-thumb" :style="{left:`${progress}%`}"></span>
+          <output v-if="seekHover.visible" class="audio-seek-tooltip" :style="{left:`${seekHover.percent}%`}">{{ formatTime(seekHover.time) }}</output>
+          <input :value="displayedTime" type="range" min="0" :max="duration||0" step="0.1" aria-label="播放进度" @input="previewSeek" @change="commitSeek" @pointermove="updateSeekHover" @pointerleave="hideSeekHover">
         </div>
-        <div class="audio-chapter-current"><span>正在播放</span><strong>{{ currentChapter?.title||item.name }}</strong><small>第 {{ currentChapterIndex+1 }} / {{ chapters.length }} 节</small></div>
+        <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span><span>-{{ formatTime(Math.max(0,duration-displayedTime)) }}</span></div>
+        <div class="audio-controls">
+          <button title="上一节" aria-label="上一节" @click="previousChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6 9 12l10 6Z"/></svg></button>
+          <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback"><span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path v-if="playing" d="M8 6v12M16 6v12"/><path v-else class="play-shape" d="m9 6 9 6-9 6Z"/></svg></button>
+          <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l10 6-10 6Z"/></svg></button>
+        </div>
+        <div class="audio-player-options">
+          <label class="audio-rate"><span>倍速</span><select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label>
+          <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
+          <div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div>
+        </div>
+        <p v-if="error" class="audio-player-error">{{ error }}</p>
+        <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="playing=false" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
       </section>
-      <aside class="audio-side-panel">
-        <header>
-          <div class="audio-side-tabs"><button :class="{active:sideView==='subtitles'}" @click="sideView='subtitles'">字幕</button><button :class="{active:sideView==='chapters'}" @click="sideView='chapters'">分节</button></div>
-          <span>{{ sideView==='subtitles'?`${subtitles.length} 条`:`${chapters.length} 节` }}</span>
-        </header>
-        <div v-if="sideView==='subtitles'" class="audio-subtitle-stage">
-          <div v-if="subtitles.length" class="audio-subtitle-lines">
-            <button v-for="cue in visibleSubtitles" :key="cue.id" :class="{active:cue.id-1===currentSubtitleIndex}" @click="seek(cue.start,true)"><small>{{ formatTime(cue.start) }}</small><span>{{ cue.text }}</span></button>
-          </div>
-          <div v-else class="audio-subtitle-empty"><b>CC</b><strong>没有内嵌字幕</strong><small>合并 M4A 时会自动识别每段同名的 VTT</small></div>
+    </main>
+    <aside class="audio-chapters">
+      <header><div><strong>分节</strong><small>保留合并前的文件名</small></div><span>{{ chapters.length }} 节</span></header>
+      <div class="audio-chapter-scroll-area">
+        <div ref="chapterList" class="audio-chapter-list" @scroll.passive="updateChapterScrollbar">
+          <button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :class="{active:index===currentChapterIndex}" @click="seek(chapter.start,true)">
+            <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></i>
+          </button>
         </div>
-        <div v-else class="audio-chapter-scroll-area">
-          <div ref="chapterList" class="audio-chapter-list" @scroll.passive="updateChapterScrollbar">
-            <button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :class="{active:index===currentChapterIndex}" @click="seek(chapter.start,true)">
-              <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></i>
-            </button>
-          </div>
-          <span v-if="chapterScrollbar.visible" class="audio-chapter-scrollbar" :style="{height:`${chapterScrollbar.height}px`,transform:`translateY(${chapterScrollbar.top}px)`}" aria-hidden="true"></span>
-        </div>
-      </aside>
-    </div>
-    <section class="audio-playback">
-      <div class="audio-track-wrap">
-        <div class="audio-track-buffer" :style="{width:`${buffered}%`}"></div>
-        <div class="audio-track-played" :style="{width:`${progress}%`}"></div>
-        <i v-for="chapter in chapters.slice(1)" :key="chapter.id" :style="{left:`${duration?chapter.start/duration*100:0}%`}"></i>
-        <span class="audio-track-thumb" :style="{left:`${progress}%`}"></span>
-        <output v-if="seekHover.visible" class="audio-seek-tooltip" :style="{left:`${seekHover.percent}%`}">{{ formatTime(seekHover.time) }}</output>
-        <input :value="displayedTime" type="range" min="0" :max="duration||0" step="0.1" aria-label="播放进度" @input="previewSeek" @change="commitSeek" @pointermove="updateSeekHover" @pointerleave="hideSeekHover">
+        <span v-if="chapterScrollbar.visible" class="audio-chapter-scrollbar" :style="{height:`${chapterScrollbar.height}px`,transform:`translateY(${chapterScrollbar.top}px)`}" aria-hidden="true"></span>
       </div>
-      <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span><span>-{{ formatTime(Math.max(0,duration-displayedTime)) }}</span></div>
-      <div class="audio-controls">
-        <button title="上一节" aria-label="上一节" @click="previousChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6 9 12l10 6Z"/></svg></button>
-        <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback"><span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path v-if="playing" d="M8 6v12M16 6v12"/><path v-else class="play-shape" d="m9 6 9 6-9 6Z"/></svg></button>
-        <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l10 6-10 6Z"/></svg></button>
-      </div>
-      <div class="audio-player-options">
-        <label class="audio-rate"><span>倍速</span><select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label>
-        <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
-        <div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div>
-      </div>
-      <p v-if="error" class="audio-player-error">{{ error }}</p>
-      <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="playing=false" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
-    </section>
+    </aside>
   </div>
 </template>

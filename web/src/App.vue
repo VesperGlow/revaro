@@ -429,10 +429,23 @@ function downloadSelected(){
 }
 
 function audioMergeExtension(format:AudioMergeFormat){return format==='flac'?'.flac':'.m4a'}
+const audioSubtitleSourceExtensions=new Set(['.mp3','.wav','.flac','.m4a','.aac','.ogg','.opus','.wma','.aiff','.aif','.mka','.webm'])
+function audioSubtitleMatchPriority(audioName:string,subtitleName:string){
+  if(!/\.vtt$/i.test(subtitleName))return -1
+  const audioTitle=audioName.replace(/\.[^.]+$/,'')
+  const subtitleTitle=subtitleName.replace(/\.vtt$/i,'')
+  if(subtitleTitle.localeCompare(audioTitle,undefined,{sensitivity:'accent'})===0)return 0
+  if(subtitleTitle.localeCompare(audioName,undefined,{sensitivity:'accent'})===0)return 1
+  const sourceExtension=subtitleTitle.match(/\.[^.]+$/)?.[0].toLowerCase()||''
+  if(audioSubtitleSourceExtensions.has(sourceExtension)&&subtitleTitle.slice(0,-sourceExtension.length).localeCompare(audioTitle,undefined,{sensitivity:'accent'})===0)return 2
+  return -1
+}
 function audioSubtitleFor(item:DriveFile){
-  const expected=item.name.replace(/\.[^.]+$/,'.vtt')
-  return items.value.find(candidate=>candidate.kind==='file'&&candidate.status==='ready'&&candidate.name===expected)
-    ||items.value.find(candidate=>candidate.kind==='file'&&candidate.status==='ready'&&candidate.name.toLowerCase()===expected.toLowerCase())
+  return items.value
+    .filter(candidate=>candidate.kind==='file'&&candidate.status==='ready')
+    .map(candidate=>({candidate,priority:audioSubtitleMatchPriority(item.name,candidate.name)}))
+    .filter(match=>match.priority>=0)
+    .sort((a,b)=>a.priority-b.priority)[0]?.candidate
 }
 function defaultAudioMergeName(files:DriveFile[],format:AudioMergeFormat){
   const folderName=currentId.value!==ROOT?current.value?.name.trim():''

@@ -202,7 +202,9 @@ func TestAudioMergeEmbedsMatchingWebVTT(t *testing.T) {
 	a.srv.cfg.DataDir = t.TempDir()
 	first := a.readyFile(t, "01 耳语.wav", audioFixture(t, "wav", 440))
 	second := a.readyFile(t, "02 敲击.wav", audioFixture(t, "wav", 880))
-	a.readyFile(t, "01 耳语.vtt", []byte("WEBVTT\n\n00:00:00.020 --> 00:00:00.120\n第一段字幕\n"))
+	// Subtitle exporters often keep the pre-conversion source extension. A
+	// title-preserving 01 耳语.mp3.vtt must still match 01 耳语.wav.
+	a.readyFile(t, "01 耳语.mp3.vtt", []byte("WEBVTT\n\n00:00:00.020 --> 00:00:00.120\n第一段字幕\n"))
 	a.readyFile(t, "02 敲击.VTT", []byte("\ufeffWEBVTT\n\ncue-1\n00:00:00.030 --> 00:00:00.200\n<b>第二段字幕</b> &amp; 继续\n"))
 
 	createdRR := a.request("POST", "/api/audio-merges", map[string]any{

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -197,21 +196,69 @@ func (s *Server) audioCoverFromFile(ctx context.Context, parentID, fileID string
 
 func (s *Server) findAudioSubtitles(ctx context.Context, inputs []File) ([]*File, error) {
 	matched := make([]*File, len(inputs))
+	byParent := make(map[string][]File)
 	for index, input := range inputs {
 		if input.ParentID == nil {
 			continue
 		}
-		expected := strings.TrimSuffix(input.Name, filepath.Ext(input.Name)) + ".vtt"
-		subtitle, err := scanFile(s.db.QueryRowContext(ctx, `SELECT `+fileColumns+` FROM files WHERE parent_id=? AND kind='file' AND status='ready' AND deleted_at IS NULL AND name=? COLLATE NOCASE ORDER BY CASE WHEN name=? THEN 0 ELSE 1 END LIMIT 1`, *input.ParentID, expected, expected))
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
+		candidates, loaded := byParent[*input.ParentID]
+		if !loaded {
+			rows, err := s.db.QueryContext(ctx, `SELECT `+fileColumns+` FROM files WHERE parent_id=? AND kind='file' AND status='ready' AND deleted_at IS NULL AND lower(name) LIKE '%.vtt'`, *input.ParentID)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				candidate, scanErr := scanFile(rows)
+				if scanErr != nil {
+					rows.Close()
+					return nil, scanErr
+				}
+				candidates = append(candidates, candidate)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if err := rows.Close(); err != nil {
+				return nil, err
+			}
+			byParent[*input.ParentID] = candidates
 		}
-		if err != nil {
-			return nil, err
+		bestPriority := 0
+		for candidateIndex := range candidates {
+			priority, ok := audioSubtitleMatchPriority(input.Name, candidates[candidateIndex].Name)
+			if !ok || matched[index] != nil && priority >= bestPriority {
+				continue
+			}
+			bestPriority = priority
+			candidate := candidates[candidateIndex]
+			matched[index] = &candidate
 		}
-		matched[index] = &subtitle
 	}
 	return matched, nil
+}
+
+// WebVTT exporters commonly preserve the original audio extension, producing
+// names such as "track.mp3.vtt" even after the audio was converted to WAV.
+// Prefer the plain "track.vtt", then an exact "track.wav.vtt", and finally a
+// matching title carrying any supported audio extension.
+func audioSubtitleMatchPriority(audioName, subtitleName string) (int, bool) {
+	audioTitle := strings.TrimSuffix(audioName, filepath.Ext(audioName))
+	if !strings.EqualFold(filepath.Ext(subtitleName), ".vtt") {
+		return 0, false
+	}
+	subtitleTitle := strings.TrimSuffix(subtitleName, filepath.Ext(subtitleName))
+	if strings.EqualFold(subtitleTitle, audioTitle) {
+		return 0, true
+	}
+	if strings.EqualFold(subtitleTitle, audioName) {
+		return 1, true
+	}
+	sourceExt := strings.ToLower(filepath.Ext(subtitleTitle))
+	if audioSourceExts[sourceExt] && strings.EqualFold(strings.TrimSuffix(subtitleTitle, filepath.Ext(subtitleTitle)), audioTitle) {
+		return 2, true
+	}
+	return 0, false
 }
 
 func (s *Server) prepareMergedSubtitles(ctx context.Context, sources []*File, durations []time.Duration) ([]storedAudioSubtitle, error) {
