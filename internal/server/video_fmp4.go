@@ -246,12 +246,14 @@ func probeFMP4Source(ctx context.Context, ffmpeg, sourceURL string, requestedSta
 	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-show_entries",
 		"format=duration,bit_rate:stream=codec_type,codec_name,profile,level,width,height,avg_frame_rate,bit_rate,channels,sample_rate",
 		"-of", "json", sourceURL)
-	output, err := cmd.Output()
-	if err != nil {
-		return fmp4MediaInfo{}, fmt.Errorf("ffprobe fMP4 metadata: %w", err)
+	output := &limitedBuffer{limit: 2 << 20}
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = output, stderr
+	if err := cmd.Run(); err != nil {
+		return fmp4MediaInfo{}, mediaCommandError("ffprobe fMP4 metadata", err, ctx.Err(), stderr.String())
 	}
 	var probe fmp4Probe
-	if err := json.Unmarshal(output, &probe); err != nil {
+	if err := json.Unmarshal([]byte(output.String()), &probe); err != nil {
 		return fmp4MediaInfo{}, fmt.Errorf("decode ffprobe fMP4 metadata: %w", err)
 	}
 	info := fmp4MediaInfo{start: requestedStart}
@@ -402,7 +404,10 @@ func (s *Server) runVideoFMP4(ctx context.Context, f File, sourceURL string, clo
 	}
 	args = append(args,
 		"-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
-		"-movflags", "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset+disable_chpl",
+		// delay_moov still emits an MSE initialization segment before the first
+		// moof, but lets FFmpeg inspect the first audio packets first. EAC3 needs
+		// that inspection to populate dec3; empty_moov would fail before remuxing.
+		"-movflags", "+frag_keyframe+delay_moov+default_base_moof+omit_tfhd_offset+disable_chpl",
 		"-frag_duration", "2000000", "-f", "mp4", session.Path,
 	)
 	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, args...)
