@@ -584,3 +584,13 @@ button img,.ui-image{pointer-events:none;-webkit-touch-callout:none;-webkit-user
 .preview-command-content .preview-file-meta{justify-content:center}
 @media(max-width:720px){.editor-meta>span{display:none}.editor-meta{padding-left:8px}.editor-header-message{display:none}}
 @media(max-width:520px){.preview-command-content{max-width:calc(100% - 12px)}.editor-title{gap:7px}.editor-title>span:first-child{width:36px;height:36px}.editor-meta{padding-left:7px;font-size:9px}}
+
+/* Media viewer: quiet desktop navigation and gesture-first mobile images. */
+.preview-nav{position:absolute;top:50%;width:46px;height:62px;border:1px solid #ffffff38;border-radius:15px;background:#172033ad;color:#fff;box-shadow:0 10px 30px #0f172a38;backdrop-filter:blur(16px);transform:translateY(-50%);opacity:.78}
+.preview-nav:hover{border-color:#ffffff6b;background:#172033dd;transform:translateY(-50%) scale(1.04);opacity:1}
+.preview-nav svg{width:22px;height:22px;stroke-width:2.2}.preview-prev{left:18px}.preview-next{right:18px}
+.preview-stage.swipeable{touch-action:none}.preview-stage.swipeable img{transform-origin:center center}
+.preview-stage.zoomed img{z-index:2;max-width:min(100%,1500px);max-height:calc(100dvh - 164px)}
+.preview-zoom{position:absolute;z-index:8;right:18px;bottom:16px;display:flex;align-items:center;overflow:hidden;border:1px solid #ffffff32;border-radius:11px;background:#172033d6;color:#fff;box-shadow:0 8px 28px #0f172a4a;backdrop-filter:blur(14px)}
+.preview-zoom button{display:grid;place-items:center;min-width:36px;height:34px;padding:0 9px;border:0;border-right:1px solid #ffffff20;background:transparent;color:inherit;font-size:17px}.preview-zoom button:last-child{border-right:0}.preview-zoom button:hover:not(:disabled){background:#ffffff1a}.preview-zoom button:disabled{opacity:.35}.preview-zoom .zoom-value{min-width:58px;font-size:10px}
+@media(max-width:850px){.preview-nav{display:none}.preview-zoom{right:10px;bottom:10px}.preview-zoom button{min-width:34px;height:32px}.preview-stage.zoomed img{max-height:100%}}

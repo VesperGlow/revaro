@@ -21,8 +21,9 @@ const circumference=100.53
 const dashOffset=computed(()=>circumference*(1-overallProgress.value/100))
 const center=ref<HTMLDetailsElement|null>(null)
 const modalOpen=ref(false)
-const mode=ref<'magnet'|'torrent'>('magnet')
+const mode=ref<'magnet'|'torrent'|'url'>('magnet')
 const magnet=ref('')
+const directURL=ref('')
 const torrentFile=ref<File|null>(null)
 const detail=ref<DownloadJob|null>(null)
 const selected=ref<Set<number>>(new Set())
@@ -37,11 +38,11 @@ let metadataTimer=0
 const selectedFiles=computed(()=>detail.value?.files?.filter(file=>selected.value.has(file.index))||[])
 const selectedSize=computed(()=>selectedFiles.value.reduce((sum,file)=>sum+file.size,0))
 const progress=(job:DownloadJob)=>job.status==='done'?100:job.selected_size?Math.min(100,Math.round(phaseCompleted(job)/job.selected_size*100)):0
-const statusText=(job:DownloadJob)=>job.status==='metadata'?'正在获取元数据':job.status==='waiting'?'等待选择文件':job.status==='queued'?'准备下载':job.status==='downloading'?`${formatSize(job.download_speed)}/s · ${job.peers} 个节点`:job.status==='paused'?'已暂停':job.status==='importing'?`正在导入${job.current_file?` ${job.current_file.split('/').pop()}`:''} · ${formatSize(job.imported_size)} / ${formatSize(job.selected_size)}${job.import_speed?` · ${formatSize(job.import_speed)}/s`:''}`:job.status==='done'?'已完成':job.status==='cancelled'?'已取消':job.error||'失败'
+const statusText=(job:DownloadJob)=>job.status==='metadata'?'正在获取元数据':job.status==='waiting'?'等待选择文件':job.status==='queued'?'准备下载':job.status==='downloading'?(job.source_type==='url'?`${formatSize(job.completed_size)}${job.selected_size?` / ${formatSize(job.selected_size)}`:''}${job.download_speed?` · ${formatSize(job.download_speed)}/s`:''}`:`${formatSize(job.download_speed)}/s · ${job.peers} 个节点`):job.status==='paused'?'已暂停':job.status==='importing'?`正在导入${job.current_file?` ${job.current_file.split('/').pop()}`:''} · ${formatSize(job.imported_size)} / ${formatSize(job.selected_size)}${job.import_speed?` · ${formatSize(job.import_speed)}/s`:''}`:job.status==='done'?'已完成':job.status==='cancelled'?'已取消':job.error||'失败'
 
 function closeFromOutside(event:PointerEvent){const target=event.target;if(center.value?.open&&target instanceof Node&&!center.value.contains(target))center.value.open=false}
 function closeFromEscape(event:KeyboardEvent){if(event.key==='Escape'){if(modalOpen.value)closeModal();else if(center.value?.open){center.value.open=false;center.value.querySelector<HTMLElement>('summary')?.focus()}}}
-function resetForm(){mode.value='magnet';magnet.value='';torrentFile.value=null;detail.value=null;selected.value=new Set();selectionJobId.value='';error.value='';busy.value=false;destinationId.value=props.parentId;folderOptions.value=[]}
+function resetForm(){mode.value='magnet';magnet.value='';directURL.value='';torrentFile.value=null;detail.value=null;selected.value=new Set();selectionJobId.value='';error.value='';busy.value=false;destinationId.value=props.parentId;folderOptions.value=[]}
 async function loadFolderTree(){
   foldersLoading.value=true
   const result:FolderOption[]=[{id:ROOT,name:'我的文件',depth:0}]
@@ -70,14 +71,17 @@ async function createTask(){
   error.value=''
   if(mode.value==='magnet'&&!magnet.value.trim()){error.value='请粘贴磁力链接';return}
   if(mode.value==='torrent'&&!torrentFile.value){error.value='请选择 .torrent 文件';return}
+  if(mode.value==='url'&&!/^https?:\/\//i.test(directURL.value.trim())){error.value='请输入完整的 HTTP 或 HTTPS 下载链接';return}
   busy.value=true
   try{
     const body:Record<string,string>={parent_id:destinationId.value}
     if(mode.value==='magnet')body.magnet=magnet.value.trim()
-    else body.torrent_base64=await fileBase64(torrentFile.value!)
+    else if(mode.value==='torrent')body.torrent_base64=await fileBase64(torrentFile.value!)
+    else body.url=directURL.value.trim()
     const job=await api<DownloadJob>('/api/downloads',{method:'POST',body:JSON.stringify(body)})
     detail.value=job;initializeSelection(job);emit('changed')
-    if(job.status==='metadata')metadataTimer=window.setTimeout(()=>void loadDetail(job.id),500)
+    if(job.source_type==='url')modalOpen.value=false
+    else if(job.status==='metadata')metadataTimer=window.setTimeout(()=>void loadDetail(job.id),500)
   }catch(e){error.value=(e as Error).message}
   finally{busy.value=false}
 }
@@ -99,11 +103,11 @@ onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside
       <span v-if="activeJobs.length" class="download-count">{{ activeJobs.length }}</span>
     </summary>
     <section class="download-popover">
-      <header><div><strong>离线下载</strong><small>{{ activeJobs.length?`${activeJobs.length} 项后台运行`:'磁力与 BT 种子' }}</small></div><button class="add" @click.prevent="openCreate">＋ 新建</button></header>
+      <header><div><strong>离线下载</strong><small>{{ activeJobs.length?`${activeJobs.length} 项后台运行`:'磁力、BT 与直链' }}</small></div><button class="add" @click.prevent="openCreate">＋ 新建</button></header>
       <div v-if="!jobs.length" class="download-empty"><span>⌄</span><p>还没有离线下载</p><button @click="openCreate">添加磁力链接</button></div>
       <div v-else class="download-list">
         <article v-for="job in jobs" :key="job.id">
-          <button class="task-main" @click="job.status==='waiting'&&openJob(job)"><span class="task-icon">↓</span><span class="task-copy"><strong :title="job.name">{{ job.name||'获取种子元数据…' }}</strong><small>{{ formatSize(job.selected_size||job.completed_size) }} · {{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${progress(job)}%`}"></b></i></span><em>{{ progress(job) }}%</em></button>
+          <button class="task-main" @click="job.status==='waiting'&&openJob(job)"><span class="task-icon">↓</span><span class="task-copy"><strong :title="job.name">{{ job.name||'获取种子元数据…' }}</strong><small>{{ job.selected_size||job.completed_size?`${formatSize(job.selected_size||job.completed_size)} · `:'' }}{{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${progress(job)}%`}"></b></i></span><em>{{ job.selected_size||job.status==='done'?`${progress(job)}%`:'—' }}</em></button>
           <span class="task-actions"><button v-if="job.status==='downloading'||job.status==='queued'" title="暂停" @click="taskAction(job,'pause')">Ⅱ</button><button v-else-if="job.status==='paused'" title="继续" @click="taskAction(job,'resume')">▶</button><button v-else-if="job.status==='waiting'" title="选择文件" @click="openJob(job)">选择</button><button title="删除任务" @click="removeTask(job)">×</button></span>
         </article>
       </div>
@@ -115,13 +119,14 @@ onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside
       <section class="download-dialog" role="dialog" aria-modal="true" aria-label="新建离线下载">
         <header><div><strong>{{ detail?'选择下载文件':'新建离线下载' }}</strong><small>保存到网盘目录 · 完成后不会做种</small></div><button aria-label="关闭" @click="closeModal">×</button></header>
         <template v-if="!detail">
-          <div class="source-tabs"><button :class="{active:mode==='magnet'}" @click="mode='magnet'">磁力链接</button><button :class="{active:mode==='torrent'}" @click="mode='torrent'">.torrent 文件</button></div>
+          <div class="source-tabs"><button :class="{active:mode==='magnet'}" @click="mode='magnet'">磁力链接</button><button :class="{active:mode==='torrent'}" @click="mode='torrent'">.torrent 文件</button><button :class="{active:mode==='url'}" @click="mode='url'">直链下载</button></div>
           <label v-if="mode==='magnet'" class="source-field"><span>磁力链接</span><textarea v-model="magnet" rows="5" maxlength="16384" placeholder="magnet:?xt=urn:btih:…"></textarea></label>
-          <label v-else class="torrent-picker"><input type="file" accept=".torrent,application/x-bittorrent" @change="pickTorrent"><span>{{ torrentFile?.name||'选择 .torrent 文件' }}</span><small>最大 4 MiB</small></label>
+          <label v-else-if="mode==='torrent'" class="torrent-picker"><input type="file" accept=".torrent,application/x-bittorrent" @change="pickTorrent"><span>{{ torrentFile?.name||'选择 .torrent 文件' }}</span><small>最大 4 MiB</small></label>
+          <label v-else class="source-field"><span>HTTP / HTTPS 下载链接</span><textarea v-model="directURL" rows="4" maxlength="16384" placeholder="https://example.com/video.mkv"></textarea></label>
           <label class="destination-field"><span>保存到</span><select v-model="destinationId" :disabled="foldersLoading"><option v-for="folder in folderOptions" :key="folder.id" :value="folder.id">{{ `${'\u00a0\u00a0'.repeat(folder.depth)}${folder.name}` }}</option></select><small>{{ foldersLoading?'正在读取文件夹…':'下载完成后会按种子目录结构导入这里' }}</small></label>
-          <p class="privacy-note">只连接公网节点、Tracker 与 WebSeed；内网和本机地址会被拦截。</p>
+          <p class="privacy-note">{{ mode==='url'?'由服务器流式下载并写入对象存储；内网、本机地址和不安全重定向会被拦截。':'只连接公网节点、Tracker 与 WebSeed；内网和本机地址会被拦截。' }}</p>
           <p v-if="error" class="download-error">{{ error }}</p>
-          <footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="busy||foldersLoading" @click="createTask">{{ busy?'正在创建…':'解析种子' }}</button></footer>
+          <footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="busy||foldersLoading" @click="createTask">{{ busy?'正在创建…':mode==='url'?'开始下载':'解析种子' }}</button></footer>
         </template>
         <template v-else-if="detail.status==='metadata'">
           <div class="metadata-wait"><span class="download-spinner"></span><strong>正在获取种子元数据</strong><p>磁力链接需要先从公网节点取得文件列表。</p></div>

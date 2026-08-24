@@ -11,7 +11,6 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -31,7 +30,6 @@ import (
 
 const maxThumbBytes = 512 << 10 // 缩略图对象上限
 const maxThumbSource = 64 << 20 // 生成缩略图时允许读取的源文件上限
-const maxThumbVideo = 512 << 20 // ffmpeg 抽帧的视频大小上限（512 MiB）
 const thumbMaxDim = 480         // 缩略图最长边
 
 // maxThumbPixels caps the pixel dimensions of sources we decode: a small
@@ -156,11 +154,11 @@ func acquireThumbSlot(ctx context.Context, slots chan struct{}) bool {
 	}
 }
 
-// generateVideoThumb 用 ffmpeg 在视频第 1 秒处抽一帧缩略 JPEG。视频会
-// 先流式落到临时文件（保证 moov 在文件尾的 MP4 也能正常 seek），抽帧后
-// 立即删除；生成结果持久化到 thumbs/，每个内容只付一次下载成本。
+// generateVideoThumb uses the same authenticated local Range source as HLS.
+// ffmpeg can seek directly across FastCDC blocks, so multi-gigabyte videos no
+// longer need to be downloaded to a temporary VPS file just to obtain a cover.
 func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) {
-	if f.Size <= 0 || f.Size > maxThumbVideo {
+	if f.Size <= 0 {
 		return nil, false
 	}
 	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
@@ -174,27 +172,14 @@ func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) 
 	}
 	genCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	rc, err := s.storage.Open(genCtx, f.objectKey)
+	sourceURL, closeSource, err := s.startMediaHLSSource(genCtx, f)
 	if err != nil {
 		return nil, false
 	}
-	defer rc.Close()
-	tmp, err := os.CreateTemp("", "revaro-thumb-*"+filepath.Ext(f.Name))
-	if err != nil {
-		return nil, false
-	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-	n, err := io.Copy(tmp, io.LimitReader(rc, maxThumbVideo+1))
-	if err != nil || n > maxThumbVideo {
-		return nil, false
-	}
-	if err := tmp.Close(); err != nil {
-		return nil, false
-	}
+	defer closeSource()
 	cmd := exec.CommandContext(genCtx, s.cfg.FFmpegPath,
 		"-hide_banner", "-loglevel", "error",
-		"-ss", "1", "-i", tmp.Name(),
+		"-ss", "1", "-i", sourceURL,
 		"-frames:v", "1",
 		"-vf", fmt.Sprintf("scale='min(%d,iw)':-2", thumbMaxDim),
 		"-f", "image2", "-")

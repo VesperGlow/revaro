@@ -32,11 +32,15 @@ type downloadManager struct {
 	server *Server
 	client *torrent.Client
 	pieces *btstore.Client
+	http   *http.Client
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu   sync.RWMutex
-	jobs map[string]*downloadRuntime
+	mu       sync.RWMutex
+	jobs     map[string]*downloadRuntime
+	urlMu    sync.Mutex
+	urlJobs  map[string]*urlDownloadRuntime
+	urlSlots chan struct{}
 }
 
 type downloadRuntime struct {
@@ -54,6 +58,7 @@ type downloadRuntime struct {
 type downloadJob struct {
 	ID            string         `json:"id"`
 	ParentID      string         `json:"parent_id"`
+	SourceType    string         `json:"source_type"`
 	InfoHash      string         `json:"info_hash,omitempty"`
 	Name          string         `json:"name"`
 	Status        string         `json:"status"`
@@ -101,10 +106,16 @@ func newDownloadManager(s *Server) (*downloadManager, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &downloadManager{server: s, client: client, pieces: pieceStore, ctx: ctx, cancel: cancel, jobs: make(map[string]*downloadRuntime)}
+	m := &downloadManager{
+		server: s, client: client, pieces: pieceStore, http: newURLDownloadClient(),
+		ctx: ctx, cancel: cancel, jobs: make(map[string]*downloadRuntime),
+		urlJobs: make(map[string]*urlDownloadRuntime), urlSlots: make(chan struct{}, 2),
+	}
 	go m.restore()
+	go m.restoreURLDownloads()
 	go m.cleanupCompletedPieces()
 	go m.cleanupLoop()
+	go m.cleanupURLLoop()
 	return m, nil
 }
 
@@ -118,6 +129,12 @@ func (m *downloadManager) Close() {
 	}
 	m.jobs = make(map[string]*downloadRuntime)
 	m.mu.Unlock()
+	m.urlMu.Lock()
+	for _, runtime := range m.urlJobs {
+		runtime.cancel()
+	}
+	m.urlJobs = make(map[string]*urlDownloadRuntime)
+	m.urlMu.Unlock()
 	if m.client != nil {
 		m.client.Close()
 	}
@@ -155,14 +172,22 @@ func publicDialContext(ctx context.Context, network, address string) (net.Conn, 
 	if err != nil {
 		return nil, err
 	}
+	var lastDialErr error
 	for _, candidate := range resolved {
 		ip := candidate.IP
 		if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
 			continue
 		}
-		return (&net.Dialer{Timeout: 20 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		connection, dialErr := (&net.Dialer{Timeout: 20 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if dialErr == nil {
+			return connection, nil
+		}
+		lastDialErr = dialErr
 	}
-	return nil, errors.New("tracker or webseed resolves only to a blocked address")
+	if lastDialErr != nil {
+		return nil, lastDialErr
+	}
+	return nil, errors.New("destination resolves only to a blocked address")
 }
 
 func (m *downloadManager) restore() {
@@ -820,7 +845,7 @@ func (m *downloadManager) piecesUsedByOtherJob(ctx context.Context, jobID, infoH
 }
 
 func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
-	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs ORDER BY created_at DESC`)
+	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -828,7 +853,7 @@ func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
 	items := []downloadJob{}
 	for rows.Next() {
 		var job downloadJob
-		if err := rows.Scan(&job.ID, &job.ParentID, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, job)
@@ -838,7 +863,7 @@ func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
 
 func (m *downloadManager) get(ctx context.Context, jobID string, withFiles bool) (downloadJob, error) {
 	var job downloadJob
-	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return job, err
 	}
@@ -949,11 +974,22 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		ParentID      string `json:"parent_id"`
 		Magnet        string `json:"magnet"`
 		TorrentBase64 string `json:"torrent_base64"`
+		URL           string `json:"url"`
 	}
 	if decodeJSONLimit(w, r, &in, maxJSONBody) != nil {
 		return
 	}
-	job, err := s.downloads.create(r.Context(), in.ParentID, in.Magnet, in.TorrentBase64)
+	var job downloadJob
+	var err error
+	if strings.TrimSpace(in.URL) != "" {
+		if strings.TrimSpace(in.Magnet) != "" || strings.TrimSpace(in.TorrentBase64) != "" {
+			problem(w, http.StatusBadRequest, "每次只能提交一种下载来源")
+			return
+		}
+		job, err = s.downloads.createURL(r.Context(), in.ParentID, in.URL)
+	} else {
+		job, err = s.downloads.create(r.Context(), in.ParentID, in.Magnet, in.TorrentBase64)
+	}
 	if err != nil {
 		problem(w, http.StatusBadRequest, err.Error())
 		return
@@ -965,7 +1001,7 @@ func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": []downloadJob{}})
 		return
 	}
-	items, err := s.downloads.list(r.Context())
+	items, err := s.downloads.listAll(r.Context())
 	if err != nil {
 		problem(w, 500, "无法读取离线下载任务")
 		return
@@ -977,7 +1013,7 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 503, "内置离线下载不可用")
 		return
 	}
-	job, err := s.downloads.get(r.Context(), chi.URLParam(r, "id"), true)
+	job, err := s.downloads.getAny(r.Context(), chi.URLParam(r, "id"), true)
 	if errors.Is(err, sql.ErrNoRows) {
 		problem(w, 404, "离线下载任务不存在")
 		return
@@ -999,11 +1035,16 @@ func (s *Server) startDownload(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(w, r, &in) != nil {
 		return
 	}
+	job, err := s.downloads.getAny(r.Context(), chi.URLParam(r, "id"), false)
+	if err != nil || job.SourceType == "url" {
+		problem(w, 400, "直链下载不需要选择文件")
+		return
+	}
 	if err := s.downloads.start(r.Context(), chi.URLParam(r, "id"), in.FileIndices); err != nil {
 		problem(w, 400, err.Error())
 		return
 	}
-	job, _ := s.downloads.get(r.Context(), chi.URLParam(r, "id"), true)
+	job, _ = s.downloads.get(r.Context(), chi.URLParam(r, "id"), true)
 	writeJSON(w, 200, job)
 }
 func (s *Server) pauseDownload(w http.ResponseWriter, r *http.Request) {
@@ -1011,7 +1052,7 @@ func (s *Server) pauseDownload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 503, "内置离线下载不可用")
 		return
 	}
-	if err := s.downloads.pause(r.Context(), chi.URLParam(r, "id")); err != nil {
+	if err := s.downloads.pauseAny(r.Context(), chi.URLParam(r, "id")); err != nil {
 		problem(w, 409, err.Error())
 		return
 	}
@@ -1022,7 +1063,7 @@ func (s *Server) resumeDownload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 503, "内置离线下载不可用")
 		return
 	}
-	if err := s.downloads.resume(r.Context(), chi.URLParam(r, "id")); err != nil {
+	if err := s.downloads.resumeAny(r.Context(), chi.URLParam(r, "id")); err != nil {
 		problem(w, 409, err.Error())
 		return
 	}
@@ -1033,7 +1074,7 @@ func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 503, "内置离线下载不可用")
 		return
 	}
-	if err := s.downloads.remove(r.Context(), chi.URLParam(r, "id")); errors.Is(err, sql.ErrNoRows) {
+	if err := s.downloads.removeAny(r.Context(), chi.URLParam(r, "id")); errors.Is(err, sql.ErrNoRows) {
 		problem(w, 404, "离线下载任务不存在")
 		return
 	} else if err != nil {

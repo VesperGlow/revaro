@@ -48,6 +48,7 @@ export interface DownloadFile {
 export interface DownloadJob {
   id:string
   parent_id:string
+  source_type:'magnet'|'torrent'|'url'
   info_hash?:string
   name:string
   status:DownloadStatus

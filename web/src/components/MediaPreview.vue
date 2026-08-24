@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { DriveFile } from '../api'
 import { isAudio, isImage, isVideo, previewURL } from '../fileTypes'
 import { formatSize } from '../format'
@@ -13,12 +13,21 @@ const galleryItems=computed(()=>props.items.filter(item=>isImage(item)||isVideo(
 const galleryIndex=computed(()=>galleryItems.value.findIndex(item=>item.id===props.selected.id))
 const hasGalleryNavigation=computed(()=>galleryIndex.value>=0&&galleryItems.value.length>1)
 const swipe=reactive({active:false,pointerId:0,startX:0,startY:0,dx:0,dy:0})
+const zoom=ref(1)
+const pan=reactive({x:0,y:0})
 const stageEl=ref<HTMLElement|null>(null)
+const pointers=new Map<number,{x:number;y:number}>()
+let startPanX=0
+let startPanY=0
+let pinchDistance=0
+let pinchZoom=1
+let gestureMoved=false
 let swipeStartedOnStage=false
-const stageSwipeable=computed(()=>isImage(props.selected)&&hasGalleryNavigation.value)
+const stageSwipeable=computed(()=>isImage(props.selected))
 const swipeStyle=computed(()=>({
-  transform:`translateX(${swipe.active?swipe.dx:0}px)${swipe.active?' scale(.985)':''}`,
+  transform:`translate3d(${pan.x+(zoom.value===1&&swipe.active?swipe.dx:0)}px,${pan.y}px,0) scale(${zoom.value})`,
   transition:swipe.active?'none':'transform .24s cubic-bezier(.22,.8,.3,1)',
+  cursor:zoom.value>1?(swipe.active?'grabbing':'grab'):'zoom-in',
 }))
 
 function change(direction:-1|1){
@@ -27,7 +36,7 @@ function change(direction:-1|1){
   emit('change',galleryItems.value[next])
 }
 function handleKey(event:KeyboardEvent){
-  if(event.key==='ArrowLeft'||event.key==='ArrowRight'){
+  if((event.key==='ArrowLeft'||event.key==='ArrowRight')&&zoom.value===1){
     event.preventDefault()
     change(event.key==='ArrowLeft'?-1:1)
   }
@@ -36,24 +45,48 @@ function onPointerDown(event:PointerEvent){
   if(event.target instanceof Element&&event.target.closest('.preview-nav'))return
   if(event.pointerType==='mouse'&&event.button!==0)return
   swipeStartedOnStage=event.target===stageEl.value
-  if(!stageSwipeable.value||swipe.active)return
-  swipe.active=true;swipe.pointerId=event.pointerId;swipe.startX=event.clientX;swipe.startY=event.clientY;swipe.dx=0;swipe.dy=0
+  if(!stageSwipeable.value||pointers.has(event.pointerId))return
+  pointers.set(event.pointerId,{x:event.clientX,y:event.clientY})
+  if(pointers.size===1){swipe.active=true;swipe.pointerId=event.pointerId;swipe.startX=event.clientX;swipe.startY=event.clientY;swipe.dx=0;swipe.dy=0;startPanX=pan.x;startPanY=pan.y;gestureMoved=false}
+  else if(pointers.size===2){const [a,b]=[...pointers.values()];pinchDistance=Math.hypot(a.x-b.x,a.y-b.y);pinchZoom=zoom.value;swipe.dx=0;swipe.dy=0}
   stageEl.value?.setPointerCapture(event.pointerId)
 }
 function onPointerMove(event:PointerEvent){
-  if(!swipe.active||event.pointerId!==swipe.pointerId)return
+  if(!swipe.active||!pointers.has(event.pointerId))return
+  pointers.set(event.pointerId,{x:event.clientX,y:event.clientY})
+  if(pointers.size>=2){
+    const [a,b]=[...pointers.values()];const distance=Math.hypot(a.x-b.x,a.y-b.y)
+    if(pinchDistance>0)setZoom(pinchZoom*distance/pinchDistance)
+    gestureMoved=true;swipe.dx=0;swipe.dy=0;return
+  }
   swipe.dx=event.clientX-swipe.startX;swipe.dy=event.clientY-swipe.startY
+  if(Math.abs(swipe.dx)>3||Math.abs(swipe.dy)>3)gestureMoved=true
+  if(zoom.value>1){pan.x=startPanX+swipe.dx;pan.y=startPanY+swipe.dy;clampPan()}
 }
 function onPointerEnd(event:PointerEvent){
-  if(!swipe.active||event.pointerId!==swipe.pointerId)return
+  if(!swipe.active||!pointers.has(event.pointerId))return
+  pointers.delete(event.pointerId)
+  if(pointers.size){const [remaining]=[...pointers.entries()];swipe.pointerId=remaining[0];swipe.startX=remaining[1].x;swipe.startY=remaining[1].y;startPanX=pan.x;startPanY=pan.y;return}
   const {dx,dy}=swipe
   swipe.active=false;swipe.dx=0;swipe.dy=0
-  if(Math.abs(dx)>60&&Math.abs(dx)>Math.abs(dy)*1.25)change(dx<0?1:-1)
+  if(zoom.value===1&&Math.abs(dx)>60&&Math.abs(dx)>Math.abs(dy)*1.25)change(dx<0?1:-1)
 }
 function onStageClick(event:MouseEvent){
-  if(swipeStartedOnStage&&event.target===stageEl.value)emit('close')
+  if(!gestureMoved&&swipeStartedOnStage&&event.target===stageEl.value)emit('close')
   swipeStartedOnStage=false
 }
+function clampPan(){
+  const stage=stageEl.value;if(!stage||zoom.value<=1){if(zoom.value<=1){pan.x=0;pan.y=0};return}
+  const maxX=stage.clientWidth*(zoom.value-1)/2
+  const maxY=stage.clientHeight*(zoom.value-1)/2
+  pan.x=Math.max(-maxX,Math.min(maxX,pan.x));pan.y=Math.max(-maxY,Math.min(maxY,pan.y))
+}
+function setZoom(value:number){zoom.value=Math.max(1,Math.min(5,Math.round(value*100)/100));if(zoom.value===1){pan.x=0;pan.y=0}else clampPan()}
+function zoomBy(amount:number){setZoom(zoom.value+amount)}
+function onWheel(event:WheelEvent){if(!isImage(props.selected))return;event.preventDefault();setZoom(zoom.value+(event.deltaY<0?.35:-.35))}
+function toggleZoom(){setZoom(zoom.value>1?1:2)}
+
+watch(()=>props.selected.id,()=>{setZoom(1);pointers.clear();swipe.active=false})
 
 onMounted(()=>window.addEventListener('keydown',handleKey))
 onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
@@ -63,12 +96,13 @@ onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
   <section class="preview-modal" :class="{'audio-preview':isAudio(selected)}" @click.self="$emit('close')">
     <span v-if="galleryIndex>=0" class="preview-count-floating">{{ galleryIndex+1 }} / {{ galleryItems.length }}</span>
     <button class="preview-close" aria-label="关闭预览" @click="$emit('close')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
-    <div ref="stageEl" class="preview-stage" :class="{swipeable:stageSwipeable}" @click="onStageClick" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerEnd" @pointercancel="onPointerEnd">
+    <div ref="stageEl" class="preview-stage" :class="{swipeable:stageSwipeable,zoomed:zoom>1}" @click="onStageClick" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerEnd" @pointercancel="onPointerEnd" @wheel="onWheel">
       <button v-if="hasGalleryNavigation" class="preview-nav preview-prev" aria-label="上一项" @click.stop="change(-1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
-      <img v-if="isImage(selected)" :key="selected.id" :src="previewURL(selected)" :alt="selected.name" :style="swipeStyle">
+      <img v-if="isImage(selected)" :key="selected.id" :src="previewURL(selected)" :alt="selected.name" :style="swipeStyle" draggable="false" @dblclick.stop="toggleZoom">
       <VideoPlayer v-else-if="isVideo(selected)" :key="selected.id" :item="selected" />
       <AudioPlayer v-else-if="isAudio(selected)" :key="selected.id" :item="selected" />
       <button v-if="hasGalleryNavigation" class="preview-nav preview-next" aria-label="下一项" @click.stop="change(1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
+      <div v-if="isImage(selected)" class="preview-zoom" @pointerdown.stop><button :disabled="zoom<=1" aria-label="缩小图片" @click.stop="zoomBy(-.5)">−</button><button class="zoom-value" title="还原大小" @click.stop="setZoom(1)">{{ Math.round(zoom*100) }}%</button><button :disabled="zoom>=5" aria-label="放大图片" @click.stop="zoomBy(.5)">＋</button></div>
     </div>
     <footer class="preview-commandbar">
       <div class="preview-command-content">
