@@ -38,17 +38,18 @@ type videoHLSSession struct {
 	Dir      string
 	Playlist string
 
-	mu          sync.RWMutex
-	lastAccess  time.Time
-	err         string
-	done        bool
-	videoCodec  string
-	audioCodec  string
-	transcoding bool
-	cancel      context.CancelFunc
-	doneCh      chan struct{}
-	cancelOnce  sync.Once
-	destroyOnce sync.Once
+	mu             sync.RWMutex
+	lastAccess     time.Time
+	err            string
+	done           bool
+	videoCodec     string
+	audioCodec     string
+	transcoding    bool
+	fallbackReason string
+	cancel         context.CancelFunc
+	doneCh         chan struct{}
+	cancelOnce     sync.Once
+	destroyOnce    sync.Once
 }
 
 func (session *videoHLSSession) touch() {
@@ -137,7 +138,7 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
 		return
 	}
-	s.log.Info("video playback selected", "file", f.ID, "mode", "hls", "fallback_reason", strings.TrimSpace(in.FallbackReason))
+	s.log.Info("video HLS requested", "file", f.ID, "fallback_reason", strings.TrimSpace(in.FallbackReason))
 	// Sessions are a file/start-range cache, not a property of a single hls.js
 	// instance. A refresh or an earlier seek can therefore reuse any still-live
 	// event playlist for this file, including all segments already on disk.
@@ -182,7 +183,7 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 	session := &videoHLSSession{
 		ID: ids.New(), FileID: f.ID, Start: float64(int64(in.Start*1000)) / 1000,
 		Dir: dir, Playlist: filepath.Join(dir, "index.m3u8"), lastAccess: time.Now(),
-		cancel: cancel, doneCh: make(chan struct{}),
+		fallbackReason: strings.TrimSpace(in.FallbackReason), cancel: cancel, doneCh: make(chan struct{}),
 	}
 	s.videoHLSMu.Lock()
 	s.videoHLSSessions[session.ID] = session
@@ -427,6 +428,9 @@ func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSessi
 	}
 	transcoding := videoCodec != "h264"
 	session.setProbe(duration, videoCodec, audioCodec, transcoding)
+	s.log.Info("video playback selected", "file", f.ID, "video_codec", videoCodec, "audio_codec", audioCodec,
+		"selected_mode", "hls-transcode", "video_transcoding", transcoding, "audio_transcoding", audioCodec != "" && audioCodec != "aac",
+		"fallback_reason", session.fallbackReason)
 	args := []string{"-hide_banner", "-loglevel", "error"}
 	if session.Start > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(session.Start, 'f', 3, 64))

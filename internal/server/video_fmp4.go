@@ -2,15 +2,14 @@ package server
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,24 +20,30 @@ import (
 )
 
 const (
-	videoFMP4IdleTTL     = 10 * time.Minute
+	videoFMP4IdleTTL     = 20 * time.Minute
 	videoFMP4StartWait   = 45 * time.Second
+	videoFMP4IndexWait   = 20 * time.Second
 	maxVideoFMP4Sessions = 4
+	fmp4AudioCopy        = "copy"
+	fmp4AudioAAC         = "aac"
 )
+
+var videoFMP4AssetName = regexp.MustCompile(`^(init\.mp4|fragment-[0-9]{6}\.m4s)$`)
 
 type videoFMP4Session struct {
 	ID               string
 	FileID           string
-	Start            float64
-	RequestedStart   float64
 	Duration         float64
 	Dir              string
-	Path             string
+	Playlist         string
 	MIMEType         string
 	VideoContentType string
 	AudioContentType string
 	VideoCodec       string
 	AudioCodec       string
+	OutputAudioCodec string
+	AudioMode        string
+	AudioTranscoding bool
 	Width            int
 	Height           int
 	Bitrate          int64
@@ -90,24 +95,51 @@ func (session *videoFMP4Session) destroy() {
 }
 
 type startVideoFMP4Request struct {
-	Start float64 `json:"start"`
+	Start             float64 `json:"start"`
+	AudioMode         string  `json:"audio_mode"`
+	PreviousSessionID string  `json:"previous_session_id"`
+	FallbackReason    string  `json:"fallback_reason"`
+}
+
+type videoFMP4MetadataResponse struct {
+	Duration         float64 `json:"duration"`
+	MIMEType         string  `json:"mime_type"`
+	AACMIMEType      string  `json:"aac_mime_type"`
+	VideoMIMEType    string  `json:"video_mime_type"`
+	AudioMIMEType    string  `json:"audio_mime_type,omitempty"`
+	AACAudioMIMEType string  `json:"aac_audio_mime_type,omitempty"`
+	VideoCodec       string  `json:"video_codec"`
+	AudioCodec       string  `json:"audio_codec,omitempty"`
+	Width            int     `json:"width"`
+	Height           int     `json:"height"`
+	Bitrate          int64   `json:"bitrate"`
+	FrameRate        float64 `json:"frame_rate"`
 }
 
 type startVideoFMP4Response struct {
-	SessionID       string  `json:"session_id"`
-	StreamURL       string  `json:"stream_url"`
-	Start           float64 `json:"start"`
-	RequestedStart  float64 `json:"requested_start"`
-	Duration        float64 `json:"duration"`
-	MIMEType        string  `json:"mime_type"`
-	VideoMIMEType   string  `json:"video_mime_type"`
-	AudioMIMEType   string  `json:"audio_mime_type,omitempty"`
-	VideoCodec      string  `json:"video_codec"`
-	AudioCodec      string  `json:"audio_codec,omitempty"`
-	Width           int     `json:"width"`
-	Height          int     `json:"height"`
-	Bitrate         int64   `json:"bitrate"`
-	FrameRate       float64 `json:"frame_rate"`
+	videoFMP4MetadataResponse
+	SessionID        string  `json:"session_id"`
+	InitURL          string  `json:"init_url"`
+	IndexURL         string  `json:"index_url"`
+	Start            float64 `json:"start"`
+	RequestedStart   float64 `json:"requested_start"`
+	OutputAudioCodec string  `json:"output_audio_codec,omitempty"`
+	AudioTranscoding bool    `json:"audio_transcoding"`
+	SelectedMode     string  `json:"selected_mode"`
+}
+
+type fmp4Fragment struct {
+	Number   int     `json:"number"`
+	Start    float64 `json:"start"`
+	Duration float64 `json:"duration"`
+	URL      string  `json:"url"`
+}
+
+type fmp4IndexResponse struct {
+	Fragments      []fmp4Fragment `json:"fragments"`
+	AvailableUntil float64        `json:"available_until"`
+	Done           bool           `json:"done"`
+	Error          string         `json:"error,omitempty"`
 }
 
 type fmp4Probe struct {
@@ -120,8 +152,6 @@ type fmp4Probe struct {
 		Height    int    `json:"height"`
 		FrameRate string `json:"avg_frame_rate"`
 		Bitrate   string `json:"bit_rate"`
-		Channels   int    `json:"channels"`
-		SampleRate string `json:"sample_rate"`
 	} `json:"streams"`
 	Format struct {
 		Duration string `json:"duration"`
@@ -130,19 +160,41 @@ type fmp4Probe struct {
 }
 
 type fmp4MediaInfo struct {
-	duration, start, frameRate float64
-	videoCodec, audioCodec     string
-	mimeType                   string
-	videoContentType           string
-	audioContentType           string
-	width, height              int
-	bitrate                    int64
+	duration, frameRate                float64
+	videoCodec, audioCodec             string
+	videoCodecString, audioCodecString string
+	mimeType, aacMIMEType              string
+	videoContentType, audioContentType string
+	aacAudioContentType                string
+	width, height                      int
+	bitrate                            int64
+}
+
+func (s *Server) videoFMP4Metadata(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.fmp4File(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, f)
+	if err != nil {
+		problem(w, http.StatusBadGateway, "could not open video for fMP4 probe")
+		return
+	}
+	defer closeSource()
+	info, err := probeFMP4Source(ctx, s.cfg.FFmpegPath, sourceURL)
+	if err != nil {
+		s.log.Warn("fMP4 probe failed", "file", f.ID, "error", err)
+		problem(w, http.StatusUnprocessableEntity, "video codec cannot be remuxed to browser fMP4")
+		return
+	}
+	writeJSON(w, http.StatusOK, fmp4MetadataResponse(info))
 }
 
 func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
-	f, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || f.Kind != "file" || f.Status != "ready" || !isVideoSource(f) {
-		problem(w, http.StatusNotFound, "ready video file not found")
+	f, ok := s.fmp4File(w, r)
+	if !ok {
 		return
 	}
 	var in startVideoFMP4Request
@@ -153,29 +205,32 @@ func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid fMP4 start time")
 		return
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		s.log.Warn("fMP4 creation failed", "file", f.ID, "error", err)
-		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
+	if in.AudioMode == "" {
+		in.AudioMode = fmp4AudioCopy
+	}
+	if in.AudioMode != fmp4AudioCopy && in.AudioMode != fmp4AudioAAC {
+		problem(w, http.StatusBadRequest, "invalid fMP4 audio mode")
 		return
 	}
-	if _, err := ffprobeFor(s.cfg.FFmpegPath); err != nil {
-		s.log.Warn("fMP4 creation failed", "file", f.ID, "error", err)
-		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
+	if session := s.reusableVideoFMP4Session(f.ID, in.AudioMode, in.PreviousSessionID); session != nil {
+		if in.Start >= session.Duration {
+			problem(w, http.StatusBadRequest, "fMP4 start time is beyond the video duration")
+			return
+		}
+		s.logVideoFMP4Selection(f.ID, session, in.FallbackReason, true)
+		writeJSON(w, http.StatusCreated, videoFMP4Response(session, in.Start))
 		return
 	}
 	select {
 	case s.videoFMP4Slots <- struct{}{}:
 	default:
-		s.log.Warn("fMP4 creation deferred", "file", f.ID, "reason", "too many remux sessions")
 		problem(w, http.StatusTooManyRequests, "too many fMP4 streams are active")
 		return
 	}
-
 	dir, err := os.MkdirTemp("", "revaro-video-fmp4-")
 	if err != nil {
 		<-s.videoFMP4Slots
-		s.log.Warn("fMP4 creation failed", "file", f.ID, "error", err)
-		problem(w, http.StatusInternalServerError, "could not create fMP4 stream")
+		problem(w, http.StatusInternalServerError, "could not create fMP4 fragment cache")
 		return
 	}
 	ctx, cancel := context.WithCancel(s.audioHLSCtx)
@@ -184,21 +239,20 @@ func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		<-s.videoFMP4Slots
 		_ = os.RemoveAll(dir)
-		s.log.Warn("fMP4 creation failed", "file", f.ID, "error", err)
 		problem(w, http.StatusBadGateway, "could not open video for fMP4 remux")
 		return
 	}
-	info, err := probeFMP4Source(ctx, s.cfg.FFmpegPath, sourceURL, in.Start)
+	info, err := probeFMP4Source(ctx, s.cfg.FFmpegPath, sourceURL)
 	if err != nil {
 		closeSource()
 		cancel()
 		<-s.videoFMP4Slots
 		_ = os.RemoveAll(dir)
 		s.log.Warn("fMP4 creation failed", "file", f.ID, "error", err)
-		problem(w, http.StatusUnprocessableEntity, "video codecs cannot be remuxed to browser fMP4")
+		problem(w, http.StatusUnprocessableEntity, "video codec cannot be remuxed to browser fMP4")
 		return
 	}
-	if info.start >= info.duration {
+	if in.Start >= info.duration {
 		closeSource()
 		cancel()
 		<-s.videoFMP4Slots
@@ -206,12 +260,22 @@ func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "fMP4 start time is beyond the video duration")
 		return
 	}
+	if in.AudioMode == fmp4AudioCopy && info.audioCodec != "" && info.audioCodecString == "" {
+		closeSource()
+		cancel()
+		<-s.videoFMP4Slots
+		_ = os.RemoveAll(dir)
+		problem(w, http.StatusUnprocessableEntity, "source audio cannot be copied into browser fMP4")
+		return
+	}
+	mimeType, audioContentType, outputAudioCodec := fmp4OutputTypes(info, in.AudioMode)
 	session := &videoFMP4Session{
-		ID: ids.New(), FileID: f.ID, Start: info.start, RequestedStart: in.Start, Duration: info.duration,
-		Dir: dir, Path: filepath.Join(dir, "stream.mp4"), MIMEType: info.mimeType,
-		VideoContentType: info.videoContentType, AudioContentType: info.audioContentType,
-		VideoCodec: info.videoCodec, AudioCodec: info.audioCodec, Width: info.width, Height: info.height,
-		Bitrate: info.bitrate, FrameRate: info.frameRate, lastAccess: time.Now(), cancel: cancel, doneCh: make(chan struct{}),
+		ID: ids.New(), FileID: f.ID, Duration: info.duration, Dir: dir, Playlist: filepath.Join(dir, "index.m3u8"),
+		MIMEType: mimeType, VideoContentType: info.videoContentType, AudioContentType: audioContentType,
+		VideoCodec: info.videoCodec, AudioCodec: info.audioCodec, OutputAudioCodec: outputAudioCodec,
+		AudioMode: in.AudioMode, AudioTranscoding: in.AudioMode == fmp4AudioAAC && info.audioCodec != "",
+		Width: info.width, Height: info.height, Bitrate: info.bitrate, FrameRate: info.frameRate,
+		lastAccess: time.Now(), cancel: cancel, doneCh: make(chan struct{}),
 	}
 	s.videoFMP4Mu.Lock()
 	s.videoFMP4Sessions[session.ID] = session
@@ -221,30 +285,81 @@ func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
 	if err := waitForVideoFMP4(r.Context(), session); err != nil {
 		s.removeVideoFMP4Session(session.ID)
 		if errors.Is(err, context.DeadlineExceeded) {
-			problem(w, http.StatusGatewayTimeout, "fMP4 stream took too long to start")
+			problem(w, http.StatusGatewayTimeout, "fMP4 fragments took too long to start")
 		} else {
 			s.log.Warn("fMP4 creation failed", "file", f.ID, "session", session.ID, "error", err)
-			problem(w, http.StatusBadGateway, "fMP4 stream failed to start")
+			problem(w, http.StatusBadGateway, "fMP4 fragments failed to start")
 		}
 		return
 	}
-	s.log.Info("video playback selected", "file", f.ID, "mode", "mse-fmp4", "video_codec", info.videoCodec, "audio_codec", info.audioCodec, "start", info.start)
-	writeJSON(w, http.StatusCreated, startVideoFMP4Response{
-		SessionID: session.ID, StreamURL: "/api/video/fmp4/" + session.ID + "/stream.mp4",
-		Start: session.Start, RequestedStart: session.RequestedStart, Duration: session.Duration,
-		MIMEType: session.MIMEType, VideoMIMEType: session.VideoContentType, AudioMIMEType: session.AudioContentType,
-		VideoCodec: session.VideoCodec, AudioCodec: session.AudioCodec, Width: session.Width, Height: session.Height,
-		Bitrate: session.Bitrate, FrameRate: session.FrameRate,
-	})
+	s.logVideoFMP4Selection(f.ID, session, in.FallbackReason, false)
+	writeJSON(w, http.StatusCreated, videoFMP4Response(session, in.Start))
 }
 
-func probeFMP4Source(ctx context.Context, ffmpeg, sourceURL string, requestedStart float64) (fmp4MediaInfo, error) {
+func (s *Server) fmp4File(w http.ResponseWriter, r *http.Request) (File, bool) {
+	f, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || f.Kind != "file" || f.Status != "ready" || !isVideoSource(f) {
+		problem(w, http.StatusNotFound, "ready video file not found")
+		return File{}, false
+	}
+	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
+		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
+		return File{}, false
+	}
+	if _, err := ffprobeFor(s.cfg.FFmpegPath); err != nil {
+		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
+		return File{}, false
+	}
+	return f, true
+}
+
+func (s *Server) logVideoFMP4Selection(fileID string, session *videoFMP4Session, fallbackReason string, reused bool) {
+	selectedMode := "mse-copy"
+	if session.AudioTranscoding {
+		selectedMode = "mse-copy-video-aac-audio"
+	}
+	s.log.Info("video playback selected", "file", fileID, "video_codec", session.VideoCodec,
+		"audio_codec", session.AudioCodec, "selected_mode", selectedMode, "video_transcoding", false,
+		"audio_transcoding", session.AudioTranscoding, "fallback_reason", strings.TrimSpace(fallbackReason),
+		"session", session.ID, "session_reused", reused)
+}
+
+func fmp4MetadataResponse(info fmp4MediaInfo) videoFMP4MetadataResponse {
+	return videoFMP4MetadataResponse{
+		Duration: info.duration, MIMEType: info.mimeType, AACMIMEType: info.aacMIMEType,
+		VideoMIMEType: info.videoContentType, AudioMIMEType: info.audioContentType,
+		AACAudioMIMEType: info.aacAudioContentType, VideoCodec: info.videoCodec, AudioCodec: info.audioCodec,
+		Width: info.width, Height: info.height, Bitrate: info.bitrate, FrameRate: info.frameRate,
+	}
+}
+
+func videoFMP4Response(session *videoFMP4Session, requestedStart float64) startVideoFMP4Response {
+	selectedMode := "mse-copy"
+	if session.AudioTranscoding {
+		selectedMode = "mse-copy-video-aac-audio"
+	}
+	metadata := videoFMP4MetadataResponse{
+		Duration: session.Duration, MIMEType: session.MIMEType, AACMIMEType: session.MIMEType,
+		VideoMIMEType: session.VideoContentType, AudioMIMEType: session.AudioContentType,
+		AACAudioMIMEType: `audio/mp4; codecs="mp4a.40.2"`, VideoCodec: session.VideoCodec,
+		AudioCodec: session.AudioCodec, Width: session.Width, Height: session.Height,
+		Bitrate: session.Bitrate, FrameRate: session.FrameRate,
+	}
+	base := "/api/video/fmp4/" + session.ID
+	return startVideoFMP4Response{
+		videoFMP4MetadataResponse: metadata, SessionID: session.ID, InitURL: base + "/init.mp4",
+		IndexURL: base + "/index.json", Start: 0, RequestedStart: requestedStart,
+		OutputAudioCodec: session.OutputAudioCodec, AudioTranscoding: session.AudioTranscoding, SelectedMode: selectedMode,
+	}
+}
+
+func probeFMP4Source(ctx context.Context, ffmpeg, sourceURL string) (fmp4MediaInfo, error) {
 	ffprobe, err := ffprobeFor(ffmpeg)
 	if err != nil {
 		return fmp4MediaInfo{}, err
 	}
 	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-show_entries",
-		"format=duration,bit_rate:stream=codec_type,codec_name,profile,level,width,height,avg_frame_rate,bit_rate,channels,sample_rate",
+		"format=duration,bit_rate:stream=codec_type,codec_name,profile,level,width,height,avg_frame_rate,bit_rate",
 		"-of", "json", sourceURL)
 	output := &limitedBuffer{limit: 2 << 20}
 	stderr := &limitedBuffer{limit: 64 << 10}
@@ -256,7 +371,7 @@ func probeFMP4Source(ctx context.Context, ffmpeg, sourceURL string, requestedSta
 	if err := json.Unmarshal([]byte(output.String()), &probe); err != nil {
 		return fmp4MediaInfo{}, fmt.Errorf("decode ffprobe fMP4 metadata: %w", err)
 	}
-	info := fmp4MediaInfo{start: requestedStart}
+	var info fmp4MediaInfo
 	info.duration, _ = strconv.ParseFloat(probe.Format.Duration, 64)
 	info.bitrate, _ = strconv.ParseInt(probe.Format.Bitrate, 10, 64)
 	var videoProfile string
@@ -265,7 +380,7 @@ func probeFMP4Source(ctx context.Context, ffmpeg, sourceURL string, requestedSta
 		switch stream.CodecType {
 		case "video":
 			if info.videoCodec == "" {
-				info.videoCodec, videoProfile, videoLevel = stream.CodecName, stream.Profile, stream.Level
+				info.videoCodec, videoProfile, videoLevel = strings.ToLower(stream.CodecName), stream.Profile, stream.Level
 				info.width, info.height = stream.Width, stream.Height
 				info.frameRate = parseFMP4FrameRate(stream.FrameRate)
 				if bitrate, parseErr := strconv.ParseInt(stream.Bitrate, 10, 64); parseErr == nil && bitrate > 0 {
@@ -274,58 +389,46 @@ func probeFMP4Source(ctx context.Context, ffmpeg, sourceURL string, requestedSta
 			}
 		case "audio":
 			if info.audioCodec == "" {
-				info.audioCodec = stream.CodecName
+				info.audioCodec = strings.ToLower(stream.CodecName)
 			}
 		}
 	}
 	if info.duration <= 0 || info.videoCodec == "" {
 		return fmp4MediaInfo{}, errors.New("video duration or codec is unavailable")
 	}
-	videoCodecString, err := fmp4VideoCodecString(info.videoCodec, videoProfile, videoLevel)
+	info.videoCodecString, err = fmp4VideoCodecString(info.videoCodec, videoProfile, videoLevel)
 	if err != nil {
 		return fmp4MediaInfo{}, err
 	}
-	audioCodecString, err := fmp4AudioCodecString(info.audioCodec)
-	if err != nil {
-		return fmp4MediaInfo{}, err
+	info.audioCodecString, _ = fmp4AudioCodecString(info.audioCodec)
+	info.videoContentType = `video/mp4; codecs="` + info.videoCodecString + `"`
+	info.aacAudioContentType = `audio/mp4; codecs="mp4a.40.2"`
+	info.mimeType = info.videoContentType
+	if info.audioCodecString != "" {
+		info.audioContentType = `audio/mp4; codecs="` + info.audioCodecString + `"`
+		info.mimeType = `video/mp4; codecs="` + info.videoCodecString + `, ` + info.audioCodecString + `"`
 	}
-	info.videoContentType = `video/mp4; codecs="` + videoCodecString + `"`
-	codecList := videoCodecString
-	if audioCodecString != "" {
-		info.audioContentType = `audio/mp4; codecs="` + audioCodecString + `"`
-		codecList += ", " + audioCodecString
+	info.aacMIMEType = `video/mp4; codecs="` + info.videoCodecString + `, mp4a.40.2"`
+	if info.audioCodec == "" {
+		info.aacMIMEType = info.mimeType
 	}
-	info.mimeType = `video/mp4; codecs="` + codecList + `"`
 	if info.bitrate <= 0 {
 		info.bitrate = 8_000_000
 	}
 	if info.frameRate <= 0 {
 		info.frameRate = 30
 	}
-	if requestedStart > 0 {
-		keyframe, keyframeErr := probeFMP4Keyframe(ctx, ffprobe, sourceURL, requestedStart)
-		if keyframeErr == nil && keyframe >= 0 && keyframe <= requestedStart+.25 {
-			info.start = keyframe
-		}
-	}
-	info.start = float64(int64(max(0, info.start)*1000)) / 1000
 	return info, nil
 }
 
-func probeFMP4Keyframe(ctx context.Context, ffprobe, sourceURL string, target float64) (float64, error) {
-	interval := strconv.FormatFloat(target, 'f', 3, 64) + "%+#1"
-	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-read_intervals", interval, "-select_streams", "v:0",
-		"-show_entries", "packet=pts_time", "-of", "default=noprint_wrappers=1:nokey=1", sourceURL)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, err
+func fmp4OutputTypes(info fmp4MediaInfo, audioMode string) (string, string, string) {
+	if info.audioCodec == "" {
+		return info.videoContentType, "", ""
 	}
-	line := strings.TrimSpace(strings.SplitN(string(output), "\n", 2)[0])
-	value, err := strconv.ParseFloat(line, 64)
-	if err != nil {
-		return 0, err
+	if audioMode == fmp4AudioAAC {
+		return info.aacMIMEType, info.aacAudioContentType, "aac"
 	}
-	return value, nil
+	return info.mimeType, info.audioContentType, info.audioCodec
 }
 
 func parseFMP4FrameRate(value string) float64 {
@@ -381,36 +484,35 @@ func fmp4AudioCodecString(codec string) (string, error) {
 	case "mp3":
 		return "mp4a.6B", nil
 	default:
-		return "", fmt.Errorf("audio codec %q is not supported by the fMP4 remux path", codec)
+		return "", fmt.Errorf("audio codec %q cannot be copied into browser fMP4", codec)
 	}
 }
 
-func (s *Server) runVideoFMP4(ctx context.Context, f File, sourceURL string, closeSource func(), session *videoFMP4Session) {
-	defer func() { <-s.videoFMP4Slots }()
-	defer closeSource()
-	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
-	if session.RequestedStart > 0 {
-		// Seek with the requested timestamp so FFmpeg selects the same preceding
-		// keyframe that probeFMP4Keyframe reported. The response exposes that
-		// keyframe as Start, allowing the browser to seek within the remuxed
-		// timeline without losing subtitle alignment.
-		args = append(args, "-ss", strconv.FormatFloat(session.RequestedStart, 'f', 3, 64))
-	}
-	args = append(args, "-i", sourceURL, "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-c:v", "copy", "-c:a", "copy")
+func videoFMP4Args(sourceURL string, session *videoFMP4Session) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", sourceURL,
+		"-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-c:v", "copy"}
 	if session.VideoCodec == "hevc" || session.VideoCodec == "h265" {
 		args = append(args, "-tag:v", "hvc1")
 	} else if session.VideoCodec == "h264" || session.VideoCodec == "avc" {
 		args = append(args, "-tag:v", "avc1")
 	}
-	args = append(args,
+	if session.AudioTranscoding {
+		args = append(args, "-c:a", "aac", "-b:a", "192k", "-ar", "48000")
+	} else {
+		args = append(args, "-c:a", "copy")
+	}
+	return append(args,
 		"-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
-		// delay_moov still emits an MSE initialization segment before the first
-		// moof, but lets FFmpeg inspect the first audio packets first. EAC3 needs
-		// that inspection to populate dec3; empty_moov would fail before remuxing.
-		"-movflags", "+frag_keyframe+delay_moov+default_base_moof+omit_tfhd_offset+disable_chpl",
-		"-frag_duration", "2000000", "-f", "mp4", session.Path,
+		"-f", "hls", "-hls_segment_type", "fmp4", "-hls_time", "2", "-hls_list_size", "0",
+		"-hls_playlist_type", "event", "-hls_flags", "temp_file+independent_segments",
+		"-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", filepath.Join(session.Dir, "fragment-%06d.m4s"), session.Playlist,
 	)
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, args...)
+}
+
+func (s *Server) runVideoFMP4(ctx context.Context, f File, sourceURL string, closeSource func(), session *videoFMP4Session) {
+	defer func() { <-s.videoFMP4Slots }()
+	defer closeSource()
+	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, videoFMP4Args(sourceURL, session)...)
 	stderr := &limitedBuffer{limit: 64 << 10}
 	cmd.Stderr = stderr
 	err := cmd.Run()
@@ -418,7 +520,7 @@ func (s *Server) runVideoFMP4(ctx context.Context, f File, sourceURL string, clo
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		} else {
-			err = mediaCommandError("ffmpeg fMP4 remux", err, nil, stderr.String())
+			err = mediaCommandError("ffmpeg fMP4 fragments", err, nil, stderr.String())
 		}
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
@@ -433,9 +535,11 @@ func waitForVideoFMP4(requestCtx context.Context, session *videoFMP4Session) err
 	ticker := time.NewTicker(75 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		initReady, fragmentReady := fmp4FileState(session.Path)
-		if initReady && fragmentReady {
-			return nil
+		fragments, _ := fmp4FragmentIndex(session.Playlist, session.ID)
+		if len(fragments) > 0 {
+			if _, err := os.Stat(filepath.Join(session.Dir, "init.mp4")); err == nil {
+				return nil
+			}
 		}
 		_, done, sessionErr := session.snapshot()
 		if done {
@@ -454,173 +558,128 @@ func waitForVideoFMP4(requestCtx context.Context, session *videoFMP4Session) err
 	}
 }
 
-func fmp4FileState(path string) (bool, bool) {
-	file, err := os.Open(path)
+func fmp4FragmentIndex(path, sessionID string) ([]fmp4Fragment, float64) {
+	body, err := os.ReadFile(path)
 	if err != nil {
-		return false, false
+		return nil, 0
 	}
-	defer file.Close()
-	stat, err := file.Stat()
-	if err != nil {
-		return false, false
-	}
-	size := stat.Size()
-	var offset int64
-	initReady, fragmentReady := false, false
-	header := make([]byte, 16)
-	for offset+8 <= size {
-		if _, err := file.ReadAt(header[:8], offset); err != nil {
-			break
-		}
-		boxSize := int64(binary.BigEndian.Uint32(header[:4]))
-		headerSize := int64(8)
-		if boxSize == 1 {
-			if offset+16 > size {
-				break
-			}
-			if _, err := file.ReadAt(header, offset); err != nil {
-				break
-			}
-			boxSize, headerSize = int64(binary.BigEndian.Uint64(header[8:16])), 16
-		}
-		if boxSize == 0 || boxSize < headerSize || offset+boxSize > size {
-			break
-		}
-		boxType := string(header[4:8])
-		if boxType == "moov" {
-			initReady = true
-		}
-		if initReady && boxType == "mdat" {
-			fragmentReady = true
-		}
-		offset += boxSize
-	}
-	return initReady, fragmentReady
-}
-
-func (s *Server) videoFMP4Stream(w http.ResponseWriter, r *http.Request) {
-	session := s.videoFMP4Session(chi.URLParam(r, "session"))
-	if session == nil {
-		problem(w, http.StatusNotFound, "fMP4 stream not found")
-		return
-	}
-	session.touch()
-	file, err := os.Open(session.Path)
-	if err != nil {
-		problem(w, http.StatusNotFound, "fMP4 stream is not ready")
-		return
-	}
-	defer file.Close()
-	w.Header().Set("Content-Type", session.MIMEType)
-	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, done, _ := session.snapshot()
-	if r.Header.Get("Range") != "" || done {
-		if done {
-			http.ServeContent(w, r, "stream.mp4", time.Time{}, file)
-			return
-		}
-		s.serveGrowingFMP4Range(w, r, session, file)
-		return
-	}
-	flusher, _ := w.(http.Flusher)
-	buffer := make([]byte, 256<<10)
-	for {
-		n, readErr := file.Read(buffer)
-		if n > 0 {
-			if _, err := w.Write(buffer[:n]); err != nil {
-				return
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-			session.touch()
-		}
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return
-		}
-		if !errors.Is(readErr, io.EOF) {
+	var fragments []fmp4Fragment
+	var start, pendingDuration float64
+	for _, rawLine := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "#EXTINF:") {
+			value := strings.TrimSuffix(strings.TrimPrefix(line, "#EXTINF:"), ",")
+			pendingDuration, _ = strconv.ParseFloat(value, 64)
 			continue
 		}
-		_, finished, _ := session.snapshot()
-		if finished {
-			return
+		if pendingDuration <= 0 || !videoFMP4AssetName.MatchString(line) || !strings.HasSuffix(line, ".m4s") {
+			continue
 		}
-		select {
-		case <-r.Context().Done():
-			return
-		case <-session.doneCh:
-		case <-time.After(50 * time.Millisecond):
+		numberText := strings.TrimSuffix(strings.TrimPrefix(line, "fragment-"), ".m4s")
+		number, parseErr := strconv.Atoi(numberText)
+		if parseErr != nil {
+			continue
 		}
+		fragments = append(fragments, fmp4Fragment{Number: number, Start: start, Duration: pendingDuration,
+			URL: "/api/video/fmp4/" + sessionID + "/" + line})
+		start += pendingDuration
+		pendingDuration = 0
 	}
+	return fragments, start
 }
 
-func (s *Server) serveGrowingFMP4Range(w http.ResponseWriter, r *http.Request, session *videoFMP4Session, file *os.File) {
-	rangeValue := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Range"), "bytes="))
-	parts := strings.SplitN(rangeValue, "-", 2)
-	if len(parts) != 2 || parts[0] == "" {
-		problem(w, http.StatusRequestedRangeNotSatisfiable, "unsupported fMP4 byte range")
+func (s *Server) videoFMP4Index(w http.ResponseWriter, r *http.Request) {
+	session := s.videoFMP4Session(chi.URLParam(r, "session"))
+	if session == nil {
+		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
 		return
 	}
-	start, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || start < 0 {
-		problem(w, http.StatusRequestedRangeNotSatisfiable, "invalid fMP4 byte range")
-		return
-	}
-	deadline := time.NewTimer(30 * time.Second)
+	target, _ := strconv.ParseFloat(r.URL.Query().Get("time"), 64)
+	target = max(0, target)
+	deadline := time.NewTimer(videoFMP4IndexWait)
 	defer deadline.Stop()
-	var size int64
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 	for {
-		if stat, statErr := file.Stat(); statErr == nil {
-			size = stat.Size()
+		fragments, available := fmp4FragmentIndex(session.Playlist, session.ID)
+		_, done, sessionErr := session.snapshot()
+		startIndex := 0
+		for startIndex < len(fragments) && fragments[startIndex].Start+fragments[startIndex].Duration <= target+.001 {
+			startIndex++
 		}
-		_, done, _ := session.snapshot()
-		if start < size || done {
-			break
+		if startIndex < len(fragments) || done {
+			end := min(len(fragments), startIndex+12)
+			session.touch()
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, http.StatusOK, fmp4IndexResponse{Fragments: fragments[startIndex:end], AvailableUntil: available, Done: done, Error: sessionErr})
+			return
 		}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-deadline.C:
-			problem(w, http.StatusRequestedRangeNotSatisfiable, "fMP4 byte range is not ready")
+			w.Header().Set("Cache-Control", "no-store")
+			writeJSON(w, http.StatusOK, fmp4IndexResponse{Fragments: []fmp4Fragment{}, AvailableUntil: available, Done: false})
 			return
-		case <-time.After(50 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
-	if start >= size {
-		w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(size, 10))
-		problem(w, http.StatusRequestedRangeNotSatisfiable, "fMP4 byte range is outside the stream")
+}
+
+func (s *Server) videoFMP4Asset(w http.ResponseWriter, r *http.Request) {
+	session := s.videoFMP4Session(chi.URLParam(r, "session"))
+	if session == nil {
+		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
 		return
 	}
-	end := size - 1
-	if parts[1] != "" {
-		requestedEnd, parseErr := strconv.ParseInt(parts[1], 10, 64)
-		if parseErr != nil || requestedEnd < start {
-			problem(w, http.StatusRequestedRangeNotSatisfiable, "invalid fMP4 byte range")
-			return
-		}
-		end = min(end, requestedEnd)
+	asset := chi.URLParam(r, "asset")
+	if !videoFMP4AssetName.MatchString(asset) {
+		problem(w, http.StatusNotFound, "fMP4 fragment not found")
+		return
 	}
-	_, done, _ := session.snapshot()
-	total := "*"
-	if done {
-		total = strconv.FormatInt(size, 10)
+	path := filepath.Join(session.Dir, asset)
+	if _, err := os.Stat(path); err != nil {
+		problem(w, http.StatusNotFound, "fMP4 fragment is not ready")
+		return
 	}
-	length := end - start + 1
-	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%s", start, end, total))
-	w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
-	w.WriteHeader(http.StatusPartialContent)
-	_, _ = file.Seek(start, io.SeekStart)
-	_, _ = io.CopyN(w, file, length)
+	session.touch()
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, path)
 }
 
 func (s *Server) stopVideoFMP4(w http.ResponseWriter, r *http.Request) {
-	if s.removeVideoFMP4Session(chi.URLParam(r, "session")) == nil {
-		problem(w, http.StatusNotFound, "fMP4 stream not found")
+	session := s.videoFMP4Session(chi.URLParam(r, "session"))
+	if session == nil {
+		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
 		return
 	}
+	// Releasing a player is not a cache eviction. Continue remuxing so seeks and
+	// refreshes can reuse this exact init segment, index, fragments and process.
+	session.touch()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) reusableVideoFMP4Session(fileID, audioMode, preferredID string) *videoFMP4Session {
+	s.videoFMP4Mu.RLock()
+	defer s.videoFMP4Mu.RUnlock()
+	if preferred := s.videoFMP4Sessions[preferredID]; preferred != nil && preferred.FileID == fileID && preferred.AudioMode == audioMode {
+		if fragments, _ := fmp4FragmentIndex(preferred.Playlist, preferred.ID); len(fragments) > 0 {
+			preferred.touch()
+			return preferred
+		}
+	}
+	for _, session := range s.videoFMP4Sessions {
+		if session.FileID != fileID || session.AudioMode != audioMode {
+			continue
+		}
+		if fragments, _ := fmp4FragmentIndex(session.Playlist, session.ID); len(fragments) > 0 {
+			session.touch()
+			return session
+		}
+	}
+	return nil
 }
 
 func (s *Server) videoFMP4Session(id string) *videoFMP4Session {

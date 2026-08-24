@@ -67,15 +67,13 @@ export interface DownloadJob {
 
 export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string }
 export interface VideoMediaResponse { subtitles:VideoSubtitleTrack[] }
-export interface VideoFMP4Response {
-  session_id:string
-  stream_url:string
-  start:number
-  requested_start:number
+export interface VideoFMP4Metadata {
   duration:number
   mime_type:string
+  aac_mime_type:string
   video_mime_type:string
   audio_mime_type?:string
+  aac_audio_mime_type?:string
   video_codec:string
   audio_codec?:string
   width:number
@@ -83,6 +81,18 @@ export interface VideoFMP4Response {
   bitrate:number
   frame_rate:number
 }
+export interface VideoFMP4Response extends VideoFMP4Metadata {
+  session_id:string
+  init_url:string
+  index_url:string
+  start:number
+  requested_start:number
+  output_audio_codec?:string
+  audio_transcoding:boolean
+  selected_mode:'mse-copy'|'mse-copy-video-aac-audio'
+}
+export interface VideoFMP4Fragment { number:number;start:number;duration:number;url:string }
+export interface VideoFMP4Index { fragments:VideoFMP4Fragment[];available_until:number;done:boolean;error?:string }
 export interface VideoHLSResponse { session_id:string; playlist_url:string; start:number; duration:number; video_codec:string; audio_codec:string; transcoding:boolean }
 export interface ArchiveJob {
   id:string

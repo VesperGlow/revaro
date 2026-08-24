@@ -4,7 +4,7 @@ import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
-import type { VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
+import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
 import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, type UnifiedVideoPlayer } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
@@ -32,6 +32,7 @@ const streamOffset=ref(0)
 const videoCodec=ref('')
 const audioCodec=ref('')
 const transcoding=ref(false)
+const audioTranscoding=ref(false)
 const controlsVisible=ref(true)
 const volume=ref(.9)
 const muted=ref(false)
@@ -49,7 +50,6 @@ let remoteSaveTimer=0
 let controlsTimer=0
 let volumeTimer=0
 let lastAudibleVolume=.9
-let bufferRecoveryTimer=0
 let directFallbackStarted=false
 let mseFallbackStarted=false
 let progressLoaded=false
@@ -58,9 +58,16 @@ let serverPosition=0
 
 const positionKey=computed(()=>`revaro-video-position:${props.item.id}`)
 const sessionKey=computed(()=>`revaro-video-hls-session:${props.item.id}`)
+const fmp4SessionKey=computed(()=>`revaro-video-fmp4-session:${props.item.id}`)
 const volumeKey='revaro-video-volume'
 const poster=computed(()=>thumbSRC(props.item))
-const compatibilityLabel=computed(()=>mseMode.value?`${videoCodec.value.toUpperCase()||'视频'}${audioCodec.value?` + ${audioCodec.value.toUpperCase()}`:''} · MSE fMP4 原码`:transcoding.value?`${videoCodec.value.toUpperCase()} → H.264 实时转码`:`${videoCodec.value.toUpperCase()||'视频'} HLS 封装`)
+const compatibilityLabel=computed(()=>{
+  const videoName=videoCodec.value.toUpperCase()||'视频'
+  const audioName=audioCodec.value.toUpperCase()
+  if(mseMode.value&&audioTranscoding.value)return `${videoName} + ${audioName} → AAC · MSE 视频原码`
+  if(mseMode.value)return `${videoName}${audioName?` + ${audioName}`:''} · MSE 原码`
+  return transcoding.value?`${videoName} → H.264 · HLS 兼容转码`:`${videoName} · HLS 兼容封装`
+})
 const timelinePosition=computed(()=>pendingSeek.value??currentTime.value)
 const progress=computed(()=>duration.value?Math.min(100,timelinePosition.value/duration.value*100):0)
 const effectiveVolume=computed(()=>muted.value?0:volume.value)
@@ -142,35 +149,53 @@ function releaseHLSSession(id:string){
 async function startMSEStream(start:number,autoplay=true){
   if(typeof MediaSource==='undefined'){await startCompatibilityStream(start,autoplay,'浏览器没有 MediaSource Extensions');return}
   const generation=++playbackGeneration
-  const previousFMP4=fmp4SessionId;fmp4SessionId=''
   const previousHLS=hlsSessionId;hlsSessionId=''
-  prepareKind.value=previousFMP4||previousHLS||player?'seek':'initial';prepareMode.value='mse'
+  prepareKind.value=fmp4SessionId||previousHLS||player?'seek':'initial';prepareMode.value='mse'
   starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=true;directSource.value='';mseFallbackStarted=false;showControls(true)
   if(prepareKind.value==='seek')video.value?.pause()
-  resetPlayback();releaseHLSSession(previousHLS);void releaseFMP4Session(previousFMP4)
+  resetPlayback();releaseHLSSession(previousHLS)
   await nextTick();if(generation!==playbackGeneration)return
   try{
-    const response=await api<VideoFMP4Response>(`/api/files/${props.item.id}/video/fmp4`,{method:'POST',body:JSON.stringify({start})},70000)
+    const metadata=await api<VideoFMP4Metadata>(`/api/files/${props.item.id}/video/fmp4`,{},70000)
+    if(generation!==playbackGeneration)return
+    const compatibility=await mseCompatibility(metadata)
+    console.info('[revaro] MSE video supported:',compatibility.videoSupported,'power efficient:',compatibility.powerEfficient??'unknown')
+    console.info('[revaro] MSE audio supported:',compatibility.audioSupported,'AAC supported:',compatibility.aacAudioSupported)
+    console.info('[revaro] MSE combined copy supported:',compatibility.combinedCopySupported,'combined AAC supported:',compatibility.combinedAACSupported)
+    if(compatibility.mode==='hls'){
+      console.warn('[revaro] selected mode: hls-transcode; fallback reason:',compatibility.fallbackReason)
+      await startCompatibilityStream(start,autoplayPending.value,compatibility.fallbackReason)
+      return
+    }
+    if(compatibility.mode==='error'){
+      starting.value=false;buffering.value=false;error.value=`MSE 音频输出不可用：${compatibility.fallbackReason}`
+      console.error('[revaro] selected mode: mse-error; HEVC remains untouched; reason:',compatibility.fallbackReason);showControls(true)
+      return
+    }
+    const previousSessionID=fmp4SessionId||sessionStorage.getItem(fmp4SessionKey.value)||''
+    const response=await api<VideoFMP4Response>(`/api/files/${props.item.id}/video/fmp4`,{method:'POST',body:JSON.stringify({start,audio_mode:compatibility.mode,previous_session_id:previousSessionID,fallback_reason:compatibility.fallbackReason})},70000)
     if(generation!==playbackGeneration){void releaseFMP4Session(response.session_id);return}
-    const fallbackReason=await mseCompatibility(response)
-    if(fallbackReason){void releaseFMP4Session(response.session_id);await startCompatibilityStream(start,autoplayPending.value,fallbackReason);return}
     const el=video.value;if(!el)throw new Error('播放器已经关闭')
-    fmp4SessionId=response.session_id;streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
-    videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec||'';transcoding.value=false
+    fmp4SessionId=response.session_id;sessionStorage.setItem(fmp4SessionKey.value,response.session_id);streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
+    videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec||'';transcoding.value=false;audioTranscoding.value=response.audio_transcoding
     const attachment=await attachFMP4Stream({
-      element:el,response,target:start,autoplay:false,
+      element:el,response,mimeType:compatibility.mimeType,target:currentTime.value,autoplay:false,
       onFatal:reason=>fallbackFromMSE(reason),
+      onFragment:()=>{buffering.value=false},
     })
     if(generation!==playbackGeneration){attachment.destroy();void releaseFMP4Session(response.session_id);return}
-    player=createUnifiedVideoPlayer('mse',el,response.start,attachment.destroy);player.setVolume(volume.value,muted.value)
+    player=createUnifiedVideoPlayer('mse',el,response.start,attachment.destroy,targetTime=>{buffering.value=true;showControls(true);return attachment.seek(targetTime)});player.setVolume(volume.value,muted.value)
     starting.value=false;buffering.value=false;subtitleReady.value=true;refreshSubtitle()
-    console.info('[revaro] video playback mode=mse-fmp4',response.video_codec,response.audio_codec||'no-audio')
+    console.info('[revaro] selected mode:',response.selected_mode,'video:',response.video_codec,'audio:',response.audio_codec||'none','output audio:',response.output_audio_codec||'none')
     if(autoplayPending.value)void player.play().catch(()=>{});showControls()
   }catch(caught){
     if(generation!==playbackGeneration)return
     const failedSession=fmp4SessionId;fmp4SessionId='';resetPlayback();void releaseFMP4Session(failedSession)
     const reason=caught instanceof Error?caught.message:'MSE fMP4 启动失败'
-    await startCompatibilityStream(start,autoplayPending.value,reason)
+    const confirmedBrowserFailure=/SourceBuffer|媒体解码|无法创建 MSE/i.test(reason)
+    if(confirmedBrowserFailure){await startCompatibilityStream(start,autoplayPending.value,reason);return}
+    starting.value=false;buffering.value=false;mseMode.value=true;error.value=`MSE 原码流启动失败：${reason}`
+    console.error('[revaro] selected mode: mse-error; no H.264 fallback; reason:',reason);showControls(true)
   }
 }
 function fallbackFromMSE(reason:string){
@@ -198,7 +223,7 @@ async function startCompatibilityStream(start:number,autoplay=true,fallbackReaso
     if(generation!==playbackGeneration)return
     resetPlayback()
     hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
-    videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding
+    videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding;audioTranscoding.value=false
     if(Hls.isSupported()){
       const hlsPlayer=new Hls({enableWorker:true,lowLatencyMode:false,startFragPrefetch:true,backBufferLength:60,maxBufferLength:90,maxMaxBufferLength:180,maxBufferSize:256*1024*1024,maxBufferHole:.5,highBufferWatchdogPeriod:2,manifestLoadingTimeOut:15000,fragLoadingTimeOut:25000})
       hls=hlsPlayer;player=createUnifiedVideoPlayer('hls',el,response.start,()=>{hlsPlayer.destroy();if(hls===hlsPlayer)hls=null})
@@ -233,11 +258,9 @@ function onTimeUpdate(){
 }
 function onWaiting(){
   if(starting.value)return
-  buffering.value=true;showControls(true);window.clearTimeout(bufferRecoveryTimer)
-  const stalledAt=currentTime.value
-  if(!directMode.value)bufferRecoveryTimer=window.setTimeout(()=>{if(buffering.value&&!starting.value&&Math.abs(currentTime.value-stalledAt)<.5){if(mseMode.value)void startMSEStream(currentTime.value,true);else void startCompatibilityStream(currentTime.value,true,'HLS 缓冲停滞后重建会话')}},7000)
+  buffering.value=true;showControls(true)
 }
-function onCanPlay(){buffering.value=false;window.clearTimeout(bufferRecoveryTimer)}
+function onCanPlay(){buffering.value=false}
 function onVideoError(){
   if(starting.value)return
   if(directMode.value&&!directFallbackStarted){directFallbackStarted=true;void startMSEStream(currentTime.value||savedPosition(),true);return}
@@ -247,10 +270,10 @@ function seekTo(target:number){
   const el=video.value
   if(!el||!Number.isFinite(target))return
   target=Math.max(0,Math.min(target,duration.value||target))
-  if(starting.value){currentTime.value=target;if(mseMode.value)void startMSEStream(target,autoplayPending.value);else void startCompatibilityStream(target,autoplayPending.value,'HLS seek 重建');return}
+  if(starting.value){currentTime.value=target;return}
   if(player?.seek(target)){currentTime.value=target;clearSubtitleTracks();subtitleReady.value=activeSubtitle.value>=0;refreshSubtitle();return}
-  if(mseMode.value)void startMSEStream(target,playing.value)
-  else void startCompatibilityStream(target,playing.value,'目标位置不在 HLS 已缓冲范围')
+  if(mseMode.value){buffering.value=true;showControls(true);return}
+  void startCompatibilityStream(target,playing.value,'目标位置不在 HLS 已缓冲范围')
 }
 function previewSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);if(Number.isFinite(value))pendingSeek.value=value;showControls(true)}
 function commitSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);pendingSeek.value=null;seekTo(value)}
@@ -260,7 +283,7 @@ function togglePlayback(){
   if(el.paused)void player?.play().catch(()=>{});else player?.pause()
 }
 function onPlay(){playing.value=true;buffering.value=false;showControls()}
-function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);window.clearTimeout(bufferRecoveryTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
+function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
 function showVolumeFeedback(){volumeFeedback.value=true;window.clearTimeout(volumeTimer);volumeTimer=window.setTimeout(()=>volumeFeedback.value=false,900);showControls(true)}
 function changeVolume(event:Event){const value=Math.max(0,Math.min(1,Number((event.target as HTMLInputElement).value)));volume.value=value;if(value>0)lastAudibleVolume=value;muted.value=value===0;localStorage.setItem(volumeKey,String(value));player?.setVolume(value,muted.value);showVolumeFeedback()}
 function toggleMute(){if(muted.value||volume.value===0){if(volume.value===0)volume.value=lastAudibleVolume;muted.value=false}else muted.value=true;player?.setVolume(volume.value,muted.value);showVolumeFeedback()}
@@ -289,7 +312,7 @@ onMounted(async()=>{
   else{await progressPromise;void startMSEStream(savedPosition(),true)}
 })
 onBeforeUnmount(()=>{
-  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);window.clearTimeout(bufferRecoveryTimer);persistProgress(false);playbackGeneration++;clearSubtitleTracks()
+  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);persistProgress(false);playbackGeneration++;clearSubtitleTracks()
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const hlsSession=hlsSessionId;hlsSessionId='';const fmp4Session=fmp4SessionId;fmp4SessionId='';resetPlayback()
   releaseHLSSession(hlsSession);if(fmp4Session)void fetch(`/api/video/fmp4/${fmp4Session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
@@ -306,7 +329,7 @@ onBeforeUnmount(()=>{
     <button v-if="!playing&&!starting&&!error" class="video-center-play" aria-label="播放" @click.stop="togglePlayback"><svg viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
     <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:prepareMode==='mse'?'正在准备 MSE 原码流':'正在准备 HLS 兼容流' }}</strong><small v-if="prepareKind==='initial'">{{ prepareMode==='mse'?'正在重封装 fMP4，不会重新编码视频':'正在生成启动缓冲，首批分片完成后自动播放' }}</small></div>
     <div v-else-if="buffering" class="video-buffering"><span></span><strong>正在缓冲</strong></div>
-    <p v-if="error" class="video-error">{{ error }} <button @click="startCompatibilityStream(currentTime||savedPosition(),true,'用户重试 HLS')">重试</button></p>
+    <p v-if="error" class="video-error">{{ error }} <button @click="mseMode?startMSEStream(currentTime||savedPosition(),true):startCompatibilityStream(currentTime||savedPosition(),true,'用户重试 HLS')">重试</button></p>
     <div class="video-controls" :class="{visible:controlsVisible||!playing}" @click.stop>
       <input class="video-seek" type="range" min="0" :max="Math.max(duration,1)" step=".25" :value="Math.min(timelinePosition,Math.max(duration,1))" :style="{'--video-progress':`${progress}%`}" :disabled="!duration" aria-label="视频进度" @input="previewSeek" @change="commitSeek">
       <div class="video-control-row">

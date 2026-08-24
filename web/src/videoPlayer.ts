@@ -1,4 +1,4 @@
-import type { VideoFMP4Response } from './types'
+import type { VideoFMP4Index, VideoFMP4Metadata, VideoFMP4Response } from './types'
 
 export type VideoPlaybackMode='direct'|'mse'|'hls'
 
@@ -19,6 +19,7 @@ export function createUnifiedVideoPlayer(
   element:HTMLVideoElement,
   offset=0,
   cleanup:()=>void=()=>{},
+  seekOutside?:(globalTime:number)=>boolean,
 ):UnifiedVideoPlayer {
   return {
     mode,
@@ -38,7 +39,7 @@ export function createUnifiedVideoPlayer(
           return true
         }
       }
-      return false
+      return seekOutside?.(globalTime)??false
     },
     setVolume:(value:number,muted:boolean)=>{element.volume=value;element.muted=muted},
     setSubtitle:(track:TextTrack|null)=>{
@@ -55,45 +56,97 @@ export function createUnifiedVideoPlayer(
   }
 }
 
-export async function mseCompatibility(response:VideoFMP4Response):Promise<string>{
-  if(typeof MediaSource==='undefined')return '浏览器没有 MediaSource Extensions'
-  if(!MediaSource.isTypeSupported(response.mime_type))return `MSE 不支持 ${response.mime_type}`
-  const capabilities=navigator.mediaCapabilities
-  if(!capabilities?.decodingInfo)return ''
-  try{
-    const result=await capabilities.decodingInfo({
-      type:'media-source',
-      video:{
-        contentType:response.video_mime_type,
-        width:Math.max(1,response.width),height:Math.max(1,response.height),
-        bitrate:Math.max(1,response.bitrate),framerate:Math.max(1,response.frame_rate),
-      },
-    })
-    if(!result.supported)return `浏览器解码能力不支持 ${response.video_codec}`
-    const mobile=/Android|Mobile|HarmonyOS|HuaweiBrowser/i.test(navigator.userAgent)
-    if(mobile&&result.powerEfficient===false)return `移动端没有 ${response.video_codec} 硬件高效解码`
-  }catch{/* 浏览器实现不完整时仍以 MediaSource.isTypeSupported 为准 */}
+export interface MSECompatibility {
+  videoSupported:boolean
+  audioSupported:boolean
+  aacAudioSupported:boolean
+  combinedCopySupported:boolean
+  combinedAACSupported:boolean
+  powerEfficient?:boolean
+  mode:'copy'|'aac'|'hls'|'error'
+  mimeType:string
+  fallbackReason:string
+}
+
+function supportedMIME(contentType:string,videoCodec:string):string{
+  if(!contentType)return ''
+  if(MediaSource.isTypeSupported(contentType))return contentType
+  if(/^(hevc|h265)$/i.test(videoCodec)){
+    const generic=contentType.replace(/hvc1\.[^," ]+/i,'hvc1')
+    if(generic!==contentType&&MediaSource.isTypeSupported(generic))return generic
+  }
   return ''
+}
+
+export async function mseCompatibility(metadata:VideoFMP4Metadata):Promise<MSECompatibility>{
+  const unavailable:MSECompatibility={
+    videoSupported:false,audioSupported:false,aacAudioSupported:false,
+    combinedCopySupported:false,combinedAACSupported:false,mode:'hls',mimeType:'',
+    fallbackReason:'浏览器没有 MediaSource Extensions',
+  }
+  if(typeof MediaSource==='undefined')return unavailable
+  const videoMIME=supportedMIME(metadata.video_mime_type,metadata.video_codec)
+  const audioSupported=!metadata.audio_codec||Boolean(metadata.audio_mime_type&&MediaSource.isTypeSupported(metadata.audio_mime_type))
+  const aacAudioSupported=!metadata.audio_codec||Boolean(metadata.aac_audio_mime_type&&MediaSource.isTypeSupported(metadata.aac_audio_mime_type))
+  const copyMIME=supportedMIME(metadata.mime_type,metadata.video_codec)
+  const aacMIME=supportedMIME(metadata.aac_mime_type,metadata.video_codec)
+  let videoSupported=Boolean(videoMIME)
+  let powerEfficient: boolean|undefined
+  if(videoSupported&&navigator.mediaCapabilities?.decodingInfo){
+    try{
+      const result=await navigator.mediaCapabilities.decodingInfo({
+        type:'media-source',
+        video:{
+          contentType:videoMIME,width:Math.max(1,metadata.width),height:Math.max(1,metadata.height),
+          bitrate:Math.max(1,metadata.bitrate),framerate:Math.max(1,metadata.frame_rate),
+        },
+      })
+      videoSupported=result.supported
+      powerEfficient=result.powerEfficient
+    }catch{/* isTypeSupported remains authoritative when MediaCapabilities is incomplete */}
+  }
+  const result:MSECompatibility={
+    videoSupported,audioSupported,aacAudioSupported,
+    combinedCopySupported:Boolean(copyMIME),combinedAACSupported:Boolean(aacMIME),powerEfficient,
+    mode:'hls',mimeType:'',fallbackReason:'',
+  }
+  if(!videoSupported){
+    result.fallbackReason=`浏览器不支持 ${metadata.video_codec.toUpperCase()} MSE/解码`
+  }else if(audioSupported&&copyMIME){
+    result.mode='copy';result.mimeType=copyMIME
+  }else if(aacAudioSupported&&aacMIME){
+    result.mode='aac';result.mimeType=aacMIME
+    result.fallbackReason=metadata.audio_codec?`${metadata.audio_codec.toUpperCase()} MSE 不受支持，仅将音频转为 AAC`:''
+  }else{
+    result.mode='error'
+    result.fallbackReason=`MSE 不支持 ${metadata.audio_codec?`${metadata.audio_codec.toUpperCase()} 或 AAC 音频`:'该 fMP4 组合'}`
+  }
+  return result
 }
 
 interface FMP4AttachOptions {
   element:HTMLVideoElement
   response:VideoFMP4Response
+  mimeType:string
   target:number
   autoplay:boolean
   onFatal:(reason:string)=>void
+  onFragment?:()=>void
 }
 
-interface FMP4Attachment { destroy:()=>void }
+export interface FMP4Attachment { destroy:()=>void;seek:(globalTime:number)=>boolean }
 
 export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4Attachment>{
   const {element,response,autoplay,onFatal}=options
   const mediaSource=new MediaSource()
   const objectURL=URL.createObjectURL(mediaSource)
-  const abortController=new AbortController()
+  const lifetimeController=new AbortController()
+  let requestController:AbortController|null=null
   let sourceBuffer:SourceBuffer|null=null
   let disposed=false
   let readySettled=false
+  let requestedTarget=Math.max(0,options.target-response.start)
+  let seekVersion=0
   let resolveReady:()=>void=()=>{}
   let rejectReady:(error:Error)=>void=()=>{}
   const ready=new Promise<void>((resolve,reject)=>{resolveReady=resolve;rejectReady=reject})
@@ -105,106 +158,127 @@ export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4At
   }
   const destroy=()=>{
     if(disposed)return
-    disposed=true;abortController.abort()
+    disposed=true;lifetimeController.abort();requestController?.abort()
     try{if(sourceBuffer?.updating)sourceBuffer.abort()}catch{/* already detached */}
     try{if(sourceBuffer&&mediaSource.readyState==='open')mediaSource.removeSourceBuffer(sourceBuffer)}catch{/* already detached */}
     if(element.src===objectURL){element.pause();element.removeAttribute('src');element.load()}
     URL.revokeObjectURL(objectURL)
+  }
+  const seek=(globalTime:number)=>{
+    if(disposed||!Number.isFinite(globalTime))return false
+    requestedTarget=Math.max(0,Math.min(response.duration,globalTime-response.start))
+    seekVersion+=1
+    requestController?.abort()
+    try{element.currentTime=requestedTarget}catch{/* set again after the target fragment is appended */}
+    return true
   }
 
   element.src=objectURL;element.load()
   mediaSource.addEventListener('sourceopen',()=>{
     if(disposed)return
     try{
-      sourceBuffer=mediaSource.addSourceBuffer(response.mime_type)
+      sourceBuffer=mediaSource.addSourceBuffer(options.mimeType)
       sourceBuffer.mode='segments'
       sourceBuffer.addEventListener('error',()=>fail('MSE SourceBuffer 解码 fMP4 失败'))
-      void pumpFMP4(sourceBuffer,mediaSource,options,abortController.signal,()=>disposed).then(()=>{
-        if(!disposed&&mediaSource.readyState==='open'&&!sourceBuffer?.updating)try{mediaSource.endOfStream()}catch{/* final duration remains usable */}
-      }).catch(caught=>fail(caught instanceof Error?caught.message:'MSE fMP4 流读取失败'))
+      void pumpFMP4Fragments(sourceBuffer,mediaSource,options,lifetimeController.signal,()=>disposed,()=>requestedTarget,()=>seekVersion,controller=>{requestController=controller},()=>{
+        if(!readySettled){readySettled=true;resolveReady()}
+      }).catch(caught=>{
+        if(caught instanceof DOMException&&caught.name==='AbortError'&&disposed)return
+        fail(caught instanceof Error?caught.message:'MSE fMP4 分片读取失败')
+      })
     }catch(caught){fail(caught instanceof Error?caught.message:'无法创建 MSE SourceBuffer')}
   },{once:true})
-  mediaSource.addEventListener('sourceended',()=>{if(!readySettled)fail('MSE 在首个片段前结束')},{once:true})
 
-  const markReady=()=>{
-    if(readySettled)return
-    readySettled=true;resolveReady()
-  }
-  ;(options as FMP4AttachOptions&{markReady?:()=>void}).markReady=markReady
   await ready
   if(autoplay)void element.play().catch(()=>{})
-  return {destroy}
+  return {destroy,seek}
 }
 
-async function pumpFMP4(
+async function pumpFMP4Fragments(
   sourceBuffer:SourceBuffer,
   mediaSource:MediaSource,
-  options:FMP4AttachOptions&{markReady?:()=>void},
-  signal:AbortSignal,
+  options:FMP4AttachOptions,
+  lifetimeSignal:AbortSignal,
   isDisposed:()=>boolean,
+  target:()=>number,
+  version:()=>number,
+  setRequestController:(controller:AbortController|null)=>void,
+  markReady:()=>void,
 ):Promise<void>{
-  const response=await fetch(options.response.stream_url,{credentials:'same-origin',signal})
-  if(!response.ok||!response.body)throw new Error(`fMP4 流请求失败 (${response.status})`)
-  const reader=response.body.getReader()
-  let pending:Uint8Array<ArrayBufferLike>=new Uint8Array(0)
-  let initAppended=false
-  let mediaAppended=false
+  const init=await fetchBytes(options.response.init_url,lifetimeSignal)
+  await appendSourceBuffer(sourceBuffer,init,lifetimeSignal)
+  if(mediaSource.readyState==='open')try{mediaSource.duration=Math.max(.1,options.response.duration)}catch{/* duration may already be known */}
+  let cursor=target()
+  let observedVersion=version()
+  let firstMedia=false
+  let consecutiveFailures=0
   while(!isDisposed()){
-    const result=await reader.read()
-    if(result.value?.length)pending=concatBytes(pending,result.value)
-    for(;;){
-      const appendable=appendableMP4Prefix(pending,initAppended)
-      if(!appendable.length)break
-      const chunk=pending.slice(0,appendable.length)
-      pending=pending.slice(appendable.length)
-      await appendSourceBuffer(sourceBuffer,chunk,signal)
-      if(appendable.hasInit)initAppended=true
-      if(appendable.hasMedia){
-        mediaAppended=true
-        if(mediaSource.readyState==='open'&&(!Number.isFinite(mediaSource.duration)||mediaSource.duration<=0)){
-          try{mediaSource.duration=Math.max(.1,options.response.duration-options.response.start)}catch{/* duration will come from media */}
+    if(observedVersion!==version()){
+      observedVersion=version();cursor=target()
+    }
+    const requestVersion=observedVersion
+    const controller=new AbortController()
+    const abort=()=>controller.abort()
+    lifetimeSignal.addEventListener('abort',abort,{once:true});setRequestController(controller)
+    try{
+      const separator=options.response.index_url.includes('?')?'&':'?'
+      const response=await fetch(`${options.response.index_url}${separator}time=${cursor.toFixed(3)}`,{credentials:'same-origin',signal:controller.signal})
+      if(!response.ok)throw new Error(`fMP4 分片索引请求失败 (${response.status})`)
+      const index=await response.json() as VideoFMP4Index
+      consecutiveFailures=0
+      if(requestVersion!==version())continue
+      if(!index.fragments.length){
+        if(index.done){
+          if(index.error)throw new Error(`fMP4 remux 已退出：${index.error}`)
+          // Keep MediaSource open after the remux completes. Old ranges may be
+          // evicted later; a backwards seek must still be able to reappend the
+          // cached fragment without constructing another session.
+          await abortableDelay(500,lifetimeSignal)
         }
-        if(!options.markReady)continue
-        const local=Math.max(0,options.target-options.response.start)
-        options.element.currentTime=local
-        options.markReady();options.markReady=undefined
+        continue
       }
-      await keepMSEBufferBounded(sourceBuffer,options.element,signal)
+      for(const fragment of index.fragments){
+        if(requestVersion!==version())break
+        const midpoint=fragment.start+Math.min(fragment.duration/2,.25)
+        if(!bufferContains(sourceBuffer.buffered,midpoint)){
+          const bytes=await fetchBytes(fragment.url,lifetimeSignal)
+          if(requestVersion!==version())break
+          await appendSourceBuffer(sourceBuffer,bytes,lifetimeSignal)
+        }
+        cursor=fragment.start+fragment.duration+.002
+        if(!firstMedia){
+          firstMedia=true
+          options.element.currentTime=target()
+          markReady()
+        }
+        options.onFragment?.()
+        await keepMSEBufferBounded(sourceBuffer,options.element,lifetimeSignal,()=>requestVersion!==version())
+      }
+    }catch(caught){
+      if(controller.signal.aborted){
+        if(lifetimeSignal.aborted)throw new DOMException('Aborted','AbortError')
+        continue
+      }
+      consecutiveFailures+=1
+      if(consecutiveFailures>=4)throw caught
+      await abortableDelay(500*consecutiveFailures,lifetimeSignal)
+    }finally{
+      lifetimeSignal.removeEventListener('abort',abort);setRequestController(null)
     }
-    if(result.done)break
   }
-  if(!mediaAppended)throw new Error('fMP4 没有产生可播放媒体片段')
 }
 
-function concatBytes(left:Uint8Array,right:Uint8Array):Uint8Array{
-  if(!left.length)return right.slice()
-  const merged=new Uint8Array(left.length+right.length);merged.set(left);merged.set(right,left.length);return merged
+async function fetchBytes(url:string,signal:AbortSignal):Promise<Uint8Array>{
+  const response=await fetch(url,{credentials:'same-origin',signal})
+  if(!response.ok)throw new Error(`fMP4 分片请求失败 (${response.status})`)
+  return new Uint8Array(await response.arrayBuffer())
 }
 
-function appendableMP4Prefix(data:Uint8Array,initAppended:boolean):{length:number;hasInit:boolean;hasMedia:boolean}{
-  let offset=0
-  let initEnd=0
-  let mediaEnd=0
-  let hasInit=false
-  while(offset+8<=data.length){
-    const view=new DataView(data.buffer,data.byteOffset+offset,Math.min(16,data.length-offset))
-    let size=view.getUint32(0)
-    let headerSize=8
-    if(size===1){
-      if(offset+16>data.length)break
-      const high=view.getUint32(8);const low=view.getUint32(12)
-      size=high*0x100000000+low;headerSize=16
-    }
-    if(size===0||size<headerSize||offset+size>data.length)break
-    const type=String.fromCharCode(data[offset+4],data[offset+5],data[offset+6],data[offset+7])
-    offset+=size
-    if(type==='moov'){hasInit=true;initEnd=offset}
-    if(type==='mdat'&&(initAppended||hasInit)){mediaEnd=offset}
+function bufferContains(ranges:TimeRanges,time:number):boolean{
+  for(let index=0;index<ranges.length;index+=1){
+    if(time>=ranges.start(index)-.05&&time<=ranges.end(index)+.05)return true
   }
-  if(!initAppended&&mediaEnd)return {length:mediaEnd,hasInit:true,hasMedia:true}
-  if(!initAppended&&initEnd)return {length:initEnd,hasInit:true,hasMedia:false}
-  if(initAppended&&mediaEnd)return {length:mediaEnd,hasInit:false,hasMedia:true}
-  return {length:0,hasInit:false,hasMedia:false}
+  return false
 }
 
 function appendSourceBuffer(sourceBuffer:SourceBuffer,data:Uint8Array,signal:AbortSignal):Promise<void>{
@@ -212,19 +286,19 @@ function appendSourceBuffer(sourceBuffer:SourceBuffer,data:Uint8Array,signal:Abo
     if(signal.aborted){reject(new DOMException('Aborted','AbortError'));return}
     const cleanup=()=>{sourceBuffer.removeEventListener('updateend',done);sourceBuffer.removeEventListener('error',failed);signal.removeEventListener('abort',aborted)}
     const done=()=>{cleanup();resolve()}
-    const failed=()=>{cleanup();reject(new Error('MSE 无法追加 fMP4 片段'))}
+    const failed=()=>{cleanup();reject(new Error('MSE 无法追加 fMP4 分片'))}
     const aborted=()=>{cleanup();reject(new DOMException('Aborted','AbortError'))}
     sourceBuffer.addEventListener('updateend',done,{once:true});sourceBuffer.addEventListener('error',failed,{once:true});signal.addEventListener('abort',aborted,{once:true})
     try{sourceBuffer.appendBuffer(data.slice().buffer as ArrayBuffer)}catch(caught){cleanup();reject(caught)}
   })
 }
 
-async function keepMSEBufferBounded(sourceBuffer:SourceBuffer,element:HTMLVideoElement,signal:AbortSignal):Promise<void>{
+async function keepMSEBufferBounded(sourceBuffer:SourceBuffer,element:HTMLVideoElement,signal:AbortSignal,seekChanged:()=>boolean):Promise<void>{
   if(sourceBuffer.buffered.length&&element.currentTime>70){
     const removeEnd=element.currentTime-60
     if(removeEnd>sourceBuffer.buffered.start(0))await removeSourceBufferRange(sourceBuffer,0,removeEnd,signal)
   }
-  while(sourceBuffer.buffered.length&&sourceBuffer.buffered.end(sourceBuffer.buffered.length-1)-element.currentTime>120){
+  while(!seekChanged()&&sourceBuffer.buffered.length&&sourceBuffer.buffered.end(sourceBuffer.buffered.length-1)-element.currentTime>120){
     await abortableDelay(350,signal)
   }
 }
