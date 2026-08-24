@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -20,6 +21,9 @@ import (
 
 const maxVideoSubtitleBytes = 16 << 20
 const maxConvertedSubtitleBytes = 32 << 20
+const videoSubtitleCacheTTL = 2 * time.Hour
+const maxVideoSubtitleCacheEntries = 32
+const maxVideoSubtitleCacheBytes = int64(64 << 20)
 
 var videoSubtitleExts = map[string]bool{
 	".vtt": true,
@@ -43,6 +47,101 @@ type embeddedVideoSubtitle struct {
 	Title    string
 	Default  bool
 	Forced   bool
+}
+
+type videoSubtitleCacheEntry struct {
+	ready       chan struct{}
+	data        []byte
+	err         error
+	completedAt time.Time
+}
+
+// cachedVideoSubtitle keeps conversion work independent from the lifetime of
+// the browser's <track> request. HLS media attachment can legitimately replace
+// the video element and cancel that request; the FFmpeg conversion should still
+// finish once and be reused when the selected track is attached again.
+func (s *Server) cachedVideoSubtitle(ctx context.Context, key string, convert func(context.Context) ([]byte, error)) ([]byte, error) {
+	now := time.Now()
+	s.videoSubtitleMu.Lock()
+	entry := s.videoSubtitleCache[key]
+	if entry == nil {
+		for cacheKey, cached := range s.videoSubtitleCache {
+			if !cached.completedAt.IsZero() && now.Sub(cached.completedAt) > videoSubtitleCacheTTL {
+				s.videoSubtitleBytes -= int64(len(cached.data))
+				delete(s.videoSubtitleCache, cacheKey)
+			}
+		}
+		if len(s.videoSubtitleCache) >= maxVideoSubtitleCacheEntries {
+			var oldestKey string
+			var oldestTime time.Time
+			for cacheKey, cached := range s.videoSubtitleCache {
+				if cached.completedAt.IsZero() || (!oldestTime.IsZero() && !cached.completedAt.Before(oldestTime)) {
+					continue
+				}
+				oldestKey, oldestTime = cacheKey, cached.completedAt
+			}
+			if oldestKey != "" {
+				s.videoSubtitleBytes -= int64(len(s.videoSubtitleCache[oldestKey].data))
+				delete(s.videoSubtitleCache, oldestKey)
+			}
+		}
+		entry = &videoSubtitleCacheEntry{ready: make(chan struct{})}
+		s.videoSubtitleCache[key] = entry
+		go func() {
+			workCtx, cancel := context.WithTimeout(s.audioHLSCtx, 10*time.Minute)
+			defer cancel()
+			data, err := convert(workCtx)
+			s.videoSubtitleMu.Lock()
+			entry.data, entry.err, entry.completedAt = data, err, time.Now()
+			if err != nil {
+				s.log.Warn("video subtitle background conversion failed", "subtitle", key, "error", err)
+				// Failed conversions may be caused by a transient S3/FFmpeg issue.
+				// Wake current waiters, but allow the next request to retry.
+				delete(s.videoSubtitleCache, key)
+			} else {
+				s.videoSubtitleBytes += int64(len(data))
+				for s.videoSubtitleBytes > maxVideoSubtitleCacheBytes {
+					var oldestKey string
+					var oldestTime time.Time
+					for cacheKey, cached := range s.videoSubtitleCache {
+						if cacheKey == key || cached.completedAt.IsZero() || (!oldestTime.IsZero() && !cached.completedAt.Before(oldestTime)) {
+							continue
+						}
+						oldestKey, oldestTime = cacheKey, cached.completedAt
+					}
+					if oldestKey == "" {
+						break
+					}
+					s.videoSubtitleBytes -= int64(len(s.videoSubtitleCache[oldestKey].data))
+					delete(s.videoSubtitleCache, oldestKey)
+				}
+			}
+			close(entry.ready)
+			s.videoSubtitleMu.Unlock()
+		}()
+	}
+	s.videoSubtitleMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-entry.ready:
+		return entry.data, entry.err
+	}
+}
+
+func mediaCommandError(operation string, runErr, ctxErr error, stderr string) error {
+	detail := strings.TrimSpace(stderr)
+	base := runErr
+	if ctxErr != nil {
+		base = ctxErr
+	}
+	if base == nil {
+		base = errors.New("command failed")
+	}
+	if detail == "" {
+		return fmt.Errorf("%s: %w", operation, base)
+	}
+	return fmt.Errorf("%s: %w: %s", operation, base, detail)
 }
 
 func isVideoSource(f File) bool {
@@ -143,13 +242,13 @@ func (s *Server) findEmbeddedVideoSubtitles(ctx context.Context, video File) ([]
 	stderr := &limitedBuffer{limit: 64 << 10}
 	cmd.Stdout, cmd.Stderr = output, stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffprobe subtitles: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, mediaCommandError("ffprobe subtitles", err, ctx.Err(), stderr.String())
 	}
 	var result struct {
 		Streams []struct {
-			Index       int    `json:"index"`
-			Codec       string `json:"codec_name"`
-			Tags        struct {
+			Index int    `json:"index"`
+			Codec string `json:"codec_name"`
+			Tags  struct {
 				Language string `json:"language"`
 				Title    string `json:"title"`
 			} `json:"tags"`
@@ -287,24 +386,23 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusNotFound, "embedded subtitle not found")
 			return
 		}
-		allowed, probeErr := s.findEmbeddedVideoSubtitles(r.Context(), video)
-		if probeErr != nil {
-			problem(w, http.StatusBadGateway, "embedded subtitles could not be read")
-			return
-		}
-		found := false
-		for _, track := range allowed {
-			if track.Index == index {
-				found = true
-				break
+		cacheKey := fmt.Sprintf("embedded-v1:%s:%s:%s:%d", video.ID, video.ETag, video.UpdatedAt, index)
+		vtt, convertErr := s.cachedVideoSubtitle(r.Context(), cacheKey, func(workCtx context.Context) ([]byte, error) {
+			allowed, probeErr := s.findEmbeddedVideoSubtitles(workCtx, video)
+			if probeErr != nil {
+				return nil, probeErr
 			}
-		}
-		if !found {
-			problem(w, http.StatusNotFound, "embedded subtitle not found")
-			return
-		}
-		vtt, convertErr := s.embeddedSubtitleAsWebVTT(r.Context(), video, index)
+			for _, track := range allowed {
+				if track.Index == index {
+					return s.embeddedSubtitleAsWebVTT(workCtx, video, index)
+				}
+			}
+			return nil, errors.New("embedded subtitle stream is unavailable")
+		})
 		if convertErr != nil {
+			if errors.Is(convertErr, context.Canceled) || errors.Is(convertErr, context.DeadlineExceeded) && r.Context().Err() != nil {
+				return
+			}
 			s.log.Warn("embedded video subtitle conversion failed", "video", video.ID, "stream", index, "error", convertErr)
 			problem(w, http.StatusUnprocessableEntity, "embedded subtitle could not be converted to WebVTT")
 			return
@@ -328,16 +426,21 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "matching subtitle not found")
 		return
 	}
-	raw, err := s.readFileWithLimit(r.Context(), *subtitle, maxVideoSubtitleBytes)
+	cacheKey := fmt.Sprintf("external-v1:%s:%s:%s", subtitle.ID, subtitle.ETag, subtitle.UpdatedAt)
+	vtt, err := s.cachedVideoSubtitle(r.Context(), cacheKey, func(workCtx context.Context) ([]byte, error) {
+		raw, readErr := s.readFileWithLimit(workCtx, *subtitle, maxVideoSubtitleBytes)
+		if readErr != nil {
+			return nil, readErr
+		}
+		return s.subtitleAsWebVTT(workCtx, subtitle.Name, raw)
+	})
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) && r.Context().Err() != nil {
+		return
+	}
 	if errors.Is(err, storage.ErrObjectTooLarge) {
 		problem(w, http.StatusRequestEntityTooLarge, "subtitle is too large")
 		return
 	}
-	if err != nil {
-		problem(w, http.StatusBadGateway, "subtitle storage read failed")
-		return
-	}
-	vtt, err := s.subtitleAsWebVTT(r.Context(), subtitle.Name, raw)
 	if err != nil {
 		s.log.Warn("video subtitle conversion failed", "video", video.ID, "subtitle", subtitle.ID, "error", err)
 		problem(w, http.StatusUnprocessableEntity, "subtitle could not be converted to WebVTT")
@@ -380,7 +483,7 @@ func (s *Server) embeddedSubtitleAsWebVTT(ctx context.Context, video File, strea
 		return nil, errors.New("converted subtitle is too large")
 	}
 	if err := cmd.Wait(); err != nil {
-		return nil, errors.New(strings.TrimSpace(stderr.String()))
+		return nil, mediaCommandError("ffmpeg embedded subtitle conversion", err, ctx.Err(), stderr.String())
 	}
 	if !bytes.HasPrefix(bytes.TrimSpace(converted), []byte("WEBVTT")) {
 		return nil, errors.New("ffmpeg produced invalid WebVTT")
@@ -432,7 +535,7 @@ func (s *Server) subtitleAsWebVTT(ctx context.Context, name string, raw []byte) 
 		return nil, errors.New("converted subtitle is too large")
 	}
 	if err := cmd.Wait(); err != nil {
-		return nil, errors.New(strings.TrimSpace(stderr.String()))
+		return nil, mediaCommandError("ffmpeg subtitle conversion", err, ctx.Err(), stderr.String())
 	}
 	if !bytes.HasPrefix(bytes.TrimSpace(converted), []byte("WEBVTT")) {
 		return nil, errors.New("ffmpeg produced invalid WebVTT")

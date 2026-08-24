@@ -3,8 +3,10 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -51,6 +53,51 @@ func TestWebVTTSubtitlePassThrough(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("got=%q want=%q", got, want)
+	}
+}
+
+func TestVideoSubtitleConversionContinuesAfterRequestCancellationAndIsCached(t *testing.T) {
+	app := newTestApp(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var conversions atomic.Int32
+	convert := func(context.Context) ([]byte, error) {
+		conversions.Add(1)
+		close(started)
+		<-release
+		return []byte("WEBVTT\n"), nil
+	}
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := app.srv.cachedVideoSubtitle(requestCtx, "video:track", convert)
+		result <- err
+	}()
+	<-started
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first request error=%v, want context canceled", err)
+	}
+	close(release)
+
+	got, err := app.srv.cachedVideoSubtitle(context.Background(), "video:track", convert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "WEBVTT\n" || conversions.Load() != 1 {
+		t.Fatalf("got=%q conversions=%d, want one cached conversion", got, conversions.Load())
+	}
+}
+
+func TestMediaCommandErrorNeverLosesExitOrContextError(t *testing.T) {
+	err := mediaCommandError("ffmpeg subtitle conversion", errors.New("exit status 1"), nil, "")
+	if got := err.Error(); !strings.Contains(got, "exit status 1") {
+		t.Fatalf("missing exit error: %q", got)
+	}
+	err = mediaCommandError("ffmpeg subtitle conversion", errors.New("signal: killed"), context.Canceled, "")
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("missing context error: %v", err)
 	}
 }
 

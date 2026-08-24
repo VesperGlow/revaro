@@ -1,6 +1,14 @@
 package server
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+)
 
 func TestArchiveNamesAndPaths(t *testing.T) {
 	for _, name := range []string{"backup.zip", "movie.7z", "files.rar", "source.tar.gz", "source.tar.xz", "source.tzst"} {
@@ -30,6 +38,55 @@ func TestArchiveNamesAndPaths(t *testing.T) {
 	for _, attributes := range []string{"A_ lrwxrwxrwx", "reparse point"} {
 		if !archiveAttributesUnsafe(attributes) {
 			t.Fatalf("unsafe archive attributes accepted: %q", attributes)
+		}
+	}
+}
+
+func TestArchiveFailureIsDetailedAndStructured(t *testing.T) {
+	app := newTestApp(t)
+	var logs bytes.Buffer
+	app.srv.log = slog.New(slog.NewJSONHandler(&logs, nil))
+	job := &archiveJob{ID: "job-1", FileID: "file-1", Status: "extracting"}
+	app.srv.failArchiveJob(job, errors.New("7-Zip: invalid archive"))
+	snapshot := job.snapshot()
+	if snapshot.Status != "failed" || snapshot.Error != "解压失败：7-Zip: invalid archive" || snapshot.Message != snapshot.Error {
+		t.Fatalf("job status=%q error=%q message=%q", snapshot.Status, snapshot.Error, snapshot.Message)
+	}
+	for _, value := range []string{`"level":"WARN"`, `"file":"file-1"`, `"job":"job-1"`, `"status":"extracting"`, `"error":"7-Zip: invalid archive"`} {
+		if !strings.Contains(logs.String(), value) {
+			t.Fatalf("structured log missing %s: %s", value, logs.String())
+		}
+	}
+}
+
+func TestArchiveDiskSpaceFailureIsExplicit(t *testing.T) {
+	message := archiveFailureMessage(errors.New("write /tmp/output: no space left on device"))
+	if !strings.Contains(message, "临时磁盘空间不足") {
+		t.Fatalf("message=%q", message)
+	}
+	size, err := archiveExpandedSize([]archiveEntry{{Path: "one", Size: 3}, {Path: "dir", IsDir: true}, {Path: "two", Size: 5}})
+	if err != nil || size != 8 {
+		t.Fatalf("expanded size=%d err=%v", size, err)
+	}
+}
+
+func TestArchiveSourceSupportsManifestAndLegacyRawObjects(t *testing.T) {
+	app := newTestApp(t)
+	manifestFile := app.readyFile(t, "manifest.zip", []byte("manifest archive"))
+	app.store.raw["legacy/archive.zip"] = []byte("legacy archive")
+	legacyFile := File{objectKey: "legacy/archive.zip"}
+	for _, test := range []struct {
+		file File
+		want string
+	}{{manifestFile, "manifest archive"}, {legacyFile, "legacy archive"}} {
+		source, err := app.srv.openArchiveSource(context.Background(), test.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(source)
+		_ = source.Close()
+		if err != nil || string(got) != test.want {
+			t.Fatalf("source=%q err=%v, want %q", got, err, test.want)
 		}
 	}
 }

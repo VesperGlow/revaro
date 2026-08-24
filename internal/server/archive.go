@@ -21,12 +21,14 @@ import (
 	"github.com/VesperGlow/revaro/internal/ids"
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sys/unix"
 )
 
 const (
 	maxArchiveEntries       = 100000
 	maxArchiveExpandedBytes = int64(64 << 30)
 	maxArchiveListingBytes  = 64 << 20
+	archiveDiskReserve      = int64(64 << 20)
 )
 
 type archiveJob struct {
@@ -53,9 +55,9 @@ func (job *archiveJob) update(status string, progress int, message string) {
 	job.mu.Unlock()
 }
 
-func (job *archiveJob) fail(err error) {
+func (job *archiveJob) fail(message string) {
 	job.mu.Lock()
-	job.Status, job.Error, job.Message = "failed", err.Error(), "解压失败"
+	job.Status, job.Error, job.Message = "failed", message, message
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
 }
@@ -197,6 +199,70 @@ func archiveExpandedLimit(archiveSize int64) int64 {
 	return limit
 }
 
+func archiveDiskAvailable(path string) (int64, error) {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	available := uint64(stat.Bavail) * uint64(stat.Bsize)
+	if available > uint64(^uint64(0)>>1) {
+		return int64(^uint64(0) >> 1), nil
+	}
+	return int64(available), nil
+}
+
+func ensureArchiveDiskSpace(path string, required int64) error {
+	if required < 0 || required > int64(^uint64(0)>>1)-archiveDiskReserve {
+		return errors.New("temporary disk space requirement is invalid")
+	}
+	available, err := archiveDiskAvailable(path)
+	if err != nil {
+		return fmt.Errorf("check temporary disk space: %w", err)
+	}
+	needed := required + archiveDiskReserve
+	if available < needed {
+		return fmt.Errorf("temporary disk space is insufficient: need at least %d MiB, only %d MiB is available", (needed+(1<<20)-1)>>20, available>>20)
+	}
+	return nil
+}
+
+func archiveExpandedSize(entries []archiveEntry) (int64, error) {
+	var total int64
+	for _, entry := range entries {
+		if entry.IsDir {
+			continue
+		}
+		if entry.Size < 0 || total > int64(^uint64(0)>>1)-entry.Size {
+			return 0, errors.New("archive expanded size is invalid")
+		}
+		total += entry.Size
+	}
+	return total, nil
+}
+
+func archiveFailureMessage(err error) string {
+	if err == nil {
+		return "解压失败：未知错误"
+	}
+	lower := strings.ToLower(err.Error())
+	if errors.Is(err, unix.ENOSPC) || errors.Is(err, unix.EDQUOT) || strings.Contains(lower, "no space left") || strings.Contains(lower, "disk space is insufficient") || strings.Contains(lower, "disk quota") {
+		return "解压失败：临时磁盘空间不足，请释放服务器磁盘空间后重试"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "解压失败：任务已取消或处理超时"
+	}
+	return "解压失败：" + err.Error()
+}
+
+func (s *Server) failArchiveJob(job *archiveJob, err error) {
+	snapshot := job.snapshot()
+	if err == nil {
+		err = errors.New("unknown archive error")
+	}
+	job.fail(archiveFailureMessage(err))
+	s.log.Warn("archive job failed", "file", job.FileID, "job", job.ID, "status", snapshot.Status, "error", err)
+}
+
 func archiveAttributesUnsafe(attributes string) bool {
 	lower := strings.ToLower(attributes)
 	if strings.Contains(lower, "reparse") {
@@ -296,26 +362,38 @@ type extractedObject struct {
 	mimeType string
 }
 
+func (s *Server) openArchiveSource(ctx context.Context, f File) (io.ReadCloser, error) {
+	if storage.IsManifestKey(f.objectKey) {
+		return s.storage.Open(ctx, f.objectKey)
+	}
+	return s.storage.OpenRaw(ctx, f.objectKey)
+}
+
 func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string, job *archiveJob) {
+	fail := func(err error) { s.failArchiveJob(job, err) }
 	select {
 	case s.archiveSlots <- struct{}{}:
 		defer func() { <-s.archiveSlots }()
 	case <-ctx.Done():
-		job.fail(ctx.Err())
+		fail(ctx.Err())
 		return
 	}
 	tempDir, err := os.MkdirTemp("", "revaro-extract-")
 	if err != nil {
-		job.fail(err)
+		fail(fmt.Errorf("create temporary extraction directory: %w", err))
 		return
 	}
 	defer os.RemoveAll(tempDir)
 	archivePath := filepath.Join(tempDir, "source"+filepath.Ext(f.Name))
 	outputDir := filepath.Join(tempDir, "output")
+	if err = ensureArchiveDiskSpace(tempDir, f.Size); err != nil {
+		fail(err)
+		return
+	}
 	job.update("downloading", 2, "正在读取压缩包")
-	source, err := s.storage.Open(ctx, f.objectKey)
+	source, err := s.openArchiveSource(ctx, f)
 	if err != nil {
-		job.fail(fmt.Errorf("read archive: %w", err))
+		fail(fmt.Errorf("read archive from S3: %w", err))
 		return
 	}
 	out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
@@ -328,21 +406,31 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	}
 	_ = source.Close()
 	if err != nil {
-		job.fail(fmt.Errorf("stage archive: %w", err))
+		fail(fmt.Errorf("stage archive on temporary disk: %w", err))
 		return
 	}
 	executable, err := sevenZipExecutable()
 	if err != nil {
-		job.fail(err)
+		fail(err)
 		return
 	}
 	job.update("checking", 18, "正在检查压缩包安全性")
-	if _, err = inspectArchive(ctx, executable, archivePath, f.Size); err != nil {
-		job.fail(err)
+	entries, inspectErr := inspectArchive(ctx, executable, archivePath, f.Size)
+	if inspectErr != nil {
+		fail(inspectErr)
+		return
+	}
+	expandedEstimate, sizeErr := archiveExpandedSize(entries)
+	if sizeErr != nil {
+		fail(sizeErr)
+		return
+	}
+	if err = ensureArchiveDiskSpace(tempDir, expandedEstimate); err != nil {
+		fail(err)
 		return
 	}
 	if err = os.Mkdir(outputDir, 0o700); err != nil {
-		job.fail(err)
+		fail(fmt.Errorf("create extraction output directory: %w", err))
 		return
 	}
 	job.update("extracting", 25, "正在解压")
@@ -350,7 +438,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	cmd := exec.CommandContext(ctx, executable, "x", "-y", "-bd", "-bb0", "-p-", "-o"+outputDir, archivePath)
 	cmd.Stdout, cmd.Stderr = io.Discard, stderr
 	if err = cmd.Run(); err != nil {
-		job.fail(fmt.Errorf("7-Zip extraction failed: %w: %s", err, strings.TrimSpace(stderr.String())))
+		fail(mediaCommandError("7-Zip extraction", err, ctx.Err(), stderr.String()))
 		return
 	}
 	var paths []string
@@ -387,11 +475,11 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		return nil
 	})
 	if err != nil {
-		job.fail(err)
+		fail(fmt.Errorf("validate extracted files: %w", err))
 		return
 	}
 	if len(paths) > maxArchiveEntries {
-		job.fail(fmt.Errorf("archive contains more than %d entries", maxArchiveEntries))
+		fail(fmt.Errorf("archive contains more than %d entries", maxArchiveEntries))
 		return
 	}
 	job.update("importing", 35, "正在写入网盘")
@@ -403,13 +491,17 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		}
 		file, openErr := os.Open(path)
 		if openErr != nil {
-			job.fail(openErr)
+			fail(fmt.Errorf("open extracted file %q: %w", filepath.Base(path), openErr))
 			return
 		}
 		key, manifest, storeErr := s.storage.Store(ctx, file)
 		_ = file.Close()
 		if storeErr != nil {
-			job.fail(fmt.Errorf("store extracted file: %w", storeErr))
+			fail(fmt.Errorf("upload extracted file %q to S3: %w", filepath.Base(path), storeErr))
+			return
+		}
+		if manifest.Size != info.Size() {
+			fail(fmt.Errorf("upload extracted file %q: stored size %d does not match local size %d", filepath.Base(path), manifest.Size, info.Size()))
 			return
 		}
 		rel, _ := filepath.Rel(outputDir, path)
@@ -422,7 +514,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	}
 	rootID, rootName, err := s.commitExtractedArchive(ctx, parentID, archiveBaseName(f.Name), outputDir, paths, objects)
 	if err != nil {
-		job.fail(err)
+		fail(fmt.Errorf("commit extracted files: %w", err))
 		return
 	}
 	job.mu.Lock()

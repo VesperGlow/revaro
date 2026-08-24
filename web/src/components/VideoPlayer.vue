@@ -13,6 +13,8 @@ const video=ref<HTMLVideoElement|null>(null)
 const actionMenu=ref<HTMLDetailsElement|null>(null)
 const subtitles=ref<VideoSubtitleTrack[]>([])
 const activeSubtitle=ref(-1)
+const subtitleReady=ref(false)
+const subtitleEpoch=ref(0)
 const directMode=ref(/\.(mp4|m4v|webm|ogv|mov)$/i.test(props.item.name))
 const directSource=ref(directMode.value?previewURL(props.item):'')
 const starting=ref(false)
@@ -45,6 +47,7 @@ const sessionKey=computed(()=>`revaro-video-hls-session:${props.item.id}`)
 const poster=computed(()=>thumbSRC(props.item))
 const compatibilityLabel=computed(()=>transcoding.value?`${videoCodec.value.toUpperCase()} → H.264 实时转码`:`${videoCodec.value.toUpperCase()||'视频'} HLS 封装`)
 const progress=computed(()=>duration.value?Math.min(100,currentTime.value/duration.value*100):0)
+const selectedSubtitle=computed(()=>activeSubtitle.value>=0?subtitles.value[activeSubtitle.value]:undefined)
 
 function formatTime(seconds:number){
   if(!Number.isFinite(seconds)||seconds<0)return '0:00'
@@ -74,10 +77,22 @@ function persistProgress(remote=false){
 function applySubtitle(){
   const tracks=video.value?.textTracks
   if(!tracks)return
-  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=index===activeSubtitle.value?'showing':'disabled'
+  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=selectedSubtitle.value?'showing':'disabled'
 }
-function chooseSubtitle(event:Event){activeSubtitle.value=Number((event.target as HTMLSelectElement).value);applySubtitle()}
-async function removeHLSSession(id:string){if(id)try{await api(`/api/video/hls/${id}`,{method:'DELETE'})}catch{/* 服务端闲置清理兜底 */}}
+function refreshSubtitle(){subtitleEpoch.value+=1;void nextTick().then(applySubtitle)}
+function chooseSubtitle(event:Event){activeSubtitle.value=Number((event.target as HTMLSelectElement).value);refreshSubtitle()}
+function onSubtitleLoad(event:Event){
+  const track=(event.currentTarget as HTMLTrackElement).track
+  const offset=directMode.value?0:hlsOffset.value
+  if(offset>0&&track.cues){
+    for(const cue of Array.from(track.cues)){
+      if(cue.endTime<=offset){track.removeCue(cue);continue}
+      cue.startTime=Math.max(0,cue.startTime-offset)
+      cue.endTime=Math.max(cue.startTime+.001,cue.endTime-offset)
+    }
+  }
+  track.mode='showing'
+}
 function resetHLS(){hls?.destroy();hls=null;if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}}
 function showControls(persist=false){
   controlsVisible.value=true;window.clearTimeout(controlsTimer)
@@ -86,31 +101,33 @@ function showControls(persist=false){
 
 async function startCompatibilityStream(start:number,autoplay=true){
   const generation=++hlsGeneration
-  const previous=hlsSessionId;hlsSessionId=''
-  starting.value=true;autoplayPending.value=autoplay;error.value='';directMode.value=false;directSource.value='';showControls(true)
-  resetHLS();await removeHLSSession(previous)
+  const previous=hlsSessionId
+  starting.value=true;subtitleReady.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;directSource.value='';showControls(true)
+  resetHLS()
   try{
     const previousSessionID=previous||sessionStorage.getItem(sessionKey.value)||''
-    const response=await api<VideoHLSResponse>(`/api/files/${props.item.id}/video/hls`,{method:'POST',body:JSON.stringify({start,previous_session_id:previousSessionID})},75000)
-    if(generation!==hlsGeneration){void removeHLSSession(response.session_id);return}
+    const response=await api<VideoHLSResponse>(`/api/files/${props.item.id}/video/hls`,{method:'POST',body:JSON.stringify({start,previous_session_id:previousSessionID})},110000)
+    if(generation!==hlsGeneration)return
     const el=video.value
     if(!el)throw new Error('播放器已经关闭')
     hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);hlsOffset.value=response.start;currentTime.value=response.start;duration.value=response.duration
     videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding
     const {default:Hls}=await import('hls.js/light')
     if(Hls.isSupported()){
-      const player=new Hls({enableWorker:true,lowLatencyMode:false,backBufferLength:90})
+      const player=new Hls({enableWorker:true,lowLatencyMode:false,backBufferLength:90,maxBufferLength:90,maxMaxBufferLength:120,maxBufferSize:256*1024*1024})
       hls=player
       player.on(Hls.Events.MEDIA_ATTACHED,()=>player.loadSource(response.playlist_url))
-      player.on(Hls.Events.MANIFEST_PARSED,()=>{starting.value=false;applySubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()})
-      player.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;error.value='兼容视频流播放失败，请重试';showControls(true)}})
+      player.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()})
+      player.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;subtitleReady.value=false;error.value='兼容视频流播放失败，请重试';showControls(true)}})
       player.attachMedia(el)
     }else if(el.canPlayType('application/vnd.apple.mpegurl')){
-      el.src=response.playlist_url;el.load();starting.value=false;applySubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()
+      const localStart=Math.max(0,start-response.start)
+      if(localStart>0)el.addEventListener('loadedmetadata',()=>{el.currentTime=localStart},{once:true})
+      el.src=response.playlist_url;el.load();starting.value=false;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()
     }else throw new Error('当前浏览器不支持 HLS 播放')
   }catch(caught){
     if(generation!==hlsGeneration)return
-    const failed=hlsSessionId;hlsSessionId='';resetHLS();if(failed)void removeHLSSession(failed)
+    resetHLS()
     starting.value=false;error.value=caught instanceof Error?caught.message:'兼容视频流启动失败';showControls(true)
   }
 }
@@ -176,7 +193,7 @@ onMounted(async()=>{
   document.addEventListener('fullscreenchange',onFullscreenChange)
   document.addEventListener('pointerdown',closeActionMenuFromOutside)
   const progressPromise=loadProgress()
-  try{const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`);subtitles.value=media.subtitles||[];activeSubtitle.value=subtitles.value.length?0:-1;await nextTick();applySubtitle()}catch{/* 视频仍可在没有字幕信息时播放 */}
+  try{const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`);subtitles.value=media.subtitles||[];activeSubtitle.value=subtitles.value.length?0:-1;subtitleReady.value=directMode.value;refreshSubtitle()}catch{/* 视频仍可在没有字幕信息时播放 */}
   const el=video.value
   if(directMode.value){el?.load();void el?.play().catch(()=>{})}
   else{await progressPromise;void startCompatibilityStream(savedPosition(),true)}
@@ -192,7 +209,7 @@ onBeforeUnmount(()=>{
 <template>
   <div ref="shell" class="video-player-shell" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
     <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @play="onPlay" @pause="onPause" @ended="onPause" @error="onVideoError">
-      <track v-for="(track,index) in subtitles" :key="track.id" kind="subtitles" :src="track.url" :srclang="track.language" :label="track.label" :default="index===activeSubtitle">
+      <track v-if="subtitleReady&&selectedSubtitle" :key="`${selectedSubtitle.id}:${subtitleEpoch}`" kind="subtitles" :src="selectedSubtitle.url" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad">
       你的浏览器不支持这个视频格式。
     </video>
     <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong>{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>

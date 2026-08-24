@@ -45,30 +45,33 @@ const maxManifestBlocks = 262144
 const maxLogicalFileSize = 1 << 40 // 1 TiB
 
 type Server struct {
-	db               *sql.DB
-	storage          storage.Storage
-	auth             *auth.Service
-	cfg              config.Config
-	log              *slog.Logger
-	limiter          *loginLimiter
-	s3Origin         string // S3_PUBLIC_ENDPOINT 的 scheme://host，用于收窄 CSP
-	shareSlots       chan struct{}
-	blockUploadSlots chan struct{}
-	audioMergeSlots  chan struct{}
-	audioMergeMu     sync.RWMutex
-	audioMergeJobs   map[string]*audioMergeJob
-	audioHLSSlots    chan struct{}
-	audioHLSMu       sync.RWMutex
-	audioHLSSessions map[string]*audioHLSSession
-	audioHLSCtx      context.Context
-	audioHLSCancel   context.CancelFunc
-	videoHLSSlots    chan struct{}
-	videoHLSMu       sync.RWMutex
-	videoHLSSessions map[string]*videoHLSSession
-	archiveSlots     chan struct{}
-	archiveMu        sync.RWMutex
-	archiveJobs      map[string]*archiveJob
-	downloads        *downloadManager
+	db                 *sql.DB
+	storage            storage.Storage
+	auth               *auth.Service
+	cfg                config.Config
+	log                *slog.Logger
+	limiter            *loginLimiter
+	s3Origin           string // S3_PUBLIC_ENDPOINT 的 scheme://host，用于收窄 CSP
+	shareSlots         chan struct{}
+	blockUploadSlots   chan struct{}
+	audioMergeSlots    chan struct{}
+	audioMergeMu       sync.RWMutex
+	audioMergeJobs     map[string]*audioMergeJob
+	audioHLSSlots      chan struct{}
+	audioHLSMu         sync.RWMutex
+	audioHLSSessions   map[string]*audioHLSSession
+	audioHLSCtx        context.Context
+	audioHLSCancel     context.CancelFunc
+	videoHLSSlots      chan struct{}
+	videoHLSMu         sync.RWMutex
+	videoHLSSessions   map[string]*videoHLSSession
+	videoSubtitleMu    sync.Mutex
+	videoSubtitleCache map[string]*videoSubtitleCacheEntry
+	videoSubtitleBytes int64
+	archiveSlots       chan struct{}
+	archiveMu          sync.RWMutex
+	archiveJobs        map[string]*archiveJob
+	downloads          *downloadManager
 }
 
 type File struct {
@@ -103,7 +106,8 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
 		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
-		archiveSlots: make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
+		videoSubtitleCache: make(map[string]*videoSubtitleCacheEntry),
+		archiveSlots:       make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
 	if cfg.BTEnabled {

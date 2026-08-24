@@ -19,7 +19,10 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-const videoHLSIdleTTL = 20 * time.Minute
+const (
+	videoHLSIdleTTL       = 20 * time.Minute
+	videoHLSStartupChunks = 4 // 4s segments: keep roughly 16 seconds ahead before playback.
+)
 
 var videoHLSSegmentName = regexp.MustCompile(`^segment-[0-9]{6}\.ts$`)
 
@@ -122,9 +125,15 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
 		return
 	}
+	// A seek can rebuild hls.js without throwing away the FFmpeg output. Reuse a
+	// presented session whenever its event playlist already covers the target.
+	if response, ok := s.reusableVideoHLSResponse(in.PreviousSessionID, f.ID, in.Start); ok {
+		writeJSON(w, http.StatusCreated, response)
+		return
+	}
 	// A page refresh frequently prevents the browser's best-effort DELETE from
-	// reaching us. Reclaim only the session token presented by the new page and
-	// only when it belongs to this file, so another tab/device is never stopped.
+	// reaching us. Reclaim only the token presented by the same file before a
+	// replacement transcode is started, so another tab/device is never stopped.
 	if in.PreviousSessionID != "" {
 		s.removeReplacedVideoHLSSession(in.PreviousSessionID, f.ID)
 	}
@@ -171,6 +180,31 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) reusableVideoHLSResponse(id, fileID string, target float64) (startVideoHLSResponse, bool) {
+	if id == "" {
+		return startVideoHLSResponse{}, false
+	}
+	s.videoHLSMu.RLock()
+	session := s.videoHLSSessions[id]
+	if session == nil || session.FileID != fileID {
+		s.videoHLSMu.RUnlock()
+		return startVideoHLSResponse{}, false
+	}
+	_, _, _, duration, videoCodec, audioCodec, transcoding := session.snapshot()
+	_, available := videoHLSPlaylistState(session.Playlist)
+	if target < session.Start || target > session.Start+available-.25 {
+		s.videoHLSMu.RUnlock()
+		return startVideoHLSResponse{}, false
+	}
+	session.touch()
+	response := startVideoHLSResponse{
+		SessionID: session.ID, PlaylistURL: "/api/video/hls/" + session.ID + "/index.m3u8",
+		Start: session.Start, Duration: duration, VideoCodec: videoCodec, AudioCodec: audioCodec, Transcoding: transcoding,
+	}
+	s.videoHLSMu.RUnlock()
+	return response, true
+}
+
 func (s *Server) removeReplacedVideoHLSSession(id, fileID string) {
 	s.videoHLSMu.Lock()
 	session := s.videoHLSSessions[id]
@@ -186,16 +220,21 @@ func (s *Server) removeReplacedVideoHLSSession(id, fileID string) {
 }
 
 func waitForVideoHLS(requestCtx context.Context, session *videoHLSSession) error {
-	timer := time.NewTimer(60 * time.Second)
+	timer := time.NewTimer(90 * time.Second)
 	defer timer.Stop()
 	ticker := time.NewTicker(75 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if body, err := os.ReadFile(session.Playlist); err == nil && strings.Contains(string(body), "#EXTINF:") {
+		segments, _ := videoHLSPlaylistState(session.Playlist)
+		if segments >= videoHLSStartupChunks {
 			return nil
 		}
 		_, done, sessionErr, _, _, _, _ := session.snapshot()
 		if done {
+			if segments > 0 {
+				// Short clips may finish with fewer than four segments.
+				return nil
+			}
 			if sessionErr == "" {
 				return errors.New("ffmpeg produced no HLS segments")
 			}
@@ -209,6 +248,26 @@ func waitForVideoHLS(requestCtx context.Context, session *videoHLSSession) error
 		case <-ticker.C:
 		}
 	}
+}
+
+func videoHLSPlaylistState(path string) (int, float64) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0
+	}
+	segments := 0
+	var duration float64
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(line, "#EXTINF:") {
+			continue
+		}
+		value := strings.TrimSuffix(strings.TrimPrefix(line, "#EXTINF:"), ",")
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil && parsed > 0 {
+			duration += parsed
+		}
+		segments++
+	}
+	return segments, duration
 }
 
 type videoProbe struct {
@@ -277,7 +336,7 @@ func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSessi
 	args = append(args, "-i", sourceURL, "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn")
 	if transcoding {
 		args = append(args,
-			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads", "2",
+			"-c:v", "libx264", "-preset", "superfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads", "0",
 			"-vf", "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
 			"-force_key_frames", "expr:gte(t,n_forced*4)")
 	} else {
