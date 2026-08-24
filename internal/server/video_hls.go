@@ -102,6 +102,7 @@ func (session *videoHLSSession) destroy() {
 type startVideoHLSRequest struct {
 	Start             float64 `json:"start"`
 	PreviousSessionID string  `json:"previous_session_id"`
+	FallbackReason    string  `json:"fallback_reason"`
 }
 
 type startVideoHLSResponse struct {
@@ -136,6 +137,7 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
 		return
 	}
+	s.log.Info("video playback selected", "file", f.ID, "mode", "hls", "fallback_reason", strings.TrimSpace(in.FallbackReason))
 	// Sessions are a file/start-range cache, not a property of a single hls.js
 	// instance. A refresh or an earlier seek can therefore reuse any still-live
 	// event playlist for this file, including all segments already on disk.

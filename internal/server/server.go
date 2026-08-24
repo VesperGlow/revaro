@@ -65,6 +65,9 @@ type Server struct {
 	videoHLSSlots      chan struct{}
 	videoHLSMu         sync.RWMutex
 	videoHLSSessions   map[string]*videoHLSSession
+	videoFMP4Slots     chan struct{}
+	videoFMP4Mu        sync.RWMutex
+	videoFMP4Sessions  map[string]*videoFMP4Session
 	videoSubtitleMu    sync.Mutex
 	videoSubtitleCache map[string]*videoSubtitleCacheEntry
 	videoSubtitleBytes int64
@@ -106,6 +109,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
 		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
+		videoFMP4Slots: make(chan struct{}, 2), videoFMP4Sessions: make(map[string]*videoFMP4Session),
 		videoSubtitleCache: make(map[string]*videoSubtitleCacheEntry),
 		archiveSlots:       make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
@@ -128,6 +132,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	}
 	go s.cleanupAudioHLSSessions()
 	go s.cleanupVideoHLSSessions()
+	go s.cleanupVideoFMP4Sessions()
 	go s.cleanupArchiveJobs()
 	return s
 }
@@ -159,6 +164,16 @@ func (s *Server) Close() {
 	s.videoHLSSessions = make(map[string]*videoHLSSession)
 	s.videoHLSMu.Unlock()
 	for _, session := range videoSessions {
+		session.destroy()
+	}
+	s.videoFMP4Mu.Lock()
+	fmp4Sessions := make([]*videoFMP4Session, 0, len(s.videoFMP4Sessions))
+	for _, session := range s.videoFMP4Sessions {
+		fmp4Sessions = append(fmp4Sessions, session)
+	}
+	s.videoFMP4Sessions = make(map[string]*videoFMP4Session)
+	s.videoFMP4Mu.Unlock()
+	for _, session := range fmp4Sessions {
 		session.destroy()
 	}
 	s.archiveMu.RLock()
@@ -212,11 +227,14 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/audio/hls/{session}", s.stopAudioHLS)
 			r.Get("/files/{id}/video", s.videoMediaInfo)
 			r.Get("/files/{id}/video/subtitles/{subtitle}", s.videoSubtitle)
+			r.Post("/files/{id}/video/fmp4", s.startVideoFMP4)
 			r.Post("/files/{id}/video/hls", s.startVideoHLS)
 			r.Get("/files/{id}/media/progress", s.mediaProgress)
 			r.Put("/files/{id}/media/progress", s.saveMediaProgress)
 			r.Get("/video/hls/{session}/{asset}", s.videoHLSAsset)
 			r.Delete("/video/hls/{session}", s.stopVideoHLS)
+			r.Get("/video/fmp4/{session}/stream.mp4", s.videoFMP4Stream)
+			r.Delete("/video/fmp4/{session}", s.stopVideoFMP4)
 			r.Get("/files/{id}/content", s.getDocument)
 			r.Put("/files/{id}/content", s.updateDocument)
 			r.Get("/files/{id}/book", s.bookInfo)
