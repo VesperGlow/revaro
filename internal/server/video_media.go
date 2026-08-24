@@ -3,12 +3,15 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/VesperGlow/revaro/internal/storage"
@@ -33,6 +36,15 @@ type videoSubtitleResponse struct {
 	URL      string `json:"url"`
 }
 
+type embeddedVideoSubtitle struct {
+	Index    int
+	Codec    string
+	Language string
+	Title    string
+	Default  bool
+	Forced   bool
+}
+
 func isVideoSource(f File) bool {
 	return strings.HasPrefix(strings.ToLower(f.MimeType), "video/") || videoExts[strings.ToLower(filepath.Ext(f.Name))]
 }
@@ -48,7 +60,31 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, "could not find video subtitles")
 		return
 	}
-	tracks := make([]videoSubtitleResponse, 0, len(files))
+	tracks := make([]videoSubtitleResponse, 0, len(files)+2)
+	embedded, probeErr := s.findEmbeddedVideoSubtitles(r.Context(), video)
+	if probeErr != nil {
+		s.log.Warn("embedded video subtitle probe failed", "video", video.ID, "error", probeErr)
+	}
+	for _, subtitle := range embedded {
+		language, languageLabel := embeddedSubtitleLanguage(subtitle.Language)
+		label := strings.TrimSpace(subtitle.Title)
+		if label == "" {
+			label = languageLabel
+		}
+		if label == "" {
+			label = fmt.Sprintf("内嵌字幕 %d", subtitle.Index+1)
+		}
+		if subtitle.Forced {
+			label += " · 强制"
+		} else if subtitle.Default {
+			label += " · 默认"
+		}
+		id := "embedded-" + strconv.Itoa(subtitle.Index)
+		tracks = append(tracks, videoSubtitleResponse{
+			ID: id, Name: label, Label: label, Language: language,
+			URL: "/api/files/" + video.ID + "/video/subtitles/" + id,
+		})
+	}
 	for _, subtitle := range files {
 		language, languageLabel := videoSubtitleLanguage(video.Name, subtitle.Name)
 		label := subtitle.Name
@@ -61,6 +97,79 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"subtitles": tracks})
+}
+
+func embeddedSubtitleLanguage(value string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "zh", "chi", "zho", "chs", "zh-cn", "zh-hans":
+		return "zh-CN", "简体中文"
+	case "cht", "zh-tw", "zh-hant":
+		return "zh-TW", "繁體中文"
+	case "en", "eng":
+		return "en", "English"
+	case "ja", "jpn":
+		return "ja", "日本語"
+	case "ko", "kor":
+		return "ko", "한국어"
+	default:
+		if value == "" {
+			return "und", ""
+		}
+		return value, strings.ToUpper(value)
+	}
+}
+
+func supportedEmbeddedSubtitleCodec(codec string) bool {
+	switch strings.ToLower(codec) {
+	case "ass", "ssa", "subrip", "srt", "webvtt", "text", "mov_text":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) findEmbeddedVideoSubtitles(ctx context.Context, video File) ([]embeddedVideoSubtitle, error) {
+	ffprobe, err := ffprobeFor(s.cfg.FFmpegPath)
+	if err != nil {
+		return nil, err
+	}
+	sourceURL, cleanup, err := s.startMediaHLSSource(ctx, video)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-select_streams", "s", "-show_entries", "stream=index,codec_name:stream_tags=language,title:stream_disposition=default,forced", "-of", "json", sourceURL)
+	output := &limitedBuffer{limit: 2 << 20}
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = output, stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffprobe subtitles: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var result struct {
+		Streams []struct {
+			Index       int    `json:"index"`
+			Codec       string `json:"codec_name"`
+			Tags        struct {
+				Language string `json:"language"`
+				Title    string `json:"title"`
+			} `json:"tags"`
+			Disposition struct {
+				Default int `json:"default"`
+				Forced  int `json:"forced"`
+			} `json:"disposition"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(output.buf.Bytes(), &result); err != nil {
+		return nil, err
+	}
+	tracks := make([]embeddedVideoSubtitle, 0, len(result.Streams))
+	for _, stream := range result.Streams {
+		if !supportedEmbeddedSubtitleCodec(stream.Codec) {
+			continue
+		}
+		tracks = append(tracks, embeddedVideoSubtitle{Index: stream.Index, Codec: stream.Codec, Language: stream.Tags.Language, Title: stream.Tags.Title, Default: stream.Disposition.Default != 0, Forced: stream.Disposition.Forced != 0})
+	}
+	return tracks, nil
 }
 
 func (s *Server) findVideoSubtitles(ctx context.Context, video File) ([]File, error) {
@@ -171,6 +280,38 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "ready video file not found")
 		return
 	}
+	subtitleID := chi.URLParam(r, "subtitle")
+	if strings.HasPrefix(subtitleID, "embedded-") {
+		index, parseErr := strconv.Atoi(strings.TrimPrefix(subtitleID, "embedded-"))
+		if parseErr != nil || index < 0 {
+			problem(w, http.StatusNotFound, "embedded subtitle not found")
+			return
+		}
+		allowed, probeErr := s.findEmbeddedVideoSubtitles(r.Context(), video)
+		if probeErr != nil {
+			problem(w, http.StatusBadGateway, "embedded subtitles could not be read")
+			return
+		}
+		found := false
+		for _, track := range allowed {
+			if track.Index == index {
+				found = true
+				break
+			}
+		}
+		if !found {
+			problem(w, http.StatusNotFound, "embedded subtitle not found")
+			return
+		}
+		vtt, convertErr := s.embeddedSubtitleAsWebVTT(r.Context(), video, index)
+		if convertErr != nil {
+			s.log.Warn("embedded video subtitle conversion failed", "video", video.ID, "stream", index, "error", convertErr)
+			problem(w, http.StatusUnprocessableEntity, "embedded subtitle could not be converted to WebVTT")
+			return
+		}
+		writeVideoSubtitle(w, vtt)
+		return
+	}
 	allowed, err := s.findVideoSubtitles(r.Context(), video)
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "could not find video subtitles")
@@ -178,7 +319,7 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 	}
 	var subtitle *File
 	for index := range allowed {
-		if allowed[index].ID == chi.URLParam(r, "subtitle") {
+		if allowed[index].ID == subtitleID {
 			subtitle = &allowed[index]
 			break
 		}
@@ -202,11 +343,49 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "subtitle could not be converted to WebVTT")
 		return
 	}
+	writeVideoSubtitle(w, vtt)
+}
+
+func writeVideoSubtitle(w http.ResponseWriter, vtt []byte) {
 	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(vtt)
+}
+
+func (s *Server) embeddedSubtitleAsWebVTT(ctx context.Context, video File, streamIndex int) ([]byte, error) {
+	sourceURL, cleanup, err := s.startMediaHLSSource(ctx, video)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, "-hide_banner", "-loglevel", "error", "-i", sourceURL, "-map", fmt.Sprintf("0:%d", streamIndex), "-f", "webvtt", "pipe:1")
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stderr = stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	converted, readErr := io.ReadAll(io.LimitReader(stdout, maxConvertedSubtitleBytes+1))
+	if readErr != nil || len(converted) > maxConvertedSubtitleBytes {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, errors.New("converted subtitle is too large")
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, errors.New(strings.TrimSpace(stderr.String()))
+	}
+	if !bytes.HasPrefix(bytes.TrimSpace(converted), []byte("WEBVTT")) {
+		return nil, errors.New("ffmpeg produced invalid WebVTT")
+	}
+	return converted, nil
 }
 
 func (s *Server) readFileWithLimit(ctx context.Context, f File, limit int64) ([]byte, error) {

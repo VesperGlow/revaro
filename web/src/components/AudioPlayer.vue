@@ -164,6 +164,13 @@ function setVolume(event:Event){
   localStorage.setItem('revaro-audio-volume',String(volume.value));localStorage.setItem('revaro-audio-muted',String(muted.value));applyVolume()
 }
 function toggleMute(){muted.value=!muted.value;localStorage.setItem('revaro-audio-muted',String(muted.value));applyVolume()}
+function closeActionMenuFromOutside(event:PointerEvent){
+  const target=event.target
+  if(actionMenu.value?.open&&target instanceof Node&&!actionMenu.value.contains(target))actionMenu.value.open=false
+}
+function closeActionMenuFromEscape(event:KeyboardEvent){
+  if(event.key==='Escape'&&actionMenu.value?.open){actionMenu.value.open=false;actionMenu.value.querySelector<HTMLElement>('summary')?.focus()}
+}
 
 async function removeHLSSession(id:string){
   if(!id)return
@@ -245,6 +252,8 @@ onMounted(()=>{
     updateChapterScrollbar()
     if(chapterList.value&&'ResizeObserver' in window){chapterResizeObserver=new ResizeObserver(updateChapterScrollbar);chapterResizeObserver.observe(chapterList.value)}
   })
+  document.addEventListener('pointerdown',closeActionMenuFromOutside)
+  document.addEventListener('keydown',closeActionMenuFromEscape)
 })
 watch(()=>chapters.value.length,()=>void nextTick().then(updateChapterScrollbar))
 watch(currentChapterIndex,index=>void nextTick().then(()=>{
@@ -256,6 +265,7 @@ watch(subtitleFocusIndex,index=>{
   void nextTick().then(()=>subtitleList.value?.querySelector<HTMLElement>(`[data-subtitle-index="${index}"]`)?.scrollIntoView({behavior:'smooth',block:'center'}))
 })
 onBeforeUnmount(()=>{
+  document.removeEventListener('pointerdown',closeActionMenuFromOutside);document.removeEventListener('keydown',closeActionMenuFromEscape)
   window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);persistProgress(false);chapterResizeObserver?.disconnect();hlsGeneration++
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const session=hlsSessionId;hlsSessionId='';resetLocalHLS()
@@ -294,16 +304,16 @@ onBeforeUnmount(()=>{
           <input :value="displayedTime" type="range" min="0" :max="duration||0" step="0.1" aria-label="播放进度" @input="previewSeek" @change="commitSeek" @pointermove="updateSeekHover" @pointerleave="hideSeekHover">
         </div>
         <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span><span>-{{ formatTime(Math.max(0,duration-displayedTime)) }}</span></div>
-        <div class="audio-controls">
-          <button title="上一节" aria-label="上一节" @click="previousChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6 9 12l10 6Z"/></svg></button>
-          <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback"><span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path v-if="playing" d="M8 6v12M16 6v12"/><path v-else class="play-shape" d="m9 6 9 6-9 6Z"/></svg></button>
-          <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l10 6-10 6Z"/></svg></button>
-        </div>
-        <div class="audio-player-options">
+        <div class="audio-player-options audio-transport-row">
           <label class="audio-rate"><span>倍速</span><select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label>
-          <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
+          <div class="audio-controls">
+            <button title="上一节" aria-label="上一节" @click="previousChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6 9 12l10 6Z"/></svg></button>
+            <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback"><span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path v-if="playing" d="M8 6v12M16 6v12"/><path v-else class="play-shape" d="m9 6 9 6-9 6Z"/></svg></button>
+            <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l10 6-10 6Z"/></svg></button>
+          </div>
           <div class="audio-option-end"><div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div><details ref="actionMenu" class="audio-action-menu"><summary aria-label="更多操作"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></summary><div><button @click="actionMenu?.removeAttribute('open');emit('download',item)">下载</button><button @click="actionMenu?.removeAttribute('open');emit('move',item)">移动</button><button @click="actionMenu?.removeAttribute('open');emit('copy',item)">复制</button></div></details></div>
         </div>
+        <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
         <p v-if="error" class="audio-player-error">{{ error }}</p>
         <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
       </section>

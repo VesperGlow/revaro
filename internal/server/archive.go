@@ -34,6 +34,7 @@ type archiveJob struct {
 
 	ID         string `json:"id"`
 	FileID     string `json:"file_id"`
+	ParentID   string `json:"parent_id"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Progress   int    `json:"progress"`
@@ -62,7 +63,7 @@ func (job *archiveJob) fail(err error) {
 func (job *archiveJob) snapshot() archiveJob {
 	job.mu.RLock()
 	defer job.mu.RUnlock()
-	return archiveJob{ID: job.ID, FileID: job.FileID, Name: job.Name, Status: job.Status, Progress: job.Progress, Message: job.Message, OutputID: job.OutputID, OutputName: job.OutputName, Error: job.Error, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt}
+	return archiveJob{ID: job.ID, FileID: job.FileID, ParentID: job.ParentID, Name: job.Name, Status: job.Status, Progress: job.Progress, Message: job.Message, OutputID: job.OutputID, OutputName: job.OutputName, Error: job.Error, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt}
 }
 
 func isArchiveName(name string) bool {
@@ -110,7 +111,7 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		parentID = *f.ParentID
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	job := &archiveJob{ID: ids.New(), FileID: f.ID, Name: f.Name, Status: "queued", Progress: 0, Message: "等待解压", CreatedAt: now, UpdatedAt: now}
+	job := &archiveJob{ID: ids.New(), FileID: f.ID, ParentID: parentID, Name: f.Name, Status: "queued", Progress: 0, Message: "等待解压", CreatedAt: now, UpdatedAt: now}
 	s.archiveMu.Lock()
 	s.archiveJobs[job.ID] = job
 	s.archiveMu.Unlock()
@@ -127,6 +128,42 @@ func (s *Server) getArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job.snapshot())
+}
+
+func (s *Server) listArchiveExtracts(w http.ResponseWriter, _ *http.Request) {
+	s.archiveMu.RLock()
+	jobs := make([]archiveJob, 0, len(s.archiveJobs))
+	for _, job := range s.archiveJobs {
+		jobs = append(jobs, job.snapshot())
+	}
+	s.archiveMu.RUnlock()
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].CreatedAt > jobs[j].CreatedAt })
+	writeJSON(w, http.StatusOK, map[string]any{"items": jobs})
+}
+
+func archiveJobTerminal(status string) bool {
+	return status == "done" || status == "failed"
+}
+
+func (s *Server) deleteArchiveExtract(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	s.archiveMu.Lock()
+	job := s.archiveJobs[id]
+	if job != nil {
+		snapshot := job.snapshot()
+		if !archiveJobTerminal(snapshot.Status) {
+			s.archiveMu.Unlock()
+			problem(w, http.StatusConflict, "active archive job cannot be removed")
+			return
+		}
+		delete(s.archiveJobs, id)
+	}
+	s.archiveMu.Unlock()
+	if job == nil {
+		problem(w, http.StatusNotFound, "archive job not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type archiveEntry struct {

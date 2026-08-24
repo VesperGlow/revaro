@@ -71,6 +71,7 @@ export interface VideoHLSResponse { session_id:string; playlist_url:string; star
 export interface ArchiveJob {
   id:string
   file_id:string
+  parent_id:string
   name:string
   status:'queued'|'downloading'|'checking'|'extracting'|'importing'|'done'|'failed'
   progress:number

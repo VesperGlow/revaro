@@ -4,18 +4,6 @@
   font-size: 13px;
 }
 
-.top-logout {
-  border: 0;
-  background: transparent;
-  color: #64748b;
-  font-size: 12px;
-  padding: 8px;
-}
-
-.top-logout:hover {
-  color: #1d4ed8;
-}
-
 .account-modal form {
   display: flex;
   flex-direction: column;
@@ -137,6 +125,44 @@
 
 .account-setting-row.security-row {
   background: #f8fafc;
+}
+
+.account-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+  gap: 24px;
+  padding: 10px 18px;
+  border: 1px dashed #dce4ee;
+  border-radius: 15px;
+  background: #fbfcfe;
+}
+
+.account-session-row > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.account-session-row p {
+  margin: 0;
+  color: #8794a6;
+  font-size: 11px;
+}
+
+.account-session-row > button {
+  padding: 8px 13px;
+  border: 1px solid #fecaca;
+  border-radius: 9px;
+  background: #fff;
+  color: #dc2626;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.account-session-row > button:hover {
+  background: #fff1f2;
 }
 
 .setting-copy {

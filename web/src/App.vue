@@ -58,6 +58,7 @@ const editor = reactive({ isNew:false, readonly:false, fileId:'', name:'', origi
 const audioMerge = reactive({ name:'', format:'flac' as AudioMergeFormat, order:[] as DriveFile[], coverData:'', coverFileId:'', coverPreview:'', coverName:'', error:'', busy:false })
 const audioMergeJobs = ref<AudioMergeResponse[]>([])
 const downloadJobs = ref<DownloadJob[]>([])
+const archiveJobs = ref<ArchiveJob[]>([])
 const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
 const fileInput = ref<HTMLInputElement|null>(null)
 const folderInput = ref<HTMLInputElement|null>(null)
@@ -70,8 +71,8 @@ let activeUploads = 0
 let toastTimer = 0
 let audioMergePollTimer = 0
 let downloadPollTimer = 0
+let archivePollTimer = 0
 let uploadRefreshTimer = 0
-const archivePollTimers=new Set<number>()
 
 const editorDirty = computed(() => editor.content !== editor.original || editor.name !== editor.originalName)
 const editorBytes = computed(() => new Blob([editor.content]).size)
@@ -132,7 +133,7 @@ async function submitLogin() {
   login.busy=true;login.error='';login.notice=''
   try {
     const me=await api<ProfileResponse>('/api/auth/login',{method:'POST',body:JSON.stringify({username:login.username,password:login.password,second_factor:login.secondFactor})})
-    user.value=me.username;hasAvatar.value=me.has_avatar;login.password='';login.secondFactor='';login.totpRequired=false;await openFolder(ROOT);void refreshAudioMergeJobs();void refreshDownloadJobs()
+    user.value=me.username;hasAvatar.value=me.has_avatar;login.password='';login.secondFactor='';login.totpRequired=false;await openFolder(ROOT);void refreshAudioMergeJobs();void refreshDownloadJobs();void refreshArchiveJobs()
   }catch(e){
     const code=((e as ApiError).data as {error?:{code?:string}}|null)?.error?.code
     if(code==='totp_required'){login.totpRequired=true;login.error='请输入身份验证器验证码或恢复码'}
@@ -141,7 +142,7 @@ async function submitLogin() {
   }
   finally{login.busy=false}
 }
-async function logout(){await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];downloadJobs.value=[];window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer)}
+async function logout(){await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];downloadJobs.value=[];archiveJobs.value=[];window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(archivePollTimer)}
 function showAccount(){account.username=user.value||'';account.currentPassword='';account.password='';account.confirmPassword='';account.error='';accountPanel.value=null;usernameEditing.value=false;usernameSaving.value=false;usernameError.value='';avatar.error='';resetTwoFactor();openModal('account');loadTwoFactorStatus()}
 async function startUsernameEdit(){
   if(usernameSaving.value)return
@@ -552,7 +553,7 @@ async function refreshDownloadJobs(){
   try{
     const previous=new Map(downloadJobs.value.map(job=>[job.id,job.status]))
     const data=await api<{items:DownloadJob[]}>('/api/downloads')
-    downloadJobs.value=data.items
+    downloadJobs.value=data.items.filter(job=>job.status!=='done')
     let refreshFolder=false
     for(const job of data.items){
       const before=previous.get(job.id)
@@ -560,6 +561,7 @@ async function refreshDownloadJobs(){
         notify(`「${job.name}」已下载到网盘`,'success')
         if(job.parent_id===currentId.value)refreshFolder=true
       }else if(before&&!downloadTerminal(before)&&job.status==='failed')notify(job.error||`「${job.name}」下载失败`)
+      if(job.status==='done')void api(`/api/downloads/${job.id}`,{method:'DELETE'},30*60*1000).catch(()=>{})
     }
     if(refreshFolder)void openFolder(currentId.value)
     scheduleDownloadPoll()
@@ -573,24 +575,36 @@ async function extractArchive(item:DriveFile){
   if(!confirmed)return
   try{
     const job=await api<ArchiveJob>(`/api/files/${item.id}/extract`,{method:'POST'})
-    clearSelection();notify(`「${item.name}」已加入解压队列`,'success');scheduleArchivePoll(job.id,item,500)
+    archiveJobs.value=[job,...archiveJobs.value.filter(existing=>existing.id!==job.id)]
+    clearSelection();notify(`「${item.name}」已加入解压队列`,'success');scheduleArchivePoll(500)
   }catch(e){notify((e as Error).message)}
 }
-function scheduleArchivePoll(jobID:string,item:DriveFile,delay=1200){
-  const timer=window.setTimeout(()=>{archivePollTimers.delete(timer);void pollArchive(jobID,item)},delay)
-  archivePollTimers.add(timer)
+function archiveTerminal(status:ArchiveJob['status']){return status==='done'||status==='failed'}
+function scheduleArchivePoll(delay=1200){
+  window.clearTimeout(archivePollTimer)
+  if(archiveJobs.value.some(job=>!archiveTerminal(job.status)))archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),delay)
 }
-async function pollArchive(jobID:string,item:DriveFile){
+async function refreshArchiveJobs(){
   try{
-    const job=await api<ArchiveJob>(`/api/archive-jobs/${jobID}`)
-    if(job.status==='done'){
-      notify(`「${job.output_name||item.name}」解压完成`,'success')
-      if((item.parent_id||ROOT)===currentId.value)void openFolder(currentId.value)
-      return
+    const previous=new Map(archiveJobs.value.map(job=>[job.id,job.status]))
+    const data=await api<{items:ArchiveJob[]}>('/api/archive-jobs')
+    archiveJobs.value=data.items
+    let refreshFolder=false
+    for(const job of data.items){
+      const before=previous.get(job.id)
+      if(before&&!archiveTerminal(before)&&job.status==='done'){
+        notify(`「${job.output_name||job.name}」解压完成`,'success')
+        if(job.parent_id===currentId.value)refreshFolder=true
+      }else if(before&&!archiveTerminal(before)&&job.status==='failed')notify(job.error||`「${job.name}」解压失败`)
     }
-    if(job.status==='failed'){notify(job.error||`「${item.name}」解压失败`);return}
-    scheduleArchivePoll(jobID,item)
-  }catch{scheduleArchivePoll(jobID,item,3000)}
+    if(refreshFolder)void openFolder(currentId.value)
+    scheduleArchivePoll()
+  }catch{window.clearTimeout(archivePollTimer);archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),3000)}
+}
+async function clearArchiveJobs(){
+  const finished=archiveJobs.value.filter(job=>archiveTerminal(job.status))
+  await Promise.all(finished.map(job=>api(`/api/archive-jobs/${job.id}`,{method:'DELETE'}).catch(()=>undefined)))
+  archiveJobs.value=archiveJobs.value.filter(job=>!archiveTerminal(job.status))
 }
 
 function chooseFiles(){fileInput.value?.click()}
@@ -775,8 +789,8 @@ function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled
 // 完成记录保留在上传进度中，等用户主动清除。
 function scheduleAutoClear(){}
 function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
-onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){void refreshAudioMergeJobs();void refreshDownloadJobs()}})})
-onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(uploadRefreshTimer);for(const timer of archivePollTimers)window.clearTimeout(timer);archivePollTimers.clear();for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
+onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){void refreshAudioMergeJobs();void refreshDownloadJobs();void refreshArchiveJobs()}})})
+onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(archivePollTimer);window.clearTimeout(uploadRefreshTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
 </script>
 
 <template>
@@ -797,7 +811,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
   </main>
 
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
-    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" :downloads="downloadJobs" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @logout="logout" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" @downloads-changed="downloadsChanged" />
+    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" :downloads="downloadJobs" :archive-jobs="archiveJobs" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" @clear-archive-jobs="clearArchiveJobs" @downloads-changed="downloadsChanged" />
     <section class="content" @click="clearSelectionFromBlank">
       <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :view-mode="viewMode" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @set-view="setViewMode" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}">
@@ -897,6 +911,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
               <div class="setting-copy"><div class="setting-title"><span class="setting-label">两步验证</span><span class="security-badge" :class="{enabled:twoFactor.enabled}">{{ twoFactor.enabled?'已启用':'未启用' }}</span></div><p>{{ twoFactor.enabled?`身份验证器已启用，剩余 ${twoFactor.recoveryRemaining} 枚恢复码。`:'使用 TOTP 验证码保护管理员登录。' }}</p></div>
               <button type="button" class="secondary" :disabled="twoFactor.loading" @click="openAccountPanel('totp')">{{ twoFactor.loading?'读取中…':twoFactor.enabled?'管理':'设置' }}</button>
             </section>
+            <section class="account-session-row"><div><span class="setting-label">当前会话</span><p>退出这台设备上的 Revaro 账户</p></div><button type="button" @click="logout">退出登录</button></section>
             <p v-if="twoFactor.error&&!accountPanel" class="form-error">{{ twoFactor.error }}</p>
           </div>
         </div>

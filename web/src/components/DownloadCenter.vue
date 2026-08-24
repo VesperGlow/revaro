@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
@@ -94,6 +94,7 @@ function toggleFile(index:number){const next=new Set(selected.value);if(next.has
 
 onMounted(()=>{document.addEventListener('pointerdown',closeFromOutside);document.addEventListener('keydown',closeFromEscape)})
 onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside);document.removeEventListener('keydown',closeFromEscape);window.clearTimeout(metadataTimer)})
+watch(()=>props.jobs.length,(length,previous)=>{if(!length&&previous&&center.value)center.value.open=false})
 </script>
 
 <template>

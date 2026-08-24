@@ -106,11 +106,11 @@ onBeforeUnmount(()=>{window.removeEventListener('keydown',handleKey);window.clea
       </div>
     </header>
     <span v-if="galleryIndex>=0" class="preview-count-floating">{{ galleryIndex+1 }} / {{ galleryItems.length }}</span>
-    <button class="preview-close" aria-label="关闭预览" @click="$emit('close')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    <button v-if="!isVideo(selected)" class="preview-close" aria-label="关闭预览" @click="$emit('close')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     <div ref="stageEl" class="preview-stage" :class="{swipeable:stageSwipeable,zoomed:zoom>1}" @click="onStageClick" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerEnd" @pointercancel="onPointerEnd" @wheel="onWheel">
       <button v-if="hasGalleryNavigation&&isImage(selected)" class="preview-nav preview-prev" aria-label="上一项" @click.stop="change(-1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
       <img v-if="isImage(selected)" :key="selected.id" :src="previewURL(selected)" :alt="selected.name" :style="swipeStyle" draggable="false" @dblclick.stop="toggleZoom">
-      <VideoPlayer v-else-if="isVideo(selected)" :key="selected.id" :item="selected" @download="emit('download',$event)" @move="emit('move',$event)" @copy="emit('copy',$event)" />
+      <VideoPlayer v-else-if="isVideo(selected)" :key="selected.id" :item="selected" @close="emit('close')" @download="emit('download',$event)" @move="emit('move',$event)" @copy="emit('copy',$event)" />
       <AudioPlayer v-else-if="isAudio(selected)" :key="selected.id" :item="selected" @download="emit('download',$event)" @move="emit('move',$event)" @copy="emit('copy',$event)" />
       <button v-if="hasGalleryNavigation&&isImage(selected)" class="preview-nav preview-next" aria-label="下一项" @click.stop="change(1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
       <output v-if="isImage(selected)&&zoomNotice" class="preview-zoom-notice">{{ Math.round(zoom*100) }}%</output>
