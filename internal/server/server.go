@@ -128,6 +128,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	}
 	go s.cleanupAudioHLSSessions()
 	go s.cleanupVideoHLSSessions()
+	go s.cleanupArchiveJobs()
 	return s
 }
 
@@ -159,6 +160,15 @@ func (s *Server) Close() {
 	s.videoHLSMu.Unlock()
 	for _, session := range videoSessions {
 		session.destroy()
+	}
+	s.archiveMu.RLock()
+	archiveJobs := make([]*archiveJob, 0, len(s.archiveJobs))
+	for _, job := range s.archiveJobs {
+		archiveJobs = append(archiveJobs, job)
+	}
+	s.archiveMu.RUnlock()
+	for _, job := range archiveJobs {
+		s.cleanupArchiveJobStaging(job)
 	}
 }
 

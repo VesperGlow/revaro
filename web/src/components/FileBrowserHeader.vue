@@ -57,7 +57,7 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
   <div class="content-head">
     <div class="folder-heading">
       <nav v-if="!trashMode&&parentBreadcrumbs.length" class="breadcrumbs" aria-label="路径">
-        <button v-for="crumb in parentBreadcrumbs" :key="crumb.id" @click="$emit('openFolder',crumb.id)">
+        <button v-for="crumb in parentBreadcrumbs" :key="crumb.id" :title="crumb.name || '我的文件'" @click="$emit('openFolder',crumb.id)">
           {{ crumb.name || '我的文件' }}<span>/</span>
         </button>
       </nav>
@@ -65,7 +65,7 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
         <button v-if="!trashMode&&canGoUp" class="up-button" title="返回上一级" aria-label="返回上一级" @click="$emit('up')">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6m0 0-5 5m5-5 5 5"/></svg>
         </button>
-        <h1>{{ trashMode?'回收站':current?.name || '我的文件' }}</h1>
+        <h1 :title="trashMode?'回收站':current?.name || '我的文件'">{{ trashMode?'回收站':current?.name || '我的文件' }}</h1>
         <div class="view-switch" role="group" aria-label="文件显示方式">
           <button :class="{active:viewMode==='list'}" title="列表视图" aria-label="列表视图" @click="$emit('setView','list')">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>

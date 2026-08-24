@@ -22,7 +22,7 @@ import (
 
 const (
 	videoHLSIdleTTL       = 20 * time.Minute
-	videoHLSStartupChunks = 4 // 4s segments: keep roughly 16 seconds ahead before playback.
+	videoHLSStartupChunks = 2 // 4s segments: start at ~8s, then let hls.js grow the buffer in the background.
 	videoHLSNearWindow    = 32 * time.Second
 	maxVideoHLSSessions   = 6
 	maxVideoHLSPerFile    = 2
@@ -292,7 +292,7 @@ func waitForVideoHLSTarget(requestCtx context.Context, session *videoHLSSession,
 }
 
 func videoHLSTargetReady(availableEnd, target, duration float64) bool {
-	ahead := 12.0
+	ahead := 8.0
 	if duration > target {
 		ahead = min(ahead, duration-target)
 	}

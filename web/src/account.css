@@ -573,3 +573,8 @@
     max-width: calc(100vw - 120px);
   }
 }
+
+/* Keep account sheets inside the visual viewport on mobile WebViews. */
+.account-modal,.account-subdialog{max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px)}
+@media (max-width:850px){.account-modal,.account-subdialog{max-height:calc(100vh - 28px);max-height:calc(100dvh - 28px)}}
+@media (max-width:460px){.account-modal,.account-subdialog{max-height:calc(100vh - 20px);max-height:calc(100dvh - 20px)}}

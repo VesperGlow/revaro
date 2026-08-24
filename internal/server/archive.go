@@ -29,6 +29,7 @@ const (
 	maxArchiveExpandedBytes = int64(64 << 30)
 	maxArchiveListingBytes  = 64 << 20
 	archiveDiskReserve      = int64(64 << 20)
+	archivePasswordWaitTTL  = 30 * time.Minute
 )
 
 var (
@@ -38,6 +39,12 @@ var (
 
 type archiveJob struct {
 	mu sync.RWMutex
+	// The staged object is transient and only survives while this in-memory job
+	// is alive. It lets password retries continue without downloading from S3
+	// again; the password itself is never assigned to the job.
+	tempDir          string
+	archivePath      string
+	passwordDeadline time.Time
 
 	ID         string `json:"id"`
 	FileID     string `json:"file_id"`
@@ -63,13 +70,15 @@ func (job *archiveJob) update(status string, progress int, message string) {
 func (job *archiveJob) fail(message string) {
 	job.mu.Lock()
 	job.Status, job.Error, job.Message = "failed", message, message
+	job.passwordDeadline = time.Time{}
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
 }
 
 func (job *archiveJob) needsPassword(message string) {
 	job.mu.Lock()
-	job.Status, job.Error, job.Message = "needs_password", message, message
+	job.Status, job.Error, job.Message = "waiting_password", message, message
+	job.passwordDeadline = time.Now().Add(archivePasswordWaitTTL)
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
 }
@@ -77,11 +86,45 @@ func (job *archiveJob) needsPassword(message string) {
 func (job *archiveJob) resumeWithPassword() bool {
 	job.mu.Lock()
 	defer job.mu.Unlock()
-	if job.Status != "needs_password" {
+	if job.Status != "waiting_password" {
 		return false
 	}
-	job.Status, job.Error, job.Message = "queued", "", "正在验证密码"
+	job.Status, job.Error, job.Message = "checking", "", "正在验证密码"
+	job.passwordDeadline = time.Time{}
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return true
+}
+
+func (job *archiveJob) setStaged(tempDir, archivePath string) {
+	job.mu.Lock()
+	job.tempDir, job.archivePath = tempDir, archivePath
+	job.mu.Unlock()
+}
+
+func (job *archiveJob) staged() (string, string) {
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	return job.tempDir, job.archivePath
+}
+
+func (job *archiveJob) takeStagedDir() string {
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	tempDir := job.tempDir
+	job.tempDir, job.archivePath = "", ""
+	return tempDir
+}
+
+func (job *archiveJob) expirePasswordWait(now time.Time) bool {
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	if job.Status != "waiting_password" || job.passwordDeadline.IsZero() || now.Before(job.passwordDeadline) {
+		return false
+	}
+	message := "解压失败：30 分钟内未输入密码，任务已超时"
+	job.Status, job.Error, job.Message = "failed", message, message
+	job.passwordDeadline = time.Time{}
+	job.UpdatedAt = now.UTC().Format(time.RFC3339Nano)
 	return true
 }
 
@@ -202,6 +245,14 @@ func archiveJobTerminal(status string) bool {
 	return status == "done" || status == "failed"
 }
 
+func (s *Server) cleanupArchiveJobStaging(job *archiveJob) {
+	if tempDir := job.takeStagedDir(); tempDir != "" {
+		if err := os.RemoveAll(tempDir); err != nil {
+			s.log.Warn("archive staging cleanup failed", "file", job.FileID, "job", job.ID, "path", tempDir, "error", err)
+		}
+	}
+}
+
 func (s *Server) deleteArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	s.archiveMu.Lock()
@@ -220,6 +271,7 @@ func (s *Server) deleteArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "archive job not found")
 		return
 	}
+	s.cleanupArchiveJobStaging(job)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -317,6 +369,7 @@ func (s *Server) failArchiveJob(job *archiveJob, err error) {
 	}
 	job.fail(archiveFailureMessage(err))
 	s.log.Warn("archive job failed", "file", job.FileID, "job", job.ID, "status", snapshot.Status, "error", err)
+	s.cleanupArchiveJobStaging(job)
 }
 
 func archiveAttributesUnsafe(attributes string) bool {
@@ -470,7 +523,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 			message = "压缩包密码错误，请重新输入"
 		}
 		job.needsPassword(message)
-		s.log.Info("archive job waiting for password", "file", job.FileID, "job", job.ID, "status", "needs_password", "error", err)
+		s.log.Info("archive job waiting for password", "file", job.FileID, "job", job.ID, "status", "waiting_password", "error", err)
 	}
 	select {
 	case s.archiveSlots <- struct{}{}:
@@ -479,35 +532,44 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		fail(ctx.Err())
 		return
 	}
-	tempDir, err := os.MkdirTemp("", "revaro-extract-")
-	if err != nil {
-		fail(fmt.Errorf("create temporary extraction directory: %w", err))
-		return
-	}
-	defer os.RemoveAll(tempDir)
-	archivePath := filepath.Join(tempDir, "source"+filepath.Ext(f.Name))
-	outputDir := filepath.Join(tempDir, "output")
-	if err = ensureArchiveDiskSpace(tempDir, f.Size); err != nil {
-		fail(err)
-		return
-	}
-	job.update("downloading", 2, "正在读取压缩包")
-	source, err := s.openArchiveSource(ctx, f)
-	if err != nil {
-		fail(fmt.Errorf("read archive from S3: %w", err))
-		return
-	}
-	out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-	if err == nil {
-		_, err = io.Copy(out, source)
-		closeErr := out.Close()
-		if err == nil {
-			err = closeErr
+	tempDir, archivePath := job.staged()
+	if tempDir == "" || archivePath == "" {
+		var err error
+		tempDir, err = os.MkdirTemp("", "revaro-extract-")
+		if err != nil {
+			fail(fmt.Errorf("create temporary extraction directory: %w", err))
+			return
 		}
+		archivePath = filepath.Join(tempDir, "source"+filepath.Ext(f.Name))
+		job.setStaged(tempDir, archivePath)
 	}
-	_ = source.Close()
-	if err != nil {
-		fail(fmt.Errorf("stage archive on temporary disk: %w", err))
+	outputDir := filepath.Join(tempDir, "output")
+	if _, statErr := os.Stat(archivePath); errors.Is(statErr, os.ErrNotExist) {
+		if err := ensureArchiveDiskSpace(tempDir, f.Size); err != nil {
+			fail(err)
+			return
+		}
+		job.update("checking", 2, "正在检测压缩包是否加密")
+		source, err := s.openArchiveSource(ctx, f)
+		if err != nil {
+			fail(fmt.Errorf("read archive from S3 while checking encryption: %w", err))
+			return
+		}
+		out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+		if err == nil {
+			_, err = io.Copy(out, source)
+			closeErr := out.Close()
+			if err == nil {
+				err = closeErr
+			}
+		}
+		_ = source.Close()
+		if err != nil {
+			fail(fmt.Errorf("stage archive for encryption check: %w", err))
+			return
+		}
+	} else if statErr != nil {
+		fail(fmt.Errorf("inspect staged archive: %w", statErr))
 		return
 	}
 	executable, err := sevenZipExecutable()
@@ -515,7 +577,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		fail(err)
 		return
 	}
-	job.update("checking", 18, "正在检查压缩包安全性")
+	job.update("checking", 18, "正在验证密码与压缩包安全性")
 	entries, inspectErr := inspectArchive(ctx, executable, archivePath, f.Size, password)
 	if inspectErr != nil {
 		if errors.Is(inspectErr, errArchivePasswordRequired) || errors.Is(inspectErr, errArchiveWrongPassword) {
@@ -532,6 +594,12 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	}
 	if err = ensureArchiveDiskSpace(tempDir, expandedEstimate); err != nil {
 		fail(err)
+		return
+	}
+	// A wrong password can leave a partial output tree. The staged source stays
+	// cached, but every extraction attempt gets a fresh output directory.
+	if err = os.RemoveAll(outputDir); err != nil {
+		fail(fmt.Errorf("reset extraction output directory: %w", err))
 		return
 	}
 	if err = os.Mkdir(outputDir, 0o700); err != nil {
@@ -628,8 +696,35 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	}
 	job.mu.Lock()
 	job.Status, job.Progress, job.Message, job.OutputID, job.OutputName = "done", 100, "解压完成", rootID, rootName
+	job.passwordDeadline = time.Time{}
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
+	s.cleanupArchiveJobStaging(job)
+	s.log.Info("archive job completed", "file", job.FileID, "job", job.ID, "output", rootID, "name", rootName)
+}
+
+func (s *Server) cleanupArchiveJobs() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.audioHLSCtx.Done():
+			return
+		case now := <-ticker.C:
+			s.archiveMu.RLock()
+			jobs := make([]*archiveJob, 0, len(s.archiveJobs))
+			for _, job := range s.archiveJobs {
+				jobs = append(jobs, job)
+			}
+			s.archiveMu.RUnlock()
+			for _, job := range jobs {
+				if job.expirePasswordWait(now) {
+					s.log.Warn("archive password wait expired", "file", job.FileID, "job", job.ID, "timeout", archivePasswordWaitTTL)
+					s.cleanupArchiveJobStaging(job)
+				}
+			}
+		}
+	}
 }
 
 func availableArchiveName(ctx context.Context, tx *sql.Tx, parentID, preferred string) (string, error) {

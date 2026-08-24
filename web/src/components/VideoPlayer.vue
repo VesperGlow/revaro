@@ -19,6 +19,8 @@ const subtitleEpoch=ref(0)
 const directMode=ref(/\.(mp4|m4v|webm|ogv|mov)$/i.test(props.item.name))
 const directSource=ref(directMode.value?previewURL(props.item):'')
 const starting=ref(false)
+const buffering=ref(false)
+const prepareKind=ref<'initial'|'seek'>('initial')
 const playing=ref(false)
 const error=ref('')
 const currentTime=ref(0)
@@ -30,6 +32,8 @@ const transcoding=ref(false)
 const controlsVisible=ref(true)
 const volume=ref(.9)
 const muted=ref(false)
+const volumeFeedback=ref(false)
+const pendingSeek=ref<number|null>(null)
 const fullscreen=ref(false)
 const autoplayPending=ref(true)
 let hls:HlsInstance|null=null
@@ -38,6 +42,9 @@ let hlsGeneration=0
 let saveTimer=0
 let remoteSaveTimer=0
 let controlsTimer=0
+let volumeTimer=0
+let lastAudibleVolume=.9
+let bufferRecoveryTimer=0
 let directFallbackStarted=false
 let progressLoaded=false
 let restoredPosition=false
@@ -45,9 +52,14 @@ let serverPosition=0
 
 const positionKey=computed(()=>`revaro-video-position:${props.item.id}`)
 const sessionKey=computed(()=>`revaro-video-hls-session:${props.item.id}`)
+const volumeKey='revaro-video-volume'
 const poster=computed(()=>thumbSRC(props.item))
 const compatibilityLabel=computed(()=>transcoding.value?`${videoCodec.value.toUpperCase()} → H.264 实时转码`:`${videoCodec.value.toUpperCase()||'视频'} HLS 封装`)
-const progress=computed(()=>duration.value?Math.min(100,currentTime.value/duration.value*100):0)
+const timelinePosition=computed(()=>pendingSeek.value??currentTime.value)
+const progress=computed(()=>duration.value?Math.min(100,timelinePosition.value/duration.value*100):0)
+const effectiveVolume=computed(()=>muted.value?0:volume.value)
+const volumePercent=computed(()=>Math.round(effectiveVolume.value*100))
+const volumeState=computed<'muted'|'low'|'high'>(()=>effectiveVolume.value===0?'muted':effectiveVolume.value<.5?'low':'high')
 const selectedSubtitle=computed(()=>activeSubtitle.value>=0?subtitles.value[activeSubtitle.value]:undefined)
 const selectedSubtitleURL=computed(()=>{
   const track=selectedSubtitle.value
@@ -88,17 +100,23 @@ function applySubtitle(){
   const current=subtitleElement.value?.track
   for(let index=0;index<tracks.length;index+=1)tracks[index].mode=current&&tracks[index]===current?'showing':'disabled'
 }
+function clearSubtitleTracks(){
+  subtitleReady.value=false;subtitleEpoch.value+=1
+  const tracks=video.value?.textTracks
+  if(tracks)for(let index=0;index<tracks.length;index+=1)tracks[index].mode='disabled'
+}
 function refreshSubtitle(){subtitleEpoch.value+=1;void nextTick().then(applySubtitle)}
 async function chooseSubtitle(event:Event){
-  subtitleReady.value=false;subtitleEpoch.value+=1;applySubtitle();await nextTick()
+  clearSubtitleTracks();await nextTick()
   activeSubtitle.value=Number((event.target as HTMLSelectElement).value)
   subtitleReady.value=activeSubtitle.value>=0;await nextTick();applySubtitle()
 }
 function onSubtitleLoad(event:Event){
+  if(event.currentTarget!==subtitleElement.value)return
   const track=(event.currentTarget as HTMLTrackElement).track
   applySubtitle();track.mode='showing'
 }
-function resetHLS(){applySubtitle();hls?.destroy();hls=null;if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}}
+function resetHLS(){clearSubtitleTracks();hls?.destroy();hls=null;if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}}
 function showControls(persist=false){
   controlsVisible.value=true;window.clearTimeout(controlsTimer)
   if(!persist&&playing.value)controlsTimer=window.setTimeout(()=>controlsVisible.value=false,2400)
@@ -107,35 +125,38 @@ function showControls(persist=false){
 async function startCompatibilityStream(start:number,autoplay=true){
   const generation=++hlsGeneration
   const previous=hlsSessionId
-  starting.value=true;subtitleReady.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;directSource.value='';showControls(true)
-  subtitleEpoch.value+=1;applySubtitle();await nextTick()
+  prepareKind.value=previous||hls?'seek':'initial'
+  starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;directSource.value='';showControls(true)
+  if(prepareKind.value==='seek')video.value?.pause()
+  clearSubtitleTracks();await nextTick()
   if(generation!==hlsGeneration)return
-  resetHLS()
   try{
     const previousSessionID=previous||sessionStorage.getItem(sessionKey.value)||''
     const response=await api<VideoHLSResponse>(`/api/files/${props.item.id}/video/hls`,{method:'POST',body:JSON.stringify({start,previous_session_id:previousSessionID})},110000)
     if(generation!==hlsGeneration)return
     const el=video.value
     if(!el)throw new Error('播放器已经关闭')
-    hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);hlsOffset.value=response.start;currentTime.value=response.start;duration.value=response.duration
-    videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding
     const {default:Hls}=await import('hls.js/light')
+    if(generation!==hlsGeneration)return
+    resetHLS()
+    hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);hlsOffset.value=response.start;currentTime.value=start;duration.value=response.duration
+    videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding
     if(Hls.isSupported()){
-      const player=new Hls({enableWorker:true,lowLatencyMode:false,backBufferLength:90,maxBufferLength:90,maxMaxBufferLength:120,maxBufferSize:256*1024*1024})
+      const player=new Hls({enableWorker:true,lowLatencyMode:false,startFragPrefetch:true,backBufferLength:60,maxBufferLength:60,maxMaxBufferLength:180,maxBufferSize:256*1024*1024,maxBufferHole:.5,highBufferWatchdogPeriod:2,manifestLoadingTimeOut:15000,fragLoadingTimeOut:25000})
       hls=player
       player.on(Hls.Events.MEDIA_ATTACHED,()=>player.loadSource(response.playlist_url))
-      player.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()})
-      player.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;subtitleReady.value=false;error.value='兼容视频流播放失败，请重试';showControls(true)}})
+      player.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()})
+      player.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;buffering.value=false;clearSubtitleTracks();error.value=`兼容视频流播放失败：${data.details||'未知错误'}`;showControls(true)}else if(String(data.details).includes('buffer'))buffering.value=true})
       player.attachMedia(el)
     }else if(el.canPlayType('application/vnd.apple.mpegurl')){
       const localStart=Math.max(0,start-response.start)
       if(localStart>0)el.addEventListener('loadedmetadata',()=>{el.currentTime=localStart},{once:true})
-      el.src=response.playlist_url;el.load();starting.value=false;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()
+      el.src=response.playlist_url;el.load();starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()
     }else throw new Error('当前浏览器不支持 HLS 播放')
   }catch(caught){
     if(generation!==hlsGeneration)return
     resetHLS()
-    starting.value=false;error.value=caught instanceof Error?caught.message:'兼容视频流启动失败';showControls(true)
+    starting.value=false;buffering.value=false;error.value=caught instanceof Error?caught.message:'兼容视频流启动失败';showControls(true)
   }
 }
 function onLoadedMetadata(){
@@ -150,6 +171,13 @@ function onTimeUpdate(){
   window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>persistProgress(false),600)
   if(!remoteSaveTimer)remoteSaveTimer=window.setTimeout(()=>{remoteSaveTimer=0;persistProgress(true)},5000)
 }
+function onWaiting(){
+  if(starting.value)return
+  buffering.value=true;showControls(true);window.clearTimeout(bufferRecoveryTimer)
+  const stalledAt=currentTime.value
+  if(!directMode.value)bufferRecoveryTimer=window.setTimeout(()=>{if(buffering.value&&!starting.value&&Math.abs(currentTime.value-stalledAt)<.5)void startCompatibilityStream(currentTime.value,true)},7000)
+}
+function onCanPlay(){buffering.value=false;window.clearTimeout(bufferRecoveryTimer)}
 function onVideoError(){
   if(!directMode.value||directFallbackStarted||starting.value)return
   directFallbackStarted=true;void startCompatibilityStream(currentTime.value||savedPosition(),true)
@@ -158,24 +186,26 @@ function seekTo(target:number){
   const el=video.value
   if(!el||!Number.isFinite(target))return
   target=Math.max(0,Math.min(target,duration.value||target))
-  if(directMode.value){el.currentTime=target;currentTime.value=target;return}
+  if(directMode.value){el.currentTime=target;currentTime.value=target;clearSubtitleTracks();subtitleReady.value=activeSubtitle.value>=0;refreshSubtitle();return}
   if(starting.value){currentTime.value=target;void startCompatibilityStream(target,autoplayPending.value);return}
   const local=target-hlsOffset.value;const ranges=el.seekable
   let available=false
   for(let index=0;index<ranges.length;index+=1)if(local>=ranges.start(index)-.5&&local<=ranges.end(index)+.5){available=true;break}
-  if(available){el.currentTime=Math.max(0,local);currentTime.value=target}
+  if(available){clearSubtitleTracks();el.currentTime=Math.max(0,local);currentTime.value=target;subtitleReady.value=activeSubtitle.value>=0;refreshSubtitle()}
   else void startCompatibilityStream(target,playing.value)
 }
-function seek(event:Event){seekTo(Number((event.target as HTMLInputElement).value))}
+function previewSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);if(Number.isFinite(value))pendingSeek.value=value;showControls(true)}
+function commitSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);pendingSeek.value=null;seekTo(value)}
 function togglePlayback(){
   const el=video.value;if(!el)return
   if(starting.value){autoplayPending.value=!autoplayPending.value;showControls(true);return}
   if(el.paused)void el.play().catch(()=>{});else el.pause()
 }
-function onPlay(){playing.value=true;showControls()}
-function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
-function changeVolume(event:Event){const value=Number((event.target as HTMLInputElement).value);volume.value=value;muted.value=value===0;if(video.value){video.value.volume=value;video.value.muted=muted.value}}
-function toggleMute(){muted.value=!muted.value;if(video.value)video.value.muted=muted.value;showControls()}
+function onPlay(){playing.value=true;buffering.value=false;showControls()}
+function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);window.clearTimeout(bufferRecoveryTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
+function showVolumeFeedback(){volumeFeedback.value=true;window.clearTimeout(volumeTimer);volumeTimer=window.setTimeout(()=>volumeFeedback.value=false,900);showControls(true)}
+function changeVolume(event:Event){const value=Math.max(0,Math.min(1,Number((event.target as HTMLInputElement).value)));volume.value=value;if(value>0)lastAudibleVolume=value;muted.value=value===0;localStorage.setItem(volumeKey,String(value));if(video.value){video.value.volume=value;video.value.muted=muted.value};showVolumeFeedback()}
+function toggleMute(){if(muted.value||volume.value===0){if(volume.value===0)volume.value=lastAudibleVolume;muted.value=false}else muted.value=true;if(video.value){video.value.volume=volume.value;video.value.muted=muted.value};showVolumeFeedback()}
 async function toggleFullscreen(){
   if(!shell.value)return
   if(document.fullscreenElement)await document.exitFullscreen()
@@ -199,6 +229,7 @@ function onKey(event:KeyboardEvent){
 onMounted(async()=>{
   document.addEventListener('fullscreenchange',onFullscreenChange)
   document.addEventListener('pointerdown',closeActionMenuFromOutside)
+  const storedVolume=Number(localStorage.getItem(volumeKey));if(Number.isFinite(storedVolume)&&storedVolume>=0&&storedVolume<=1){volume.value=storedVolume;muted.value=storedVolume===0;if(storedVolume>0)lastAudibleVolume=storedVolume}
   const progressPromise=loadProgress()
   try{const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`);subtitles.value=media.subtitles||[];activeSubtitle.value=subtitles.value.length?0:-1;subtitleReady.value=directMode.value;refreshSubtitle()}catch{/* 视频仍可在没有字幕信息时播放 */}
   const el=video.value
@@ -206,7 +237,7 @@ onMounted(async()=>{
   else{await progressPromise;void startCompatibilityStream(savedPosition(),true)}
 })
 onBeforeUnmount(()=>{
-  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);persistProgress(false);hlsGeneration++
+  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);window.clearTimeout(bufferRecoveryTimer);persistProgress(false);hlsGeneration++;clearSubtitleTracks()
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const session=hlsSessionId;hlsSessionId='';resetHLS()
   if(session)void fetch(`/api/video/hls/${session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
@@ -215,21 +246,22 @@ onBeforeUnmount(()=>{
 
 <template>
   <div ref="shell" class="video-player-shell" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
-    <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @play="onPlay" @pause="onPause" @ended="onPause" @error="onVideoError">
+    <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @waiting="onWaiting" @stalled="onWaiting" @canplay="onCanPlay" @playing="onCanPlay" @play="onPlay" @pause="onPause" @ended="onPause" @error="onVideoError">
       <track v-if="subtitleReady&&selectedSubtitle" ref="subtitleElement" :key="`${selectedSubtitle.id}:${subtitleEpoch}`" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad">
       你的浏览器不支持这个视频格式。
     </video>
-    <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong>{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>
+    <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong :title="item.name">{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>
     <button v-if="!playing&&!starting&&!error" class="video-center-play" aria-label="播放" @click.stop="togglePlayback"><svg viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
-    <div v-if="starting" class="video-loading"><span></span><strong>正在准备兼容视频流</strong><small>首次播放 MKV / HEVC 时需要先生成几个分片</small></div>
+    <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:'正在准备兼容视频流' }}</strong><small v-if="prepareKind==='initial'">正在生成启动缓冲，首批分片完成后自动播放</small></div>
+    <div v-else-if="buffering" class="video-buffering"><span></span><strong>正在缓冲</strong></div>
     <p v-if="error" class="video-error">{{ error }} <button @click="startCompatibilityStream(currentTime||savedPosition(),true)">重试</button></p>
     <div class="video-controls" :class="{visible:controlsVisible||!playing}" @click.stop>
-      <input class="video-seek" type="range" min="0" :max="Math.max(duration,1)" step=".25" :value="Math.min(currentTime,Math.max(duration,1))" :style="{'--video-progress':`${progress}%`}" :disabled="!duration" aria-label="视频进度" @change="seek">
+      <input class="video-seek" type="range" min="0" :max="Math.max(duration,1)" step=".25" :value="Math.min(timelinePosition,Math.max(duration,1))" :style="{'--video-progress':`${progress}%`}" :disabled="!duration" aria-label="视频进度" @input="previewSeek" @change="commitSeek">
       <div class="video-control-row">
         <button class="video-icon-button" :aria-label="playing||(starting&&autoplayPending)?'暂停':'播放'" @click="togglePlayback"><svg v-if="playing||(starting&&autoplayPending)" viewBox="0 0 24 24"><path d="M8 6v12M16 6v12"/></svg><svg v-else viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
-        <button class="video-icon-button" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24"><path d="M5 10h3l4-3v10l-4-3H5Z"/><path v-if="!muted" d="M15 9c1.5 1.5 1.5 4.5 0 6M18 7c3 3 3 7 0 10"/><path v-else d="m16 10 4 4m0-4-4 4"/></svg></button>
-        <input class="video-volume" type="range" min="0" max="1" step=".05" :value="muted?0:volume" aria-label="音量" @input="changeVolume">
-        <span class="video-time">{{ formatTime(currentTime) }} / {{ formatTime(duration) }}</span>
+        <button class="video-icon-button video-mute" :class="volumeState" :aria-label="volumeState==='muted'?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24"><path d="M5 10h3l4-3v10l-4-3H5Z"/><path v-if="volumeState==='low'" d="M15 9c1.5 1.5 1.5 4.5 0 6"/><template v-else-if="volumeState==='high'"><path d="M15 9c1.5 1.5 1.5 4.5 0 6"/><path d="M18 7c3 3 3 7 0 10"/></template><path v-else d="m16 10 4 4m0-4-4 4"/></svg></button>
+        <label class="video-volume-control" :class="{active:volumeFeedback,muted:volumeState==='muted'}" :style="{'--volume-progress':`${volumePercent}%`}"><input class="video-volume" type="range" min="0" max="1" step=".01" :value="effectiveVolume" aria-label="音量" :aria-valuetext="`${volumePercent}%`" @pointerdown="volumeFeedback=true" @pointerup="showVolumeFeedback" @input="changeVolume"><output>{{ volumePercent }}%</output></label>
+        <span class="video-time">{{ formatTime(timelinePosition) }} / {{ formatTime(duration) }}</span>
         <span class="video-control-spacer"></span>
         <label class="video-subtitles" :class="{disabled:!subtitles.length}"><span>CC</span><select :value="activeSubtitle" :disabled="!subtitles.length" aria-label="字幕" @change="chooseSubtitle"><option value="-1">关闭字幕</option><option v-for="(track,index) in subtitles" :key="track.id" :value="index">{{ track.label }}</option></select></label>
         <details ref="actionMenu" class="video-action-menu"><summary class="video-icon-button" aria-label="更多操作"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></summary><div><button @click="actionMenu?.removeAttribute('open');emit('download',item)">下载</button><button @click="actionMenu?.removeAttribute('open');emit('move',item)">移动</button><button @click="actionMenu?.removeAttribute('open');emit('copy',item)">复制</button></div></details>
@@ -240,7 +272,22 @@ onBeforeUnmount(()=>{
 </template>
 
 <style scoped>
-.video-player-shell{position:relative;isolation:isolate;justify-self:center;width:min(1500px,100%);max-width:100%;height:min(820px,calc(100dvh - 178px));min-height:280px;overflow:hidden;border-radius:15px;background:#000;box-shadow:0 18px 46px #39517226;outline:none}.video-player-shell:fullscreen{width:100vw;height:100vh;border-radius:0}.video-player-shell video{display:block;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;background:#000;object-fit:contain;box-shadow:none;cursor:pointer}.video-top-shade{position:absolute;z-index:9;inset:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px 22px 60px;background:linear-gradient(#000c,transparent);color:#fff;opacity:0;pointer-events:none;transition:opacity .2s}.video-top-shade.visible{opacity:1}.video-title-group{display:flex;align-items:center;min-width:0;gap:8px}.video-top-shade strong{overflow:hidden;font-size:17px;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000}.video-top-shade>span{flex:0 0 auto;padding:6px 9px;border:1px solid #ffffff3d;border-radius:999px;background:#0005;color:#d9e7f6;font-size:10px}.video-back{display:grid;place-items:center;flex:0 0 auto;width:42px;height:42px;padding:0;border:0;border-radius:50%;background:#0b1220a8;color:#fff;pointer-events:auto}.video-back:hover{background:#ffffff24}.video-back svg{width:27px;height:27px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}.video-center-play{position:absolute;z-index:6;top:50%;left:50%;display:grid;place-items:center;width:76px;height:54px;padding:0;border:0;border-radius:15px;background:#ff0033e8;color:#fff;box-shadow:0 8px 28px #0007;transform:translate(-50%,-50%);transition:transform .16s,background .16s}.video-center-play:hover{background:#ff0033;transform:translate(-50%,-50%) scale(1.06)}.video-center-play svg{width:33px;height:33px;fill:currentColor;stroke:none}.video-controls{position:absolute;z-index:8;right:0;bottom:0;left:0;padding:62px 20px 12px;background:linear-gradient(transparent,#000e);color:#fff;opacity:0;pointer-events:none;transform:translateY(8px);transition:opacity .2s,transform .2s}.video-controls.visible{opacity:1;pointer-events:auto;transform:none}.video-seek{display:block;width:100%;height:5px;margin:0;appearance:none;border-radius:999px;background:linear-gradient(to right,#f03 var(--video-progress),#ffffff55 var(--video-progress));cursor:pointer;transition:height .12s}.video-seek:hover{height:7px}.video-seek::-webkit-slider-thumb{width:15px;height:15px;appearance:none;border:0;border-radius:50%;background:#f03}.video-seek::-moz-range-thumb{width:15px;height:15px;border:0;border-radius:50%;background:#f03}.video-control-row{display:flex;align-items:center;gap:7px;min-height:50px}.video-icon-button{display:grid;place-items:center;width:46px;height:46px;padding:0;border:0;border-radius:50%;background:transparent;color:#fff}.video-icon-button:hover{background:#ffffff1f}.video-icon-button svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.video-icon-button svg path[d*="9 7"]{fill:currentColor;stroke:none}.video-volume{width:0;height:5px;margin:0;appearance:none;border-radius:999px;background:#ffffff7a;accent-color:#fff;opacity:0;transition:width .18s,opacity .18s}.video-icon-button:hover+.video-volume,.video-volume:hover,.video-volume:focus{width:94px;opacity:1}.video-volume::-webkit-slider-thumb{width:13px;height:13px;appearance:none;border-radius:50%;background:#fff}.video-time{margin-left:5px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap;text-shadow:0 1px 2px #000}.video-control-spacer{flex:1}.video-subtitles{position:relative;display:flex;align-items:center}.video-subtitles>span{display:grid;place-items:center;width:38px;height:31px;border:2px solid currentColor;border-radius:6px;font-size:10px;font-weight:850;letter-spacing:.04em}.video-subtitles select{position:absolute;right:0;bottom:40px;width:min(300px,70vw);padding:11px;border:1px solid #ffffff30;border-radius:9px;background:#171717ec;color:#fff;font-size:12px;opacity:0;pointer-events:none;transform:translateY(6px);transition:.15s}.video-subtitles:hover select,.video-subtitles select:focus{opacity:1;pointer-events:auto;transform:none}.video-subtitles.disabled{opacity:.45}.video-loading{position:absolute;z-index:7;inset:0;display:grid;place-content:center;justify-items:center;padding:24px;background:#0009;color:#fff;text-align:center;pointer-events:none}.video-loading span{width:42px;height:42px;border:3px solid #ffffff30;border-top-color:#fff;border-radius:50%;animation:video-spin .8s linear infinite}.video-loading strong{margin-top:14px;font-size:15px}.video-loading small{max-width:420px;margin-top:7px;color:#c8d2df;font-size:11px;line-height:1.6}.video-error{position:absolute;z-index:10;left:50%;bottom:86px;max-width:calc(100% - 30px);margin:0;padding:9px 12px;border:1px solid #fecaca;border-radius:10px;background:#fff1f2ed;color:#be123c;font-size:11px;transform:translateX(-50%)}.video-error button{margin-left:8px;border:0;background:transparent;color:#9f1239;font-weight:800}@keyframes video-spin{to{transform:rotate(360deg)}}
-.video-action-menu{position:relative}.video-action-menu summary{list-style:none}.video-action-menu summary::-webkit-details-marker{display:none}.video-action-menu>div{position:absolute;right:0;bottom:45px;display:grid;width:130px;overflow:hidden;border:1px solid #ffffff24;border-radius:11px;background:#171717f2;box-shadow:0 12px 32px #0007}.video-action-menu>div button{padding:10px 14px;border:0;background:transparent;color:#fff;text-align:left}.video-action-menu>div button:hover{background:#ffffff14}
-@media(max-width:850px){.video-player-shell{width:100%;height:100%;min-height:0;border-radius:10px}.video-top-shade{padding:10px 12px 48px}.video-title-group{gap:4px}.video-back{width:39px;height:39px}.video-back svg{width:24px;height:24px}.video-top-shade strong{font-size:13px}.video-top-shade>span{display:none}.video-controls{padding:46px 9px max(6px,env(safe-area-inset-bottom,0px))}.video-control-row{gap:2px;min-height:43px}.video-icon-button{width:40px;height:40px}.video-icon-button svg{width:23px;height:23px}.video-volume{display:none}.video-time{font-size:10px}.video-center-play{width:64px;height:47px}.video-subtitles select{inset:0;width:100%;height:100%;padding:0;opacity:0;pointer-events:auto;transform:none}.video-error{bottom:66px}}
+.video-player-shell{position:relative;isolation:isolate;justify-self:center;width:min(1500px,100%);max-width:100%;height:min(820px,calc(100vh - 178px));height:min(820px,calc(100dvh - 178px));min-width:0;min-height:280px;overflow:hidden;border-radius:15px;background:#000;box-shadow:0 18px 46px #39517226;outline:none}
+.video-player-shell:fullscreen{width:100vw;height:100vh;height:100dvh;border-radius:0}
+.video-player-shell video{display:block;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;background:#000;object-fit:contain;box-shadow:none;cursor:pointer}
+.video-top-shade{position:absolute;z-index:9;inset:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:max(18px,env(safe-area-inset-top,0px)) 22px 60px;background:linear-gradient(#000c,transparent);color:#fff;opacity:0;pointer-events:none;transition:opacity .2s}
+.video-top-shade.visible{opacity:1}.video-title-group{display:flex;align-items:center;min-width:0;gap:8px}.video-top-shade strong{min-width:0;max-width:100%;overflow:hidden;font-size:17px;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000}.video-top-shade>span{flex:0 0 auto;padding:6px 9px;border:1px solid #ffffff3d;border-radius:999px;background:#0005;color:#d9e7f6;font-size:10px}
+.video-back{display:grid;place-items:center;flex:0 0 auto;width:42px;height:42px;padding:0;border:0;border-radius:50%;background:#0b1220a8;color:#fff;pointer-events:auto}.video-back:hover{background:#ffffff24}.video-back svg{width:27px;height:27px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.video-center-play{position:absolute;z-index:6;top:50%;left:50%;display:grid;place-items:center;width:76px;height:54px;padding:0;border:0;border-radius:15px;background:#ff0033e8;color:#fff;box-shadow:0 8px 28px #0007;transform:translate(-50%,-50%);transition:transform .16s,background .16s}.video-center-play:hover{background:#ff0033;transform:translate(-50%,-50%) scale(1.06)}.video-center-play svg{width:33px;height:33px;fill:currentColor;stroke:none}
+.video-controls{position:absolute;z-index:8;right:0;bottom:0;left:0;min-width:0;padding:62px 20px max(12px,env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,#000e);color:#fff;opacity:0;pointer-events:none;transform:translateY(8px);transition:opacity .2s,transform .2s}.video-controls.visible{opacity:1;pointer-events:auto;transform:none}
+.video-seek{display:block;width:100%;height:17px;margin:-6px 0 0;padding:6px 0;appearance:none;background:transparent;cursor:pointer}.video-seek::-webkit-slider-runnable-track{height:5px;border-radius:999px;background:linear-gradient(to right,#f03 var(--video-progress),#ffffff55 var(--video-progress))}.video-seek::-moz-range-track{height:5px;border-radius:999px;background:linear-gradient(to right,#f03 var(--video-progress),#ffffff55 var(--video-progress))}.video-seek::-webkit-slider-thumb{width:16px;height:16px;margin-top:-5.5px;appearance:none;border:0;border-radius:50%;background:#f03;box-shadow:0 0 0 3px #ff00333d}.video-seek::-moz-range-thumb{width:16px;height:16px;border:0;border-radius:50%;background:#f03;box-shadow:0 0 0 3px #ff00333d}
+.video-control-row{display:flex;align-items:center;min-width:0;min-height:50px;gap:6px}.video-icon-button{display:grid;place-items:center;flex:0 0 auto;width:46px;height:46px;padding:0;border:0;border-radius:50%;background:transparent;color:#fff}.video-icon-button:hover,.video-icon-button:focus-visible{background:#ffffff1f;outline:none}.video-icon-button svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.video-icon-button svg path[d*="9 7"]{fill:currentColor;stroke:none}.video-mute.low{color:#dbeafe}.video-mute.muted{color:#fda4af}
+.video-volume-control{position:relative;display:flex;align-items:center;flex:0 1 126px;width:126px;height:40px;min-width:82px;padding:0 9px;border-radius:10px;transition:background .15s}.video-volume-control:hover,.video-volume-control:focus-within,.video-volume-control.active{background:#ffffff17}.video-volume{width:100%;height:32px;margin:0;appearance:none;background:transparent;cursor:pointer;touch-action:pan-x}.video-volume::-webkit-slider-runnable-track{height:6px;border-radius:999px;background:linear-gradient(to right,#fff var(--volume-progress),#ffffff52 var(--volume-progress))}.video-volume::-moz-range-track{height:6px;border-radius:999px;background:linear-gradient(to right,#fff var(--volume-progress),#ffffff52 var(--volume-progress))}.video-volume::-webkit-slider-thumb{width:18px;height:18px;margin-top:-6px;appearance:none;border:2px solid #fff;border-radius:50%;background:#111827;box-shadow:0 2px 8px #0008;transition:transform .12s}.video-volume::-moz-range-thumb{width:18px;height:18px;border:2px solid #fff;border-radius:50%;background:#111827;box-shadow:0 2px 8px #0008}.video-volume:active::-webkit-slider-thumb,.video-volume:focus-visible::-webkit-slider-thumb{transform:scale(1.15)}.video-volume:focus-visible{outline:2px solid #93c5fd;outline-offset:3px}.video-volume-control.muted .video-volume::-webkit-slider-runnable-track{background:#ffffff42}.video-volume-control.muted .video-volume::-moz-range-track{background:#ffffff42}.video-volume-control output{position:absolute;left:50%;bottom:38px;min-width:44px;padding:5px 7px;border-radius:7px;background:#111827e8;color:#fff;font-size:10px;text-align:center;opacity:0;transform:translate(-50%,5px);transition:.14s;pointer-events:none}.video-volume-control:hover output,.video-volume-control:focus-within output,.video-volume-control.active output{opacity:1;transform:translate(-50%,0)}
+.video-time{margin-left:5px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap;text-shadow:0 1px 2px #000}.video-control-spacer{min-width:12px;flex:1}.video-subtitles{position:relative;display:flex;align-items:center;flex:0 0 auto;margin-left:5px}.video-subtitles>span{display:grid;place-items:center;width:38px;height:31px;border:2px solid currentColor;border-radius:6px;font-size:10px;font-weight:850;letter-spacing:.04em}.video-subtitles select{position:absolute;right:0;bottom:40px;width:min(300px,70vw);padding:11px;border:1px solid #ffffff30;border-radius:9px;background:#171717ec;color:#fff;font-size:12px;opacity:0;pointer-events:none;transform:translateY(6px);transition:.15s}.video-subtitles:hover select,.video-subtitles select:focus{opacity:1;pointer-events:auto;transform:none}.video-subtitles.disabled{opacity:.45}
+.video-loading{position:absolute;z-index:7;inset:0;display:grid;place-content:center;justify-items:center;padding:24px;background:#0009;color:#fff;text-align:center;pointer-events:none}.video-loading.compact{inset:auto auto 92px 50%;display:flex;align-items:center;padding:9px 13px;border:1px solid #ffffff2b;border-radius:999px;background:#111827d9;transform:translateX(-50%);gap:9px;white-space:nowrap}.video-loading span,.video-buffering span{width:42px;height:42px;border:3px solid #ffffff30;border-top-color:#fff;border-radius:50%;animation:video-spin .8s linear infinite}.video-loading.compact span,.video-buffering span{width:18px;height:18px;border-width:2px}.video-loading strong{margin-top:14px;font-size:15px}.video-loading.compact strong{margin:0;font-size:11px}.video-loading small{max-width:420px;margin-top:7px;color:#c8d2df;font-size:11px;line-height:1.6}.video-buffering{position:absolute;z-index:7;top:50%;left:50%;display:flex;align-items:center;padding:9px 13px;border-radius:999px;background:#111827c9;color:#fff;transform:translate(-50%,-50%);gap:9px;pointer-events:none}.video-buffering strong{font-size:11px}
+.video-error{position:absolute;z-index:10;left:50%;bottom:86px;max-width:calc(100% - 30px);margin:0;padding:9px 12px;border:1px solid #fecaca;border-radius:10px;background:#fff1f2ed;color:#be123c;font-size:11px;transform:translateX(-50%)}.video-error button{margin-left:8px;border:0;background:transparent;color:#9f1239;font-weight:800}
+.video-action-menu{position:relative;flex:0 0 auto}.video-action-menu summary{list-style:none}.video-action-menu summary::-webkit-details-marker{display:none}.video-action-menu>div{position:absolute;right:0;bottom:45px;display:grid;width:130px;overflow:hidden;border:1px solid #ffffff24;border-radius:11px;background:#171717f2;box-shadow:0 12px 32px #0007}.video-action-menu>div button{padding:10px 14px;border:0;background:transparent;color:#fff;text-align:left}.video-action-menu>div button:hover{background:#ffffff14}
+@keyframes video-spin{to{transform:rotate(360deg)}}
+@media(max-width:850px){.video-player-shell{width:100%;height:100%;min-height:0;border-radius:10px}.video-top-shade{padding:max(10px,env(safe-area-inset-top,0px)) 12px 48px}.video-title-group{gap:4px}.video-back{width:39px;height:39px}.video-back svg{width:24px;height:24px}.video-top-shade strong{font-size:13px}.video-top-shade>span{display:none}.video-controls{padding:46px 8px max(7px,env(safe-area-inset-bottom,0px))}.video-control-row{min-height:43px;gap:1px}.video-icon-button{width:39px;height:39px}.video-icon-button svg{width:23px;height:23px}.video-volume-control{flex-basis:clamp(76px,22vw,108px);width:clamp(76px,22vw,108px);min-width:70px;height:39px;padding:0 7px}.video-volume{height:38px}.video-volume::-webkit-slider-runnable-track{height:7px}.video-volume::-moz-range-track{height:7px}.video-volume::-webkit-slider-thumb{width:20px;height:20px;margin-top:-6.5px}.video-volume::-moz-range-thumb{width:20px;height:20px}.video-time{margin-left:2px;font-size:10px}.video-control-spacer{min-width:5px}.video-subtitles{margin-left:5px}.video-center-play{width:64px;height:47px}.video-subtitles select{inset:0;width:100%;height:100%;padding:0;opacity:0;pointer-events:auto;transform:none}.video-loading.compact{bottom:67px}.video-error{bottom:66px}}
+@media(max-width:520px){.video-time{display:none}.video-control-spacer{flex:1}.video-volume-control{flex-basis:clamp(72px,24vw,98px);min-width:68px}.video-action-menu .video-icon-button,.video-control-row>.video-icon-button{width:38px}.video-loading.compact{max-width:calc(100% - 20px)}}
 </style>

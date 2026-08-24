@@ -580,7 +580,7 @@ async function extractArchive(item:DriveFile){
   }catch(e){notify((e as Error).message)}
 }
 function archiveTerminal(status:ArchiveJob['status']){return status==='done'||status==='failed'}
-function archivePolling(status:ArchiveJob['status']){return !archiveTerminal(status)&&status!=='needs_password'}
+function archivePolling(status:ArchiveJob['status']){return !archiveTerminal(status)&&status!=='waiting_password'}
 function scheduleArchivePoll(delay=1200){
   window.clearTimeout(archivePollTimer)
   if(archiveJobs.value.some(job=>archivePolling(job.status)))archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),delay)
@@ -597,7 +597,7 @@ async function refreshArchiveJobs(){
         notify(`「${job.output_name||job.name}」解压完成`,'success')
         if(job.parent_id===currentId.value)refreshFolder=true
       }else if(before&&!archiveTerminal(before)&&job.status==='failed')notify(job.error||`「${job.name}」解压失败`)
-      else if(before&&before!=='needs_password'&&job.status==='needs_password')notify(job.error||`「${job.name}」需要解压密码`)
+      else if(before&&before!=='waiting_password'&&job.status==='waiting_password')notify(job.error||`「${job.name}」需要解压密码`)
     }
     if(refreshFolder)void openFolder(currentId.value)
     scheduleArchivePoll()

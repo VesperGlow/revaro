@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestArchiveNamesAndPaths(t *testing.T) {
@@ -97,11 +98,32 @@ func TestArchiveJobCanResumeOnlyFromPasswordState(t *testing.T) {
 		t.Fatal("password job did not resume")
 	}
 	snapshot := job.snapshot()
-	if snapshot.Status != "queued" || snapshot.Error != "" || snapshot.Message != "正在验证密码" {
+	if snapshot.Status != "checking" || snapshot.Error != "" || snapshot.Message != "正在验证密码" {
 		t.Fatalf("resumed job status=%q error=%q message=%q", snapshot.Status, snapshot.Error, snapshot.Message)
 	}
 	if job.resumeWithPassword() {
 		t.Fatal("concurrent password retry was accepted")
+	}
+}
+
+func TestArchivePasswordStateKeepsAndCleansStaging(t *testing.T) {
+	app := newTestApp(t)
+	tempDir := t.TempDir()
+	job := &archiveJob{ID: "job-staged", FileID: "file-staged", Status: "checking"}
+	job.setStaged(tempDir, tempDir+"/source.zip")
+	job.needsPassword("需要密码")
+	if snapshot := job.snapshot(); snapshot.Status != "waiting_password" {
+		t.Fatalf("password state=%q", snapshot.Status)
+	}
+	if !job.expirePasswordWait(time.Now().Add(archivePasswordWaitTTL + time.Second)) {
+		t.Fatal("password wait did not expire")
+	}
+	if snapshot := job.snapshot(); snapshot.Status != "failed" || !strings.Contains(snapshot.Error, "超时") {
+		t.Fatalf("expired password state=%q error=%q", snapshot.Status, snapshot.Error)
+	}
+	app.srv.cleanupArchiveJobStaging(job)
+	if stagedDir, stagedPath := job.staged(); stagedDir != "" || stagedPath != "" {
+		t.Fatalf("staging references were not cleared: dir=%q path=%q", stagedDir, stagedPath)
 	}
 }
 

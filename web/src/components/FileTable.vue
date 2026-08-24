@@ -49,7 +49,7 @@ function thumbFallback(event:Event,item:DriveFile){
           <img v-else-if="isEpub(item)&&!coverBroken[item.id]" class="ui-image" :src="thumbSRC(item)" :alt="item.name" loading="lazy" draggable="false" @error="coverBroken[item.id]=true">
           <span v-else-if="isEpub(item)||isEditable(item)">▤</span><span v-else-if="isAudio(item)">♫</span><span v-else>◇</span>
         </button>
-        <div><strong>{{ item.name }}</strong><small v-if="trashMode">删除于 {{ formatDate(item.deleted_at||item.updated_at) }}</small><small v-else-if="item.status!=='ready'">{{ item.status }}</small><small v-else>{{ item.kind==='directory'?'文件夹':item.mime_type||'文件' }}</small></div>
+        <div><strong :title="item.name">{{ item.name }}</strong><small v-if="trashMode">删除于 {{ formatDate(item.deleted_at||item.updated_at) }}</small><small v-else-if="item.status!=='ready'">{{ item.status }}</small><small v-else>{{ item.kind==='directory'?'文件夹':item.mime_type||'文件' }}</small></div>
       </div>
       <span>{{ item.kind==='directory'?'—':formatSize(item.size) }}</span><span>{{ formatDate(item.updated_at) }}</span>
       <div class="row-actions" :class="{'trash-actions':trashMode}">

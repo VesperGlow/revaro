@@ -35,8 +35,8 @@ func TestVideoHLSWaitsForStartupBuffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	segments, duration := videoHLSPlaylistState(playlist)
-	if segments != 4 || duration != 16 {
-		t.Fatalf("playlist state=(%d,%v), want (4,16)", segments, duration)
+	if segments != 2 || duration != 8 {
+		t.Fatalf("playlist state=(%d,%v), want (2,8)", segments, duration)
 	}
 }
 
@@ -91,8 +91,8 @@ func TestVideoHLSCompletedCacheRequiresForwardBuffer(t *testing.T) {
 	if videoHLSTargetReady(116, 112, 300) {
 		t.Fatal("completed cache with only four seconds ahead was accepted")
 	}
-	if !videoHLSTargetReady(124, 112, 300) {
-		t.Fatal("completed cache with twelve seconds ahead was rejected")
+	if !videoHLSTargetReady(120, 112, 300) {
+		t.Fatal("completed cache with eight seconds ahead was rejected")
 	}
 	if !videoHLSTargetReady(300, 296, 300) {
 		t.Fatal("final short range of a completed video was rejected")
