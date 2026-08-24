@@ -580,9 +580,10 @@ async function extractArchive(item:DriveFile){
   }catch(e){notify((e as Error).message)}
 }
 function archiveTerminal(status:ArchiveJob['status']){return status==='done'||status==='failed'}
+function archivePolling(status:ArchiveJob['status']){return !archiveTerminal(status)&&status!=='needs_password'}
 function scheduleArchivePoll(delay=1200){
   window.clearTimeout(archivePollTimer)
-  if(archiveJobs.value.some(job=>!archiveTerminal(job.status)))archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),delay)
+  if(archiveJobs.value.some(job=>archivePolling(job.status)))archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),delay)
 }
 async function refreshArchiveJobs(){
   try{
@@ -596,10 +597,18 @@ async function refreshArchiveJobs(){
         notify(`「${job.output_name||job.name}」解压完成`,'success')
         if(job.parent_id===currentId.value)refreshFolder=true
       }else if(before&&!archiveTerminal(before)&&job.status==='failed')notify(job.error||`「${job.name}」解压失败`)
+      else if(before&&before!=='needs_password'&&job.status==='needs_password')notify(job.error||`「${job.name}」需要解压密码`)
     }
     if(refreshFolder)void openFolder(currentId.value)
     scheduleArchivePoll()
   }catch{window.clearTimeout(archivePollTimer);archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),3000)}
+}
+async function submitArchivePassword(job:ArchiveJob,password:string){
+  try{
+    const updated=await api<ArchiveJob>(`/api/archive-jobs/${job.id}/password`,{method:'POST',body:JSON.stringify({password})})
+    archiveJobs.value=archiveJobs.value.map(existing=>existing.id===updated.id?updated:existing)
+    notify(`正在验证「${job.name}」的解压密码`,'success');scheduleArchivePoll(500)
+  }catch(e){notify((e as Error).message)}
 }
 async function clearArchiveJobs(){
   const finished=archiveJobs.value.filter(job=>archiveTerminal(job.status))
@@ -811,7 +820,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
   </main>
 
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
-    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" :downloads="downloadJobs" :archive-jobs="archiveJobs" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" @clear-archive-jobs="clearArchiveJobs" @downloads-changed="downloadsChanged" />
+    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" :downloads="downloadJobs" :archive-jobs="archiveJobs" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" @clear-archive-jobs="clearArchiveJobs" @archive-password="submitArchivePassword" @downloads-changed="downloadsChanged" />
     <section class="content" @click="clearSelectionFromBlank">
       <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :view-mode="viewMode" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @set-view="setViewMode" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}">

@@ -63,4 +63,59 @@ func TestVideoHLSSessionIsReusedForGeneratedRange(t *testing.T) {
 	if _, ok := app.srv.reusableVideoHLSResponse(session.ID, session.FileID, 140); ok {
 		t.Fatal("target outside generated playlist must not reuse session")
 	}
+	response, ok = app.srv.reusableVideoHLSResponse("stale-browser-token", session.FileID, 108)
+	if !ok || response.SessionID != session.ID {
+		t.Fatalf("file cache was not searched after stale token: response=%+v reusable=%v", response, ok)
+	}
+}
+
+func TestVideoHLSTranscodeReleaseRetainsSegmentsUntilCacheDestroy(t *testing.T) {
+	dir := t.TempDir()
+	segment := filepath.Join(dir, "segment-000000.ts")
+	if err := os.WriteFile(segment, []byte("segment"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	session := &videoHLSSession{Dir: dir, doneCh: done, cancel: func() { close(done) }}
+	session.cancelTranscode()
+	if _, err := os.Stat(segment); err != nil {
+		t.Fatalf("release removed cached segment: %v", err)
+	}
+	session.destroy()
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destroy did not remove cache directory: %v", err)
+	}
+}
+
+func TestVideoHLSCompletedCacheRequiresForwardBuffer(t *testing.T) {
+	if videoHLSTargetReady(116, 112, 300) {
+		t.Fatal("completed cache with only four seconds ahead was accepted")
+	}
+	if !videoHLSTargetReady(124, 112, 300) {
+		t.Fatal("completed cache with twelve seconds ahead was rejected")
+	}
+	if !videoHLSTargetReady(300, 296, 300) {
+		t.Fatal("final short range of a completed video was rejected")
+	}
+}
+
+func TestVideoHLSPausesOnlyPresentedSession(t *testing.T) {
+	app := newTestApp(t)
+	done := make(chan struct{})
+	session := &videoHLSSession{ID: "presented", FileID: "video", cancel: func() { close(done) }, doneCh: done}
+	app.srv.videoHLSMu.Lock()
+	app.srv.videoHLSSessions[session.ID] = session
+	app.srv.videoHLSMu.Unlock()
+	app.srv.pauseVideoHLSTranscoder("another-tab", "video")
+	select {
+	case <-done:
+		t.Fatal("another tab token stopped the presented session")
+	default:
+	}
+	app.srv.pauseVideoHLSTranscoder(session.ID, session.FileID)
+	select {
+	case <-done:
+	default:
+		t.Fatal("presented session was not stopped")
+	}
 }

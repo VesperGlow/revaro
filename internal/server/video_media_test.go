@@ -101,6 +101,34 @@ func TestMediaCommandErrorNeverLosesExitOrContextError(t *testing.T) {
 	}
 }
 
+func TestOffsetVideoSubtitleUsesHLSSessionTimeline(t *testing.T) {
+	input := []byte("WEBVTT\n\nold\n00:00:05.000 --> 00:00:09.000\nold\n\ncrossing\n00:00:09.500 --> 00:00:11.000 line:90%\ncross\n\nafter\n00:01:12.250 --> 00:01:14.500\nafter\n")
+	got := string(offsetVideoSubtitle(input, 10))
+	if strings.Contains(got, "old\n") {
+		t.Fatalf("expired cue was retained: %q", got)
+	}
+	for _, want := range []string{
+		"00:00:00.000 --> 00:00:01.000 line:90%",
+		"00:01:02.250 --> 00:01:04.500",
+		"WEBVTT",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("offset subtitle missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestOffsetVideoSubtitleLeavesCanonicalCacheUnchanged(t *testing.T) {
+	input := []byte("WEBVTT\n\n00:00:20.000 --> 00:00:21.000\nhello\n")
+	got := offsetVideoSubtitle(input, 15)
+	if !strings.Contains(string(got), "00:00:05.000 --> 00:00:06.000") {
+		t.Fatalf("unexpected derived track: %q", got)
+	}
+	if !strings.Contains(string(input), "00:00:20.000 --> 00:00:21.000") {
+		t.Fatalf("canonical cache was mutated: %q", input)
+	}
+}
+
 func TestVideoSubtitleAPI(t *testing.T) {
 	app := newTestApp(t)
 	video := app.readyFile(t, "Movie.mkv", []byte("not needed by metadata endpoint"))
@@ -123,5 +151,9 @@ func TestVideoSubtitleAPI(t *testing.T) {
 	track := app.request("GET", payload.Subtitles[0].URL, nil, true)
 	if track.Code != http.StatusOK || track.Header().Get("Content-Type") != "text/vtt; charset=utf-8" || !strings.Contains(track.Body.String(), "你好") {
 		t.Fatalf("subtitle track=%d type=%q body=%q", track.Code, track.Header().Get("Content-Type"), track.Body.String())
+	}
+	offsetTrack := app.request("GET", payload.Subtitles[0].URL+"?start=0.500", nil, true)
+	if offsetTrack.Code != http.StatusOK || !strings.Contains(offsetTrack.Body.String(), "00:00:00.000 --> 00:00:00.500") {
+		t.Fatalf("offset subtitle track=%d body=%q", offsetTrack.Code, offsetTrack.Body.String())
 	}
 }

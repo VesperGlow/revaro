@@ -17,7 +17,7 @@ defineProps<{
   downloadParentId:string
 }>()
 
-defineEmits<{
+const emit=defineEmits<{
   home:[]
   trash:[]
   account:[]
@@ -28,8 +28,11 @@ defineEmits<{
   cancelAudioMerge:[job:AudioMergeResponse]
   clearAudioMerges:[]
   clearArchiveJobs:[]
+  archivePassword:[job:ArchiveJob,password:string]
   downloadsChanged:[]
 }>()
+
+function forwardArchivePassword(job:ArchiveJob,password:string){emit('archivePassword',job,password)}
 
 const mobile=ref(false)
 const mobileMenu=ref<HTMLDetailsElement|null>(null)
@@ -48,7 +51,7 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
         <TransferCenter :uploads="uploads" @clear="$emit('clearUploads')" @cancel="$emit('cancelUpload',$event)" @retry="$emit('retryUpload',$event)" />
         <DownloadCenter :jobs="downloads" :parent-id="downloadParentId" @changed="$emit('downloadsChanged')" />
         <AudioMergeCenter v-if="audioMerges.length" :jobs="audioMerges" @cancel="$emit('cancelAudioMerge',$event)" @clear="$emit('clearAudioMerges')" />
-        <ArchiveCenter v-if="archiveJobs.length" :jobs="archiveJobs" @clear="$emit('clearArchiveJobs')" />
+        <ArchiveCenter v-if="archiveJobs.length" :jobs="archiveJobs" @clear="$emit('clearArchiveJobs')" @password="forwardArchivePassword" />
         <button class="trash-button" title="回收站" aria-label="打开回收站" @click="$emit('trash')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button>
       </template>
       <button class="account-button" title="打开账户设置" @click="$emit('account')">
@@ -61,7 +64,7 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
           <div class="mobile-tool-item"><TransferCenter :uploads="uploads" @clear="$emit('clearUploads')" @cancel="$emit('cancelUpload',$event)" @retry="$emit('retryUpload',$event)" /><span>上传中心</span></div>
           <div class="mobile-tool-item"><DownloadCenter :jobs="downloads" :parent-id="downloadParentId" @changed="$emit('downloadsChanged')" /><span>下载中心</span></div>
           <div v-if="audioMerges.length" class="mobile-tool-item"><AudioMergeCenter :jobs="audioMerges" @cancel="$emit('cancelAudioMerge',$event)" @clear="$emit('clearAudioMerges')" /><span>音频合并</span></div>
-          <div v-if="archiveJobs.length" class="mobile-tool-item"><ArchiveCenter :jobs="archiveJobs" @clear="$emit('clearArchiveJobs')" /><span>解压中心</span></div>
+          <div v-if="archiveJobs.length" class="mobile-tool-item"><ArchiveCenter :jobs="archiveJobs" @clear="$emit('clearArchiveJobs')" @password="forwardArchivePassword" /><span>解压中心</span></div>
           <button class="mobile-trash" @click="mobileMenu?.removeAttribute('open');$emit('trash')"><span class="trash-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></span><b>回收站</b></button>
         </section>
       </details>

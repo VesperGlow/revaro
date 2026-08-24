@@ -158,7 +158,7 @@ func (s *Server) Close() {
 	s.videoHLSSessions = make(map[string]*videoHLSSession)
 	s.videoHLSMu.Unlock()
 	for _, session := range videoSessions {
-		session.stop()
+		session.destroy()
 	}
 }
 
@@ -227,6 +227,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/files/{id}/extract", s.startArchiveExtract)
 			r.Get("/archive-jobs", s.listArchiveExtracts)
 			r.Get("/archive-jobs/{id}", s.getArchiveExtract)
+			r.Post("/archive-jobs/{id}/password", s.resumeArchiveExtract)
 			r.Delete("/archive-jobs/{id}", s.deleteArchiveExtract)
 			r.Delete("/files/{id}", s.deleteFile)
 			r.Get("/trash", s.trash)

@@ -31,6 +31,11 @@ const (
 	archiveDiskReserve      = int64(64 << 20)
 )
 
+var (
+	errArchivePasswordRequired = errors.New("archive password is required")
+	errArchiveWrongPassword    = errors.New("archive password is incorrect")
+)
+
 type archiveJob struct {
 	mu sync.RWMutex
 
@@ -60,6 +65,24 @@ func (job *archiveJob) fail(message string) {
 	job.Status, job.Error, job.Message = "failed", message, message
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
+}
+
+func (job *archiveJob) needsPassword(message string) {
+	job.mu.Lock()
+	job.Status, job.Error, job.Message = "needs_password", message, message
+	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	job.mu.Unlock()
+}
+
+func (job *archiveJob) resumeWithPassword() bool {
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	if job.Status != "needs_password" {
+		return false
+	}
+	job.Status, job.Error, job.Message = "queued", "", "正在验证密码"
+	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return true
 }
 
 func (job *archiveJob) snapshot() archiveJob {
@@ -117,7 +140,39 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	s.archiveMu.Lock()
 	s.archiveJobs[job.ID] = job
 	s.archiveMu.Unlock()
-	go s.runArchiveExtract(s.audioHLSCtx, f, parentID, job)
+	go s.runArchiveExtract(s.audioHLSCtx, f, parentID, job, "")
+	writeJSON(w, http.StatusAccepted, job.snapshot())
+}
+
+func (s *Server) resumeArchiveExtract(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		return
+	}
+	if in.Password == "" || len(in.Password) > 1024 {
+		problem(w, http.StatusBadRequest, "archive password is required and must be at most 1024 bytes")
+		return
+	}
+	s.archiveMu.RLock()
+	job := s.archiveJobs[chi.URLParam(r, "id")]
+	s.archiveMu.RUnlock()
+	if job == nil {
+		problem(w, http.StatusNotFound, "archive job not found")
+		return
+	}
+	if !job.resumeWithPassword() {
+		problem(w, http.StatusConflict, "archive job is not waiting for a password")
+		return
+	}
+	f, err := s.readableFile(r.Context(), job.FileID)
+	if err != nil || f.Kind != "file" || f.Status != "ready" || !isArchiveName(f.Name) {
+		s.failArchiveJob(job, errors.New("archive source is no longer available"))
+		problem(w, http.StatusConflict, "archive source is no longer available")
+		return
+	}
+	go s.runArchiveExtract(s.audioHLSCtx, f, job.ParentID, job, in.Password)
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
 
@@ -169,9 +224,10 @@ func (s *Server) deleteArchiveExtract(w http.ResponseWriter, r *http.Request) {
 }
 
 type archiveEntry struct {
-	Path  string
-	Size  int64
-	IsDir bool
+	Path      string
+	Size      int64
+	IsDir     bool
+	Encrypted bool
 }
 
 func validateArchivePath(path string) error {
@@ -276,20 +332,48 @@ func archiveAttributesUnsafe(attributes string) bool {
 	return false
 }
 
-func inspectArchive(ctx context.Context, executable, archivePath string, archiveSize int64) ([]archiveEntry, error) {
+func archivePasswordArg(password string) string {
+	if password == "" {
+		return "-p-"
+	}
+	return "-p" + password
+}
+
+func archivePasswordFailure(detail string, supplied bool) error {
+	lower := strings.ToLower(detail)
+	for _, marker := range []string{"wrong password", "password is incorrect", "incorrect password", "can not open encrypted archive", "cannot open encrypted archive"} {
+		if strings.Contains(lower, marker) {
+			if supplied {
+				return errArchiveWrongPassword
+			}
+			return errArchivePasswordRequired
+		}
+	}
+	return nil
+}
+
+func inspectArchive(ctx context.Context, executable, archivePath string, archiveSize int64, password string) ([]archiveEntry, error) {
 	stdout := &limitedBuffer{limit: maxArchiveListingBytes}
 	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd := exec.CommandContext(ctx, executable, "l", "-slt", "-ba", "-p-", archivePath)
+	cmd := exec.CommandContext(ctx, executable, "l", "-slt", "-ba", archivePasswordArg(password), archivePath)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("7-Zip could not read this archive: %w: %s", err, strings.TrimSpace(stderr.String()))
+		detail := strings.TrimSpace(stderr.String() + "\n" + stdout.String())
+		if passwordErr := archivePasswordFailure(detail, password != ""); passwordErr != nil {
+			return nil, fmt.Errorf("%w: %s", passwordErr, detail)
+		}
+		return nil, mediaCommandError("7-Zip archive inspection", err, ctx.Err(), detail)
 	}
 	if stdout.buf.Len() >= maxArchiveListingBytes {
 		return nil, errors.New("archive file list is too large")
 	}
+	return parseArchiveListing(stdout.String(), archiveSize, password != "")
+}
+
+func parseArchiveListing(listing string, archiveSize int64, passwordSupplied bool) ([]archiveEntry, error) {
 	var entries []archiveEntry
 	var path, attributes string
-	var linked bool
+	var linked, encrypted bool
 	var size int64
 	flush := func() error {
 		if path == "" {
@@ -301,11 +385,11 @@ func inspectArchive(ctx context.Context, executable, archivePath string, archive
 		if linked || archiveAttributesUnsafe(attributes) {
 			return errors.New("archive links are not allowed")
 		}
-		entries = append(entries, archiveEntry{Path: filepath.ToSlash(filepath.Clean(path)), Size: size, IsDir: strings.Contains(attributes, "D")})
-		path, attributes, size, linked = "", "", 0, false
+		entries = append(entries, archiveEntry{Path: filepath.ToSlash(filepath.Clean(path)), Size: size, IsDir: strings.Contains(attributes, "D"), Encrypted: encrypted})
+		path, attributes, size, linked, encrypted = "", "", 0, false, false
 		return nil
 	}
-	scanner := bufio.NewScanner(strings.NewReader(stdout.String()))
+	scanner := bufio.NewScanner(strings.NewReader(listing))
 	scanner.Buffer(make([]byte, 64<<10), 2<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -326,6 +410,8 @@ func inspectArchive(ctx context.Context, executable, archivePath string, archive
 			size, _ = strconv.ParseInt(value, 10, 64)
 		case "Attributes":
 			attributes = value
+		case "Encrypted":
+			encrypted = value == "+"
 		case "Symbolic Link", "Hard Link", "Reparse Point":
 			linked = linked || value != ""
 		}
@@ -338,6 +424,13 @@ func inspectArchive(ctx context.Context, executable, archivePath string, archive
 	}
 	if len(entries) == 0 {
 		return nil, errors.New("archive is empty")
+	}
+	if !passwordSupplied {
+		for _, entry := range entries {
+			if entry.Encrypted {
+				return nil, errArchivePasswordRequired
+			}
+		}
 	}
 	if len(entries) > maxArchiveEntries {
 		return nil, fmt.Errorf("archive contains more than %d entries", maxArchiveEntries)
@@ -369,8 +462,16 @@ func (s *Server) openArchiveSource(ctx context.Context, f File) (io.ReadCloser, 
 	return s.storage.OpenRaw(ctx, f.objectKey)
 }
 
-func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string, job *archiveJob) {
+func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string, job *archiveJob, password string) {
 	fail := func(err error) { s.failArchiveJob(job, err) }
+	requestPassword := func(err error) {
+		message := "压缩包已加密，请输入密码后继续"
+		if errors.Is(err, errArchiveWrongPassword) {
+			message = "压缩包密码错误，请重新输入"
+		}
+		job.needsPassword(message)
+		s.log.Info("archive job waiting for password", "file", job.FileID, "job", job.ID, "status", "needs_password", "error", err)
+	}
 	select {
 	case s.archiveSlots <- struct{}{}:
 		defer func() { <-s.archiveSlots }()
@@ -415,8 +516,12 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		return
 	}
 	job.update("checking", 18, "正在检查压缩包安全性")
-	entries, inspectErr := inspectArchive(ctx, executable, archivePath, f.Size)
+	entries, inspectErr := inspectArchive(ctx, executable, archivePath, f.Size, password)
 	if inspectErr != nil {
+		if errors.Is(inspectErr, errArchivePasswordRequired) || errors.Is(inspectErr, errArchiveWrongPassword) {
+			requestPassword(inspectErr)
+			return
+		}
 		fail(inspectErr)
 		return
 	}
@@ -435,9 +540,13 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	}
 	job.update("extracting", 25, "正在解压")
 	stderr := &limitedBuffer{limit: 128 << 10}
-	cmd := exec.CommandContext(ctx, executable, "x", "-y", "-bd", "-bb0", "-p-", "-o"+outputDir, archivePath)
+	cmd := exec.CommandContext(ctx, executable, "x", "-y", "-bd", "-bb0", archivePasswordArg(password), "-o"+outputDir, archivePath)
 	cmd.Stdout, cmd.Stderr = io.Discard, stderr
 	if err = cmd.Run(); err != nil {
+		if passwordErr := archivePasswordFailure(stderr.String(), password != ""); passwordErr != nil {
+			requestPassword(passwordErr)
+			return
+		}
 		fail(mediaCommandError("7-Zip extraction", err, ctx.Err(), stderr.String()))
 		return
 	}

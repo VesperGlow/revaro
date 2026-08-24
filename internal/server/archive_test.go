@@ -70,6 +70,41 @@ func TestArchiveDiskSpaceFailureIsExplicit(t *testing.T) {
 	}
 }
 
+func TestEncryptedArchiveIsDetectedBeforeExtraction(t *testing.T) {
+	listing := "Path = secret.txt\nSize = 42\nAttributes = A\nEncrypted = +\n\n"
+	if _, err := parseArchiveListing(listing, 1024, false); !errors.Is(err, errArchivePasswordRequired) {
+		t.Fatalf("encrypted listing error=%v, want password required", err)
+	}
+	entries, err := parseArchiveListing(listing, 1024, true)
+	if err != nil || len(entries) != 1 || !entries[0].Encrypted {
+		t.Fatalf("password-supplied listing=%+v err=%v", entries, err)
+	}
+	if err := archivePasswordFailure("ERROR: Wrong password?", false); !errors.Is(err, errArchivePasswordRequired) {
+		t.Fatalf("missing-password classification=%v", err)
+	}
+	if err := archivePasswordFailure("ERROR: Wrong password?", true); !errors.Is(err, errArchiveWrongPassword) {
+		t.Fatalf("wrong-password classification=%v", err)
+	}
+}
+
+func TestArchiveJobCanResumeOnlyFromPasswordState(t *testing.T) {
+	job := &archiveJob{Status: "checking", Progress: 18}
+	if job.resumeWithPassword() {
+		t.Fatal("non-password job resumed")
+	}
+	job.needsPassword("压缩包已加密，请输入密码后继续")
+	if !job.resumeWithPassword() {
+		t.Fatal("password job did not resume")
+	}
+	snapshot := job.snapshot()
+	if snapshot.Status != "queued" || snapshot.Error != "" || snapshot.Message != "正在验证密码" {
+		t.Fatalf("resumed job status=%q error=%q message=%q", snapshot.Status, snapshot.Error, snapshot.Message)
+	}
+	if job.resumeWithPassword() {
+		t.Fatal("concurrent password retry was accepted")
+	}
+}
+
 func TestArchiveSourceSupportsManifestAndLegacyRawObjects(t *testing.T) {
 	app := newTestApp(t)
 	manifestFile := app.readyFile(t, "manifest.zip", []byte("manifest archive"))

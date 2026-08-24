@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,8 @@ var videoSubtitleExts = map[string]bool{
 	".ass": true,
 	".ssa": true,
 }
+
+var webVTTCueTiming = regexp.MustCompile(`^(\S+)\s+-->\s+(\S+)(.*)$`)
 
 type videoSubtitleResponse struct {
 	ID       string `json:"id"`
@@ -407,7 +410,7 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusUnprocessableEntity, "embedded subtitle could not be converted to WebVTT")
 			return
 		}
-		writeVideoSubtitle(w, vtt)
+		writeVideoSubtitle(w, offsetVideoSubtitle(vtt, videoSubtitleStartOffset(r)))
 		return
 	}
 	allowed, err := s.findVideoSubtitles(r.Context(), video)
@@ -446,7 +449,92 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "subtitle could not be converted to WebVTT")
 		return
 	}
-	writeVideoSubtitle(w, vtt)
+	writeVideoSubtitle(w, offsetVideoSubtitle(vtt, videoSubtitleStartOffset(r)))
+}
+
+func videoSubtitleStartOffset(r *http.Request) float64 {
+	value, err := strconv.ParseFloat(r.URL.Query().Get("start"), 64)
+	if err != nil || value <= 0 || value > 7*24*60*60 {
+		return 0
+	}
+	return float64(int64(value*1000)) / 1000
+}
+
+// offsetVideoSubtitle derives a session-local WebVTT track from the canonical
+// cached conversion. It deliberately runs after cachedVideoSubtitle so seeking
+// never invokes FFmpeg again. HLS media timestamps start at zero after -ss;
+// subtitle timestamps therefore need the exact session start subtracted.
+func offsetVideoSubtitle(vtt []byte, offset float64) []byte {
+	if offset <= 0 {
+		return vtt
+	}
+	normalized := strings.ReplaceAll(string(vtt), "\r\n", "\n")
+	blocks := strings.Split(normalized, "\n\n")
+	out := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		lines := strings.Split(block, "\n")
+		timingIndex := -1
+		var start, end float64
+		var settings string
+		for index, line := range lines {
+			match := webVTTCueTiming.FindStringSubmatch(strings.TrimSuffix(line, "\r"))
+			if len(match) != 4 {
+				continue
+			}
+			parsedStart, startOK := parseVideoWebVTTTimestamp(match[1])
+			parsedEnd, endOK := parseVideoWebVTTTimestamp(match[2])
+			if !startOK || !endOK {
+				continue
+			}
+			timingIndex, start, end, settings = index, parsedStart, parsedEnd, match[3]
+			break
+		}
+		if timingIndex < 0 {
+			out = append(out, block)
+			continue
+		}
+		if end <= offset {
+			continue
+		}
+		start = max(0, start-offset)
+		end = max(start+.001, end-offset)
+		lines[timingIndex] = formatVideoWebVTTTimestamp(start) + " --> " + formatVideoWebVTTTimestamp(end) + settings
+		out = append(out, strings.Join(lines, "\n"))
+	}
+	return []byte(strings.Join(out, "\n\n"))
+}
+
+func parseVideoWebVTTTimestamp(value string) (float64, bool) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 && len(parts) != 3 {
+		return 0, false
+	}
+	seconds, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	if err != nil || seconds < 0 || seconds >= 60 {
+		return 0, false
+	}
+	minutes, err := strconv.Atoi(parts[len(parts)-2])
+	if err != nil || minutes < 0 || minutes >= 60 {
+		return 0, false
+	}
+	hours := 0
+	if len(parts) == 3 {
+		hours, err = strconv.Atoi(parts[0])
+		if err != nil || hours < 0 {
+			return 0, false
+		}
+	}
+	return float64(hours*3600+minutes*60) + seconds, true
+}
+
+func formatVideoWebVTTTimestamp(value float64) string {
+	milliseconds := int64(value*1000 + .5)
+	hours := milliseconds / 3_600_000
+	milliseconds %= 3_600_000
+	minutes := milliseconds / 60_000
+	milliseconds %= 60_000
+	seconds := milliseconds / 1000
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", hours, minutes, seconds, milliseconds%1000)
 }
 
 func writeVideoSubtitle(w http.ResponseWriter, vtt []byte) {

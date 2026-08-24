@@ -10,6 +10,7 @@ const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
 const shell=ref<HTMLElement|null>(null)
 const video=ref<HTMLVideoElement|null>(null)
+const subtitleElement=ref<HTMLTrackElement|null>(null)
 const actionMenu=ref<HTMLDetailsElement|null>(null)
 const subtitles=ref<VideoSubtitleTrack[]>([])
 const activeSubtitle=ref(-1)
@@ -48,6 +49,13 @@ const poster=computed(()=>thumbSRC(props.item))
 const compatibilityLabel=computed(()=>transcoding.value?`${videoCodec.value.toUpperCase()} → H.264 实时转码`:`${videoCodec.value.toUpperCase()||'视频'} HLS 封装`)
 const progress=computed(()=>duration.value?Math.min(100,currentTime.value/duration.value*100):0)
 const selectedSubtitle=computed(()=>activeSubtitle.value>=0?subtitles.value[activeSubtitle.value]:undefined)
+const selectedSubtitleURL=computed(()=>{
+  const track=selectedSubtitle.value
+  if(!track)return ''
+  const start=directMode.value?0:hlsOffset.value
+  if(start<=0)return track.url
+  return `${track.url}${track.url.includes('?')?'&':'?'}start=${start.toFixed(3)}`
+})
 
 function formatTime(seconds:number){
   if(!Number.isFinite(seconds)||seconds<0)return '0:00'
@@ -77,23 +85,20 @@ function persistProgress(remote=false){
 function applySubtitle(){
   const tracks=video.value?.textTracks
   if(!tracks)return
-  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=selectedSubtitle.value?'showing':'disabled'
+  const current=subtitleElement.value?.track
+  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=current&&tracks[index]===current?'showing':'disabled'
 }
 function refreshSubtitle(){subtitleEpoch.value+=1;void nextTick().then(applySubtitle)}
-function chooseSubtitle(event:Event){activeSubtitle.value=Number((event.target as HTMLSelectElement).value);refreshSubtitle()}
+async function chooseSubtitle(event:Event){
+  subtitleReady.value=false;subtitleEpoch.value+=1;applySubtitle();await nextTick()
+  activeSubtitle.value=Number((event.target as HTMLSelectElement).value)
+  subtitleReady.value=activeSubtitle.value>=0;await nextTick();applySubtitle()
+}
 function onSubtitleLoad(event:Event){
   const track=(event.currentTarget as HTMLTrackElement).track
-  const offset=directMode.value?0:hlsOffset.value
-  if(offset>0&&track.cues){
-    for(const cue of Array.from(track.cues)){
-      if(cue.endTime<=offset){track.removeCue(cue);continue}
-      cue.startTime=Math.max(0,cue.startTime-offset)
-      cue.endTime=Math.max(cue.startTime+.001,cue.endTime-offset)
-    }
-  }
-  track.mode='showing'
+  applySubtitle();track.mode='showing'
 }
-function resetHLS(){hls?.destroy();hls=null;if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}}
+function resetHLS(){applySubtitle();hls?.destroy();hls=null;if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}}
 function showControls(persist=false){
   controlsVisible.value=true;window.clearTimeout(controlsTimer)
   if(!persist&&playing.value)controlsTimer=window.setTimeout(()=>controlsVisible.value=false,2400)
@@ -103,6 +108,8 @@ async function startCompatibilityStream(start:number,autoplay=true){
   const generation=++hlsGeneration
   const previous=hlsSessionId
   starting.value=true;subtitleReady.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;directSource.value='';showControls(true)
+  subtitleEpoch.value+=1;applySubtitle();await nextTick()
+  if(generation!==hlsGeneration)return
   resetHLS()
   try{
     const previousSessionID=previous||sessionStorage.getItem(sessionKey.value)||''
@@ -209,7 +216,7 @@ onBeforeUnmount(()=>{
 <template>
   <div ref="shell" class="video-player-shell" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
     <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @play="onPlay" @pause="onPause" @ended="onPause" @error="onVideoError">
-      <track v-if="subtitleReady&&selectedSubtitle" :key="`${selectedSubtitle.id}:${subtitleEpoch}`" kind="subtitles" :src="selectedSubtitle.url" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad">
+      <track v-if="subtitleReady&&selectedSubtitle" ref="subtitleElement" :key="`${selectedSubtitle.id}:${subtitleEpoch}`" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad">
       你的浏览器不支持这个视频格式。
     </video>
     <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong>{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>
