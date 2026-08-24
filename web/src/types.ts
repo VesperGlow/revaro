@@ -67,6 +67,22 @@ export interface DownloadJob {
 
 export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string }
 export interface VideoMediaResponse { subtitles:VideoSubtitleTrack[] }
+export interface VideoFMP4Response {
+  session_id:string
+  stream_url:string
+  start:number
+  requested_start:number
+  duration:number
+  mime_type:string
+  video_mime_type:string
+  audio_mime_type?:string
+  video_codec:string
+  audio_codec?:string
+  width:number
+  height:number
+  bitrate:number
+  frame_rate:number
+}
 export interface VideoHLSResponse { session_id:string; playlist_url:string; start:number; duration:number; video_codec:string; audio_codec:string; transcoding:boolean }
 export interface ArchiveJob {
   id:string

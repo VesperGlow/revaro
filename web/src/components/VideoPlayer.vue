@@ -4,7 +4,8 @@ import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
-import type { VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
+import type { VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
+import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, type UnifiedVideoPlayer } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -17,15 +18,17 @@ const activeSubtitle=ref(-1)
 const subtitleReady=ref(false)
 const subtitleEpoch=ref(0)
 const directMode=ref(/\.(mp4|m4v|webm|ogv|mov)$/i.test(props.item.name))
+const mseMode=ref(false)
 const directSource=ref(directMode.value?previewURL(props.item):'')
 const starting=ref(false)
 const buffering=ref(false)
 const prepareKind=ref<'initial'|'seek'>('initial')
+const prepareMode=ref<'mse'|'hls'>('mse')
 const playing=ref(false)
 const error=ref('')
 const currentTime=ref(0)
 const duration=ref(0)
-const hlsOffset=ref(0)
+const streamOffset=ref(0)
 const videoCodec=ref('')
 const audioCodec=ref('')
 const transcoding=ref(false)
@@ -38,7 +41,9 @@ const fullscreen=ref(false)
 const autoplayPending=ref(true)
 let hls:HlsInstance|null=null
 let hlsSessionId=''
-let hlsGeneration=0
+let fmp4SessionId=''
+let playbackGeneration=0
+let player:UnifiedVideoPlayer|null=null
 let saveTimer=0
 let remoteSaveTimer=0
 let controlsTimer=0
@@ -46,6 +51,7 @@ let volumeTimer=0
 let lastAudibleVolume=.9
 let bufferRecoveryTimer=0
 let directFallbackStarted=false
+let mseFallbackStarted=false
 let progressLoaded=false
 let restoredPosition=false
 let serverPosition=0
@@ -54,7 +60,7 @@ const positionKey=computed(()=>`revaro-video-position:${props.item.id}`)
 const sessionKey=computed(()=>`revaro-video-hls-session:${props.item.id}`)
 const volumeKey='revaro-video-volume'
 const poster=computed(()=>thumbSRC(props.item))
-const compatibilityLabel=computed(()=>transcoding.value?`${videoCodec.value.toUpperCase()} → H.264 实时转码`:`${videoCodec.value.toUpperCase()||'视频'} HLS 封装`)
+const compatibilityLabel=computed(()=>mseMode.value?`${videoCodec.value.toUpperCase()||'视频'}${audioCodec.value?` + ${audioCodec.value.toUpperCase()}`:''} · MSE fMP4 原码`:transcoding.value?`${videoCodec.value.toUpperCase()} → H.264 实时转码`:`${videoCodec.value.toUpperCase()||'视频'} HLS 封装`)
 const timelinePosition=computed(()=>pendingSeek.value??currentTime.value)
 const progress=computed(()=>duration.value?Math.min(100,timelinePosition.value/duration.value*100):0)
 const effectiveVolume=computed(()=>muted.value?0:volume.value)
@@ -64,7 +70,7 @@ const selectedSubtitle=computed(()=>activeSubtitle.value>=0?subtitles.value[acti
 const selectedSubtitleURL=computed(()=>{
   const track=selectedSubtitle.value
   if(!track)return ''
-  const start=directMode.value?0:hlsOffset.value
+  const start=directMode.value?0:streamOffset.value
   if(start<=0)return track.url
   return `${track.url}${track.url.includes('?')?'&':'?'}start=${start.toFixed(3)}`
 })
@@ -98,7 +104,8 @@ function applySubtitle(){
   const tracks=video.value?.textTracks
   if(!tracks)return
   const current=subtitleElement.value?.track
-  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=current&&tracks[index]===current?'showing':'disabled'
+  if(player)player.setSubtitle(current||null)
+  else for(let index=0;index<tracks.length;index+=1)tracks[index].mode=current&&tracks[index]===current?'showing':'disabled'
 }
 function clearSubtitleTracks(){
   subtitleReady.value=false;subtitleEpoch.value+=1
@@ -116,46 +123,99 @@ function onSubtitleLoad(event:Event){
   const track=(event.currentTarget as HTMLTrackElement).track
   applySubtitle();track.mode='showing'
 }
-function resetHLS(){clearSubtitleTracks();hls?.destroy();hls=null;if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}}
+function resetPlayback(){
+  clearSubtitleTracks();player?.destroy();player=null;hls?.destroy();hls=null
+  if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}
+}
 function showControls(persist=false){
   controlsVisible.value=true;window.clearTimeout(controlsTimer)
   if(!persist&&playing.value)controlsTimer=window.setTimeout(()=>controlsVisible.value=false,2400)
 }
 
-async function startCompatibilityStream(start:number,autoplay=true){
-  const generation=++hlsGeneration
-  const previous=hlsSessionId
-  prepareKind.value=previous||hls?'seek':'initial'
-  starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;directSource.value='';showControls(true)
+async function releaseFMP4Session(id:string){
+  if(!id)return
+  try{await api(`/api/video/fmp4/${id}`,{method:'DELETE'})}catch{/* 服务端 TTL 仍会兜底 */}
+}
+function releaseHLSSession(id:string){
+  if(id)void fetch(`/api/video/hls/${id}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
+}
+async function startMSEStream(start:number,autoplay=true){
+  if(typeof MediaSource==='undefined'){await startCompatibilityStream(start,autoplay,'浏览器没有 MediaSource Extensions');return}
+  const generation=++playbackGeneration
+  const previousFMP4=fmp4SessionId;fmp4SessionId=''
+  const previousHLS=hlsSessionId;hlsSessionId=''
+  prepareKind.value=previousFMP4||previousHLS||player?'seek':'initial';prepareMode.value='mse'
+  starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=true;directSource.value='';mseFallbackStarted=false;showControls(true)
   if(prepareKind.value==='seek')video.value?.pause()
-  clearSubtitleTracks();await nextTick()
-  if(generation!==hlsGeneration)return
+  resetPlayback();releaseHLSSession(previousHLS);void releaseFMP4Session(previousFMP4)
+  await nextTick();if(generation!==playbackGeneration)return
+  try{
+    const response=await api<VideoFMP4Response>(`/api/files/${props.item.id}/video/fmp4`,{method:'POST',body:JSON.stringify({start})},70000)
+    if(generation!==playbackGeneration){void releaseFMP4Session(response.session_id);return}
+    const fallbackReason=await mseCompatibility(response)
+    if(fallbackReason){void releaseFMP4Session(response.session_id);await startCompatibilityStream(start,autoplayPending.value,fallbackReason);return}
+    const el=video.value;if(!el)throw new Error('播放器已经关闭')
+    fmp4SessionId=response.session_id;streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
+    videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec||'';transcoding.value=false
+    const attachment=await attachFMP4Stream({
+      element:el,response,target:start,autoplay:false,
+      onFatal:reason=>fallbackFromMSE(reason),
+    })
+    if(generation!==playbackGeneration){attachment.destroy();void releaseFMP4Session(response.session_id);return}
+    player=createUnifiedVideoPlayer('mse',el,response.start,attachment.destroy);player.setVolume(volume.value,muted.value)
+    starting.value=false;buffering.value=false;subtitleReady.value=true;refreshSubtitle()
+    console.info('[revaro] video playback mode=mse-fmp4',response.video_codec,response.audio_codec||'no-audio')
+    if(autoplayPending.value)void player.play().catch(()=>{});showControls()
+  }catch(caught){
+    if(generation!==playbackGeneration)return
+    const failedSession=fmp4SessionId;fmp4SessionId='';resetPlayback();void releaseFMP4Session(failedSession)
+    const reason=caught instanceof Error?caught.message:'MSE fMP4 启动失败'
+    await startCompatibilityStream(start,autoplayPending.value,reason)
+  }
+}
+function fallbackFromMSE(reason:string){
+  if(mseFallbackStarted||starting.value)return
+  mseFallbackStarted=true
+  console.warn('[revaro] MSE fallback to HLS:',reason)
+  void startCompatibilityStream(currentTime.value||savedPosition(),playing.value||autoplayPending.value,reason)
+}
+async function startCompatibilityStream(start:number,autoplay=true,fallbackReason='MSE 不可用'){
+  const generation=++playbackGeneration
+  const previous=hlsSessionId
+  const previousFMP4=fmp4SessionId;fmp4SessionId=''
+  prepareKind.value=previous||previousFMP4||player?'seek':'initial';prepareMode.value='hls'
+  starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=false;directSource.value='';showControls(true)
+  if(prepareKind.value==='seek')video.value?.pause()
+  resetPlayback();void releaseFMP4Session(previousFMP4);await nextTick()
+  if(generation!==playbackGeneration)return
   try{
     const previousSessionID=previous||sessionStorage.getItem(sessionKey.value)||''
-    const response=await api<VideoHLSResponse>(`/api/files/${props.item.id}/video/hls`,{method:'POST',body:JSON.stringify({start,previous_session_id:previousSessionID})},110000)
-    if(generation!==hlsGeneration)return
+    const response=await api<VideoHLSResponse>(`/api/files/${props.item.id}/video/hls`,{method:'POST',body:JSON.stringify({start,previous_session_id:previousSessionID,fallback_reason:fallbackReason})},110000)
+    if(generation!==playbackGeneration)return
     const el=video.value
     if(!el)throw new Error('播放器已经关闭')
     const {default:Hls}=await import('hls.js/light')
-    if(generation!==hlsGeneration)return
-    resetHLS()
-    hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);hlsOffset.value=response.start;currentTime.value=start;duration.value=response.duration
+    if(generation!==playbackGeneration)return
+    resetPlayback()
+    hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
     videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding
     if(Hls.isSupported()){
-      const player=new Hls({enableWorker:true,lowLatencyMode:false,startFragPrefetch:true,backBufferLength:60,maxBufferLength:60,maxMaxBufferLength:180,maxBufferSize:256*1024*1024,maxBufferHole:.5,highBufferWatchdogPeriod:2,manifestLoadingTimeOut:15000,fragLoadingTimeOut:25000})
-      hls=player
-      player.on(Hls.Events.MEDIA_ATTACHED,()=>player.loadSource(response.playlist_url))
-      player.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()})
-      player.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;buffering.value=false;clearSubtitleTracks();error.value=`兼容视频流播放失败：${data.details||'未知错误'}`;showControls(true)}else if(String(data.details).includes('buffer'))buffering.value=true})
-      player.attachMedia(el)
+      const hlsPlayer=new Hls({enableWorker:true,lowLatencyMode:false,startFragPrefetch:true,backBufferLength:60,maxBufferLength:90,maxMaxBufferLength:180,maxBufferSize:256*1024*1024,maxBufferHole:.5,highBufferWatchdogPeriod:2,manifestLoadingTimeOut:15000,fragLoadingTimeOut:25000})
+      hls=hlsPlayer;player=createUnifiedVideoPlayer('hls',el,response.start,()=>{hlsPlayer.destroy();if(hls===hlsPlayer)hls=null})
+      player.setVolume(volume.value,muted.value)
+      hlsPlayer.on(Hls.Events.MEDIA_ATTACHED,()=>hlsPlayer.loadSource(response.playlist_url))
+      hlsPlayer.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();console.info('[revaro] video playback mode=hls fallback=',fallbackReason);if(autoplayPending.value)void player?.play().catch(()=>{});showControls()})
+      hlsPlayer.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;buffering.value=false;clearSubtitleTracks();error.value=`兼容视频流播放失败：${data.details||'未知错误'}`;showControls(true)}else if(String(data.details).includes('buffer'))buffering.value=true})
+      hlsPlayer.attachMedia(el)
     }else if(el.canPlayType('application/vnd.apple.mpegurl')){
       const localStart=Math.max(0,start-response.start)
       if(localStart>0)el.addEventListener('loadedmetadata',()=>{el.currentTime=localStart},{once:true})
-      el.src=response.playlist_url;el.load();starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();if(autoplayPending.value)void el.play().catch(()=>{});showControls()
+      el.src=response.playlist_url;el.load();player=createUnifiedVideoPlayer('hls',el,response.start,()=>{el.pause();el.removeAttribute('src');el.load()});player.setVolume(volume.value,muted.value)
+      starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();console.info('[revaro] video playback mode=native-hls fallback=',fallbackReason);if(autoplayPending.value)void player.play().catch(()=>{});showControls()
     }else throw new Error('当前浏览器不支持 HLS 播放')
   }catch(caught){
-    if(generation!==hlsGeneration)return
-    resetHLS()
+    if(generation!==playbackGeneration)return
+    resetPlayback()
     starting.value=false;buffering.value=false;error.value=caught instanceof Error?caught.message:'兼容视频流启动失败';showControls(true)
   }
 }
@@ -167,7 +227,7 @@ function onLoadedMetadata(){
 }
 function onTimeUpdate(){
   const el=video.value;if(!el)return
-  currentTime.value=(directMode.value?0:hlsOffset.value)+el.currentTime
+  currentTime.value=(directMode.value?0:streamOffset.value)+el.currentTime
   window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>persistProgress(false),600)
   if(!remoteSaveTimer)remoteSaveTimer=window.setTimeout(()=>{remoteSaveTimer=0;persistProgress(true)},5000)
 }
@@ -175,45 +235,37 @@ function onWaiting(){
   if(starting.value)return
   buffering.value=true;showControls(true);window.clearTimeout(bufferRecoveryTimer)
   const stalledAt=currentTime.value
-  if(!directMode.value)bufferRecoveryTimer=window.setTimeout(()=>{if(buffering.value&&!starting.value&&Math.abs(currentTime.value-stalledAt)<.5)void startCompatibilityStream(currentTime.value,true)},7000)
+  if(!directMode.value)bufferRecoveryTimer=window.setTimeout(()=>{if(buffering.value&&!starting.value&&Math.abs(currentTime.value-stalledAt)<.5){if(mseMode.value)void startMSEStream(currentTime.value,true);else void startCompatibilityStream(currentTime.value,true,'HLS 缓冲停滞后重建会话')}},7000)
 }
 function onCanPlay(){buffering.value=false;window.clearTimeout(bufferRecoveryTimer)}
 function onVideoError(){
-  if(!directMode.value||directFallbackStarted||starting.value)return
-  directFallbackStarted=true;void startCompatibilityStream(currentTime.value||savedPosition(),true)
+  if(starting.value)return
+  if(directMode.value&&!directFallbackStarted){directFallbackStarted=true;void startMSEStream(currentTime.value||savedPosition(),true);return}
+  if(mseMode.value)fallbackFromMSE('浏览器报告 MSE 媒体解码错误')
 }
 function seekTo(target:number){
   const el=video.value
   if(!el||!Number.isFinite(target))return
   target=Math.max(0,Math.min(target,duration.value||target))
-  if(directMode.value){el.currentTime=target;currentTime.value=target;clearSubtitleTracks();subtitleReady.value=activeSubtitle.value>=0;refreshSubtitle();return}
-  if(starting.value){currentTime.value=target;void startCompatibilityStream(target,autoplayPending.value);return}
-  const local=target-hlsOffset.value;const ranges=el.seekable
-  let available=false
-  for(let index=0;index<ranges.length;index+=1)if(local>=ranges.start(index)-.5&&local<=ranges.end(index)+.5){available=true;break}
-  if(available){clearSubtitleTracks();el.currentTime=Math.max(0,local);currentTime.value=target;subtitleReady.value=activeSubtitle.value>=0;refreshSubtitle()}
-  else void startCompatibilityStream(target,playing.value)
+  if(starting.value){currentTime.value=target;if(mseMode.value)void startMSEStream(target,autoplayPending.value);else void startCompatibilityStream(target,autoplayPending.value,'HLS seek 重建');return}
+  if(player?.seek(target)){currentTime.value=target;clearSubtitleTracks();subtitleReady.value=activeSubtitle.value>=0;refreshSubtitle();return}
+  if(mseMode.value)void startMSEStream(target,playing.value)
+  else void startCompatibilityStream(target,playing.value,'目标位置不在 HLS 已缓冲范围')
 }
 function previewSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);if(Number.isFinite(value))pendingSeek.value=value;showControls(true)}
 function commitSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);pendingSeek.value=null;seekTo(value)}
 function togglePlayback(){
   const el=video.value;if(!el)return
   if(starting.value){autoplayPending.value=!autoplayPending.value;showControls(true);return}
-  if(el.paused)void el.play().catch(()=>{});else el.pause()
+  if(el.paused)void player?.play().catch(()=>{});else player?.pause()
 }
 function onPlay(){playing.value=true;buffering.value=false;showControls()}
 function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);window.clearTimeout(bufferRecoveryTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
 function showVolumeFeedback(){volumeFeedback.value=true;window.clearTimeout(volumeTimer);volumeTimer=window.setTimeout(()=>volumeFeedback.value=false,900);showControls(true)}
-function changeVolume(event:Event){const value=Math.max(0,Math.min(1,Number((event.target as HTMLInputElement).value)));volume.value=value;if(value>0)lastAudibleVolume=value;muted.value=value===0;localStorage.setItem(volumeKey,String(value));if(video.value){video.value.volume=value;video.value.muted=muted.value};showVolumeFeedback()}
-function toggleMute(){if(muted.value||volume.value===0){if(volume.value===0)volume.value=lastAudibleVolume;muted.value=false}else muted.value=true;if(video.value){video.value.volume=volume.value;video.value.muted=muted.value};showVolumeFeedback()}
+function changeVolume(event:Event){const value=Math.max(0,Math.min(1,Number((event.target as HTMLInputElement).value)));volume.value=value;if(value>0)lastAudibleVolume=value;muted.value=value===0;localStorage.setItem(volumeKey,String(value));player?.setVolume(value,muted.value);showVolumeFeedback()}
+function toggleMute(){if(muted.value||volume.value===0){if(volume.value===0)volume.value=lastAudibleVolume;muted.value=false}else muted.value=true;player?.setVolume(volume.value,muted.value);showVolumeFeedback()}
 async function toggleFullscreen(){
-  if(!shell.value)return
-  if(document.fullscreenElement)await document.exitFullscreen()
-  else try{await shell.value.requestFullscreen({navigationUI:'hide'})}
-  catch{
-    const nativeVideo=video.value as (HTMLVideoElement&{webkitEnterFullscreen?:()=>void})|null
-    nativeVideo?.webkitEnterFullscreen?.()
-  }
+  if(shell.value)await player?.requestFullscreen(shell.value)
 }
 function onFullscreenChange(){fullscreen.value=document.fullscreenElement===shell.value}
 function closeActionMenuFromOutside(event:PointerEvent){const target=event.target;if(actionMenu.value?.open&&target instanceof Node&&!actionMenu.value.contains(target))actionMenu.value.open=false}
@@ -233,14 +285,14 @@ onMounted(async()=>{
   const progressPromise=loadProgress()
   try{const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`);subtitles.value=media.subtitles||[];activeSubtitle.value=subtitles.value.length?0:-1;subtitleReady.value=directMode.value;refreshSubtitle()}catch{/* 视频仍可在没有字幕信息时播放 */}
   const el=video.value
-  if(directMode.value){el?.load();void el?.play().catch(()=>{})}
-  else{await progressPromise;void startCompatibilityStream(savedPosition(),true)}
+  if(directMode.value&&el){player=createUnifiedVideoPlayer('direct',el);player.setVolume(volume.value,muted.value);el.load();void player.play().catch(()=>{})}
+  else{await progressPromise;void startMSEStream(savedPosition(),true)}
 })
 onBeforeUnmount(()=>{
-  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);window.clearTimeout(bufferRecoveryTimer);persistProgress(false);hlsGeneration++;clearSubtitleTracks()
+  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);window.clearTimeout(bufferRecoveryTimer);persistProgress(false);playbackGeneration++;clearSubtitleTracks()
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
-  const session=hlsSessionId;hlsSessionId='';resetHLS()
-  if(session)void fetch(`/api/video/hls/${session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
+  const hlsSession=hlsSessionId;hlsSessionId='';const fmp4Session=fmp4SessionId;fmp4SessionId='';resetPlayback()
+  releaseHLSSession(hlsSession);if(fmp4Session)void fetch(`/api/video/fmp4/${fmp4Session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
 })
 </script>
 
@@ -252,9 +304,9 @@ onBeforeUnmount(()=>{
     </video>
     <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong :title="item.name">{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>
     <button v-if="!playing&&!starting&&!error" class="video-center-play" aria-label="播放" @click.stop="togglePlayback"><svg viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
-    <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:'正在准备兼容视频流' }}</strong><small v-if="prepareKind==='initial'">正在生成启动缓冲，首批分片完成后自动播放</small></div>
+    <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:prepareMode==='mse'?'正在准备 MSE 原码流':'正在准备 HLS 兼容流' }}</strong><small v-if="prepareKind==='initial'">{{ prepareMode==='mse'?'正在重封装 fMP4，不会重新编码视频':'正在生成启动缓冲，首批分片完成后自动播放' }}</small></div>
     <div v-else-if="buffering" class="video-buffering"><span></span><strong>正在缓冲</strong></div>
-    <p v-if="error" class="video-error">{{ error }} <button @click="startCompatibilityStream(currentTime||savedPosition(),true)">重试</button></p>
+    <p v-if="error" class="video-error">{{ error }} <button @click="startCompatibilityStream(currentTime||savedPosition(),true,'用户重试 HLS')">重试</button></p>
     <div class="video-controls" :class="{visible:controlsVisible||!playing}" @click.stop>
       <input class="video-seek" type="range" min="0" :max="Math.max(duration,1)" step=".25" :value="Math.min(timelinePosition,Math.max(duration,1))" :style="{'--video-progress':`${progress}%`}" :disabled="!duration" aria-label="视频进度" @input="previewSeek" @change="commitSeek">
       <div class="video-control-row">
