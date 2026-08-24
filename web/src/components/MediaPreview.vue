@@ -4,6 +4,7 @@ import type { DriveFile } from '../api'
 import { isAudio, isImage, isVideo, previewURL } from '../fileTypes'
 import { formatSize } from '../format'
 import AudioPlayer from './AudioPlayer.vue'
+import VideoPlayer from './VideoPlayer.vue'
 
 const props=defineProps<{selected:DriveFile;items:DriveFile[]}>()
 const emit=defineEmits<{close:[];change:[item:DriveFile];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -65,7 +66,7 @@ onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
     <div ref="stageEl" class="preview-stage" :class="{swipeable:stageSwipeable}" @click="onStageClick" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerEnd" @pointercancel="onPointerEnd">
       <button v-if="hasGalleryNavigation" class="preview-nav preview-prev" aria-label="上一项" @click.stop="change(-1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
       <img v-if="isImage(selected)" :key="selected.id" :src="previewURL(selected)" :alt="selected.name" :style="swipeStyle">
-      <video v-else-if="isVideo(selected)" :key="selected.id" :src="previewURL(selected)" controls autoplay playsinline preload="metadata">你的浏览器不支持这个视频格式。</video>
+      <VideoPlayer v-else-if="isVideo(selected)" :key="selected.id" :item="selected" />
       <AudioPlayer v-else-if="isAudio(selected)" :key="selected.id" :item="selected" />
       <button v-if="hasGalleryNavigation" class="preview-nav preview-next" aria-label="下一项" @click.stop="change(1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
     </div>

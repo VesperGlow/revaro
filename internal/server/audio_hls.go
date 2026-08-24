@@ -173,7 +173,7 @@ func waitForAudioHLS(requestCtx context.Context, session *audioHLSSession) error
 
 func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSession) {
 	defer func() { <-s.audioHLSSlots }()
-	sourceURL, closeSource, err := s.startAudioHLSSource(ctx, f)
+	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, f)
 	if err != nil {
 		session.finish(err)
 		return
@@ -208,7 +208,7 @@ func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSessi
 	session.finish(err)
 }
 
-func (s *Server) startAudioHLSSource(ctx context.Context, f File) (string, func(), error) {
+func (s *Server) startMediaHLSSource(ctx context.Context, f File) (string, func(), error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
@@ -244,7 +244,7 @@ func (s *Server) startAudioHLSSource(ctx context.Context, f File) (string, func(
 	go func() {
 		defer close(done)
 		if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			s.log.Warn("audio HLS source server stopped", "file", f.ID, "error", serveErr)
+			s.log.Warn("media HLS source server stopped", "file", f.ID, "error", serveErr)
 		}
 	}()
 	var closeOnce sync.Once

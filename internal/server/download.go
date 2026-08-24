@@ -60,6 +60,9 @@ type downloadJob struct {
 	SelectedSize  int64          `json:"selected_size"`
 	CompletedSize int64          `json:"completed_size"`
 	DownloadSpeed int64          `json:"download_speed"`
+	ImportedSize  int64          `json:"imported_size"`
+	ImportSpeed   int64          `json:"import_speed"`
+	CurrentFile   string         `json:"current_file,omitempty"`
 	Peers         int            `json:"peers"`
 	Error         string         `json:"error,omitempty"`
 	CreatedAt     string         `json:"created_at"`
@@ -438,7 +441,7 @@ func (m *downloadManager) start(ctx context.Context, jobID string, indices []int
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE download_jobs SET selected_size=?,completed_size=0,download_speed=0,error='',status='queued',updated_at=? WHERE id=?`, total, time.Now().UTC().Format(time.RFC3339Nano), jobID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE download_jobs SET selected_size=?,completed_size=0,download_speed=0,imported_size=0,import_speed=0,current_file='',error='',status='queued',updated_at=? WHERE id=?`, total, time.Now().UTC().Format(time.RFC3339Nano), jobID); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -554,7 +557,7 @@ func (m *downloadManager) monitor(runtime *downloadRuntime) {
 			if allComplete && job.SelectedSize > 0 {
 				runtime.torrent.DisallowDataDownload()
 				runtime.torrent.DisallowDataUpload()
-				m.setStatus(runtime.jobID, "importing", "")
+				_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET status='importing',download_speed=0,peers=0,imported_size=0,import_speed=0,current_file='',error='',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), runtime.jobID)
 				go m.importRuntime(runtime)
 				return
 			}
@@ -565,6 +568,23 @@ func (m *downloadManager) monitor(runtime *downloadRuntime) {
 type importedDownloadFile struct {
 	path, objectKey, mimeType, etag string
 	size                            int64
+}
+
+type downloadImportProgressReader struct {
+	reader     io.Reader
+	read       int64
+	onProgress func(int64)
+}
+
+func (r *downloadImportProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.read += int64(n)
+		if r.onProgress != nil {
+			r.onProgress(r.read)
+		}
+	}
+	return n, err
 }
 
 func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
@@ -581,8 +601,28 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		m.fail(runtime.jobID, err)
 		return
 	}
+	// A restored import starts from the first selected file again. Content
+	// addressing makes already uploaded blocks cheap to deduplicate, while a
+	// reset counter keeps the displayed progress honest after a restart.
+	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=0,import_speed=0,current_file='',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	files := runtime.torrent.Files()
 	stored := make([]importedDownloadFile, 0)
+	var imported int64
+	lastBytes := int64(0)
+	lastUpdate := time.Now()
+	persistProgress := func(total int64, currentFile string, force bool) {
+		now := time.Now()
+		elapsed := now.Sub(lastUpdate)
+		if !force && elapsed < 500*time.Millisecond && total-lastBytes < 4<<20 {
+			return
+		}
+		speed := int64(0)
+		if elapsed > 0 && total >= lastBytes {
+			speed = int64(float64(total-lastBytes) / elapsed.Seconds())
+		}
+		_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=?,import_speed=?,current_file=?,updated_at=? WHERE id=? AND status='importing'`, total, max(speed, 0), currentFile, now.UTC().Format(time.RFC3339Nano), job.ID)
+		lastBytes, lastUpdate = total, now
+	}
 	for _, item := range job.Files {
 		if !item.Selected {
 			continue
@@ -593,7 +633,10 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		}
 		reader := files[item.Index].NewReader()
 		reader.SetContext(runtime.ctx)
-		key, manifest, storeErr := m.server.storage.Store(runtime.ctx, io.LimitReader(reader, item.Size))
+		persistProgress(imported, item.Path, true)
+		progressReader := &downloadImportProgressReader{reader: io.LimitReader(reader, item.Size)}
+		progressReader.onProgress = func(fileBytes int64) { persistProgress(imported+fileBytes, item.Path, false) }
+		key, manifest, storeErr := m.server.storage.Store(runtime.ctx, progressReader)
 		reader.Close()
 		if storeErr != nil || manifest.Size != item.Size {
 			if storeErr == nil {
@@ -602,6 +645,8 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 			m.fail(runtime.jobID, fmt.Errorf("导入 %s: %w", item.Path, storeErr))
 			return
 		}
+		imported += manifest.Size
+		persistProgress(imported, item.Path, true)
 		fileName := path.Base(item.Path)
 		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
 		if mimeType == "" {
@@ -693,7 +738,7 @@ func (m *downloadManager) commitImported(ctx context.Context, job downloadJob, f
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE download_jobs SET status='done',completed_size=selected_size,download_speed=0,peers=0,error='',updated_at=? WHERE id=?`, now, job.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE download_jobs SET status='done',completed_size=selected_size,download_speed=0,imported_size=selected_size,import_speed=0,current_file='',peers=0,error='',updated_at=? WHERE id=?`, now, job.ID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -775,7 +820,7 @@ func (m *downloadManager) piecesUsedByOtherJob(ctx context.Context, jobID, infoH
 }
 
 func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
-	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,peers,error,created_at,updated_at FROM download_jobs ORDER BY created_at DESC`)
+	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -783,7 +828,7 @@ func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
 	items := []downloadJob{}
 	for rows.Next() {
 		var job downloadJob
-		if err := rows.Scan(&job.ID, &job.ParentID, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.ParentID, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, job)
@@ -793,7 +838,7 @@ func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
 
 func (m *downloadManager) get(ctx context.Context, jobID string, withFiles bool) (downloadJob, error) {
 	var job downloadJob
-	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,peers,error,created_at,updated_at FROM download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return job, err
 	}
@@ -816,7 +861,7 @@ func (m *downloadManager) get(ctx context.Context, jobID string, withFiles bool)
 }
 
 func (m *downloadManager) setStatus(jobID, status, jobError string) {
-	_, _ = m.server.db.Exec(`UPDATE download_jobs SET status=?,error=?,download_speed=CASE WHEN ?='downloading' THEN download_speed ELSE 0 END,updated_at=? WHERE id=?`, status, jobError, status, time.Now().UTC().Format(time.RFC3339Nano), jobID)
+	_, _ = m.server.db.Exec(`UPDATE download_jobs SET status=?,error=?,download_speed=CASE WHEN ?='downloading' THEN download_speed ELSE 0 END,import_speed=CASE WHEN ?='importing' THEN import_speed ELSE 0 END,current_file=CASE WHEN ?='importing' THEN current_file ELSE '' END,updated_at=? WHERE id=?`, status, jobError, status, status, status, time.Now().UTC().Format(time.RFC3339Nano), jobID)
 }
 
 func (m *downloadManager) fail(jobID string, err error) {

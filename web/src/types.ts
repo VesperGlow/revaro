@@ -54,9 +54,16 @@ export interface DownloadJob {
   selected_size:number
   completed_size:number
   download_speed:number
+  imported_size:number
+  import_speed:number
+  current_file?:string
   peers:number
   error?:string
   created_at:string
   updated_at:string
   files?:DownloadFile[]
 }
+
+export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string }
+export interface VideoMediaResponse { subtitles:VideoSubtitleTrack[] }
+export interface VideoHLSResponse { session_id:string; playlist_url:string; start:number; duration:number; video_codec:string; audio_codec:string; transcoding:boolean }

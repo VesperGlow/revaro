@@ -3,12 +3,31 @@ package server
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"testing"
 
 	"github.com/VesperGlow/revaro/internal/btstore"
 	"github.com/anacrolix/torrent/metainfo"
 )
+
+func TestDownloadImportProgressReader(t *testing.T) {
+	var updates []int64
+	reader := &downloadImportProgressReader{
+		reader:     bytes.NewBufferString("abcdefghij"),
+		onProgress: func(read int64) { updates = append(updates, read) },
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "abcdefghij" || reader.read != int64(len(got)) {
+		t.Fatalf("got=%q read=%d", got, reader.read)
+	}
+	if len(updates) == 0 || updates[len(updates)-1] != int64(len(got)) {
+		t.Fatalf("progress updates=%v", updates)
+	}
+}
 
 func TestSafeTorrentPath(t *testing.T) {
 	for _, value := range []string{"movie.mkv", "season/episode 01.mkv", "folder\\subtitle.vtt"} {

@@ -62,6 +62,9 @@ type Server struct {
 	audioHLSSessions map[string]*audioHLSSession
 	audioHLSCtx      context.Context
 	audioHLSCancel   context.CancelFunc
+	videoHLSSlots    chan struct{}
+	videoHLSMu       sync.RWMutex
+	videoHLSSessions map[string]*videoHLSSession
 	downloads        *downloadManager
 }
 
@@ -96,6 +99,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		shareSlots: make(chan struct{}, 8), blockUploadSlots: make(chan struct{}, 4),
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
 		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
+		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
 	if cfg.BTEnabled {
@@ -115,6 +119,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		logger.Info("interrupted audio merges cleaned", "files", removed)
 	}
 	go s.cleanupAudioHLSSessions()
+	go s.cleanupVideoHLSSessions()
 	return s
 }
 
@@ -135,6 +140,16 @@ func (s *Server) Close() {
 	s.audioHLSSessions = make(map[string]*audioHLSSession)
 	s.audioHLSMu.Unlock()
 	for _, session := range sessions {
+		session.stop()
+	}
+	s.videoHLSMu.Lock()
+	videoSessions := make([]*videoHLSSession, 0, len(s.videoHLSSessions))
+	for _, session := range s.videoHLSSessions {
+		videoSessions = append(videoSessions, session)
+	}
+	s.videoHLSSessions = make(map[string]*videoHLSSession)
+	s.videoHLSMu.Unlock()
+	for _, session := range videoSessions {
 		session.stop()
 	}
 }
@@ -177,6 +192,11 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/files/{id}/audio/hls", s.startAudioHLS)
 			r.Get("/audio/hls/{session}/{asset}", s.audioHLSAsset)
 			r.Delete("/audio/hls/{session}", s.stopAudioHLS)
+			r.Get("/files/{id}/video", s.videoMediaInfo)
+			r.Get("/files/{id}/video/subtitles/{subtitle}", s.videoSubtitle)
+			r.Post("/files/{id}/video/hls", s.startVideoHLS)
+			r.Get("/video/hls/{session}/{asset}", s.videoHLSAsset)
+			r.Delete("/video/hls/{session}", s.stopVideoHLS)
 			r.Get("/files/{id}/content", s.getDocument)
 			r.Put("/files/{id}/content", s.updateDocument)
 			r.Get("/files/{id}/book", s.bookInfo)
@@ -1441,6 +1461,18 @@ func responseMime(f File) string {
 		return "video/quicktime"
 	case ".m4v":
 		return "video/x-m4v"
+	case ".mkv":
+		return "video/x-matroska"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".flv":
+		return "video/x-flv"
+	case ".wmv":
+		return "video/x-ms-wmv"
+	case ".mpg", ".mpeg":
+		return "video/mpeg"
+	case ".ts", ".m2ts", ".mts":
+		return "video/mp2t"
 	case ".mp3":
 		return "audio/mpeg"
 	case ".wav":

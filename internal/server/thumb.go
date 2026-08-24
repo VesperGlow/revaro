@@ -43,6 +43,7 @@ const maxThumbSide = 30_000       // 单边像素上限（极端长条图）
 var videoExts = map[string]bool{
 	".mp4": true, ".webm": true, ".mov": true, ".m4v": true, ".mkv": true,
 	".avi": true, ".ogv": true, ".mpg": true, ".mpeg": true, ".wmv": true, ".flv": true,
+	".ts": true, ".m2ts": true, ".mts": true,
 }
 
 // ffmpeg 抽帧全局并发上限：目录里多个视频首次生成时不至于打满 CPU/磁盘。
