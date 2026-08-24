@@ -86,7 +86,8 @@ func (session *videoHLSSession) stop() {
 }
 
 type startVideoHLSRequest struct {
-	Start float64 `json:"start"`
+	Start             float64 `json:"start"`
+	PreviousSessionID string  `json:"previous_session_id"`
 }
 
 type startVideoHLSResponse struct {
@@ -121,9 +122,19 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
 		return
 	}
+	// A page refresh frequently prevents the browser's best-effort DELETE from
+	// reaching us. Reclaim only the session token presented by the new page and
+	// only when it belongs to this file, so another tab/device is never stopped.
+	if in.PreviousSessionID != "" {
+		s.removeReplacedVideoHLSSession(in.PreviousSessionID, f.ID)
+	}
+	slotTimer := time.NewTimer(5 * time.Second)
+	defer slotTimer.Stop()
 	select {
 	case s.videoHLSSlots <- struct{}{}:
-	default:
+	case <-r.Context().Done():
+		return
+	case <-slotTimer.C:
 		problem(w, http.StatusTooManyRequests, "another compatibility video stream is already active")
 		return
 	}
@@ -158,6 +169,20 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		SessionID: session.ID, PlaylistURL: "/api/video/hls/" + session.ID + "/index.m3u8",
 		Start: session.Start, Duration: duration, VideoCodec: videoCodec, AudioCodec: audioCodec, Transcoding: transcoding,
 	})
+}
+
+func (s *Server) removeReplacedVideoHLSSession(id, fileID string) {
+	s.videoHLSMu.Lock()
+	session := s.videoHLSSessions[id]
+	if session != nil && session.FileID == fileID {
+		delete(s.videoHLSSessions, id)
+	} else {
+		session = nil
+	}
+	s.videoHLSMu.Unlock()
+	if session != nil {
+		session.stop()
+	}
 }
 
 func waitForVideoHLS(requestCtx context.Context, session *videoHLSSession) error {

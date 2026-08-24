@@ -1,6 +1,6 @@
 # revaro
 
-revaro 是一个轻量、单用户、自托管的私人 S3 网盘，存储层采用 Seafile 式的**内容寻址块存储**：每个文件由 FastCDC 按内容切成可变大小的块，块以 SHA-256 内容寻址存入 S3，同一内容跨文件或跨版本只存一份；在文件中间插入内容也不会让后续所有块边界整体错位。块列表写入 JSON 清单（Seafile "fs object" 的等价物），SQLite 里的文件树只保存指向清单的键。Go 服务处理认证、SQLite 元数据和 S3 控制面；浏览器在 Worker 中分块、哈希，通常把块直传 S3；UpCloud endpoint 会自动改为经 Go 服务走私网转存，无需开放对象存储公网访问。UpCloud 下载也经 Go 服务转发；其他存储的单块文件仍走短期 Presigned URL 直连，多块文件由服务端流式拼接（支持 Range）。服务端还内置**磁力 / BitTorrent 离线下载**：校验完成的 BT 分片直接暂存到同一对象存储，任务可跨重启恢复，完成后按 FastCDC 导入网盘并立即停止上传，不继续做种。内置**阅读器**：EPUB/TXT 在服务端解析清洗，前端按章分段、按视口分栏分页，支持目录、滑动翻页、进度与字号/明暗偏好。内置**缩略图管线**：图片与 EPUB 封面由服务端重采样、视频由 ffmpeg 抽帧，持久化缓存。内置编辑器读写不超过 1 MiB 的文本文件时会经过应用服务，以便校验 UTF-8、大小和并发修改。
+revaro 是一个轻量、单用户、自托管的私人 S3 网盘，存储层采用 Seafile 式的**内容寻址块存储**：每个文件由 FastCDC 按内容切成可变大小的块，块以 SHA-256 内容寻址存入 S3，同一内容跨文件或跨版本只存一份；在文件中间插入内容也不会让后续所有块边界整体错位。块列表写入 JSON 清单（Seafile "fs object" 的等价物），SQLite 里的文件树只保存指向清单的键。Go 服务处理认证、SQLite 元数据和 S3 控制面；浏览器在 Worker 中分块、哈希，通常把块直传 S3；UpCloud endpoint 会自动改为经 Go 服务走私网转存，无需开放对象存储公网访问。UpCloud 下载也经 Go 服务转发；其他存储的单块文件仍走短期 Presigned URL 直连，多块文件由服务端流式拼接（支持 Range）。服务端还内置**磁力 / BitTorrent 离线下载**：校验完成的 BT 分片直接暂存到同一对象存储，任务可跨重启恢复，完成后按 FastCDC 导入网盘并立即停止上传，不继续做种。内置**阅读器**：EPUB/TXT 在服务端解析清洗，前端按章分段、按视口分栏分页，支持目录、滑动翻页、进度与字号/明暗偏好。音频和视频使用沉浸式播放器，并将播放进度同步到服务端。常见的 ZIP、7z、RAR 与压缩 TAR 文件可直接后台在线解压，导入完成前不会向文件树暴露半成品。内置**缩略图管线**：图片与 EPUB 封面由服务端重采样、视频由 ffmpeg 抽帧，持久化缓存。内置编辑器读写不超过 1 MiB 的文本文件时会经过应用服务，以便校验 UTF-8、大小和并发修改。
 
 ## 架构
 
@@ -221,6 +221,9 @@ Bucket 必须保持私有。直连模式的浏览器访问依赖 Presigned URL�
 | `GET` | `/api/files/{id}/video` | 获取与视频同名的外挂字幕轨 |
 | `GET` | `/api/files/{id}/video/subtitles/{subtitle}` | 把 VTT/SRT/ASS/SSA 字幕作为 WebVTT 返回 |
 | `POST` | `/api/files/{id}/video/hls` | 为浏览器不兼容的视频启动按需 FFmpeg HLS 流 |
+| `GET` / `PUT` | `/api/files/{id}/media/progress` | 读取或保存音频/视频的跨设备播放进度 |
+| `POST` | `/api/files/{id}/extract` | 创建安全检查后后台执行的在线解压任务 |
+| `GET` | `/api/archive-jobs/{id}` | 查询在线解压状态与生成的目录 |
 | `POST` / `GET` | `/api/downloads` | 创建磁力、`.torrent` 或 HTTP(S) 直链离线下载、列出任务 |
 | `GET` / `DELETE` | `/api/downloads/{id}` | 获取文件列表与进度、删除任务及临时分片 |
 | `POST` | `/api/downloads/{id}/start` | 选择种子内文件并开始下载 |

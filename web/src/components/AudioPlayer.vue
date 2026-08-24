@@ -7,7 +7,9 @@ import { previewURL } from '../fileTypes'
 import type { AudioChapter, AudioHLSResponse, AudioMediaResponse, AudioSubtitle } from '../types'
 
 const props=defineProps<{item:DriveFile}>()
+const emit=defineEmits<{download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
 const audio=ref<HTMLAudioElement|null>(null)
+const actionMenu=ref<HTMLDetailsElement|null>(null)
 const chapterList=ref<HTMLElement|null>(null)
 const subtitleList=ref<HTMLElement|null>(null)
 const media=ref<AudioMediaResponse|null>(null)
@@ -29,12 +31,16 @@ const savedVolume=Number(localStorage.getItem('revaro-audio-volume')??0.85)
 const volume=ref(Number.isFinite(savedVolume)?Math.max(0,Math.min(1,savedVolume)):0.85)
 const muted=ref(localStorage.getItem('revaro-audio-muted')==='true')
 let saveTimer=0
+let remoteSaveTimer=0
 let restoredPosition=false
+let progressLoaded=false
+let serverPosition=0
 let autoplayRequested=true
 let hls:HlsInstance|null=null
 let hlsSessionId=''
 let hlsGeneration=0
 let chapterResizeObserver:ResizeObserver|null=null
+let progressPromise:Promise<void>|null=null
 
 // Keep the initial source stable so chapter metadata arriving later does not
 // reload media that already started from the user's file click.
@@ -56,6 +62,28 @@ const subtitleFocusIndex=computed(()=>{
 const displayedTime=computed(()=>seekPreview.value??currentTime.value)
 const progress=computed(()=>duration.value?Math.min(100,displayedTime.value/duration.value*100):0)
 const positionKey=computed(()=>`revaro-audio-position:${props.item.id}`)
+
+function savedPosition(){
+  if(serverPosition>0)return serverPosition
+  const saved=Number(localStorage.getItem(positionKey.value)||0)
+  return Number.isFinite(saved)&&saved>0?saved:0
+}
+async function loadProgress(){
+  try{const value=await api<{position:number}>(`/api/files/${props.item.id}/media/progress`);serverPosition=Number.isFinite(value.position)?value.position:0}
+  catch{/* 本机进度仍可兜底 */}
+  progressLoaded=true;restorePosition()
+}
+function restorePosition(){
+  if(!progressLoaded||restoredPosition||compatibilityMode.value||!audio.value||!duration.value)return
+  restoredPosition=true;const saved=savedPosition();if(saved>0&&saved<duration.value-5)seek(saved)
+}
+function persistProgress(remote=false){
+  const position=Math.max(0,currentTime.value)
+  if(position<=0)return
+  localStorage.setItem(positionKey.value,String(Math.floor(position)))
+  if(!remote)return
+  void api(`/api/files/${props.item.id}/media/progress`,{method:'PUT',body:JSON.stringify({position,duration:duration.value})}).catch(()=>{})
+}
 
 function formatTime(seconds:number){
   if(!Number.isFinite(seconds)||seconds<0)return '0:00'
@@ -119,16 +147,15 @@ function onLoadedMetadata(){
   if(!el)return
   nativeDuration.value=Number.isFinite(el.duration)?el.duration:0;loading.value=false;waiting.value=false;updateBuffer()
   if(compatibilityMode.value){currentTime.value=hlsOffset.value+el.currentTime;return}
-  if(restoredPosition)return
-  restoredPosition=true
-  const saved=Number(localStorage.getItem(positionKey.value)||0)
-  if(saved>0&&saved<duration.value-5)seek(saved)
+  restorePosition()
 }
 function onTimeUpdate(){
   if(!audio.value)return
   currentTime.value=(compatibilityMode.value?hlsOffset.value:0)+audio.value.currentTime;updateBuffer()
-  window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>localStorage.setItem(positionKey.value,String(Math.floor(currentTime.value))),500)
+  window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>persistProgress(false),500)
+  if(!remoteSaveTimer)remoteSaveTimer=window.setTimeout(()=>{remoteSaveTimer=0;persistProgress(true)},5000)
 }
+function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true)}
 function setRate(event:Event){rate.value=Number((event.target as HTMLSelectElement).value);if(audio.value)audio.value.playbackRate=rate.value}
 function applyVolume(){if(audio.value){audio.value.volume=volume.value;audio.value.muted=muted.value}}
 function setVolume(event:Event){
@@ -200,18 +227,20 @@ async function startCompatibilityStream(start:number,autoplay=false){
     error.value=caught instanceof Error?caught.message:'兼容流启动失败'
   }
 }
-function onAudioError(){
+async function onAudioError(){
   if(compatibilityMode.value||compatibilityStarting.value)return
-  const saved=Number(localStorage.getItem(positionKey.value)||0)
-  const start=currentTime.value>0?currentTime.value:(saved>0&&saved<duration.value-5?saved:0)
+  if(progressPromise)await progressPromise
+  const saved=savedPosition()
+  const start=currentTime.value>0?currentTime.value:(saved>0&&(!duration.value||saved<duration.value-5)?saved:0)
   void startCompatibilityStream(start,autoplayRequested||playing.value)
 }
 
 onMounted(()=>{
   // Run play immediately after mounting, while mobile browsers still treat it
   // as part of the click that opened the audio preview.
+  progressPromise=loadProgress()
   applyVolume();audio.value?.load();void audio.value?.play().catch(()=>{})
-  void api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`).then(value=>{media.value=value}).catch(()=>{/* 普通音频继续走原始 Range 预览 */})
+  void api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`).then(value=>{media.value=value;restorePosition()}).catch(()=>{/* 普通音频继续走原始 Range 预览 */})
   void nextTick().then(()=>{
     updateChapterScrollbar()
     if(chapterList.value&&'ResizeObserver' in window){chapterResizeObserver=new ResizeObserver(updateChapterScrollbar);chapterResizeObserver.observe(chapterList.value)}
@@ -227,7 +256,8 @@ watch(subtitleFocusIndex,index=>{
   void nextTick().then(()=>subtitleList.value?.querySelector<HTMLElement>(`[data-subtitle-index="${index}"]`)?.scrollIntoView({behavior:'smooth',block:'center'}))
 })
 onBeforeUnmount(()=>{
-  window.clearTimeout(saveTimer);chapterResizeObserver?.disconnect();hlsGeneration++
+  window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);persistProgress(false);chapterResizeObserver?.disconnect();hlsGeneration++
+  if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const session=hlsSessionId;hlsSessionId='';resetLocalHLS()
   if(session)void fetch(`/api/audio/hls/${session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
 })
@@ -242,7 +272,7 @@ onBeforeUnmount(()=>{
             <img v-if="media?.has_cover" :src="media.cover_url" :alt="`${item.name} 封面`">
             <span v-else>♫</span>
           </div>
-          <div class="audio-chapter-current"><span>正在播放</span><strong>{{ currentChapter?.title||item.name }}</strong><small>第 {{ currentChapterIndex+1 }} / {{ chapters.length }} 节</small></div>
+          <div class="audio-chapter-current"><span>正在播放</span><strong>{{ item.name }}</strong><small>第 {{ currentChapterIndex+1 }} / {{ chapters.length }} 节</small></div>
         </section>
         <section class="audio-subtitle-panel">
           <header><strong>字幕</strong><span>{{ subtitles.length }} 条</span></header>
@@ -272,10 +302,10 @@ onBeforeUnmount(()=>{
         <div class="audio-player-options">
           <label class="audio-rate"><span>倍速</span><select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label>
           <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
-          <div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div>
+          <div class="audio-option-end"><div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div><details ref="actionMenu" class="audio-action-menu"><summary aria-label="更多操作"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></summary><div><button @click="actionMenu?.removeAttribute('open');emit('download',item)">下载</button><button @click="actionMenu?.removeAttribute('open');emit('move',item)">移动</button><button @click="actionMenu?.removeAttribute('open');emit('copy',item)">复制</button></div></details></div>
         </div>
         <p v-if="error" class="audio-player-error">{{ error }}</p>
-        <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="playing=false" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
+        <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
       </section>
     </main>
     <aside class="audio-chapters">

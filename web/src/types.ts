@@ -68,3 +68,16 @@ export interface DownloadJob {
 export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string }
 export interface VideoMediaResponse { subtitles:VideoSubtitleTrack[] }
 export interface VideoHLSResponse { session_id:string; playlist_url:string; start:number; duration:number; video_codec:string; audio_codec:string; transcoding:boolean }
+export interface ArchiveJob {
+  id:string
+  file_id:string
+  name:string
+  status:'queued'|'downloading'|'checking'|'extracting'|'importing'|'done'|'failed'
+  progress:number
+  message:string
+  output_id?:string
+  output_name?:string
+  error?:string
+  created_at:string
+  updated_at:string
+}

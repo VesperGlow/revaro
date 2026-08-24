@@ -1797,3 +1797,22 @@ func TestVideoThumbnailWithFFmpeg(t *testing.T) {
 		t.Fatal("persisted video thumbnail not served consistently")
 	}
 }
+
+func TestMediaProgressSync(t *testing.T) {
+	a := newTestApp(t)
+	audio := a.readyFile(t, "episode.mp3", []byte("audio"))
+
+	empty := a.request("GET", "/api/files/"+audio.ID+"/media/progress", nil, true)
+	if empty.Code != http.StatusOK {
+		t.Fatalf("empty progress=%d: %s", empty.Code, empty.Body.String())
+	}
+	put := a.request("PUT", "/api/files/"+audio.ID+"/media/progress", map[string]any{"position": 123.456, "duration": 600}, true)
+	if put.Code != http.StatusOK {
+		t.Fatalf("save progress=%d: %s", put.Code, put.Body.String())
+	}
+	got := a.request("GET", "/api/files/"+audio.ID+"/media/progress", nil, true)
+	progress := decode[mediaProgressResponse](t, got)
+	if progress.Position != 123.456 || progress.Duration != 600 || progress.UpdatedAt == "" {
+		t.Fatalf("progress=%+v", progress)
+	}
+}

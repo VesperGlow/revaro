@@ -10,10 +10,10 @@ import FileBrowserHeader from './components/FileBrowserHeader.vue'
 import FileGrid from './components/FileGrid.vue'
 import FileTable from './components/FileTable.vue'
 import MediaPreview from './components/MediaPreview.vue'
-import { isAudio, isBook, isEditable, isImage, isMedia, thumbSRC } from './fileTypes'
+import { isArchive, isAudio, isBook, isEditable, isImage, isMedia, isVideo, thumbSRC } from './fileTypes'
 import { formatDate, formatSize } from './format'
 import ReaderView from './Reader.vue'
-import type { AudioMergeFormat, AudioMergeResponse, DownloadJob, FolderOption, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
+import type { ArchiveJob, AudioMergeFormat, AudioMergeResponse, DownloadJob, FolderOption, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_CONCURRENCY = 3
@@ -71,6 +71,7 @@ let toastTimer = 0
 let audioMergePollTimer = 0
 let downloadPollTimer = 0
 let uploadRefreshTimer = 0
+const archivePollTimers=new Set<number>()
 
 const editorDirty = computed(() => editor.content !== editor.original || editor.name !== editor.originalName)
 const editorBytes = computed(() => new Blob([editor.content]).size)
@@ -566,6 +567,32 @@ async function refreshDownloadJobs(){
 }
 function downloadsChanged(){void refreshDownloadJobs()}
 
+async function extractArchive(item:DriveFile){
+  if(!isArchive(item))return
+  const confirmed=await confirmDialog({title:'在线解压',message:`将“${item.name}”解压到当前目录中的新文件夹。大压缩包会在后台继续处理。`,confirmLabel:'开始解压'})
+  if(!confirmed)return
+  try{
+    const job=await api<ArchiveJob>(`/api/files/${item.id}/extract`,{method:'POST'})
+    clearSelection();notify(`「${item.name}」已加入解压队列`,'success');scheduleArchivePoll(job.id,item,500)
+  }catch(e){notify((e as Error).message)}
+}
+function scheduleArchivePoll(jobID:string,item:DriveFile,delay=1200){
+  const timer=window.setTimeout(()=>{archivePollTimers.delete(timer);void pollArchive(jobID,item)},delay)
+  archivePollTimers.add(timer)
+}
+async function pollArchive(jobID:string,item:DriveFile){
+  try{
+    const job=await api<ArchiveJob>(`/api/archive-jobs/${jobID}`)
+    if(job.status==='done'){
+      notify(`「${job.output_name||item.name}」解压完成`,'success')
+      if((item.parent_id||ROOT)===currentId.value)void openFolder(currentId.value)
+      return
+    }
+    if(job.status==='failed'){notify(job.error||`「${item.name}」解压失败`);return}
+    scheduleArchivePoll(jobID,item)
+  }catch{scheduleArchivePoll(jobID,item,3000)}
+}
+
 function chooseFiles(){fileInput.value?.click()}
 function chooseFolder(){folderInput.value?.click()}
 function queueFiles(files:File[],parentId:string,relativePaths?:Map<File,string>){
@@ -749,7 +776,7 @@ function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled
 function scheduleAutoClear(){}
 function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
 onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){void refreshAudioMergeJobs();void refreshDownloadJobs()}})})
-onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(uploadRefreshTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
+onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(uploadRefreshTimer);for(const timer of archivePollTimers)window.clearTimeout(timer);archivePollTimers.clear();for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
 </script>
 
 <template>
@@ -782,6 +809,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
           <button @click="selectAll"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="m8 12 3 3 5-6"/></svg><span>{{ selectedItems.length===items.length?'取消全选':'全选' }}</span></button>
           <button v-if="singleSelected&&(singleSelected.kind==='directory'||isEditable(singleSelected)||isMedia(singleSelected)||isBook(singleSelected))" @click="openItem(singleSelected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path v-if="singleSelected.kind==='directory'" d="M3 7h7l2 2h9v9H3z"/><path v-else-if="isEditable(singleSelected)&&!isBook(singleSelected)" d="m4 16-.8 4 4-.8L18.5 7.9l-3.2-3.2L4 16Z"/><path v-else-if="isBook(singleSelected)" d="M12 5c-1.7-1.4-4.2-2-8-2v14c3.8 0 6.3.6 8 2 1.7-1.4 4.2-2 8-2V3c-3.8 0-6.3.6-8 2Zm0 0v14"/><path v-else-if="isImage(singleSelected)" d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><path v-else d="M8 5v14l11-7Z"/></svg><span>{{ singleSelected.kind==='directory'?'打开':isBook(singleSelected)?'阅读':isEditable(singleSelected)?'编辑文本':isImage(singleSelected)?'预览':'播放' }}</span></button>
           <button v-if="canMergeSelectedAudio" @click="showAudioMerge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6M8 6v12M12 3v18M16 7v10M20 10v4"/></svg><span>合并音频</span></button>
+          <button v-if="singleSelected&&isArchive(singleSelected)" @click="extractArchive(singleSelected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v6H5zM5 14h14v6H5zM12 4v16M9 8h3m-3 4h3m-3 4h3"/></svg><span>在线解压</span></button>
           <button v-if="selectedFiles.length" @click="downloadSelected"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg><span>下载{{ selectedFiles.length>1?` (${selectedFiles.length})`:'' }}</span></button>
           <button v-if="singleSelected?.kind==='file'" @click="showShare(singleSelected)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4"/></svg><span>分享</span></button>
           <button v-if="singleSelected" @click="showRename(singleSelected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14M9 19h6"/></svg><span>重命名</span></button>
@@ -791,13 +819,13 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
       </div>
       <div v-if="loading" class="state"><div class="spinner"></div><p>正在读取文件…</p></div>
       <div v-else-if="!items.length" class="state empty"><div class="empty-icon">⌁</div><h3>{{ trashMode?'回收站是空的':'这里还是空的' }}</h3><p>{{ trashMode?'删除的项目会先来到这里。':'拖放文件到这里，或新建一篇文档。' }}</p><div v-if="!trashMode" class="empty-actions"><button class="secondary" @click="newDocument">新建文档</button><button class="primary" @click="chooseFiles">上传文件</button></div></div>
-      <FileTable v-else-if="viewMode==='list'" :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" @select-all="selectAll" @edit="openEditor" @preview="showPreview" @read="openReader" @download="download" @share="showShare" @rename="showRename" @move="showMove" @remove="removeItem" @restore="restoreItem" @purge="purgeItem" />
+      <FileTable v-else-if="viewMode==='list'" :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" @select-all="selectAll" @edit="openEditor" @preview="showPreview" @read="openReader" @download="download" @extract="extractArchive" @share="showShare" @rename="showRename" @move="showMove" @remove="removeItem" @restore="restoreItem" @purge="purgeItem" />
       <FileGrid v-else :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" />
     </section>
 
     <div v-if="dragActive&&!trashMode" class="drop-zone"><div><span>↓</span><h2>释放以上传到 {{ current?.name || '我的文件' }}</h2><p>文件将按内容块直传 S3，重复内容自动去重</p></div></div>
 
-    <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),editing:modal==='editor',reading:modal==='reader'}" @click.self="closeBackdrop">
+    <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),'video-previewing':modal==='preview'&&!!selected&&isVideo(selected),editing:modal==='editor',reading:modal==='reader'}" @click.self="closeBackdrop">
       <section v-if="modal==='rename'" class="modal"><header><div><p class="eyebrow dark">EDIT</p><h2>重命名</h2></div><button @click="closeModal">×</button></header><label>新名称<input v-model="renameValue" maxlength="1024" @keyup.enter="saveRename"></label><footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="modalBusy" @click="saveRename">保存</button></footer></section>
       <section v-else-if="modal==='move'" class="modal folder-modal"><header><div><p class="eyebrow dark">{{ transferMode==='copy'?'COPY':'MOVE' }}</p><h2>{{ transferMode==='copy'?'复制到':'移动到' }}</h2><p class="move-target" :title="moveTargets.length===1?moveTargets[0]?.name:undefined">{{ moveTargets.length===1?`「${moveTargets[0]?.name}」`:`${moveTargets.length} 项` }}</p></div><button @click="closeModal">×</button></header><div v-if="modalBusy" class="state small"><div class="spinner"></div></div><div v-else class="folder-list"><button v-for="folder in folders" :key="folder.id" :style="{paddingLeft:`${18+folder.depth*22}px`}" @click="transferTo(folder.id)"><span>▰</span>{{ folder.name }}</button></div></section>
       <section v-else-if="modal==='audioMerge'" class="modal audio-merge-modal">

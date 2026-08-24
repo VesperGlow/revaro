@@ -9,11 +9,12 @@ import VideoPlayer from './VideoPlayer.vue'
 const props=defineProps<{selected:DriveFile;items:DriveFile[]}>()
 const emit=defineEmits<{close:[];change:[item:DriveFile];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
 
-const galleryItems=computed(()=>props.items.filter(item=>isImage(item)||isVideo(item)))
+const galleryItems=computed(()=>props.items.filter(isImage))
 const galleryIndex=computed(()=>galleryItems.value.findIndex(item=>item.id===props.selected.id))
 const hasGalleryNavigation=computed(()=>galleryIndex.value>=0&&galleryItems.value.length>1)
 const swipe=reactive({active:false,pointerId:0,startX:0,startY:0,dx:0,dy:0})
 const zoom=ref(1)
+const zoomNotice=ref(false)
 const pan=reactive({x:0,y:0})
 const stageEl=ref<HTMLElement|null>(null)
 const pointers=new Map<number,{x:number;y:number}>()
@@ -23,6 +24,7 @@ let pinchDistance=0
 let pinchZoom=1
 let gestureMoved=false
 let swipeStartedOnStage=false
+let zoomNoticeTimer=0
 const stageSwipeable=computed(()=>isImage(props.selected))
 const swipeStyle=computed(()=>({
   transform:`translate3d(${pan.x+(zoom.value===1&&swipe.active?swipe.dx:0)}px,${pan.y}px,0) scale(${zoom.value})`,
@@ -36,7 +38,7 @@ function change(direction:-1|1){
   emit('change',galleryItems.value[next])
 }
 function handleKey(event:KeyboardEvent){
-  if((event.key==='ArrowLeft'||event.key==='ArrowRight')&&zoom.value===1){
+  if(isImage(props.selected)&&(event.key==='ArrowLeft'||event.key==='ArrowRight')&&zoom.value===1){
     event.preventDefault()
     change(event.key==='ArrowLeft'?-1:1)
   }
@@ -81,38 +83,37 @@ function clampPan(){
   const maxY=stage.clientHeight*(zoom.value-1)/2
   pan.x=Math.max(-maxX,Math.min(maxX,pan.x));pan.y=Math.max(-maxY,Math.min(maxY,pan.y))
 }
-function setZoom(value:number){zoom.value=Math.max(1,Math.min(5,Math.round(value*100)/100));if(zoom.value===1){pan.x=0;pan.y=0}else clampPan()}
-function zoomBy(amount:number){setZoom(zoom.value+amount)}
+function setZoom(value:number,showNotice=true){const next=Math.max(1,Math.min(5,Math.round(value*100)/100));if(next===zoom.value)return;zoom.value=next;if(zoom.value===1){pan.x=0;pan.y=0}else clampPan();if(showNotice){zoomNotice.value=true;window.clearTimeout(zoomNoticeTimer);zoomNoticeTimer=window.setTimeout(()=>zoomNotice.value=false,900)}}
 function onWheel(event:WheelEvent){if(!isImage(props.selected))return;event.preventDefault();setZoom(zoom.value+(event.deltaY<0?.35:-.35))}
 function toggleZoom(){setZoom(zoom.value>1?1:2)}
 
-watch(()=>props.selected.id,()=>{setZoom(1);pointers.clear();swipe.active=false})
+watch(()=>props.selected.id,()=>{setZoom(1,false);zoomNotice.value=false;pointers.clear();swipe.active=false})
 
 onMounted(()=>window.addEventListener('keydown',handleKey))
-onBeforeUnmount(()=>window.removeEventListener('keydown',handleKey))
+onBeforeUnmount(()=>{window.removeEventListener('keydown',handleKey);window.clearTimeout(zoomNoticeTimer)})
 </script>
 
 <template>
-  <section class="preview-modal" :class="{'audio-preview':isAudio(selected)}" @click.self="$emit('close')">
-    <span v-if="galleryIndex>=0" class="preview-count-floating">{{ galleryIndex+1 }} / {{ galleryItems.length }}</span>
-    <button class="preview-close" aria-label="关闭预览" @click="$emit('close')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
-    <div ref="stageEl" class="preview-stage" :class="{swipeable:stageSwipeable,zoomed:zoom>1}" @click="onStageClick" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerEnd" @pointercancel="onPointerEnd" @wheel="onWheel">
-      <button v-if="hasGalleryNavigation" class="preview-nav preview-prev" aria-label="上一项" @click.stop="change(-1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
-      <img v-if="isImage(selected)" :key="selected.id" :src="previewURL(selected)" :alt="selected.name" :style="swipeStyle" draggable="false" @dblclick.stop="toggleZoom">
-      <VideoPlayer v-else-if="isVideo(selected)" :key="selected.id" :item="selected" />
-      <AudioPlayer v-else-if="isAudio(selected)" :key="selected.id" :item="selected" />
-      <button v-if="hasGalleryNavigation" class="preview-nav preview-next" aria-label="下一项" @click.stop="change(1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
-      <div v-if="isImage(selected)" class="preview-zoom" @pointerdown.stop><button :disabled="zoom<=1" aria-label="缩小图片" @click.stop="zoomBy(-.5)">−</button><button class="zoom-value" title="还原大小" @click.stop="setZoom(1)">{{ Math.round(zoom*100) }}%</button><button :disabled="zoom>=5" aria-label="放大图片" @click.stop="zoomBy(.5)">＋</button></div>
-    </div>
-    <footer class="preview-commandbar">
+  <section class="preview-modal" :class="{'audio-preview':isAudio(selected),'video-preview':isVideo(selected),'image-preview':isImage(selected)}" @click.self="$emit('close')">
+    <header v-if="isImage(selected)" class="preview-commandbar preview-image-bar">
       <div class="preview-command-content">
-        <div class="preview-file-meta"><strong :title="selected.name">{{ selected.name }}</strong><small>{{ formatSize(selected.size) }} · {{ selected.mime_type||'媒体文件' }}</small></div>
+        <div class="preview-file-meta"><strong :title="selected.name">{{ selected.name }}</strong><small>{{ formatSize(selected.size) }} · {{ selected.mime_type||'图片' }}</small></div>
         <div class="preview-file-actions">
           <button @click="$emit('download',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg><span>下载</span></button>
           <button @click="$emit('move',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3Z"/><path d="m14 13 2 2 2-2"/></svg><span>移动</span></button>
           <button @click="$emit('copy',selected)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span>复制</span></button>
         </div>
       </div>
-    </footer>
+    </header>
+    <span v-if="galleryIndex>=0" class="preview-count-floating">{{ galleryIndex+1 }} / {{ galleryItems.length }}</span>
+    <button class="preview-close" aria-label="关闭预览" @click="$emit('close')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    <div ref="stageEl" class="preview-stage" :class="{swipeable:stageSwipeable,zoomed:zoom>1}" @click="onStageClick" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerEnd" @pointercancel="onPointerEnd" @wheel="onWheel">
+      <button v-if="hasGalleryNavigation&&isImage(selected)" class="preview-nav preview-prev" aria-label="上一项" @click.stop="change(-1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
+      <img v-if="isImage(selected)" :key="selected.id" :src="previewURL(selected)" :alt="selected.name" :style="swipeStyle" draggable="false" @dblclick.stop="toggleZoom">
+      <VideoPlayer v-else-if="isVideo(selected)" :key="selected.id" :item="selected" @download="emit('download',$event)" @move="emit('move',$event)" @copy="emit('copy',$event)" />
+      <AudioPlayer v-else-if="isAudio(selected)" :key="selected.id" :item="selected" @download="emit('download',$event)" @move="emit('move',$event)" @copy="emit('copy',$event)" />
+      <button v-if="hasGalleryNavigation&&isImage(selected)" class="preview-nav preview-next" aria-label="下一项" @click.stop="change(1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
+      <output v-if="isImage(selected)&&zoomNotice" class="preview-zoom-notice">{{ Math.round(zoom*100) }}%</output>
+    </div>
   </section>
 </template>

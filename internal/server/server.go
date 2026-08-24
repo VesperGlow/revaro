@@ -65,6 +65,9 @@ type Server struct {
 	videoHLSSlots    chan struct{}
 	videoHLSMu       sync.RWMutex
 	videoHLSSessions map[string]*videoHLSSession
+	archiveSlots     chan struct{}
+	archiveMu        sync.RWMutex
+	archiveJobs      map[string]*archiveJob
 	downloads        *downloadManager
 }
 
@@ -100,6 +103,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
 		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
+		archiveSlots: make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
 	if cfg.BTEnabled {
@@ -195,6 +199,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/video", s.videoMediaInfo)
 			r.Get("/files/{id}/video/subtitles/{subtitle}", s.videoSubtitle)
 			r.Post("/files/{id}/video/hls", s.startVideoHLS)
+			r.Get("/files/{id}/media/progress", s.mediaProgress)
+			r.Put("/files/{id}/media/progress", s.saveMediaProgress)
 			r.Get("/video/hls/{session}/{asset}", s.videoHLSAsset)
 			r.Delete("/video/hls/{session}", s.stopVideoHLS)
 			r.Get("/files/{id}/content", s.getDocument)
@@ -214,6 +220,8 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/documents", s.createDocument)
 			r.Patch("/files/{id}", s.patchFile)
 			r.Post("/files/{id}/copy", s.copyFile)
+			r.Post("/files/{id}/extract", s.startArchiveExtract)
+			r.Get("/archive-jobs/{id}", s.getArchiveExtract)
 			r.Delete("/files/{id}", s.deleteFile)
 			r.Get("/trash", s.trash)
 			r.Delete("/trash", s.emptyTrash)
