@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -155,5 +158,71 @@ func TestVideoSubtitleAPI(t *testing.T) {
 	offsetTrack := app.request("GET", payload.Subtitles[0].URL+"?start=0.500", nil, true)
 	if offsetTrack.Code != http.StatusOK || !strings.Contains(offsetTrack.Body.String(), "00:00:00.000 --> 00:00:00.500") {
 		t.Fatalf("offset subtitle track=%d body=%q", offsetTrack.Code, offsetTrack.Body.String())
+	}
+}
+
+func TestEmbeddedASSSubtitleAPIUsesGlobalMSETimelineAndHLSSessionOffset(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not available")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not available")
+	}
+	dir := t.TempDir()
+	assPath := filepath.Join(dir, "subtitle.ass")
+	mkvPath := filepath.Join(dir, "movie.mkv")
+	ass := `[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,24,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,开始字幕
+Dialogue: 0,0:06:15.00,0:06:20.00,Default,,0,0,0,,六分钟字幕
+`
+	if err := os.WriteFile(assPath, []byte(ass), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "color=c=black:s=160x90:r=1:d=1", "-i", assPath,
+		"-map", "0:v:0", "-map", "1:s:0", "-c:v", "mpeg4", "-c:s", "ass",
+		"-metadata:s:s:0", "language=chi", "-metadata:s:s:0", "title=简体 ASS",
+		"-disposition:s:0", "default", mkvPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create embedded ASS fixture: %v: %s", err, output)
+	}
+	data, err := os.ReadFile(mkvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := newTestApp(t)
+	video := app.readyFile(t, "Movie.mkv", data)
+	info := app.request("GET", "/api/files/"+video.ID+"/video", nil, true)
+	if info.Code != http.StatusOK {
+		t.Fatalf("video info=%d: %s", info.Code, info.Body.String())
+	}
+	payload := decode[struct {
+		Subtitles []videoSubtitleResponse `json:"subtitles"`
+	}](t, info)
+	if len(payload.Subtitles) != 1 || payload.Subtitles[0].ID != "embedded-1" || payload.Subtitles[0].Language != "zh-CN" {
+		t.Fatalf("embedded subtitles=%+v", payload.Subtitles)
+	}
+	global := app.request("GET", payload.Subtitles[0].URL, nil, true)
+	if global.Code != http.StatusOK || global.Header().Get("Content-Type") != "text/vtt; charset=utf-8" {
+		t.Fatalf("global subtitle=%d type=%q body=%q", global.Code, global.Header().Get("Content-Type"), global.Body.String())
+	}
+	for _, cue := range []string{"00:00.000 --> 00:01.000", "06:15.000 --> 06:20.000", "六分钟字幕"} {
+		if !strings.Contains(global.Body.String(), cue) {
+			t.Fatalf("global MSE subtitle missing %q: %q", cue, global.Body.String())
+		}
+	}
+	hls := app.request("GET", payload.Subtitles[0].URL+"?start=360.000", nil, true)
+	if hls.Code != http.StatusOK || !strings.Contains(hls.Body.String(), "00:00:15.000 --> 00:00:20.000") || strings.Contains(hls.Body.String(), "开始字幕") {
+		t.Fatalf("HLS offset subtitle=%d body=%q", hls.Code, hls.Body.String())
 	}
 }

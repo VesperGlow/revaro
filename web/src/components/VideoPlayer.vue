@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
 import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, type UnifiedVideoPlayer } from '../videoPlayer'
+import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, setExclusiveSubtitleTrack, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -15,8 +15,6 @@ const subtitleElement=ref<HTMLTrackElement|null>(null)
 const actionMenu=ref<HTMLDetailsElement|null>(null)
 const subtitles=ref<VideoSubtitleTrack[]>([])
 const activeSubtitle=ref(-1)
-const subtitleReady=ref(false)
-const subtitleEpoch=ref(0)
 const directMode=ref(/\.(mp4|m4v|webm|ogv|mov)$/i.test(props.item.name))
 const mseMode=ref(false)
 const directSource=ref(directMode.value?previewURL(props.item):'')
@@ -74,13 +72,13 @@ const effectiveVolume=computed(()=>muted.value?0:volume.value)
 const volumePercent=computed(()=>Math.round(effectiveVolume.value*100))
 const volumeState=computed<'muted'|'low'|'high'>(()=>effectiveVolume.value===0?'muted':effectiveVolume.value<.5?'low':'high')
 const selectedSubtitle=computed(()=>activeSubtitle.value>=0?subtitles.value[activeSubtitle.value]:undefined)
+const subtitlePlaybackMode=computed<VideoPlaybackMode>(()=>directMode.value?'direct':mseMode.value||prepareMode.value==='mse'?'mse':'hls')
 const selectedSubtitleURL=computed(()=>{
   const track=selectedSubtitle.value
   if(!track)return ''
-  const start=directMode.value?0:streamOffset.value
-  if(start<=0)return track.url
-  return `${track.url}${track.url.includes('?')?'&':'?'}start=${start.toFixed(3)}`
+  return subtitleURLForPlayback(track.url,subtitlePlaybackMode.value,streamOffset.value)
 })
+const selectedSubtitleKey=computed(()=>selectedSubtitle.value?subtitleTrackKey(selectedSubtitle.value.id,subtitlePlaybackMode.value,streamOffset.value):'')
 
 function formatTime(seconds:number){
   if(!Number.isFinite(seconds)||seconds<0)return '0:00'
@@ -110,28 +108,40 @@ function persistProgress(remote=false){
 function applySubtitle(){
   const tracks=video.value?.textTracks
   if(!tracks)return
-  const current=subtitleElement.value?.track
+  const current=activeSubtitle.value>=0?subtitleElement.value?.track:null
   if(player)player.setSubtitle(current||null)
-  else for(let index=0;index<tracks.length;index+=1)tracks[index].mode=current&&tracks[index]===current?'showing':'disabled'
+  else setExclusiveSubtitleTrack(tracks,current||null)
 }
-function clearSubtitleTracks(){
-  subtitleReady.value=false;subtitleEpoch.value+=1
+function disableSubtitleTracks(){
   const tracks=video.value?.textTracks
-  if(tracks)for(let index=0;index<tracks.length;index+=1)tracks[index].mode='disabled'
+  if(tracks)setExclusiveSubtitleTrack(tracks,null)
 }
-function refreshSubtitle(){subtitleEpoch.value+=1;void nextTick().then(applySubtitle)}
 async function chooseSubtitle(event:Event){
-  clearSubtitleTracks();await nextTick()
   activeSubtitle.value=Number((event.target as HTMLSelectElement).value)
-  subtitleReady.value=activeSubtitle.value>=0;await nextTick();applySubtitle()
+  if(activeSubtitle.value<0){disableSubtitleTracks();console.info('[revaro] subtitle selected: off');return}
+  await nextTick();applySubtitle()
+  console.info('[revaro] subtitle selected:',selectedSubtitle.value?.id||'none')
 }
 function onSubtitleLoad(event:Event){
   if(event.currentTarget!==subtitleElement.value)return
   const track=(event.currentTarget as HTMLTrackElement).track
   applySubtitle();track.mode='showing'
+  console.info('[revaro] subtitle track loaded')
+  console.info('[revaro] subtitle cues:',track.cues?.length??0)
+  console.info('[revaro] subtitle mode:',track.mode)
+}
+function onSubtitleError(event:Event){
+  const element=event.currentTarget as HTMLTrackElement
+  const url=selectedSubtitleURL.value
+  console.error('[revaro] subtitle error','url:',url,'track readyState:',element.readyState)
+  if(!url)return
+  void fetch(url,{credentials:'same-origin',cache:'no-store'}).then(async response=>{
+    console.error('[revaro] subtitle HTTP status:',response.status,'content-type:',response.headers.get('content-type')||'missing','track readyState:',element.readyState)
+    await response.body?.cancel()
+  }).catch(caught=>console.error('[revaro] subtitle diagnostic request failed:',caught))
 }
 function resetPlayback(){
-  clearSubtitleTracks();player?.destroy();player=null;hls?.destroy();hls=null
+  player?.destroy();player=null;hls?.destroy();hls=null
   if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}
 }
 function showControls(persist=false){
@@ -154,7 +164,7 @@ async function startMSEStream(start:number,autoplay=true){
   starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=true;directSource.value='';mseFallbackStarted=false;showControls(true)
   if(prepareKind.value==='seek')video.value?.pause()
   resetPlayback();releaseHLSSession(previousHLS)
-  await nextTick();if(generation!==playbackGeneration)return
+  await nextTick();applySubtitle();if(generation!==playbackGeneration)return
   try{
     const metadata=await api<VideoFMP4Metadata>(`/api/files/${props.item.id}/video/fmp4`,{},70000)
     if(generation!==playbackGeneration)return
@@ -185,7 +195,7 @@ async function startMSEStream(start:number,autoplay=true){
     })
     if(generation!==playbackGeneration){attachment.destroy();void releaseFMP4Session(response.session_id);return}
     player=createUnifiedVideoPlayer('mse',el,response.start,attachment.destroy,targetTime=>{buffering.value=true;showControls(true);return attachment.seek(targetTime)});player.setVolume(volume.value,muted.value)
-    starting.value=false;buffering.value=false;subtitleReady.value=true;refreshSubtitle()
+    starting.value=false;buffering.value=false;applySubtitle()
     console.info('[revaro] selected mode:',response.selected_mode,'video:',response.video_codec,'audio:',response.audio_codec||'none','output audio:',response.output_audio_codec||'none')
     if(autoplayPending.value)void player.play().catch(()=>{});showControls()
   }catch(caught){
@@ -211,7 +221,7 @@ async function startCompatibilityStream(start:number,autoplay=true,fallbackReaso
   prepareKind.value=previous||previousFMP4||player?'seek':'initial';prepareMode.value='hls'
   starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=false;directSource.value='';showControls(true)
   if(prepareKind.value==='seek')video.value?.pause()
-  resetPlayback();void releaseFMP4Session(previousFMP4);await nextTick()
+  resetPlayback();void releaseFMP4Session(previousFMP4);await nextTick();applySubtitle()
   if(generation!==playbackGeneration)return
   try{
     const previousSessionID=previous||sessionStorage.getItem(sessionKey.value)||''
@@ -221,7 +231,7 @@ async function startCompatibilityStream(start:number,autoplay=true,fallbackReaso
     if(!el)throw new Error('播放器已经关闭')
     const {default:Hls}=await import('hls.js/light')
     if(generation!==playbackGeneration)return
-    resetPlayback()
+    resetPlayback();applySubtitle()
     hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
     videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding;audioTranscoding.value=false
     if(Hls.isSupported()){
@@ -229,14 +239,14 @@ async function startCompatibilityStream(start:number,autoplay=true,fallbackReaso
       hls=hlsPlayer;player=createUnifiedVideoPlayer('hls',el,response.start,()=>{hlsPlayer.destroy();if(hls===hlsPlayer)hls=null})
       player.setVolume(volume.value,muted.value)
       hlsPlayer.on(Hls.Events.MEDIA_ATTACHED,()=>hlsPlayer.loadSource(response.playlist_url))
-      hlsPlayer.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();console.info('[revaro] video playback mode=hls fallback=',fallbackReason);if(autoplayPending.value)void player?.play().catch(()=>{});showControls()})
-      hlsPlayer.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;buffering.value=false;clearSubtitleTracks();error.value=`兼容视频流播放失败：${data.details||'未知错误'}`;showControls(true)}else if(String(data.details).includes('buffer'))buffering.value=true})
+      hlsPlayer.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;buffering.value=true;applySubtitle();console.info('[revaro] video playback mode=hls fallback=',fallbackReason);if(autoplayPending.value)void player?.play().catch(()=>{});showControls()})
+      hlsPlayer.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;buffering.value=false;error.value=`兼容视频流播放失败：${data.details||'未知错误'}`;showControls(true)}else if(String(data.details).includes('buffer'))buffering.value=true})
       hlsPlayer.attachMedia(el)
     }else if(el.canPlayType('application/vnd.apple.mpegurl')){
       const localStart=Math.max(0,start-response.start)
       if(localStart>0)el.addEventListener('loadedmetadata',()=>{el.currentTime=localStart},{once:true})
       el.src=response.playlist_url;el.load();player=createUnifiedVideoPlayer('hls',el,response.start,()=>{el.pause();el.removeAttribute('src');el.load()});player.setVolume(volume.value,muted.value)
-      starting.value=false;buffering.value=true;subtitleReady.value=true;refreshSubtitle();console.info('[revaro] video playback mode=native-hls fallback=',fallbackReason);if(autoplayPending.value)void player.play().catch(()=>{});showControls()
+      starting.value=false;buffering.value=true;applySubtitle();console.info('[revaro] video playback mode=native-hls fallback=',fallbackReason);if(autoplayPending.value)void player.play().catch(()=>{});showControls()
     }else throw new Error('当前浏览器不支持 HLS 播放')
   }catch(caught){
     if(generation!==playbackGeneration)return
@@ -271,7 +281,7 @@ function seekTo(target:number){
   if(!el||!Number.isFinite(target))return
   target=Math.max(0,Math.min(target,duration.value||target))
   if(starting.value){currentTime.value=target;return}
-  if(player?.seek(target)){currentTime.value=target;clearSubtitleTracks();subtitleReady.value=activeSubtitle.value>=0;refreshSubtitle();return}
+  if(player?.seek(target)){currentTime.value=target;return}
   if(mseMode.value){buffering.value=true;showControls(true);return}
   void startCompatibilityStream(target,playing.value,'目标位置不在 HLS 已缓冲范围')
 }
@@ -301,18 +311,30 @@ function onKey(event:KeyboardEvent){
   else if(event.key==='f')void toggleFullscreen()
 }
 
+watch(selectedSubtitleURL,url=>{
+  if(!url)return
+  console.info('[revaro] subtitle url:',url)
+  void nextTick().then(applySubtitle)
+},{flush:'post'})
+
 onMounted(async()=>{
   document.addEventListener('fullscreenchange',onFullscreenChange)
   document.addEventListener('pointerdown',closeActionMenuFromOutside)
   const storedVolume=Number(localStorage.getItem(volumeKey));if(Number.isFinite(storedVolume)&&storedVolume>=0&&storedVolume<=1){volume.value=storedVolume;muted.value=storedVolume===0;if(storedVolume>0)lastAudibleVolume=storedVolume}
   const progressPromise=loadProgress()
-  try{const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`);subtitles.value=media.subtitles||[];activeSubtitle.value=subtitles.value.length?0:-1;subtitleReady.value=directMode.value;refreshSubtitle()}catch{/* 视频仍可在没有字幕信息时播放 */}
+  try{
+    const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`)
+    subtitles.value=media.subtitles||[];activeSubtitle.value=subtitles.value.length?0:-1
+    console.info('[revaro] subtitles discovered:',subtitles.value.length)
+    console.info('[revaro] subtitle selected:',selectedSubtitle.value?.id||'off')
+    await nextTick();applySubtitle()
+  }catch(caught){console.error('[revaro] subtitle discovery failed:',caught)}
   const el=video.value
   if(directMode.value&&el){player=createUnifiedVideoPlayer('direct',el);player.setVolume(volume.value,muted.value);el.load();void player.play().catch(()=>{})}
   else{await progressPromise;void startMSEStream(savedPosition(),true)}
 })
 onBeforeUnmount(()=>{
-  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);persistProgress(false);playbackGeneration++;clearSubtitleTracks()
+  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);persistProgress(false);playbackGeneration++;disableSubtitleTracks()
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const hlsSession=hlsSessionId;hlsSessionId='';const fmp4Session=fmp4SessionId;fmp4SessionId='';resetPlayback()
   releaseHLSSession(hlsSession);if(fmp4Session)void fetch(`/api/video/fmp4/${fmp4Session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
@@ -322,7 +344,7 @@ onBeforeUnmount(()=>{
 <template>
   <div ref="shell" class="video-player-shell" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
     <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @waiting="onWaiting" @stalled="onWaiting" @canplay="onCanPlay" @playing="onCanPlay" @play="onPlay" @pause="onPause" @ended="onPause" @error="onVideoError">
-      <track v-if="subtitleReady&&selectedSubtitle" ref="subtitleElement" :key="`${selectedSubtitle.id}:${subtitleEpoch}`" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad">
+      <track v-if="selectedSubtitle" ref="subtitleElement" :key="selectedSubtitleKey" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad" @error="onSubtitleError">
       你的浏览器不支持这个视频格式。
     </video>
     <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong :title="item.name">{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>

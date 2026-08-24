@@ -198,6 +198,7 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 			URL: "/api/files/" + video.ID + "/video/subtitles/" + subtitle.ID,
 		})
 	}
+	s.log.Info("video subtitles discovered", "file", video.ID, "embedded", len(embedded), "external", len(files), "total", len(tracks))
 	writeJSON(w, http.StatusOK, map[string]any{"subtitles": tracks})
 }
 
@@ -410,7 +411,9 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusUnprocessableEntity, "embedded subtitle could not be converted to WebVTT")
 			return
 		}
-		writeVideoSubtitle(w, offsetVideoSubtitle(vtt, videoSubtitleStartOffset(r)))
+		offset := videoSubtitleStartOffset(r)
+		s.log.Info("video subtitle served", "file", video.ID, "subtitle", subtitleID, "codec", "embedded", "offset", offset, "bytes", len(vtt))
+		writeVideoSubtitle(w, offsetVideoSubtitle(vtt, offset))
 		return
 	}
 	allowed, err := s.findVideoSubtitles(r.Context(), video)
@@ -449,7 +452,9 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "subtitle could not be converted to WebVTT")
 		return
 	}
-	writeVideoSubtitle(w, offsetVideoSubtitle(vtt, videoSubtitleStartOffset(r)))
+	offset := videoSubtitleStartOffset(r)
+	s.log.Info("video subtitle served", "file", video.ID, "subtitle", subtitleID, "codec", filepath.Ext(subtitle.Name), "offset", offset, "bytes", len(vtt))
+	writeVideoSubtitle(w, offsetVideoSubtitle(vtt, offset))
 }
 
 func videoSubtitleStartOffset(r *http.Request) float64 {

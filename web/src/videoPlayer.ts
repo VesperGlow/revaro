@@ -2,6 +2,25 @@ import type { VideoFMP4Index, VideoFMP4Metadata, VideoFMP4Response } from './typ
 
 export type VideoPlaybackMode='direct'|'mse'|'hls'
 
+type MutableTextTrack=Pick<TextTrack,'mode'>
+
+export function subtitleURLForPlayback(url:string,mode:VideoPlaybackMode,streamOffset=0):string{
+  if(!url||mode!=='hls'||!Number.isFinite(streamOffset)||streamOffset<=0)return url
+  const offset=Math.floor(streamOffset*1000)/1000
+  return `${url}${url.includes('?')?'&':'?'}start=${offset.toFixed(3)}`
+}
+
+export function subtitleTrackKey(id:string,mode:VideoPlaybackMode,streamOffset=0):string{
+  if(mode!=='hls'||!Number.isFinite(streamOffset)||streamOffset<=0)return `global:${id}`
+  return `hls:${Math.floor(streamOffset*1000)/1000}:${id}`
+}
+
+export function setExclusiveSubtitleTrack<T extends MutableTextTrack>(tracks:ArrayLike<T>,selected:T|null):void{
+  for(let index=0;index<tracks.length;index+=1){
+    tracks[index].mode=selected&&tracks[index]===selected?'showing':'disabled'
+  }
+}
+
 export interface UnifiedVideoPlayer {
   readonly mode:VideoPlaybackMode
   readonly offset:number
@@ -42,11 +61,7 @@ export function createUnifiedVideoPlayer(
       return seekOutside?.(globalTime)??false
     },
     setVolume:(value:number,muted:boolean)=>{element.volume=value;element.muted=muted},
-    setSubtitle:(track:TextTrack|null)=>{
-      for(let index=0;index<element.textTracks.length;index+=1){
-        element.textTracks[index].mode=track&&element.textTracks[index]===track?'showing':'disabled'
-      }
-    },
+    setSubtitle:(track:TextTrack|null)=>setExclusiveSubtitleTrack(element.textTracks,track),
     requestFullscreen:async(container:HTMLElement)=>{
       if(document.fullscreenElement)await document.exitFullscreen()
       else try{await container.requestFullscreen({navigationUI:'hide'})}
