@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM node:24-alpine AS web
+FROM node:26-alpine AS web
 WORKDIR /src
 COPY web/package.json web/package-lock.json ./web/
 RUN cd web && npm ci
@@ -11,7 +11,7 @@ COPY web/public ./web/public
 COPY internal/webui ./internal/webui
 RUN cd web && npm run build
 
-FROM golang:1.25.13-alpine AS backend
+FROM golang:1.27.0-alpine AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -19,7 +19,7 @@ COPY . .
 COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/revaro ./cmd/server
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata ffmpeg 7zip \
     && addgroup -S -g 10001 revaro \
     && adduser -S -D -H -u 10001 -G revaro revaro \
