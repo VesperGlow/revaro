@@ -13,7 +13,8 @@ flowchart LR
     P[BT 公网节点] -->|分片| G
 ```
 
-- 用户路径与 S3 Object Key 完全解耦。文件内容以 `blocks/aa/<sha256>` 块对象存储，块列表以 `manifests/bb/<sha256>` 清单对象存储；同一内容（块级或整文件级）在 S3 中只存一份。
+- 用户路径与 S3 Object Key 完全解耦。文件内容以 `blocks/aa/<sha256>` 块对象存储，块列表以 `manifests/bb/<sha256>` 清单对象存储；同一内容（块级或整文件级）在 S3 中只存一份。清单的有序 block/size/offset 映射同时持久化到 SQLite，正常读取不访问 S3 清单；旧数据首次读取或启动 GC 扫描时会从原 JSON 清单自动回填。
+- 多块读取依次经过全局 RAM LRU、本地 SSD 持久缓存和 S3。S3 返回的块必须同时通过 manifest 大小与 SHA-256 内容地址校验才会原子写入 SSD；相同块的并发 miss 合并为一个 S3 GET。普通读取预取 3 块，媒体、下载与解压按配置维持字节级 ahead 窗口，seek 会取消不再需要的旧窗口。
 - 块对象使用 `If-None-Match: *` 条件写入，内容寻址对象不可变、不可被并发上传覆盖。
 - 移动和重命名只更新 SQLite，不执行 `CopyObject`。
 - 上传先写入 `pending` 元数据，浏览器按 FastCDC 的 min/avg/max 参数切块；默认用 Presigned URL 直传 S3，UpCloud 则自动经 revaro 转存到私网 endpoint。完成后服务端校验可变块列表的总大小并逐块 `HeadObject`，再写入清单并切换为 `ready`。旧的固定分块清单无需迁移，仍可正常读取。
@@ -100,6 +101,11 @@ set -a; . ./.env; set +a
 | `BLOCK_SIZE` | `4194304` | FastCDC 目标平均块大小（字节），默认 4 MiB，范围 1 MiB–1 GiB |
 | `FASTCDC_MIN_SIZE` | `BLOCK_SIZE / 4` | FastCDC 最小块大小，默认 1 MiB，范围 64 KiB–`BLOCK_SIZE` |
 | `FASTCDC_MAX_SIZE` | `BLOCK_SIZE * 4` | FastCDC 强制切块上限，默认 16 MiB，范围 `BLOCK_SIZE`–1 GiB；代理传输模式最多 64 MiB |
+| `BLOCK_RAM_CACHE_CAPACITY` | `268435456` | 全局 RAM block LRU 容量（默认 256 MiB）；`0` 禁用 |
+| `BLOCK_SSD_CACHE_CAPACITY` | `8589934592` | `/data` 上持久 block LRU 最大容量（默认 8 GiB）；`0` 禁用 |
+| `BLOCK_CACHE_MIN_FREE` | `2147483648` | SSD cache 写入后必须保留的文件系统可用空间（默认 2 GiB） |
+| `BLOCK_CACHE_DIR` | `APP_DATA_DIR/block-cache` | SSD block cache 目录；应放在本地 SSD 持久卷 |
+| `BLOCK_READ_AHEAD` | `268435456` | 视频、音频、下载、解压等连续读取的动态预读窗口（默认 256 MiB）；`0` 退回普通 3-block 预取 |
 | `UPLOAD_EXPIRES` | `24h` | 未完成上传的清理期限，也决定垃圾回收宽限期下限 |
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
 | `GC_INTERVAL` | `1h` | 周期孤儿对象回收间隔；`0` 表示禁用周期扫描（回收站到期删除仍会触发一次回收） |

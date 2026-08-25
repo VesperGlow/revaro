@@ -809,7 +809,7 @@ func (s *Server) storeAudioArtifact(ctx context.Context, path string, progressSt
 
 func (s *Server) openMergeSource(ctx context.Context, f File) (io.ReadCloser, error) {
 	if storage.IsManifestKey(f.objectKey) {
-		return s.storage.Open(ctx, f.objectKey)
+		return s.storage.Open(storage.WithDynamicReadAhead(ctx), f.objectKey)
 	}
 	return s.storage.OpenRaw(ctx, f.objectKey)
 }

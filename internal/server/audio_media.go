@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -122,7 +123,7 @@ func (s *Server) audioMediaStream(w http.ResponseWriter, r *http.Request) {
 	stream.ETag = etag
 	stream.objectKey = key
 	w.Header().Set("Cache-Control", "private, max-age=3600")
-	rc, err := s.storage.Open(r.Context(), stream.objectKey)
+	rc, err := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), stream.objectKey)
 	if err != nil {
 		s.log.Error("audio stream open failed", "file", f.ID, "error", err)
 		problem(w, http.StatusBadGateway, "audio stream storage read failed")

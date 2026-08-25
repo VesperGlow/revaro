@@ -8,7 +8,19 @@ import (
 	"sync"
 )
 
-const fileReaderPrefetchBlocks = 3
+const (
+	fileReaderPrefetchBlocks      = 3
+	fileReaderPrefetchConcurrency = 4
+)
+
+type dynamicReadAheadKey struct{}
+
+// WithDynamicReadAhead marks continuous consumers such as media, downloads,
+// and extraction. Open then maintains the configured byte window instead of
+// the ordinary three-block lookahead.
+func WithDynamicReadAhead(ctx context.Context) context.Context {
+	return context.WithValue(ctx, dynamicReadAheadKey{}, true)
+}
 
 type blockFuture struct {
 	done chan struct{}
@@ -20,19 +32,22 @@ type blockFuture struct {
 // io.ReadSeeker so http.ServeContent can serve Range requests for video
 // seeking; only the blocks intersecting the requested range are fetched.
 type fileReader struct {
-	getBlock      func(context.Context, string) ([]byte, error)
-	ctx           context.Context
-	m             Manifest
-	starts        []int64
-	off           int64
-	loadedIdx     int
-	loaded        []byte
-	err           error
-	cancel        context.CancelFunc
-	closeOnce     sync.Once
-	prefetchMu    sync.Mutex
-	prefetch      map[int]*blockFuture
-	prefetchSlots chan struct{}
+	getBlock       func(context.Context, Block) ([]byte, error)
+	ctx            context.Context
+	m              Manifest
+	starts         []int64
+	off            int64
+	loadedIdx      int
+	loaded         []byte
+	err            error
+	cancel         context.CancelFunc
+	closeOnce      sync.Once
+	prefetchMu     sync.Mutex
+	prefetch       map[int]*blockFuture
+	prefetchSlots  chan struct{}
+	prefetchCtx    context.Context
+	prefetchCancel context.CancelFunc
+	readAheadBytes int64
 }
 
 func (s *S3) Open(ctx context.Context, key string) (io.ReadSeekCloser, error) {
@@ -47,9 +62,15 @@ func (s *S3) Open(ctx context.Context, key string) (io.ReadSeekCloser, error) {
 		offset += block.Size
 	}
 	readerCtx, cancel := context.WithCancel(ctx)
+	prefetchCtx, prefetchCancel := context.WithCancel(readerCtx)
+	var readAhead int64
+	if enabled, _ := ctx.Value(dynamicReadAheadKey{}).(bool); enabled {
+		readAhead = s.readAhead
+	}
 	return &fileReader{
-		getBlock: s.GetBlock, ctx: readerCtx, cancel: cancel, m: m, starts: starts, loadedIdx: -1,
-		prefetch: make(map[int]*blockFuture), prefetchSlots: make(chan struct{}, fileReaderPrefetchBlocks),
+		getBlock: s.getBlock, ctx: readerCtx, cancel: cancel, m: m, starts: starts, loadedIdx: -1,
+		prefetch: make(map[int]*blockFuture), prefetchSlots: make(chan struct{}, fileReaderPrefetchConcurrency),
+		prefetchCtx: prefetchCtx, prefetchCancel: prefetchCancel, readAheadBytes: readAhead,
 	}, nil
 }
 
@@ -93,12 +114,34 @@ func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
 	if next < 0 {
 		return 0, fmt.Errorf("negative seek position %d", next)
 	}
+	if next != r.off && !r.seekWithinReadAhead(next) {
+		r.resetPrefetch()
+		r.err = nil
+	}
 	r.off = next
 	return r.off, nil
 }
 
+func (r *fileReader) seekWithinReadAhead(next int64) bool {
+	if next < r.off || r.off >= r.m.Size {
+		return false
+	}
+	current, _, _, err := r.blockAt(r.off)
+	if err != nil {
+		return false
+	}
+	end := r.prefetchEnd(current + 1)
+	if end >= len(r.starts) {
+		return next < r.m.Size
+	}
+	return next < r.starts[end]
+}
+
 func (r *fileReader) Close() error {
 	r.closeOnce.Do(func() {
+		if r.prefetchCancel != nil {
+			r.prefetchCancel()
+		}
 		if r.cancel != nil {
 			r.cancel()
 		}
@@ -133,9 +176,9 @@ func (r *fileReader) load(idx int) ([]byte, error) {
 	return data, nil
 }
 
-func (r *fileReader) readBlock(idx int) ([]byte, error) {
+func (r *fileReader) readBlock(ctx context.Context, idx int) ([]byte, error) {
 	block := r.m.Blocks[idx]
-	data, err := r.getBlock(r.ctx, block.ID)
+	data, err := r.getBlock(ctx, block)
 	if err != nil {
 		return nil, fmt.Errorf("read block %s: %w", block.ID, err)
 	}
@@ -153,7 +196,7 @@ func (r *fileReader) loadOrWait(idx int) ([]byte, error) {
 	}
 	r.prefetchMu.Unlock()
 	if future == nil {
-		return r.readBlock(idx)
+		return r.readBlock(r.ctx, idx)
 	}
 	select {
 	case <-future.done:
@@ -169,10 +212,14 @@ func (r *fileReader) startPrefetch(first int) {
 		r.prefetch = make(map[int]*blockFuture)
 	}
 	if r.prefetchSlots == nil {
-		r.prefetchSlots = make(chan struct{}, fileReaderPrefetchBlocks)
+		r.prefetchSlots = make(chan struct{}, fileReaderPrefetchConcurrency)
 	}
+	if r.prefetchCtx == nil {
+		r.prefetchCtx, r.prefetchCancel = context.WithCancel(r.ctx)
+	}
+	prefetchCtx := r.prefetchCtx
 	r.prefetchMu.Unlock()
-	last := min(len(r.m.Blocks), first+fileReaderPrefetchBlocks)
+	last := r.prefetchEnd(first)
 	for idx := first; idx < last; idx++ {
 		r.prefetchMu.Lock()
 		if _, exists := r.prefetch[idx]; exists {
@@ -182,26 +229,27 @@ func (r *fileReader) startPrefetch(first int) {
 		future := &blockFuture{done: make(chan struct{})}
 		r.prefetch[idx] = future
 		r.prefetchMu.Unlock()
-		go func(index int, result *blockFuture) {
+		go func(index int, result *blockFuture, fetchCtx context.Context) {
 			select {
 			case r.prefetchSlots <- struct{}{}:
 				defer func() { <-r.prefetchSlots }()
-			case <-r.ctx.Done():
-				result.err = r.ctx.Err()
+			case <-fetchCtx.Done():
+				result.err = fetchCtx.Err()
 				close(result.done)
 				return
 			}
-			result.data, result.err = r.readBlock(index)
+			result.data, result.err = r.readBlock(fetchCtx, index)
 			close(result.done)
-		}(idx, future)
+		}(idx, future, prefetchCtx)
 	}
 }
 
 func (r *fileReader) prunePrefetch(current int) {
 	r.prefetchMu.Lock()
 	defer r.prefetchMu.Unlock()
+	first, last := current+1, r.prefetchEnd(current+1)
 	for idx, future := range r.prefetch {
-		if idx > current && idx <= current+fileReaderPrefetchBlocks {
+		if idx >= first && idx < last {
 			continue
 		}
 		select {
@@ -212,9 +260,35 @@ func (r *fileReader) prunePrefetch(current int) {
 	}
 }
 
+func (r *fileReader) prefetchEnd(first int) int {
+	if first >= len(r.m.Blocks) {
+		return len(r.m.Blocks)
+	}
+	if r.readAheadBytes <= 0 {
+		return min(len(r.m.Blocks), first+fileReaderPrefetchBlocks)
+	}
+	var bytes int64
+	end := first
+	for end < len(r.m.Blocks) && (bytes < r.readAheadBytes || end < first+fileReaderPrefetchBlocks) {
+		bytes += r.m.Blocks[end].Size
+		end++
+	}
+	return end
+}
+
+func (r *fileReader) resetPrefetch() {
+	r.prefetchMu.Lock()
+	defer r.prefetchMu.Unlock()
+	if r.prefetchCancel != nil {
+		r.prefetchCancel()
+	}
+	r.prefetchCtx, r.prefetchCancel = context.WithCancel(r.ctx)
+	r.prefetch = make(map[int]*blockFuture)
+}
+
 // ReadFile reads an entire logical file with a size guard.
 func (s *S3) ReadFile(ctx context.Context, key string, limit int64) ([]byte, error) {
-	rc, err := s.Open(ctx, key)
+	rc, err := s.Open(WithDynamicReadAhead(ctx), key)
 	if err != nil {
 		return nil, err
 	}

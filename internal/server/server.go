@@ -1426,7 +1426,11 @@ func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File
 		http.Redirect(w, r, u, http.StatusFound)
 		return
 	}
-	rc, err := s.storage.Open(r.Context(), f.objectKey)
+	readCtx := r.Context()
+	if !inline || isAudioSource(f) || isVideoSource(f) || isArchiveName(f.Name) {
+		readCtx = storage.WithDynamicReadAhead(readCtx)
+	}
+	rc, err := s.storage.Open(readCtx, f.objectKey)
 	if err != nil {
 		s.log.Error("file open failed", "file", f.ID, "error", err)
 		problem(w, 502, "object storage read failed")

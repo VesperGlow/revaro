@@ -510,7 +510,7 @@ type extractedObject struct {
 
 func (s *Server) openArchiveSource(ctx context.Context, f File) (io.ReadCloser, error) {
 	if storage.IsManifestKey(f.objectKey) {
-		return s.storage.Open(ctx, f.objectKey)
+		return s.storage.Open(storage.WithDynamicReadAhead(ctx), f.objectKey)
 	}
 	return s.storage.OpenRaw(ctx, f.objectKey)
 }

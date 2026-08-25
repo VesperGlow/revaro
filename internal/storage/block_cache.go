@@ -5,8 +5,6 @@ import (
 	"sync"
 )
 
-const blockCacheCapacity = int64(256 << 20)
-
 type blockCacheEntry struct {
 	id   string
 	data []byte

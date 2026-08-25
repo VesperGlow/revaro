@@ -221,7 +221,7 @@ func (s *Server) startMediaHLSSource(ctx context.Context, f File) (string, func(
 		}
 		w.Header().Set("Content-Type", responseMime(f))
 		if storage.IsManifestKey(f.objectKey) {
-			rc, openErr := s.storage.Open(r.Context(), f.objectKey)
+			rc, openErr := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
 			if openErr != nil {
 				http.Error(w, "source unavailable", http.StatusBadGateway)
 				return

@@ -98,10 +98,45 @@ func (s *S3) PutManifest(ctx context.Context, m Manifest) (string, error) {
 	if err := s.putConditional(ctx, key, manifestMime, m.bytes()); err != nil {
 		return "", err
 	}
+	if err := s.manifests.put(ctx, key, m); err != nil {
+		return "", fmt.Errorf("index manifest %s: %w", key, err)
+	}
 	return key, nil
 }
 
 func (s *S3) GetManifest(ctx context.Context, key string) (Manifest, error) {
+	if m, ok, err := s.manifests.get(ctx, key); err == nil && ok {
+		return m, nil
+	} else if err != nil {
+		// A partial or corrupted local row must never shadow the immutable S3
+		// recovery copy. Remove it before the singleflight fallback rebuild.
+		_ = s.manifests.delete(ctx, key)
+	}
+	result := s.manifestGroup.DoChan(key, func() (any, error) {
+		if m, ok, err := s.manifests.get(ctx, key); err == nil && ok {
+			return m, nil
+		}
+		m, err := s.getManifestRemote(ctx, key)
+		if err != nil {
+			return Manifest{}, err
+		}
+		if err := s.manifests.put(ctx, key, m); err != nil {
+			return Manifest{}, fmt.Errorf("rebuild local manifest index %s: %w", key, err)
+		}
+		return m, nil
+	})
+	select {
+	case <-ctx.Done():
+		return Manifest{}, ctx.Err()
+	case loaded := <-result:
+		if loaded.Err != nil {
+			return Manifest{}, loaded.Err
+		}
+		return loaded.Val.(Manifest), nil
+	}
+}
+
+func (s *S3) getManifestRemote(ctx context.Context, key string) (Manifest, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
 	if err != nil {
 		return Manifest{}, err

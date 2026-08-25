@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	"golang.org/x/sync/singleflight"
 )
 
 var ErrObjectTooLarge = errors.New("object exceeds read limit")
@@ -73,16 +75,32 @@ type Storage interface {
 }
 
 type S3 struct {
-	client       *s3.Client
-	presign      *s3.PresignClient
-	bucket       string
-	maxBlockSize int64
-	chunking     fastcdc.Config
-	cacheOnce    sync.Once
-	blockCache   *blockLRU
+	client        *s3.Client
+	presign       *s3.PresignClient
+	bucket        string
+	maxBlockSize  int64
+	chunking      fastcdc.Config
+	cacheOnce     sync.Once
+	blockCache    *blockLRU
+	diskCache     *diskBlockCache
+	ramCapacity   int64
+	readAhead     int64
+	manifests     *manifestIndex
+	blockGroup    singleflight.Group
+	manifestGroup singleflight.Group
 }
 
 func NewS3(ctx context.Context, c config.Config) (*S3, error) {
+	return newS3(ctx, c, nil)
+}
+
+// NewS3WithDB enables the persistent SQLite manifest index used by the
+// application. NewS3 remains available for storage-only callers and tests.
+func NewS3WithDB(ctx context.Context, c config.Config, db *sql.DB) (*S3, error) {
+	return newS3(ctx, c, db)
+}
+
+func newS3(ctx context.Context, c config.Config, db *sql.DB) (*S3, error) {
 	options := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(c.S3Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(c.S3AccessKey, c.S3SecretKey, "")),
@@ -117,7 +135,15 @@ func NewS3(ctx context.Context, c config.Config) (*S3, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure FastCDC: %w", err)
 	}
-	return &S3{client: client, presign: s3.NewPresignClient(presignClient), bucket: c.S3Bucket, maxBlockSize: maximum, chunking: chunking}, nil
+	diskCache, err := newDiskBlockCache(c.BlockCacheDir, c.BlockSSDCacheCapacity, c.BlockCacheMinFree, maximum)
+	if err != nil {
+		return nil, fmt.Errorf("initialize persistent block cache: %w", err)
+	}
+	return &S3{
+		client: client, presign: s3.NewPresignClient(presignClient), bucket: c.S3Bucket,
+		maxBlockSize: maximum, chunking: chunking, ramCapacity: c.BlockRAMCacheCapacity,
+		diskCache: diskCache, readAhead: c.BlockReadAhead, manifests: newManifestIndex(db),
+	}, nil
 }
 
 func (s *S3) Ping(ctx context.Context) error {
@@ -158,7 +184,12 @@ func (s *S3) PutBlock(ctx context.Context, id string, data []byte) error {
 	if int64(len(data)) > s.maxBlockSize {
 		return errors.New("block exceeds configured block size")
 	}
-	return s.putConditional(ctx, BlockKey(id), blockMime, data)
+	if err := s.putConditional(ctx, BlockKey(id), blockMime, data); err != nil {
+		return err
+	}
+	_ = s.diskCache.put(id, data)
+	s.cachedBlocks().put(id, data)
+	return nil
 }
 
 func (s *S3) HeadBlock(ctx context.Context, id string) (Block, error) {
@@ -170,33 +201,72 @@ func (s *S3) HeadBlock(ctx context.Context, id string) (Block, error) {
 }
 
 func (s *S3) GetBlock(ctx context.Context, id string) ([]byte, error) {
+	return s.getBlock(ctx, Block{ID: id, Size: -1})
+}
+
+func (s *S3) getBlock(ctx context.Context, block Block) ([]byte, error) {
+	id := block.ID
 	if !ValidBlockID(id) {
 		return nil, fmt.Errorf("invalid block id %q", id)
 	}
 	cache := s.cachedBlocks()
 	if data, ok := cache.get(id); ok {
+		if block.Size < 0 || int64(len(data)) == block.Size {
+			return data, nil
+		}
+	}
+	if data, ok := s.diskCache.get(id, block.Size); ok {
+		cache.put(id, data)
 		return data, nil
 	}
-	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(BlockKey(id))})
-	if err != nil {
-		return nil, err
+	result := s.blockGroup.DoChan(id, func() (any, error) {
+		if data, ok := cache.get(id); ok && (block.Size < 0 || int64(len(data)) == block.Size) {
+			return data, nil
+		}
+		if data, ok := s.diskCache.get(id, block.Size); ok {
+			cache.put(id, data)
+			return data, nil
+		}
+		out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(BlockKey(id))})
+		if err != nil {
+			return nil, err
+		}
+		defer out.Body.Close()
+		if block.Size >= 0 && out.ContentLength != nil && aws.ToInt64(out.ContentLength) != block.Size {
+			return nil, fmt.Errorf("block %s size mismatch: S3 says %d bytes, manifest says %d", id, aws.ToInt64(out.ContentLength), block.Size)
+		}
+		data, err := io.ReadAll(io.LimitReader(out.Body, s.maxBlockSize+1))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(data)) > s.maxBlockSize {
+			return nil, fmt.Errorf("block %s exceeds configured block size", id)
+		}
+		if block.Size >= 0 && int64(len(data)) != block.Size {
+			return nil, fmt.Errorf("block %s size mismatch: stored %d bytes, manifest says %d", id, len(data), block.Size)
+		}
+		if hashBytes(data) != id {
+			return nil, ErrBlockHashMismatch
+		}
+		_ = s.diskCache.put(id, data)
+		cache.put(id, data)
+		return data, nil
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case fetched := <-result:
+		if fetched.Err != nil {
+			return nil, fetched.Err
+		}
+		return fetched.Val.([]byte), nil
 	}
-	defer out.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(out.Body, s.maxBlockSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > s.maxBlockSize {
-		return nil, fmt.Errorf("block %s exceeds configured block size", id)
-	}
-	cache.put(id, data)
-	return data, nil
 }
 
 func (s *S3) cachedBlocks() *blockLRU {
 	s.cacheOnce.Do(func() {
 		if s.blockCache == nil {
-			s.blockCache = newBlockLRU(blockCacheCapacity)
+			s.blockCache = newBlockLRU(s.ramCapacity)
 		}
 	})
 	return s.blockCache
@@ -338,10 +408,10 @@ func (s *S3) DeleteObject(ctx context.Context, key string) error {
 	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
 	if err == nil {
-		return nil
+		return s.manifests.delete(ctx, key)
 	}
 	if IsNotFound(err) {
-		return nil
+		return s.manifests.delete(ctx, key)
 	}
 	return err
 }

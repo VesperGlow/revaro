@@ -47,7 +47,7 @@ func main() {
 		log.Error("administrator initialization failed", "error", err)
 		os.Exit(1)
 	}
-	store, err := storage.NewS3(context.Background(), cfg)
+	store, err := storage.NewS3WithDB(context.Background(), cfg, db)
 	if err != nil {
 		log.Error("S3 client initialization failed", "error", err)
 		os.Exit(1)

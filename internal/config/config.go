@@ -29,19 +29,24 @@ type Config struct {
 	PresignExpires   time.Duration
 	// BlockSize is the target average FastCDC chunk size. BlockMinSize and
 	// BlockMaxSize bound the variable-size chunks around that target.
-	BlockMinSize   int64
-	BlockSize      int64
-	BlockMaxSize   int64
-	UploadExpires  time.Duration
-	TrashRetention time.Duration
-	GCInterval     time.Duration
-	FFmpegPath     string
-	BTEnabled      bool
-	BTListenPort   int
-	BTMaxFiles     int
-	BTMaxTotalSize int64
-	BTMetadataWait time.Duration
-	BTStaleAfter   time.Duration
+	BlockMinSize          int64
+	BlockSize             int64
+	BlockMaxSize          int64
+	BlockRAMCacheCapacity int64
+	BlockSSDCacheCapacity int64
+	BlockCacheMinFree     int64
+	BlockReadAhead        int64
+	BlockCacheDir         string
+	UploadExpires         time.Duration
+	TrashRetention        time.Duration
+	GCInterval            time.Duration
+	FFmpegPath            string
+	BTEnabled             bool
+	BTListenPort          int
+	BTMaxFiles            int
+	BTMaxTotalSize        int64
+	BTMetadataWait        time.Duration
+	BTStaleAfter          time.Duration
 }
 
 func Load() (Config, error) {
@@ -116,6 +121,19 @@ func Load() (Config, error) {
 	if c.BlockMaxSize, err = int64Env("FASTCDC_MAX_SIZE", defaultMax); err != nil {
 		return c, err
 	}
+	if c.BlockRAMCacheCapacity, err = int64Env("BLOCK_RAM_CACHE_CAPACITY", 256*1024*1024); err != nil {
+		return c, err
+	}
+	if c.BlockSSDCacheCapacity, err = int64Env("BLOCK_SSD_CACHE_CAPACITY", 8*1024*1024*1024); err != nil {
+		return c, err
+	}
+	if c.BlockCacheMinFree, err = int64Env("BLOCK_CACHE_MIN_FREE", 2*1024*1024*1024); err != nil {
+		return c, err
+	}
+	if c.BlockReadAhead, err = int64Env("BLOCK_READ_AHEAD", 256*1024*1024); err != nil {
+		return c, err
+	}
+	c.BlockCacheDir = env("BLOCK_CACHE_DIR", filepath.Join(c.DataDir, "block-cache"))
 	if c.BlockSize < 1*1024*1024 || c.BlockSize > 1024*1024*1024 {
 		return c, errors.New("BLOCK_SIZE must be between 1 MiB and 1 GiB")
 	}
@@ -127,6 +145,21 @@ func Load() (Config, error) {
 	}
 	if c.ProxyTransfers && c.BlockMaxSize > 64*1024*1024 {
 		return c, errors.New("FASTCDC_MAX_SIZE must not exceed 64 MiB when S3_PROXY_TRANSFERS is enabled")
+	}
+	if c.BlockRAMCacheCapacity < 0 || c.BlockRAMCacheCapacity > 16*1024*1024*1024 {
+		return c, errors.New("BLOCK_RAM_CACHE_CAPACITY must be between 0 and 16 GiB")
+	}
+	if c.BlockSSDCacheCapacity < 0 || c.BlockSSDCacheCapacity > 1<<40 {
+		return c, errors.New("BLOCK_SSD_CACHE_CAPACITY must be between 0 and 1 TiB")
+	}
+	if c.BlockCacheMinFree < 0 || c.BlockCacheMinFree > 1<<40 {
+		return c, errors.New("BLOCK_CACHE_MIN_FREE must be between 0 and 1 TiB")
+	}
+	if c.BlockReadAhead < 0 || c.BlockReadAhead > 1024*1024*1024 || (c.BlockReadAhead > 0 && c.BlockReadAhead < 1024*1024) {
+		return c, errors.New("BLOCK_READ_AHEAD must be 0 or between 1 MiB and 1 GiB")
+	}
+	if c.BlockCacheDir == "" {
+		return c, errors.New("BLOCK_CACHE_DIR must not be empty")
 	}
 	if c.UploadExpires <= 0 {
 		return c, errors.New("UPLOAD_EXPIRES must be positive")
