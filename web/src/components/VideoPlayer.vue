@@ -5,7 +5,7 @@ import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
 import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, setExclusiveSubtitleTrack, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
+import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -79,6 +79,7 @@ const selectedSubtitleURL=computed(()=>{
   return subtitleURLForPlayback(track.url,subtitlePlaybackMode.value,streamOffset.value)
 })
 const selectedSubtitleKey=computed(()=>selectedSubtitle.value?subtitleTrackKey(selectedSubtitle.value.id,subtitlePlaybackMode.value,streamOffset.value):'')
+const cursorHidden=computed(()=>shouldHideVideoCursor({playing:playing.value,controlsVisible:controlsVisible.value,starting:starting.value,buffering:buffering.value,error:error.value}))
 
 function formatTime(seconds:number){
   if(!Number.isFinite(seconds)||seconds<0)return '0:00'
@@ -342,7 +343,7 @@ onBeforeUnmount(()=>{
 </script>
 
 <template>
-  <div ref="shell" class="video-player-shell" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
+  <div ref="shell" class="video-player-shell" :class="{'cursor-hidden':cursorHidden}" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
     <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @waiting="onWaiting" @stalled="onWaiting" @canplay="onCanPlay" @playing="onCanPlay" @play="onPlay" @pause="onPause" @ended="onPause" @error="onVideoError">
       <track v-if="selectedSubtitle" ref="subtitleElement" :key="selectedSubtitleKey" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad" @error="onSubtitleError">
       你的浏览器不支持这个视频格式。
@@ -372,6 +373,7 @@ onBeforeUnmount(()=>{
 .video-player-shell{position:relative;isolation:isolate;justify-self:center;width:min(1500px,100%);max-width:100%;height:min(820px,calc(100vh - 178px));height:min(820px,calc(100dvh - 178px));min-width:0;min-height:280px;overflow:hidden;border-radius:15px;background:#000;box-shadow:0 18px 46px #39517226;outline:none}
 .video-player-shell:fullscreen{width:100vw;height:100vh;height:100dvh;border-radius:0}
 .video-player-shell video{display:block;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;background:#000;object-fit:contain;box-shadow:none;cursor:pointer}
+.video-player-shell.cursor-hidden,.video-player-shell.cursor-hidden *{cursor:none!important}
 .video-top-shade{position:absolute;z-index:9;inset:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:max(18px,env(safe-area-inset-top,0px)) 22px 60px;background:linear-gradient(#000c,transparent);color:#fff;opacity:0;pointer-events:none;transition:opacity .2s}
 .video-top-shade.visible{opacity:1}.video-title-group{display:flex;align-items:center;min-width:0;gap:8px}.video-top-shade strong{min-width:0;max-width:100%;overflow:hidden;font-size:17px;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000}.video-top-shade>span{flex:0 0 auto;padding:6px 9px;border:1px solid #ffffff3d;border-radius:999px;background:#0005;color:#d9e7f6;font-size:10px}
 .video-back{display:grid;place-items:center;flex:0 0 auto;width:42px;height:42px;padding:0;border:0;border-radius:50%;background:#0b1220a8;color:#fff;pointer-events:auto}.video-back:hover{background:#ffffff24}.video-back svg{width:27px;height:27px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}

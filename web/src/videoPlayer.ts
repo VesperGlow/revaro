@@ -2,6 +2,18 @@ import type { VideoFMP4Index, VideoFMP4Metadata, VideoFMP4Response } from './typ
 
 export type VideoPlaybackMode='direct'|'mse'|'hls'
 
+export interface VideoCursorState {
+  playing:boolean
+  controlsVisible:boolean
+  starting:boolean
+  buffering:boolean
+  error:string|boolean
+}
+
+export function shouldHideVideoCursor(state:VideoCursorState):boolean{
+  return state.playing&&!state.controlsVisible&&!state.starting&&!state.buffering&&!state.error
+}
+
 type MutableTextTrack=Pick<TextTrack,'mode'>
 
 export function subtitleURLForPlayback(url:string,mode:VideoPlaybackMode,streamOffset=0):string{
@@ -222,6 +234,7 @@ async function pumpFMP4Fragments(
 ):Promise<void>{
   const init=await fetchBytes(options.response.init_url,lifetimeSignal)
   await appendSourceBuffer(sourceBuffer,init,lifetimeSignal)
+  let currentInitURL=options.response.init_url
   if(mediaSource.readyState==='open')try{mediaSource.duration=Math.max(.1,options.response.duration)}catch{/* duration may already be known */}
   let cursor=target()
   let observedVersion=version()
@@ -240,11 +253,11 @@ async function pumpFMP4Fragments(
       const response=await fetch(`${options.response.index_url}${separator}time=${cursor.toFixed(3)}`,{credentials:'same-origin',signal:controller.signal})
       if(!response.ok)throw new Error(`fMP4 分片索引请求失败 (${response.status})`)
       const index=await response.json() as VideoFMP4Index
-      consecutiveFailures=0
       if(requestVersion!==version())continue
+      if(index.error)throw new Error(`fMP4 remux 已退出：${index.error}`)
+      consecutiveFailures=0
       if(!index.fragments.length){
         if(index.done){
-          if(index.error)throw new Error(`fMP4 remux 已退出：${index.error}`)
           // Keep MediaSource open after the remux completes. Old ranges may be
           // evicted later; a backwards seek must still be able to reappend the
           // cached fragment without constructing another session.
@@ -256,6 +269,13 @@ async function pumpFMP4Fragments(
         if(requestVersion!==version())break
         const midpoint=fragment.start+Math.min(fragment.duration/2,.25)
         if(!bufferContains(sourceBuffer.buffered,midpoint)){
+          const fragmentInitURL=fragment.init_url||currentInitURL
+          if(fragmentInitURL!==currentInitURL){
+            const windowInit=await fetchBytes(fragmentInitURL,lifetimeSignal)
+            if(requestVersion!==version())break
+            await appendSourceBuffer(sourceBuffer,windowInit,lifetimeSignal)
+            currentInitURL=fragmentInitURL
+          }
           const bytes=await fetchBytes(fragment.url,lifetimeSignal)
           if(requestVersion!==version())break
           await appendSourceBuffer(sourceBuffer,bytes,lifetimeSignal)

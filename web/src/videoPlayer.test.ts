@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, setExclusiveSubtitleTrack, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,
@@ -20,6 +20,19 @@ function browserSupports(types:string[],supported=true,powerEfficient=true){
 }
 
 afterEach(()=>vi.restoreAllMocks())
+
+describe('video cursor visibility',()=>{
+  const state={playing:true,controlsVisible:false,starting:false,buffering:false,error:''}
+
+  it('hides only during unobstructed playback with hidden controls',()=>{
+    expect(shouldHideVideoCursor(state)).toBe(true)
+    expect(shouldHideVideoCursor({...state,controlsVisible:true})).toBe(false)
+    expect(shouldHideVideoCursor({...state,playing:false})).toBe(false)
+    expect(shouldHideVideoCursor({...state,starting:true})).toBe(false)
+    expect(shouldHideVideoCursor({...state,buffering:true})).toBe(false)
+    expect(shouldHideVideoCursor({...state,error:'decode failed'})).toBe(false)
+  })
+})
 
 describe('mseCompatibility',()=>{
   it.each([['hevc','aac'],['h264','aac']])('%s + %s selects video/audio copy',async(video,audio)=>{
@@ -112,7 +125,7 @@ describe('video subtitle timeline and lifecycle',()=>{
     expect(selected.mode).toBe('showing')
   })
 
-  it('leaves the selected track untouched while MSE appends a fragment',async()=>{
+  it('leaves the selected track untouched while MSE switches window init segments',async()=>{
     class FakeSourceBuffer extends EventTarget {
       mode:AppendMode='segments'
       updating=false
@@ -136,7 +149,7 @@ describe('video subtitle timeline and lifecycle',()=>{
       const requestURL=String(input)
       if(requestURL.endsWith('/init.mp4'))return new Response(new Uint8Array([1,2,3]))
       if(requestURL.includes('/index.json'))return Response.json({
-        fragments:[{number:1,start:360,duration:2,url:'/fragment-000001.m4s'}],available_until:362,done:false,
+		fragments:[{number:1,start:360,duration:2,url:'/fragment-window-000001.m4s',init_url:'/init-window.mp4'}],available_until:362,done:false,
       })
       return new Response(new Uint8Array([4,5,6]))
     })
@@ -152,7 +165,8 @@ describe('video subtitle timeline and lifecycle',()=>{
     const onFragment=vi.fn()
     const attachment=await attachFMP4Stream({element,response,mimeType:response.mime_type,target:360,autoplay:false,onFatal:vi.fn(),onFragment})
     expect(onFragment).toHaveBeenCalled()
-    expect(fetchMock).toHaveBeenCalledWith('/fragment-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
+    expect(fetchMock).toHaveBeenCalledWith('/init-window.mp4',expect.objectContaining({credentials:'same-origin'}))
+    expect(fetchMock).toHaveBeenCalledWith('/fragment-window-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
     expect(element.textTracks[0]).toBe(selected)
     expect(selected.mode).toBe('showing')
     attachment.destroy()

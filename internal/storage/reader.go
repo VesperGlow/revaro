@@ -11,7 +11,7 @@ import (
 // io.ReadSeeker so http.ServeContent can serve Range requests for video
 // seeking; only the blocks intersecting the requested range are fetched.
 type fileReader struct {
-	s         *S3
+	getBlock  func(context.Context, string) ([]byte, error)
 	ctx       context.Context
 	m         Manifest
 	starts    []int64
@@ -32,7 +32,7 @@ func (s *S3) Open(ctx context.Context, key string) (io.ReadSeekCloser, error) {
 		starts[i] = offset
 		offset += block.Size
 	}
-	return &fileReader{s: s, ctx: ctx, m: m, starts: starts, loadedIdx: -1}, nil
+	return &fileReader{getBlock: s.GetBlock, ctx: ctx, m: m, starts: starts, loadedIdx: -1}, nil
 }
 
 func (r *fileReader) Read(p []byte) (int, error) {
@@ -99,7 +99,7 @@ func (r *fileReader) load(idx int) ([]byte, error) {
 		return r.loaded, nil
 	}
 	block := r.m.Blocks[idx]
-	data, err := r.s.GetBlock(r.ctx, block.ID)
+	data, err := r.getBlock(r.ctx, block.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read block %s: %w", block.ID, err)
 	}
