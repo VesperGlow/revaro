@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, mseWindowRefillLeadSeconds, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,
@@ -31,6 +31,13 @@ describe('video cursor visibility',()=>{
     expect(shouldHideVideoCursor({...state,starting:true})).toBe(false)
     expect(shouldHideVideoCursor({...state,buffering:true})).toBe(false)
     expect(shouldHideVideoCursor({...state,error:'decode failed'})).toBe(false)
+  })
+})
+
+describe('MSE window refill',()=>{
+  it('waits until playback is close to a short window tail',()=>{
+    expect(mseWindowRefillLeadSeconds).toBeGreaterThanOrEqual(10)
+    expect(mseWindowRefillLeadSeconds).toBeLessThanOrEqual(15)
   })
 })
 

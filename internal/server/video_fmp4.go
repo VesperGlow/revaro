@@ -25,7 +25,7 @@ const (
 	videoFMP4StartWait   = 45 * time.Second
 	videoFMP4IndexWait   = 20 * time.Second
 	maxVideoFMP4Sessions = 4
-	videoFMP4WindowSize  = 150 * time.Second
+	videoFMP4WindowSize  = 60 * time.Second
 	videoFMP4WindowStep  = 30 * time.Second
 	videoFMP4WindowLead  = 10 * time.Second
 	videoFMP4CacheBytes  = int64(1 << 30)
@@ -598,6 +598,20 @@ func fmp4WindowStart(target float64) float64 {
 	return max(0, float64(int64(max(0, target-lead)/step))*step)
 }
 
+func nextFMP4WindowStart(target float64, windows map[string]*videoFMP4Window) float64 {
+	start := fmp4WindowStart(target)
+	for _, window := range windows {
+		end := window.Start + window.Duration
+		// Sequential playback asks just past the final fragment. Continue from
+		// the preceding finite window instead of applying seek lead again and
+		// rereading up to half of it from S3.
+		if target >= end-.01 && target <= end+videoFMP4WindowLead.Seconds() && end > start {
+			start = end
+		}
+	}
+	return start
+}
+
 func (s *Server) ensureVideoFMP4Window(session *videoFMP4Session, target float64) (*videoFMP4Window, bool, error) {
 	if fragments, _, window := videoFMP4FragmentsAt(session, target, 1); len(fragments) > 0 {
 		return window, true, nil
@@ -628,7 +642,7 @@ func (s *Server) ensureVideoFMP4Window(session *videoFMP4Session, target float64
 		session.mu.Unlock()
 		return nil, false, errors.New("too many fMP4 window workers are active")
 	}
-	start := fmp4WindowStart(target)
+	start := nextFMP4WindowStart(target, session.windows)
 	duration := min(videoFMP4WindowSize.Seconds(), session.Duration-start)
 	if duration <= 0 {
 		<-s.videoFMP4Slots

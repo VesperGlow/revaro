@@ -1,5 +1,7 @@
 import type { VideoFMP4Index, VideoFMP4Metadata, VideoFMP4Response } from './types'
 
+export const mseWindowRefillLeadSeconds=12
+
 export type VideoPlaybackMode='direct'|'mse'|'hls'
 
 export interface VideoCursorState {
@@ -333,7 +335,11 @@ async function keepMSEBufferBounded(sourceBuffer:SourceBuffer,element:HTMLVideoE
     const removeEnd=element.currentTime-60
     if(removeEnd>sourceBuffer.buffered.start(0))await removeSourceBufferRange(sourceBuffer,0,removeEnd,signal)
   }
-  while(!seekChanged()&&sourceBuffer.buffered.length&&sourceBuffer.buffered.end(sourceBuffer.buffered.length-1)-element.currentTime>120){
+  // A remux worker is intentionally limited to one short source window. Do
+  // not ask the index for the following window until playback is close to the
+  // end of the buffered one, otherwise a paused player would still make
+  // FFmpeg walk through several windows and read most of a short S3 object.
+  while(!seekChanged()&&sourceBuffer.buffered.length&&sourceBuffer.buffered.end(sourceBuffer.buffered.length-1)-element.currentTime>mseWindowRefillLeadSeconds){
     await abortableDelay(350,signal)
   }
 }

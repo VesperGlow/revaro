@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/config"
@@ -77,6 +78,8 @@ type S3 struct {
 	bucket       string
 	maxBlockSize int64
 	chunking     fastcdc.Config
+	cacheOnce    sync.Once
+	blockCache   *blockLRU
 }
 
 func NewS3(ctx context.Context, c config.Config) (*S3, error) {
@@ -167,6 +170,13 @@ func (s *S3) HeadBlock(ctx context.Context, id string) (Block, error) {
 }
 
 func (s *S3) GetBlock(ctx context.Context, id string) ([]byte, error) {
+	if !ValidBlockID(id) {
+		return nil, fmt.Errorf("invalid block id %q", id)
+	}
+	cache := s.cachedBlocks()
+	if data, ok := cache.get(id); ok {
+		return data, nil
+	}
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(BlockKey(id))})
 	if err != nil {
 		return nil, err
@@ -179,7 +189,17 @@ func (s *S3) GetBlock(ctx context.Context, id string) ([]byte, error) {
 	if int64(len(data)) > s.maxBlockSize {
 		return nil, fmt.Errorf("block %s exceeds configured block size", id)
 	}
+	cache.put(id, data)
 	return data, nil
+}
+
+func (s *S3) cachedBlocks() *blockLRU {
+	s.cacheOnce.Do(func() {
+		if s.blockCache == nil {
+			s.blockCache = newBlockLRU(blockCacheCapacity)
+		}
+	})
+	return s.blockCache
 }
 
 // putConditional stores an immutable content-addressed object. A concurrent

@@ -62,7 +62,7 @@ func TestFMP4CodecStringsPreserveHEVCAndEAC3(t *testing.T) {
 
 func TestFMP4CopyCommandNeverUsesLibx264(t *testing.T) {
 	session := &videoFMP4Session{Dir: t.TempDir(), VideoCodec: "hevc", AudioCodec: "aac", AudioMode: fmp4AudioCopy}
-	window := testFMP4Window(session.Dir, 2370, 150, "w0000002370000-000001")
+	window := testFMP4Window(session.Dir, 2370, videoFMP4WindowSize.Seconds(), "w0000002370000-000001")
 	rawArgs := videoFMP4Args("source", session, window)
 	args := strings.Join(rawArgs, " ")
 	if !strings.Contains(args, "-c:v copy") || !strings.Contains(args, "-c:a copy") || strings.Contains(args, "libx264") {
@@ -71,7 +71,7 @@ func TestFMP4CopyCommandNeverUsesLibx264(t *testing.T) {
 	if !strings.Contains(args, "-hls_segment_type fmp4") || !strings.Contains(args, window.InitAsset) || !strings.Contains(args, "fragment-"+window.Key+"-%06d.m4s") {
 		t.Fatalf("fragmented MP4 arguments missing: %s", args)
 	}
-	if indexOfArgument(rawArgs, "-ss") >= indexOfArgument(rawArgs, "-i") || !strings.Contains(args, "-ss 2370.000") || !strings.Contains(args, "-to 2520.000") || !strings.Contains(args, "-copyts") {
+	if indexOfArgument(rawArgs, "-ss") >= indexOfArgument(rawArgs, "-i") || !strings.Contains(args, "-ss 2370.000") || !strings.Contains(args, "-to 2430.000") || !strings.Contains(args, "-copyts") {
 		t.Fatalf("input-side finite window seek missing: %v", rawArgs)
 	}
 	if strings.Contains(args, " -re ") {
@@ -114,7 +114,7 @@ func TestFMP4WindowRemuxPreservesGlobalTimestamp(t *testing.T) {
 
 func TestFMP4AACCommandOnlyTranscodesAudio(t *testing.T) {
 	session := &videoFMP4Session{Dir: t.TempDir(), VideoCodec: "hevc", AudioCodec: "eac3", AudioMode: fmp4AudioAAC, AudioTranscoding: true}
-	args := strings.Join(videoFMP4Args("source", session, testFMP4Window(session.Dir, 0, 150, "w0000000000000-000001")), " ")
+	args := strings.Join(videoFMP4Args("source", session, testFMP4Window(session.Dir, 0, videoFMP4WindowSize.Seconds(), "w0000000000000-000001")), " ")
 	if !strings.Contains(args, "-c:v copy") || !strings.Contains(args, "-c:a aac") || strings.Contains(args, "libx264") {
 		t.Fatalf("unexpected HEVC+EAC3 args: %s", args)
 	}
@@ -152,9 +152,25 @@ func TestFMP4FarSeekStartsNearbyFiniteWindow(t *testing.T) {
 	}
 }
 
+func TestFMP4WindowsStayShortFiniteAndAdvanceWithoutOverlap(t *testing.T) {
+	if videoFMP4WindowSize < 45*time.Second || videoFMP4WindowSize > 60*time.Second {
+		t.Fatalf("fMP4 window=%s, want 45-60s", videoFMP4WindowSize)
+	}
+	first := testFMP4Window(t.TempDir(), 0, videoFMP4WindowSize.Seconds(), "first")
+	start := nextFMP4WindowStart(first.Start+first.Duration+.002, map[string]*videoFMP4Window{first.Key: first})
+	if start != first.Start+first.Duration {
+		t.Fatalf("next sequential window starts at %.3f, want %.3f", start, first.Start+first.Duration)
+	}
+	rawArgs := videoFMP4Args("source", &videoFMP4Session{Dir: t.TempDir(), VideoCodec: "hevc"}, first)
+	toIndex := indexOfArgument(rawArgs, "-to")
+	if toIndex >= len(rawArgs)-1 || rawArgs[toIndex+1] != "60.000" {
+		t.Fatalf("finite 60-second output bound missing: %v", rawArgs)
+	}
+}
+
 func TestFMP4CachedWindowDoesNotStartWorker(t *testing.T) {
 	dir := t.TempDir()
-	window := testFMP4Window(dir, 120, 150, "w0000000120000-000001")
+	window := testFMP4Window(dir, 120, videoFMP4WindowSize.Seconds(), "w0000000120000-000001")
 	writeFMP4Window(t, dir, window, []byte("cached"))
 	session := &videoFMP4Session{ID: "cached", Duration: 3600, Dir: dir, windows: map[string]*videoFMP4Window{window.Key: window}, lastAccess: time.Now()}
 	server := &Server{videoFMP4Slots: make(chan struct{}, 1)}
@@ -169,7 +185,7 @@ func TestFMP4CachedWindowDoesNotStartWorker(t *testing.T) {
 
 func TestFMP4CacheDoesNotUseAFragmentAfterTheRequestedTime(t *testing.T) {
 	dir := t.TempDir()
-	window := testFMP4Window(dir, 120, 150, "w0000000120000-000001")
+	window := testFMP4Window(dir, 120, videoFMP4WindowSize.Seconds(), "w0000000120000-000001")
 	writeFMP4Window(t, dir, window, []byte("future"))
 	session := &videoFMP4Session{ID: "cached", Duration: 3600, Dir: dir, windows: map[string]*videoFMP4Window{window.Key: window}}
 	fragments, _, _ := videoFMP4FragmentsAt(session, 100, 1)
@@ -196,8 +212,8 @@ func TestFMP4PlayerReleaseStopsWorkerButKeepsCache(t *testing.T) {
 
 func TestFMP4CachePrunesLeastRecentlyUsedInactiveWindow(t *testing.T) {
 	dir := t.TempDir()
-	old := testFMP4Window(dir, 0, 150, "w0000000000000-000001")
-	recent := testFMP4Window(dir, 120, 150, "w0000000120000-000002")
+	old := testFMP4Window(dir, 0, videoFMP4WindowSize.Seconds(), "w0000000000000-000001")
+	recent := testFMP4Window(dir, 120, videoFMP4WindowSize.Seconds(), "w0000000120000-000002")
 	old.lastAccess = time.Unix(1, 0)
 	recent.lastAccess = time.Unix(2, 0)
 	writeFMP4Window(t, dir, old, []byte("old-fragment"))
@@ -248,7 +264,7 @@ func indexOfArgument(args []string, target string) int {
 
 func TestFMP4WindowArgumentsAreStable(t *testing.T) {
 	session := &videoFMP4Session{Dir: "/tmp/cache", VideoCodec: "hevc"}
-	window := testFMP4Window(session.Dir, 30, 150, "w0000000030000-000001")
+	window := testFMP4Window(session.Dir, 30, videoFMP4WindowSize.Seconds(), "w0000000030000-000001")
 	first := videoFMP4Args("source", session, window)
 	second := videoFMP4Args("source", session, window)
 	if !reflect.DeepEqual(first, second) {
