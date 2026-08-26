@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, mseWindowRefillLeadSeconds, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseWatchdogExpired, mseWindowRefillLeadSeconds, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,
@@ -38,6 +38,20 @@ describe('MSE window refill',()=>{
   it('waits until playback is close to a short window tail',()=>{
     expect(mseWindowRefillLeadSeconds).toBeGreaterThanOrEqual(10)
     expect(mseWindowRefillLeadSeconds).toBeLessThanOrEqual(15)
+  })
+
+  it('rebuilds MSE twice before falling back to HLS',()=>{
+    expect(mseFreshRecoveryLimit).toBe(2)
+    expect(mseRecoveryAction(0)).toBe('fresh-mse')
+    expect(mseRecoveryAction(1)).toBe('fresh-mse')
+    expect(mseRecoveryAction(2)).toBe('hls')
+    expect(mseStallWatchdogSeconds).toBeGreaterThanOrEqual(6)
+    expect(mseStallWatchdogSeconds).toBeLessThanOrEqual(10)
+    const limit=mseStallWatchdogSeconds*1000
+    expect(mseWatchdogExpired(1000,1000,1000+limit-1,false)).toBe(false)
+    expect(mseWatchdogExpired(1000,1000,1000+limit,false)).toBe(true)
+    expect(mseWatchdogExpired(1000,1000,1000+limit,true)).toBe(false)
+    expect(mseWatchdogExpired(1000,5000,1000+limit,false)).toBe(false)
   })
 })
 
@@ -133,36 +147,47 @@ describe('video subtitle timeline and lifecycle',()=>{
   })
 
   it('leaves the selected track untouched while MSE switches window init segments',async()=>{
+    let createdSourceBuffer:FakeSourceBuffer|undefined
     class FakeSourceBuffer extends EventTarget {
       mode:AppendMode='segments'
       updating=false
-      buffered={length:0,start:()=>0,end:()=>0} as TimeRanges
-      appendBuffer(){queueMicrotask(()=>this.dispatchEvent(new Event('updateend')))}
+      timestampOffset=0
+      ranges:Array<[number,number]>=[]
+      appendCount=0
+      get buffered(){return {length:this.ranges.length,start:(index:number)=>this.ranges[index][0],end:(index:number)=>this.ranges[index][1]} as TimeRanges}
+      appendBuffer(){
+        this.appendCount+=1
+        if(this.appendCount%2===0)this.ranges=[[this.timestampOffset,this.timestampOffset+2]]
+        queueMicrotask(()=>this.dispatchEvent(new Event('updateend')))
+      }
       abort(){}
-      remove(){queueMicrotask(()=>this.dispatchEvent(new Event('updateend')))}
+      remove(){this.ranges=[];queueMicrotask(()=>this.dispatchEvent(new Event('updateend')))}
     }
     class FakeMediaSource extends EventTarget {
       readyState:'closed'|'open'|'ended'='open'
       duration=Number.NaN
       sourceBuffer=new FakeSourceBuffer()
-      constructor(){super();queueMicrotask(()=>this.dispatchEvent(new Event('sourceopen')))}
+      constructor(){super();createdSourceBuffer=this.sourceBuffer;queueMicrotask(()=>this.dispatchEvent(new Event('sourceopen')))}
       addSourceBuffer(){return this.sourceBuffer as unknown as SourceBuffer}
       removeSourceBuffer(){}
     }
     Object.defineProperty(globalThis,'MediaSource',{configurable:true,value:FakeMediaSource})
     vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:revaro-mse')
     vi.spyOn(URL,'revokeObjectURL').mockImplementation(()=>{})
-    const fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async input=>{
+    const fetchSignals:AbortSignal[]=[]
+    const fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async(input,init)=>{
+      if(init?.signal)fetchSignals.push(init.signal)
       const requestURL=String(input)
       if(requestURL.endsWith('/init.mp4'))return new Response(new Uint8Array([1,2,3]))
       if(requestURL.includes('/index.json'))return Response.json({
-		fragments:[{number:1,start:360,duration:2,url:'/fragment-window-000001.m4s',init_url:'/init-window.mp4'}],available_until:362,done:false,
+		fragments:[{number:1,start:360,duration:2,url:'/fragment-window-000001.m4s',init_url:'/init-window.mp4',window_start:360,timestamp_offset:360}],available_until:362,done:false,
       })
       return new Response(new Uint8Array([4,5,6]))
     })
     const selected={mode:'showing' as TextTrackMode}
-    const element={
-      src:'',currentTime:360,textTracks:[selected],seekable:{length:0,start:()=>0,end:()=>0},
+    const events=new EventTarget()
+    const element={src:'',currentTime:360,readyState:1,networkState:2,paused:false,textTracks:[selected],seekable:{length:0,start:()=>0,end:()=>0},
+      addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events),
       load:vi.fn(),pause:vi.fn(),play:vi.fn(async()=>{}),removeAttribute:vi.fn(function(this:{src:string}){this.src=''}),
     } as unknown as HTMLVideoElement
     const response:VideoFMP4Response={
@@ -173,9 +198,15 @@ describe('video subtitle timeline and lifecycle',()=>{
     const attachment=await attachFMP4Stream({element,response,mimeType:response.mime_type,target:360,autoplay:false,onFatal:vi.fn(),onFragment})
     expect(onFragment).toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledWith('/init-window.mp4',expect.objectContaining({credentials:'same-origin'}))
+    expect(fetchMock).not.toHaveBeenCalledWith('/init.mp4',expect.anything())
     expect(fetchMock).toHaveBeenCalledWith('/fragment-window-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
+    expect(createdSourceBuffer?.timestampOffset).toBe(360)
+    expect(createdSourceBuffer?.buffered.start(0)).toBe(360)
     expect(element.textTracks[0]).toBe(selected)
     expect(selected.mode).toBe('showing')
+    expect(fetchSignals.every(signal=>!signal.aborted)).toBe(true)
+    attachment.seek(600)
+    expect(fetchSignals.every(signal=>signal.aborted)).toBe(true)
     attachment.destroy()
   })
 })

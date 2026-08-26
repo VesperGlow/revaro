@@ -44,6 +44,9 @@ func TestFMP4FragmentIndexBuildsTimeMap(t *testing.T) {
 	if fragments[1].URL != "/api/video/fmp4/session/fragment-"+key+"-000001.m4s" || fragments[1].InitURL != "/api/video/fmp4/session/init-"+key+".mp4" {
 		t.Fatalf("unexpected fragment URL %q", fragments[1].URL)
 	}
+	if fragments[1].WindowStart != 120 || fragments[1].TimestampOffset != 0 {
+		t.Fatalf("fragment time mapping=%+v", fragments[1])
+	}
 }
 
 func TestFMP4CodecStringsPreserveHEVCAndEAC3(t *testing.T) {
@@ -79,7 +82,7 @@ func TestFMP4CopyCommandNeverUsesLibx264(t *testing.T) {
 	}
 }
 
-func TestFMP4WindowRemuxPreservesGlobalTimestamp(t *testing.T) {
+func TestFMP4WindowRemuxPreservesGlobalTimestampsForCopiedVideoAndAAC(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg is unavailable")
@@ -90,25 +93,27 @@ func TestFMP4WindowRemuxPreservesGlobalTimestamp(t *testing.T) {
 	}
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.mp4")
-	generate := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10", "-t", "12", "-c:v", "libx264", "-g", "20", "-an", source)
+	generate := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-g", "20", "-c:a", "flac", source)
 	if output, generateErr := generate.CombinedOutput(); generateErr != nil {
 		t.Skipf("test ffmpeg cannot create H.264 fixture: %v: %s", generateErr, output)
 	}
-	session := &videoFMP4Session{Dir: dir, VideoCodec: "h264"}
+	session := &videoFMP4Session{Dir: dir, VideoCodec: "h264", AudioCodec: "flac", AudioMode: fmp4AudioAAC, AudioTranscoding: true}
 	window := testFMP4Window(dir, 7, 4, "w0000000007000-000001")
 	remux := exec.Command(ffmpeg, videoFMP4Args(source, session, window)...)
 	if output, remuxErr := remux.CombinedOutput(); remuxErr != nil {
 		t.Fatalf("window remux failed: %v: %s", remuxErr, output)
 	}
-	probe := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0", window.Playlist)
-	output, err := probe.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstLine := strings.TrimSpace(strings.Split(string(output), "\n")[0])
-	firstPTS, err := strconv.ParseFloat(firstLine, 64)
-	if err != nil || firstPTS < window.Start-2.5 || firstPTS >= window.Start+1 {
-		t.Fatalf("first packet PTS=%q (%v), want a global keyframe timestamp near %.3f instead of a zero-based window", firstLine, err, window.Start)
+	for _, stream := range []string{"v:0", "a:0"} {
+		probe := exec.Command(ffprobe, "-v", "error", "-select_streams", stream, "-show_entries", "packet=pts_time", "-of", "csv=p=0", window.Playlist)
+		output, probeErr := probe.Output()
+		if probeErr != nil {
+			t.Fatal(probeErr)
+		}
+		firstLine := strings.TrimSpace(strings.Split(string(output), "\n")[0])
+		firstPTS, parseErr := strconv.ParseFloat(firstLine, 64)
+		if parseErr != nil || firstPTS < window.Start-2.5 || firstPTS >= window.Start+1 {
+			t.Fatalf("%s first packet PTS=%q (%v), want global time near %.3f with SourceBuffer offset 0", stream, firstLine, parseErr, window.Start)
+		}
 	}
 }
 
@@ -141,6 +146,14 @@ func TestFMP4SessionCacheReusesFileAndAudioMode(t *testing.T) {
 	if got := server.reusableVideoFMP4Session("file", fmp4AudioCopy, "cached"); got != nil {
 		t.Fatalf("session with a different audio mode was reused: %v", got)
 	}
+	request := startVideoFMP4Request{AudioMode: fmp4AudioAAC, PreviousSessionID: "cached"}
+	if got := server.reusableVideoFMP4SessionForRequest("file", request); got != session {
+		t.Fatalf("normal request did not reuse cached session: %v", got)
+	}
+	request.FreshSession = true
+	if got := server.reusableVideoFMP4SessionForRequest("file", request); got != nil {
+		t.Fatalf("fresh recovery reused suspect session: %v", got)
+	}
 }
 
 func TestFMP4FarSeekStartsNearbyFiniteWindow(t *testing.T) {
@@ -165,6 +178,18 @@ func TestFMP4WindowsStayShortFiniteAndAdvanceWithoutOverlap(t *testing.T) {
 	toIndex := indexOfArgument(rawArgs, "-to")
 	if toIndex >= len(rawArgs)-1 || rawArgs[toIndex+1] != "60.000" {
 		t.Fatalf("finite 60-second output bound missing: %v", rawArgs)
+	}
+}
+
+func TestFMP4FreshRecoveryRequestIsExplicit(t *testing.T) {
+	body, err := json.Marshal(startVideoFMP4Request{Start: 207, AudioMode: fmp4AudioAAC, PreviousSessionID: "suspect", FreshSession: true, FallbackReason: "watchdog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"previous_session_id":"suspect"`, `"fresh_session":true`, `"fallback_reason":"watchdog"`} {
+		if !strings.Contains(string(body), field) {
+			t.Fatalf("fresh recovery request %s does not contain %s", body, field)
+		}
 	}
 }
 

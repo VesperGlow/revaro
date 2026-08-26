@@ -128,6 +128,7 @@ type startVideoFMP4Request struct {
 	Start             float64 `json:"start"`
 	AudioMode         string  `json:"audio_mode"`
 	PreviousSessionID string  `json:"previous_session_id"`
+	FreshSession      bool    `json:"fresh_session"`
 	FallbackReason    string  `json:"fallback_reason"`
 }
 
@@ -159,11 +160,13 @@ type startVideoFMP4Response struct {
 }
 
 type fmp4Fragment struct {
-	Number   int     `json:"number"`
-	Start    float64 `json:"start"`
-	Duration float64 `json:"duration"`
-	URL      string  `json:"url"`
-	InitURL  string  `json:"init_url"`
+	Number          int     `json:"number"`
+	Start           float64 `json:"start"`
+	Duration        float64 `json:"duration"`
+	URL             string  `json:"url"`
+	InitURL         string  `json:"init_url"`
+	WindowStart     float64 `json:"window_start"`
+	TimestampOffset float64 `json:"timestamp_offset"`
 }
 
 type fmp4IndexResponse struct {
@@ -243,7 +246,14 @@ func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid fMP4 audio mode")
 		return
 	}
-	if session := s.reusableVideoFMP4Session(f.ID, in.AudioMode, in.PreviousSessionID); session != nil {
+	if in.FreshSession && in.PreviousSessionID != "" {
+		if suspect := s.videoFMP4Session(in.PreviousSessionID); suspect != nil && suspect.FileID == f.ID {
+			s.removeVideoFMP4Session(suspect.ID)
+			s.log.Info("discarded suspect fMP4 session before fresh recovery", "file", f.ID, "session", suspect.ID, "reason", strings.TrimSpace(in.FallbackReason))
+		}
+	}
+	reusableSession := s.reusableVideoFMP4SessionForRequest(f.ID, in)
+	if session := reusableSession; session != nil {
 		if in.Start >= session.Duration {
 			problem(w, http.StatusBadRequest, "fMP4 start time is beyond the video duration")
 			return
@@ -324,6 +334,9 @@ func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logVideoFMP4Selection(f.ID, session, in.FallbackReason, false)
+	if in.FreshSession {
+		s.log.Info("fresh fMP4 session created", "file", f.ID, "session", session.ID, "target", in.Start, "reason", strings.TrimSpace(in.FallbackReason))
+	}
 	writeJSON(w, http.StatusCreated, videoFMP4Response(session, window, in.Start))
 }
 
@@ -520,6 +533,10 @@ func fmp4AudioCodecString(codec string) (string, error) {
 }
 
 func videoFMP4Args(sourceURL string, session *videoFMP4Session, window *videoFMP4Window) []string {
+	// Keep copied video and encoded AAC on the source's global clock. FFmpeg's
+	// input seek can retain a preceding video keyframe, so resetting each window
+	// to zero would lose that delta and desynchronise audio, subtitles, and the
+	// API's global fragment map. The browser therefore receives offset=0.
 	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-copyts"}
 	if window.Start > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(window.Start, 'f', 3, 64))
@@ -724,8 +741,8 @@ func fmp4FragmentIndex(path, sessionID string, windowStart float64, initAsset st
 			continue
 		}
 		fragments = append(fragments, fmp4Fragment{Number: number, Start: start, Duration: pendingDuration,
-			URL:     "/api/video/fmp4/" + sessionID + "/" + line,
-			InitURL: "/api/video/fmp4/" + sessionID + "/" + initAsset})
+			URL: "/api/video/fmp4/" + sessionID + "/" + line, InitURL: "/api/video/fmp4/" + sessionID + "/" + initAsset,
+			WindowStart: windowStart, TimestampOffset: 0})
 		start += pendingDuration
 		pendingDuration = 0
 	}
@@ -865,6 +882,12 @@ func (s *Server) stopVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
 		return
 	}
+	if r.URL.Query().Get("discard") == "1" {
+		s.removeVideoFMP4Session(session.ID)
+		s.log.Info("fMP4 suspect session discarded", "session", session.ID, "file", session.FileID, "reason", strings.TrimSpace(r.URL.Query().Get("reason")))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	// Keep completed fragments for reuse, but do not keep reading the source after
 	// the player has gone away.
 	session.stopWorkers()
@@ -887,6 +910,13 @@ func (s *Server) reusableVideoFMP4Session(fileID, audioMode, preferredID string)
 		}
 	}
 	return nil
+}
+
+func (s *Server) reusableVideoFMP4SessionForRequest(fileID string, request startVideoFMP4Request) *videoFMP4Session {
+	if request.FreshSession {
+		return nil
+	}
+	return s.reusableVideoFMP4Session(fileID, request.AudioMode, request.PreviousSessionID)
 }
 
 func reusableFMP4Session(session *videoFMP4Session, fileID, audioMode string) bool {

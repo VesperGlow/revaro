@@ -5,7 +5,7 @@ import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
 import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
+import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -49,7 +49,9 @@ let controlsTimer=0
 let volumeTimer=0
 let lastAudibleVolume=.9
 let directFallbackStarted=false
-let mseFallbackStarted=false
+let mseRecoveryStarted=false
+let mseFreshFailures=0
+let mseRecoveryAnchor=-1
 let progressLoaded=false
 let restoredPosition=false
 let serverPosition=0
@@ -150,19 +152,23 @@ function showControls(persist=false){
   if(!persist&&playing.value)controlsTimer=window.setTimeout(()=>controlsVisible.value=false,2400)
 }
 
-async function releaseFMP4Session(id:string){
+async function releaseFMP4Session(id:string,discard=false,reason=''){
   if(!id)return
-  try{await api(`/api/video/fmp4/${id}`,{method:'DELETE'})}catch{/* 服务端 TTL 仍会兜底 */}
+  const query=discard?`?discard=1&reason=${encodeURIComponent(reason)}`:''
+  try{await api(`/api/video/fmp4/${id}${query}`,{method:'DELETE'})}catch{/* 服务端 TTL 仍会兜底 */}
 }
 function releaseHLSSession(id:string){
   if(id)void fetch(`/api/video/hls/${id}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
 }
-async function startMSEStream(start:number,autoplay=true){
+interface MSEStartOptions { fresh?:boolean;suspectSessionID?:string;recoveryReason?:string }
+async function startMSEStream(start:number,autoplay=true,recovery:MSEStartOptions={}){
   if(typeof MediaSource==='undefined'){await startCompatibilityStream(start,autoplay,'浏览器没有 MediaSource Extensions');return}
   const generation=++playbackGeneration
+  const previousFMP4=recovery.suspectSessionID||fmp4SessionId||sessionStorage.getItem(fmp4SessionKey.value)||''
+  if(recovery.fresh){fmp4SessionId='';sessionStorage.removeItem(fmp4SessionKey.value)}
   const previousHLS=hlsSessionId;hlsSessionId=''
   prepareKind.value=fmp4SessionId||previousHLS||player?'seek':'initial';prepareMode.value='mse'
-  starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=true;directSource.value='';mseFallbackStarted=false;showControls(true)
+  starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=true;directSource.value='';showControls(true)
   if(prepareKind.value==='seek')video.value?.pause()
   resetPlayback();releaseHLSSession(previousHLS)
   await nextTick();applySubtitle();if(generation!==playbackGeneration)return
@@ -175,54 +181,71 @@ async function startMSEStream(start:number,autoplay=true){
     console.info('[revaro] MSE combined copy supported:',compatibility.combinedCopySupported,'combined AAC supported:',compatibility.combinedAACSupported)
     if(compatibility.mode==='hls'){
       console.warn('[revaro] selected mode: hls-transcode; fallback reason:',compatibility.fallbackReason)
+      if(recovery.fresh)void releaseFMP4Session(previousFMP4,true,compatibility.fallbackReason)
+      mseRecoveryStarted=false
       await startCompatibilityStream(start,autoplayPending.value,compatibility.fallbackReason)
       return
     }
     if(compatibility.mode==='error'){
-      starting.value=false;buffering.value=false;error.value=`MSE 音频输出不可用：${compatibility.fallbackReason}`
+      if(recovery.fresh)void releaseFMP4Session(previousFMP4,true,compatibility.fallbackReason)
+      starting.value=false;buffering.value=false;mseRecoveryStarted=false;error.value=`MSE 音频输出不可用：${compatibility.fallbackReason}`
       console.error('[revaro] selected mode: mse-error; HEVC remains untouched; reason:',compatibility.fallbackReason);showControls(true)
       return
     }
-    const previousSessionID=fmp4SessionId||sessionStorage.getItem(fmp4SessionKey.value)||''
-    const response=await api<VideoFMP4Response>(`/api/files/${props.item.id}/video/fmp4`,{method:'POST',body:JSON.stringify({start,audio_mode:compatibility.mode,previous_session_id:previousSessionID,fallback_reason:compatibility.fallbackReason})},70000)
+    const fallbackReason=recovery.recoveryReason||compatibility.fallbackReason
+    console.info('[revaro][mse] requesting session',{target:start,fresh_session:Boolean(recovery.fresh),previous_session_id:previousFMP4||'none',reason:fallbackReason||'none'})
+    const response=await api<VideoFMP4Response>(`/api/files/${props.item.id}/video/fmp4`,{method:'POST',body:JSON.stringify({start,audio_mode:compatibility.mode,previous_session_id:previousFMP4,fresh_session:Boolean(recovery.fresh),fallback_reason:fallbackReason})},70000)
     if(generation!==playbackGeneration){void releaseFMP4Session(response.session_id);return}
     const el=video.value;if(!el)throw new Error('播放器已经关闭')
     fmp4SessionId=response.session_id;sessionStorage.setItem(fmp4SessionKey.value,response.session_id);streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
     videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec||'';transcoding.value=false;audioTranscoding.value=response.audio_transcoding
     const attachment=await attachFMP4Stream({
       element:el,response,mimeType:compatibility.mimeType,target:currentTime.value,autoplay:false,
-      onFatal:reason=>fallbackFromMSE(reason),
+      onFatal:reason=>recoverFromMSE(reason),
       onFragment:()=>{buffering.value=false},
     })
     if(generation!==playbackGeneration){attachment.destroy();void releaseFMP4Session(response.session_id);return}
     player=createUnifiedVideoPlayer('mse',el,response.start,attachment.destroy,targetTime=>{buffering.value=true;showControls(true);return attachment.seek(targetTime)});player.setVolume(volume.value,muted.value)
-    starting.value=false;buffering.value=false;applySubtitle()
+    starting.value=false;buffering.value=false;mseRecoveryStarted=false;applySubtitle()
     console.info('[revaro] selected mode:',response.selected_mode,'video:',response.video_codec,'audio:',response.audio_codec||'none','output audio:',response.output_audio_codec||'none')
     if(autoplayPending.value)void player.play().catch(()=>{});showControls()
   }catch(caught){
     if(generation!==playbackGeneration)return
-    const failedSession=fmp4SessionId;fmp4SessionId='';resetPlayback();void releaseFMP4Session(failedSession)
+    const failedSession=fmp4SessionId;fmp4SessionId='';resetPlayback();void releaseFMP4Session(failedSession,Boolean(recovery.fresh),recovery.recoveryReason||'MSE attach failed')
     const reason=caught instanceof Error?caught.message:'MSE fMP4 启动失败'
     const confirmedBrowserFailure=/SourceBuffer|媒体解码|无法创建 MSE/i.test(reason)
-    if(confirmedBrowserFailure){await startCompatibilityStream(start,autoplayPending.value,reason);return}
+    if(recovery.fresh||confirmedBrowserFailure){starting.value=false;mseRecoveryStarted=false;recoverFromMSE(`MSE attachment failed: ${reason}`);return}
     starting.value=false;buffering.value=false;mseMode.value=true;error.value=`MSE 原码流启动失败：${reason}`
     console.error('[revaro] selected mode: mse-error; no H.264 fallback; reason:',reason);showControls(true)
   }
 }
-function fallbackFromMSE(reason:string){
-  if(mseFallbackStarted||starting.value)return
-  mseFallbackStarted=true
-  console.warn('[revaro] MSE fallback to HLS:',reason)
-  void startCompatibilityStream(currentTime.value||savedPosition(),playing.value||autoplayPending.value,reason)
+function recoverFromMSE(reason:string){
+  if(mseRecoveryStarted||starting.value)return
+  mseRecoveryStarted=true
+  const target=currentTime.value||savedPosition()
+  if(mseRecoveryAnchor<0||Math.abs(target-mseRecoveryAnchor)>5){mseRecoveryAnchor=target;mseFreshFailures=0}
+  const action=mseRecoveryAction(mseFreshFailures)
+  const autoplay=playing.value||autoplayPending.value
+  const suspect=fmp4SessionId||sessionStorage.getItem(fmp4SessionKey.value)||''
+  sessionStorage.removeItem(fmp4SessionKey.value)
+  console.warn('[revaro][mse] recovery selected',{action,target,reason,fresh_failures:mseFreshFailures,suspect_session:suspect||'none'})
+  if(action==='fresh-mse'){
+    mseFreshFailures+=1
+    void startMSEStream(target,autoplay,{fresh:true,suspectSessionID:suspect,recoveryReason:reason})
+    return
+  }
+  mseRecoveryStarted=false
+  console.warn('[revaro][mse] fallback to HLS after fresh recovery failures',{target,reason,fresh_failures:mseFreshFailures})
+  void startCompatibilityStream(target,autoplay,`MSE fresh recovery exhausted: ${reason}`,true)
 }
-async function startCompatibilityStream(start:number,autoplay=true,fallbackReason='MSE 不可用'){
+async function startCompatibilityStream(start:number,autoplay=true,fallbackReason='MSE 不可用',discardFMP4=false){
   const generation=++playbackGeneration
   const previous=hlsSessionId
   const previousFMP4=fmp4SessionId;fmp4SessionId=''
   prepareKind.value=previous||previousFMP4||player?'seek':'initial';prepareMode.value='hls'
   starting.value=true;buffering.value=false;autoplayPending.value=autoplay;error.value='';directMode.value=false;mseMode.value=false;directSource.value='';showControls(true)
   if(prepareKind.value==='seek')video.value?.pause()
-  resetPlayback();void releaseFMP4Session(previousFMP4);await nextTick();applySubtitle()
+  resetPlayback();void releaseFMP4Session(previousFMP4,discardFMP4,fallbackReason);await nextTick();applySubtitle()
   if(generation!==playbackGeneration)return
   try{
     const previousSessionID=previous||sessionStorage.getItem(sessionKey.value)||''
@@ -264,6 +287,10 @@ function onLoadedMetadata(){
 function onTimeUpdate(){
   const el=video.value;if(!el)return
   currentTime.value=(directMode.value?0:streamOffset.value)+el.currentTime
+  if(mseFreshFailures&&mseRecoveryAnchor>=0&&Math.abs(currentTime.value-mseRecoveryAnchor)>10){
+    console.info('[revaro][mse] recovery streak cleared after playback advanced',{from:mseRecoveryAnchor,to:currentTime.value})
+    mseFreshFailures=0;mseRecoveryAnchor=-1
+  }
   window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>persistProgress(false),600)
   if(!remoteSaveTimer)remoteSaveTimer=window.setTimeout(()=>{remoteSaveTimer=0;persistProgress(true)},5000)
 }
@@ -275,7 +302,7 @@ function onCanPlay(){buffering.value=false}
 function onVideoError(){
   if(starting.value)return
   if(directMode.value&&!directFallbackStarted){directFallbackStarted=true;void startMSEStream(currentTime.value||savedPosition(),true);return}
-  if(mseMode.value)fallbackFromMSE('浏览器报告 MSE 媒体解码错误')
+  if(mseMode.value)recoverFromMSE('浏览器报告 MSE 媒体解码错误')
 }
 function seekTo(target:number){
   const el=video.value
