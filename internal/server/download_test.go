@@ -98,7 +98,7 @@ func TestURLDownloadStreamsIntoDrive(t *testing.T) {
 	if err := app.db.QueryRow(`SELECT object_key FROM files WHERE parent_id=? AND name=?`, RootID, job.Name).Scan(&objectKey); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := app.store.ReadFile(context.Background(), objectKey, int64(len(payload)))
+	stored, err := app.store.GetObject(context.Background(), objectKey, int64(len(payload)))
 	if err != nil || !bytes.Equal(stored, payload) {
 		t.Fatalf("stored bytes=%d error=%v", len(stored), err)
 	}
