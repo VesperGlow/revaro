@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,40 +18,20 @@ import (
 )
 
 const (
-	videoFMP4IdleTTL     = 20 * time.Minute
-	videoFMP4StartWait   = 45 * time.Second
-	videoFMP4IndexWait   = 20 * time.Second
+	videoFMP4IdleTTL     = 5 * time.Minute
 	maxVideoFMP4Sessions = 4
-	videoFMP4WindowSize  = 60 * time.Second
-	videoFMP4WindowStep  = 30 * time.Second
-	videoFMP4WindowLead  = 10 * time.Second
-	videoFMP4CacheBytes  = int64(1 << 30)
 	fmp4AudioCopy        = "copy"
 	fmp4AudioAAC         = "aac"
 )
 
-var videoFMP4AssetName = regexp.MustCompile(`^(init-w[0-9]+-[0-9]+\.mp4|fragment-w[0-9]+-[0-9]+-[0-9]{6}\.m4s)$`)
-
-type videoFMP4Window struct {
-	Key          string
-	Start        float64
-	Duration     float64
-	Playlist     string
-	InitAsset    string
-	FragmentGlob string
-	active       bool
-	complete     bool
-	err          string
-	cancel       context.CancelFunc
-	lastAccess   time.Time
-	size         int64
-}
-
+// videoFMP4Session is only a cancellable description of one stdout stream.
+// It owns no fragment files, window cache, playlist, index poller, or prewarm
+// worker. A seek creates a new session and cancels the previous one.
 type videoFMP4Session struct {
 	ID               string
 	FileID           string
+	RequestedStart   float64
 	Duration         float64
-	Dir              string
 	MIMEType         string
 	VideoContentType string
 	AudioContentType string
@@ -69,61 +46,52 @@ type videoFMP4Session struct {
 	FrameRate        float64
 	File             File
 
-	mu               sync.RWMutex
-	lastAccess       time.Time
-	ctx              context.Context
-	cancel           context.CancelFunc
-	windows          map[string]*videoFMP4Window
-	nextWindow       uint64
-	prewarmSourceKey string
-	prewarmWindowKey string
-	prewarmPending   bool
-	workers          sync.WaitGroup
-	destroyed        bool
-	destroyOnce      sync.Once
-}
-
-func (session *videoFMP4Session) touch() {
-	session.mu.Lock()
-	session.lastAccess = time.Now()
-	session.mu.Unlock()
+	mu           sync.Mutex
+	lastAccess   time.Time
+	active       bool
+	streamCancel context.CancelFunc
+	ctx          context.Context
+	cancel       context.CancelFunc
+	destroyOnce  sync.Once
 }
 
 func (session *videoFMP4Session) snapshot() time.Time {
-	session.mu.RLock()
-	defer session.mu.RUnlock()
+	session.mu.Lock()
+	defer session.mu.Unlock()
 	return session.lastAccess
 }
 
-func (session *videoFMP4Session) stopWorkers() {
+func (session *videoFMP4Session) beginStream(cancel context.CancelFunc) bool {
 	session.mu.Lock()
-	var cancels []context.CancelFunc
-	for _, window := range session.windows {
-		if window.active && window.cancel != nil {
-			cancels = append(cancels, window.cancel)
-		}
+	defer session.mu.Unlock()
+	if session.active || session.ctx.Err() != nil {
+		return false
 	}
+	session.active = true
+	session.streamCancel = cancel
+	session.lastAccess = time.Now()
+	return true
+}
+
+func (session *videoFMP4Session) finishStream() {
+	session.mu.Lock()
+	session.active = false
+	session.streamCancel = nil
+	session.lastAccess = time.Now()
 	session.mu.Unlock()
-	for _, cancel := range cancels {
-		cancel()
-	}
 }
 
 func (session *videoFMP4Session) destroy() {
 	session.destroyOnce.Do(func() {
 		session.mu.Lock()
-		session.destroyed = true
+		streamCancel := session.streamCancel
 		session.mu.Unlock()
+		if streamCancel != nil {
+			streamCancel()
+		}
 		if session.cancel != nil {
 			session.cancel()
 		}
-		done := make(chan struct{})
-		go func() { session.workers.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
-		_ = os.RemoveAll(session.Dir)
 	})
 }
 
@@ -153,44 +121,12 @@ type videoFMP4MetadataResponse struct {
 type startVideoFMP4Response struct {
 	videoFMP4MetadataResponse
 	SessionID        string  `json:"session_id"`
-	InitURL          string  `json:"init_url"`
-	IndexURL         string  `json:"index_url"`
-	PrewarmURL       string  `json:"prewarm_url"`
+	StreamURL        string  `json:"stream_url"`
 	Start            float64 `json:"start"`
 	RequestedStart   float64 `json:"requested_start"`
 	OutputAudioCodec string  `json:"output_audio_codec,omitempty"`
 	AudioTranscoding bool    `json:"audio_transcoding"`
 	SelectedMode     string  `json:"selected_mode"`
-}
-
-type prewarmVideoFMP4Request struct {
-	Target float64 `json:"target"`
-}
-
-type prewarmVideoFMP4Response struct {
-	Status      string  `json:"status"`
-	Target      float64 `json:"target,omitempty"`
-	WindowStart float64 `json:"window_start,omitempty"`
-	CacheHit    bool    `json:"cache_hit,omitempty"`
-}
-
-type fmp4Fragment struct {
-	Number            int     `json:"number"`
-	Start             float64 `json:"start"`
-	Duration          float64 `json:"duration"`
-	URL               string  `json:"url"`
-	InitURL           string  `json:"init_url"`
-	WindowStart       float64 `json:"window_start"`
-	WindowEnd         float64 `json:"window_end"`
-	TimestampOffset   float64 `json:"timestamp_offset"`
-	TimingApproximate bool    `json:"timing_approximate"`
-}
-
-type fmp4IndexResponse struct {
-	Fragments      []fmp4Fragment `json:"fragments"`
-	AvailableUntil float64        `json:"available_until"`
-	Done           bool           `json:"done"`
-	Error          string         `json:"error,omitempty"`
 }
 
 type fmp4Probe struct {
@@ -228,13 +164,7 @@ func (s *Server) videoFMP4Metadata(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, f)
-	if err != nil {
-		problem(w, http.StatusBadGateway, "could not open video for fMP4 probe")
-		return
-	}
-	defer closeSource()
-	info, err := probeFMP4Source(ctx, s.cfg.FFmpegPath, sourceURL)
+	info, err := s.probeFMP4File(ctx, f)
 	if err != nil {
 		s.log.Warn("fMP4 probe failed", "file", f.ID, "error", err)
 		problem(w, http.StatusUnprocessableEntity, "video codec cannot be remuxed to browser fMP4")
@@ -263,98 +193,46 @@ func (s *Server) startVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid fMP4 audio mode")
 		return
 	}
-	if in.FreshSession && in.PreviousSessionID != "" {
-		if suspect := s.videoFMP4Session(in.PreviousSessionID); suspect != nil && suspect.FileID == f.ID {
-			s.removeVideoFMP4Session(suspect.ID)
-			s.log.Info("discarded suspect fMP4 session before fresh recovery", "file", f.ID, "session", suspect.ID, "reason", strings.TrimSpace(in.FallbackReason))
+	// A seek/retry is a handoff, never a cache lookup. Cancel the old HTTP
+	// stream and its FFmpeg/source Reader before probing and starting the new one.
+	if in.PreviousSessionID != "" {
+		previous := s.videoFMP4Session(in.PreviousSessionID)
+		if previous != nil && previous.FileID == f.ID {
+			s.removeVideoFMP4Session(in.PreviousSessionID)
 		}
-	}
-	reusableSession := s.reusableVideoFMP4SessionForRequest(f.ID, in)
-	if session := reusableSession; session != nil {
-		if in.Start >= session.Duration {
-			problem(w, http.StatusBadRequest, "fMP4 start time is beyond the video duration")
-			return
-		}
-		window, cacheHit, err := s.ensureVideoFMP4Window(session, in.Start)
-		if err != nil {
-			problem(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		if err := waitForVideoFMP4Window(r.Context(), session, window, in.Start); err != nil {
-			problem(w, http.StatusBadGateway, "fMP4 window failed to start")
-			return
-		}
-		s.logVideoFMP4Selection(f.ID, session, in.FallbackReason, true)
-		s.log.Info("fMP4 window selected", "file", f.ID, "session", session.ID, "target", in.Start, "window_start", window.Start, "cache_hit", cacheHit)
-		writeJSON(w, http.StatusCreated, videoFMP4Response(session, window, in.Start))
-		return
-	}
-	dir, err := os.MkdirTemp("", "revaro-video-fmp4-")
-	if err != nil {
-		problem(w, http.StatusInternalServerError, "could not create fMP4 fragment cache")
-		return
 	}
 	probeCtx, probeCancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer probeCancel()
-	sourceURL, closeSource, err := s.startMediaHLSSource(probeCtx, f)
+	info, err := s.probeFMP4File(probeCtx, f)
 	if err != nil {
-		_ = os.RemoveAll(dir)
-		problem(w, http.StatusBadGateway, "could not open video for fMP4 remux")
-		return
-	}
-	info, err := probeFMP4Source(probeCtx, s.cfg.FFmpegPath, sourceURL)
-	closeSource()
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		s.log.Warn("fMP4 creation failed", "file", f.ID, "error", err)
+		s.log.Warn("fMP4 creation probe failed", "file", f.ID, "error", err)
 		problem(w, http.StatusUnprocessableEntity, "video codec cannot be remuxed to browser fMP4")
 		return
 	}
 	if in.Start >= info.duration {
-		_ = os.RemoveAll(dir)
 		problem(w, http.StatusBadRequest, "fMP4 start time is beyond the video duration")
 		return
 	}
 	if in.AudioMode == fmp4AudioCopy && info.audioCodec != "" && info.audioCodecString == "" {
-		_ = os.RemoveAll(dir)
 		problem(w, http.StatusUnprocessableEntity, "source audio cannot be copied into browser fMP4")
 		return
 	}
 	ctx, cancel := context.WithCancel(s.audioHLSCtx)
 	mimeType, audioContentType, outputAudioCodec := fmp4OutputTypes(info, in.AudioMode)
 	session := &videoFMP4Session{
-		ID: ids.New(), FileID: f.ID, Duration: info.duration, Dir: dir,
+		ID: ids.New(), FileID: f.ID, RequestedStart: in.Start, Duration: info.duration,
 		MIMEType: mimeType, VideoContentType: info.videoContentType, AudioContentType: audioContentType,
 		VideoCodec: info.videoCodec, AudioCodec: info.audioCodec, OutputAudioCodec: outputAudioCodec,
 		AudioMode: in.AudioMode, AudioTranscoding: in.AudioMode == fmp4AudioAAC && info.audioCodec != "",
 		Width: info.width, Height: info.height, Bitrate: info.bitrate, FrameRate: info.frameRate,
-		File: f, lastAccess: time.Now(), ctx: ctx, cancel: cancel, windows: make(map[string]*videoFMP4Window),
+		File: f, lastAccess: time.Now(), ctx: ctx, cancel: cancel,
 	}
 	s.videoFMP4Mu.Lock()
 	s.videoFMP4Sessions[session.ID] = session
 	s.videoFMP4Mu.Unlock()
 	s.pruneVideoFMP4Sessions(session.ID)
-	window, _, err := s.ensureVideoFMP4Window(session, in.Start)
-	if err != nil {
-		s.removeVideoFMP4Session(session.ID)
-		problem(w, http.StatusTooManyRequests, err.Error())
-		return
-	}
-	if err := waitForVideoFMP4Window(r.Context(), session, window, in.Start); err != nil {
-		s.removeVideoFMP4Session(session.ID)
-		if errors.Is(err, context.DeadlineExceeded) {
-			problem(w, http.StatusGatewayTimeout, "fMP4 window took too long to start")
-		} else {
-			s.log.Warn("fMP4 window failed", "file", f.ID, "session", session.ID, "error", err)
-			problem(w, http.StatusBadGateway, "fMP4 window failed to start")
-		}
-		return
-	}
-	s.logVideoFMP4Selection(f.ID, session, in.FallbackReason, false)
-	if in.FreshSession {
-		s.log.Info("fresh fMP4 session created", "file", f.ID, "session", session.ID, "target", in.Start, "reason", strings.TrimSpace(in.FallbackReason))
-	}
-	writeJSON(w, http.StatusCreated, videoFMP4Response(session, window, in.Start))
+	s.logVideoFMP4Selection(f.ID, session, in.FallbackReason, in.FreshSession)
+	writeJSON(w, http.StatusCreated, videoFMP4Response(session))
 }
 
 func (s *Server) fmp4File(w http.ResponseWriter, r *http.Request) (File, bool) {
@@ -374,15 +252,25 @@ func (s *Server) fmp4File(w http.ResponseWriter, r *http.Request) (File, bool) {
 	return f, true
 }
 
-func (s *Server) logVideoFMP4Selection(fileID string, session *videoFMP4Session, fallbackReason string, reused bool) {
+func (s *Server) probeFMP4File(ctx context.Context, f File) (fmp4MediaInfo, error) {
+	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, f)
+	if err != nil {
+		return fmp4MediaInfo{}, err
+	}
+	defer closeSource()
+	return probeFMP4Source(ctx, s.cfg.FFmpegPath, sourceURL)
+}
+
+func (s *Server) logVideoFMP4Selection(fileID string, session *videoFMP4Session, fallbackReason string, fresh bool) {
 	selectedMode := "mse-copy"
 	if session.AudioTranscoding {
 		selectedMode = "mse-copy-video-aac-audio"
 	}
 	s.log.Info("video playback selected", "file", fileID, "video_codec", session.VideoCodec,
-		"audio_codec", session.AudioCodec, "selected_mode", selectedMode, "video_transcoding", false,
-		"audio_transcoding", session.AudioTranscoding, "fallback_reason", strings.TrimSpace(fallbackReason),
-		"session", session.ID, "session_reused", reused)
+		"audio_codec", session.AudioCodec, "selected_mode", selectedMode, "transport", "ffmpeg-stdout-http-mse",
+		"video_transcoding", false, "audio_transcoding", session.AudioTranscoding,
+		"fallback_reason", strings.TrimSpace(fallbackReason), "session", session.ID,
+		"requested_start", session.RequestedStart, "fresh_recovery", fresh)
 }
 
 func fmp4MetadataResponse(info fmp4MediaInfo) videoFMP4MetadataResponse {
@@ -394,7 +282,7 @@ func fmp4MetadataResponse(info fmp4MediaInfo) videoFMP4MetadataResponse {
 	}
 }
 
-func videoFMP4Response(session *videoFMP4Session, window *videoFMP4Window, requestedStart float64) startVideoFMP4Response {
+func videoFMP4Response(session *videoFMP4Session) startVideoFMP4Response {
 	selectedMode := "mse-copy"
 	if session.AudioTranscoding {
 		selectedMode = "mse-copy-video-aac-audio"
@@ -406,11 +294,11 @@ func videoFMP4Response(session *videoFMP4Session, window *videoFMP4Window, reque
 		AudioCodec: session.AudioCodec, Width: session.Width, Height: session.Height,
 		Bitrate: session.Bitrate, FrameRate: session.FrameRate,
 	}
-	base := "/api/video/fmp4/" + session.ID
 	return startVideoFMP4Response{
-		videoFMP4MetadataResponse: metadata, SessionID: session.ID, InitURL: base + "/" + window.InitAsset,
-		IndexURL: base + "/index.json", PrewarmURL: base + "/prewarm", Start: 0, RequestedStart: requestedStart,
-		OutputAudioCodec: session.OutputAudioCodec, AudioTranscoding: session.AudioTranscoding, SelectedMode: selectedMode,
+		videoFMP4MetadataResponse: metadata, SessionID: session.ID,
+		StreamURL: "/api/video/fmp4/" + session.ID + "/stream", Start: 0,
+		RequestedStart: session.RequestedStart, OutputAudioCodec: session.OutputAudioCodec,
+		AudioTranscoding: session.AudioTranscoding, SelectedMode: selectedMode,
 	}
 }
 
@@ -549,14 +437,14 @@ func fmp4AudioCodecString(codec string) (string, error) {
 	}
 }
 
-func videoFMP4Args(sourceURL string, session *videoFMP4Session, window *videoFMP4Window) []string {
-	// Keep copied video and encoded AAC on the source's global clock. FFmpeg's
-	// input seek can retain a preceding video keyframe, so resetting each window
-	// to zero would lose that delta and desynchronise audio, subtitles, and the
-	// API's global fragment map. The browser therefore receives offset=0.
-	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-copyts"}
-	if window.Start > 0 {
-		args = append(args, "-ss", strconv.FormatFloat(window.Start, 'f', 3, 64))
+// videoFMP4Args writes a fragmented MP4 directly to stdout. Each seek stream
+// has a local clock; the browser places it at RequestedStart with the exact MSE
+// timestampOffset instead of estimating timestamps from HLS EXTINF values.
+// Video is always stream-copied; only incompatible audio may become AAC.
+func videoFMP4Args(sourceURL string, session *videoFMP4Session) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+	if session.RequestedStart > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(session.RequestedStart, 'f', 3, 64))
 	}
 	args = append(args, "-i", sourceURL,
 		"-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-c:v", "copy")
@@ -570,574 +458,108 @@ func videoFMP4Args(sourceURL string, session *videoFMP4Session, window *videoFMP
 	} else {
 		args = append(args, "-c:a", "copy")
 	}
-	args = append(args, "-to", strconv.FormatFloat(window.Start+window.Duration, 'f', 3, 64))
 	return append(args,
-		"-max_muxing_queue_size", "2048",
-		"-f", "hls", "-hls_segment_type", "fmp4", "-hls_time", "2", "-hls_list_size", "0",
-		"-hls_playlist_type", "event", "-hls_flags", "temp_file+independent_segments",
-		"-hls_fmp4_init_filename", window.InitAsset,
-		"-hls_segment_filename", filepath.Join(session.Dir, "fragment-"+window.Key+"-%06d.m4s"), window.Playlist,
-	)
+		"-max_muxing_queue_size", "2048", "-avoid_negative_ts", "make_zero",
+		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-frag_duration", "2000000", "-min_frag_duration", "500000",
+		"-flush_packets", "1", "-f", "mp4", "pipe:1")
 }
 
-func (s *Server) runVideoFMP4Window(ctx context.Context, session *videoFMP4Session, window *videoFMP4Window) {
-	defer session.workers.Done()
-	defer func() { <-s.videoFMP4Slots }()
-	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, session.File)
+func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
+	session := s.videoFMP4Session(chi.URLParam(r, "session"))
+	if session == nil {
+		problem(w, http.StatusNotFound, "fMP4 stream session not found")
+		return
+	}
+	streamCtx, streamCancel := context.WithCancel(r.Context())
+	defer streamCancel()
+	stopSessionHook := context.AfterFunc(session.ctx, streamCancel)
+	defer stopSessionHook()
+	if !session.beginStream(streamCancel) {
+		problem(w, http.StatusConflict, "fMP4 stream session is already active or closed")
+		return
+	}
+	defer session.finishStream()
+
+	select {
+	case s.videoFMP4Slots <- struct{}{}:
+		defer func() { <-s.videoFMP4Slots }()
+	case <-streamCtx.Done():
+		return
+	case <-time.After(5 * time.Second):
+		problem(w, http.StatusTooManyRequests, "another fMP4 stream is already active")
+		return
+	}
+	sourceURL, closeSource, err := s.startMediaHLSSource(streamCtx, session.File)
 	if err != nil {
-		s.finishVideoFMP4Window(session, window, err)
+		problem(w, http.StatusBadGateway, "could not open video stream source")
 		return
 	}
 	defer closeSource()
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, videoFMP4Args(sourceURL, session, window)...)
+	cmd := exec.CommandContext(streamCtx, s.cfg.FFmpegPath, videoFMP4Args(sourceURL, session)...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not create fMP4 stdout stream")
+		return
+	}
 	stderr := &limitedBuffer{limit: 64 << 10}
 	cmd.Stderr = stderr
-	err = cmd.Run()
-	if err != nil {
-		if ctx.Err() != nil {
-			err = ctx.Err()
-		} else {
-			err = mediaCommandError("ffmpeg fMP4 fragments", err, nil, stderr.String())
-		}
-	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.log.Warn("fMP4 window remux stopped", "file", session.FileID, "session", session.ID, "window", window.Key, "error", err)
-	}
-	s.finishVideoFMP4Window(session, window, err)
-}
-
-func (s *Server) finishVideoFMP4Window(session *videoFMP4Session, window *videoFMP4Window, err error) {
-	size := videoFMP4WindowCacheSize(session.Dir, window)
-	session.mu.Lock()
-	cancel := window.cancel
-	window.active = false
-	window.cancel = nil
-	window.size = size
-	window.complete = err == nil
-	if err != nil && !errors.Is(err, context.Canceled) {
-		window.err = err.Error()
-	}
-	session.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	s.log.Info("fMP4 window stopped", "file", session.FileID, "session", session.ID, "window", window.Key,
-		"start", window.Start, "duration", window.Duration, "cached_bytes", size, "complete", err == nil)
-	s.pruneVideoFMP4Cache(session.ID, window.Key)
-}
-
-func fmp4WindowStart(target float64) float64 {
-	lead := videoFMP4WindowLead.Seconds()
-	step := videoFMP4WindowStep.Seconds()
-	return max(0, float64(int64(max(0, target-lead)/step))*step)
-}
-
-func nextFMP4WindowStart(target float64, windows map[string]*videoFMP4Window) float64 {
-	start := fmp4WindowStart(target)
-	for _, window := range windows {
-		end := window.Start + window.Duration
-		// Sequential playback asks just past the final fragment. Continue from
-		// the preceding finite window instead of applying seek lead again and
-		// rereading up to half of it from S3.
-		if target >= end-.01 && target <= end+videoFMP4WindowLead.Seconds() && end > start {
-			start = end
-		}
-	}
-	return start
-}
-
-func (s *Server) ensureVideoFMP4Window(session *videoFMP4Session, target float64) (*videoFMP4Window, bool, error) {
-	if fragments, _, window := videoFMP4FragmentsAt(session, target, 1); len(fragments) > 0 {
-		return window, true, nil
-	}
-	session.mu.Lock()
-	if session.destroyed {
-		session.mu.Unlock()
-		return nil, false, errors.New("fMP4 session is closed")
-	}
-	for _, window := range session.windows {
-		if target+.001 < window.Start || target >= window.Start+window.Duration-.001 {
-			continue
-		}
-		if window.active {
-			window.lastAccess = time.Now()
-			session.mu.Unlock()
-			return window, false, nil
-		}
-		if window.complete && window.err != "" {
-			err := errors.New(window.err)
-			session.mu.Unlock()
-			return nil, false, err
-		}
-	}
-	select {
-	case s.videoFMP4Slots <- struct{}{}:
-	default:
-		session.mu.Unlock()
-		return nil, false, errors.New("too many fMP4 window workers are active")
-	}
-	start := nextFMP4WindowStart(target, session.windows)
-	duration := min(videoFMP4WindowSize.Seconds(), session.Duration-start)
-	if duration <= 0 {
-		<-s.videoFMP4Slots
-		session.mu.Unlock()
-		return nil, false, errors.New("fMP4 target is beyond video duration")
-	}
-	session.nextWindow++
-	key := fmt.Sprintf("w%013d-%06d", int64(start*1000), session.nextWindow)
-	workerCtx, cancel := context.WithCancel(session.ctx)
-	window := &videoFMP4Window{
-		Key: key, Start: start, Duration: duration, Playlist: filepath.Join(session.Dir, "index-"+key+".m3u8"),
-		InitAsset: "init-" + key + ".mp4", FragmentGlob: "fragment-" + key + "-*.m4s",
-		active: true, cancel: cancel, lastAccess: time.Now(),
-	}
-	session.windows[key] = window
-	session.workers.Add(1)
-	session.mu.Unlock()
-	s.log.Info("fMP4 window started", "file", session.FileID, "session", session.ID, "window", key,
-		"target", target, "input_seek", start, "duration", duration, "video_transcoding", false, "audio_transcoding", session.AudioTranscoding)
-	go s.runVideoFMP4Window(workerCtx, session, window)
-	return window, false, nil
-}
-
-type videoFMP4PrewarmReservation struct {
-	sourceKey string
-	target    float64
-}
-
-func reserveVideoFMP4Prewarm(session *videoFMP4Session, playhead float64) (videoFMP4PrewarmReservation, string) {
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	if session.destroyed {
-		return videoFMP4PrewarmReservation{}, "closed"
-	}
-	var current *videoFMP4Window
-	for _, window := range session.windows {
-		end := window.Start + window.Duration
-		if playhead+.25 < window.Start || playhead >= end-.001 {
-			continue
-		}
-		if current == nil || window.Start > current.Start {
-			current = window
-		}
-	}
-	if current == nil {
-		return videoFMP4PrewarmReservation{}, "current-window-unavailable"
-	}
-	if session.prewarmPending {
-		return videoFMP4PrewarmReservation{}, "prewarm-pending"
-	}
-	if session.prewarmWindowKey != "" {
-		prewarmed := session.windows[session.prewarmWindowKey]
-		switch {
-		case current.Key == session.prewarmSourceKey && prewarmed != nil:
-			return videoFMP4PrewarmReservation{}, "next-window-already-prewarmed"
-		case current.Key == session.prewarmWindowKey:
-			// Playback has advanced into the prewarmed window. It is now the
-			// current window, so exactly one following window may be reserved.
-		case prewarmed != nil && prewarmed.active:
-			return videoFMP4PrewarmReservation{}, "other-next-window-prewarming"
-		}
-		session.prewarmSourceKey = ""
-		session.prewarmWindowKey = ""
-	}
-	next := current.Start + current.Duration
-	if next >= session.Duration-.001 {
-		return videoFMP4PrewarmReservation{}, "end-of-media"
-	}
-	session.prewarmPending = true
-	session.prewarmSourceKey = current.Key
-	return videoFMP4PrewarmReservation{sourceKey: current.Key, target: next + .002}, ""
-}
-
-func finishVideoFMP4Prewarm(session *videoFMP4Session, reservation videoFMP4PrewarmReservation, window *videoFMP4Window, err error) {
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	if session.prewarmSourceKey != reservation.sourceKey {
+	if err := cmd.Start(); err != nil {
+		problem(w, http.StatusBadGateway, "could not start fMP4 stream")
 		return
 	}
-	session.prewarmPending = false
-	if err != nil || window == nil {
-		session.prewarmSourceKey = ""
-		session.prewarmWindowKey = ""
+	buffer := make([]byte, 128<<10)
+	firstN, firstErr := stdout.Read(buffer)
+	if firstN == 0 {
+		waitErr := cmd.Wait()
+		if streamCtx.Err() == nil {
+			s.log.Warn("fMP4 stdout ended before headers", "file", session.FileID, "session", session.ID,
+				"error", mediaCommandError("ffmpeg fMP4 stdout", waitErr, nil, stderr.String()))
+			problem(w, http.StatusBadGateway, "fMP4 stream produced no data")
+		}
 		return
 	}
-	session.prewarmWindowKey = window.Key
-}
-
-func (s *Server) prewarmNextVideoFMP4Window(session *videoFMP4Session, playhead float64) (*videoFMP4Window, bool, string, error) {
-	reservation, status := reserveVideoFMP4Prewarm(session, playhead)
-	if status != "" {
-		return nil, false, status, nil
-	}
-	window, cacheHit, err := s.ensureVideoFMP4Window(session, reservation.target)
-	finishVideoFMP4Prewarm(session, reservation, window, err)
-	return window, cacheHit, "", err
-}
-
-func waitForVideoFMP4Window(requestCtx context.Context, session *videoFMP4Session, window *videoFMP4Window, target float64) error {
-	timer := time.NewTimer(videoFMP4StartWait)
-	defer timer.Stop()
-	ticker := time.NewTicker(75 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		fragments, _, _ := videoFMP4FragmentsAt(session, target, 1)
-		if len(fragments) > 0 {
-			return nil
-		}
-		session.mu.RLock()
-		active, complete, windowErr := window.active, window.complete, window.err
-		session.mu.RUnlock()
-		if !active {
-			if windowErr != "" {
-				return errors.New(windowErr)
-			}
-			if complete {
-				return errors.New("ffmpeg produced no fMP4 fragment for the requested window")
-			}
-			return context.Canceled
-		}
-		select {
-		case <-requestCtx.Done():
-			return requestCtx.Err()
-		case <-timer.C:
-			return context.DeadlineExceeded
-		case <-ticker.C:
-		}
-	}
-}
-
-func fmp4FragmentIndex(path, sessionID string, windowStart float64, initAsset string) ([]fmp4Fragment, float64) {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return nil, 0
-	}
-	// EXTINF describes HLS scheduling duration, not the authoritative tfdt/PTS
-	// inside each fMP4 fragment. With -copyts and input-side stream-copy seek, a
-	// preceding HEVC keyframe can make the browser's actual buffered range differ
-	// from windowStart plus accumulated EXTINF. Keep these values as index hints.
-	var fragments []fmp4Fragment
-	start, pendingDuration := windowStart, float64(0)
-	for _, rawLine := range strings.Split(string(body), "\n") {
-		line := strings.TrimSpace(rawLine)
-		if strings.HasPrefix(line, "#EXTINF:") {
-			value := strings.TrimSuffix(strings.TrimPrefix(line, "#EXTINF:"), ",")
-			pendingDuration, _ = strconv.ParseFloat(value, 64)
-			continue
-		}
-		if pendingDuration <= 0 || !videoFMP4AssetName.MatchString(line) || !strings.HasSuffix(line, ".m4s") {
-			continue
-		}
-		numberText := strings.TrimSuffix(line, ".m4s")
-		if dash := strings.LastIndex(numberText, "-"); dash >= 0 {
-			numberText = numberText[dash+1:]
-		}
-		number, parseErr := strconv.Atoi(numberText)
-		if parseErr != nil {
-			continue
-		}
-		fragments = append(fragments, fmp4Fragment{Number: number, Start: start, Duration: pendingDuration,
-			URL: "/api/video/fmp4/" + sessionID + "/" + line, InitURL: "/api/video/fmp4/" + sessionID + "/" + initAsset,
-			WindowStart: windowStart, TimestampOffset: 0, TimingApproximate: true})
-		start += pendingDuration
-		pendingDuration = 0
-	}
-	return fragments, start
-}
-
-func videoFMP4FragmentsAt(session *videoFMP4Session, target float64, limit int) ([]fmp4Fragment, float64, *videoFMP4Window) {
-	session.mu.RLock()
-	windows := make([]*videoFMP4Window, 0, len(session.windows))
-	for _, window := range session.windows {
-		windows = append(windows, window)
-	}
-	session.mu.RUnlock()
-	sort.Slice(windows, func(i, j int) bool { return windows[i].Start > windows[j].Start })
-	var chosen *videoFMP4Window
-	var chosenFragments []fmp4Fragment
-	var available float64
-	for _, window := range windows {
-		if _, err := os.Stat(filepath.Join(session.Dir, window.InitAsset)); err != nil {
-			continue
-		}
-		fragments, windowAvailable := fmp4FragmentIndex(window.Playlist, session.ID, window.Start, window.InitAsset)
-		if len(fragments) == 0 || target+.001 < fragments[0].Start {
-			continue
-		}
-		startIndex := 0
-		for startIndex < len(fragments) && fragments[startIndex].Start+fragments[startIndex].Duration <= target+.001 {
-			startIndex++
-		}
-		if startIndex >= len(fragments) {
-			continue
-		}
-		chosen, available = window, windowAvailable
-		end := min(len(fragments), startIndex+limit)
-		chosenFragments = fragments[startIndex:end]
-		for index := range chosenFragments {
-			chosenFragments[index].WindowEnd = window.Start + window.Duration
-		}
-		break
-	}
-	if chosen != nil {
-		now := time.Now()
-		session.mu.Lock()
-		chosen.lastAccess = now
-		session.lastAccess = now
-		session.mu.Unlock()
-	}
-	return chosenFragments, available, chosen
-}
-
-func (s *Server) videoFMP4Index(w http.ResponseWriter, r *http.Request) {
-	session := s.videoFMP4Session(chi.URLParam(r, "session"))
-	if session == nil {
-		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
-		return
-	}
-	target, _ := strconv.ParseFloat(r.URL.Query().Get("time"), 64)
-	target = max(0, min(target, session.Duration))
-	if target >= session.Duration-.001 {
-		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, fmp4IndexResponse{Fragments: []fmp4Fragment{}, AvailableUntil: session.Duration, Done: true})
-		return
-	}
-	deadline := time.NewTimer(videoFMP4IndexWait)
-	defer deadline.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		fragments, available, _ := videoFMP4FragmentsAt(session, target, 12)
-		if len(fragments) > 0 {
-			session.touch()
-			w.Header().Set("Cache-Control", "no-store")
-			writeJSON(w, http.StatusOK, fmp4IndexResponse{Fragments: fragments, AvailableUntil: available, Done: false})
-			return
-		}
-		window, _, ensureErr := s.ensureVideoFMP4Window(session, target)
-		if ensureErr != nil {
-			w.Header().Set("Cache-Control", "no-store")
-			writeJSON(w, http.StatusOK, fmp4IndexResponse{Fragments: []fmp4Fragment{}, AvailableUntil: available, Error: ensureErr.Error()})
-			return
-		}
-		session.mu.RLock()
-		active, complete, windowErr := window.active, window.complete, window.err
-		session.mu.RUnlock()
-		if !active && (complete || windowErr != "") {
-			if windowErr == "" {
-				windowErr = "fMP4 window ended before the requested timestamp"
-			}
-			w.Header().Set("Cache-Control", "no-store")
-			writeJSON(w, http.StatusOK, fmp4IndexResponse{Fragments: []fmp4Fragment{}, AvailableUntil: available, Error: windowErr})
-			return
-		}
-		select {
-		case <-r.Context().Done():
-			return
-		case <-deadline.C:
-			w.Header().Set("Cache-Control", "no-store")
-			writeJSON(w, http.StatusOK, fmp4IndexResponse{Fragments: []fmp4Fragment{}, AvailableUntil: available})
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (s *Server) prewarmVideoFMP4(w http.ResponseWriter, r *http.Request) {
-	session := s.videoFMP4Session(chi.URLParam(r, "session"))
-	if session == nil {
-		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
-		return
-	}
-	var in prewarmVideoFMP4Request
-	if err := decodeJSON(w, r, &in); err != nil {
-		return
-	}
-	if in.Target < 0 || in.Target >= session.Duration {
-		problem(w, http.StatusBadRequest, "invalid fMP4 prewarm target")
-		return
-	}
-	session.touch()
-	window, cacheHit, status, err := s.prewarmNextVideoFMP4Window(session, in.Target)
-	if err != nil {
-		s.log.Warn("fMP4 next-window prewarm failed", "file", session.FileID, "session", session.ID, "playhead", in.Target, "error", err)
-		problem(w, http.StatusServiceUnavailable, err.Error())
-		return
-	}
+	w.Header().Set("Content-Type", session.MIMEType)
 	w.Header().Set("Cache-Control", "no-store")
-	if status != "" {
-		s.log.Debug("fMP4 next-window prewarm skipped", "file", session.FileID, "session", session.ID, "playhead", in.Target, "reason", status)
-		writeJSON(w, http.StatusOK, prewarmVideoFMP4Response{Status: status})
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Content-Disposition", "inline")
+	w.WriteHeader(http.StatusOK)
+	written, writeErr := w.Write(buffer[:firstN])
+	bytesSent := int64(written)
+	if writeErr == nil && firstErr == nil {
+		n, copyErr := io.CopyBuffer(w, stdout, buffer)
+		bytesSent += n
+		writeErr = copyErr
+	}
+	if writeErr != nil {
+		// Do not wait for a producer whose consumer is already gone. Killing
+		// FFmpeg also closes its local Range request and the underlying Reader.
+		streamCancel()
+	}
+	waitErr := cmd.Wait()
+	if streamCtx.Err() != nil || writeErr != nil {
+		s.log.Info("fMP4 stdout stream cancelled", "file", session.FileID, "session", session.ID,
+			"requested_start", session.RequestedStart, "bytes", bytesSent, "request_error", writeErr)
 		return
 	}
-	state := "started"
-	if cacheHit {
-		state = "cache-hit"
-	}
-	s.log.Info("fMP4 next-window prewarm scheduled", "file", session.FileID, "session", session.ID,
-		"playhead", in.Target, "target", window.Start, "window", window.Key, "cache_hit", cacheHit, "waited_for_fragment", false)
-	writeJSON(w, http.StatusAccepted, prewarmVideoFMP4Response{Status: state, Target: window.Start, WindowStart: window.Start, CacheHit: cacheHit})
-}
-
-func (s *Server) videoFMP4Asset(w http.ResponseWriter, r *http.Request) {
-	session := s.videoFMP4Session(chi.URLParam(r, "session"))
-	if session == nil {
-		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
+	if waitErr != nil {
+		s.log.Warn("fMP4 stdout stream failed", "file", session.FileID, "session", session.ID,
+			"requested_start", session.RequestedStart, "bytes", bytesSent,
+			"error", mediaCommandError("ffmpeg fMP4 stdout", waitErr, nil, stderr.String()))
 		return
 	}
-	asset := chi.URLParam(r, "asset")
-	if !videoFMP4AssetName.MatchString(asset) {
-		problem(w, http.StatusNotFound, "fMP4 fragment not found")
-		return
-	}
-	path := filepath.Join(session.Dir, asset)
-	if _, err := os.Stat(path); err != nil {
-		problem(w, http.StatusNotFound, "fMP4 fragment is not ready")
-		return
-	}
-	now := time.Now()
-	session.mu.Lock()
-	session.lastAccess = now
-	for _, window := range session.windows {
-		if asset == window.InitAsset || strings.HasPrefix(asset, "fragment-"+window.Key+"-") {
-			window.lastAccess = now
-			break
-		}
-	}
-	session.mu.Unlock()
-	w.Header().Set("Content-Type", "video/mp4")
-	w.Header().Set("Cache-Control", "private, max-age=3600")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeFile(w, r, path)
+	s.log.Info("fMP4 stdout stream completed", "file", session.FileID, "session", session.ID,
+		"requested_start", session.RequestedStart, "bytes", bytesSent)
 }
 
 func (s *Server) stopVideoFMP4(w http.ResponseWriter, r *http.Request) {
-	session := s.videoFMP4Session(chi.URLParam(r, "session"))
-	if session == nil {
-		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
+	id := chi.URLParam(r, "session")
+	if s.videoFMP4Session(id) == nil {
+		problem(w, http.StatusNotFound, "fMP4 stream session not found")
 		return
 	}
-	if r.URL.Query().Get("discard") == "1" {
-		s.removeVideoFMP4Session(session.ID)
-		s.log.Info("fMP4 suspect session discarded", "session", session.ID, "file", session.FileID, "reason", strings.TrimSpace(r.URL.Query().Get("reason")))
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	// Keep completed fragments for reuse, but do not keep reading the source after
-	// the player has gone away.
-	session.stopWorkers()
-	session.touch()
-	s.log.Info("fMP4 player released", "session", session.ID, "file", session.FileID, "workers_stopped", true)
+	s.removeVideoFMP4Session(id)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) reusableVideoFMP4Session(fileID, audioMode, preferredID string) *videoFMP4Session {
-	s.videoFMP4Mu.RLock()
-	defer s.videoFMP4Mu.RUnlock()
-	if preferred := s.videoFMP4Sessions[preferredID]; reusableFMP4Session(preferred, fileID, audioMode) {
-		preferred.touch()
-		return preferred
-	}
-	for _, session := range s.videoFMP4Sessions {
-		if reusableFMP4Session(session, fileID, audioMode) {
-			session.touch()
-			return session
-		}
-	}
-	return nil
-}
-
-func (s *Server) reusableVideoFMP4SessionForRequest(fileID string, request startVideoFMP4Request) *videoFMP4Session {
-	if request.FreshSession {
-		return nil
-	}
-	return s.reusableVideoFMP4Session(fileID, request.AudioMode, request.PreviousSessionID)
-}
-
-func reusableFMP4Session(session *videoFMP4Session, fileID, audioMode string) bool {
-	if session == nil || session.FileID != fileID || session.AudioMode != audioMode {
-		return false
-	}
-	session.mu.RLock()
-	defer session.mu.RUnlock()
-	return !session.destroyed
-}
-
-func videoFMP4WindowCacheSize(dir string, window *videoFMP4Window) int64 {
-	paths := []string{window.Playlist, filepath.Join(dir, window.InitAsset)}
-	fragments, _ := filepath.Glob(filepath.Join(dir, window.FragmentGlob))
-	paths = append(paths, fragments...)
-	var size int64
-	for _, path := range paths {
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			size += info.Size()
-		}
-	}
-	return size
-}
-
-func removeVideoFMP4WindowFiles(dir string, window *videoFMP4Window) {
-	_ = os.Remove(window.Playlist)
-	_ = os.Remove(filepath.Join(dir, window.InitAsset))
-	fragments, _ := filepath.Glob(filepath.Join(dir, window.FragmentGlob))
-	for _, path := range fragments {
-		_ = os.Remove(path)
-	}
-}
-
-func (s *Server) pruneVideoFMP4Cache(keepSessionID, keepWindowKey string) {
-	s.pruneVideoFMP4CacheLimit(videoFMP4CacheBytes, keepSessionID, keepWindowKey)
-}
-
-func (s *Server) pruneVideoFMP4CacheLimit(limit int64, keepSessionID, keepWindowKey string) {
-	type cachedWindow struct {
-		session    *videoFMP4Session
-		window     *videoFMP4Window
-		lastAccess time.Time
-		size       int64
-	}
-	s.videoFMP4Mu.RLock()
-	sessions := make([]*videoFMP4Session, 0, len(s.videoFMP4Sessions))
-	for _, session := range s.videoFMP4Sessions {
-		sessions = append(sessions, session)
-	}
-	s.videoFMP4Mu.RUnlock()
-
-	var total int64
-	var candidates []cachedWindow
-	for _, session := range sessions {
-		session.mu.Lock()
-		for _, window := range session.windows {
-			size := videoFMP4WindowCacheSize(session.Dir, window)
-			window.size = size
-			total += size
-			if !window.active && !(session.ID == keepSessionID && window.Key == keepWindowKey) {
-				candidates = append(candidates, cachedWindow{session: session, window: window, lastAccess: window.lastAccess, size: size})
-			}
-		}
-		session.mu.Unlock()
-	}
-	if total <= limit {
-		return
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].lastAccess.Before(candidates[j].lastAccess) })
-	for _, candidate := range candidates {
-		if total <= limit {
-			break
-		}
-		session, window := candidate.session, candidate.window
-		session.mu.Lock()
-		if session.windows[window.Key] != window || window.active || window.lastAccess.After(candidate.lastAccess) {
-			session.mu.Unlock()
-			continue
-		}
-		delete(session.windows, window.Key)
-		session.mu.Unlock()
-		removeVideoFMP4WindowFiles(session.Dir, window)
-		total -= candidate.size
-		s.log.Info("fMP4 cache evicted", "file", session.FileID, "session", session.ID, "window", window.Key,
-			"cached_bytes", candidate.size, "cache_bytes_after", total)
-	}
 }
 
 func (s *Server) videoFMP4Session(id string) *videoFMP4Session {
@@ -1146,7 +568,10 @@ func (s *Server) videoFMP4Session(id string) *videoFMP4Session {
 	return s.videoFMP4Sessions[id]
 }
 
-func (s *Server) removeVideoFMP4Session(id string) *videoFMP4Session {
+func (s *Server) removeVideoFMP4Session(id string) {
+	if id == "" {
+		return
+	}
 	s.videoFMP4Mu.Lock()
 	session := s.videoFMP4Sessions[id]
 	delete(s.videoFMP4Sessions, id)
@@ -1154,33 +579,27 @@ func (s *Server) removeVideoFMP4Session(id string) *videoFMP4Session {
 	if session != nil {
 		session.destroy()
 	}
-	return session
 }
 
 func (s *Server) pruneVideoFMP4Sessions(keepID string) {
-	type cachedSession struct {
-		id         string
-		lastAccess time.Time
+	type item struct {
+		id   string
+		when time.Time
 	}
 	s.videoFMP4Mu.RLock()
-	items := make([]cachedSession, 0, len(s.videoFMP4Sessions))
+	items := make([]item, 0, len(s.videoFMP4Sessions))
 	for id, session := range s.videoFMP4Sessions {
-		lastAccess := session.snapshot()
-		items = append(items, cachedSession{id: id, lastAccess: lastAccess})
+		if id != keepID {
+			items = append(items, item{id: id, when: session.snapshot()})
+		}
 	}
 	s.videoFMP4Mu.RUnlock()
-	for len(items) > maxVideoFMP4Sessions {
-		oldest := -1
-		for index := range items {
-			if items[index].id == keepID {
-				continue
+	for len(items)+1 > maxVideoFMP4Sessions {
+		oldest := 0
+		for i := 1; i < len(items); i++ {
+			if items[i].when.Before(items[oldest].when) {
+				oldest = i
 			}
-			if oldest < 0 || items[index].lastAccess.Before(items[oldest].lastAccess) {
-				oldest = index
-			}
-		}
-		if oldest < 0 {
-			break
 		}
 		s.removeVideoFMP4Session(items[oldest].id)
 		items = append(items[:oldest], items[oldest+1:]...)
@@ -1198,8 +617,7 @@ func (s *Server) cleanupVideoFMP4Sessions() {
 			var expired []string
 			s.videoFMP4Mu.RLock()
 			for id, session := range s.videoFMP4Sessions {
-				lastAccess := session.snapshot()
-				if now.Sub(lastAccess) > videoFMP4IdleTTL {
+				if now.Sub(session.snapshot()) > videoFMP4IdleTTL {
 					expired = append(expired, id)
 				}
 			}
@@ -1207,7 +625,6 @@ func (s *Server) cleanupVideoFMP4Sessions() {
 			for _, id := range expired {
 				s.removeVideoFMP4Session(id)
 			}
-			s.pruneVideoFMP4Cache("", "")
 		}
 	}
 }

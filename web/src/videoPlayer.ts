@@ -1,7 +1,6 @@
-import type { VideoFMP4Index, VideoFMP4Metadata, VideoFMP4Response } from './types'
+import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
 
-export const mseWindowRefillLeadSeconds=12
-export const mseWindowPrewarmLeadSeconds=30
+export const mseStreamBufferGoalSeconds=45
 export const mseStallWatchdogSeconds=8
 export const mseFreshRecoveryLimit=2
 
@@ -21,19 +20,11 @@ export function bufferedRangesAddedSeconds(before:MSEBufferedRange[],after:MSEBu
   for(const current of after){
     let uncovered=Math.max(0,current.end-current.start)
     for(const previous of before){
-      const overlap=Math.max(0,Math.min(current.end,previous.end)-Math.max(current.start,previous.start))
-      uncovered-=overlap
+      uncovered-=Math.max(0,Math.min(current.end,previous.end)-Math.max(current.start,previous.start))
     }
     added+=Math.max(0,uncovered)
   }
   return added
-}
-
-export function shouldPrewarmFMP4Window(availableUntil:number,windowEnd:number,playhead:number,duration:number):boolean{
-  if(![availableUntil,windowEnd,playhead,duration].every(Number.isFinite))return false
-  if(windowEnd>=duration-.001||availableUntil<windowEnd-3)return false
-  const ahead=availableUntil-playhead
-  return ahead>0&&ahead<=mseWindowPrewarmLeadSeconds
 }
 
 export type VideoPlaybackMode='direct'|'mse'|'hls'
@@ -64,9 +55,7 @@ export function subtitleTrackKey(id:string,mode:VideoPlaybackMode,streamOffset=0
 }
 
 export function setExclusiveSubtitleTrack<T extends MutableTextTrack>(tracks:ArrayLike<T>,selected:T|null):void{
-  for(let index=0;index<tracks.length;index+=1){
-    tracks[index].mode=selected&&tracks[index]===selected?'showing':'disabled'
-  }
+  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=selected&&tracks[index]===selected?'showing':'disabled'
 }
 
 export interface UnifiedVideoPlayer {
@@ -89,22 +78,15 @@ export function createUnifiedVideoPlayer(
   seekOutside?:(globalTime:number)=>boolean,
 ):UnifiedVideoPlayer {
   return {
-    mode,
-    offset,
+    mode,offset,
     play:async()=>{await element.play()},
     pause:()=>element.pause(),
     seek:(globalTime:number)=>{
       const local=Math.max(0,globalTime-offset)
-      if(mode==='direct'){
-        element.currentTime=local
-        return true
-      }
+      if(mode==='direct'){element.currentTime=local;return true}
       const ranges=element.seekable
       for(let index=0;index<ranges.length;index+=1){
-        if(local>=ranges.start(index)-.5&&local<=ranges.end(index)+.5){
-          element.currentTime=local
-          return true
-        }
+        if(local>=ranges.start(index)-.5&&local<=ranges.end(index)+.5){element.currentTime=local;return true}
       }
       return seekOutside?.(globalTime)??false
     },
@@ -154,30 +136,23 @@ export async function mseCompatibility(metadata:VideoFMP4Metadata):Promise<MSECo
   const copyMIME=supportedMIME(metadata.mime_type,metadata.video_codec)
   const aacMIME=supportedMIME(metadata.aac_mime_type,metadata.video_codec)
   let videoSupported=Boolean(videoMIME)
-  let powerEfficient: boolean|undefined
+  let powerEfficient:boolean|undefined
   if(videoSupported&&navigator.mediaCapabilities?.decodingInfo){
     try{
-      const result=await navigator.mediaCapabilities.decodingInfo({
-        type:'media-source',
-        video:{
-          contentType:videoMIME,width:Math.max(1,metadata.width),height:Math.max(1,metadata.height),
-          bitrate:Math.max(1,metadata.bitrate),framerate:Math.max(1,metadata.frame_rate),
-        },
-      })
-      videoSupported=result.supported
-      powerEfficient=result.powerEfficient
+      const result=await navigator.mediaCapabilities.decodingInfo({type:'media-source',video:{
+        contentType:videoMIME,width:Math.max(1,metadata.width),height:Math.max(1,metadata.height),
+        bitrate:Math.max(1,metadata.bitrate),framerate:Math.max(1,metadata.frame_rate),
+      }})
+      videoSupported=result.supported;powerEfficient=result.powerEfficient
     }catch{/* isTypeSupported remains authoritative when MediaCapabilities is incomplete */}
   }
   const result:MSECompatibility={
-    videoSupported,audioSupported,aacAudioSupported,
-    combinedCopySupported:Boolean(copyMIME),combinedAACSupported:Boolean(aacMIME),powerEfficient,
-    mode:'hls',mimeType:'',fallbackReason:'',
+    videoSupported,audioSupported,aacAudioSupported,combinedCopySupported:Boolean(copyMIME),
+    combinedAACSupported:Boolean(aacMIME),powerEfficient,mode:'hls',mimeType:'',fallbackReason:'',
   }
-  if(!videoSupported){
-    result.fallbackReason=`浏览器不支持 ${metadata.video_codec.toUpperCase()} MSE/解码`
-  }else if(audioSupported&&copyMIME){
-    result.mode='copy';result.mimeType=copyMIME
-  }else if(aacAudioSupported&&aacMIME){
+  if(!videoSupported)result.fallbackReason=`浏览器不支持 ${metadata.video_codec.toUpperCase()} MSE/解码`
+  else if(audioSupported&&copyMIME){result.mode='copy';result.mimeType=copyMIME}
+  else if(aacAudioSupported&&aacMIME){
     result.mode='aac';result.mimeType=aacMIME
     result.fallbackReason=metadata.audio_codec?`${metadata.audio_codec.toUpperCase()} MSE 不受支持，仅将音频转为 AAC`:''
   }else{
@@ -199,268 +174,136 @@ interface FMP4AttachOptions {
 
 export interface FMP4Attachment { destroy:()=>void;seek:(globalTime:number)=>boolean }
 
+// attachFMP4Stream consumes one long-lived fetch body. Browser stream
+// backpressure stops response reads once enough media is buffered; that stalls
+// the server's HTTP write, FFmpeg stdout, the local Range source, and finally
+// S3 reads. Abort is propagated through the same chain on seek/close.
 export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4Attachment>{
   const {element,response,autoplay,onFatal}=options
   const mediaSource=new MediaSource()
   const objectURL=URL.createObjectURL(mediaSource)
-  const lifetimeController=new AbortController()
-  let operationController=new AbortController()
+  const controller=new AbortController()
   let sourceBuffer:SourceBuffer|null=null
   let disposed=false
   let readySettled=false
-  let requestedTarget=Math.max(0,options.target-response.start)
-  let seekVersion=0
-  let inFlight='none'
   let waitingSince=0
-  let lastWatchdogLog=0
   let lastBufferGrowth=Date.now()
-  let lastBufferedRanges:MSEBufferedRange[]=[]
   let watchdogTimer=0
   let watchdogFired=false
   let resolveReady:()=>void=()=>{}
-  let rejectReady:(error:Error)=>void=()=>{}
+  let rejectReady:(reason:Error)=>void=()=>{}
   const ready=new Promise<void>((resolve,reject)=>{resolveReady=resolve;rejectReady=reject})
+  const target=Math.max(0,Math.min(response.duration,options.target-response.start))
 
-  const state=()=>({
-    currentTime:element.currentTime,readyState:element.readyState,networkState:element.networkState,
-    paused:element.paused,buffered:formatTimeRanges(sourceBuffer?.buffered),inFlight,
-    sourceBufferUpdating:sourceBuffer?.updating??false,mediaSourceState:mediaSource.readyState,
-  })
-  const log=(event:string,extra:Record<string,unknown>={})=>console.info('[revaro][mse]',event,{...state(),...extra})
-  const recordBuffer=(kind:string,url:string,before:MSEBufferedRange[])=>{
-    const after=snapshotTimeRanges(sourceBuffer?.buffered)
-    const addedSeconds=bufferedRangesAddedSeconds(before,after)
-    if(addedSeconds>.001)lastBufferGrowth=Date.now()
-    lastBufferedRanges=after
-    log('append complete',{kind,url,buffered_before:formatRangeSnapshot(before),buffered_after:formatRangeSnapshot(after),buffer_added_seconds:Number(addedSeconds.toFixed(3))})
-    return addedSeconds
-  }
-  const clearWaiting=()=>{waitingSince=0}
-  const noteWaiting=(eventName:string)=>{
-    if(disposed||!readySettled||element.paused)return
-    const now=Date.now()
-    if(bufferContains(sourceBuffer?.buffered,element.currentTime,.25)){clearWaiting();return}
-    if(!waitingSince){waitingSince=now;log(`${eventName} started`)}
-    else if(now-lastWatchdogLog>=2000){lastWatchdogLog=now;log(`${eventName} ongoing`,{duration_ms:now-waitingSince})}
-  }
-  const inspectWatchdog=()=>{
-    if(disposed||watchdogFired||!readySettled||element.paused)return
-    const now=Date.now()
-    const buffered=snapshotTimeRanges(sourceBuffer?.buffered)
-    if(bufferedRangesAddedSeconds(lastBufferedRanges,buffered)>.001)lastBufferGrowth=now
-    lastBufferedRanges=buffered
-    if(bufferContains(sourceBuffer?.buffered,element.currentTime,.25)){clearWaiting();return}
-    if(!waitingSince&&element.readyState<=2){waitingSince=now;log('watchdog observed unbuffered playhead')}
-    if(!waitingSince)return
-    const stalledFor=now-waitingSince
-    const noGrowthFor=now-lastBufferGrowth
-    if(now-lastWatchdogLog>=2000){lastWatchdogLog=now;log('waiting/stalled ongoing',{duration_ms:stalledFor,no_buffer_growth_ms:noGrowthFor})}
-    if(!mseWatchdogExpired(waitingSince,lastBufferGrowth,now,false))return
-    watchdogFired=true
-    const reason=`MSE watchdog: ${Math.round(stalledFor/1000)}s 无可播放缓冲且缓冲没有增长`
-    console.warn('[revaro][mse] watchdog recovery',{reason,...state(),waiting_ms:stalledFor,no_buffer_growth_ms:noGrowthFor})
-    fail(reason)
-  }
-  const onWaiting=()=>noteWaiting('waiting')
-  const onStalled=()=>noteWaiting('stalled')
-  const onPlayable=()=>{if(bufferContains(sourceBuffer?.buffered,element.currentTime,.25))clearWaiting()}
-
-  const fail=(reason:string)=>{
-    if(disposed)return
-    if(!readySettled){readySettled=true;rejectReady(new Error(reason))}
-    else onFatal(reason)
+  const log=(event:string,extra:Record<string,unknown>={})=>console.info('[revaro][mse]',event,{session:response.session_id,target,...extra})
+  const cleanup=()=>{
+    if(watchdogTimer)globalThis.clearInterval(watchdogTimer)
+    element.removeEventListener('waiting',onWaiting);element.removeEventListener('stalled',onWaiting)
+    element.removeEventListener('playing',onPlayable);element.removeEventListener('canplay',onPlayable);element.removeEventListener('timeupdate',onPlayable)
+    try{if(sourceBuffer?.updating)sourceBuffer.abort()}catch{/* detached */}
+    if(mediaSource.readyState==='open'&&sourceBuffer)try{mediaSource.removeSourceBuffer(sourceBuffer)}catch{/* detached */}
+    URL.revokeObjectURL(objectURL)
   }
   const destroy=()=>{
     if(disposed)return
-    disposed=true;lifetimeController.abort();operationController.abort();globalThis.clearInterval(watchdogTimer)
-    element.removeEventListener('waiting',onWaiting);element.removeEventListener('stalled',onStalled)
-    element.removeEventListener('playing',onPlayable);element.removeEventListener('canplay',onPlayable);element.removeEventListener('timeupdate',onPlayable)
-    try{if(sourceBuffer?.updating)sourceBuffer.abort()}catch{/* already detached */}
-    try{if(sourceBuffer&&mediaSource.readyState==='open')mediaSource.removeSourceBuffer(sourceBuffer)}catch{/* already detached */}
-    if(element.src===objectURL){element.pause();element.removeAttribute('src');element.load()}
-    URL.revokeObjectURL(objectURL)
+    disposed=true;controller.abort();cleanup()
+    if(!readySettled){readySettled=true;rejectReady(new DOMException('Aborted','AbortError'))}
   }
-  const seek=(globalTime:number)=>{
-    if(disposed||!Number.isFinite(globalTime))return false
-    requestedTarget=Math.max(0,Math.min(response.duration,globalTime-response.start))
-    const previousVersion=seekVersion
-    seekVersion+=1
-    operationController.abort();operationController=new AbortController();waitingSince=Date.now();lastBufferGrowth=Date.now();watchdogFired=false
-    log('seek generation changed',{from:previousVersion,to:seekVersion,target:requestedTarget})
-    try{if(sourceBuffer?.updating)sourceBuffer.abort()}catch{/* the pump will rebuild this generation */}
-    try{element.currentTime=requestedTarget}catch{/* set again after the target fragment is appended */}
-    return true
+  const fail=(reason:string)=>{
+    if(disposed)return
+    disposed=true;controller.abort();cleanup()
+    const error=new Error(reason)
+    if(!readySettled){readySettled=true;rejectReady(error)}else onFatal(reason)
+  }
+  const onWaiting=()=>{if(!waitingSince)waitingSince=Date.now()}
+  const onPlayable=()=>{if(bufferContains(sourceBuffer?.buffered,element.currentTime,.1))waitingSince=0}
+  const inspectWatchdog=()=>{
+    if(disposed||watchdogFired||!sourceBuffer)return
+    const now=Date.now(),covered=bufferContains(sourceBuffer.buffered,element.currentTime,.1)
+    if(mseWatchdogExpired(waitingSince,lastBufferGrowth,now,covered)){
+      watchdogFired=true
+      const reason=`MSE watchdog: ${Math.round((now-waitingSince)/1000)}s 无可播放缓冲且流没有增长`
+      console.warn('[revaro][mse]',reason,{buffered:formatTimeRanges(sourceBuffer.buffered)})
+      fail(reason)
+    }
   }
 
   element.src=objectURL;element.load()
-  element.addEventListener('waiting',onWaiting);element.addEventListener('stalled',onStalled)
+  element.addEventListener('waiting',onWaiting);element.addEventListener('stalled',onWaiting)
   element.addEventListener('playing',onPlayable);element.addEventListener('canplay',onPlayable);element.addEventListener('timeupdate',onPlayable)
   mediaSource.addEventListener('sourceopen',()=>{
     if(disposed)return
     try{
-      sourceBuffer=mediaSource.addSourceBuffer(options.mimeType)
-      sourceBuffer.mode='segments'
-      sourceBuffer.addEventListener('error',()=>fail('MSE SourceBuffer 解码 fMP4 失败'))
-      log('MediaSource attached',{mimeType:options.mimeType})
+      sourceBuffer=mediaSource.addSourceBuffer(options.mimeType);sourceBuffer.mode='segments'
+      sourceBuffer.timestampOffset=Math.max(0,response.requested_start-response.start)
+      sourceBuffer.addEventListener('error',()=>fail('MSE SourceBuffer 解码 fMP4 流失败'))
+      try{mediaSource.duration=Math.max(.1,response.duration)}catch{/* duration may already be known */}
       watchdogTimer=globalThis.setInterval(inspectWatchdog,1000) as unknown as number
-      void pumpFMP4Fragments(sourceBuffer,mediaSource,options,lifetimeController.signal,()=>operationController.signal,()=>disposed,()=>requestedTarget,()=>seekVersion,value=>{inFlight=value},recordBuffer,log,()=>{
+      log('stdout HTTP stream attached',{url:response.stream_url,mime_type:options.mimeType,timestamp_offset:sourceBuffer.timestampOffset})
+      void pumpFMP4Stream(sourceBuffer,mediaSource,options,controller.signal,target,()=>disposed,()=>{
         if(!readySettled){readySettled=true;resolveReady()}
-      }).catch(caught=>{
+      },()=>{lastBufferGrowth=Date.now()}).catch(caught=>{
         if(caught instanceof DOMException&&caught.name==='AbortError'&&disposed)return
-        fail(caught instanceof Error?caught.message:'MSE fMP4 分片读取失败')
+        fail(caught instanceof Error?caught.message:'MSE fMP4 流读取失败')
       })
     }catch(caught){fail(caught instanceof Error?caught.message:'无法创建 MSE SourceBuffer')}
   },{once:true})
 
   await ready
   if(autoplay)void element.play().catch(()=>{})
-  return {destroy,seek}
+  return {destroy,seek:()=>{destroy();return false}}
 }
 
-async function pumpFMP4Fragments(
+async function pumpFMP4Stream(
   sourceBuffer:SourceBuffer,
   mediaSource:MediaSource,
   options:FMP4AttachOptions,
-  lifetimeSignal:AbortSignal,
-  operationSignal:()=>AbortSignal,
+  signal:AbortSignal,
+  target:number,
   isDisposed:()=>boolean,
-  target:()=>number,
-  version:()=>number,
-  setInFlight:(value:string)=>void,
-  recordBuffer:(kind:string,url:string,before:MSEBufferedRange[])=>number,
-  log:(event:string,extra?:Record<string,unknown>)=>void,
   markReady:()=>void,
+  markGrowth:()=>void,
 ):Promise<void>{
-  if(mediaSource.readyState==='open')try{mediaSource.duration=Math.max(.1,options.response.duration)}catch{/* duration may already be known */}
-  let cursor=target()
-  let observedVersion=version()
-  let currentInitURL=''
-  let currentTimestampOffset=Number.NaN
-  const appendedFragments=new Set<string>()
-  let firstMedia=false
-  let consecutiveFailures=0
-  const prewarmedWindowStarts=new Set<number>()
-  const requestPrewarm=(index:VideoFMP4Index,signal:AbortSignal)=>{
-    const fragment=index.fragments[0]
-    if(!fragment||!options.response.prewarm_url)return
-    const playhead=options.response.start+options.element.currentTime
-    if(!shouldPrewarmFMP4Window(index.available_until,fragment.window_end,playhead,options.response.duration))return
-    if(prewarmedWindowStarts.has(fragment.window_start))return
-    prewarmedWindowStarts.add(fragment.window_start)
-    log('next-window prewarm requested',{playhead,buffer_tail:index.available_until,window_start:fragment.window_start,window_end:fragment.window_end,lead_seconds:index.available_until-playhead})
-    void fetch(options.response.prewarm_url,{
-      method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({target:playhead}),signal,
-    }).then(async response=>{
-      if(!response.ok)throw new Error(`fMP4 预热请求失败 (${response.status})`)
-      const result=await response.json() as {status?:string;window_start?:number;cache_hit?:boolean}
-      log('next-window prewarm accepted',{status:result.status||'unknown',window_start:result.window_start,cache_hit:Boolean(result.cache_hit)})
-    }).catch(caught=>{
-      if(signal.aborted)return
-      prewarmedWindowStarts.delete(fragment.window_start)
-      console.warn('[revaro][mse] next-window prewarm failed',{error:caught instanceof Error?caught.message:String(caught),window_start:fragment.window_start})
-    })
-  }
-  while(!isDisposed()){
-    if(observedVersion!==version()){
-      observedVersion=version();cursor=target();currentInitURL='';currentTimestampOffset=Number.NaN;appendedFragments.clear();prewarmedWindowStarts.clear()
-      const signal=operationSignal()
-      setInFlight(`clear buffer for seek generation ${observedVersion}`)
-      try{await clearSourceBuffer(sourceBuffer,signal)}
-      catch(caught){
-        if(signal.aborted){if(lifetimeSignal.aborted)throw new DOMException('Aborted','AbortError');continue}
-        throw caught
+  const response=await fetch(options.response.stream_url,{credentials:'same-origin',cache:'no-store',signal})
+  if(!response.ok)throw new Error(`fMP4 流请求失败 (${response.status})`)
+  if(!response.body)throw new Error('浏览器未提供 fMP4 ReadableStream')
+  const reader=response.body.getReader()
+  let ready=false
+  try{
+    while(!isDisposed()){
+      await applyMSEBackpressure(sourceBuffer,options.element,signal)
+      const {done,value}=await reader.read()
+      if(done)break
+      if(!value?.byteLength)continue
+      const before=snapshotTimeRanges(sourceBuffer.buffered)
+      await appendSourceBuffer(sourceBuffer,value,signal)
+      const after=snapshotTimeRanges(sourceBuffer.buffered)
+      const growth=bufferedRangesAddedSeconds(before,after)
+      if(growth>.001){
+        markGrowth();options.onFragment?.()
+        if(!ready&&bufferContains(sourceBuffer.buffered,target,.5)){
+          ready=true;options.element.currentTime=target;markReady()
+        }
       }
-      setInFlight('none')
-      log('seek buffer cleared',{generation:observedVersion,target:cursor})
     }
-    const requestVersion=observedVersion
-    const signal=operationSignal()
-    try{
-      if(firstMedia)await keepMSEBufferBounded(sourceBuffer,options.element,signal,()=>requestVersion!==version())
-      if(requestVersion!==version())continue
-      const separator=options.response.index_url.includes('?')?'&':'?'
-      const indexURL=`${options.response.index_url}${separator}time=${cursor.toFixed(3)}`
-      setInFlight(`index ${indexURL}`)
-      const response=await fetch(indexURL,{credentials:'same-origin',signal})
-      if(!response.ok)throw new Error(`fMP4 分片索引请求失败 (${response.status})`)
-      const index=await response.json() as VideoFMP4Index
-      if(requestVersion!==version())continue
-      if(index.error)throw new Error(`fMP4 remux 已退出：${index.error}`)
-      if(!index.fragments.length){
-        consecutiveFailures=0
-        if(index.done){
-          // Keep MediaSource open after the remux completes. Old ranges may be
-          // evicted later; a backwards seek must still be able to reappend the
-          // cached fragment without constructing another session.
-          setInFlight('index complete; waiting for seek')
-          await abortableDelay(500,signal)
-        }
-        continue
-      }
-      requestPrewarm(index,signal)
-      for(const fragment of index.fragments){
-        if(requestVersion!==version())break
-        if(!appendedFragments.has(fragment.url)){
-          const fragmentInitURL=fragment.init_url||currentInitURL
-          const timestampOffset=Number.isFinite(fragment.timestamp_offset)?fragment.timestamp_offset:fragment.window_start
-          if(!Number.isFinite(timestampOffset))throw new Error('fMP4 分片缺少窗口时间轴偏移')
-          if(!fragmentInitURL)throw new Error('fMP4 分片缺少 init segment')
-          if(fragmentInitURL!==currentInitURL){
-            setInFlight(`init ${fragmentInitURL}`)
-            const windowInit=await fetchBytes(fragmentInitURL,signal)
-            if(requestVersion!==version())break
-            sourceBuffer.timestampOffset=timestampOffset
-            const beforeInit=snapshotTimeRanges(sourceBuffer.buffered)
-            await appendSourceBuffer(sourceBuffer,windowInit,signal)
-            recordBuffer('init',fragmentInitURL,beforeInit)
-            currentInitURL=fragmentInitURL
-            currentTimestampOffset=timestampOffset
-            log('window init attached',{init_url:fragmentInitURL,window_start:fragment.window_start,timestamp_offset:timestampOffset,timing_approximate:fragment.timing_approximate})
-          }
-          if(currentTimestampOffset!==timestampOffset){
-            sourceBuffer.timestampOffset=timestampOffset
-            currentTimestampOffset=timestampOffset
-            log('window timestamp offset changed',{window_start:fragment.window_start,timestamp_offset:timestampOffset,timing_approximate:fragment.timing_approximate})
-          }
-          setInFlight(`fragment ${fragment.url}`)
-          const bytes=await fetchBytes(fragment.url,signal)
-          if(requestVersion!==version())break
-          const beforeMedia=snapshotTimeRanges(sourceBuffer.buffered)
-          await appendSourceBuffer(sourceBuffer,bytes,signal)
-          const addedSeconds=recordBuffer('media',fragment.url,beforeMedia)
-          appendedFragments.add(fragment.url)
-          if(addedSeconds<=.001){
-            console.warn('[revaro][mse] media append completed without buffer growth',{fragment:fragment.url,scheduling_start:fragment.start,scheduling_duration:fragment.duration,timing_approximate:fragment.timing_approximate,buffered:formatTimeRanges(sourceBuffer.buffered)})
-          }
-        }
-        cursor=fragment.start+fragment.duration+.002
-        if(!firstMedia){
-          firstMedia=true
-          options.element.currentTime=target()
-          markReady()
-        }
-        options.onFragment?.()
-      }
-      consecutiveFailures=0
-    }catch(caught){
-      if(signal.aborted){
-        if(lifetimeSignal.aborted)throw new DOMException('Aborted','AbortError')
-        continue
-      }
-      consecutiveFailures+=1
-      if(consecutiveFailures>=4)throw caught
-      await abortableDelay(500*consecutiveFailures,signal)
-    }finally{
-      setInFlight('none')
-    }
+  }finally{
+    try{reader.releaseLock()}catch{/* already released */}
   }
+  if(!ready){
+    if(sourceBuffer.buffered.length){options.element.currentTime=Math.min(target,sourceBuffer.buffered.end(sourceBuffer.buffered.length-1));markReady()}
+    else throw new Error('FFmpeg fMP4 流在产生可播放缓冲前结束')
+  }
+  if(mediaSource.readyState==='open'&&!sourceBuffer.updating)try{mediaSource.endOfStream()}catch{/* a seek may detach it */}
 }
 
-async function fetchBytes(url:string,signal:AbortSignal):Promise<Uint8Array>{
-  const response=await fetch(url,{credentials:'same-origin',signal})
-  if(!response.ok)throw new Error(`fMP4 分片请求失败 (${response.status})`)
-  return new Uint8Array(await response.arrayBuffer())
+async function applyMSEBackpressure(sourceBuffer:SourceBuffer,element:HTMLVideoElement,signal:AbortSignal):Promise<void>{
+  if(sourceBuffer.buffered.length&&element.currentTime>70){
+    const removeEnd=element.currentTime-60
+    if(removeEnd>sourceBuffer.buffered.start(0))await removeSourceBufferRange(sourceBuffer,sourceBuffer.buffered.start(0),removeEnd,signal)
+  }
+  while(sourceBuffer.buffered.length&&sourceBuffer.buffered.end(sourceBuffer.buffered.length-1)-element.currentTime>=mseStreamBufferGoalSeconds){
+    await abortableDelay(250,signal)
+  }
 }
 
 function bufferContains(ranges:TimeRanges|undefined,time:number,tolerance=.05):boolean{
@@ -472,7 +315,7 @@ function bufferContains(ranges:TimeRanges|undefined,time:number,tolerance=.05):b
 }
 
 function formatTimeRanges(ranges:TimeRanges|undefined):string{
-  return formatRangeSnapshot(snapshotTimeRanges(ranges))
+  return `[${snapshotTimeRanges(ranges).map(range=>`${range.start.toFixed(3)}-${range.end.toFixed(3)}`).join(', ')}]`
 }
 
 function snapshotTimeRanges(ranges:TimeRanges|undefined):MSEBufferedRange[]{
@@ -482,41 +325,16 @@ function snapshotTimeRanges(ranges:TimeRanges|undefined):MSEBufferedRange[]{
   return values
 }
 
-function formatRangeSnapshot(ranges:MSEBufferedRange[]):string{
-  return `[${ranges.map(range=>`${range.start.toFixed(3)}-${range.end.toFixed(3)}`).join(', ')}]`
-}
-
 function appendSourceBuffer(sourceBuffer:SourceBuffer,data:Uint8Array,signal:AbortSignal):Promise<void>{
   return new Promise((resolve,reject)=>{
     if(signal.aborted){reject(new DOMException('Aborted','AbortError'));return}
     const cleanup=()=>{sourceBuffer.removeEventListener('updateend',done);sourceBuffer.removeEventListener('error',failed);signal.removeEventListener('abort',aborted)}
     const done=()=>{cleanup();resolve()}
-    const failed=()=>{cleanup();reject(new Error('MSE 无法追加 fMP4 分片'))}
+    const failed=()=>{cleanup();reject(new Error('MSE 无法追加 fMP4 流数据'))}
     const aborted=()=>{cleanup();try{if(sourceBuffer.updating)sourceBuffer.abort()}catch{/* detached */}reject(new DOMException('Aborted','AbortError'))}
     sourceBuffer.addEventListener('updateend',done,{once:true});sourceBuffer.addEventListener('error',failed,{once:true});signal.addEventListener('abort',aborted,{once:true})
     try{sourceBuffer.appendBuffer(data.slice().buffer as ArrayBuffer)}catch(caught){cleanup();reject(caught)}
   })
-}
-
-async function clearSourceBuffer(sourceBuffer:SourceBuffer,signal:AbortSignal):Promise<void>{
-  if(!sourceBuffer.buffered.length)return
-  const start=sourceBuffer.buffered.start(0)
-  const end=sourceBuffer.buffered.end(sourceBuffer.buffered.length-1)
-  if(end>start)await removeSourceBufferRange(sourceBuffer,start,end,signal)
-}
-
-async function keepMSEBufferBounded(sourceBuffer:SourceBuffer,element:HTMLVideoElement,signal:AbortSignal,seekChanged:()=>boolean):Promise<void>{
-  if(sourceBuffer.buffered.length&&element.currentTime>70){
-    const removeEnd=element.currentTime-60
-    if(removeEnd>sourceBuffer.buffered.start(0))await removeSourceBufferRange(sourceBuffer,0,removeEnd,signal)
-  }
-  // A remux worker is intentionally limited to one short source window. Do
-  // not ask the index for the following window until playback is close to the
-  // end of the buffered one, otherwise a paused player would still make
-  // FFmpeg walk through several windows and read most of a short S3 object.
-  while(!seekChanged()&&sourceBuffer.buffered.length&&sourceBuffer.buffered.end(sourceBuffer.buffered.length-1)-element.currentTime>mseWindowRefillLeadSeconds){
-    await abortableDelay(350,signal)
-  }
 }
 
 function removeSourceBufferRange(sourceBuffer:SourceBuffer,start:number,end:number,signal:AbortSignal):Promise<void>{

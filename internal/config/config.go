@@ -130,7 +130,7 @@ func Load() (Config, error) {
 	if c.BlockCacheMinFree, err = int64Env("BLOCK_CACHE_MIN_FREE", 2*1024*1024*1024); err != nil {
 		return c, err
 	}
-	if c.BlockReadAhead, err = int64Env("BLOCK_READ_AHEAD", 512*1024*1024); err != nil {
+	if c.BlockReadAhead, err = int64Env("BLOCK_READ_AHEAD", 64*1024*1024); err != nil {
 		return c, err
 	}
 	c.BlockCacheDir = env("BLOCK_CACHE_DIR", filepath.Join(c.DataDir, "block-cache"))
@@ -155,8 +155,8 @@ func Load() (Config, error) {
 	if c.BlockCacheMinFree < 0 || c.BlockCacheMinFree > 1<<40 {
 		return c, errors.New("BLOCK_CACHE_MIN_FREE must be between 0 and 1 TiB")
 	}
-	if c.BlockReadAhead < 0 || c.BlockReadAhead > 1024*1024*1024 || (c.BlockReadAhead > 0 && c.BlockReadAhead < 1024*1024) {
-		return c, errors.New("BLOCK_READ_AHEAD must be 0 or between 1 MiB and 1 GiB")
+	if c.BlockReadAhead < 0 || c.BlockReadAhead > 512*1024*1024 || (c.BlockReadAhead > 0 && c.BlockReadAhead < 8*1024*1024) {
+		return c, errors.New("BLOCK_READ_AHEAD must be 0 or between 8 MiB and 512 MiB")
 	}
 	if c.BlockCacheDir == "" {
 		return c, errors.New("BLOCK_CACHE_DIR must not be empty")

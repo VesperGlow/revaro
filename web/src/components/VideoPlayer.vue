@@ -205,7 +205,11 @@ async function startMSEStream(start:number,autoplay=true,recovery:MSEStartOption
       onFragment:()=>{buffering.value=false},
     })
     if(generation!==playbackGeneration){attachment.destroy();void releaseFMP4Session(response.session_id);return}
-    player=createUnifiedVideoPlayer('mse',el,response.start,attachment.destroy,targetTime=>{buffering.value=true;showControls(true);return attachment.seek(targetTime)});player.setVolume(volume.value,muted.value)
+    player=createUnifiedVideoPlayer('mse',el,response.start,attachment.destroy,targetTime=>{
+      buffering.value=true;showControls(true)
+      void startMSEStream(targetTime,playing.value||autoplayPending.value)
+      return true
+    });player.setVolume(volume.value,muted.value)
     starting.value=false;buffering.value=false;mseRecoveryStarted=false;applySubtitle()
     console.info('[revaro] selected mode:',response.selected_mode,'video:',response.video_codec,'audio:',response.audio_codec||'none','output audio:',response.output_audio_codec||'none')
     if(autoplayPending.value)void player.play().catch(()=>{});showControls()
@@ -377,7 +381,7 @@ onBeforeUnmount(()=>{
     </video>
     <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong :title="item.name">{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>
     <button v-if="!playing&&!starting&&!error" class="video-center-play" aria-label="播放" @click.stop="togglePlayback"><svg viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
-    <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:prepareMode==='mse'?'正在准备 MSE 原码流':'正在准备 HLS 兼容流' }}</strong><small v-if="prepareKind==='initial'">{{ prepareMode==='mse'?'正在重封装 fMP4，不会重新编码视频':'正在生成启动缓冲，首批分片完成后自动播放' }}</small></div>
+    <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:prepareMode==='mse'?'正在连接 MSE 原码流':'正在准备 HLS 兼容流' }}</strong><small v-if="prepareKind==='initial'">{{ prepareMode==='mse'?'FFmpeg 正在将原码实时重封装为 fMP4':'正在生成启动缓冲，首批分片完成后自动播放' }}</small></div>
     <div v-else-if="buffering" class="video-buffering"><span></span><strong>正在缓冲</strong></div>
     <p v-if="error" class="video-error">{{ error }} <button @click="mseMode?startMSEStream(currentTime||savedPosition(),true):startCompatibilityStream(currentTime||savedPosition(),true,'用户重试 HLS')">重试</button></p>
     <div class="video-controls" :class="{visible:controlsVisible||!playing}" @click.stop>

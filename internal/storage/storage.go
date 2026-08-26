@@ -59,7 +59,7 @@ type Storage interface {
 	Store(context.Context, io.Reader) (string, Manifest, error)
 
 	// Reading a logical file back as a stream.
-	Open(context.Context, string) (io.ReadSeekCloser, error)
+	Open(context.Context, string) (ReadSeekCloserAt, error)
 	ReadFile(context.Context, string, int64) ([]byte, error)
 
 	// Raw single objects (avatar, legacy objects, GC cleanup).
@@ -86,8 +86,18 @@ type S3 struct {
 	ramCapacity   int64
 	readAhead     int64
 	manifests     *manifestIndex
-	blockGroup    singleflight.Group
+	blockFlightMu sync.Mutex
+	blockFlights  map[string]*blockDownload
 	manifestGroup singleflight.Group
+}
+
+type blockDownload struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
+	waiters int
+	data    []byte
+	err     error
 }
 
 func NewS3(ctx context.Context, c config.Config) (*S3, error) {
@@ -219,48 +229,88 @@ func (s *S3) getBlock(ctx context.Context, block Block) ([]byte, error) {
 		cache.put(id, data)
 		return data, nil
 	}
-	result := s.blockGroup.DoChan(id, func() (any, error) {
-		if data, ok := cache.get(id); ok && (block.Size < 0 || int64(len(data)) == block.Size) {
-			return data, nil
-		}
-		if data, ok := s.diskCache.get(id, block.Size); ok {
-			cache.put(id, data)
-			return data, nil
-		}
-		out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(BlockKey(id))})
-		if err != nil {
-			return nil, err
-		}
-		defer out.Body.Close()
-		if block.Size >= 0 && out.ContentLength != nil && aws.ToInt64(out.ContentLength) != block.Size {
-			return nil, fmt.Errorf("block %s size mismatch: S3 says %d bytes, manifest says %d", id, aws.ToInt64(out.ContentLength), block.Size)
-		}
-		data, err := io.ReadAll(io.LimitReader(out.Body, s.maxBlockSize+1))
-		if err != nil {
-			return nil, err
-		}
-		if int64(len(data)) > s.maxBlockSize {
-			return nil, fmt.Errorf("block %s exceeds configured block size", id)
-		}
-		if block.Size >= 0 && int64(len(data)) != block.Size {
-			return nil, fmt.Errorf("block %s size mismatch: stored %d bytes, manifest says %d", id, len(data), block.Size)
-		}
-		if hashBytes(data) != id {
-			return nil, ErrBlockHashMismatch
-		}
-		_ = s.diskCache.put(id, data)
-		cache.put(id, data)
-		return data, nil
-	})
+	return s.joinBlockDownload(ctx, block)
+}
+
+// joinBlockDownload coalesces concurrent misses without assigning ownership
+// of the S3 request to an arbitrary caller. Every waiter has independent
+// cancellation; the shared GET is cancelled as soon as the last waiter leaves.
+func (s *S3) joinBlockDownload(ctx context.Context, block Block) ([]byte, error) {
+	s.blockFlightMu.Lock()
+	if s.blockFlights == nil {
+		s.blockFlights = make(map[string]*blockDownload)
+	}
+	flight := s.blockFlights[block.ID]
+	if flight == nil {
+		flightCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		flight = &blockDownload{ctx: flightCtx, cancel: cancel, done: make(chan struct{})}
+		s.blockFlights[block.ID] = flight
+		go s.runBlockDownload(block, flight)
+	}
+	flight.waiters++
+	s.blockFlightMu.Unlock()
+
 	select {
 	case <-ctx.Done():
+		s.leaveBlockDownload(block.ID, flight)
 		return nil, ctx.Err()
-	case fetched := <-result:
-		if fetched.Err != nil {
-			return nil, fetched.Err
-		}
-		return fetched.Val.([]byte), nil
+	case <-flight.done:
+		return flight.data, flight.err
 	}
+}
+
+func (s *S3) leaveBlockDownload(id string, flight *blockDownload) {
+	s.blockFlightMu.Lock()
+	defer s.blockFlightMu.Unlock()
+	if s.blockFlights[id] != flight {
+		return
+	}
+	flight.waiters--
+	if flight.waiters <= 0 {
+		delete(s.blockFlights, id)
+		flight.cancel()
+	}
+}
+
+func (s *S3) runBlockDownload(block Block, flight *blockDownload) {
+	flight.data, flight.err = s.fetchBlockRemote(flight.ctx, block)
+	s.blockFlightMu.Lock()
+	if s.blockFlights[block.ID] == flight {
+		delete(s.blockFlights, block.ID)
+	}
+	close(flight.done)
+	s.blockFlightMu.Unlock()
+}
+
+func (s *S3) fetchBlockRemote(ctx context.Context, block Block) ([]byte, error) {
+	id := block.ID
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(BlockKey(id))})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+	if block.Size >= 0 && out.ContentLength != nil && aws.ToInt64(out.ContentLength) != block.Size {
+		return nil, fmt.Errorf("block %s size mismatch: S3 says %d bytes, manifest says %d", id, aws.ToInt64(out.ContentLength), block.Size)
+	}
+	data, err := io.ReadAll(io.LimitReader(out.Body, s.maxBlockSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > s.maxBlockSize {
+		return nil, fmt.Errorf("block %s exceeds configured block size", id)
+	}
+	if block.Size >= 0 && int64(len(data)) != block.Size {
+		return nil, fmt.Errorf("block %s size mismatch: stored %d bytes, manifest says %d", id, len(data), block.Size)
+	}
+	if hashBytes(data) != id {
+		return nil, ErrBlockHashMismatch
+	}
+	_ = s.diskCache.put(id, data)
+	s.cachedBlocks().put(id, data)
+	return data, nil
 }
 
 func (s *S3) cachedBlocks() *blockLRU {

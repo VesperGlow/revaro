@@ -234,9 +234,7 @@ func (s *Server) Handler() http.Handler {
 			r.Put("/files/{id}/media/progress", s.saveMediaProgress)
 			r.Get("/video/hls/{session}/{asset}", s.videoHLSAsset)
 			r.Delete("/video/hls/{session}", s.stopVideoHLS)
-			r.Get("/video/fmp4/{session}/index.json", s.videoFMP4Index)
-			r.Post("/video/fmp4/{session}/prewarm", s.prewarmVideoFMP4)
-			r.Get("/video/fmp4/{session}/{asset}", s.videoFMP4Asset)
+			r.Get("/video/fmp4/{session}/stream", s.streamVideoFMP4)
 			r.Delete("/video/fmp4/{session}", s.stopVideoFMP4)
 			r.Get("/files/{id}/content", s.getDocument)
 			r.Put("/files/{id}/content", s.updateDocument)
@@ -1389,11 +1387,10 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, inline bool)
 	s.serveFileContent(w, r, f, inline)
 }
 
-// serveFileContent delivers one logical file. Direct-upload configurations
-// redirect single-block files to S3; proxy configurations (UpCloud by default)
-// keep reads on the application path so the storage public endpoint can stay
-// disabled. Multi-block files always stream through the server with Range
-// support, and legacy whole-object keys work until startup migration finishes.
+// serveFileContent delivers every FastCDC logical file through the common
+// Reader/ReaderAt data plane. This keeps Range, cancellation, adaptive
+// read-ahead, and RAM -> SSD -> S3 cache behavior identical for downloads and
+// previews. Legacy whole-object keys remain readable until migration finishes.
 func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File, inline bool) {
 	mimeType := safeDeliveryMime(responseMime(f))
 	if mimeType == "application/octet-stream" {
@@ -1412,25 +1409,7 @@ func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File
 		http.Redirect(w, r, u, http.StatusFound)
 		return
 	}
-	m, err := s.storage.GetManifest(r.Context(), f.objectKey)
-	if err != nil {
-		s.log.Error("manifest read failed", "file", f.ID, "key", f.objectKey, "error", err)
-		problem(w, 502, "object storage read failed")
-		return
-	}
-	if len(m.Blocks) == 1 && !s.cfg.ProxyTransfers {
-		u, err := s.storage.PresignGetObject(r.Context(), storage.BlockKey(m.Blocks[0].ID), f.Name, mimeType, inline, s.cfg.PresignExpires)
-		if err != nil {
-			problem(w, 502, "could not create download URL")
-			return
-		}
-		http.Redirect(w, r, u, http.StatusFound)
-		return
-	}
-	readCtx := r.Context()
-	if !inline || isAudioSource(f) || isVideoSource(f) || isArchiveName(f.Name) {
-		readCtx = storage.WithDynamicReadAhead(readCtx)
-	}
+	readCtx := storage.WithDynamicReadAhead(r.Context())
 	rc, err := s.storage.Open(readCtx, f.objectKey)
 	if err != nil {
 		s.log.Error("file open failed", "file", f.ID, "error", err)

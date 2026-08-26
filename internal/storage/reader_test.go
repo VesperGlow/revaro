@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +47,7 @@ func TestFileReaderHTTPRangeLoadsOnlyIntersectingFastCDCBlock(t *testing.T) {
 	}
 }
 
-func TestFileReaderPrefetchesNextThreeBlocksAndReusesResult(t *testing.T) {
+func TestFileReaderPrefetchesTwoBlocksAndReusesResult(t *testing.T) {
 	blocks := map[string][]byte{
 		"first": []byte("aaaa"), "second": []byte("bbbb"), "third": []byte("cccc"), "fourth": []byte("dddd"), "fifth": []byte("eeee"),
 	}
@@ -64,28 +65,26 @@ func TestFileReaderPrefetchesNextThreeBlocksAndReusesResult(t *testing.T) {
 			return blocks[block.ID], nil
 		},
 	}
-	if _, err := reader.Read(make([]byte, 1)); err != nil {
+	if _, err := reader.Read(make([]byte, 4)); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		mu.Lock()
-		prefetched := loads["second"] == 1 && loads["third"] == 1 && loads["fourth"] == 1
+		prefetched := loads["second"] == 1 && loads["third"] == 1
+		fourthLoads := loads["fourth"]
 		fifthLoads := loads["fifth"]
 		mu.Unlock()
 		if prefetched {
-			if fifthLoads != 0 {
-				t.Fatalf("prefetch crossed its three-block bound: fifth loads=%d", fifthLoads)
+			if fourthLoads != 0 || fifthLoads != 0 {
+				t.Fatalf("prefetch crossed its two-block bound: fourth=%d fifth=%d", fourthLoads, fifthLoads)
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("next three blocks were not prefetched: %+v", loads)
+			t.Fatalf("next two blocks were not prefetched: %+v", loads)
 		}
 		time.Sleep(time.Millisecond)
-	}
-	if _, err := reader.Seek(4, io.SeekStart); err != nil {
-		t.Fatal(err)
 	}
 	buffer := make([]byte, 1)
 	if _, err := reader.Read(buffer); err != nil || string(buffer) != "b" {
@@ -111,7 +110,8 @@ func TestFileReaderDynamicReadAheadUsesByteWindow(t *testing.T) {
 	var mu sync.Mutex
 	loads := make(map[string]int)
 	reader := &fileReader{
-		ctx: context.Background(), m: manifest, starts: starts, loadedIdx: -1, readAheadBytes: 16,
+		ctx: context.Background(), m: manifest, starts: starts, loadedIdx: -1,
+		adaptive: true, readAhead: 16, readAheadCap: 32,
 		getBlock: func(_ context.Context, block Block) ([]byte, error) {
 			mu.Lock()
 			loads[block.ID]++
@@ -148,7 +148,8 @@ func TestFileReaderSeekCancelsOldReadAhead(t *testing.T) {
 	started := make(chan struct{}, 4)
 	cancelled := make(chan struct{}, 4)
 	reader := &fileReader{
-		ctx: context.Background(), m: manifest, starts: []int64{0, 4, 8, 12, 16}, loadedIdx: -1, readAheadBytes: 12,
+		ctx: context.Background(), m: manifest, starts: []int64{0, 4, 8, 12, 16}, loadedIdx: -1,
+		adaptive: true, readAhead: 12, readAheadCap: 24,
 		getBlock: func(ctx context.Context, block Block) ([]byte, error) {
 			if block.ID == "a" || block.ID == "e" {
 				return []byte(block.ID + block.ID + block.ID + block.ID), nil
@@ -178,5 +179,60 @@ func TestFileReaderSeekCancelsOldReadAhead(t *testing.T) {
 	case <-cancelled:
 	case <-time.After(time.Second):
 		t.Fatal("seek did not cancel old-direction read-ahead")
+	}
+}
+
+func TestFileReaderReadAtSpansBlocksWithoutMovingCursorOrPrefetching(t *testing.T) {
+	manifest := Manifest{Size: 12, Blocks: []Block{{ID: "a", Size: 4}, {ID: "b", Size: 4}, {ID: "c", Size: 4}}}
+	blocks := map[string][]byte{"a": []byte("aaaa"), "b": []byte("bbbb"), "c": []byte("cccc")}
+	var mu sync.Mutex
+	var loaded []string
+	reader := &fileReader{
+		ctx: context.Background(), m: manifest, starts: []int64{0, 4, 8}, loadedIdx: -1,
+		getBlock: func(_ context.Context, block Block) ([]byte, error) {
+			mu.Lock()
+			loaded = append(loaded, block.ID)
+			mu.Unlock()
+			return blocks[block.ID], nil
+		},
+	}
+	data := make([]byte, 6)
+	if n, err := reader.ReadAt(data, 3); n != 6 || err != nil || string(data) != "abbbbc" {
+		t.Fatalf("ReadAt n=%d data=%q err=%v", n, data, err)
+	}
+	if reader.off != 0 {
+		t.Fatalf("ReadAt moved sequential cursor to %d", reader.off)
+	}
+	mu.Lock()
+	got := append([]string(nil), loaded...)
+	mu.Unlock()
+	if !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("ReadAt loads=%v, want only intersecting blocks", got)
+	}
+}
+
+func TestFileReaderCloseCancelsDemandRead(t *testing.T) {
+	started := make(chan struct{})
+	reader := &fileReader{
+		ctx: context.Background(), m: Manifest{Size: 4, Blocks: []Block{{ID: "a", Size: 4}}},
+		starts: []int64{0}, loadedIdx: -1,
+		getBlock: func(ctx context.Context, _ Block) ([]byte, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	reader.ctx, reader.cancel = context.WithCancel(reader.ctx)
+	done := make(chan error, 1)
+	go func() { _, err := reader.Read(make([]byte, 1)); done <- err }()
+	<-started
+	_ = reader.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("read error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel demand read")
 	}
 }

@@ -9,17 +9,29 @@ import (
 )
 
 const (
-	fileReaderPrefetchBlocks      = 3
-	fileReaderPrefetchConcurrency = 8
+	fileReaderBasePrefetchBlocks  = 2
+	fileReaderPrefetchConcurrency = 4
+	fileReaderInitialReadAhead    = int64(8 << 20)
 )
 
 type dynamicReadAheadKey struct{}
 
-// WithDynamicReadAhead marks continuous consumers such as media, downloads,
-// and extraction. Open then maintains the configured byte window instead of
-// the ordinary three-block lookahead.
+// WithDynamicReadAhead enables adaptive look-ahead for a sequential consumer.
+// BLOCK_READ_AHEAD is only the hard ceiling: a reader starts with a small
+// window, grows it after sustained forward reads, and resets it on a seek.
 func WithDynamicReadAhead(ctx context.Context) context.Context {
 	return context.WithValue(ctx, dynamicReadAheadKey{}, true)
+}
+
+// ReadSeekCloserAt is the common logical-file data plane. A single instance is
+// suitable for HTTP Range serving and for tools which prefer ReaderAt. Reads
+// are backed by immutable FastCDC blocks through RAM L1, SSD L2, then S3 L3.
+type ReadSeekCloserAt interface {
+	io.Reader
+	io.ReaderAt
+	io.Seeker
+	io.Closer
+	Size() int64
 }
 
 type blockFuture struct {
@@ -28,18 +40,18 @@ type blockFuture struct {
 	err  error
 }
 
-// fileReader streams a logical file back from its blocks. It implements
-// io.ReadSeeker so http.ServeContent can serve Range requests for video
-// seeking; only the blocks intersecting the requested range are fetched.
 type fileReader struct {
-	getBlock       func(context.Context, Block) ([]byte, error)
-	ctx            context.Context
-	m              Manifest
-	starts         []int64
-	off            int64
-	loadedIdx      int
-	loaded         []byte
-	err            error
+	getBlock func(context.Context, Block) ([]byte, error)
+	ctx      context.Context
+	m        Manifest
+	starts   []int64
+
+	mu        sync.Mutex
+	off       int64
+	loadedIdx int
+	loaded    []byte
+	err       error
+
 	cancel         context.CancelFunc
 	closeOnce      sync.Once
 	prefetchMu     sync.Mutex
@@ -47,10 +59,14 @@ type fileReader struct {
 	prefetchSlots  chan struct{}
 	prefetchCtx    context.Context
 	prefetchCancel context.CancelFunc
-	readAheadBytes int64
+
+	adaptive       bool
+	readAheadCap   int64
+	readAhead      int64
+	sequentialRead int64
 }
 
-func (s *S3) Open(ctx context.Context, key string) (io.ReadSeekCloser, error) {
+func (s *S3) Open(ctx context.Context, key string) (ReadSeekCloserAt, error) {
 	m, err := s.GetManifest(ctx, key)
 	if err != nil {
 		return nil, err
@@ -63,23 +79,32 @@ func (s *S3) Open(ctx context.Context, key string) (io.ReadSeekCloser, error) {
 	}
 	readerCtx, cancel := context.WithCancel(ctx)
 	prefetchCtx, prefetchCancel := context.WithCancel(readerCtx)
-	var readAhead int64
-	if enabled, _ := ctx.Value(dynamicReadAheadKey{}).(bool); enabled {
-		readAhead = s.readAhead
+	adaptive, _ := ctx.Value(dynamicReadAheadKey{}).(bool)
+	readAhead := int64(0)
+	if adaptive && s.readAhead > 0 {
+		readAhead = min(s.readAhead, fileReaderInitialReadAhead)
 	}
 	return &fileReader{
 		getBlock: s.getBlock, ctx: readerCtx, cancel: cancel, m: m, starts: starts, loadedIdx: -1,
 		prefetch: make(map[int]*blockFuture), prefetchSlots: make(chan struct{}, fileReaderPrefetchConcurrency),
-		prefetchCtx: prefetchCtx, prefetchCancel: prefetchCancel, readAheadBytes: readAhead,
+		prefetchCtx: prefetchCtx, prefetchCancel: prefetchCancel, adaptive: adaptive,
+		readAheadCap: s.readAhead, readAhead: readAhead,
 	}, nil
 }
 
+func (r *fileReader) Size() int64 { return r.m.Size }
+
 func (r *fileReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.err != nil {
 		return 0, r.err
 	}
 	if len(p) == 0 {
 		return 0, nil
+	}
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
 	}
 	if r.off >= r.m.Size {
 		return 0, io.EOF
@@ -95,10 +120,49 @@ func (r *fileReader) Read(p []byte) (int, error) {
 	}
 	n := copy(p, data[r.off-start:])
 	r.off += int64(n)
+	r.observeSequentialRead(int64(n))
 	return n, nil
 }
 
+// ReadAt is deliberately demand-only. Random probes must not launch a forward
+// prefetch train; subsequent adjacent calls are served by the shared L1/L2
+// caches and sequential consumers should use Read instead.
+func (r *fileReader) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if off < 0 {
+		return 0, fmt.Errorf("negative read offset %d", off)
+	}
+	if off >= r.m.Size {
+		return 0, io.EOF
+	}
+	written := 0
+	for written < len(p) && off < r.m.Size {
+		if err := r.ctx.Err(); err != nil {
+			return written, err
+		}
+		idx, start, _, err := r.blockAt(off)
+		if err != nil {
+			return written, err
+		}
+		data, err := r.readBlock(r.ctx, idx)
+		if err != nil {
+			return written, err
+		}
+		n := copy(p[written:], data[off-start:])
+		written += n
+		off += int64(n)
+	}
+	if written < len(p) {
+		return written, io.EOF
+	}
+	return written, nil
+}
+
 func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var base int64
 	switch whence {
 	case io.SeekStart:
@@ -114,34 +178,25 @@ func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
 	if next < 0 {
 		return 0, fmt.Errorf("negative seek position %d", next)
 	}
-	if next != r.off && !r.seekWithinReadAhead(next) {
+	if next != r.off {
 		r.resetPrefetch()
 		r.err = nil
+		r.sequentialRead = 0
+		if r.adaptive && r.readAheadCap > 0 {
+			r.readAhead = min(r.readAheadCap, fileReaderInitialReadAhead)
+		}
 	}
 	r.off = next
 	return r.off, nil
 }
 
-func (r *fileReader) seekWithinReadAhead(next int64) bool {
-	if next < r.off || r.off >= r.m.Size {
-		return false
-	}
-	current, _, _, err := r.blockAt(r.off)
-	if err != nil {
-		return false
-	}
-	end := r.prefetchEnd(current + 1)
-	if end >= len(r.starts) {
-		return next < r.m.Size
-	}
-	return next < r.starts[end]
-}
-
 func (r *fileReader) Close() error {
 	r.closeOnce.Do(func() {
+		r.prefetchMu.Lock()
 		if r.prefetchCancel != nil {
 			r.prefetchCancel()
 		}
+		r.prefetchMu.Unlock()
 		if r.cancel != nil {
 			r.cancel()
 		}
@@ -149,8 +204,6 @@ func (r *fileReader) Close() error {
 	return nil
 }
 
-// blockAt locates the block containing off by its prefix offset, keeping
-// backward and random Range seeks logarithmic even for very large manifests.
 func (r *fileReader) blockAt(off int64) (int, int64, int64, error) {
 	if off < 0 || off >= r.m.Size || len(r.starts) == 0 {
 		return 0, 0, 0, io.EOF
@@ -207,6 +260,9 @@ func (r *fileReader) loadOrWait(idx int) ([]byte, error) {
 }
 
 func (r *fileReader) startPrefetch(first int) {
+	if first >= len(r.m.Blocks) {
+		return
+	}
 	r.prefetchMu.Lock()
 	if r.prefetch == nil {
 		r.prefetch = make(map[int]*blockFuture)
@@ -218,8 +274,8 @@ func (r *fileReader) startPrefetch(first int) {
 		r.prefetchCtx, r.prefetchCancel = context.WithCancel(r.ctx)
 	}
 	prefetchCtx := r.prefetchCtx
-	r.prefetchMu.Unlock()
 	last := r.prefetchEnd(first)
+	r.prefetchMu.Unlock()
 	for idx := first; idx < last; idx++ {
 		r.prefetchMu.Lock()
 		if _, exists := r.prefetch[idx]; exists {
@@ -264,16 +320,33 @@ func (r *fileReader) prefetchEnd(first int) int {
 	if first >= len(r.m.Blocks) {
 		return len(r.m.Blocks)
 	}
-	if r.readAheadBytes <= 0 {
-		return min(len(r.m.Blocks), first+fileReaderPrefetchBlocks)
+	target := r.readAhead
+	if !r.adaptive || target <= 0 {
+		return min(len(r.m.Blocks), first+fileReaderBasePrefetchBlocks)
 	}
 	var bytes int64
 	end := first
-	for end < len(r.m.Blocks) && (bytes < r.readAheadBytes || end < first+fileReaderPrefetchBlocks) {
+	for end < len(r.m.Blocks) && (bytes < target || end < first+fileReaderBasePrefetchBlocks) {
 		bytes += r.m.Blocks[end].Size
 		end++
 	}
 	return end
+}
+
+func (r *fileReader) observeSequentialRead(n int64) {
+	if !r.adaptive || r.readAheadCap <= 0 || n <= 0 {
+		return
+	}
+	r.sequentialRead += n
+	if r.sequentialRead < max(fileReaderInitialReadAhead, r.readAhead) {
+		return
+	}
+	r.sequentialRead = 0
+	next := r.readAhead * 2
+	if next == 0 {
+		next = fileReaderInitialReadAhead
+	}
+	r.readAhead = min(r.readAheadCap, next)
 }
 
 func (r *fileReader) resetPrefetch() {

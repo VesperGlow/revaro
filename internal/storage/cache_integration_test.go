@@ -77,6 +77,45 @@ func TestGetBlockConcurrentMissUsesSingleS3Request(t *testing.T) {
 	}
 }
 
+func TestGetBlockCancelsSharedS3RequestAfterLastWaiterLeaves(t *testing.T) {
+	data := []byte("cancelled immutable block")
+	id := hashBytes(data)
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+		close(cancelled)
+	}))
+	defer server.Close()
+	store, err := NewS3(context.Background(), testS3Config(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := store.GetBlock(ctx, id); done <- err }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("S3 request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled waiter returned no error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled waiter did not return")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("last waiter cancellation did not stop S3 request")
+	}
+}
+
 func TestGetManifestFallsBackOnceThenUsesSQLite(t *testing.T) {
 	m := Manifest{Version: 1, Size: 5, Blocks: []Block{{ID: hashBytes([]byte("block")), Size: 5}}}
 	var requests atomic.Int32

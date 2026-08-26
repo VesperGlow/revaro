@@ -105,7 +105,7 @@ set -a; . ./.env; set +a
 | `BLOCK_SSD_CACHE_CAPACITY` | `8589934592` | `/data` 上持久 block LRU 最大容量（默认 8 GiB）；`0` 禁用 |
 | `BLOCK_CACHE_MIN_FREE` | `2147483648` | SSD cache 写入后必须保留的文件系统可用空间（默认 2 GiB） |
 | `BLOCK_CACHE_DIR` | `APP_DATA_DIR/block-cache` | SSD block cache 目录；应放在本地 SSD 持久卷 |
-| `BLOCK_READ_AHEAD` | `536870912` | 视频、音频、下载、解压等连续读取的动态预读窗口（默认 512 MiB，最多 8 个 block 并发预取）；`0` 退回普通 3-block 预取 |
+| `BLOCK_READ_AHEAD` | `67108864` | 连续读取的自适应预读上限；从 8 MiB 小窗口开始，持续顺序消费时逐步增长，seek/取消会重置；`0` 使用普通 2-block 预取 |
 | `UPLOAD_EXPIRES` | `24h` | 未完成上传的清理期限，也决定垃圾回收宽限期下限 |
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
 | `GC_INTERVAL` | `1h` | 周期孤儿对象回收间隔；`0` 表示禁用周期扫描（回收站到期删除仍会触发一次回收） |
@@ -227,9 +227,8 @@ Bucket 必须保持私有。直连模式的浏览器访问依赖 Presigned URL�
 | `GET` | `/api/files/{id}/video` | 获取与视频同名的外挂字幕轨 |
 | `GET` | `/api/files/{id}/video/subtitles/{subtitle}` | 把 VTT/SRT/ASS/SSA 字幕作为 WebVTT 返回 |
 | `POST` | `/api/files/{id}/video/fmp4` | 创建不重新编码音视频的临时 fragmented MP4 remux 会话 |
-| `GET` | `/api/video/fmp4/{session}/stream.mp4` | 以 HTTP streaming/Range 返回增长中的或已完成的 fMP4 |
-| `POST` | `/api/video/fmp4/{session}/prewarm` | 仅启动当前播放 window 的下一个有限 fMP4 window，不等待 fragment |
-| `DELETE` | `/api/video/fmp4/{session}` | 停止并清理临时 fMP4 remux 会话 |
+| `GET` | `/api/video/fmp4/{session}/stream` | 把 FFmpeg stream-copy 产生的 fragmented MP4 stdout 直接流式送入 MSE |
+| `DELETE` | `/api/video/fmp4/{session}` | 停止会话并取消 FFmpeg、源 Range 请求及后续块读取 |
 | `POST` | `/api/files/{id}/video/hls` | 为浏览器不兼容的视频启动按需 FFmpeg HLS 流 |
 | `GET` / `PUT` | `/api/files/{id}/media/progress` | 读取或保存音频/视频的跨设备播放进度 |
 | `POST` | `/api/files/{id}/extract` | 创建安全检查后后台执行的在线解压任务 |
@@ -344,7 +343,7 @@ docker compose start revaro
 
 - 单用户模型：一个管理员账户、一棵文件树，没有注册与多用户。
 - 非空目录会在单个 SQLite 事务中整棵移入回收站；恢复与永久删除同样是原子操作，重名恢复返回 `409`，不会覆盖现有项目。
-- MSE fMP4 是临时 `-c copy` remux，会在 VPS 临时目录缓存增长中的 fMP4 并于关闭/超时后删除，不会写回网盘；同一时间最多两个 remux。回退的视频兼容播放仍是单实例、最多一路的临时 FFmpeg HLS，不生成持久播放副本；只有进入 HLS 的 HEVC 等格式才可能消耗实时转码 CPU。无波形、OCR 或 EXIF 索引。单文件上限 1 TiB，清单最多 262144 块；超大文件的逐块校验开销随块数线性增长。
+- MSE fMP4 是 `-c copy` 的 stdout 真流式 remux，不创建临时 window 文件；seek 会取消旧会话并从目标时间启动新流，同一时间最多两个 remux。回退的视频兼容播放仍是单实例、最多一路的临时 FFmpeg HLS，不生成持久播放副本；只有进入 HLS 的 HEVC 等格式才可能消耗实时转码 CPU。无波形、OCR 或 EXIF 索引。单文件上限 1 TiB，清单最多 262144 块；超大文件的逐块校验开销随块数线性增长。
 - 登录限速与公开分享并发限制是单实例内存状态；这符合单实例部署模型。
 - 块上传不做跨浏览器断点恢复；取消或过期会清理元数据，孤儿块由回收器回收，网络失败可在当前页面重试。
 - 回收站项目仍占用对象存储空间；永久删除后内容对象进入异步垃圾回收，直到下一次宽限期后的回收才释放空间。

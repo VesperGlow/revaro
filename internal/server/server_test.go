@@ -149,7 +149,7 @@ func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, storage.Man
 	key, err := m.PutManifest(context.Background(), mm)
 	return key, mm, err
 }
-func (m *mockStorage) Open(_ context.Context, key string) (io.ReadSeekCloser, error) {
+func (m *mockStorage) Open(_ context.Context, key string) (storage.ReadSeekCloserAt, error) {
 	mm, ok := m.manifests[key]
 	if !ok {
 		return nil, notFoundError()
@@ -167,7 +167,8 @@ func (m *mockStorage) Open(_ context.Context, key string) (io.ReadSeekCloser, er
 
 type nopReadSeekCloser struct{ *bytes.Reader }
 
-func (nopReadSeekCloser) Close() error { return nil }
+func (nopReadSeekCloser) Close() error  { return nil }
+func (r nopReadSeekCloser) Size() int64 { return r.Reader.Size() }
 
 func (m *mockStorage) ReadFile(ctx context.Context, key string, limit int64) ([]byte, error) {
 	rc, err := m.Open(ctx, key)
@@ -625,7 +626,7 @@ func TestTrashRestoresTreeAndProtectsContentFromGC(t *testing.T) {
 	if rr := a.request("GET", "/api/files/"+f.ID, nil, true); rr.Code != http.StatusOK {
 		t.Fatalf("restored descendant unavailable: %d", rr.Code)
 	}
-	if rr := a.request("GET", shareURL.Path, nil, false); rr.Code != http.StatusFound {
+	if rr := a.request("GET", shareURL.Path, nil, false); rr.Code != http.StatusOK {
 		t.Fatalf("restored share unavailable: %d", rr.Code)
 	}
 
@@ -661,14 +662,14 @@ func TestTrashFilesRemainReadableUntilPurged(t *testing.T) {
 		}
 	}
 	for _, f := range []File{photo, video, audio} {
-		if rr := a.request("GET", "/api/files/"+f.ID+"/preview", nil, true); rr.Code != http.StatusFound {
+		if rr := a.request("GET", "/api/files/"+f.ID+"/preview", nil, true); rr.Code != http.StatusOK {
 			t.Fatalf("trashed preview %s=%d: %s", f.Name, rr.Code, rr.Body.String())
 		}
 	}
 	if rr := a.request("GET", "/api/files/"+photo.ID+"/thumbnail", nil, true); rr.Code != http.StatusOK {
 		t.Fatalf("trashed thumbnail=%d: %s", rr.Code, rr.Body.String())
 	}
-	if rr := a.request("GET", "/api/files/"+audio.ID+"/download", nil, true); rr.Code != http.StatusFound {
+	if rr := a.request("GET", "/api/files/"+audio.ID+"/download", nil, true); rr.Code != http.StatusOK {
 		t.Fatalf("trashed download=%d: %s", rr.Code, rr.Body.String())
 	}
 	if rr := a.request("GET", "/api/files/"+book.ID+"/book/content", nil, true); rr.Code != http.StatusOK {
@@ -763,8 +764,8 @@ func TestShareLinkCanBeReadRotatedAndRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicRR := a.request("GET", shareURL.Path, nil, false)
-	if publicRR.Code != http.StatusFound || publicRR.Header().Get("Location") != "https://s3.example/get" {
-		t.Fatalf("public share=%d location=%q", publicRR.Code, publicRR.Header().Get("Location"))
+	if publicRR.Code != http.StatusOK || publicRR.Body.String() != "name: value\n" {
+		t.Fatalf("public share=%d body=%q", publicRR.Code, publicRR.Body.String())
 	}
 	statusRR := a.request("GET", "/api/files/"+f.ID+"/share", nil, true)
 	status := decode[struct {
@@ -854,7 +855,7 @@ func TestMediaPreviewAndStorageStats(t *testing.T) {
 			continue
 		}
 		preview := a.request("GET", "/api/files/"+item.ID+"/preview", nil, true)
-		if preview.Code != http.StatusFound {
+		if preview.Code != http.StatusOK {
 			t.Fatalf("preview %s=%d: %s", item.Name, preview.Code, preview.Body.String())
 		}
 	}
@@ -985,9 +986,9 @@ func TestBlockUploadLifecycle(t *testing.T) {
 	if !strings.HasPrefix(objKey, "manifests/") {
 		t.Fatalf("object key=%q", objKey)
 	}
-	// Single-block files still download straight from S3.
+	// Single-block files use the same cached Range reader as larger files.
 	dl := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
-	if dl.Code != http.StatusFound {
+	if dl.Code != http.StatusOK || !bytes.Equal(dl.Body.Bytes(), content) {
 		t.Fatalf("download=%d: %s", dl.Code, dl.Body.String())
 	}
 	// Deleting removes only metadata; the block stays for the GC.
@@ -1141,7 +1142,7 @@ func TestIdenticalFilesShareBlocksAndManifest(t *testing.T) {
 		t.Fatalf("delete=%d: %s", del.Code, del.Body.String())
 	}
 	dl := a.request("GET", "/api/files/"+f2.ID+"/download", nil, true)
-	if dl.Code != http.StatusFound {
+	if dl.Code != http.StatusOK || dl.Body.String() != "same content" {
 		t.Fatalf("second copy broken after delete: %d", dl.Code)
 	}
 }
@@ -1505,7 +1506,7 @@ func TestLegacyObjectsAreMigratedToBlocks(t *testing.T) {
 		t.Fatal("legacy object was not deleted after migration")
 	}
 	dl := a.request("GET", "/api/files/"+id+"/download", nil, true)
-	if dl.Code != http.StatusFound {
+	if dl.Code != http.StatusOK || dl.Body.String() != string(content) {
 		t.Fatalf("migrated download=%d: %s", dl.Code, dl.Body.String())
 	}
 }
