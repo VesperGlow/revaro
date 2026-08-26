@@ -21,8 +21,11 @@ func TestLoadDefaults(t *testing.T) {
 	if c.S3Region != "us-east-1" || c.S3PathStyle || c.PresignExpires != 15*time.Minute || c.UploadExpires != 24*time.Hour || c.TrashRetention != 30*24*time.Hour || c.GCInterval != time.Hour || c.BlockMinSize != 1<<20 || c.BlockSize != 4<<20 || c.BlockMaxSize != 16<<20 {
 		t.Fatalf("defaults: %+v", c)
 	}
-	if c.BlockRAMCacheCapacity != 256<<20 || c.BlockSSDCacheCapacity != 8<<30 || c.BlockCacheMinFree != 2<<30 || c.BlockReadAhead != 64<<20 || c.BlockCacheDir != filepath.Join(c.DataDir, "block-cache") {
+	if c.BlockRAMCacheCapacity != 0 || c.BlockSSDCacheCapacity != 0 || c.BlockCacheMinFree != 0 || c.BlockCacheDir != filepath.Join(c.DataDir, "block-cache") {
 		t.Fatalf("block cache defaults: %+v", c)
+	}
+	if c.MediaCacheCapacity != 2<<30 {
+		t.Fatalf("media cache default: %+v", c)
 	}
 	if c.FFmpegPath != "ffmpeg" {
 		t.Fatalf("ffmpeg default=%q", c.FFmpegPath)
@@ -37,7 +40,7 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("public endpoint must default to empty: %q", c.S3PublicEndpoint)
 	}
 	if c.ProxyTransfers {
-		t.Fatal("generic S3 must default to direct block uploads")
+		t.Fatal("generic S3 must default to direct blob transfers")
 	}
 }
 
@@ -83,8 +86,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("BLOCK_RAM_CACHE_CAPACITY", "134217728")
 	t.Setenv("BLOCK_SSD_CACHE_CAPACITY", "4294967296")
 	t.Setenv("BLOCK_CACHE_MIN_FREE", "1073741824")
-	t.Setenv("BLOCK_READ_AHEAD", "134217728")
 	t.Setenv("BLOCK_CACHE_DIR", "/cache/blocks")
+	t.Setenv("MEDIA_CACHE_CAPACITY", "1073741824")
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +101,7 @@ func TestLoadOverrides(t *testing.T) {
 	if c.S3PublicEndpoint != "https://minio-public.example.com" {
 		t.Fatalf("public endpoint override: %q", c.S3PublicEndpoint)
 	}
-	if c.BlockRAMCacheCapacity != 128<<20 || c.BlockSSDCacheCapacity != 4<<30 || c.BlockCacheMinFree != 1<<30 || c.BlockReadAhead != 128<<20 || c.BlockCacheDir != "/cache/blocks" {
+	if c.BlockRAMCacheCapacity != 128<<20 || c.BlockSSDCacheCapacity != 4<<30 || c.BlockCacheMinFree != 1<<30 || c.BlockCacheDir != "/cache/blocks" || c.MediaCacheCapacity != 1<<30 {
 		t.Fatalf("block cache overrides: %+v", c)
 	}
 	// 未显式配置时公网 endpoint 回退到 S3_ENDPOINT
@@ -129,7 +132,7 @@ func TestLoadValidations(t *testing.T) {
 		{"bad ram cache", func(t *testing.T) { t.Setenv("BLOCK_RAM_CACHE_CAPACITY", "-1") }},
 		{"bad ssd cache", func(t *testing.T) { t.Setenv("BLOCK_SSD_CACHE_CAPACITY", "1099511627777") }},
 		{"bad cache reserve", func(t *testing.T) { t.Setenv("BLOCK_CACHE_MIN_FREE", "-1") }},
-		{"bad read ahead", func(t *testing.T) { t.Setenv("BLOCK_READ_AHEAD", "1024") }},
+		{"bad media cache", func(t *testing.T) { t.Setenv("MEDIA_CACHE_CAPACITY", "1099511627777") }},
 		{"bad base url", func(t *testing.T) { t.Setenv("APP_BASE_URL", "not-a-url") }},
 		{"bad upload expires", func(t *testing.T) { t.Setenv("UPLOAD_EXPIRES", "0s") }},
 		{"bad trash retention", func(t *testing.T) { t.Setenv("TRASH_RETENTION", "-1s") }},

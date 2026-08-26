@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +21,7 @@ import (
 )
 
 const audioHLSIdleTTL = 20 * time.Minute
+const mediaFallbackDuration = 3 * time.Minute
 
 var audioHLSSegmentName = regexp.MustCompile(`^segment-[0-9]{6}\.ts$`)
 
@@ -186,6 +186,7 @@ func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSessi
 	}
 	args = append(args,
 		"-i", sourceURL, "-map", "0:a:0", "-vn",
+		"-t", strconv.FormatFloat(mediaFallbackDuration.Seconds(), 'f', 0, 64),
 		"-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
 		"-f", "hls", "-hls_time", "6", "-hls_list_size", "0",
 		"-hls_playlist_type", "event", "-hls_flags", "temp_file+independent_segments",
@@ -209,6 +210,16 @@ func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSessi
 }
 
 func (s *Server) startMediaHLSSource(ctx context.Context, f File) (string, func(), error) {
+	if !storage.IsManifestKey(f.objectKey) {
+		// FFmpeg/ffprobe talk to Wasabi directly. They issue their own bounded
+		// Range requests, and CommandContext closes them immediately when a seek
+		// replaces the session or the browser disconnects.
+		u, err := s.storage.PresignGetObject(ctx, f.objectKey, f.Name, responseMime(f), true, s.cfg.PresignExpires)
+		if err != nil {
+			return "", nil, err
+		}
+		return u, func() {}, nil
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, err
@@ -220,24 +231,13 @@ func (s *Server) startMediaHLSSource(ctx context.Context, f File) (string, func(
 			return
 		}
 		w.Header().Set("Content-Type", responseMime(f))
-		if storage.IsManifestKey(f.objectKey) {
-			rc, openErr := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
-			if openErr != nil {
-				http.Error(w, "source unavailable", http.StatusBadGateway)
-				return
-			}
-			defer rc.Close()
-			http.ServeContent(w, r, f.Name, time.Time{}, rc)
-			return
-		}
-		rc, openErr := s.storage.OpenRaw(r.Context(), f.objectKey)
+		rc, openErr := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
 		if openErr != nil {
 			http.Error(w, "source unavailable", http.StatusBadGateway)
 			return
 		}
 		defer rc.Close()
-		w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
-		_, _ = io.Copy(w, rc)
+		http.ServeContent(w, r, f.Name, time.Time{}, rc)
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	done := make(chan struct{})

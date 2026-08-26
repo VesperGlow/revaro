@@ -17,9 +17,8 @@ import type { ArchiveJob, AudioMergeFormat, AudioMergeResponse, DownloadJob, Fol
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_CONCURRENCY = 3
-const BLOCK_PUT_CONCURRENCY = 4
-const BLOCK_REGISTER_BATCH = 1000
-const COMPLETE_RETRIES = 3
+const MULTIPART_CONCURRENCY = 4
+const PART_URL_BATCH = 100
 
 const user = ref<string|null>(null)
 const hasAvatar = ref(false)
@@ -670,12 +669,8 @@ async function acceptFolder(list:FileList){
 }
 function onDrop(event:DragEvent){dragActive.value=false;if(!trashMode.value&&event.dataTransfer?.files.length)acceptFiles(event.dataTransfer.files)}
 function pumpQueue(){while(activeUploads<FILE_CONCURRENCY){const task=tasks.find(t=>t.status==='queued');if(!task)return;activeUploads++;runUpload(task).finally(()=>{activeUploads--;pumpQueue()})}}
-interface BlockSpec { id:string; size:number; offset:number }
-interface RegisteredBlock { id:string; size:number; exists:boolean; url?:string; offset:number }
-interface ChunkingSpec { algorithm:'fastcdc-v1'; min_size:number; avg_size:number; max_size:number }
-interface CreatedUpload { upload_id:string; mode:'blocks'; block_size:number; block_count:number; chunking?:ChunkingSpec }
-interface HashJob { worker:Worker; reject:(reason?:unknown)=>void }
-const hashJobs=new Map<string,HashJob>()
+interface CreatedUpload { upload_id:string; mode:'single'|'multipart'; url?:string; part_size:number; part_count:number }
+interface CompletedPart { part_number:number; etag:string }
 
 async function runUpload(task:UploadTask){
   task.status='uploading';task.error='';task.cancelled=false;task.progress=0
@@ -683,107 +678,59 @@ async function runUpload(task:UploadTask){
     const created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})
     task.uploadId=created.upload_id
     if(task.cancelled){await abortRemote(task);return}
-    // 1) 在 Worker 中用 FastCDC 分块并计算 SHA-256；旧服务端回退为固定分块。
-    const chunking=created.chunking??{algorithm:'fastcdc-v1' as const,min_size:created.block_size,avg_size:created.block_size,max_size:created.block_size}
-    const blocks=await hashBlocks(task,chunking)
+    let parts:CompletedPart[]=[]
+    if(created.mode==='single'){
+      if(!created.url)throw new Error('服务端没有返回上传地址')
+      await xhrPut(created.url,task.file,task,loaded=>{task.progress=Math.floor(percentage(loaded,task.file.size)*.98)},task.file.type||'application/octet-stream')
+    }else{
+      parts=await uploadMultipart(task,created)
+    }
     if(task.cancelled){await abortRemote(task);return}
-    // 2) 登记全部块；服务端为缺失的块签发条件 PUT 的预签名 URL。
-    const registered=await registerBlocks(task,created.upload_id,blocks)
-    if(task.cancelled){await abortRemote(task);return}
-    // 3) 只把缺失的块直传到 S3。
-    await uploadBlocks(task,registered.filter(b=>!b.exists&&b.url))
-    if(task.cancelled){await abortRemote(task);return}
-    // 4) 完成上传；409 时按缺失列表修复并重试。
-    await completeWithRepair(task,created.upload_id,blocks)
+    await api(`/api/uploads/${created.upload_id}/complete`,{method:'POST',body:JSON.stringify({parts})},120000)
     task.progress=100;task.status='done';scheduleUploadRefresh();scheduleAutoClear()
   }catch(e){if(task.cancelled){task.status='cancelled';scheduleAutoClear()}else{task.status='failed';task.error=(e as Error).message}}
 }
 
-function hashBlocks(task:UploadTask,chunking:ChunkingSpec):Promise<BlockSpec[]>{
-  return new Promise((resolve,reject)=>{
-    const worker=new Worker(new URL('./fastcdc.worker.ts',import.meta.url),{type:'module'})
-    const blocks:BlockSpec[]=[]
-    let settled=false
-    const finish=(error?:unknown)=>{
-      if(settled)return
-      settled=true;worker.terminate();hashJobs.delete(task.id)
-      if(error)reject(error);else resolve(blocks)
-    }
-    hashJobs.set(task.id,{worker,reject:reason=>finish(reason)})
-    worker.onerror=()=>finish(new Error('FastCDC Worker 启动失败'))
-    worker.onmessage=(event:MessageEvent<{type:'block';block:BlockSpec;hashed:number}|{type:'done'}|{type:'error';message:string}>)=>{
-      if(event.data.type==='block'){
-        blocks.push(event.data.block)
-        task.progress=Math.floor(percentage(event.data.hashed,task.file.size)*0.35)
-      }else if(event.data.type==='done')finish()
-      else finish(new Error(event.data.message))
-    }
-    worker.postMessage({file:task.file,config:{minSize:chunking.min_size,avgSize:chunking.avg_size,maxSize:chunking.max_size}})
-  })
-}
-
-async function registerBlocks(task:UploadTask,uploadId:string,blocks:BlockSpec[]):Promise<RegisteredBlock[]>{
-  const out:RegisteredBlock[]=[]
-  for(let from=0;from<blocks.length;from+=BLOCK_REGISTER_BATCH){
-    const page=blocks.slice(from,from+BLOCK_REGISTER_BATCH)
-    const data=await api<{blocks:{id:string;size:number;exists:boolean;url?:string}[]}>(`/api/uploads/${uploadId}/blocks`,{method:'POST',body:JSON.stringify({blocks:page.map(b=>({id:b.id,size:b.size}))})})
-    // 服务端按顺序回显；把文件偏移重新挂回每个块。
-    data.blocks.forEach((b,i)=>out.push({...b,offset:page[i].offset}))
-  }
-  return out
-}
-
-async function uploadBlocks(task:UploadTask,blocks:RegisteredBlock[]){
-  const total=blocks.reduce((sum,b)=>sum+b.size,0)
-  const sent=new Array(blocks.length).fill(0) as number[]
-  let cursor=0
-  const worker=async()=>{
-    while(true){
-      const idx=cursor++
-      if(idx>=blocks.length)return
-      if(task.cancelled)throw new Error('上传已取消')
-      const b=blocks[idx]
-      const blob=task.file.slice(b.offset,b.offset+b.size)
-      await xhrPutBlock(b.url!,blob,task,(loaded)=>{sent[idx]=loaded;task.progress=35+Math.floor(percentage(sent.reduce((a,x)=>a+x,0),total)*0.64)})
-    }
-  }
-  await Promise.all(Array.from({length:Math.min(BLOCK_PUT_CONCURRENCY,blocks.length)},worker))
-}
-
-async function completeWithRepair(task:UploadTask,uploadId:string,blocks:BlockSpec[]){
-  for(let attempt=0;attempt<COMPLETE_RETRIES;attempt++){
+async function uploadMultipart(task:UploadTask,created:CreatedUpload):Promise<CompletedPart[]>{
+  const numbers=Array.from({length:created.part_count},(_,index)=>index+1)
+  const sent=new Array(numbers.length).fill(0) as number[]
+  const completed=new Array<CompletedPart>(numbers.length)
+  for(let from=0;from<numbers.length;from+=PART_URL_BATCH){
     if(task.cancelled)throw new Error('上传已取消')
-    try{
-      // 服务端只认 {id,size}：offset 是前端本地字段，不能带上
-      await api(`/api/uploads/${uploadId}/complete`,{method:'POST',body:JSON.stringify({blocks:blocks.map(b=>({id:b.id,size:b.size}))})})
-      return
-    }catch(e){
-      const err=e as Error & {status?:number;data?:unknown}
-      const missing:string[]|undefined=(err.data as {error?:{missing_blocks?:string[]}}|null)?.error?.missing_blocks
-      if(err.status!==409||!missing?.length)throw e
-      // 有块在登记后被回收（极端竞态）：重新登记拿到新 URL，补传后重试。
-      const ids=new Set(missing)
-      const registered=await registerBlocks(task,uploadId,blocks.filter(b=>ids.has(b.id)))
-      await uploadBlocks(task,registered.filter(b=>!b.exists&&b.url))
+    const page=numbers.slice(from,from+PART_URL_BATCH)
+    const data=await api<{parts:{part_number:number;url:string}[]}>(`/api/uploads/${created.upload_id}/parts`,{method:'POST',body:JSON.stringify({part_numbers:page})})
+    let cursor=0
+    const worker=async()=>{
+      while(true){
+        const localIndex=cursor++
+        if(localIndex>=data.parts.length)return
+        if(task.cancelled)throw new Error('上传已取消')
+        const part=data.parts[localIndex]
+        const idx=part.part_number-1
+        const start=idx*created.part_size
+        const blob=task.file.slice(start,Math.min(task.file.size,start+created.part_size))
+        const etag=await xhrPut(part.url,blob,task,loaded=>{sent[idx]=loaded;task.progress=Math.floor(percentage(sent.reduce((a,x)=>a+x,0),task.file.size)*.98)})
+        if(!etag)throw new Error('对象存储没有暴露 ETag，请检查 Bucket CORS 的 ExposeHeaders')
+        completed[idx]={part_number:part.part_number,etag}
+      }
     }
+    await Promise.all(Array.from({length:Math.min(MULTIPART_CONCURRENCY,data.parts.length)},worker))
   }
-  throw new Error('无法完成块校验，请重试')
+  return completed
 }
 
-function xhrPutBlock(url:string,body:Blob,task:UploadTask,onProgress:(n:number)=>void):Promise<void>{
+function xhrPut(url:string,body:Blob,task:UploadTask,onProgress:(n:number)=>void,contentType?:string):Promise<string>{
   return new Promise((resolve,reject)=>{
     const xhr=new XMLHttpRequest()
     const detach=()=>{task.requests=task.requests.filter(request=>request!==xhr)}
     task.requests.push(xhr)
     xhr.open('PUT',url)
-    xhr.setRequestHeader('Content-Type','application/octet-stream')
-    xhr.setRequestHeader('If-None-Match','*')
+    if(contentType)xhr.setRequestHeader('Content-Type',contentType)
     xhr.upload.onprogress=e=>{if(e.lengthComputable)onProgress(e.loaded)}
     xhr.onload=()=>{
       detach()
-      if(xhr.status>=200&&xhr.status<300)resolve()
-      else if(xhr.status===412)resolve() // 内容相同的块已存在（并发去重），视为成功
-      else reject(new Error(`S3 块上传失败 (${xhr.status})`))
+      if(xhr.status>=200&&xhr.status<300)resolve(xhr.getResponseHeader('ETag')||'')
+      else reject(new Error(`S3 上传失败 (${xhr.status})`))
     }
     xhr.onerror=()=>{detach();reject(new Error('无法连接对象存储，请检查 S3 CORS'))}
     xhr.onabort=()=>{detach();reject(new Error('上传已取消'))}
@@ -791,7 +738,7 @@ function xhrPutBlock(url:string,body:Blob,task:UploadTask,onProgress:(n:number)=
   })
 }
 function percentage(done:number,total:number){return total===0?100:Math.min(99,Math.round(done/total*100))}
-async function cancelUpload(task:UploadTask){task.cancelled=true;hashJobs.get(task.id)?.reject(new Error('上传已取消'));task.requests.forEach(x=>x.abort());await abortRemote(task);task.status='cancelled'}
+async function cancelUpload(task:UploadTask){task.cancelled=true;task.requests.forEach(x=>x.abort());await abortRemote(task);task.status='cancelled'}
 async function abortRemote(task:UploadTask){if(task.uploadId){try{await api(`/api/uploads/${task.uploadId}`,{method:'DELETE'})}catch{/* stale cleanup retries later */}}}
 async function retry(task:UploadTask){await abortRemote(task);task.status='queued';task.error='';task.uploadId=undefined;task.requests=[];task.cancelled=false;pumpQueue()}
 function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled'].includes(tasks[i].status))tasks.splice(i,1)}
@@ -799,13 +746,13 @@ function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled
 function scheduleAutoClear(){}
 function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
 onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){void refreshAudioMergeJobs();void refreshDownloadJobs();void refreshArchiveJobs()}})})
-onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(archivePollTimer);window.clearTimeout(uploadRefreshTimer);for(const job of hashJobs.values())job.reject(new Error('页面已关闭'));hashJobs.clear()})
+onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(archivePollTimer);window.clearTimeout(uploadRefreshTimer);tasks.forEach(task=>task.requests.forEach(request=>request.abort()))})
 </script>
 
 <template>
   <div v-if="checking" class="splash"><div class="brand-mark"><img class="ui-image" src="/logo.png" alt="" draggable="false"></div><div class="spinner"></div></div>
   <main v-else-if="!user" class="login-page">
-    <section class="login-visual"><div class="glow glow-a"></div><div class="glow glow-b"></div><div class="visual-copy"><span class="eyebrow">PRIVATE · DIRECT · YOURS</span><h1>你的文件，<br>安静地待在云上。</h1><p>轻量、自托管，文件按内容块直传你的 S3。</p></div><div class="revaro-card"><span>☁</span><div><strong>Seafile 式块存储</strong><small>内容寻址 · 跨文件去重</small></div></div></section>
+    <section class="login-visual"><div class="glow glow-a"></div><div class="glow glow-b"></div><div class="visual-copy"><span class="eyebrow">PRIVATE · DIRECT · YOURS</span><h1>你的文件，<br>安静地待在云上。</h1><p>轻量、自托管，浏览器直连你的 S3。</p></div><div class="revaro-card"><span>☁</span><div><strong>不透明对象存储</strong><small>SQLite 元数据 · 原生 Range</small></div></div></section>
     <section class="login-panel">
       <form class="login-form" @submit.prevent="submitLogin">
         <div class="logo"><span class="brand-mark small"><img class="ui-image" src="/logo.png" alt="" draggable="false"></span><span>revaro</span></div>
@@ -846,7 +793,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
       <FileGrid v-else :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" />
     </section>
 
-    <div v-if="dragActive&&!trashMode" class="drop-zone"><div><span>↓</span><h2>释放以上传到 {{ current?.name || '我的文件' }}</h2><p>文件将按内容块直传 S3，重复内容自动去重</p></div></div>
+    <div v-if="dragActive&&!trashMode" class="drop-zone"><div><span>↓</span><h2>释放以上传到 {{ current?.name || '我的文件' }}</h2><p>文件将通过 Presigned URL 直传 S3</p></div></div>
 
     <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),'video-previewing':modal==='preview'&&!!selected&&isVideo(selected),editing:modal==='editor',reading:modal==='reader'}" @click.self="closeBackdrop">
       <section v-if="modal==='rename'" class="modal"><header><div><p class="eyebrow dark">EDIT</p><h2>重命名</h2></div><button @click="closeModal">×</button></header><label>新名称<input v-model="renameValue" maxlength="1024" @keyup.enter="saveRename"></label><footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="modalBusy" @click="saveRename">保存</button></footer></section>

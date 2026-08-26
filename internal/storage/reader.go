@@ -8,19 +8,11 @@ import (
 	"sync"
 )
 
-const (
-	fileReaderBasePrefetchBlocks  = 2
-	fileReaderPrefetchConcurrency = 4
-	fileReaderInitialReadAhead    = int64(8 << 20)
-)
-
-type dynamicReadAheadKey struct{}
-
-// WithDynamicReadAhead enables adaptive look-ahead for a sequential consumer.
-// BLOCK_READ_AHEAD is only the hard ceiling: a reader starts with a small
-// window, grows it after sustained forward reads, and resets it on a seek.
+// WithDynamicReadAhead remains as a source-compatible no-op for legacy call
+// sites. The compatibility reader is deliberately demand-only now: it never
+// launches work beyond the block containing the current read.
 func WithDynamicReadAhead(ctx context.Context) context.Context {
-	return context.WithValue(ctx, dynamicReadAheadKey{}, true)
+	return ctx
 }
 
 // ReadSeekCloserAt is the common logical-file data plane. A single instance is
@@ -32,12 +24,6 @@ type ReadSeekCloserAt interface {
 	io.Seeker
 	io.Closer
 	Size() int64
-}
-
-type blockFuture struct {
-	done chan struct{}
-	data []byte
-	err  error
 }
 
 type fileReader struct {
@@ -52,18 +38,8 @@ type fileReader struct {
 	loaded    []byte
 	err       error
 
-	cancel         context.CancelFunc
-	closeOnce      sync.Once
-	prefetchMu     sync.Mutex
-	prefetch       map[int]*blockFuture
-	prefetchSlots  chan struct{}
-	prefetchCtx    context.Context
-	prefetchCancel context.CancelFunc
-
-	adaptive       bool
-	readAheadCap   int64
-	readAhead      int64
-	sequentialRead int64
+	cancel    context.CancelFunc
+	closeOnce sync.Once
 }
 
 func (s *S3) Open(ctx context.Context, key string) (ReadSeekCloserAt, error) {
@@ -78,17 +54,8 @@ func (s *S3) Open(ctx context.Context, key string) (ReadSeekCloserAt, error) {
 		offset += block.Size
 	}
 	readerCtx, cancel := context.WithCancel(ctx)
-	prefetchCtx, prefetchCancel := context.WithCancel(readerCtx)
-	adaptive, _ := ctx.Value(dynamicReadAheadKey{}).(bool)
-	readAhead := int64(0)
-	if adaptive && s.readAhead > 0 {
-		readAhead = min(s.readAhead, fileReaderInitialReadAhead)
-	}
 	return &fileReader{
 		getBlock: s.getBlock, ctx: readerCtx, cancel: cancel, m: m, starts: starts, loadedIdx: -1,
-		prefetch: make(map[int]*blockFuture), prefetchSlots: make(chan struct{}, fileReaderPrefetchConcurrency),
-		prefetchCtx: prefetchCtx, prefetchCancel: prefetchCancel, adaptive: adaptive,
-		readAheadCap: s.readAhead, readAhead: readAhead,
 	}, nil
 }
 
@@ -120,7 +87,6 @@ func (r *fileReader) Read(p []byte) (int, error) {
 	}
 	n := copy(p, data[r.off-start:])
 	r.off += int64(n)
-	r.observeSequentialRead(int64(n))
 	return n, nil
 }
 
@@ -179,12 +145,7 @@ func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, fmt.Errorf("negative seek position %d", next)
 	}
 	if next != r.off {
-		r.resetPrefetch()
 		r.err = nil
-		r.sequentialRead = 0
-		if r.adaptive && r.readAheadCap > 0 {
-			r.readAhead = min(r.readAheadCap, fileReaderInitialReadAhead)
-		}
 	}
 	r.off = next
 	return r.off, nil
@@ -192,11 +153,6 @@ func (r *fileReader) Seek(offset int64, whence int) (int64, error) {
 
 func (r *fileReader) Close() error {
 	r.closeOnce.Do(func() {
-		r.prefetchMu.Lock()
-		if r.prefetchCancel != nil {
-			r.prefetchCancel()
-		}
-		r.prefetchMu.Unlock()
 		if r.cancel != nil {
 			r.cancel()
 		}
@@ -219,13 +175,11 @@ func (r *fileReader) load(idx int) ([]byte, error) {
 	if r.loadedIdx == idx && r.loaded != nil {
 		return r.loaded, nil
 	}
-	data, err := r.loadOrWait(idx)
+	data, err := r.readBlock(r.ctx, idx)
 	if err != nil {
 		return nil, err
 	}
 	r.loaded, r.loadedIdx = data, idx
-	r.prunePrefetch(idx)
-	r.startPrefetch(idx + 1)
 	return data, nil
 }
 
@@ -239,124 +193,6 @@ func (r *fileReader) readBlock(ctx context.Context, idx int) ([]byte, error) {
 		return nil, fmt.Errorf("block %s size mismatch: stored %d bytes, manifest says %d", block.ID, len(data), block.Size)
 	}
 	return data, nil
-}
-
-func (r *fileReader) loadOrWait(idx int) ([]byte, error) {
-	r.prefetchMu.Lock()
-	future := r.prefetch[idx]
-	if future != nil {
-		delete(r.prefetch, idx)
-	}
-	r.prefetchMu.Unlock()
-	if future == nil {
-		return r.readBlock(r.ctx, idx)
-	}
-	select {
-	case <-future.done:
-		return future.data, future.err
-	case <-r.ctx.Done():
-		return nil, r.ctx.Err()
-	}
-}
-
-func (r *fileReader) startPrefetch(first int) {
-	if first >= len(r.m.Blocks) {
-		return
-	}
-	r.prefetchMu.Lock()
-	if r.prefetch == nil {
-		r.prefetch = make(map[int]*blockFuture)
-	}
-	if r.prefetchSlots == nil {
-		r.prefetchSlots = make(chan struct{}, fileReaderPrefetchConcurrency)
-	}
-	if r.prefetchCtx == nil {
-		r.prefetchCtx, r.prefetchCancel = context.WithCancel(r.ctx)
-	}
-	prefetchCtx := r.prefetchCtx
-	last := r.prefetchEnd(first)
-	r.prefetchMu.Unlock()
-	for idx := first; idx < last; idx++ {
-		r.prefetchMu.Lock()
-		if _, exists := r.prefetch[idx]; exists {
-			r.prefetchMu.Unlock()
-			continue
-		}
-		future := &blockFuture{done: make(chan struct{})}
-		r.prefetch[idx] = future
-		r.prefetchMu.Unlock()
-		go func(index int, result *blockFuture, fetchCtx context.Context) {
-			select {
-			case r.prefetchSlots <- struct{}{}:
-				defer func() { <-r.prefetchSlots }()
-			case <-fetchCtx.Done():
-				result.err = fetchCtx.Err()
-				close(result.done)
-				return
-			}
-			result.data, result.err = r.readBlock(fetchCtx, index)
-			close(result.done)
-		}(idx, future, prefetchCtx)
-	}
-}
-
-func (r *fileReader) prunePrefetch(current int) {
-	r.prefetchMu.Lock()
-	defer r.prefetchMu.Unlock()
-	first, last := current+1, r.prefetchEnd(current+1)
-	for idx, future := range r.prefetch {
-		if idx >= first && idx < last {
-			continue
-		}
-		select {
-		case <-future.done:
-			delete(r.prefetch, idx)
-		default:
-		}
-	}
-}
-
-func (r *fileReader) prefetchEnd(first int) int {
-	if first >= len(r.m.Blocks) {
-		return len(r.m.Blocks)
-	}
-	target := r.readAhead
-	if !r.adaptive || target <= 0 {
-		return min(len(r.m.Blocks), first+fileReaderBasePrefetchBlocks)
-	}
-	var bytes int64
-	end := first
-	for end < len(r.m.Blocks) && (bytes < target || end < first+fileReaderBasePrefetchBlocks) {
-		bytes += r.m.Blocks[end].Size
-		end++
-	}
-	return end
-}
-
-func (r *fileReader) observeSequentialRead(n int64) {
-	if !r.adaptive || r.readAheadCap <= 0 || n <= 0 {
-		return
-	}
-	r.sequentialRead += n
-	if r.sequentialRead < max(fileReaderInitialReadAhead, r.readAhead) {
-		return
-	}
-	r.sequentialRead = 0
-	next := r.readAhead * 2
-	if next == 0 {
-		next = fileReaderInitialReadAhead
-	}
-	r.readAhead = min(r.readAheadCap, next)
-}
-
-func (r *fileReader) resetPrefetch() {
-	r.prefetchMu.Lock()
-	defer r.prefetchMu.Unlock()
-	if r.prefetchCancel != nil {
-		r.prefetchCancel()
-	}
-	r.prefetchCtx, r.prefetchCancel = context.WithCancel(r.ctx)
-	r.prefetch = make(map[int]*blockFuture)
 }
 
 // ReadFile reads an entire logical file with a size guard.

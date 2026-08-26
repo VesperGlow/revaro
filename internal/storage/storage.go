@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"golang.org/x/sync/singleflight"
 )
@@ -30,6 +32,11 @@ type ObjectInfo struct {
 	ETag string
 }
 
+type CompletedPart struct {
+	PartNumber int32  `json:"part_number"`
+	ETag       string `json:"etag"`
+}
+
 // ObjectRef describes one listed object, used by the garbage collector.
 type ObjectRef struct {
 	Key          string
@@ -37,16 +44,23 @@ type ObjectRef struct {
 	LastModified time.Time
 }
 
-// Storage is the object storage control plane. File content is stored as
-// content-addressed blocks plus a small JSON manifest (the Seafile
-// "fs object" analogue); small fixed blobs (avatars) use raw objects.
+// Storage is the object-storage control plane. New logical files are opaque
+// whole objects; the manifest/block methods below are read/GC compatibility
+// hooks for installations that still contain pre-migration FastCDC data.
 type Storage interface {
 	Ping(context.Context) error
 
-	// Blocks: variable-size content-addressed chunks under blocks/xx/<sha256>.
-	PresignBlockPut(context.Context, string, time.Duration) (string, error)
-	PutBlock(context.Context, string, []byte) error
-	HeadBlock(context.Context, string) (Block, error)
+	// Opaque whole-file blobs. Multipart is transport-only: completion creates
+	// one normal S3 object at key, never a persistent set of application blocks.
+	PresignPutObject(context.Context, string, string, time.Duration) (string, error)
+	CreateMultipart(context.Context, string, string) (string, error)
+	PresignUploadPart(context.Context, string, string, int32, time.Duration) (string, error)
+	CompleteMultipart(context.Context, string, string, []CompletedPart) (ObjectInfo, error)
+	AbortMultipart(context.Context, string, string) error
+	HeadObject(context.Context, string) (ObjectInfo, error)
+	StoreBlob(context.Context, string, string, io.Reader, int64) (ObjectInfo, error)
+
+	// Legacy blocks: variable-size chunks under blocks/xx/<sha256>.
 	GetBlock(context.Context, string) ([]byte, error)
 	ListBlocks(context.Context) ([]ObjectRef, error)
 
@@ -55,10 +69,7 @@ type Storage interface {
 	GetManifest(context.Context, string) (Manifest, error)
 	ListManifests(context.Context) ([]ObjectRef, error)
 
-	// Server-side whole-content write (documents, legacy migration).
-	Store(context.Context, io.Reader) (string, Manifest, error)
-
-	// Reading a logical file back as a stream.
+	// Reading a legacy logical file back as a stream.
 	Open(context.Context, string) (ReadSeekCloserAt, error)
 	ReadFile(context.Context, string, int64) ([]byte, error)
 
@@ -84,7 +95,6 @@ type S3 struct {
 	blockCache    *blockLRU
 	diskCache     *diskBlockCache
 	ramCapacity   int64
-	readAhead     int64
 	manifests     *manifestIndex
 	blockFlightMu sync.Mutex
 	blockFlights  map[string]*blockDownload
@@ -152,13 +162,165 @@ func newS3(ctx context.Context, c config.Config, db *sql.DB) (*S3, error) {
 	return &S3{
 		client: client, presign: s3.NewPresignClient(presignClient), bucket: c.S3Bucket,
 		maxBlockSize: maximum, chunking: chunking, ramCapacity: c.BlockRAMCacheCapacity,
-		diskCache: diskCache, readAhead: c.BlockReadAhead, manifests: newManifestIndex(db),
+		diskCache: diskCache, manifests: newManifestIndex(db),
 	}, nil
 }
 
 func (s *S3) Ping(ctx context.Context) error {
 	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)})
 	return err
+}
+
+func (s *S3) PresignPutObject(ctx context.Context, key, mime string, expiry time.Duration) (string, error) {
+	in := &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}
+	if mime != "" {
+		in.ContentType = aws.String(mime)
+	}
+	out, err := s.presign.PresignPutObject(ctx, in, s3.WithPresignExpires(expiry))
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}
+
+func (s *S3) CreateMultipart(ctx context.Context, key, mime string) (string, error) {
+	in := &s3.CreateMultipartUploadInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}
+	if mime != "" {
+		in.ContentType = aws.String(mime)
+	}
+	out, err := s.client.CreateMultipartUpload(ctx, in)
+	if err != nil {
+		return "", err
+	}
+	return aws.ToString(out.UploadId), nil
+}
+
+func (s *S3) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expiry time.Duration) (string, error) {
+	if partNumber < 1 || partNumber > 10000 {
+		return "", errors.New("multipart part number is out of range")
+	}
+	out, err := s.presign.PresignUploadPart(ctx, &s3.UploadPartInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(partNumber),
+	}, s3.WithPresignExpires(expiry))
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}
+
+func (s *S3) CompleteMultipart(ctx context.Context, key, uploadID string, parts []CompletedPart) (ObjectInfo, error) {
+	completed := make([]types.CompletedPart, len(parts))
+	for i, part := range parts {
+		completed[i] = types.CompletedPart{PartNumber: aws.Int32(part.PartNumber), ETag: aws.String(part.ETag)}
+	}
+	out, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: completed},
+	})
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	info, err := s.HeadObject(ctx, key)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if info.ETag == "" {
+		info.ETag = aws.ToString(out.ETag)
+	}
+	return info, nil
+}
+
+func (s *S3) AbortMultipart(ctx context.Context, key, uploadID string) error {
+	if uploadID == "" {
+		return nil
+	}
+	_, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+	})
+	return err
+}
+
+func (s *S3) HeadObject(ctx context.Context, key string) (ObjectInfo, error) {
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	return ObjectInfo{Size: aws.ToInt64(out.ContentLength), ETag: strings.Trim(aws.ToString(out.ETag), `"`)}, nil
+}
+
+func (s *S3) StoreBlob(ctx context.Context, key, mime string, body io.Reader, size int64) (ObjectInfo, error) {
+	if size < 0 {
+		uploadID, err := s.CreateMultipart(ctx, key, mime)
+		if err != nil {
+			return ObjectInfo{}, err
+		}
+		completed := make([]CompletedPart, 0, 8)
+		const partSize = 16 << 20
+		var total int64
+		for partNumber := int32(1); ; partNumber++ {
+			if partNumber > 10000 {
+				_ = s.AbortMultipart(context.Background(), key, uploadID)
+				return ObjectInfo{}, errors.New("stream exceeds S3 multipart part limit")
+			}
+			buf := make([]byte, partSize)
+			n, readErr := io.ReadFull(body, buf)
+			if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+				_ = s.AbortMultipart(context.Background(), key, uploadID)
+				return ObjectInfo{}, readErr
+			}
+			if n == 0 {
+				break
+			}
+			out, uploadErr := s.client.UploadPart(ctx, &s3.UploadPartInput{
+				Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(partNumber),
+				Body: bytes.NewReader(buf[:n]), ContentLength: aws.Int64(int64(n)),
+			})
+			if uploadErr != nil {
+				_ = s.AbortMultipart(context.Background(), key, uploadID)
+				return ObjectInfo{}, uploadErr
+			}
+			completed = append(completed, CompletedPart{PartNumber: partNumber, ETag: aws.ToString(out.ETag)})
+			total += int64(n)
+			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+				break
+			}
+		}
+		if len(completed) == 0 {
+			_ = s.AbortMultipart(context.Background(), key, uploadID)
+			return s.StoreBlob(ctx, key, mime, bytes.NewReader(nil), 0)
+		}
+		info, err := s.CompleteMultipart(ctx, key, uploadID, completed)
+		if err != nil {
+			_ = s.AbortMultipart(context.Background(), key, uploadID)
+			return ObjectInfo{}, err
+		}
+		if info.Size != total {
+			return ObjectInfo{}, fmt.Errorf("stored blob size %d, read %d", info.Size, total)
+		}
+		return info, nil
+	}
+	in := &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), Body: body, ContentLength: aws.Int64(size)}
+	if mime != "" {
+		in.ContentType = aws.String(mime)
+	}
+	out, err := s.client.PutObject(ctx, in)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	return ObjectInfo{Size: size, ETag: strings.Trim(aws.ToString(out.ETag), `"`)}, nil
+}
+
+func BlobKey(id string) string { return "blobs/" + id }
+
+func ValidMultipartPartCount(size, partSize int64) (int, error) {
+	if size < 0 || partSize < 5<<20 {
+		return 0, errors.New("invalid multipart size")
+	}
+	count := int((size + partSize - 1) / partSize)
+	if count > 10000 {
+		return 0, fmt.Errorf("multipart upload needs %s parts", strconv.Itoa(count))
+	}
+	return count, nil
 }
 
 // PresignBlockPut issues a conditional PUT URL for one block. The URL binds

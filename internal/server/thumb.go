@@ -48,7 +48,8 @@ var videoExts = map[string]bool{
 var videoThumbSlots = make(chan struct{}, 1)
 var imageThumbSlots = make(chan struct{}, 2)
 
-// thumbnailKey 由清单键（内容哈希）派生，内容不变则缩略图键不变。
+// thumbnailKey 由不可见的 object key 派生；保存新内容会换 blob key，
+// 复制/移动仍复用同一 key，因此缩略图缓存语义保持稳定。
 // GC 也使用这个纯函数从数据库引用重建可达缩略图集合。
 func thumbnailKey(objectKey string) string {
 	sum := sha256.Sum256([]byte(objectKey + "|thumb-v2"))
@@ -154,9 +155,8 @@ func acquireThumbSlot(ctx context.Context, slots chan struct{}) bool {
 	}
 }
 
-// generateVideoThumb uses the same authenticated local Range source as HLS.
-// ffmpeg can seek directly across FastCDC blocks, so multi-gigabyte videos no
-// longer need to be downloaded to a temporary VPS file just to obtain a cover.
+// generateVideoThumb uses the same source selection as playback: direct S3
+// Range for blobs and the local compatibility Reader for legacy manifests.
 func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) {
 	if f.Size <= 0 {
 		return nil, false

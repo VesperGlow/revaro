@@ -157,6 +157,7 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "ready video file not found")
 		return
 	}
+	s.scheduleMediaAnalysis(video)
 	files, err := s.findVideoSubtitles(r.Context(), video)
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "could not find video subtitles")

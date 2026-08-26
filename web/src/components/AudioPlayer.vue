@@ -156,6 +156,9 @@ function onTimeUpdate(){
   if(!remoteSaveTimer)remoteSaveTimer=window.setTimeout(()=>{remoteSaveTimer=0;persistProgress(true)},5000)
 }
 function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true)}
+function onEnded(){
+  if(compatibilityMode.value&&currentTime.value<duration.value-1)void startCompatibilityStream(currentTime.value+.05,true)
+}
 function setRate(event:Event){rate.value=Number((event.target as HTMLSelectElement).value);if(audio.value)audio.value.playbackRate=rate.value}
 function applyVolume(){if(audio.value){audio.value.volume=volume.value;audio.value.muted=muted.value}}
 function setVolume(event:Event){
@@ -315,7 +318,7 @@ onBeforeUnmount(()=>{
         </div>
         <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
         <p v-if="error" class="audio-player-error">{{ error }}</p>
-        <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
+        <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @ended="onEnded" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
       </section>
     </main>
     <aside class="audio-chapters">

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -47,6 +48,7 @@ type mockStorage struct {
 	putManifestErr   error
 	getManifestErr   error
 	omitManifestList bool
+	multipart        map[string]string
 }
 
 func newMockStorage(blockSize int64) *mockStorage {
@@ -59,10 +61,63 @@ func newMockStorage(blockSize int64) *mockStorage {
 		raw:       map[string][]byte{},
 		modified:  map[string]time.Time{},
 		blockSize: blockSize,
+		multipart: map[string]string{},
 	}
 }
 
 func (m *mockStorage) Ping(context.Context) error { return nil }
+func (m *mockStorage) PresignPutObject(_ context.Context, key, _ string, _ time.Duration) (string, error) {
+	if m.presignErr != nil {
+		return "", m.presignErr
+	}
+	return "https://s3.example/put/" + key, nil
+}
+func (m *mockStorage) CreateMultipart(_ context.Context, key, _ string) (string, error) {
+	if m.presignErr != nil {
+		return "", m.presignErr
+	}
+	id := ids.New()
+	m.multipart[id] = key
+	return id, nil
+}
+func (m *mockStorage) PresignUploadPart(_ context.Context, key, uploadID string, partNumber int32, _ time.Duration) (string, error) {
+	if m.multipart[uploadID] != key {
+		return "", notFoundError()
+	}
+	return "https://s3.example/multipart/" + uploadID + "/" + fmt.Sprint(partNumber), nil
+}
+func (m *mockStorage) CompleteMultipart(_ context.Context, key, uploadID string, _ []storage.CompletedPart) (storage.ObjectInfo, error) {
+	if m.multipart[uploadID] != key {
+		return storage.ObjectInfo{}, notFoundError()
+	}
+	delete(m.multipart, uploadID)
+	return m.HeadObject(context.Background(), key)
+}
+func (m *mockStorage) AbortMultipart(_ context.Context, key, uploadID string) error {
+	if m.multipart[uploadID] == key {
+		delete(m.multipart, uploadID)
+	}
+	return nil
+}
+func (m *mockStorage) HeadObject(_ context.Context, key string) (storage.ObjectInfo, error) {
+	data, ok := m.raw[key]
+	if !ok {
+		return storage.ObjectInfo{}, notFoundError()
+	}
+	return storage.ObjectInfo{Size: int64(len(data)), ETag: "etag"}, nil
+}
+func (m *mockStorage) StoreBlob(_ context.Context, key, _ string, r io.Reader, size int64) (storage.ObjectInfo, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return storage.ObjectInfo{}, err
+	}
+	if size >= 0 && int64(len(data)) != size {
+		return storage.ObjectInfo{}, errors.New("size mismatch")
+	}
+	size = int64(len(data))
+	m.raw[key] = data
+	return storage.ObjectInfo{Size: size, ETag: "etag"}, nil
+}
 func (m *mockStorage) PresignBlockPut(_ context.Context, id string, _ time.Duration) (string, error) {
 	if m.presignErr != nil {
 		return "", m.presignErr
@@ -272,7 +327,7 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 		t.Fatal(err)
 	}
 	store := newMockStorage(blockSize)
-	cfg := config.Config{BaseURL: "http://example.test", BlockSize: blockSize, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, FFmpegPath: "ffmpeg"}
+	cfg := config.Config{BaseURL: "http://example.test", BlockSize: blockSize, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30, FFmpegPath: "ffmpeg"}
 	app := &testApp{t: t, db: db, store: store}
 	app.srv = New(db, store, a, cfg, nil)
 	app.handler = app.srv.Handler()
@@ -302,17 +357,12 @@ func (a *testApp) readyFile(t *testing.T, name string, content []byte) File {
 }
 
 type createdUpload struct {
-	UploadID   string `json:"upload_id"`
-	FileID     string `json:"file_id"`
-	Mode       string `json:"mode"`
-	BlockSize  int64  `json:"block_size"`
-	BlockCount int64  `json:"block_count"`
-	Chunking   struct {
-		Algorithm string `json:"algorithm"`
-		MinSize   int64  `json:"min_size"`
-		AvgSize   int64  `json:"avg_size"`
-		MaxSize   int64  `json:"max_size"`
-	} `json:"chunking"`
+	UploadID string `json:"upload_id"`
+	FileID   string `json:"file_id"`
+	Mode     string `json:"mode"`
+	URL      string `json:"url"`
+	PartSize int64  `json:"part_size"`
+	PartCount int   `json:"part_count"`
 }
 
 func (a *testApp) createUpload(t *testing.T, name string, size int64) createdUpload {
@@ -889,7 +939,7 @@ func TestCreateReadAndUpdateDocument(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, created.ID).Scan(&firstKey); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(firstKey, "manifests/") {
+	if !strings.HasPrefix(firstKey, "blobs/") {
 		t.Fatalf("document object key=%q", firstKey)
 	}
 	readRR := a.request("GET", "/api/files/"+created.ID+"/content", nil, true)
@@ -927,207 +977,64 @@ func TestCreateReadAndUpdateDocument(t *testing.T) {
 	}
 }
 
-func TestBlockUploadLifecycle(t *testing.T) {
+func TestSingleObjectUploadLifecycle(t *testing.T) {
 	a := newTestApp(t)
-	created := a.createUpload(t, "hello.txt", 12)
-	if created.Mode != "blocks" || created.BlockCount != 1 || created.BlockSize != 4<<20 || created.Chunking.Algorithm != "fastcdc-v1" || created.Chunking.MinSize != 1<<20 || created.Chunking.AvgSize != 4<<20 || created.Chunking.MaxSize != 16<<20 {
+	content := []byte("hello, world")
+	created := a.createUpload(t, "hello.txt", int64(len(content)))
+	if created.Mode != "single" || created.URL == "" || created.PartCount != 0 {
 		t.Fatalf("created upload=%+v", created)
 	}
-	var key sql.NullString
+	var key string
 	if err := a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, created.FileID).Scan(&key); err != nil {
 		t.Fatal(err)
 	}
-	if key.Valid {
-		t.Fatal("pending file must not have an object key")
+	if !strings.HasPrefix(key, "blobs/") || strings.Contains(key, "hello") {
+		t.Fatalf("opaque object key=%q", key)
 	}
-	content := []byte("hello, world")
-	id := sha256hex(content)
-	regRR := a.request("POST", "/api/uploads/"+created.UploadID+"/blocks", map[string]any{"blocks": []map[string]any{{"id": id, "size": int64(len(content))}}}, true)
-	if regRR.Code != http.StatusOK {
-		t.Fatalf("register blocks=%d: %s", regRR.Code, regRR.Body.String())
+	if rr := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []any{}}, true); rr.Code != http.StatusBadGateway {
+		t.Fatalf("complete before PUT=%d: %s", rr.Code, rr.Body.String())
 	}
-	reg := decode[struct {
-		Blocks []struct {
-			ID     string `json:"id"`
-			Exists bool   `json:"exists"`
-			URL    string `json:"url"`
-		} `json:"blocks"`
-	}](t, regRR)
-	if len(reg.Blocks) != 1 || reg.Blocks[0].Exists || reg.Blocks[0].URL == "" {
-		t.Fatalf("registration=%+v", reg.Blocks)
-	}
-	// Completing before the block is uploaded fails with a repair list.
-	completeRR := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"blocks": []map[string]any{{"id": id, "size": int64(len(content))}}}, true)
-	if completeRR.Code != http.StatusConflict {
-		t.Fatalf("complete without blocks=%d: %s", completeRR.Code, completeRR.Body.String())
-	}
-	missing := decode[struct {
-		Error struct {
-			MissingBlocks []string `json:"missing_blocks"`
-		} `json:"error"`
-	}](t, completeRR)
-	if len(missing.Error.MissingBlocks) != 1 || missing.Error.MissingBlocks[0] != id {
-		t.Fatalf("missing blocks=%+v", missing.Error.MissingBlocks)
-	}
-	// Client uploads the block, then completes.
-	a.store.putBlock(id, content)
-	doneRR := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"blocks": []map[string]any{{"id": id, "size": int64(len(content))}}}, true)
+	a.store.raw[key] = append([]byte(nil), content...)
+	doneRR := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []any{}}, true)
 	if doneRR.Code != http.StatusOK {
 		t.Fatalf("complete=%d: %s", doneRR.Code, doneRR.Body.String())
-	}
-	done := decode[File](t, doneRR)
-	if done.Status != "ready" {
-		t.Fatalf("status=%s", done.Status)
-	}
-	var objKey string
-	if err := a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, created.FileID).Scan(&objKey); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(objKey, "manifests/") {
-		t.Fatalf("object key=%q", objKey)
-	}
-	// Single-block files use the same cached Range reader as larger files.
-	dl := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
-	if dl.Code != http.StatusOK || !bytes.Equal(dl.Body.Bytes(), content) {
-		t.Fatalf("download=%d: %s", dl.Code, dl.Body.String())
-	}
-	// Deleting removes only metadata; the block stays for the GC.
-	if del := a.request("DELETE", "/api/files/"+created.FileID, nil, true); del.Code != http.StatusNoContent {
-		t.Fatalf("delete=%d: %s", del.Code, del.Body.String())
-	}
-	if _, ok := a.store.blocks[id]; !ok {
-		t.Fatal("deleting a file must not delete shared blocks")
-	}
-}
-
-func TestProxiedBlockUploadLifecycle(t *testing.T) {
-	a := newTestApp(t)
-	a.srv.cfg.ProxyTransfers = true
-	content := []byte("private upcloud block")
-	id := sha256hex(content)
-	created := a.createUpload(t, "private.bin", int64(len(content)))
-	regRR := a.request("POST", "/api/uploads/"+created.UploadID+"/blocks", map[string]any{"blocks": []map[string]any{{"id": id, "size": len(content)}}}, true)
-	if regRR.Code != http.StatusOK {
-		t.Fatalf("register=%d: %s", regRR.Code, regRR.Body.String())
-	}
-	reg := decode[struct {
-		Blocks []struct {
-			URL string `json:"url"`
-		} `json:"blocks"`
-	}](t, regRR)
-	wantURL := "/api/uploads/" + created.UploadID + "/blocks/" + id
-	if len(reg.Blocks) != 1 || reg.Blocks[0].URL != wantURL {
-		t.Fatalf("proxy url=%+v, want %q", reg.Blocks, wantURL)
-	}
-
-	bad := a.requestRaw("PUT", wantURL, []byte("wrong"), true)
-	if bad.Code != http.StatusBadRequest {
-		t.Fatalf("hash mismatch=%d: %s", bad.Code, bad.Body.String())
-	}
-	put := a.requestRaw("PUT", wantURL, content, true)
-	if put.Code != http.StatusNoContent {
-		t.Fatalf("proxy put=%d: %s", put.Code, put.Body.String())
-	}
-	if got := a.store.blocks[id]; !bytes.Equal(got, content) {
-		t.Fatalf("stored block=%q", got)
-	}
-	done := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"blocks": []map[string]any{{"id": id, "size": len(content)}}}, true)
-	if done.Code != http.StatusOK {
-		t.Fatalf("complete=%d: %s", done.Code, done.Body.String())
 	}
 	download := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
-	if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), content) {
-		t.Fatalf("proxied download=%d body=%q", download.Code, download.Body.Bytes())
+	if download.Code != http.StatusFound || download.Header().Get("Location") == "" {
+		t.Fatalf("direct download=%d location=%q", download.Code, download.Header().Get("Location"))
 	}
 }
 
-func TestBlockUploadRejectsInvalidLists(t *testing.T) {
-	a := newTestAppWithBlockSize(t, 8)
-	created := a.createUpload(t, "big.bin", 20)
-	bad := map[string]any{
-		"blocks": []map[string]any{
-			{"id": sha256hex([]byte("01234567")), "size": 8},
-			{"id": sha256hex([]byte("89ABCDEF")), "size": 8},
-		},
+func TestMultipartUploadLifecycle(t *testing.T) {
+	a := newTestApp(t)
+	size := multipartUploadThreshold
+	created := a.createUpload(t, "large.bin", size)
+	if created.Mode != "multipart" || created.PartCount != 1 || created.PartSize < 5<<20 {
+		t.Fatalf("created multipart=%+v", created)
 	}
-	if rr := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", bad, true); rr.Code != http.StatusBadRequest {
-		t.Fatalf("wrong block count=%d: %s", rr.Code, rr.Body.String())
+	partsRR := a.request("POST", "/api/uploads/"+created.UploadID+"/parts", map[string]any{"part_numbers": []int{1}}, true)
+	if partsRR.Code != http.StatusOK || !strings.Contains(partsRR.Body.String(), "multipart") {
+		t.Fatalf("parts=%d: %s", partsRR.Code, partsRR.Body.String())
 	}
-	wrongSize := map[string]any{
-		"blocks": []map[string]any{
-			{"id": sha256hex([]byte("01234567")), "size": 7},
-			{"id": sha256hex([]byte("89ABCDEF")), "size": 8},
-			{"id": sha256hex([]byte("GHIJ")), "size": 4},
-		},
+	if rr := a.request("POST", "/api/uploads/"+created.UploadID+"/parts", map[string]any{"part_numbers": []int{2}}, true); rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid part=%d", rr.Code)
 	}
-	if rr := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", wrongSize, true); rr.Code != http.StatusBadRequest {
-		t.Fatalf("wrong block size=%d: %s", rr.Code, rr.Body.String())
-	}
-	badID := map[string]any{
-		"blocks": []map[string]any{
-			{"id": "not-a-hash", "size": 8},
-			{"id": sha256hex([]byte("89ABCDEF")), "size": 8},
-			{"id": sha256hex([]byte("GHIJ")), "size": 4},
-		},
-	}
-	if rr := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", badID, true); rr.Code != http.StatusBadRequest {
-		t.Fatalf("bad block id=%d: %s", rr.Code, rr.Body.String())
-	}
-	oversized := map[string]any{"blocks": []map[string]any{{"id": sha256hex([]byte("x")), "size": 64}}}
-	if rr := a.request("POST", "/api/uploads/"+created.UploadID+"/blocks", oversized, true); rr.Code != http.StatusBadRequest {
-		t.Fatalf("oversized registration=%d: %s", rr.Code, rr.Body.String())
+	var key string
+	_ = a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, created.FileID).Scan(&key)
+	a.store.raw[key] = make([]byte, size)
+	done := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []map[string]any{{"part_number": 1, "etag": "part-etag"}}}, true)
+	if done.Code != http.StatusOK {
+		t.Fatalf("multipart complete=%d: %s", done.Code, done.Body.String())
 	}
 }
 
-func TestMultiBlockUploadStreamsWithRangeSupport(t *testing.T) {
+func TestLegacyManifestStillStreamsWithRangeSupport(t *testing.T) {
 	a := newTestAppWithBlockSize(t, 8)
 	content := []byte("0123456789ABCDEFGHIJ")
-	created := a.createUpload(t, "big.bin", 20)
-	if created.BlockCount != 3 {
-		t.Fatalf("block count=%d", created.BlockCount)
-	}
-	blocks := []struct {
-		data []byte
-		size int64
-	}{
-		{content[0:3], 3},
-		{content[3:14], 11},
-		{content[14:20], 6},
-	}
-	regBody := make([]map[string]any, len(blocks))
-	for i, b := range blocks {
-		regBody[i] = map[string]any{"id": sha256hex(b.data), "size": b.size}
-	}
-	regRR := a.request("POST", "/api/uploads/"+created.UploadID+"/blocks", map[string]any{"blocks": regBody}, true)
-	if regRR.Code != http.StatusOK {
-		t.Fatalf("register=%d: %s", regRR.Code, regRR.Body.String())
-	}
-	for _, b := range blocks {
-		a.store.putBlock(sha256hex(b.data), b.data)
-	}
-	doneRR := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"blocks": regBody}, true)
-	if doneRR.Code != http.StatusOK {
-		t.Fatalf("complete=%d: %s", doneRR.Code, doneRR.Body.String())
-	}
-	full := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
-	if full.Code != http.StatusOK {
-		t.Fatalf("full download=%d: %s", full.Code, full.Body.String())
-	}
-	if full.Body.String() != string(content) {
-		t.Fatalf("full body=%q", full.Body.String())
-	}
-	partial := a.requestH("GET", "/api/files/"+created.FileID+"/download", nil, true, map[string]string{"Range": "bytes=2-9"})
-	if partial.Code != http.StatusPartialContent {
-		t.Fatalf("range status=%d: %s", partial.Code, partial.Body.String())
-	}
-	if partial.Body.String() != string(content[2:10]) {
-		t.Fatalf("range body=%q", partial.Body.String())
-	}
-	// Preview is inline for media types; verify serving works there too.
 	media := a.readyFile(t, "clip.mp4", content)
-	seek := a.requestH("GET", "/api/files/"+media.ID+"/preview", nil, true, map[string]string{"Range": "bytes=18-"})
-	if seek.Code != http.StatusPartialContent || seek.Body.String() != string(content[18:]) {
-		t.Fatalf("preview range=%d body=%q", seek.Code, seek.Body.String())
+	seek := a.requestH("GET", "/api/files/"+media.ID+"/preview", nil, true, map[string]string{"Range": "bytes=2-9"})
+	if seek.Code != http.StatusPartialContent || seek.Body.String() != string(content[2:10]) {
+		t.Fatalf("legacy range=%d body=%q", seek.Code, seek.Body.String())
 	}
 }
 
@@ -1150,16 +1057,16 @@ func TestIdenticalFilesShareBlocksAndManifest(t *testing.T) {
 func TestEmptyFileUpload(t *testing.T) {
 	a := newTestApp(t)
 	created := a.createUpload(t, "empty.bin", 0)
-	if created.BlockCount != 0 {
-		t.Fatalf("block count=%d", created.BlockCount)
-	}
-	doneRR := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"blocks": []map[string]any{}}, true)
+	var key string
+	_ = a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, created.FileID).Scan(&key)
+	a.store.raw[key] = []byte{}
+	doneRR := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []map[string]any{}}, true)
 	if doneRR.Code != http.StatusOK {
 		t.Fatalf("complete=%d: %s", doneRR.Code, doneRR.Body.String())
 	}
 	dl := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
-	if dl.Code != http.StatusOK || dl.Body.Len() != 0 {
-		t.Fatalf("empty download=%d bytes=%d", dl.Code, dl.Body.Len())
+	if dl.Code != http.StatusFound {
+		t.Fatalf("empty download=%d", dl.Code)
 	}
 }
 
@@ -1454,12 +1361,12 @@ func TestExpiredUploadCannotComplete(t *testing.T) {
 	if _, err := a.db.Exec(`UPDATE uploads SET expires_at=? WHERE id=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), u.UploadID); err != nil {
 		t.Fatal(err)
 	}
-	body := map[string]any{"blocks": []map[string]any{{"id": strings.Repeat("0", 64), "size": 100}}}
+	body := map[string]any{"parts": []any{}}
 	if rr := a.request("POST", "/api/uploads/"+u.UploadID+"/complete", body, true); rr.Code != http.StatusNotFound {
 		t.Fatalf("expired complete=%d, want 404: %s", rr.Code, rr.Body.String())
 	}
-	if rr := a.request("POST", "/api/uploads/"+u.UploadID+"/blocks", map[string]any{"blocks": []any{}}, true); rr.Code != http.StatusNotFound {
-		t.Fatalf("expired blocks=%d, want 404", rr.Code)
+	if rr := a.request("POST", "/api/uploads/"+u.UploadID+"/parts", map[string]any{"part_numbers": []int{1}}, true); rr.Code != http.StatusNotFound {
+		t.Fatalf("expired parts=%d, want 404", rr.Code)
 	}
 }
 
@@ -1478,16 +1385,11 @@ func TestUnknownAPIEndpointReturnsJSON404(t *testing.T) {
 	}
 }
 
-func TestLegacyObjectsAreMigratedToBlocks(t *testing.T) {
+func TestLegacyFastCDCFilesAreMigratedToBlobs(t *testing.T) {
 	a := newTestApp(t)
 	content := []byte("legacy whole object content")
-	legacyKey := "objects/legacy-1"
-	a.store.raw[legacyKey] = append([]byte(nil), content...)
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	id := ids.New()
-	if _, err := a.db.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'ready',?,?)`, id, RootID, "legacy.bin", "file", legacyKey, len(content), now, now); err != nil {
-		t.Fatal(err)
-	}
+	legacy := a.readyFile(t, "legacy.bin", content)
+	legacyKey := legacy.objectKey
 	migrated, err := a.srv.MigrateLegacyObjects(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1496,44 +1398,44 @@ func TestLegacyObjectsAreMigratedToBlocks(t *testing.T) {
 		t.Fatalf("migrated=%d", migrated)
 	}
 	var key, etag string
-	if err := a.db.QueryRow(`SELECT object_key,etag FROM files WHERE id=?`, id).Scan(&key, &etag); err != nil {
+	if err := a.db.QueryRow(`SELECT object_key,etag FROM files WHERE id=?`, legacy.ID).Scan(&key, &etag); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(key, "manifests/") || !storage.ValidBlockID(etag) {
+	if !strings.HasPrefix(key, "blobs/") || etag == "" {
 		t.Fatalf("migrated key=%q etag=%q", key, etag)
 	}
-	if _, ok := a.store.raw[legacyKey]; ok {
-		t.Fatal("legacy object was not deleted after migration")
+	if _, ok := a.store.manifests[legacyKey]; !ok {
+		t.Fatal("legacy manifest must remain until reachability GC")
 	}
-	dl := a.request("GET", "/api/files/"+id+"/download", nil, true)
-	if dl.Code != http.StatusOK || dl.Body.String() != string(content) {
-		t.Fatalf("migrated download=%d: %s", dl.Code, dl.Body.String())
+	if got := a.store.raw[key]; !bytes.Equal(got, content) {
+		t.Fatalf("migrated blob=%q", got)
 	}
 }
 
-func TestLegacyMigrationMarksMissingObjectsFailed(t *testing.T) {
+func TestLegacyWholeObjectsAreAlreadyValidBlobs(t *testing.T) {
 	a := newTestApp(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	id := ids.New()
-	if _, err := a.db.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'ready',?,?)`, id, RootID, "gone.bin", "file", "objects/gone", 5, now, now); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'ready',?,?)`, id, RootID, "whole.bin", "file", "objects/existing", 5, now, now); err != nil {
 		t.Fatal(err)
 	}
 	migrated, err := a.srv.MigrateLegacyObjects(context.Background())
 	if err != nil || migrated != 0 {
 		t.Fatalf("migrated=%d err=%v", migrated, err)
 	}
-	var status string
-	if err := a.db.QueryRow(`SELECT status FROM files WHERE id=?`, id).Scan(&status); err != nil {
+	var key string
+	if err := a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, id).Scan(&key); err != nil {
 		t.Fatal(err)
 	}
-	if status != "failed" {
-		t.Fatalf("status=%s", status)
+	if key != "objects/existing" {
+		t.Fatalf("key=%s", key)
 	}
 }
 
-func TestBlockLayoutHelpers(t *testing.T) {
-	if blockCount(0, 8) != 0 || blockCount(1, 8) != 1 || blockCount(8, 8) != 1 || blockCount(9, 8) != 2 || blockCount(16, 8) != 2 || blockCount(17, 8) != 3 {
-		t.Fatal("blockCount is wrong")
+func TestMultipartPartSizeStaysWithinS3Limit(t *testing.T) {
+	partSize := multipartPartSize(1 << 40)
+	if count, err := storage.ValidMultipartPartCount(1<<40, partSize); err != nil || count > 10000 {
+		t.Fatalf("part size=%d count=%d err=%v", partSize, count, err)
 	}
 }
 

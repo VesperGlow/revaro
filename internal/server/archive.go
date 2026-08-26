@@ -504,7 +504,7 @@ type extractedObject struct {
 	path     string
 	size     int64
 	key      string
-	manifest storage.Manifest
+	etag     string
 	mimeType string
 }
 
@@ -671,22 +671,22 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 			fail(fmt.Errorf("open extracted file %q: %w", filepath.Base(path), openErr))
 			return
 		}
-		key, manifest, storeErr := s.storage.Store(ctx, file)
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		key, stored, storeErr := s.storeBlob(ctx, file, info.Size(), mimeType)
 		_ = file.Close()
 		if storeErr != nil {
 			fail(fmt.Errorf("upload extracted file %q to S3: %w", filepath.Base(path), storeErr))
 			return
 		}
-		if manifest.Size != info.Size() {
-			fail(fmt.Errorf("upload extracted file %q: stored size %d does not match local size %d", filepath.Base(path), manifest.Size, info.Size()))
+		if stored.Size != info.Size() {
+			fail(fmt.Errorf("upload extracted file %q: stored size %d does not match local size %d", filepath.Base(path), stored.Size, info.Size()))
 			return
 		}
 		rel, _ := filepath.Rel(outputDir, path)
-		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
-		objects = append(objects, extractedObject{rel: filepath.ToSlash(rel), path: path, size: info.Size(), key: key, manifest: manifest, mimeType: mimeType})
+		objects = append(objects, extractedObject{rel: filepath.ToSlash(rel), path: path, size: info.Size(), key: key, etag: stored.ETag, mimeType: mimeType})
 		job.update("importing", 35+int(float64(len(objects))/float64(max(1, len(paths)))*58), "正在写入网盘")
 	}
 	rootID, rootName, err := s.commitExtractedArchive(ctx, parentID, archiveBaseName(f.Name), outputDir, paths, objects)
@@ -789,7 +789,7 @@ func (s *Server) commitExtractedArchive(ctx context.Context, parentID, preferred
 	}
 	for _, object := range objects {
 		parentRel := filepath.ToSlash(filepath.Dir(object.rel))
-		if _, err = tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, ids.New(), directories[parentRel], filepath.Base(object.rel), object.key, object.manifest.Size, object.mimeType, object.manifest.ID(), now, now); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, ids.New(), directories[parentRel], filepath.Base(object.rel), object.key, object.size, object.mimeType, object.etag, now, now); err != nil {
 			return "", "", err
 		}
 	}

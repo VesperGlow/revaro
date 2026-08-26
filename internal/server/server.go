@@ -53,7 +53,6 @@ type Server struct {
 	limiter            *loginLimiter
 	s3Origin           string // S3_PUBLIC_ENDPOINT 的 scheme://host，用于收窄 CSP
 	shareSlots         chan struct{}
-	blockUploadSlots   chan struct{}
 	audioMergeSlots    chan struct{}
 	audioMergeMu       sync.RWMutex
 	audioMergeJobs     map[string]*audioMergeJob
@@ -105,7 +104,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
 		limiter: newLoginLimiter(), s3Origin: s3Origin,
-		shareSlots: make(chan struct{}, 8), blockUploadSlots: make(chan struct{}, 4),
+		shareSlots: make(chan struct{}, 8),
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
 		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
@@ -264,8 +263,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/trash/{id}/restore", s.restoreTrash)
 			r.Delete("/trash/{id}", s.purgeTrash)
 			r.Post("/uploads", s.createUpload)
-			r.Post("/uploads/{id}/blocks", s.uploadBlocks)
-			r.Put("/uploads/{id}/blocks/{blockID}", s.putUploadBlock)
+			r.Post("/uploads/{id}/parts", s.uploadParts)
 			r.Post("/uploads/{id}/complete", s.completeUpload)
 			r.Delete("/uploads/{id}", s.abortUpload)
 			r.Post("/audio-merges", s.createAudioMerge)
@@ -936,12 +934,13 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	key, manifest, err := s.storage.Store(r.Context(), bytes.NewReader([]byte(in.Content)))
+	content := []byte(in.Content)
+	key, stored, err := s.storeBlob(r.Context(), bytes.NewReader(content), int64(len(content)), documentMime(in.Name))
 	if err != nil {
 		problem(w, http.StatusBadGateway, "object storage write failed")
 		return
 	}
-	f := File{ID: ids.New(), ParentID: &in.ParentID, Name: in.Name, Kind: "file", Size: manifest.Size, MimeType: documentMime(in.Name), ETag: manifest.ID(), Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: key}
+	f := File{ID: ids.New(), ParentID: &in.ParentID, Name: in.Name, Kind: "file", Size: stored.Size, MimeType: documentMime(in.Name), ETag: stored.ETag, Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: key}
 	_, err = s.db.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, f.ID, in.ParentID, f.Name, f.Kind, f.objectKey, f.Size, f.MimeType, f.ETag, f.Status, now, now)
 	if isConflict(err) {
 		problem(w, http.StatusConflict, "an item with that name already exists")
@@ -1002,7 +1001,8 @@ func (s *Server) updateDocument(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusConflict, "document changed elsewhere; reopen it before saving")
 		return
 	}
-	key, manifest, err := s.storage.Store(r.Context(), bytes.NewReader([]byte(in.Content)))
+	content := []byte(in.Content)
+	key, stored, err := s.storeBlob(r.Context(), bytes.NewReader(content), int64(len(content)), documentMime(f.Name))
 	if err != nil {
 		problem(w, http.StatusBadGateway, "object storage write failed")
 		return
@@ -1011,7 +1011,7 @@ func (s *Server) updateDocument(w http.ResponseWriter, r *http.Request) {
 	// 原子乐观并发控制：etag 条件放进 UPDATE 的 WHERE 子句。两个并发
 	// 编辑者同时保存时，只有先提交者成功；后提交者命中 0 行并收到 409，
 	// 而不是在检查与写入之间被静默覆盖（TOCTOU）。
-	res, err := s.db.ExecContext(r.Context(), `UPDATE files SET object_key=?,size=?,mime_type=?,etag=?,updated_at=? WHERE id=? AND (etag=? OR ?='' OR etag='')`, key, manifest.Size, documentMime(f.Name), manifest.ID(), now, f.ID, in.ETag, in.ETag)
+	res, err := s.db.ExecContext(r.Context(), `UPDATE files SET object_key=?,size=?,mime_type=?,etag=?,updated_at=? WHERE id=? AND (etag=? OR ?='' OR etag='')`, key, stored.Size, documentMime(f.Name), stored.ETag, now, f.ID, in.ETag, in.ETag)
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "document content changed but metadata update failed")
 		return
@@ -1387,17 +1387,16 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, inline bool)
 	s.serveFileContent(w, r, f, inline)
 }
 
-// serveFileContent delivers every FastCDC logical file through the common
-// Reader/ReaderAt data plane. This keeps Range, cancellation, adaptive
-// read-ahead, and RAM -> SSD -> S3 cache behavior identical for downloads and
-// previews. Legacy whole-object keys remain readable until migration finishes.
+// serveFileContent redirects new opaque blobs to S3 so Range, cancellation and
+// backpressure stay end-to-end. Only legacy manifests use the compatibility
+// Reader/ReaderAt data plane while background migration is unfinished.
 func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File, inline bool) {
 	mimeType := safeDeliveryMime(responseMime(f))
 	if mimeType == "application/octet-stream" {
 		inline = false
 	}
 	if !storage.IsManifestKey(f.objectKey) {
-		if s.cfg.ProxyTransfers {
+		if s.cfg.ProxyTransfers && !strings.HasPrefix(f.objectKey, "blobs/") {
 			s.serveRawObject(w, r, f, inline)
 			return
 		}
@@ -1463,6 +1462,15 @@ func (s *Server) readContent(ctx context.Context, f File) ([]byte, error) {
 		return s.storage.ReadFile(ctx, f.objectKey, maxDocumentBytes)
 	}
 	return s.storage.GetObject(ctx, f.objectKey, maxDocumentBytes)
+}
+
+func (s *Server) storeBlob(ctx context.Context, body io.Reader, size int64, mimeType string) (string, storage.ObjectInfo, error) {
+	key := storage.BlobKey(ids.New())
+	info, err := s.storage.StoreBlob(ctx, key, mimeType, body, size)
+	if err != nil {
+		return "", storage.ObjectInfo{}, err
+	}
+	return key, info, nil
 }
 
 func responseMime(f File) string {
@@ -1645,6 +1653,19 @@ type createUploadInput struct {
 	MimeType string `json:"mime_type"`
 }
 
+const multipartUploadThreshold = int64(16 << 20)
+const defaultMultipartPartSize = int64(16 << 20)
+
+func multipartPartSize(size int64) int64 {
+	partSize := defaultMultipartPartSize
+	if size > partSize*10000 {
+		// Keep safely below S3's 10,000-part limit and round to MiB so the
+		// browser can slice without awkward byte boundaries.
+		partSize = ((size+9999)/10000 + (1<<20) - 1) / (1 << 20) * (1 << 20)
+	}
+	return partSize
+}
+
 func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 	var in createUploadInput
 	if decodeJSON(w, r, &in) != nil {
@@ -1674,11 +1695,27 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "parent directory is invalid")
 		return
 	}
-	// Every file is a block upload now: the browser uses FastCDC to split the
-	// content into variable-size blocks and PUTs them straight to S3 under their
-	// SHA-256 content addresses; the manifest is only written on complete.
 	fileID, uploadID := ids.New(), ids.New()
-	chunkMin, chunkAvg, chunkMax := s.cfg.ChunkSizes()
+	objectKey := storage.BlobKey(ids.New())
+	mode := "single"
+	partSize := max(in.Size, int64(1))
+	var s3UploadID, uploadURL string
+	var partCount int
+	if in.Size >= multipartUploadThreshold {
+		mode = "multipart"
+		partSize = multipartPartSize(in.Size)
+		partCount, err = storage.ValidMultipartPartCount(in.Size, partSize)
+		if err == nil {
+			s3UploadID, err = s.storage.CreateMultipart(r.Context(), objectKey, in.MimeType)
+		}
+	} else {
+		uploadURL, err = s.storage.PresignPutObject(r.Context(), objectKey, in.MimeType, s.cfg.PresignExpires)
+	}
+	if err != nil {
+		s.log.Error("blob upload initialization failed", "file", in.Name, "mode", mode, "error", err)
+		problem(w, http.StatusBadGateway, "object storage could not initialize the upload")
+		return
+	}
 	now := time.Now().UTC()
 	expires := now.Add(s.cfg.UploadExpires)
 	tx, err := s.db.BeginTx(r.Context(), nil)
@@ -1686,15 +1723,15 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "database error")
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,size,mime_type,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, fileID, in.ParentID, in.Name, "file", in.Size, in.MimeType, "pending", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, fileID, in.ParentID, in.Name, "file", objectKey, in.Size, in.MimeType, "pending", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err == nil {
-		// block_size remains the schema's hard per-block limit. The API exposes
-		// the complete FastCDC tuple while old clients can keep using block_size
-		// as a fixed average and still satisfy the variable-list validator.
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO uploads(id,file_id,block_size,expected_size,status,created_at,expires_at) VALUES(?,?,?,?,'pending',?,?)`, uploadID, fileID, chunkMax, in.Size, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano))
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO uploads(id,file_id,mode,object_key,s3_upload_id,part_size,expected_size,mime_type,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?, 'pending',?,?)`, uploadID, fileID, mode, objectKey, nullString(s3UploadID), partSize, in.Size, in.MimeType, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano))
 	}
 	if err != nil {
 		tx.Rollback()
+		if s3UploadID != "" {
+			_ = s.storage.AbortMultipart(context.Background(), objectKey, s3UploadID)
+		}
 		if isConflict(err) {
 			problem(w, 409, "an item with that name already exists")
 		} else {
@@ -1703,31 +1740,31 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = tx.Commit(); err != nil {
+		if s3UploadID != "" {
+			_ = s.storage.AbortMultipart(context.Background(), objectKey, s3UploadID)
+		}
 		problem(w, 500, "could not create upload")
 		return
 	}
-	s.log.Info("upload created", "file", in.Name, "size", in.Size, "chunking", "fastcdc-v1", "chunk_min", chunkMin, "chunk_avg", chunkAvg, "chunk_max", chunkMax)
+	s.log.Info("blob upload created", "file", in.Name, "size", in.Size, "mode", mode, "object_key", objectKey, "part_size", partSize, "parts", partCount)
 	writeJSON(w, 201, map[string]any{
 		"upload_id": uploadID,
 		"file_id":   fileID,
-		"mode":      "blocks",
-		// Legacy fields keep cached fixed-size clients compatible during a
-		// rolling deploy. New clients use chunking below.
-		"block_size":  chunkAvg,
-		"block_count": blockCount(in.Size, chunkAvg),
-		"chunking": map[string]any{
-			"algorithm": "fastcdc-v1",
-			"min_size":  chunkMin,
-			"avg_size":  chunkAvg,
-			"max_size":  chunkMax,
-		},
+		"mode": mode, "url": uploadURL, "part_size": partSize, "part_count": partCount,
 		"expires_at": expires.Format(time.RFC3339Nano),
 	})
 }
 
+func nullString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 type uploadRecord struct {
-	ID, FileID, ObjectKey, Status, ExpiresAt string
-	MaxBlockSize, ExpectedSize               int64
+	ID, FileID, Mode, ObjectKey, S3UploadID, MimeType, Status, ExpiresAt string
+	PartSize, ExpectedSize                                             int64
 }
 
 func (u uploadRecord) expired(now time.Time) bool {
@@ -1737,137 +1774,44 @@ func (u uploadRecord) expired(now time.Time) bool {
 
 func (s *Server) upload(ctx context.Context, id string) (uploadRecord, error) {
 	var u uploadRecord
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.file_id,COALESCE(f.object_key,''),u.block_size,u.expected_size,u.status,u.expires_at FROM uploads u JOIN files f ON f.id=u.file_id WHERE u.id=?`, id).Scan(&u.ID, &u.FileID, &u.ObjectKey, &u.MaxBlockSize, &u.ExpectedSize, &u.Status, &u.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,file_id,mode,object_key,COALESCE(s3_upload_id,''),part_size,expected_size,mime_type,status,expires_at FROM uploads WHERE id=?`, id).Scan(&u.ID, &u.FileID, &u.Mode, &u.ObjectKey, &u.S3UploadID, &u.PartSize, &u.ExpectedSize, &u.MimeType, &u.Status, &u.ExpiresAt)
 	return u, err
 }
 
-type uploadBlockRequest struct {
-	ID   string `json:"id"`
-	Size int64  `json:"size"`
-}
-type uploadBlockResponse struct {
-	ID     string `json:"id"`
-	Size   int64  `json:"size"`
-	Exists bool   `json:"exists"`
-	URL    string `json:"url,omitempty"`
-}
-
-// uploadBlocks returns either conditional presigned PUT URLs or same-origin
-// proxy URLs for blocks that do not exist yet. The endpoint is stateless:
-// completeUpload independently verifies every block, so registration is
-// purely a client convenience.
-func (s *Server) uploadBlocks(w http.ResponseWriter, r *http.Request) {
+func (s *Server) uploadParts(w http.ResponseWriter, r *http.Request) {
 	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || u.Status != "pending" || u.expired(time.Now().UTC()) {
+	if err != nil || u.Status != "pending" || u.Mode != "multipart" || u.expired(time.Now().UTC()) {
 		problem(w, 404, "pending upload not found")
 		return
 	}
 	var body struct {
-		Blocks []uploadBlockRequest `json:"blocks"`
+		PartNumbers []int32 `json:"part_numbers"`
 	}
 	if decodeJSON(w, r, &body) != nil {
 		return
 	}
-	if len(body.Blocks) > maxBlocksPerRequest {
-		problem(w, 400, "too many blocks in one request")
+	if len(body.PartNumbers) == 0 || len(body.PartNumbers) > 100 {
+		problem(w, 400, "request between 1 and 100 upload parts")
 		return
 	}
-	for _, b := range body.Blocks {
-		if !storage.ValidBlockID(b.ID) {
-			problem(w, 400, "invalid block id")
+	partCount, _ := storage.ValidMultipartPartCount(u.ExpectedSize, u.PartSize)
+	seen := make(map[int32]bool, len(body.PartNumbers))
+	parts := make([]map[string]any, len(body.PartNumbers))
+	for i, partNumber := range body.PartNumbers {
+		if partNumber < 1 || int(partNumber) > partCount || seen[partNumber] {
+			problem(w, 400, "invalid multipart part number")
 			return
 		}
-		if b.Size < 1 || b.Size > u.MaxBlockSize {
-			problem(w, 400, "invalid block size")
+		seen[partNumber] = true
+		url, signErr := s.storage.PresignUploadPart(r.Context(), u.ObjectKey, u.S3UploadID, partNumber, s.cfg.PresignExpires)
+		if signErr != nil {
+			s.log.Error("multipart part signing failed", "upload", u.ID, "part", partNumber, "error", signErr)
+			problem(w, 502, "object storage could not prepare upload parts")
 			return
 		}
+		parts[i] = map[string]any{"part_number": partNumber, "url": url}
 	}
-	results := make([]uploadBlockResponse, len(body.Blocks))
-	indices := make([]int, len(body.Blocks))
-	for i := range indices {
-		indices[i] = i
-	}
-	if err := parallel(indices, 16, func(i int) error {
-		b := body.Blocks[i]
-		if _, e := s.storage.HeadBlock(r.Context(), b.ID); e == nil {
-			results[i] = uploadBlockResponse{ID: b.ID, Size: b.Size, Exists: true}
-			return nil
-		} else if !storage.IsNotFound(e) {
-			return e
-		}
-		if s.cfg.ProxyTransfers {
-			results[i] = uploadBlockResponse{ID: b.ID, Size: b.Size, URL: "/api/uploads/" + u.ID + "/blocks/" + b.ID}
-			return nil
-		}
-		uurl, e := s.storage.PresignBlockPut(r.Context(), b.ID, s.cfg.PresignExpires)
-		if e != nil {
-			return e
-		}
-		results[i] = uploadBlockResponse{ID: b.ID, Size: b.Size, URL: uurl}
-		return nil
-	}); err != nil {
-		s.log.Error("block registration failed", "upload", u.ID, "error", err)
-		problem(w, 502, "object storage could not prepare block uploads")
-		return
-	}
-	writeJSON(w, 200, map[string]any{"blocks": results})
-}
-
-// putUploadBlock accepts a same-origin block upload and writes it to S3 from
-// the application server. UpCloud uses this path automatically so its public
-// endpoint can remain disabled and browsers never need bucket CORS access.
-func (s *Server) putUploadBlock(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.ProxyTransfers {
-		problem(w, http.StatusNotFound, "proxied block uploads are disabled")
-		return
-	}
-	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || u.Status != "pending" || u.expired(time.Now().UTC()) {
-		problem(w, http.StatusNotFound, "pending upload not found")
-		return
-	}
-	id := chi.URLParam(r, "blockID")
-	if !storage.ValidBlockID(id) {
-		problem(w, http.StatusBadRequest, "invalid block id")
-		return
-	}
-	// Extend deadlines only for authenticated block transfers; the server-wide
-	// limits remain tight for ordinary API requests and unauthenticated clients.
-	controller := http.NewResponseController(w)
-	deadline := time.Now().Add(15 * time.Minute)
-	_ = controller.SetReadDeadline(deadline)
-	_ = controller.SetWriteDeadline(deadline)
-	select {
-	case s.blockUploadSlots <- struct{}{}:
-		defer func() { <-s.blockUploadSlots }()
-	case <-r.Context().Done():
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, u.MaxBlockSize)
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			problem(w, http.StatusRequestEntityTooLarge, "block exceeds configured block size")
-		} else {
-			problem(w, http.StatusBadRequest, "could not read block")
-		}
-		return
-	}
-	if len(data) == 0 {
-		problem(w, http.StatusBadRequest, "block must not be empty")
-		return
-	}
-	if err := s.storage.PutBlock(r.Context(), id, data); err != nil {
-		if errors.Is(err, storage.ErrBlockHashMismatch) {
-			problem(w, http.StatusBadRequest, "block content hash does not match block id")
-			return
-		}
-		s.log.Error("proxied block write failed", "upload", u.ID, "block", id, "error", err)
-		problem(w, http.StatusBadGateway, "object storage could not write block")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, 200, map[string]any{"parts": parts})
 }
 
 func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
@@ -1877,97 +1821,57 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Blocks []storage.Block `json:"blocks"`
+		Parts []storage.CompletedPart `json:"parts"`
 	}
-	if decodeJSONLimit(w, r, &body, maxCompleteBody) != nil {
+	if decodeJSONLimit(w, r, &body, 2<<20) != nil {
 		return
 	}
-	if len(body.Blocks) > maxManifestBlocks {
-		problem(w, 400, "complete block list is too large")
-		return
-	}
-	if u.ExpectedSize > 0 && len(body.Blocks) == 0 {
-		problem(w, 400, "complete block list is invalid")
-		return
-	}
-	var total int64
-	for _, b := range body.Blocks {
-		if !storage.ValidBlockID(b.ID) {
-			problem(w, 400, "complete block list is invalid")
+	var info storage.ObjectInfo
+	if u.Mode == "multipart" {
+		partCount, _ := storage.ValidMultipartPartCount(u.ExpectedSize, u.PartSize)
+		if len(body.Parts) != partCount {
+			problem(w, 400, "multipart completion list is incomplete")
 			return
 		}
-		if b.Size < 1 || b.Size > u.MaxBlockSize || total > u.ExpectedSize-b.Size {
-			problem(w, 400, "complete block list is invalid")
-			return
-		}
-		total += b.Size
-	}
-	if total != u.ExpectedSize {
-		problem(w, 400, "complete block list is invalid")
-		return
-	}
-	// Verify that every block actually exists. Blocks are immutable
-	// (conditional PUTs), so a verified list is a durable list. A crash
-	// after PutManifest but before the DB commit makes this request safely
-	// retryable: the conditional manifest PUT dedups to the same object.
-	var mu sync.Mutex
-	var missing, mismatched []string
-	indices := make([]int, len(body.Blocks))
-	for i := range indices {
-		indices[i] = i
-	}
-	if err := parallel(indices, 32, func(i int) error {
-		b := body.Blocks[i]
-		got, e := s.storage.HeadBlock(r.Context(), b.ID)
-		if e != nil {
-			if storage.IsNotFound(e) {
-				mu.Lock()
-				missing = append(missing, b.ID)
-				mu.Unlock()
-				return nil
+		sort.Slice(body.Parts, func(i, j int) bool { return body.Parts[i].PartNumber < body.Parts[j].PartNumber })
+		for i, part := range body.Parts {
+			if part.PartNumber != int32(i+1) || strings.TrimSpace(part.ETag) == "" {
+				problem(w, 400, "multipart completion list is invalid")
+				return
 			}
-			return e
 		}
-		if got.Size != b.Size {
-			mu.Lock()
-			mismatched = append(mismatched, b.ID)
-			mu.Unlock()
+		info, err = s.storage.CompleteMultipart(r.Context(), u.ObjectKey, u.S3UploadID, body.Parts)
+	} else {
+		if len(body.Parts) != 0 {
+			problem(w, 400, "single upload must not include multipart parts")
+			return
 		}
-		return nil
-	}); err != nil {
-		s.log.Error("upload verification failed", "upload", u.ID, "error", err)
-		problem(w, 502, "object storage could not verify the upload")
-		return
+		info, err = s.storage.HeadObject(r.Context(), u.ObjectKey)
 	}
-	if len(mismatched) > 0 {
-		problem(w, 400, "one or more blocks were stored with an unexpected size")
-		return
-	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		writeJSON(w, 409, map[string]any{"error": map[string]any{"status": 409, "message": "some blocks are missing from object storage", "missing_blocks": missing}})
-		return
-	}
-	manifest := storage.Manifest{Version: 1, Size: u.ExpectedSize, Blocks: body.Blocks}
-	key, err := s.storage.PutManifest(r.Context(), manifest)
 	if err != nil {
-		s.log.Error("manifest write failed", "upload", u.ID, "error", err)
-		problem(w, 502, "object storage could not write the manifest")
+		s.log.Error("blob upload completion failed", "upload", u.ID, "mode", u.Mode, "error", err)
+		problem(w, 502, "object storage could not complete the upload")
 		return
 	}
-	if err := s.finalizeUpload(r.Context(), u, key, manifest.ID()); err != nil {
+	if info.Size != u.ExpectedSize {
+		_ = s.storage.DeleteObject(r.Context(), u.ObjectKey)
+		problem(w, 400, "uploaded object size does not match the declared size")
+		return
+	}
+	if err := s.finalizeUpload(r.Context(), u, info.ETag); err != nil {
 		problem(w, 500, "object stored but metadata finalization failed")
 		return
 	}
 	f, _ := s.file(r.Context(), u.FileID)
-	s.log.Info("upload completed", "file", f.Name, "blocks", len(manifest.Blocks), "size", manifest.Size)
+	s.log.Info("blob upload completed", "file", f.Name, "mode", u.Mode, "size", info.Size, "object_key", u.ObjectKey)
+	s.scheduleMediaAnalysis(f)
 	writeJSON(w, 200, f)
 }
 
-func (s *Server) finalizeUpload(ctx context.Context, u uploadRecord, manifestKey, manifestID string) error {
+func (s *Server) finalizeUpload(ctx context.Context, u uploadRecord, etag string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE files SET object_key=?,status='ready',size=?,etag=?,updated_at=? WHERE id=? AND status='pending'`, manifestKey, u.ExpectedSize, manifestID, time.Now().UTC().Format(time.RFC3339Nano), u.FileID)
+		_, err = tx.ExecContext(ctx, `UPDATE files SET status='ready',size=?,etag=?,updated_at=? WHERE id=? AND status='pending' AND object_key=?`, u.ExpectedSize, etag, time.Now().UTC().Format(time.RFC3339Nano), u.FileID, u.ObjectKey)
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE uploads SET status='completed' WHERE id=? AND status='pending'`, u.ID)
@@ -1989,8 +1893,9 @@ func (s *Server) abortUpload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "pending upload not found")
 		return
 	}
-	// Blocks uploaded so far are content-addressed garbage without a
-	// manifest; the garbage collector reclaims them after the grace period.
+	if err := s.cleanupPendingUploadObject(r.Context(), u); err != nil {
+		s.log.Warn("blob upload object cleanup failed", "upload", u.ID, "object_key", u.ObjectKey, "error", err)
+	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `UPDATE uploads SET status='aborted' WHERE id=?`, u.ID)
@@ -2011,6 +1916,19 @@ func (s *Server) abortUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(204)
 }
+
+// cleanupPendingUploadObject handles both an active multipart upload and the
+// less common case where CompleteMultipart succeeded but SQLite finalization
+// did not. Deleting the key after abort is safe when no object was committed.
+func (s *Server) cleanupPendingUploadObject(ctx context.Context, u uploadRecord) error {
+	if u.Mode == "multipart" && u.S3UploadID != "" {
+		if err := s.storage.AbortMultipart(ctx, u.ObjectKey, u.S3UploadID); err != nil {
+			s.log.Debug("multipart abort skipped", "upload", u.ID, "error", err)
+		}
+	}
+	return s.storage.DeleteObject(ctx, u.ObjectKey)
+}
+
 func (s *Server) failUpload(ctx context.Context, uploadID, fileID string) {
 	_, _ = s.db.ExecContext(ctx, `UPDATE uploads SET status='failed' WHERE id=?`, uploadID)
 	_, _ = s.db.ExecContext(ctx, `UPDATE files SET status='failed',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), fileID)
@@ -2035,13 +1953,10 @@ func (s *Server) CleanupExpiredUploads(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		// Only legacy uploads predating block storage carry a whole-object
-		// key to clean up; orphaned blocks are handled by the GC.
-		if u.ObjectKey != "" {
-			if err = s.storage.DeleteObject(ctx, u.ObjectKey); err != nil {
-				s.log.Warn("stale upload object cleanup failed", "upload", id, "error", err)
-				continue
-			}
+		err = s.cleanupPendingUploadObject(ctx, u)
+		if err != nil {
+			s.log.Warn("stale blob upload cleanup failed", "upload", id, "error", err)
+			continue
 		}
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -2060,13 +1975,6 @@ func (s *Server) CleanupExpiredUploads(ctx context.Context) {
 			s.log.Info("stale upload cleaned", "upload", id)
 		}
 	}
-}
-
-func blockCount(size, blockSize int64) int64 {
-	if size <= 0 {
-		return 0
-	}
-	return (size + blockSize - 1) / blockSize
 }
 
 // parallel runs fn over every index concurrently, bounded by limit
@@ -2214,7 +2122,7 @@ func (s *Server) CollectGarbage(ctx context.Context) {
 			continue
 		}
 	}
-	var deletedManifests, deletedBlocks, deletedLegacy, deletedThumbnails int
+	var deletedManifests, deletedBlocks, deletedBlobs, deletedLegacy, deletedThumbnails int
 	for _, key := range doomedManifests {
 		if err := s.storage.DeleteObject(ctx, key); err != nil {
 			s.log.Warn("GC manifest delete failed", "key", key, "error", err)
@@ -2240,6 +2148,21 @@ func (s *Server) CollectGarbage(ctx context.Context) {
 			continue
 		}
 		deletedBlocks++
+	}
+	blobs, err := s.storage.ListPrefix(ctx, "blobs/")
+	if err != nil {
+		s.log.Warn("GC blob listing failed", "error", err)
+	} else {
+		for _, ref := range blobs {
+			if referenced[ref.Key] || !ref.LastModified.Before(cutoff) {
+				continue
+			}
+			if err := s.storage.DeleteObject(ctx, ref.Key); err != nil {
+				s.log.Warn("GC blob delete failed", "key", ref.Key, "error", err)
+				continue
+			}
+			deletedBlobs++
+		}
 	}
 	// Leftover whole objects from before block storage.
 	legacy, err := s.storage.ListPrefix(ctx, "objects/")
@@ -2272,29 +2195,28 @@ func (s *Server) CollectGarbage(ctx context.Context) {
 			deletedThumbnails++
 		}
 	}
-	if deletedManifests+deletedBlocks+deletedLegacy+deletedThumbnails > 0 {
-		s.log.Info("garbage collection finished", "manifests", deletedManifests, "blocks", deletedBlocks, "legacy_objects", deletedLegacy, "thumbnails", deletedThumbnails)
+	if deletedManifests+deletedBlocks+deletedBlobs+deletedLegacy+deletedThumbnails > 0 {
+		s.log.Info("garbage collection finished", "manifests", deletedManifests, "blocks", deletedBlocks, "blobs", deletedBlobs, "legacy_objects", deletedLegacy, "thumbnails", deletedThumbnails)
 	}
 }
 
-// MigrateLegacyObjects re-stores whole objects from before block storage
-// as content-addressed blocks and manifests. It is idempotent: already
-// migrated rows have manifests/ keys and are skipped, and a crash simply
-// leaves the same rows for the next start. Rows whose object vanished are
-// marked failed so the loss is visible instead of silently broken.
+// MigrateLegacyObjects gradually collapses the old FastCDC representation
+// into one opaque blob per logical file. It is idempotent and keeps manifests
+// readable until each SQLite row is atomically switched; shared manifests are
+// intentionally left for the normal reachability GC.
 func (s *Server) MigrateLegacyObjects(ctx context.Context) (int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,object_key,size FROM files WHERE kind='file' AND status='ready' AND object_key IS NOT NULL AND object_key NOT LIKE 'manifests/%'`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,object_key,size,mime_type,name FROM files WHERE kind='file' AND status='ready' AND object_key LIKE 'manifests/%' ORDER BY created_at`)
 	if err != nil {
 		return 0, err
 	}
 	type item struct {
-		id, key string
-		size    int64
+		id, key, mimeType, name string
+		size                    int64
 	}
 	var items []item
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.id, &it.key, &it.size); err != nil {
+		if err := rows.Scan(&it.id, &it.key, &it.size, &it.mimeType, &it.name); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -2303,36 +2225,46 @@ func (s *Server) MigrateLegacyObjects(ctx context.Context) (int, error) {
 	rows.Close()
 	migrated := 0
 	for _, it := range items {
-		body, err := s.storage.OpenRaw(ctx, it.key)
+		body, err := s.storage.Open(ctx, it.key)
 		if err != nil {
-			if storage.IsNotFound(err) {
-				s.log.Error("legacy object missing; marking file failed", "file", it.id, "key", it.key)
-				_, _ = s.db.ExecContext(ctx, `UPDATE files SET status='failed',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), it.id)
-				continue
-			}
-			return migrated, fmt.Errorf("open legacy object %s: %w", it.key, err)
+			return migrated, fmt.Errorf("open legacy manifest %s: %w", it.key, err)
 		}
-		key, m, err := s.storage.Store(ctx, body)
+		key, stored, err := s.storeBlob(ctx, body, it.size, it.mimeType)
 		body.Close()
 		if err != nil {
-			return migrated, fmt.Errorf("re-store legacy object %s: %w", it.key, err)
+			return migrated, fmt.Errorf("collapse legacy manifest %s: %w", it.key, err)
 		}
-		if m.Size != it.size {
-			s.log.Warn("legacy object size differs from metadata", "file", it.id, "stored", m.Size, "metadata", it.size)
+		if stored.Size != it.size {
+			_ = s.storage.DeleteObject(ctx, key)
+			return migrated, fmt.Errorf("collapse legacy manifest %s: stored size %d, want %d", it.key, stored.Size, it.size)
+		}
+		if thumb, thumbErr := s.storage.GetObject(ctx, thumbnailKey(it.key), maxThumbSource); thumbErr == nil {
+			_ = s.storage.PutImmutable(ctx, thumbnailKey(key), "image/jpeg", thumb)
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		res, err := s.db.ExecContext(ctx, `UPDATE files SET object_key=?,size=?,etag=?,updated_at=? WHERE id=? AND object_key=?`, key, m.Size, m.ID(), now, it.id, it.key)
+		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
+			return migrated, err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE files SET object_key=?,size=?,etag=?,updated_at=? WHERE id=? AND object_key=?`, key, stored.Size, stored.ETag, now, it.id, it.key)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `UPDATE audio_media SET stream_object_key=?,stream_size=?,stream_etag=?,updated_at=? WHERE file_id=? AND stream_object_key=?`, key, stored.Size, stored.ETag, now, it.id, it.key)
+		}
+		if err != nil {
+			tx.Rollback()
 			return migrated, fmt.Errorf("update migrated file %s: %w", it.id, err)
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
+			tx.Rollback()
+			_ = s.storage.DeleteObject(ctx, key)
 			continue // changed under us; leave it alone
 		}
-		if err := s.storage.DeleteObject(ctx, it.key); err != nil {
-			s.log.Warn("legacy object left for GC", "key", it.key, "error", err)
-			continue
+		if err := tx.Commit(); err != nil {
+			_ = s.storage.DeleteObject(ctx, key)
+			return migrated, err
 		}
 		migrated++
+		s.log.Info("legacy FastCDC file migrated", "file", it.id, "name", it.name, "size", stored.Size, "blob_key", key)
 	}
 	return migrated, nil
 }

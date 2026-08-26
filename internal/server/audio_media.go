@@ -50,8 +50,15 @@ func (s *Server) audioMediaInfo(w http.ResponseWriter, r *http.Request) {
 	err = s.db.QueryRowContext(r.Context(), `SELECT duration_ms,chapters_json,subtitles_json,stream_object_key,stream_size,stream_etag,has_cover FROM audio_media WHERE file_id=?`, f.ID).
 		Scan(&durationMS, &chaptersJSON, &subtitlesJSON, &streamKey, &streamSize, &streamETag, &hasCover)
 	if errors.Is(err, sql.ErrNoRows) {
-		problem(w, http.StatusNotFound, "chapter metadata is not available for this audio")
-		return
+		metadata, probeErr := s.ensureMediaMetadata(r.Context(), f)
+		if probeErr != nil {
+			problem(w, http.StatusNotFound, "audio metadata is not available")
+			return
+		}
+		durationMS, streamKey, streamSize, streamETag = metadata.DurationMS, f.objectKey, f.Size, f.ETag
+		encoded, _ := json.Marshal(metadata.Chapters)
+		chaptersJSON, subtitlesJSON, hasCover = string(encoded), "[]", false
+		err = nil
 	}
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "could not read audio metadata")
@@ -109,8 +116,7 @@ func (s *Server) audioMediaStream(w http.ResponseWriter, r *http.Request) {
 	var size int64
 	err = s.db.QueryRowContext(r.Context(), `SELECT stream_object_key,stream_size,stream_etag FROM audio_media WHERE file_id=?`, f.ID).Scan(&key, &size, &etag)
 	if errors.Is(err, sql.ErrNoRows) {
-		problem(w, http.StatusNotFound, "stream is not available for this audio")
-		return
+		key, size, etag, err = f.objectKey, f.Size, f.ETag, nil
 	}
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "could not read audio stream metadata")
@@ -123,6 +129,15 @@ func (s *Server) audioMediaStream(w http.ResponseWriter, r *http.Request) {
 	stream.ETag = etag
 	stream.objectKey = key
 	w.Header().Set("Cache-Control", "private, max-age=3600")
+	if !storage.IsManifestKey(stream.objectKey) {
+		u, signErr := s.storage.PresignGetObject(r.Context(), stream.objectKey, stream.Name, stream.MimeType, true, s.cfg.PresignExpires)
+		if signErr != nil {
+			problem(w, http.StatusBadGateway, "audio stream URL could not be created")
+			return
+		}
+		http.Redirect(w, r, u, http.StatusFound)
+		return
+	}
 	rc, err := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), stream.objectKey)
 	if err != nil {
 		s.log.Error("audio stream open failed", "file", f.ID, "error", err)

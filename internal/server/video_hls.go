@@ -23,7 +23,6 @@ import (
 const (
 	videoHLSIdleTTL       = 20 * time.Minute
 	videoHLSStartupChunks = 2 // 4s segments: start at ~8s, then let hls.js grow the buffer in the background.
-	videoHLSNearWindow    = 32 * time.Second
 	maxVideoHLSSessions   = 6
 	maxVideoHLSPerFile    = 2
 )
@@ -139,30 +138,10 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("video HLS requested", "file", f.ID, "fallback_reason", strings.TrimSpace(in.FallbackReason))
-	// Sessions are a file/start-range cache, not a property of a single hls.js
-	// instance. A refresh or an earlier seek can therefore reuse any still-live
-	// event playlist for this file, including all segments already on disk.
-	if response, ok := s.reusableVideoHLSResponse(in.PreviousSessionID, f.ID, in.Start); ok {
-		if response.SessionID != in.PreviousSessionID {
-			s.pauseVideoHLSTranscoder(in.PreviousSessionID, f.ID)
-		}
-		writeJSON(w, http.StatusCreated, response)
-		return
-	}
-	if session := s.nearVideoHLSSession(f.ID, in.Start); session != nil {
-		if err := waitForVideoHLSTarget(r.Context(), session, in.Start); err == nil {
-			if session.ID != in.PreviousSessionID {
-				s.pauseVideoHLSTranscoder(in.PreviousSessionID, f.ID)
-			}
-			writeJSON(w, http.StatusCreated, videoHLSResponse(session))
-			return
-		} else if r.Context().Err() != nil {
-			return
-		}
-	}
-	// Only the FFmpeg process is stopped here. Its completed segments and event
-	// playlist remain independently cached until the HLS TTL/size cap evicts it.
-	s.pauseVideoHLSTranscoder(in.PreviousSessionID, f.ID)
+	// A seek always destroys the previous workspace before starting at the new
+	// offset. That cancels FFmpeg and its in-flight Wasabi Range immediately;
+	// no cached window or near-session prewarm is reused.
+	s.removeVideoHLSSessionForFile(in.PreviousSessionID, f.ID)
 	slotTimer := time.NewTimer(5 * time.Second)
 	defer slotTimer.Stop()
 	select {
@@ -203,41 +182,6 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, videoHLSResponse(session))
 }
 
-func (s *Server) reusableVideoHLSResponse(id, fileID string, target float64) (startVideoHLSResponse, bool) {
-	s.videoHLSMu.RLock()
-	var candidates []*videoHLSSession
-	if preferred := s.videoHLSSessions[id]; preferred != nil && preferred.FileID == fileID {
-		candidates = append(candidates, preferred)
-	}
-	for sessionID, session := range s.videoHLSSessions {
-		if sessionID != id && session.FileID == fileID {
-			candidates = append(candidates, session)
-		}
-	}
-	s.videoHLSMu.RUnlock()
-	var best *videoHLSSession
-	bestDistance := 1e100
-	for _, session := range candidates {
-		_, available := videoHLSPlaylistState(session.Playlist)
-		_, done, _, duration, _, _, _ := session.snapshot()
-		if target < session.Start || target > session.Start+available-.25 || done && !videoHLSTargetReady(session.Start+available, target, duration) {
-			continue
-		}
-		distance := target - session.Start
-		if session.ID == id {
-			distance = -1
-		}
-		if best == nil || distance < bestDistance {
-			best, bestDistance = session, distance
-		}
-	}
-	if best == nil {
-		return startVideoHLSResponse{}, false
-	}
-	best.touch()
-	return videoHLSResponse(best), true
-}
-
 func videoHLSResponse(session *videoHLSSession) startVideoHLSResponse {
 	_, _, _, duration, videoCodec, audioCodec, transcoding := session.snapshot()
 	return startVideoHLSResponse{
@@ -246,63 +190,7 @@ func videoHLSResponse(session *videoHLSSession) startVideoHLSResponse {
 	}
 }
 
-func (s *Server) nearVideoHLSSession(fileID string, target float64) *videoHLSSession {
-	s.videoHLSMu.RLock()
-	defer s.videoHLSMu.RUnlock()
-	var best *videoHLSSession
-	bestGap := 1e100
-	for _, session := range s.videoHLSSessions {
-		_, done, _, _, _, _, _ := session.snapshot()
-		if session.FileID != fileID || done || target < session.Start {
-			continue
-		}
-		_, available := videoHLSPlaylistState(session.Playlist)
-		gap := target - (session.Start + available)
-		if gap >= 0 && gap <= videoHLSNearWindow.Seconds() && gap < bestGap {
-			best, bestGap = session, gap
-		}
-	}
-	return best
-}
-
-func waitForVideoHLSTarget(requestCtx context.Context, session *videoHLSSession, target float64) error {
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		_, available := videoHLSPlaylistState(session.Playlist)
-		availableEnd := session.Start + available
-		_, done, sessionErr, duration, _, _, _ := session.snapshot()
-		if videoHLSTargetReady(availableEnd, target, duration) {
-			session.touch()
-			return nil
-		}
-		if done {
-			if sessionErr == "" {
-				return errors.New("cached HLS session ended before the requested position")
-			}
-			return errors.New(sessionErr)
-		}
-		select {
-		case <-requestCtx.Done():
-			return requestCtx.Err()
-		case <-timer.C:
-			return context.DeadlineExceeded
-		case <-ticker.C:
-		}
-	}
-}
-
-func videoHLSTargetReady(availableEnd, target, duration float64) bool {
-	ahead := 8.0
-	if duration > target {
-		ahead = min(ahead, duration-target)
-	}
-	return availableEnd >= target+ahead-.25
-}
-
-func (s *Server) pauseVideoHLSTranscoder(id, fileID string) {
+func (s *Server) removeVideoHLSSessionForFile(id, fileID string) {
 	if id == "" {
 		return
 	}
@@ -312,10 +200,7 @@ func (s *Server) pauseVideoHLSTranscoder(id, fileID string) {
 	if session == nil || session.FileID != fileID {
 		return
 	}
-	_, done, _, _, _, _, _ := session.snapshot()
-	if !done {
-		session.cancelTranscode()
-	}
+	s.removeVideoHLSSession(id)
 }
 
 func waitForVideoHLS(requestCtx context.Context, session *videoHLSSession) error {
@@ -436,6 +321,7 @@ func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSessi
 		args = append(args, "-ss", strconv.FormatFloat(session.Start, 'f', 3, 64))
 	}
 	args = append(args, "-i", sourceURL, "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn")
+	args = append(args, "-t", strconv.FormatFloat(mediaFallbackDuration.Seconds(), 'f', 0, 64))
 	if transcoding {
 		args = append(args,
 			"-c:v", "libx264", "-preset", "superfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads", "0",
@@ -498,15 +384,10 @@ func (s *Server) videoHLSAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stopVideoHLS(w http.ResponseWriter, r *http.Request) {
-	session := s.videoHLSSession(chi.URLParam(r, "session"))
-	if session == nil {
+	if s.removeVideoHLSSession(chi.URLParam(r, "session")) == nil {
 		problem(w, http.StatusNotFound, "compatibility stream not found")
 		return
 	}
-	session.touch()
-	// Releasing a player must not leave FFmpeg consuming the VPS, but keeping
-	// the already-written directory allows the next nearby play/seek to reuse it.
-	session.cancelTranscode()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -587,6 +468,7 @@ func (s *Server) cleanupVideoHLSSessions() {
 			for _, id := range expired {
 				s.removeVideoHLSSession(id)
 			}
+			s.pruneMediaCache()
 		}
 	}
 }

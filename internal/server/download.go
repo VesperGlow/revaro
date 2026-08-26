@@ -661,23 +661,23 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		persistProgress(imported, item.Path, true)
 		progressReader := &downloadImportProgressReader{reader: io.LimitReader(reader, item.Size)}
 		progressReader.onProgress = func(fileBytes int64) { persistProgress(imported+fileBytes, item.Path, false) }
-		key, manifest, storeErr := m.server.storage.Store(runtime.ctx, progressReader)
-		reader.Close()
-		if storeErr != nil || manifest.Size != item.Size {
-			if storeErr == nil {
-				storeErr = fmt.Errorf("导入大小 %d 与预期 %d 不一致", manifest.Size, item.Size)
-			}
-			m.fail(runtime.jobID, fmt.Errorf("导入 %s: %w", item.Path, storeErr))
-			return
-		}
-		imported += manifest.Size
-		persistProgress(imported, item.Path, true)
 		fileName := path.Base(item.Path)
 		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: key, size: manifest.Size, mimeType: mimeType, etag: manifest.ID()})
+		key, storedObject, storeErr := m.server.storeBlob(runtime.ctx, progressReader, item.Size, mimeType)
+		reader.Close()
+		if storeErr != nil || storedObject.Size != item.Size {
+			if storeErr == nil {
+				storeErr = fmt.Errorf("导入大小 %d 与预期 %d 不一致", storedObject.Size, item.Size)
+			}
+			m.fail(runtime.jobID, fmt.Errorf("导入 %s: %w", item.Path, storeErr))
+			return
+		}
+		imported += storedObject.Size
+		persistProgress(imported, item.Path, true)
+		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: key, size: storedObject.Size, mimeType: mimeType, etag: storedObject.ETag})
 	}
 	if err := m.commitImported(runtime.ctx, job, stored, len(files) > 1); err != nil {
 		m.fail(runtime.jobID, err)

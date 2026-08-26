@@ -268,25 +268,26 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 		lastBytes, lastUpdate = total, now
 	}
 	reader := &urlProgressReader{reader: response.Body, limit: m.server.cfg.BTMaxTotalSize, onProgress: progress}
-	key, manifest, storeErr := m.server.storage.Store(runtime.ctx, reader)
+	mimeType := responseDownloadMIME(response, name)
+	key, stored, storeErr := m.server.storeBlob(runtime.ctx, reader, response.ContentLength, mimeType)
 	if storeErr != nil {
 		if runtime.ctx.Err() == nil {
 			m.failURLDownload(jobID, fmt.Errorf("保存直链文件: %w", storeErr))
 		}
 		return
 	}
-	if response.ContentLength >= 0 && manifest.Size != response.ContentLength {
-		m.failURLDownload(jobID, fmt.Errorf("下载大小 %d 与服务器声明的 %d 不一致", manifest.Size, response.ContentLength))
+	if response.ContentLength >= 0 && stored.Size != response.ContentLength {
+		m.failURLDownload(jobID, fmt.Errorf("下载大小 %d 与服务器声明的 %d 不一致", stored.Size, response.ContentLength))
 		return
 	}
-	progress(manifest.Size)
-	if err := m.commitURLDownload(runtime.ctx, jobID, name, responseDownloadMIME(response, name), key, manifest.Size, manifest.ID()); err != nil {
+	progress(stored.Size)
+	if err := m.commitURLDownload(runtime.ctx, jobID, name, mimeType, key, stored.Size, stored.ETag); err != nil {
 		if runtime.ctx.Err() == nil {
 			m.failURLDownload(jobID, err)
 		}
 		return
 	}
-	m.server.log.Info("direct download imported", "job", jobID, "name", name, "size", manifest.Size)
+	m.server.log.Info("direct download imported", "job", jobID, "name", name, "size", stored.Size)
 }
 
 func (m *downloadManager) commitURLDownload(ctx context.Context, jobID, name, mimeType, objectKey string, size int64, etag string) error {

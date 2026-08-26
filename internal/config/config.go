@@ -27,16 +27,16 @@ type Config struct {
 	S3PathStyle      bool
 	ProxyTransfers   bool
 	PresignExpires   time.Duration
-	// BlockSize is the target average FastCDC chunk size. BlockMinSize and
-	// BlockMaxSize bound the variable-size chunks around that target.
+	// Legacy FastCDC settings are retained only until existing manifests finish
+	// background migration. New blob uploads never consult these values.
 	BlockMinSize          int64
 	BlockSize             int64
 	BlockMaxSize          int64
 	BlockRAMCacheCapacity int64
 	BlockSSDCacheCapacity int64
 	BlockCacheMinFree     int64
-	BlockReadAhead        int64
 	BlockCacheDir         string
+	MediaCacheCapacity    int64
 	UploadExpires         time.Duration
 	TrashRetention        time.Duration
 	GCInterval            time.Duration
@@ -121,19 +121,19 @@ func Load() (Config, error) {
 	if c.BlockMaxSize, err = int64Env("FASTCDC_MAX_SIZE", defaultMax); err != nil {
 		return c, err
 	}
-	if c.BlockRAMCacheCapacity, err = int64Env("BLOCK_RAM_CACHE_CAPACITY", 256*1024*1024); err != nil {
+	if c.BlockRAMCacheCapacity, err = int64Env("BLOCK_RAM_CACHE_CAPACITY", 0); err != nil {
 		return c, err
 	}
-	if c.BlockSSDCacheCapacity, err = int64Env("BLOCK_SSD_CACHE_CAPACITY", 8*1024*1024*1024); err != nil {
+	if c.BlockSSDCacheCapacity, err = int64Env("BLOCK_SSD_CACHE_CAPACITY", 0); err != nil {
 		return c, err
 	}
-	if c.BlockCacheMinFree, err = int64Env("BLOCK_CACHE_MIN_FREE", 2*1024*1024*1024); err != nil {
-		return c, err
-	}
-	if c.BlockReadAhead, err = int64Env("BLOCK_READ_AHEAD", 64*1024*1024); err != nil {
+	if c.BlockCacheMinFree, err = int64Env("BLOCK_CACHE_MIN_FREE", 0); err != nil {
 		return c, err
 	}
 	c.BlockCacheDir = env("BLOCK_CACHE_DIR", filepath.Join(c.DataDir, "block-cache"))
+	if c.MediaCacheCapacity, err = int64Env("MEDIA_CACHE_CAPACITY", 2*1024*1024*1024); err != nil {
+		return c, err
+	}
 	if c.BlockSize < 1*1024*1024 || c.BlockSize > 1024*1024*1024 {
 		return c, errors.New("BLOCK_SIZE must be between 1 MiB and 1 GiB")
 	}
@@ -155,11 +155,11 @@ func Load() (Config, error) {
 	if c.BlockCacheMinFree < 0 || c.BlockCacheMinFree > 1<<40 {
 		return c, errors.New("BLOCK_CACHE_MIN_FREE must be between 0 and 1 TiB")
 	}
-	if c.BlockReadAhead < 0 || c.BlockReadAhead > 512*1024*1024 || (c.BlockReadAhead > 0 && c.BlockReadAhead < 8*1024*1024) {
-		return c, errors.New("BLOCK_READ_AHEAD must be 0 or between 8 MiB and 512 MiB")
-	}
 	if c.BlockCacheDir == "" {
 		return c, errors.New("BLOCK_CACHE_DIR must not be empty")
+	}
+	if c.MediaCacheCapacity < 0 || c.MediaCacheCapacity > 1<<40 {
+		return c, errors.New("MEDIA_CACHE_CAPACITY must be between 0 and 1 TiB")
 	}
 	if c.UploadExpires <= 0 {
 		return c, errors.New("UPLOAD_EXPIRES must be positive")

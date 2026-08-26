@@ -263,7 +263,7 @@ async function startCompatibilityStream(start:number,autoplay=true,fallbackReaso
     hlsSessionId=response.session_id;sessionStorage.setItem(sessionKey.value,response.session_id);streamOffset.value=response.start;currentTime.value=start;duration.value=response.duration
     videoCodec.value=response.video_codec;audioCodec.value=response.audio_codec;transcoding.value=response.transcoding;audioTranscoding.value=false
     if(Hls.isSupported()){
-      const hlsPlayer=new Hls({enableWorker:true,lowLatencyMode:false,startFragPrefetch:true,backBufferLength:60,maxBufferLength:90,maxMaxBufferLength:180,maxBufferSize:256*1024*1024,maxBufferHole:.5,highBufferWatchdogPeriod:2,manifestLoadingTimeOut:15000,fragLoadingTimeOut:25000})
+      const hlsPlayer=new Hls({enableWorker:true,lowLatencyMode:false,startFragPrefetch:false,backBufferLength:30,maxBufferLength:30,maxMaxBufferLength:60,maxBufferSize:64*1024*1024,maxBufferHole:.5,highBufferWatchdogPeriod:2,manifestLoadingTimeOut:15000,fragLoadingTimeOut:25000})
       hls=hlsPlayer;player=createUnifiedVideoPlayer('hls',el,response.start,()=>{hlsPlayer.destroy();if(hls===hlsPlayer)hls=null})
       player.setVolume(volume.value,muted.value)
       hlsPlayer.on(Hls.Events.MEDIA_ATTACHED,()=>hlsPlayer.loadSource(response.playlist_url))
@@ -303,6 +303,10 @@ function onWaiting(){
   buffering.value=true;showControls(true)
 }
 function onCanPlay(){buffering.value=false}
+function onEnded(){
+  onPause()
+  if(!directMode.value&&!mseMode.value&&currentTime.value<duration.value-1)void startCompatibilityStream(currentTime.value+.05,true,'继续有限兼容流')
+}
 function onVideoError(){
   if(starting.value)return
   if(directMode.value&&!directFallbackStarted){directFallbackStarted=true;void startMSEStream(currentTime.value||savedPosition(),true);return}
@@ -375,7 +379,7 @@ onBeforeUnmount(()=>{
 
 <template>
   <div ref="shell" class="video-player-shell" :class="{'cursor-hidden':cursorHidden}" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
-    <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @waiting="onWaiting" @stalled="onWaiting" @canplay="onCanPlay" @playing="onCanPlay" @play="onPlay" @pause="onPause" @ended="onPause" @error="onVideoError">
+    <video ref="video" :src="directSource||undefined" :poster="poster" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @waiting="onWaiting" @stalled="onWaiting" @canplay="onCanPlay" @playing="onCanPlay" @play="onPlay" @pause="onPause" @ended="onEnded" @error="onVideoError">
       <track v-if="selectedSubtitle" ref="subtitleElement" :key="selectedSubtitleKey" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad" @error="onSubtitleError">
       你的浏览器不支持这个视频格式。
     </video>

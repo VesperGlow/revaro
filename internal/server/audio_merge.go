@@ -739,7 +739,7 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 		return err
 	}
 
-	job.update("saving", 88, "正在写入 Revaro 块存储")
+	job.update("saving", 88, "正在写入 Revaro 对象存储")
 	key, masterSize, masterETag, err := s.storeAudioArtifact(ctx, outputPath, 88, 99, "正在保存合并音频", job)
 	if err != nil {
 		return fmt.Errorf("store merged audio: %w", err)
@@ -800,11 +800,11 @@ func (s *Server) storeAudioArtifact(ctx context.Context, path string, progressSt
 		stored += n
 		job.update("saving", progressStart+int(stored*int64(progressEnd-progressStart)/info.Size()), message)
 	}}
-	key, manifest, err := s.storage.Store(ctx, reader)
+	key, stored, err := s.storeBlob(ctx, reader, info.Size(), profile.MimeType)
 	if err != nil {
 		return "", 0, "", err
 	}
-	return key, manifest.Size, manifest.ID(), nil
+	return key, stored.Size, stored.ETag, nil
 }
 
 func (s *Server) openMergeSource(ctx context.Context, f File) (io.ReadCloser, error) {

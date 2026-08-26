@@ -68,12 +68,15 @@ func main() {
 	defer app.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	// One-time re-store of whole objects created before block storage.
-	if migrated, err := app.MigrateLegacyObjects(context.Background()); err != nil {
-		log.Error("legacy object migration failed; it will be retried on the next start", "error", err)
-	} else if migrated > 0 {
-		log.Info("legacy objects re-stored as content-addressed blocks", "files", migrated)
-	}
+	// Old manifests remain readable while one low-priority pass collapses them
+	// into opaque whole-file blobs. Startup and normal requests never wait for it.
+	go func() {
+		if migrated, err := app.MigrateLegacyObjects(ctx); err != nil && ctx.Err() == nil {
+			log.Error("legacy FastCDC migration paused; it will resume on the next start", "error", err)
+		} else if migrated > 0 {
+			log.Info("legacy FastCDC files migrated to single objects", "files", migrated)
+		}
+	}()
 	gcRequests := make(chan struct{}, 1)
 	requestGC := func() {
 		select {

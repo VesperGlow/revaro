@@ -27,6 +27,13 @@ func TestOpenCreatesSchemaAndMigrations(t *testing.T) {
 	if manifestTables != 2 {
 		t.Fatalf("expected persistent manifest index tables, got %d", manifestTables)
 	}
+	var blobTables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='media_metadata'`).Scan(&blobTables); err != nil {
+		t.Fatal(err)
+	}
+	if blobTables != 1 {
+		t.Fatalf("expected media metadata table, got %d", blobTables)
+	}
 	// 迁移记录已写入
 	var versions int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versions); err != nil {
