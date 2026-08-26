@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Addr             string
 	DataDir          string
+	WorkDir          string
 	BaseURL          string
 	CookieSecure     bool
 	AdminUsername    string
@@ -64,6 +65,7 @@ func Load() (Config, error) {
 		S3SecretKey:      os.Getenv("S3_SECRET_KEY"),
 		FFmpegPath:       os.Getenv("FFMPEG_PATH"),
 	}
+	c.WorkDir = env("APP_WORK_DIR", filepath.Join(c.DataDir, "work"))
 	if c.FFmpegPath == "" {
 		c.FFmpegPath = "ffmpeg"
 	}
@@ -157,6 +159,9 @@ func Load() (Config, error) {
 	}
 	if c.BlockCacheDir == "" {
 		return c, errors.New("BLOCK_CACHE_DIR must not be empty")
+	}
+	if c.WorkDir == "" {
+		return c, errors.New("APP_WORK_DIR must not be empty")
 	}
 	if c.MediaCacheCapacity < 0 || c.MediaCacheCapacity > 1<<40 {
 		return c, errors.New("MEDIA_CACHE_CAPACITY must be between 0 and 1 TiB")

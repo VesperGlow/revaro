@@ -15,7 +15,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Addr != ":8080" || c.DataDir != "/data" || c.BaseURL != "http://localhost:8080" {
+	if c.Addr != ":8080" || c.DataDir != "/data" || c.WorkDir != "/data/work" || c.BaseURL != "http://localhost:8080" {
 		t.Fatalf("defaults: %+v", c)
 	}
 	if c.S3Region != "us-east-1" || c.S3PathStyle || c.PresignExpires != 15*time.Minute || c.UploadExpires != 24*time.Hour || c.TrashRetention != 30*24*time.Hour || c.GCInterval != time.Hour || c.BlockMinSize != 1<<20 || c.BlockSize != 4<<20 || c.BlockMaxSize != 16<<20 {
@@ -74,6 +74,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("S3_ACCESS_KEY", "key")
 	t.Setenv("S3_SECRET_KEY", "secret")
 	t.Setenv("APP_BASE_URL", "https://drive.example.com/")
+	t.Setenv("APP_DATA_DIR", "/srv/revaro")
+	t.Setenv("APP_WORK_DIR", "/mnt/revaro-work")
 	t.Setenv("BLOCK_SIZE", "8388608")
 	t.Setenv("FASTCDC_MIN_SIZE", "2097152")
 	t.Setenv("FASTCDC_MAX_SIZE", "33554432")
@@ -94,6 +96,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if c.BaseURL != "https://drive.example.com" {
 		t.Fatalf("base url must be trimmed: %q", c.BaseURL)
+	}
+	if c.DataDir != "/srv/revaro" || c.WorkDir != "/mnt/revaro-work" {
+		t.Fatalf("work directory override: %+v", c)
 	}
 	if !c.CookieSecure || !c.S3PathStyle || c.BlockMinSize != 2<<20 || c.BlockSize != 8<<20 || c.BlockMaxSize != 32<<20 || c.TrashRetention != 7*24*time.Hour || c.FFmpegPath != "/usr/bin/ffmpeg" {
 		t.Fatalf("overrides: %+v", c)

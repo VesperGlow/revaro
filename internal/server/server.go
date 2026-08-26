@@ -70,6 +70,7 @@ type Server struct {
 	videoSubtitleMu    sync.Mutex
 	videoSubtitleCache map[string]*videoSubtitleCacheEntry
 	videoSubtitleBytes int64
+	mediaAnalysis      *mediaAnalysisScheduler
 	archiveSlots       chan struct{}
 	archiveMu          sync.RWMutex
 	archiveJobs        map[string]*archiveJob
@@ -104,12 +105,13 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
 		limiter: newLoginLimiter(), s3Origin: s3Origin,
-		shareSlots: make(chan struct{}, 8),
+		shareSlots:      make(chan struct{}, 8),
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
 		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
 		videoFMP4Slots: make(chan struct{}, 2), videoFMP4Sessions: make(map[string]*videoFMP4Session),
 		videoSubtitleCache: make(map[string]*videoSubtitleCacheEntry),
+		mediaAnalysis:      newMediaAnalysisScheduler(2),
 		archiveSlots:       make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
@@ -1661,7 +1663,7 @@ func multipartPartSize(size int64) int64 {
 	if size > partSize*10000 {
 		// Keep safely below S3's 10,000-part limit and round to MiB so the
 		// browser can slice without awkward byte boundaries.
-		partSize = ((size+9999)/10000 + (1<<20) - 1) / (1 << 20) * (1 << 20)
+		partSize = ((size+9999)/10000 + (1 << 20) - 1) / (1 << 20) * (1 << 20)
 	}
 	return partSize
 }
@@ -1750,7 +1752,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{
 		"upload_id": uploadID,
 		"file_id":   fileID,
-		"mode": mode, "url": uploadURL, "part_size": partSize, "part_count": partCount,
+		"mode":      mode, "url": uploadURL, "part_size": partSize, "part_count": partCount,
 		"expires_at": expires.Format(time.RFC3339Nano),
 	})
 }
@@ -1764,7 +1766,7 @@ func nullString(value string) any {
 
 type uploadRecord struct {
 	ID, FileID, Mode, ObjectKey, S3UploadID, MimeType, Status, ExpiresAt string
-	PartSize, ExpectedSize                                             int64
+	PartSize, ExpectedSize                                               int64
 }
 
 func (u uploadRecord) expired(now time.Time) bool {
@@ -2229,7 +2231,11 @@ func (s *Server) MigrateLegacyObjects(ctx context.Context) (int, error) {
 		if err != nil {
 			return migrated, fmt.Errorf("open legacy manifest %s: %w", it.key, err)
 		}
-		key, stored, err := s.storeBlob(ctx, body, it.size, it.mimeType)
+		// File IDs are already random UUIDs. Reusing the same opaque key on
+		// every pass makes a restart overwrite an upload completed before the
+		// SQLite switch instead of leaking another unreferenced blob.
+		key := storage.BlobKey(it.id)
+		stored, err := s.storage.StoreBlob(ctx, key, it.mimeType, body, it.size)
 		body.Close()
 		if err != nil {
 			return migrated, fmt.Errorf("collapse legacy manifest %s: %w", it.key, err)

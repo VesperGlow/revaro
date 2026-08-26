@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strconv"
@@ -37,6 +38,36 @@ type audioMediaTestResponse struct {
 		End   float64 `json:"end"`
 		Text  string  `json:"text"`
 	} `json:"subtitles"`
+}
+
+func followExternalRedirect(t *testing.T, rr *httptest.ResponseRecorder, rangeHeader string) *httptest.ResponseRecorder {
+	t.Helper()
+	if rr.Code != http.StatusFound {
+		return rr
+	}
+	req, err := http.NewRequest(http.MethodGet, rr.Header().Get("Location"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	followed := httptest.NewRecorder()
+	followed.Code = resp.StatusCode
+	for key, values := range resp.Header {
+		for _, value := range values {
+			followed.Header().Add(key, value)
+		}
+	}
+	if _, err := io.Copy(followed.Body, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	return followed
 }
 
 type audioHLSTestResponse struct {
@@ -172,6 +203,7 @@ func TestAudioMergeOutputFormats(t *testing.T) {
 				t.Fatalf("audio metadata=%+v", media)
 			}
 			streamRR := a.request("GET", media.StreamURL, nil, true)
+			streamRR = followExternalRedirect(t, streamRR, "")
 			if streamRR.Code != http.StatusOK || streamRR.Header().Get("Content-Type") != tc.mime {
 				t.Fatalf("audio stream=%d type=%q: %s", streamRR.Code, streamRR.Header().Get("Content-Type"), streamRR.Body.String())
 			}
@@ -187,6 +219,7 @@ func TestAudioMergeOutputFormats(t *testing.T) {
 				t.Fatalf("direct stream codec=%q want=%q err=%v", streamCodec, tc.codec, err)
 			}
 			rangeRR := a.requestH("GET", media.StreamURL, nil, true, map[string]string{"Range": "bytes=0-63"})
+			rangeRR = followExternalRedirect(t, rangeRR, "bytes=0-63")
 			if rangeRR.Code != http.StatusPartialContent || rangeRR.Body.Len() != 64 || rangeRR.Header().Get("Accept-Ranges") != "bytes" {
 				t.Fatalf("audio stream range=%d len=%d accept=%q", rangeRR.Code, rangeRR.Body.Len(), rangeRR.Header().Get("Accept-Ranges"))
 			}

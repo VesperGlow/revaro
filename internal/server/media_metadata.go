@@ -7,8 +7,46 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+type mediaAnalysisScheduler struct {
+	slots  chan struct{}
+	mu     sync.Mutex
+	active map[string]struct{}
+}
+
+func newMediaAnalysisScheduler(limit int) *mediaAnalysisScheduler {
+	return &mediaAnalysisScheduler{slots: make(chan struct{}, limit), active: make(map[string]struct{})}
+}
+
+// schedule returns immediately. A file ID can be queued or running only once,
+// and no more than two background ffprobe workers acquire a slot at a time.
+func (q *mediaAnalysisScheduler) schedule(ctx context.Context, fileID string, work func(context.Context)) bool {
+	q.mu.Lock()
+	if _, exists := q.active[fileID]; exists {
+		q.mu.Unlock()
+		return false
+	}
+	q.active[fileID] = struct{}{}
+	q.mu.Unlock()
+	go func() {
+		defer func() {
+			q.mu.Lock()
+			delete(q.active, fileID)
+			q.mu.Unlock()
+		}()
+		select {
+		case q.slots <- struct{}{}:
+			defer func() { <-q.slots }()
+		case <-ctx.Done():
+			return
+		}
+		work(ctx)
+	}()
+	return true
+}
 
 type probedMediaMetadata struct {
 	DurationMS int64
@@ -25,13 +63,13 @@ func (s *Server) scheduleMediaAnalysis(f File) {
 	if !isAudioSource(f) && !isVideoSource(f) {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(s.audioHLSCtx, 2*time.Minute)
+	s.mediaAnalysis.schedule(s.audioHLSCtx, f.ID, func(parent context.Context) {
+		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		if _, err := s.ensureMediaMetadata(ctx, f); err != nil && !errors.Is(err, context.Canceled) {
 			s.log.Warn("media metadata analysis failed", "file", f.ID, "error", err)
 		}
-	}()
+	})
 }
 
 func (s *Server) ensureMediaMetadata(ctx context.Context, f File) (probedMediaMetadata, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -145,6 +146,49 @@ func TestGetManifestFallsBackOnceThenUsesSQLite(t *testing.T) {
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("two manifest opens made %d S3 GETs, want one recovery fetch", got)
+	}
+}
+
+func TestLegacyCachesInitializeOnlyWhenManifestIsRead(t *testing.T) {
+	m := Manifest{Version: 1, Size: 5, Blocks: []Block{{ID: hashBytes([]byte("block")), Size: 5}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", manifestMime)
+		_, _ = w.Write(m.bytes())
+	}))
+	defer server.Close()
+	db, err := database.Open(filepath.Join(t.TempDir(), "revaro.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cacheDir := filepath.Join(t.TempDir(), "legacy-block-cache")
+	cfg := testS3Config(server.URL)
+	cfg.BlockSSDCacheCapacity = 1 << 20
+	cfg.BlockCacheDir = cacheDir
+	store, err := NewS3WithDB(context.Background(), cfg, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.diskCache != nil || store.manifests != nil {
+		t.Fatal("legacy cache or manifest index initialized during S3 construction")
+	}
+	if _, err := store.PresignPutObject(context.Background(), "blobs/new", "application/octet-stream", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if store.diskCache != nil || store.manifests != nil {
+		t.Fatal("new blob path initialized legacy machinery")
+	}
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("legacy cache directory exists before manifest read: %v", err)
+	}
+	if _, err := store.GetManifest(context.Background(), m.Key()); err != nil {
+		t.Fatal(err)
+	}
+	if store.diskCache == nil || store.manifests == nil {
+		t.Fatal("manifest read did not initialize legacy machinery")
+	}
+	if _, err := os.Stat(cacheDir); err != nil {
+		t.Fatalf("legacy cache directory was not created: %v", err)
 	}
 }
 

@@ -88,6 +88,9 @@ func (m Manifest) bytes() []byte {
 }
 
 func (s *S3) PutManifest(ctx context.Context, m Manifest) (string, error) {
+	if err := s.initLegacy(); err != nil {
+		return "", err
+	}
 	if m.Version == 0 {
 		m.Version = 1
 	}
@@ -105,6 +108,9 @@ func (s *S3) PutManifest(ctx context.Context, m Manifest) (string, error) {
 }
 
 func (s *S3) GetManifest(ctx context.Context, key string) (Manifest, error) {
+	if err := s.initLegacy(); err != nil {
+		return Manifest{}, err
+	}
 	if m, ok, err := s.manifests.get(ctx, key); err == nil && ok {
 		return m, nil
 	} else if err != nil {
@@ -182,6 +188,9 @@ func validateManifest(m Manifest) error {
 // content hash (skipping blocks that already exist), then writes the
 // manifest. It returns the manifest key and the manifest itself.
 func (s *S3) Store(ctx context.Context, r io.Reader) (string, Manifest, error) {
+	if err := s.initLegacy(); err != nil {
+		return "", Manifest{}, err
+	}
 	m := Manifest{Version: 1}
 	chunker := fastcdc.New(r, s.chunking)
 	for {

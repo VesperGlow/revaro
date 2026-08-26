@@ -515,6 +515,13 @@ func (s *Server) openArchiveSource(ctx context.Context, f File) (io.ReadCloser, 
 	return s.storage.OpenRaw(ctx, f.objectKey)
 }
 
+func (s *Server) newArchiveTempDir() (string, error) {
+	if err := os.MkdirAll(s.cfg.WorkDir, 0o700); err != nil {
+		return "", fmt.Errorf("create archive work directory: %w", err)
+	}
+	return os.MkdirTemp(s.cfg.WorkDir, "revaro-extract-")
+}
+
 func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string, job *archiveJob, password string) {
 	fail := func(err error) { s.failArchiveJob(job, err) }
 	requestPassword := func(err error) {
@@ -535,7 +542,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	tempDir, archivePath := job.staged()
 	if tempDir == "" || archivePath == "" {
 		var err error
-		tempDir, err = os.MkdirTemp("", "revaro-extract-")
+		tempDir, err = s.newArchiveTempDir()
 		if err != nil {
 			fail(fmt.Errorf("create temporary extraction directory: %w", err))
 			return

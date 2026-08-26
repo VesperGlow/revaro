@@ -85,6 +85,7 @@ set -a; . ./.env; set +a
 |---|---:|---|
 | `APP_ADDR` | `:8080` | HTTP 监听地址 |
 | `APP_DATA_DIR` | `/data` | SQLite 数据目录 |
+| `APP_WORK_DIR` | `APP_DATA_DIR/work` | 解压等临时工作的目录；任务完成、失败或取消后清理 |
 | `APP_BASE_URL` | `http://localhost:8080` | 用于同源写请求校验 |
 | `COOKIE_SECURE` | 根据 Base URL | 生产必须为 `true`；HTTP 本地开发设为 `false` |
 | `ADMIN_USERNAME` | `admin` | 首次初始化使用的管理员用户名 |

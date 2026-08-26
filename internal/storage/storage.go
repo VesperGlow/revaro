@@ -90,6 +90,14 @@ type S3 struct {
 	presign       *s3.PresignClient
 	bucket        string
 	maxBlockSize  int64
+	blockMinSize  int64
+	blockSize     int64
+	blockCacheDir string
+	blockDiskCap  int64
+	blockMinFree  int64
+	manifestDB    *sql.DB
+	legacyOnce    sync.Once
+	legacyErr     error
 	chunking      fastcdc.Config
 	cacheOnce     sync.Once
 	blockCache    *blockLRU
@@ -151,19 +159,34 @@ func newS3(ctx context.Context, c config.Config, db *sql.DB) (*S3, error) {
 		}
 	})
 	minimum, average, maximum := c.ChunkSizes()
-	chunking, err := fastcdc.NewConfig(int(minimum), int(average), int(maximum))
-	if err != nil {
-		return nil, fmt.Errorf("configure FastCDC: %w", err)
-	}
-	diskCache, err := newDiskBlockCache(c.BlockCacheDir, c.BlockSSDCacheCapacity, c.BlockCacheMinFree, maximum)
-	if err != nil {
-		return nil, fmt.Errorf("initialize persistent block cache: %w", err)
-	}
 	return &S3{
 		client: client, presign: s3.NewPresignClient(presignClient), bucket: c.S3Bucket,
-		maxBlockSize: maximum, chunking: chunking, ramCapacity: c.BlockRAMCacheCapacity,
-		diskCache: diskCache, manifests: newManifestIndex(db),
+		maxBlockSize: maximum, blockMinSize: minimum, blockSize: average,
+		blockCacheDir: c.BlockCacheDir, blockDiskCap: c.BlockSSDCacheCapacity, blockMinFree: c.BlockCacheMinFree,
+		ramCapacity: c.BlockRAMCacheCapacity, manifestDB: db,
 	}, nil
+}
+
+// initLegacy initializes the FastCDC compatibility data plane on first use.
+// Normal blobs/<UUID> operations never allocate block caches, scan the cache
+// directory, or construct the manifest index.
+func (s *S3) initLegacy() error {
+	s.legacyOnce.Do(func() {
+		chunking, err := fastcdc.NewConfig(int(s.blockMinSize), int(s.blockSize), int(s.maxBlockSize))
+		if err != nil {
+			s.legacyErr = fmt.Errorf("configure FastCDC: %w", err)
+			return
+		}
+		diskCache, err := newDiskBlockCache(s.blockCacheDir, s.blockDiskCap, s.blockMinFree, s.maxBlockSize)
+		if err != nil {
+			s.legacyErr = fmt.Errorf("initialize persistent block cache: %w", err)
+			return
+		}
+		s.chunking = chunking
+		s.diskCache = diskCache
+		s.manifests = newManifestIndex(s.manifestDB)
+	})
+	return s.legacyErr
 }
 
 func (s *S3) Ping(ctx context.Context) error {
@@ -248,56 +271,134 @@ func (s *S3) HeadObject(ctx context.Context, key string) (ObjectInfo, error) {
 	return ObjectInfo{Size: aws.ToInt64(out.ContentLength), ETag: strings.Trim(aws.ToString(out.ETag), `"`)}, nil
 }
 
-func (s *S3) StoreBlob(ctx context.Context, key, mime string, body io.Reader, size int64) (ObjectInfo, error) {
+const (
+	storeBlobMultipartThreshold = int64(16 << 20)
+	storeBlobDefaultPartSize    = int64(16 << 20)
+	storeBlobUnknownPartSize    = int64(128 << 20)
+)
+
+func storeBlobPartSize(size int64) (int64, error) {
 	if size < 0 {
-		uploadID, err := s.CreateMultipart(ctx, key, mime)
-		if err != nil {
-			return ObjectInfo{}, err
+		// Start small. Subsequent unknown-size parts grow to 128 MiB so a short
+		// stream does not reserve a large buffer while a 1 TiB stream still fits
+		// within S3's 10,000-part allowance.
+		return storeBlobDefaultPartSize, nil
+	}
+	partSize := storeBlobDefaultPartSize
+	if size > partSize*10000 {
+		partSize = ((size+9999)/10000 + (1 << 20) - 1) / (1 << 20) * (1 << 20)
+	}
+	if _, err := ValidMultipartPartCount(size, partSize); err != nil {
+		return 0, err
+	}
+	return partSize, nil
+}
+
+func (s *S3) abortMultipartAfterFailure(key, uploadID string, cause error) error {
+	abortCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := s.AbortMultipart(abortCtx, key, uploadID); err != nil {
+		return errors.Join(cause, fmt.Errorf("abort multipart upload: %w", err))
+	}
+	return cause
+}
+
+func (s *S3) storeBlobMultipart(ctx context.Context, key, mime string, body io.Reader, size int64) (ObjectInfo, error) {
+	partSize, err := storeBlobPartSize(size)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	uploadID, err := s.CreateMultipart(ctx, key, mime)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	fail := func(err error) (ObjectInfo, error) {
+		return ObjectInfo{}, s.abortMultipartAfterFailure(key, uploadID, err)
+	}
+	completed := make([]CompletedPart, 0, 8)
+	buf := make([]byte, int(partSize))
+	var total int64
+	for partNumber := int32(1); ; partNumber++ {
+		if partNumber > 10000 {
+			return fail(errors.New("stream exceeds S3 multipart part limit"))
 		}
-		completed := make([]CompletedPart, 0, 8)
-		const partSize = 16 << 20
-		var total int64
-		for partNumber := int32(1); ; partNumber++ {
-			if partNumber > 10000 {
-				_ = s.AbortMultipart(context.Background(), key, uploadID)
-				return ObjectInfo{}, errors.New("stream exceeds S3 multipart part limit")
+		readSize := partSize
+		if size < 0 && partNumber > 1 {
+			readSize = storeBlobUnknownPartSize
+			if int64(cap(buf)) < readSize {
+				buf = make([]byte, int(readSize))
 			}
-			buf := make([]byte, partSize)
-			n, readErr := io.ReadFull(body, buf)
-			if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
-				_ = s.AbortMultipart(context.Background(), key, uploadID)
-				return ObjectInfo{}, readErr
+		}
+		if size >= 0 {
+			remaining := size - total
+			if remaining < 0 {
+				return fail(fmt.Errorf("stream size exceeds declared size %d", size))
 			}
-			if n == 0 {
+			if remaining == 0 {
+				var extra [1]byte
+				n, readErr := io.ReadFull(body, extra[:])
+				if n != 0 || readErr == nil {
+					return fail(fmt.Errorf("stream size exceeds declared size %d", size))
+				}
+				if readErr != io.EOF {
+					return fail(readErr)
+				}
 				break
 			}
-			out, uploadErr := s.client.UploadPart(ctx, &s3.UploadPartInput{
-				Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(partNumber),
-				Body: bytes.NewReader(buf[:n]), ContentLength: aws.Int64(int64(n)),
-			})
-			if uploadErr != nil {
-				_ = s.AbortMultipart(context.Background(), key, uploadID)
-				return ObjectInfo{}, uploadErr
-			}
-			completed = append(completed, CompletedPart{PartNumber: partNumber, ETag: aws.ToString(out.ETag)})
-			total += int64(n)
-			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-				break
-			}
+			readSize = min(readSize, remaining)
 		}
-		if len(completed) == 0 {
-			_ = s.AbortMultipart(context.Background(), key, uploadID)
-			return s.StoreBlob(ctx, key, mime, bytes.NewReader(nil), 0)
+		n, readErr := io.ReadFull(body, buf[:readSize])
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+			return fail(readErr)
 		}
-		info, err := s.CompleteMultipart(ctx, key, uploadID, completed)
-		if err != nil {
-			_ = s.AbortMultipart(context.Background(), key, uploadID)
+		if n == 0 {
+			if size >= 0 && total != size {
+				return fail(fmt.Errorf("stream ended at %d bytes, want %d", total, size))
+			}
+			break
+		}
+		if size >= 0 && int64(n) != readSize {
+			return fail(fmt.Errorf("stream ended at %d bytes, want %d", total+int64(n), size))
+		}
+		out, uploadErr := s.client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID), PartNumber: aws.Int32(partNumber),
+			Body: bytes.NewReader(buf[:n]), ContentLength: aws.Int64(int64(n)),
+		})
+		if uploadErr != nil {
+			return fail(uploadErr)
+		}
+		completed = append(completed, CompletedPart{PartNumber: partNumber, ETag: aws.ToString(out.ETag)})
+		total += int64(n)
+		if size < 0 && (readErr == io.EOF || readErr == io.ErrUnexpectedEOF) {
+			break
+		}
+	}
+	if len(completed) == 0 {
+		if err := s.AbortMultipart(ctx, key, uploadID); err != nil {
 			return ObjectInfo{}, err
 		}
-		if info.Size != total {
-			return ObjectInfo{}, fmt.Errorf("stored blob size %d, read %d", info.Size, total)
-		}
-		return info, nil
+		return s.StoreBlob(ctx, key, mime, bytes.NewReader(nil), 0)
+	}
+	info, err := s.CompleteMultipart(ctx, key, uploadID, completed)
+	if err != nil {
+		return fail(err)
+	}
+	wantSize := total
+	if size >= 0 {
+		wantSize = size
+	}
+	if info.Size != wantSize {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_ = s.DeleteObject(cleanupCtx, key)
+		return ObjectInfo{}, fmt.Errorf("stored blob size %d, want %d", info.Size, wantSize)
+	}
+	return info, nil
+}
+
+func (s *S3) StoreBlob(ctx context.Context, key, mime string, body io.Reader, size int64) (ObjectInfo, error) {
+	if size < 0 || size >= storeBlobMultipartThreshold {
+		return s.storeBlobMultipart(ctx, key, mime, body, size)
 	}
 	in := &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), Body: body, ContentLength: aws.Int64(size)}
 	if mime != "" {
@@ -307,7 +408,20 @@ func (s *S3) StoreBlob(ctx context.Context, key, mime string, body io.Reader, si
 	if err != nil {
 		return ObjectInfo{}, err
 	}
-	return ObjectInfo{Size: size, ETag: strings.Trim(aws.ToString(out.ETag), `"`)}, nil
+	info, err := s.HeadObject(ctx, key)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if info.Size != size {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_ = s.DeleteObject(cleanupCtx, key)
+		return ObjectInfo{}, fmt.Errorf("stored blob size %d, want %d", info.Size, size)
+	}
+	if info.ETag == "" {
+		info.ETag = strings.Trim(aws.ToString(out.ETag), `"`)
+	}
+	return info, nil
 }
 
 func BlobKey(id string) string { return "blobs/" + id }
@@ -350,6 +464,9 @@ func (s *S3) PresignBlockPut(ctx context.Context, id string, expiry time.Duratio
 // PutBlock stores a block received through the application upload proxy. The
 // body must match the content-addressed key so a client cannot poison a block.
 func (s *S3) PutBlock(ctx context.Context, id string, data []byte) error {
+	if err := s.initLegacy(); err != nil {
+		return err
+	}
 	if !ValidBlockID(id) || hashBytes(data) != id {
 		return ErrBlockHashMismatch
 	}
@@ -373,10 +490,16 @@ func (s *S3) HeadBlock(ctx context.Context, id string) (Block, error) {
 }
 
 func (s *S3) GetBlock(ctx context.Context, id string) ([]byte, error) {
+	if err := s.initLegacy(); err != nil {
+		return nil, err
+	}
 	return s.getBlock(ctx, Block{ID: id, Size: -1})
 }
 
 func (s *S3) getBlock(ctx context.Context, block Block) ([]byte, error) {
+	if err := s.initLegacy(); err != nil {
+		return nil, err
+	}
 	id := block.ID
 	if !ValidBlockID(id) {
 		return nil, fmt.Errorf("invalid block id %q", id)
@@ -620,10 +743,10 @@ func (s *S3) DeleteObject(ctx context.Context, key string) error {
 	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
 	if err == nil {
-		return s.manifests.delete(ctx, key)
+		return newManifestIndex(s.manifestDB).delete(ctx, key)
 	}
 	if IsNotFound(err) {
-		return s.manifests.delete(ctx, key)
+		return newManifestIndex(s.manifestDB).delete(ctx, key)
 	}
 	return err
 }

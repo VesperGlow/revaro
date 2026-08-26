@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,7 @@ type mockStorage struct {
 	blocks           map[string][]byte // by block id
 	manifests        map[string]storage.Manifest
 	raw              map[string][]byte // raw object key -> content
+	rawMime          map[string]string
 	modified         map[string]time.Time
 	blockSize        int64
 	presignErr       error
@@ -49,6 +51,7 @@ type mockStorage struct {
 	getManifestErr   error
 	omitManifestList bool
 	multipart        map[string]string
+	rawURL           string
 }
 
 func newMockStorage(blockSize int64) *mockStorage {
@@ -59,6 +62,7 @@ func newMockStorage(blockSize int64) *mockStorage {
 		blocks:    map[string][]byte{},
 		manifests: map[string]storage.Manifest{},
 		raw:       map[string][]byte{},
+		rawMime:   map[string]string{},
 		modified:  map[string]time.Time{},
 		blockSize: blockSize,
 		multipart: map[string]string{},
@@ -106,7 +110,7 @@ func (m *mockStorage) HeadObject(_ context.Context, key string) (storage.ObjectI
 	}
 	return storage.ObjectInfo{Size: int64(len(data)), ETag: "etag"}, nil
 }
-func (m *mockStorage) StoreBlob(_ context.Context, key, _ string, r io.Reader, size int64) (storage.ObjectInfo, error) {
+func (m *mockStorage) StoreBlob(_ context.Context, key, mimeType string, r io.Reader, size int64) (storage.ObjectInfo, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return storage.ObjectInfo{}, err
@@ -116,6 +120,7 @@ func (m *mockStorage) StoreBlob(_ context.Context, key, _ string, r io.Reader, s
 	}
 	size = int64(len(data))
 	m.raw[key] = data
+	m.rawMime[key] = mimeType
 	return storage.ObjectInfo{Size: size, ETag: "etag"}, nil
 }
 func (m *mockStorage) PresignBlockPut(_ context.Context, id string, _ time.Duration) (string, error) {
@@ -207,6 +212,9 @@ func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, storage.Man
 func (m *mockStorage) Open(_ context.Context, key string) (storage.ReadSeekCloserAt, error) {
 	mm, ok := m.manifests[key]
 	if !ok {
+		if data, rawOK := m.raw[key]; rawOK {
+			return nopReadSeekCloser{Reader: bytes.NewReader(data)}, nil
+		}
 		return nil, notFoundError()
 	}
 	var buf bytes.Buffer
@@ -240,15 +248,17 @@ func (m *mockStorage) ReadFile(ctx context.Context, key string, limit int64) ([]
 	}
 	return data, nil
 }
-func (m *mockStorage) PutObject(_ context.Context, key, _ string, data []byte) (storage.ObjectInfo, error) {
+func (m *mockStorage) PutObject(_ context.Context, key, mimeType string, data []byte) (storage.ObjectInfo, error) {
 	m.raw[key] = append([]byte(nil), data...)
+	m.rawMime[key] = mimeType
 	return storage.ObjectInfo{Size: int64(len(data)), ETag: `"etag"`}, nil
 }
-func (m *mockStorage) PutImmutable(_ context.Context, key, _ string, data []byte) error {
+func (m *mockStorage) PutImmutable(_ context.Context, key, mimeType string, data []byte) error {
 	if _, ok := m.raw[key]; ok {
 		return nil // 内容寻址对象已存在：视为成功
 	}
 	m.raw[key] = append([]byte(nil), data...)
+	m.rawMime[key] = mimeType
 	return nil
 }
 func (m *mockStorage) OpenRaw(_ context.Context, key string) (io.ReadCloser, error) {
@@ -275,6 +285,7 @@ func (m *mockStorage) GetObject(ctx context.Context, key string, limit int64) ([
 }
 func (m *mockStorage) DeleteObject(_ context.Context, key string) error {
 	delete(m.raw, key)
+	delete(m.rawMime, key)
 	delete(m.manifests, key)
 	delete(m.modified, key)
 	if id := strings.TrimPrefix(key, "blocks/"); id != key {
@@ -282,7 +293,11 @@ func (m *mockStorage) DeleteObject(_ context.Context, key string) error {
 	}
 	return nil
 }
-func (m *mockStorage) PresignGetObject(context.Context, string, string, string, bool, time.Duration) (string, error) {
+
+func (m *mockStorage) PresignGetObject(_ context.Context, key, _, _ string, _ bool, _ time.Duration) (string, error) {
+	if m.rawURL != "" {
+		return m.rawURL + "/" + key, nil
+	}
 	return "https://s3.example/get", nil
 }
 func (m *mockStorage) ListPrefix(_ context.Context, prefix string) ([]storage.ObjectRef, error) {
@@ -327,7 +342,22 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 		t.Fatal(err)
 	}
 	store := newMockStorage(blockSize)
-	cfg := config.Config{BaseURL: "http://example.test", BlockSize: blockSize, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30, FFmpegPath: "ffmpeg"}
+	rawServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/")
+		data, ok := store.raw[key]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if mimeType := store.rawMime[key]; mimeType != "" {
+			w.Header().Set("Content-Type", mimeType)
+		}
+		http.ServeContent(w, r, filepath.Base(key), time.Time{}, bytes.NewReader(data))
+	}))
+	store.rawURL = rawServer.URL
+	t.Cleanup(rawServer.Close)
+	dataDir := t.TempDir()
+	cfg := config.Config{DataDir: dataDir, WorkDir: filepath.Join(dataDir, "work"), BaseURL: "http://example.test", BlockSize: blockSize, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30, FFmpegPath: "ffmpeg"}
 	app := &testApp{t: t, db: db, store: store}
 	app.srv = New(db, store, a, cfg, nil)
 	app.handler = app.srv.Handler()
@@ -357,12 +387,12 @@ func (a *testApp) readyFile(t *testing.T, name string, content []byte) File {
 }
 
 type createdUpload struct {
-	UploadID string `json:"upload_id"`
-	FileID   string `json:"file_id"`
-	Mode     string `json:"mode"`
-	URL      string `json:"url"`
-	PartSize int64  `json:"part_size"`
-	PartCount int   `json:"part_count"`
+	UploadID  string `json:"upload_id"`
+	FileID    string `json:"file_id"`
+	Mode      string `json:"mode"`
+	URL       string `json:"url"`
+	PartSize  int64  `json:"part_size"`
+	PartCount int    `json:"part_count"`
 }
 
 func (a *testApp) createUpload(t *testing.T, name string, size int64) createdUpload {
@@ -1401,7 +1431,7 @@ func TestLegacyFastCDCFilesAreMigratedToBlobs(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT object_key,etag FROM files WHERE id=?`, legacy.ID).Scan(&key, &etag); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(key, "blobs/") || etag == "" {
+	if key != storage.BlobKey(legacy.ID) || etag == "" {
 		t.Fatalf("migrated key=%q etag=%q", key, etag)
 	}
 	if _, ok := a.store.manifests[legacyKey]; !ok {
@@ -1409,6 +1439,13 @@ func TestLegacyFastCDCFilesAreMigratedToBlobs(t *testing.T) {
 	}
 	if got := a.store.raw[key]; !bytes.Equal(got, content) {
 		t.Fatalf("migrated blob=%q", got)
+	}
+	before := len(a.store.raw)
+	if migrated, err := a.srv.MigrateLegacyObjects(context.Background()); err != nil || migrated != 0 {
+		t.Fatalf("second migration pass migrated=%d err=%v", migrated, err)
+	}
+	if len(a.store.raw) != before {
+		t.Fatal("idempotent migration pass created another blob")
 	}
 }
 

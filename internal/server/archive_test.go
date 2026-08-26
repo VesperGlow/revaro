@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +126,25 @@ func TestArchivePasswordStateKeepsAndCleansStaging(t *testing.T) {
 	app.srv.cleanupArchiveJobStaging(job)
 	if stagedDir, stagedPath := job.staged(); stagedDir != "" || stagedPath != "" {
 		t.Fatalf("staging references were not cleared: dir=%q path=%q", stagedDir, stagedPath)
+	}
+}
+
+func TestArchiveTemporaryDirectoryUsesConfiguredWorkDir(t *testing.T) {
+	app := newTestApp(t)
+	workDir := filepath.Join(t.TempDir(), "archive-work")
+	app.srv.cfg.WorkDir = workDir
+	tempDir, err := app.srv.newArchiveTempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(tempDir) != workDir {
+		t.Fatalf("temporary directory=%q, want parent %q", tempDir, workDir)
+	}
+	job := &archiveJob{ID: "job-work-dir", FileID: "file-work-dir"}
+	job.setStaged(tempDir, filepath.Join(tempDir, "source.zip"))
+	app.srv.cleanupArchiveJobStaging(job)
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("archive temporary directory was not cleaned: %v", err)
 	}
 }
 

@@ -73,8 +73,8 @@ func main() {
 	go func() {
 		if migrated, err := app.MigrateLegacyObjects(ctx); err != nil && ctx.Err() == nil {
 			log.Error("legacy FastCDC migration paused; it will resume on the next start", "error", err)
-		} else if migrated > 0 {
-			log.Info("legacy FastCDC files migrated to single objects", "files", migrated)
+		} else if err == nil {
+			log.Info("legacy FastCDC migration complete remaining=0", "migrated", migrated)
 		}
 	}()
 	gcRequests := make(chan struct{}, 1)
