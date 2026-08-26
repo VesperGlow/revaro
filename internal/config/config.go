@@ -130,7 +130,7 @@ func Load() (Config, error) {
 	if c.BlockCacheMinFree, err = int64Env("BLOCK_CACHE_MIN_FREE", 2*1024*1024*1024); err != nil {
 		return c, err
 	}
-	if c.BlockReadAhead, err = int64Env("BLOCK_READ_AHEAD", 256*1024*1024); err != nil {
+	if c.BlockReadAhead, err = int64Env("BLOCK_READ_AHEAD", 512*1024*1024); err != nil {
 		return c, err
 	}
 	c.BlockCacheDir = env("BLOCK_CACHE_DIR", filepath.Join(c.DataDir, "block-cache"))

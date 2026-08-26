@@ -105,7 +105,7 @@ set -a; . ./.env; set +a
 | `BLOCK_SSD_CACHE_CAPACITY` | `8589934592` | `/data` 上持久 block LRU 最大容量（默认 8 GiB）；`0` 禁用 |
 | `BLOCK_CACHE_MIN_FREE` | `2147483648` | SSD cache 写入后必须保留的文件系统可用空间（默认 2 GiB） |
 | `BLOCK_CACHE_DIR` | `APP_DATA_DIR/block-cache` | SSD block cache 目录；应放在本地 SSD 持久卷 |
-| `BLOCK_READ_AHEAD` | `268435456` | 视频、音频、下载、解压等连续读取的动态预读窗口（默认 256 MiB）；`0` 退回普通 3-block 预取 |
+| `BLOCK_READ_AHEAD` | `536870912` | 视频、音频、下载、解压等连续读取的动态预读窗口（默认 512 MiB，最多 8 个 block 并发预取）；`0` 退回普通 3-block 预取 |
 | `UPLOAD_EXPIRES` | `24h` | 未完成上传的清理期限，也决定垃圾回收宽限期下限 |
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
 | `GC_INTERVAL` | `1h` | 周期孤儿对象回收间隔；`0` 表示禁用周期扫描（回收站到期删除仍会触发一次回收） |
@@ -228,6 +228,7 @@ Bucket 必须保持私有。直连模式的浏览器访问依赖 Presigned URL�
 | `GET` | `/api/files/{id}/video/subtitles/{subtitle}` | 把 VTT/SRT/ASS/SSA 字幕作为 WebVTT 返回 |
 | `POST` | `/api/files/{id}/video/fmp4` | 创建不重新编码音视频的临时 fragmented MP4 remux 会话 |
 | `GET` | `/api/video/fmp4/{session}/stream.mp4` | 以 HTTP streaming/Range 返回增长中的或已完成的 fMP4 |
+| `POST` | `/api/video/fmp4/{session}/prewarm` | 仅启动当前播放 window 的下一个有限 fMP4 window，不等待 fragment |
 | `DELETE` | `/api/video/fmp4/{session}` | 停止并清理临时 fMP4 remux 会话 |
 | `POST` | `/api/files/{id}/video/hls` | 为浏览器不兼容的视频启动按需 FFmpeg HLS 流 |
 | `GET` / `PUT` | `/api/files/{id}/media/progress` | 读取或保存音频/视频的跨设备播放进度 |

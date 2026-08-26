@@ -10,7 +10,7 @@ import (
 
 const (
 	fileReaderPrefetchBlocks      = 3
-	fileReaderPrefetchConcurrency = 4
+	fileReaderPrefetchConcurrency = 8
 )
 
 type dynamicReadAheadKey struct{}

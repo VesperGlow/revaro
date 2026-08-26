@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseWatchdogExpired, mseWindowRefillLeadSeconds, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseWatchdogExpired, mseWindowPrewarmLeadSeconds, mseWindowRefillLeadSeconds, setExclusiveSubtitleTrack, shouldHideVideoCursor, shouldPrewarmFMP4Window, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,
@@ -38,6 +38,15 @@ describe('MSE window refill',()=>{
   it('waits until playback is close to a short window tail',()=>{
     expect(mseWindowRefillLeadSeconds).toBeGreaterThanOrEqual(10)
     expect(mseWindowRefillLeadSeconds).toBeLessThanOrEqual(15)
+  })
+
+  it('prewarms a completed current window at 30s while fragment refill stays at 12s',()=>{
+    expect(mseWindowPrewarmLeadSeconds).toBe(30)
+    expect(mseWindowPrewarmLeadSeconds).toBeGreaterThan(mseWindowRefillLeadSeconds)
+    expect(shouldPrewarmFMP4Window(60,60,30,400)).toBe(true)
+    expect(shouldPrewarmFMP4Window(60,60,29.9,400)).toBe(false)
+    expect(shouldPrewarmFMP4Window(55,60,30,400)).toBe(false)
+    expect(shouldPrewarmFMP4Window(400,400,370,400)).toBe(false)
   })
 
   it('rebuilds MSE twice before falling back to HLS',()=>{
@@ -187,6 +196,7 @@ describe('video subtitle timeline and lifecycle',()=>{
     const fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async(input,init)=>{
       if(init?.signal)fetchSignals.push(init.signal)
       const requestURL=String(input)
+      if(requestURL==='/prewarm')return Response.json({status:'started',window_start:270})
       if(requestURL==='/init-window-a.mp4')return new Response(new Uint8Array([1,2,3]))
       if(requestURL==='/init-window-b.mp4')return new Response(new Uint8Array([2,3,4]))
       if(requestURL.includes('/index.json')){
@@ -194,8 +204,8 @@ describe('video subtitle timeline and lifecycle',()=>{
         if(indexRequests>1)return Response.json({fragments:[],available_until:229.393,done:true})
         return Response.json({
           fragments:[
-            {number:1,start:227.393,duration:1,url:'/fragment-window-a-000001.m4s',init_url:'/init-window-a.mp4',window_start:210,timestamp_offset:0,timing_approximate:true},
-            {number:1,start:228.393,duration:1,url:'/fragment-window-b-000001.m4s',init_url:'/init-window-b.mp4',window_start:270,timestamp_offset:0,timing_approximate:true},
+            {number:1,start:227.393,duration:1,url:'/fragment-window-a-000001.m4s',init_url:'/init-window-a.mp4',window_start:210,window_end:230,timestamp_offset:0,timing_approximate:true},
+            {number:1,start:228.393,duration:1,url:'/fragment-window-b-000001.m4s',init_url:'/init-window-b.mp4',window_start:270,window_end:330,timestamp_offset:0,timing_approximate:true},
           ],available_until:229.393,done:false,
         })
       }
@@ -209,7 +219,7 @@ describe('video subtitle timeline and lifecycle',()=>{
       load:vi.fn(),pause:vi.fn(),play:vi.fn(async()=>{}),removeAttribute:vi.fn(function(this:{src:string}){this.src=''}),
     } as unknown as HTMLVideoElement
     const response:VideoFMP4Response={
-      ...metadata(),duration:400,session_id:'session',init_url:'/init.mp4',index_url:'/index.json',start:0,requested_start:227.393,
+      ...metadata(),duration:400,session_id:'session',init_url:'/init.mp4',index_url:'/index.json',prewarm_url:'/prewarm',start:0,requested_start:227.393,
       output_audio_codec:'aac',audio_transcoding:false,selected_mode:'mse-copy',
     }
     const onFragment=vi.fn()
@@ -221,6 +231,7 @@ describe('video subtitle timeline and lifecycle',()=>{
     expect(fetchMock).not.toHaveBeenCalledWith('/init.mp4',expect.anything())
     expect(fetchMock).toHaveBeenCalledWith('/fragment-window-a-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
     expect(fetchMock).toHaveBeenCalledWith('/fragment-window-b-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
+    expect(fetchMock).toHaveBeenCalledWith('/prewarm',expect.objectContaining({method:'POST',body:JSON.stringify({target:227.393})}))
     expect(createdSourceBuffer?.timestampOffset).toBe(0)
     expect(createdSourceBuffer?.buffered.start(0)).toBe(226.8)
     expect(createdSourceBuffer?.buffered.end(0)).toBe(228.7)

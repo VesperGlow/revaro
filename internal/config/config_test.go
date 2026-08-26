@@ -21,7 +21,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.S3Region != "us-east-1" || c.S3PathStyle || c.PresignExpires != 15*time.Minute || c.UploadExpires != 24*time.Hour || c.TrashRetention != 30*24*time.Hour || c.GCInterval != time.Hour || c.BlockMinSize != 1<<20 || c.BlockSize != 4<<20 || c.BlockMaxSize != 16<<20 {
 		t.Fatalf("defaults: %+v", c)
 	}
-	if c.BlockRAMCacheCapacity != 256<<20 || c.BlockSSDCacheCapacity != 8<<30 || c.BlockCacheMinFree != 2<<30 || c.BlockReadAhead != 256<<20 || c.BlockCacheDir != filepath.Join(c.DataDir, "block-cache") {
+	if c.BlockRAMCacheCapacity != 256<<20 || c.BlockSSDCacheCapacity != 8<<30 || c.BlockCacheMinFree != 2<<30 || c.BlockReadAhead != 512<<20 || c.BlockCacheDir != filepath.Join(c.DataDir, "block-cache") {
 		t.Fatalf("block cache defaults: %+v", c)
 	}
 	if c.FFmpegPath != "ffmpeg" {

@@ -22,7 +22,7 @@ func TestFMP4StartResponseFlattensMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	for _, field := range []string{`"duration":12`, `"init_url":"/api/video/fmp4/session/init-w0000000000000-000001.mp4"`, `"selected_mode":"mse-copy-video-aac-audio"`} {
+	for _, field := range []string{`"duration":12`, `"init_url":"/api/video/fmp4/session/init-w0000000000000-000001.mp4"`, `"prewarm_url":"/api/video/fmp4/session/prewarm"`, `"selected_mode":"mse-copy-video-aac-audio"`} {
 		if !strings.Contains(text, field) {
 			t.Fatalf("response %s does not contain %s", text, field)
 		}
@@ -205,6 +205,48 @@ func TestFMP4CachedWindowDoesNotStartWorker(t *testing.T) {
 	}
 	if len(server.videoFMP4Slots) != 0 {
 		t.Fatal("cache hit acquired a worker slot")
+	}
+}
+
+func TestFMP4PrewarmOnlySchedulesTheNextWindow(t *testing.T) {
+	dir := t.TempDir()
+	current := testFMP4Window(dir, 0, videoFMP4WindowSize.Seconds(), "w0000000000000-000001")
+	next := testFMP4Window(dir, 60, videoFMP4WindowSize.Seconds(), "w0000000060000-000002")
+	following := testFMP4Window(dir, 120, videoFMP4WindowSize.Seconds(), "w0000000120000-000003")
+	writeFMP4Window(t, dir, current, []byte("current"))
+	writeFMP4Window(t, dir, next, []byte("next"))
+	writeFMP4Window(t, dir, following, []byte("following"))
+	session := &videoFMP4Session{ID: "session", Duration: 240, Dir: dir, windows: map[string]*videoFMP4Window{
+		current.Key: current, next.Key: next, following.Key: following,
+	}}
+	server := &Server{videoFMP4Slots: make(chan struct{}, 1)}
+
+	got, cacheHit, status, err := server.prewarmNextVideoFMP4Window(session, 30)
+	if err != nil || status != "" || !cacheHit || got != next {
+		t.Fatalf("first prewarm window=%v cacheHit=%v status=%q err=%v", got, cacheHit, status, err)
+	}
+	if got, _, status, err = server.prewarmNextVideoFMP4Window(session, 30); err != nil || got != nil || status != "next-window-already-prewarmed" {
+		t.Fatalf("duplicate prewarm window=%v status=%q err=%v", got, status, err)
+	}
+	got, cacheHit, status, err = server.prewarmNextVideoFMP4Window(session, 61)
+	if err != nil || status != "" || !cacheHit || got != following {
+		t.Fatalf("advanced prewarm window=%v cacheHit=%v status=%q err=%v", got, cacheHit, status, err)
+	}
+}
+
+func TestFMP4PrewarmDoesNotChainPastAnActiveNextWindow(t *testing.T) {
+	current := &videoFMP4Window{Key: "current", Start: 0, Duration: 60, complete: true}
+	next := &videoFMP4Window{Key: "next", Start: 60, Duration: 60, active: true}
+	far := &videoFMP4Window{Key: "far", Start: 120, Duration: 60, complete: true}
+	session := &videoFMP4Session{Duration: 300, windows: map[string]*videoFMP4Window{current.Key: current, next.Key: next, far.Key: far}}
+	server := &Server{videoFMP4Slots: make(chan struct{}, 1)}
+
+	got, cacheHit, status, err := server.prewarmNextVideoFMP4Window(session, 30)
+	if err != nil || status != "" || cacheHit || got != next {
+		t.Fatalf("active next prewarm window=%v cacheHit=%v status=%q err=%v", got, cacheHit, status, err)
+	}
+	if got, _, status, err = server.prewarmNextVideoFMP4Window(session, 130); err != nil || got != nil || status != "other-next-window-prewarming" {
+		t.Fatalf("chained prewarm window=%v status=%q err=%v", got, status, err)
 	}
 }
 

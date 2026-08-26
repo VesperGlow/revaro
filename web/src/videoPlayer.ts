@@ -1,6 +1,7 @@
 import type { VideoFMP4Index, VideoFMP4Metadata, VideoFMP4Response } from './types'
 
 export const mseWindowRefillLeadSeconds=12
+export const mseWindowPrewarmLeadSeconds=30
 export const mseStallWatchdogSeconds=8
 export const mseFreshRecoveryLimit=2
 
@@ -26,6 +27,13 @@ export function bufferedRangesAddedSeconds(before:MSEBufferedRange[],after:MSEBu
     added+=Math.max(0,uncovered)
   }
   return added
+}
+
+export function shouldPrewarmFMP4Window(availableUntil:number,windowEnd:number,playhead:number,duration:number):boolean{
+  if(![availableUntil,windowEnd,playhead,duration].every(Number.isFinite))return false
+  if(windowEnd>=duration-.001||availableUntil<windowEnd-3)return false
+  const ahead=availableUntil-playhead
+  return ahead>0&&ahead<=mseWindowPrewarmLeadSeconds
 }
 
 export type VideoPlaybackMode='direct'|'mse'|'hls'
@@ -331,9 +339,31 @@ async function pumpFMP4Fragments(
   const appendedFragments=new Set<string>()
   let firstMedia=false
   let consecutiveFailures=0
+  const prewarmedWindowStarts=new Set<number>()
+  const requestPrewarm=(index:VideoFMP4Index,signal:AbortSignal)=>{
+    const fragment=index.fragments[0]
+    if(!fragment||!options.response.prewarm_url)return
+    const playhead=options.response.start+options.element.currentTime
+    if(!shouldPrewarmFMP4Window(index.available_until,fragment.window_end,playhead,options.response.duration))return
+    if(prewarmedWindowStarts.has(fragment.window_start))return
+    prewarmedWindowStarts.add(fragment.window_start)
+    log('next-window prewarm requested',{playhead,buffer_tail:index.available_until,window_start:fragment.window_start,window_end:fragment.window_end,lead_seconds:index.available_until-playhead})
+    void fetch(options.response.prewarm_url,{
+      method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({target:playhead}),signal,
+    }).then(async response=>{
+      if(!response.ok)throw new Error(`fMP4 预热请求失败 (${response.status})`)
+      const result=await response.json() as {status?:string;window_start?:number;cache_hit?:boolean}
+      log('next-window prewarm accepted',{status:result.status||'unknown',window_start:result.window_start,cache_hit:Boolean(result.cache_hit)})
+    }).catch(caught=>{
+      if(signal.aborted)return
+      prewarmedWindowStarts.delete(fragment.window_start)
+      console.warn('[revaro][mse] next-window prewarm failed',{error:caught instanceof Error?caught.message:String(caught),window_start:fragment.window_start})
+    })
+  }
   while(!isDisposed()){
     if(observedVersion!==version()){
-      observedVersion=version();cursor=target();currentInitURL='';currentTimestampOffset=Number.NaN;appendedFragments.clear()
+      observedVersion=version();cursor=target();currentInitURL='';currentTimestampOffset=Number.NaN;appendedFragments.clear();prewarmedWindowStarts.clear()
       const signal=operationSignal()
       setInFlight(`clear buffer for seek generation ${observedVersion}`)
       try{await clearSourceBuffer(sourceBuffer,signal)}
@@ -347,6 +377,8 @@ async function pumpFMP4Fragments(
     const requestVersion=observedVersion
     const signal=operationSignal()
     try{
+      if(firstMedia)await keepMSEBufferBounded(sourceBuffer,options.element,signal,()=>requestVersion!==version())
+      if(requestVersion!==version())continue
       const separator=options.response.index_url.includes('?')?'&':'?'
       const indexURL=`${options.response.index_url}${separator}time=${cursor.toFixed(3)}`
       setInFlight(`index ${indexURL}`)
@@ -366,6 +398,7 @@ async function pumpFMP4Fragments(
         }
         continue
       }
+      requestPrewarm(index,signal)
       for(const fragment of index.fragments){
         if(requestVersion!==version())break
         if(!appendedFragments.has(fragment.url)){
@@ -408,7 +441,6 @@ async function pumpFMP4Fragments(
           markReady()
         }
         options.onFragment?.()
-        await keepMSEBufferBounded(sourceBuffer,options.element,signal,()=>requestVersion!==version())
       }
       consecutiveFailures=0
     }catch(caught){

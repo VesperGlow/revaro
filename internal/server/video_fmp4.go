@@ -69,15 +69,18 @@ type videoFMP4Session struct {
 	FrameRate        float64
 	File             File
 
-	mu          sync.RWMutex
-	lastAccess  time.Time
-	ctx         context.Context
-	cancel      context.CancelFunc
-	windows     map[string]*videoFMP4Window
-	nextWindow  uint64
-	workers     sync.WaitGroup
-	destroyed   bool
-	destroyOnce sync.Once
+	mu               sync.RWMutex
+	lastAccess       time.Time
+	ctx              context.Context
+	cancel           context.CancelFunc
+	windows          map[string]*videoFMP4Window
+	nextWindow       uint64
+	prewarmSourceKey string
+	prewarmWindowKey string
+	prewarmPending   bool
+	workers          sync.WaitGroup
+	destroyed        bool
+	destroyOnce      sync.Once
 }
 
 func (session *videoFMP4Session) touch() {
@@ -152,11 +155,23 @@ type startVideoFMP4Response struct {
 	SessionID        string  `json:"session_id"`
 	InitURL          string  `json:"init_url"`
 	IndexURL         string  `json:"index_url"`
+	PrewarmURL       string  `json:"prewarm_url"`
 	Start            float64 `json:"start"`
 	RequestedStart   float64 `json:"requested_start"`
 	OutputAudioCodec string  `json:"output_audio_codec,omitempty"`
 	AudioTranscoding bool    `json:"audio_transcoding"`
 	SelectedMode     string  `json:"selected_mode"`
+}
+
+type prewarmVideoFMP4Request struct {
+	Target float64 `json:"target"`
+}
+
+type prewarmVideoFMP4Response struct {
+	Status      string  `json:"status"`
+	Target      float64 `json:"target,omitempty"`
+	WindowStart float64 `json:"window_start,omitempty"`
+	CacheHit    bool    `json:"cache_hit,omitempty"`
 }
 
 type fmp4Fragment struct {
@@ -166,6 +181,7 @@ type fmp4Fragment struct {
 	URL               string  `json:"url"`
 	InitURL           string  `json:"init_url"`
 	WindowStart       float64 `json:"window_start"`
+	WindowEnd         float64 `json:"window_end"`
 	TimestampOffset   float64 `json:"timestamp_offset"`
 	TimingApproximate bool    `json:"timing_approximate"`
 }
@@ -393,7 +409,7 @@ func videoFMP4Response(session *videoFMP4Session, window *videoFMP4Window, reque
 	base := "/api/video/fmp4/" + session.ID
 	return startVideoFMP4Response{
 		videoFMP4MetadataResponse: metadata, SessionID: session.ID, InitURL: base + "/" + window.InitAsset,
-		IndexURL: base + "/index.json", Start: 0, RequestedStart: requestedStart,
+		IndexURL: base + "/index.json", PrewarmURL: base + "/prewarm", Start: 0, RequestedStart: requestedStart,
 		OutputAudioCodec: session.OutputAudioCodec, AudioTranscoding: session.AudioTranscoding, SelectedMode: selectedMode,
 	}
 }
@@ -684,6 +700,81 @@ func (s *Server) ensureVideoFMP4Window(session *videoFMP4Session, target float64
 	return window, false, nil
 }
 
+type videoFMP4PrewarmReservation struct {
+	sourceKey string
+	target    float64
+}
+
+func reserveVideoFMP4Prewarm(session *videoFMP4Session, playhead float64) (videoFMP4PrewarmReservation, string) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.destroyed {
+		return videoFMP4PrewarmReservation{}, "closed"
+	}
+	var current *videoFMP4Window
+	for _, window := range session.windows {
+		end := window.Start + window.Duration
+		if playhead+.25 < window.Start || playhead >= end-.001 {
+			continue
+		}
+		if current == nil || window.Start > current.Start {
+			current = window
+		}
+	}
+	if current == nil {
+		return videoFMP4PrewarmReservation{}, "current-window-unavailable"
+	}
+	if session.prewarmPending {
+		return videoFMP4PrewarmReservation{}, "prewarm-pending"
+	}
+	if session.prewarmWindowKey != "" {
+		prewarmed := session.windows[session.prewarmWindowKey]
+		switch {
+		case current.Key == session.prewarmSourceKey && prewarmed != nil:
+			return videoFMP4PrewarmReservation{}, "next-window-already-prewarmed"
+		case current.Key == session.prewarmWindowKey:
+			// Playback has advanced into the prewarmed window. It is now the
+			// current window, so exactly one following window may be reserved.
+		case prewarmed != nil && prewarmed.active:
+			return videoFMP4PrewarmReservation{}, "other-next-window-prewarming"
+		}
+		session.prewarmSourceKey = ""
+		session.prewarmWindowKey = ""
+	}
+	next := current.Start + current.Duration
+	if next >= session.Duration-.001 {
+		return videoFMP4PrewarmReservation{}, "end-of-media"
+	}
+	session.prewarmPending = true
+	session.prewarmSourceKey = current.Key
+	return videoFMP4PrewarmReservation{sourceKey: current.Key, target: next + .002}, ""
+}
+
+func finishVideoFMP4Prewarm(session *videoFMP4Session, reservation videoFMP4PrewarmReservation, window *videoFMP4Window, err error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.prewarmSourceKey != reservation.sourceKey {
+		return
+	}
+	session.prewarmPending = false
+	if err != nil || window == nil {
+		session.prewarmSourceKey = ""
+		session.prewarmWindowKey = ""
+		return
+	}
+	session.prewarmWindowKey = window.Key
+}
+
+func (s *Server) prewarmNextVideoFMP4Window(session *videoFMP4Session, playhead float64) (*videoFMP4Window, bool, string, error) {
+	reservation, status := reserveVideoFMP4Prewarm(session, playhead)
+	if status != "" {
+		return nil, false, status, nil
+	}
+	window, cacheHit, err := s.ensureVideoFMP4Window(session, reservation.target)
+	finishVideoFMP4Prewarm(session, reservation, window, err)
+	return window, cacheHit, "", err
+}
+
 func waitForVideoFMP4Window(requestCtx context.Context, session *videoFMP4Session, window *videoFMP4Window, target float64) error {
 	timer := time.NewTimer(videoFMP4StartWait)
 	defer timer.Stop()
@@ -783,6 +874,9 @@ func videoFMP4FragmentsAt(session *videoFMP4Session, target float64, limit int) 
 		chosen, available = window, windowAvailable
 		end := min(len(fragments), startIndex+limit)
 		chosenFragments = fragments[startIndex:end]
+		for index := range chosenFragments {
+			chosenFragments[index].WindowEnd = window.Start + window.Duration
+		}
 		break
 	}
 	if chosen != nil {
@@ -847,6 +941,42 @@ func (s *Server) videoFMP4Index(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Server) prewarmVideoFMP4(w http.ResponseWriter, r *http.Request) {
+	session := s.videoFMP4Session(chi.URLParam(r, "session"))
+	if session == nil {
+		problem(w, http.StatusNotFound, "fMP4 fragment session not found")
+		return
+	}
+	var in prewarmVideoFMP4Request
+	if err := decodeJSON(w, r, &in); err != nil {
+		return
+	}
+	if in.Target < 0 || in.Target >= session.Duration {
+		problem(w, http.StatusBadRequest, "invalid fMP4 prewarm target")
+		return
+	}
+	session.touch()
+	window, cacheHit, status, err := s.prewarmNextVideoFMP4Window(session, in.Target)
+	if err != nil {
+		s.log.Warn("fMP4 next-window prewarm failed", "file", session.FileID, "session", session.ID, "playhead", in.Target, "error", err)
+		problem(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if status != "" {
+		s.log.Debug("fMP4 next-window prewarm skipped", "file", session.FileID, "session", session.ID, "playhead", in.Target, "reason", status)
+		writeJSON(w, http.StatusOK, prewarmVideoFMP4Response{Status: status})
+		return
+	}
+	state := "started"
+	if cacheHit {
+		state = "cache-hit"
+	}
+	s.log.Info("fMP4 next-window prewarm scheduled", "file", session.FileID, "session", session.ID,
+		"playhead", in.Target, "target", window.Start, "window", window.Key, "cache_hit", cacheHit, "waited_for_fragment", false)
+	writeJSON(w, http.StatusAccepted, prewarmVideoFMP4Response{Status: state, Target: window.Start, WindowStart: window.Start, CacheHit: cacheHit})
 }
 
 func (s *Server) videoFMP4Asset(w http.ResponseWriter, r *http.Request) {

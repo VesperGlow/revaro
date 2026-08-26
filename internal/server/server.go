@@ -235,6 +235,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/video/hls/{session}/{asset}", s.videoHLSAsset)
 			r.Delete("/video/hls/{session}", s.stopVideoHLS)
 			r.Get("/video/fmp4/{session}/index.json", s.videoFMP4Index)
+			r.Post("/video/fmp4/{session}/prewarm", s.prewarmVideoFMP4)
 			r.Get("/video/fmp4/{session}/{asset}", s.videoFMP4Asset)
 			r.Delete("/video/fmp4/{session}", s.stopVideoFMP4)
 			r.Get("/files/{id}/content", s.getDocument)
