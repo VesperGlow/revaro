@@ -160,13 +160,14 @@ type startVideoFMP4Response struct {
 }
 
 type fmp4Fragment struct {
-	Number          int     `json:"number"`
-	Start           float64 `json:"start"`
-	Duration        float64 `json:"duration"`
-	URL             string  `json:"url"`
-	InitURL         string  `json:"init_url"`
-	WindowStart     float64 `json:"window_start"`
-	TimestampOffset float64 `json:"timestamp_offset"`
+	Number            int     `json:"number"`
+	Start             float64 `json:"start"`
+	Duration          float64 `json:"duration"`
+	URL               string  `json:"url"`
+	InitURL           string  `json:"init_url"`
+	WindowStart       float64 `json:"window_start"`
+	TimestampOffset   float64 `json:"timestamp_offset"`
+	TimingApproximate bool    `json:"timing_approximate"`
 }
 
 type fmp4IndexResponse struct {
@@ -720,6 +721,10 @@ func fmp4FragmentIndex(path, sessionID string, windowStart float64, initAsset st
 	if err != nil {
 		return nil, 0
 	}
+	// EXTINF describes HLS scheduling duration, not the authoritative tfdt/PTS
+	// inside each fMP4 fragment. With -copyts and input-side stream-copy seek, a
+	// preceding HEVC keyframe can make the browser's actual buffered range differ
+	// from windowStart plus accumulated EXTINF. Keep these values as index hints.
 	var fragments []fmp4Fragment
 	start, pendingDuration := windowStart, float64(0)
 	for _, rawLine := range strings.Split(string(body), "\n") {
@@ -742,7 +747,7 @@ func fmp4FragmentIndex(path, sessionID string, windowStart float64, initAsset st
 		}
 		fragments = append(fragments, fmp4Fragment{Number: number, Start: start, Duration: pendingDuration,
 			URL: "/api/video/fmp4/" + sessionID + "/" + line, InitURL: "/api/video/fmp4/" + sessionID + "/" + initAsset,
-			WindowStart: windowStart, TimestampOffset: 0})
+			WindowStart: windowStart, TimestampOffset: 0, TimingApproximate: true})
 		start += pendingDuration
 		pendingDuration = 0
 	}

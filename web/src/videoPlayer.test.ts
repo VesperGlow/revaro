@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseWatchdogExpired, mseWindowRefillLeadSeconds, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseWatchdogExpired, mseWindowRefillLeadSeconds, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,
@@ -52,6 +52,12 @@ describe('MSE window refill',()=>{
     expect(mseWatchdogExpired(1000,1000,1000+limit,false)).toBe(true)
     expect(mseWatchdogExpired(1000,1000,1000+limit,true)).toBe(false)
     expect(mseWatchdogExpired(1000,5000,1000+limit,false)).toBe(false)
+  })
+
+  it('measures actual browser buffer growth without using scheduling timestamps',()=>{
+    expect(bufferedRangesAddedSeconds([],[{start:226.8,end:227.3}])).toBeCloseTo(.5)
+    expect(bufferedRangesAddedSeconds([{start:226.8,end:227.3}],[{start:226.8,end:227.3}])).toBe(0)
+    expect(bufferedRangesAddedSeconds([{start:226.8,end:227.0}],[{start:226.8,end:227.5}])).toBeCloseTo(.5)
   })
 })
 
@@ -146,18 +152,20 @@ describe('video subtitle timeline and lifecycle',()=>{
     expect(selected.mode).toBe('showing')
   })
 
-  it('leaves the selected track untouched while MSE switches window init segments',async()=>{
+  it('accepts real PTS drift and appends each window init without rebuilding subtitles',async()=>{
     let createdSourceBuffer:FakeSourceBuffer|undefined
     class FakeSourceBuffer extends EventTarget {
       mode:AppendMode='segments'
       updating=false
       timestampOffset=0
       ranges:Array<[number,number]>=[]
-      appendCount=0
+      mediaAppendCount=0
       get buffered(){return {length:this.ranges.length,start:(index:number)=>this.ranges[index][0],end:(index:number)=>this.ranges[index][1]} as TimeRanges}
-      appendBuffer(){
-        this.appendCount+=1
-        if(this.appendCount%2===0)this.ranges=[[this.timestampOffset,this.timestampOffset+2]]
+      appendBuffer(data:ArrayBuffer){
+        if(new Uint8Array(data)[0]>=4){
+          this.mediaAppendCount+=1
+          this.ranges=this.mediaAppendCount===1?[[226.8,227.3]]:[[226.8,228.7]]
+        }
         queueMicrotask(()=>this.dispatchEvent(new Event('updateend')))
       }
       abort(){}
@@ -175,37 +183,52 @@ describe('video subtitle timeline and lifecycle',()=>{
     vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:revaro-mse')
     vi.spyOn(URL,'revokeObjectURL').mockImplementation(()=>{})
     const fetchSignals:AbortSignal[]=[]
+    let indexRequests=0
     const fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async(input,init)=>{
       if(init?.signal)fetchSignals.push(init.signal)
       const requestURL=String(input)
-      if(requestURL.endsWith('/init.mp4'))return new Response(new Uint8Array([1,2,3]))
-      if(requestURL.includes('/index.json'))return Response.json({
-		fragments:[{number:1,start:360,duration:2,url:'/fragment-window-000001.m4s',init_url:'/init-window.mp4',window_start:360,timestamp_offset:360}],available_until:362,done:false,
-      })
-      return new Response(new Uint8Array([4,5,6]))
+      if(requestURL==='/init-window-a.mp4')return new Response(new Uint8Array([1,2,3]))
+      if(requestURL==='/init-window-b.mp4')return new Response(new Uint8Array([2,3,4]))
+      if(requestURL.includes('/index.json')){
+        indexRequests+=1
+        if(indexRequests>1)return Response.json({fragments:[],available_until:229.393,done:true})
+        return Response.json({
+          fragments:[
+            {number:1,start:227.393,duration:1,url:'/fragment-window-a-000001.m4s',init_url:'/init-window-a.mp4',window_start:210,timestamp_offset:0,timing_approximate:true},
+            {number:1,start:228.393,duration:1,url:'/fragment-window-b-000001.m4s',init_url:'/init-window-b.mp4',window_start:270,timestamp_offset:0,timing_approximate:true},
+          ],available_until:229.393,done:false,
+        })
+      }
+      if(requestURL.includes('window-a'))return new Response(new Uint8Array([4,5,6]))
+      return new Response(new Uint8Array([5,6,7]))
     })
     const selected={mode:'showing' as TextTrackMode}
     const events=new EventTarget()
-    const element={src:'',currentTime:360,readyState:1,networkState:2,paused:false,textTracks:[selected],seekable:{length:0,start:()=>0,end:()=>0},
+    const element={src:'',currentTime:227.393,readyState:1,networkState:2,paused:false,textTracks:[selected],seekable:{length:0,start:()=>0,end:()=>0},
       addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events),
       load:vi.fn(),pause:vi.fn(),play:vi.fn(async()=>{}),removeAttribute:vi.fn(function(this:{src:string}){this.src=''}),
     } as unknown as HTMLVideoElement
     const response:VideoFMP4Response={
-      ...metadata(),session_id:'session',init_url:'/init.mp4',index_url:'/index.json',start:0,requested_start:360,
+      ...metadata(),duration:400,session_id:'session',init_url:'/init.mp4',index_url:'/index.json',start:0,requested_start:227.393,
       output_audio_codec:'aac',audio_transcoding:false,selected_mode:'mse-copy',
     }
     const onFragment=vi.fn()
-    const attachment=await attachFMP4Stream({element,response,mimeType:response.mime_type,target:360,autoplay:false,onFatal:vi.fn(),onFragment})
-    expect(onFragment).toHaveBeenCalled()
-    expect(fetchMock).toHaveBeenCalledWith('/init-window.mp4',expect.objectContaining({credentials:'same-origin'}))
+    const onFatal=vi.fn()
+    const attachment=await attachFMP4Stream({element,response,mimeType:response.mime_type,target:227.393,autoplay:false,onFatal,onFragment})
+    await vi.waitFor(()=>expect(onFragment).toHaveBeenCalledTimes(2))
+    expect(fetchMock).toHaveBeenCalledWith('/init-window-a.mp4',expect.objectContaining({credentials:'same-origin'}))
+    expect(fetchMock).toHaveBeenCalledWith('/init-window-b.mp4',expect.objectContaining({credentials:'same-origin'}))
     expect(fetchMock).not.toHaveBeenCalledWith('/init.mp4',expect.anything())
-    expect(fetchMock).toHaveBeenCalledWith('/fragment-window-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
-    expect(createdSourceBuffer?.timestampOffset).toBe(360)
-    expect(createdSourceBuffer?.buffered.start(0)).toBe(360)
+    expect(fetchMock).toHaveBeenCalledWith('/fragment-window-a-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
+    expect(fetchMock).toHaveBeenCalledWith('/fragment-window-b-000001.m4s',expect.objectContaining({credentials:'same-origin'}))
+    expect(createdSourceBuffer?.timestampOffset).toBe(0)
+    expect(createdSourceBuffer?.buffered.start(0)).toBe(226.8)
+    expect(createdSourceBuffer?.buffered.end(0)).toBe(228.7)
+    expect(onFatal).not.toHaveBeenCalled()
     expect(element.textTracks[0]).toBe(selected)
     expect(selected.mode).toBe('showing')
     expect(fetchSignals.every(signal=>!signal.aborted)).toBe(true)
-    attachment.seek(600)
+    attachment.seek(300)
     expect(fetchSignals.every(signal=>signal.aborted)).toBe(true)
     attachment.destroy()
   })

@@ -13,6 +13,21 @@ export function mseWatchdogExpired(waitingSince:number,lastBufferGrowth:number,n
   return !playheadCovered&&waitingSince>0&&now-waitingSince>=limit&&now-lastBufferGrowth>=limit
 }
 
+export interface MSEBufferedRange { start:number;end:number }
+
+export function bufferedRangesAddedSeconds(before:MSEBufferedRange[],after:MSEBufferedRange[]):number{
+  let added=0
+  for(const current of after){
+    let uncovered=Math.max(0,current.end-current.start)
+    for(const previous of before){
+      const overlap=Math.max(0,Math.min(current.end,previous.end)-Math.max(current.start,previous.start))
+      uncovered-=overlap
+    }
+    added+=Math.max(0,uncovered)
+  }
+  return added
+}
+
 export type VideoPlaybackMode='direct'|'mse'|'hls'
 
 export interface VideoCursorState {
@@ -191,7 +206,7 @@ export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4At
   let waitingSince=0
   let lastWatchdogLog=0
   let lastBufferGrowth=Date.now()
-  let lastBuffered='[]'
+  let lastBufferedRanges:MSEBufferedRange[]=[]
   let watchdogTimer=0
   let watchdogFired=false
   let resolveReady:()=>void=()=>{}
@@ -204,10 +219,13 @@ export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4At
     sourceBufferUpdating:sourceBuffer?.updating??false,mediaSourceState:mediaSource.readyState,
   })
   const log=(event:string,extra:Record<string,unknown>={})=>console.info('[revaro][mse]',event,{...state(),...extra})
-  const recordBuffer=(kind:string,url:string)=>{
-    const buffered=formatTimeRanges(sourceBuffer?.buffered)
-    if(buffered!==lastBuffered){lastBuffered=buffered;lastBufferGrowth=Date.now()}
-    log('append complete',{kind,url})
+  const recordBuffer=(kind:string,url:string,before:MSEBufferedRange[])=>{
+    const after=snapshotTimeRanges(sourceBuffer?.buffered)
+    const addedSeconds=bufferedRangesAddedSeconds(before,after)
+    if(addedSeconds>.001)lastBufferGrowth=Date.now()
+    lastBufferedRanges=after
+    log('append complete',{kind,url,buffered_before:formatRangeSnapshot(before),buffered_after:formatRangeSnapshot(after),buffer_added_seconds:Number(addedSeconds.toFixed(3))})
+    return addedSeconds
   }
   const clearWaiting=()=>{waitingSince=0}
   const noteWaiting=(eventName:string)=>{
@@ -220,8 +238,9 @@ export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4At
   const inspectWatchdog=()=>{
     if(disposed||watchdogFired||!readySettled||element.paused)return
     const now=Date.now()
-    const buffered=formatTimeRanges(sourceBuffer?.buffered)
-    if(buffered!==lastBuffered){lastBuffered=buffered;lastBufferGrowth=now}
+    const buffered=snapshotTimeRanges(sourceBuffer?.buffered)
+    if(bufferedRangesAddedSeconds(lastBufferedRanges,buffered)>.001)lastBufferGrowth=now
+    lastBufferedRanges=buffered
     if(bufferContains(sourceBuffer?.buffered,element.currentTime,.25)){clearWaiting();return}
     if(!waitingSince&&element.readyState<=2){waitingSince=now;log('watchdog observed unbuffered playhead')}
     if(!waitingSince)return
@@ -300,7 +319,7 @@ async function pumpFMP4Fragments(
   target:()=>number,
   version:()=>number,
   setInFlight:(value:string)=>void,
-  recordBuffer:(kind:string,url:string)=>void,
+  recordBuffer:(kind:string,url:string,before:MSEBufferedRange[])=>number,
   log:(event:string,extra?:Record<string,unknown>)=>void,
   markReady:()=>void,
 ):Promise<void>{
@@ -308,12 +327,13 @@ async function pumpFMP4Fragments(
   let cursor=target()
   let observedVersion=version()
   let currentInitURL=''
-  let currentWindowStart=Number.NaN
+  let currentTimestampOffset=Number.NaN
+  const appendedFragments=new Set<string>()
   let firstMedia=false
   let consecutiveFailures=0
   while(!isDisposed()){
     if(observedVersion!==version()){
-      observedVersion=version();cursor=target();currentInitURL='';currentWindowStart=Number.NaN
+      observedVersion=version();cursor=target();currentInitURL='';currentTimestampOffset=Number.NaN;appendedFragments.clear()
       const signal=operationSignal()
       setInFlight(`clear buffer for seek generation ${observedVersion}`)
       try{await clearSourceBuffer(sourceBuffer,signal)}
@@ -348,40 +368,37 @@ async function pumpFMP4Fragments(
       }
       for(const fragment of index.fragments){
         if(requestVersion!==version())break
-        const midpoint=fragment.start+Math.min(fragment.duration/2,.25)
-        if(!bufferContains(sourceBuffer.buffered,midpoint,.25)){
+        if(!appendedFragments.has(fragment.url)){
           const fragmentInitURL=fragment.init_url||currentInitURL
           const timestampOffset=Number.isFinite(fragment.timestamp_offset)?fragment.timestamp_offset:fragment.window_start
           if(!Number.isFinite(timestampOffset))throw new Error('fMP4 分片缺少窗口时间轴偏移')
-          if(fragmentInitURL!==currentInitURL&&currentInitURL===''){
+          if(!fragmentInitURL)throw new Error('fMP4 分片缺少 init segment')
+          if(fragmentInitURL!==currentInitURL){
             setInFlight(`init ${fragmentInitURL}`)
             const windowInit=await fetchBytes(fragmentInitURL,signal)
             if(requestVersion!==version())break
             sourceBuffer.timestampOffset=timestampOffset
+            const beforeInit=snapshotTimeRanges(sourceBuffer.buffered)
             await appendSourceBuffer(sourceBuffer,windowInit,signal)
-            recordBuffer('init',fragmentInitURL)
+            recordBuffer('init',fragmentInitURL,beforeInit)
             currentInitURL=fragmentInitURL
-            currentWindowStart=timestampOffset
-            log('window init attached',{init_url:fragmentInitURL,window_start:fragment.window_start,timestamp_offset:timestampOffset})
-          }else if(fragmentInitURL!==currentInitURL){
-            // A session keeps the same codecs and track layout. Reusing the
-            // decoder configuration avoids appending a second independent init
-            // segment from another FFmpeg invocation to the same SourceBuffer.
-            log('window init switched; decoder config reused',{from:currentInitURL,to:fragmentInitURL,window_start:fragment.window_start,timestamp_offset:timestampOffset})
-            currentInitURL=fragmentInitURL
+            currentTimestampOffset=timestampOffset
+            log('window init attached',{init_url:fragmentInitURL,window_start:fragment.window_start,timestamp_offset:timestampOffset,timing_approximate:fragment.timing_approximate})
           }
-          if(currentWindowStart!==timestampOffset){
+          if(currentTimestampOffset!==timestampOffset){
             sourceBuffer.timestampOffset=timestampOffset
-            currentWindowStart=timestampOffset
-            log('window timestamp offset changed',{window_start:fragment.window_start,timestamp_offset:timestampOffset})
+            currentTimestampOffset=timestampOffset
+            log('window timestamp offset changed',{window_start:fragment.window_start,timestamp_offset:timestampOffset,timing_approximate:fragment.timing_approximate})
           }
           setInFlight(`fragment ${fragment.url}`)
           const bytes=await fetchBytes(fragment.url,signal)
           if(requestVersion!==version())break
+          const beforeMedia=snapshotTimeRanges(sourceBuffer.buffered)
           await appendSourceBuffer(sourceBuffer,bytes,signal)
-          recordBuffer('media',fragment.url)
-          if(!bufferContains(sourceBuffer.buffered,midpoint,.25)){
-            throw new Error(`MSE append updateend 后没有覆盖目标时间 ${midpoint.toFixed(3)}s`)
+          const addedSeconds=recordBuffer('media',fragment.url,beforeMedia)
+          appendedFragments.add(fragment.url)
+          if(addedSeconds<=.001){
+            console.warn('[revaro][mse] media append completed without buffer growth',{fragment:fragment.url,scheduling_start:fragment.start,scheduling_duration:fragment.duration,timing_approximate:fragment.timing_approximate,buffered:formatTimeRanges(sourceBuffer.buffered)})
           }
         }
         cursor=fragment.start+fragment.duration+.002
@@ -423,10 +440,18 @@ function bufferContains(ranges:TimeRanges|undefined,time:number,tolerance=.05):b
 }
 
 function formatTimeRanges(ranges:TimeRanges|undefined):string{
-  if(!ranges)return '[]'
-  const values:string[]=[]
-  for(let index=0;index<ranges.length;index+=1)values.push(`${ranges.start(index).toFixed(3)}-${ranges.end(index).toFixed(3)}`)
-  return `[${values.join(', ')}]`
+  return formatRangeSnapshot(snapshotTimeRanges(ranges))
+}
+
+function snapshotTimeRanges(ranges:TimeRanges|undefined):MSEBufferedRange[]{
+  if(!ranges)return []
+  const values:MSEBufferedRange[]=[]
+  for(let index=0;index<ranges.length;index+=1)values.push({start:ranges.start(index),end:ranges.end(index)})
+  return values
+}
+
+function formatRangeSnapshot(ranges:MSEBufferedRange[]):string{
+  return `[${ranges.map(range=>`${range.start.toFixed(3)}-${range.end.toFixed(3)}`).join(', ')}]`
 }
 
 function appendSourceBuffer(sourceBuffer:SourceBuffer,data:Uint8Array,signal:AbortSignal):Promise<void>{
@@ -473,8 +498,8 @@ function removeSourceBufferRange(sourceBuffer:SourceBuffer,start:number,end:numb
 
 function abortableDelay(milliseconds:number,signal:AbortSignal):Promise<void>{
   return new Promise((resolve,reject)=>{
-    const timer=window.setTimeout(()=>{signal.removeEventListener('abort',abort);resolve()},milliseconds)
-    const abort=()=>{window.clearTimeout(timer);reject(new DOMException('Aborted','AbortError'))}
+    const timer=globalThis.setTimeout(()=>{signal.removeEventListener('abort',abort);resolve()},milliseconds)
+    const abort=()=>{globalThis.clearTimeout(timer);reject(new DOMException('Aborted','AbortError'))}
     signal.addEventListener('abort',abort,{once:true})
   })
 }

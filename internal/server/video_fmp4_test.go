@@ -44,7 +44,7 @@ func TestFMP4FragmentIndexBuildsTimeMap(t *testing.T) {
 	if fragments[1].URL != "/api/video/fmp4/session/fragment-"+key+"-000001.m4s" || fragments[1].InitURL != "/api/video/fmp4/session/init-"+key+".mp4" {
 		t.Fatalf("unexpected fragment URL %q", fragments[1].URL)
 	}
-	if fragments[1].WindowStart != 120 || fragments[1].TimestampOffset != 0 {
+	if fragments[1].WindowStart != 120 || fragments[1].TimestampOffset != 0 || !fragments[1].TimingApproximate {
 		t.Fatalf("fragment time mapping=%+v", fragments[1])
 	}
 }

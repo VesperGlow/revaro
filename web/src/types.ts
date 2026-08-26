@@ -91,7 +91,7 @@ export interface VideoFMP4Response extends VideoFMP4Metadata {
   audio_transcoding:boolean
   selected_mode:'mse-copy'|'mse-copy-video-aac-audio'
 }
-export interface VideoFMP4Fragment { number:number;start:number;duration:number;url:string;init_url:string;window_start:number;timestamp_offset:number }
+export interface VideoFMP4Fragment { number:number;start:number;duration:number;url:string;init_url:string;window_start:number;timestamp_offset:number;timing_approximate:boolean }
 export interface VideoFMP4Index { fragments:VideoFMP4Fragment[];available_until:number;done:boolean;error?:string }
 export interface VideoHLSResponse { session_id:string; playlist_url:string; start:number; duration:number; video_codec:string; audio_codec:string; transcoding:boolean }
 export interface ArchiveJob {
