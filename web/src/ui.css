@@ -1,0 +1,52 @@
+/* Shared file-manager primitives. Loaded last so component-local legacy values converge here. */
+.transfer-center>summary,.download-center>summary,.merge-center>summary,.archive-center>summary,.trash-button{
+  width:var(--control-md);height:var(--control-md);border-radius:var(--radius-md);color:var(--muted)
+}
+.transfer-center>summary:hover,.download-center>summary:hover,.merge-center>summary:hover,.archive-center>summary:hover,.trash-button:hover{
+  background:var(--surface-hover);color:var(--ink-subtle)
+}
+.transfer-ring,.download-ring,.merge-ring,.archive-ring{width:36px;height:36px}
+.transfer-popover,.download-popover,.merge-popover,.archive-popover{
+  top:48px;border-color:var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow-popover)
+}
+.transfer-popover:before,.download-popover:before,.merge-popover:before,.archive-popover:before{display:none}
+.transfer-popover>header,.download-popover>header,.merge-popover>header,.archive-popover>header{
+  min-height:56px;padding:0 var(--space-4);border-color:var(--line)
+}
+.transfer-popover header strong,.download-popover header strong,.merge-popover header strong,.archive-popover header strong{color:var(--ink);font-size:13px;font-weight:650}
+.transfer-popover header small,.download-popover header small,.merge-popover header small,.archive-popover header small{color:var(--muted);font-size:10px}
+.transfer-list article,.download-list article,.merge-list article,.archive-list article{border-color:#edf0f3}
+.task-icon,.task-direction{border-radius:var(--radius-md)}
+.task-icon svg,.task-direction svg,.task-actions svg,.transfer-list article>button svg,.merge-list article>button svg,.download-popover .add svg,.download-empty>svg{
+  width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round
+}
+.transfer-list article>button,.merge-list article>button,.task-actions button{
+  display:grid;place-items:center;min-width:32px;height:32px;padding:0;border-radius:var(--radius-sm)
+}
+.transfer-list article>button:hover,.merge-list article>button:hover,.task-actions button:hover{background:var(--surface-hover);color:var(--ink)}
+.download-popover header .add{display:flex;align-items:center;gap:5px;background:transparent;color:var(--blue)}
+.download-empty>svg,.merge-empty>svg{width:34px;height:34px;color:var(--muted-soft);fill:none;stroke:currentColor;stroke-width:1.5}
+.download-backdrop,.archive-password-backdrop,.dialog-backdrop,.account-subdialog-backdrop{background:#17212b66;backdrop-filter:none}
+.download-dialog,.archive-password-dialog,.app-dialog,.account-subdialog{border:1px solid var(--line);border-radius:var(--radius-xl);box-shadow:var(--shadow-dialog)}
+.download-dialog>header button svg,.archive-password-dialog header button svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8}
+.app-dialog{padding:var(--space-6);border-color:var(--line);border-radius:var(--radius-xl);box-shadow:var(--shadow-dialog)}
+.dialog-icon{border-radius:var(--radius-md);background:var(--blue-soft);color:var(--blue)}
+.dialog-copy h2{color:var(--ink);font-size:18px}.dialog-copy p{color:var(--muted)}
+.app-dialog input{border-color:var(--line-strong);border-radius:var(--radius-md)}.app-dialog input:focus{border-color:var(--blue);box-shadow:var(--focus-ring)}
+.app-dialog button{border-radius:var(--radius-md)}.app-dialog .dialog-confirm{background:var(--blue)}
+.account-modal{border:1px solid var(--line);border-radius:var(--radius-xl);box-shadow:var(--shadow-dialog)}
+.avatar-settings,.account-setting-row,.account-session-row{border-color:var(--line);border-radius:var(--radius-lg)}
+.avatar-settings,.account-setting-row.security-row{background:var(--surface-subtle)}
+.account-setting-row{background:var(--surface)}.setting-label,.username-line strong{color:var(--ink)}
+.account-modal input{border-color:var(--line-strong)}.account-modal input:focus{border-color:var(--blue);box-shadow:var(--focus-ring)}
+@media(max-width:850px){
+  .transfer-popover,.download-popover,.merge-popover,.archive-popover{top:calc(62px + env(safe-area-inset-top,0px));right:max(8px,env(safe-area-inset-right,0px));width:min(420px,calc(100vw - 16px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
+  .transfer-center>summary,.download-center>summary,.merge-center>summary,.archive-center>summary{width:var(--control-md);height:var(--control-md)}
+}
+@media(max-width:430px){
+  .transfer-popover,.download-popover,.merge-popover,.archive-popover{max-height:calc(100dvh - 78px)}
+  .transfer-list,.download-list,.merge-list,.archive-list{max-height:calc(100dvh - 134px)}
+  .transfer-list article,.merge-list article,.archive-list article{padding:11px 10px;gap:8px}
+  .download-list .task-main{padding:11px 6px 11px 10px;gap:8px}
+  .account-modal{width:100%;padding:18px 14px}
+}

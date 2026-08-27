@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { Menu, Trash2 } from 'lucide-vue-next'
 import type { ArchiveJob, AudioMergeResponse, DownloadJob, UploadTask } from '../types'
 import ArchiveCenter from './ArchiveCenter.vue'
 import AudioMergeCenter from './AudioMergeCenter.vue'
@@ -52,20 +53,20 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
         <DownloadCenter :jobs="downloads" :parent-id="downloadParentId" @changed="$emit('downloadsChanged')" />
         <AudioMergeCenter v-if="audioMerges.length" :jobs="audioMerges" @cancel="$emit('cancelAudioMerge',$event)" @clear="$emit('clearAudioMerges')" />
         <ArchiveCenter v-if="archiveJobs.length" :jobs="archiveJobs" @clear="$emit('clearArchiveJobs')" @password="forwardArchivePassword" />
-        <button class="trash-button" title="回收站" aria-label="打开回收站" @click="$emit('trash')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button>
+        <button class="trash-button" title="回收站" aria-label="打开回收站" @click="$emit('trash')"><Trash2 aria-hidden="true" /></button>
       </template>
       <button class="account-button" title="打开账户设置" @click="$emit('account')">
         <span class="avatar-badge"><img v-if="hasAvatar" class="ui-image" :src="avatarUrl" alt="个人头像" draggable="false" @error="$emit('avatarError')"><template v-else>{{ user.slice(0,1).toUpperCase() }}</template></span>
         <span class="account-copy"><b>{{ user }}</b><small>账户设置</small></span>
       </button>
       <details v-if="mobile" ref="mobileMenu" class="mobile-tool-menu">
-        <summary title="任务与工具" aria-label="打开任务与工具菜单"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <summary title="任务与工具" aria-label="打开任务与工具菜单"><Menu aria-hidden="true" /></summary>
         <section>
           <div class="mobile-tool-item"><TransferCenter :uploads="uploads" @clear="$emit('clearUploads')" @cancel="$emit('cancelUpload',$event)" @retry="$emit('retryUpload',$event)" /><span>上传中心</span></div>
           <div class="mobile-tool-item"><DownloadCenter :jobs="downloads" :parent-id="downloadParentId" @changed="$emit('downloadsChanged')" /><span>下载中心</span></div>
           <div v-if="audioMerges.length" class="mobile-tool-item"><AudioMergeCenter :jobs="audioMerges" @cancel="$emit('cancelAudioMerge',$event)" @clear="$emit('clearAudioMerges')" /><span>音频合并</span></div>
           <div v-if="archiveJobs.length" class="mobile-tool-item"><ArchiveCenter :jobs="archiveJobs" @clear="$emit('clearArchiveJobs')" @password="forwardArchivePassword" /><span>解压中心</span></div>
-          <button class="mobile-trash" @click="mobileMenu?.removeAttribute('open');$emit('trash')"><span class="trash-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></span><b>回收站</b></button>
+          <button class="mobile-trash" @click="mobileMenu?.removeAttribute('open');$emit('trash')"><span class="trash-button"><Trash2 aria-hidden="true" /></span><b>回收站</b></button>
         </section>
       </details>
     </div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, FolderUp, Grid2X2, List, Music2, Upload } from 'lucide-vue-next'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
 
@@ -65,15 +66,15 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
       </nav>
       <div class="title-row">
         <button v-if="!trashMode&&canGoUp" class="up-button" title="返回上一级" aria-label="返回上一级" @click="$emit('up')">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6m0 0-5 5m5-5 5 5"/></svg>
+          <ArrowUp aria-hidden="true" />
         </button>
         <h1 :title="trashMode?'回收站':current?.name || '我的文件'">{{ trashMode?'回收站':current?.name || '我的文件' }}</h1>
         <div class="view-switch" role="group" aria-label="文件显示方式">
           <button :class="{active:viewMode==='list'}" title="列表视图" aria-label="列表视图" @click="$emit('setView','list')">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>
+            <List aria-hidden="true" />
           </button>
           <button :class="{active:viewMode==='grid'}" title="大图标视图" aria-label="大图标视图" @click="$emit('setView','grid')">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>
+            <Grid2X2 aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -87,22 +88,22 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
     <div v-if="trashMode" class="actions"><button class="secondary" @click="$emit('leaveTrash')">返回我的文件</button><button class="trash-empty-action" :disabled="!itemCount" @click="$emit('emptyTrash')">清空回收站</button></div>
     <div v-else class="actions">
       <div class="desktop-create-actions">
-        <button class="secondary" @click="$emit('newDocument')">＋ 新建文档</button>
-        <button class="secondary" @click="$emit('createFolder')">＋ 新建文件夹</button>
+        <button class="secondary" @click="$emit('newDocument')"><FilePlus2 aria-hidden="true" />新建文档</button>
+        <button class="secondary" @click="$emit('createFolder')"><FolderPlus aria-hidden="true" />新建文件夹</button>
       </div>
       <details ref="createMenu" class="create-menu">
-        <summary class="secondary">＋ 新建</summary>
+        <summary class="secondary"><FilePlus2 aria-hidden="true" />新建<ChevronDown class="menu-chevron" aria-hidden="true" /></summary>
         <div class="create-menu-popover">
-          <button @click="runCreate('document')"><span>▤</span><div><b>新建文档</b><small>Markdown 或纯文本</small></div></button>
-          <button @click="runCreate('folder')"><span>▰</span><div><b>新建文件夹</b><small>整理当前目录</small></div></button>
+          <button @click="runCreate('document')"><span><FilePlus2 /></span><div><b>新建文档</b><small>Markdown 或纯文本</small></div></button>
+          <button @click="runCreate('folder')"><span><FolderPlus /></span><div><b>新建文件夹</b><small>整理当前目录</small></div></button>
         </div>
       </details>
       <details ref="uploadMenu" class="upload-menu">
-        <summary class="primary upload-action">上传 <svg class="upload-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>
+        <summary class="primary upload-action"><Upload aria-hidden="true" />上传<ChevronDown class="upload-chevron" aria-hidden="true" /></summary>
         <div class="upload-menu-popover">
-          <button @click="runUpload('files')"><span>↥</span><div><b>上传文件</b><small>可一次选择多个文件</small></div></button>
-          <button @click="runUpload('folder')"><span>▰</span><div><b>上传文件夹</b><small>保留完整目录结构</small></div></button>
-          <button @click="runUpload('localMerge')"><span>♬</span><div><b>从本地目录合并</b><small>WAV + VTT + 封面，输出 ALAC M4A</small></div></button>
+          <button @click="runUpload('files')"><span><Upload /></span><div><b>上传文件</b><small>可一次选择多个文件</small></div></button>
+          <button @click="runUpload('folder')"><span><FolderUp /></span><div><b>上传文件夹</b><small>保留完整目录结构</small></div></button>
+          <button @click="runUpload('localMerge')"><span><Music2 /></span><div><b>从本地目录合并</b><small>WAV + VTT + 封面，输出 ALAC M4A</small></div></button>
         </div>
       </details>
     </div>

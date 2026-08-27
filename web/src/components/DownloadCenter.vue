@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Download, Pause, Play, Plus, Trash2, X } from 'lucide-vue-next'
 import { api } from '../api'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
@@ -104,12 +105,12 @@ watch(()=>props.jobs.length,(length,previous)=>{if(!length&&previous&&center.val
       <span v-if="activeJobs.length" class="download-count">{{ activeJobs.length }}</span>
     </summary>
     <section class="download-popover">
-      <header><div><strong>离线下载</strong><small>{{ activeJobs.length?`${activeJobs.length} 项后台运行`:'磁力、BT 与直链' }}</small></div><button class="add" @click.prevent="openCreate">＋ 新建</button></header>
-      <div v-if="!jobs.length" class="download-empty"><span>⌄</span><p>还没有离线下载</p><button @click="openCreate">添加磁力链接</button></div>
+      <header><div><strong>离线下载</strong><small>{{ activeJobs.length?`${activeJobs.length} 项后台运行`:'磁力、BT 与直链' }}</small></div><button class="add" @click.prevent="openCreate"><Plus />新建</button></header>
+      <div v-if="!jobs.length" class="download-empty"><Download aria-hidden="true" /><p>还没有离线下载</p><button @click="openCreate">添加磁力链接</button></div>
       <div v-else class="download-list">
         <article v-for="job in jobs" :key="job.id">
-          <button class="task-main" @click="job.status==='waiting'&&openJob(job)"><span class="task-icon">↓</span><span class="task-copy"><strong :title="job.name">{{ job.name||'获取种子元数据…' }}</strong><small>{{ job.selected_size||job.completed_size?`${formatSize(job.selected_size||job.completed_size)} · `:'' }}{{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${progress(job)}%`}"></b></i></span><em>{{ job.selected_size||job.status==='done'?`${progress(job)}%`:'—' }}</em></button>
-          <span class="task-actions"><button v-if="job.status==='downloading'||job.status==='queued'" title="暂停" @click="taskAction(job,'pause')">Ⅱ</button><button v-else-if="job.status==='paused'" title="继续" @click="taskAction(job,'resume')">▶</button><button v-else-if="job.status==='waiting'" title="选择文件" @click="openJob(job)">选择</button><button title="删除任务" @click="removeTask(job)">×</button></span>
+          <button class="task-main" @click="job.status==='waiting'&&openJob(job)"><span class="task-icon"><Download /></span><span class="task-copy"><strong :title="job.name">{{ job.name||'获取种子元数据…' }}</strong><small>{{ job.selected_size||job.completed_size?`${formatSize(job.selected_size||job.completed_size)} · `:'' }}{{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${progress(job)}%`}"></b></i></span><em>{{ job.selected_size||job.status==='done'?`${progress(job)}%`:'—' }}</em></button>
+          <span class="task-actions"><button v-if="job.status==='downloading'||job.status==='queued'" title="暂停" aria-label="暂停" @click="taskAction(job,'pause')"><Pause /></button><button v-else-if="job.status==='paused'" title="继续" aria-label="继续" @click="taskAction(job,'resume')"><Play /></button><button v-else-if="job.status==='waiting'" title="选择文件" @click="openJob(job)">选择</button><button title="删除任务" aria-label="删除任务" @click="removeTask(job)"><Trash2 /></button></span>
         </article>
       </div>
     </section>
@@ -118,7 +119,7 @@ watch(()=>props.jobs.length,(length,previous)=>{if(!length&&previous&&center.val
   <Teleport to="body">
     <div v-if="modalOpen" class="download-backdrop" @mousedown.self="closeModal">
       <section class="download-dialog" role="dialog" aria-modal="true" aria-label="新建离线下载">
-        <header><div><strong>{{ detail?'选择下载文件':'新建离线下载' }}</strong><small>保存到网盘目录 · 完成后不会做种</small></div><button aria-label="关闭" @click="closeModal">×</button></header>
+        <header><div><strong>{{ detail?'选择下载文件':'新建离线下载' }}</strong><small>保存到网盘目录 · 完成后不会做种</small></div><button aria-label="关闭" @click="closeModal"><X /></button></header>
         <template v-if="!detail">
           <div class="source-tabs"><button :class="{active:mode==='magnet'}" @click="mode='magnet'">磁力链接</button><button :class="{active:mode==='torrent'}" @click="mode='torrent'">.torrent 文件</button><button :class="{active:mode==='url'}" @click="mode='url'">直链下载</button></div>
           <label v-if="mode==='magnet'" class="source-field"><span>磁力链接</span><textarea v-model="magnet" rows="5" maxlength="16384" placeholder="magnet:?xt=urn:btih:…"></textarea></label>

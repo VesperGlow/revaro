@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Archive, X } from 'lucide-vue-next'
 import type { ArchiveJob } from '../types'
 
 const props=defineProps<{jobs:ArchiveJob[]}>()
@@ -38,12 +39,12 @@ onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside
       <header><div><strong>解压中心</strong><small>{{ activeJobs.length?`${activeJobs.length} 项后台运行`:'最近任务' }}</small></div><button v-if="clearable" @click.prevent="$emit('clear')">清除已完成</button></header>
       <div class="archive-list">
         <article v-for="job in jobs" :key="job.id">
-          <span class="task-icon">▦</span><div><strong :title="job.name">{{ job.name }}</strong><small :class="{failed:job.status==='failed'||job.status==='waiting_password'}" :title="detailText(job)">{{ detailText(job) }}</small><button v-if="job.status==='waiting_password'" class="password-button" @click="openPassword(job)">输入密码</button><i><b :class="job.status" :style="{width:`${job.progress}%`}"></b></i></div><em>{{ job.status==='waiting_password'?'待密码':`${job.progress}%` }}</em>
+          <span class="task-icon"><Archive aria-hidden="true" /></span><div><strong :title="job.name">{{ job.name }}</strong><small :class="{failed:job.status==='failed'||job.status==='waiting_password'}" :title="detailText(job)">{{ detailText(job) }}</small><button v-if="job.status==='waiting_password'" class="password-button" @click="openPassword(job)">输入密码</button><i><b :class="job.status" :style="{width:`${job.progress}%`}"></b></i></div><em>{{ job.status==='waiting_password'?'待密码':`${job.progress}%` }}</em>
         </article>
       </div>
     </section>
   </details>
-  <Teleport to="body"><div v-if="passwordJob" class="archive-password-backdrop" @click.self="closePassword"><form class="archive-password-dialog" @submit.prevent="submitPassword"><header><div><small>ENCRYPTED ARCHIVE</small><strong>输入解压密码</strong></div><button type="button" aria-label="关闭" @click="closePassword">×</button></header><p :title="passwordJob.name">{{ passwordJob.name }}</p><label>密码<input ref="passwordInput" v-model="passwordValue" type="password" autocomplete="off" maxlength="1024" placeholder="仅用于本次解压任务" required></label><small>密码只会用于当前任务，不会保存。如果密码错误，可以重新输入。</small><footer><button type="button" @click="closePassword">取消</button><button class="confirm" :disabled="!passwordValue">继续解压</button></footer></form></div></Teleport>
+  <Teleport to="body"><div v-if="passwordJob" class="archive-password-backdrop" @click.self="closePassword"><form class="archive-password-dialog" @submit.prevent="submitPassword"><header><div><small>ENCRYPTED ARCHIVE</small><strong>输入解压密码</strong></div><button type="button" aria-label="关闭" @click="closePassword"><X /></button></header><p :title="passwordJob.name">{{ passwordJob.name }}</p><label>密码<input ref="passwordInput" v-model="passwordValue" type="password" autocomplete="off" maxlength="1024" placeholder="仅用于本次解压任务" required></label><small>密码只会用于当前任务，不会保存。如果密码错误，可以重新输入。</small><footer><button type="button" @click="closePassword">取消</button><button class="confirm" :disabled="!passwordValue">继续解压</button></footer></form></div></Teleport>
 </template>
 
 <style scoped>

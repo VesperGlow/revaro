@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { AudioLines, Music2, X } from 'lucide-vue-next'
 import type { AudioMergeResponse } from '../types'
 
 const props=defineProps<{jobs:AudioMergeResponse[]}>()
@@ -28,11 +29,11 @@ onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside
     </summary>
     <section class="merge-popover">
       <header><div><strong>音频合并</strong><small>{{ activeJobs.length?`${activeJobs.length} 项后台运行`:'最近任务' }}</small></div><button v-if="clearable" @click.prevent="$emit('clear')">清除已完成</button></header>
-      <div v-if="!jobs.length" class="merge-empty"><span>♬</span><p>还没有合并任务</p></div>
+      <div v-if="!jobs.length" class="merge-empty"><Music2 aria-hidden="true" /><p>还没有合并任务</p></div>
       <div v-else class="merge-list">
         <article v-for="job in jobs" :key="job.id">
-          <span class="task-icon">≋</span><div><strong :title="job.output_name">{{ job.output_name }}</strong><small>{{ job.input_count }} 节 · {{ job.output_format.toUpperCase() }} · {{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${job.progress}%`}"></b></i></div><em>{{ job.progress }}%</em>
-          <button v-if="!terminal(job.status)" title="取消合并" aria-label="取消合并" @click="$emit('cancel',job)">×</button>
+          <span class="task-icon"><AudioLines aria-hidden="true" /></span><div><strong :title="job.output_name">{{ job.output_name }}</strong><small>{{ job.input_count }} 节 · {{ job.output_format.toUpperCase() }} · {{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${job.progress}%`}"></b></i></div><em>{{ job.progress }}%</em>
+          <button v-if="!terminal(job.status)" title="取消合并" aria-label="取消合并" @click="$emit('cancel',job)"><X /></button>
         </article>
       </div>
     </section>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
+import { CircleAlert, Trash2 } from 'lucide-vue-next'
 
 const props=defineProps<{
   title:string
@@ -23,8 +24,8 @@ function submit(){if(!props.input||props.value.trim())emit('confirm')}
   <div class="dialog-backdrop" role="presentation" @click.self="$emit('cancel')">
     <section class="app-dialog" role="dialog" aria-modal="true" :aria-labelledby="'dialog-title'" @keydown.esc="$emit('cancel')">
       <div class="dialog-icon" :class="tone">
-        <svg v-if="tone==='danger'" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>
-        <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5m0 3h.01"/><circle cx="12" cy="12" r="9"/></svg>
+        <Trash2 v-if="tone==='danger'" aria-hidden="true" />
+        <CircleAlert v-else aria-hidden="true" />
       </div>
       <div class="dialog-copy"><h2 id="dialog-title">{{ title }}</h2><p>{{ message }}</p></div>
       <input v-if="input" ref="inputElement" :value="value" :placeholder="placeholder" maxlength="1024" @input="$emit('update:value',($event.target as HTMLInputElement).value)" @keyup.enter="submit">
