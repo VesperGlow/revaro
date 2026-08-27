@@ -64,14 +64,13 @@ const localMerge = reactive({
   coverPreview:'',
   name:'',
   error:'',
-  job:null as LocalMergeCreateResponse|null,
-  chunkSize:0,
-  uploaded:0,
   total:0,
-  fileDone:{} as Record<string,number>,
   busy:false,
-  cancelled:false,
 })
+// 本地素材上传的全局会话：一旦用户确认合并，上传就脱离弹窗在后台继续，
+// 进度通过服务端任务快照在音频合并任务中心展示。只有显式取消才会中止。
+interface LocalUploadSession { id:string; picks:LocalMergePick[]; cancelled:boolean }
+const localUploads = new Map<string,LocalUploadSession>()
 const audioMergeJobs = ref<AudioMergeResponse[]>([])
 const downloadJobs = ref<DownloadJob[]>([])
 const archiveJobs = ref<ArchiveJob[]>([])
@@ -554,6 +553,8 @@ async function refreshAudioMergeJobs(){
 }
 async function cancelAudioMerge(job:AudioMergeResponse){
   if(audioMergeTerminal(job.status))return
+  const session=localUploads.get(job.id)
+  if(session)session.cancelled=true
   try{await api(`/api/audio-merges/${job.id}`,{method:'DELETE'});job.status='cancelling';job.message='正在取消合并';scheduleAudioMergePoll(300)}catch(e){notify((e as Error).message)}
 }
 async function clearAudioMerges(){
@@ -631,7 +632,7 @@ function applyLocalMergeEntries(entries:LocalMergeEntryFile[],dirName:string){
   localMerge.cover=selectLocalCover(covers.map(pick=>pick.name))
   localMerge.coverPreview=localMerge.cover?picks.find(pick=>pick.name===localMerge.cover)?.preview||'':''
   localMerge.name=`${dirName||`${audios[0].name.replace(/\.[^.]+$/,'')} 等`}.m4a`
-  localMerge.error='';localMerge.job=null;localMerge.chunkSize=0;localMerge.uploaded=0;localMerge.total=total;localMerge.fileDone={};localMerge.busy=false;localMerge.cancelled=false
+  localMerge.error='';localMerge.total=total;localMerge.busy=false
   audioMerge.local=true;audioMerge.error=''
   openModal('audioMerge')
 }
@@ -671,56 +672,68 @@ function setAudioMergeSource(source:'revaro'|'local'){
   if(suggested)selectDirectoryCover(suggested)
   audioMerge.error=''
 }
+function resetLocalMergeState(){
+  for(const pick of localMerge.picks)if(pick.preview)URL.revokeObjectURL(pick.preview)
+  localMerge.picks=[];localMerge.dirName='';localMerge.order=[];localMerge.cover='';localMerge.coverPreview='';localMerge.name='';localMerge.error='';localMerge.total=0;localMerge.busy=false
+}
 async function startLocalMerge(){
   localMerge.error=''
   let name=localMerge.name.trim()
   if(!name){localMerge.error='请输入输出文件名';return}
   if(!/\.m4a$/i.test(name))name+='.m4a'
   localMerge.name=name
-  const body={parent_id:currentId.value,name,files:localMerge.picks.map(pick=>({name:pick.name,size:pick.size})),order:localMerge.order,cover:localMerge.cover||null}
-  localMerge.busy=true;localMerge.cancelled=false
+  const picks=localMerge.picks
+  const body={parent_id:currentId.value,name,files:picks.map(pick=>({name:pick.name,size:pick.size})),order:[...localMerge.order],cover:localMerge.cover||null}
+  localMerge.busy=true
   try{
     const created=await api<LocalMergeCreateResponse>('/api/audio-merges/local',{method:'POST',body:JSON.stringify(body)})
-    if(localMerge.cancelled){await cancelLocalMergeRemote(created.id);return}
-    localMerge.job=created
-    localMerge.chunkSize=created.chunk_size
-    localMerge.total=created.files.reduce((sum,file)=>sum+file.size,0)
-    await uploadLocalMergeChunks(created)
-    if(localMerge.cancelled){await cancelLocalMergeRemote(created.id);return}
-    const snapshot=await api<AudioMergeResponse>(`/api/audio-merges/local/${created.id}/complete`,{method:'POST'})
-    audioMergeJobs.value=[snapshot,...audioMergeJobs.value.filter(job=>job.id!==snapshot.id)]
-    closeModal();notify(`「${snapshot.output_name}」已进入后台合并`,'success');scheduleAudioMergePoll(350)
+    // 任务立即进入全局任务中心；关闭弹窗不影响后续上传与合并。
+    audioMergeJobs.value=[created,...audioMergeJobs.value.filter(job=>job.id!==created.id)]
+    const session:LocalUploadSession={id:created.id,picks,cancelled:false}
+    localUploads.set(created.id,session)
+    resetLocalMergeState()
+    closeModal()
+    notify(`「${created.output_name}」已开始上传素材`,'success')
+    scheduleAudioMergePoll(350)
+    void uploadLocalMergeChunks(created,session)
   }catch(e){
-    if(localMerge.cancelled){if(localMerge.job)await cancelLocalMergeRemote(localMerge.job.id);return}
     localMerge.error=(e as Error).message
-  }finally{
     localMerge.busy=false
   }
 }
-async function uploadLocalMergeChunks(created:LocalMergeCreateResponse){
-  localMerge.fileDone={}
-  const doneByFile=new Array(created.files.length).fill(0)
+async function uploadLocalMergeChunks(created:LocalMergeCreateResponse,session:LocalUploadSession){
   let cursor=0
   const worker=async()=>{
-    while(!localMerge.cancelled){
+    while(!session.cancelled){
       const fileIndex=cursor++
       if(fileIndex>=created.files.length)return
       const file=created.files[fileIndex]
-      const pick=localMerge.picks.find(candidate=>candidate.name===file.name)
+      const pick=session.picks.find(candidate=>candidate.name===file.name)
       if(!pick)throw new Error(`找不到素材「${file.name}」`)
       for(let chunk=0;chunk<file.chunk_count;chunk++){
-        if(localMerge.cancelled)return
+        if(session.cancelled)return
         const start=chunk*created.chunk_size
         const blob=pick.file.slice(start,Math.min(pick.size,start+created.chunk_size))
         await putLocalChunkWithRetry(created.id,fileIndex,chunk,blob)
-        doneByFile[fileIndex]+=blob.size
-        localMerge.fileDone[file.name]=doneByFile[fileIndex]
-        localMerge.uploaded=doneByFile.reduce((sum,bytes)=>sum+bytes,0)
       }
     }
   }
-  const workers=Array.from({length:Math.min(LOCAL_MERGE_CONCURRENCY,created.files.length)},worker)
-  await Promise.all(workers)
+  try{
+    const workers=Array.from({length:Math.min(LOCAL_MERGE_CONCURRENCY,created.files.length)},worker)
+    await Promise.all(workers)
+    if(session.cancelled){await cancelLocalMergeRemote(created.id);return}
+    const snapshot=await api<AudioMergeResponse>(`/api/audio-merges/local/${created.id}/complete`,{method:'POST'})
+    audioMergeJobs.value=[snapshot,...audioMergeJobs.value.filter(job=>job.id!==snapshot.id)]
+    notify(`「${snapshot.output_name}」素材上传完成，开始后台合并`,'success')
+    scheduleAudioMergePoll(350)
+  }catch(e){
+    if(session.cancelled){await cancelLocalMergeRemote(created.id);return}
+    await cancelLocalMergeRemote(created.id)
+    audioMergeJobs.value=audioMergeJobs.value.filter(job=>job.id!==created.id)
+    notify(`「${created.output_name}」素材上传失败：${(e as Error).message}`)
+  }finally{
+    localUploads.delete(created.id)
+  }
 }
 async function putLocalChunkWithRetry(jobId:string,fileIndex:number,chunk:number,blob:Blob){
   let lastError:Error|null=null
@@ -743,36 +756,9 @@ async function putLocalChunkWithRetry(jobId:string,fileIndex:number,chunk:number
 async function cancelLocalMergeRemote(jobId:string){
   try{await api(`/api/audio-merges/${jobId}`,{method:'DELETE'})}catch{/* 服务端清理失败时稍后由过期清理兜底 */}
 }
-async function cancelLocalMergeUpload(){
-  if(localMerge.cancelled)return
-  localMerge.cancelled=true;localMerge.busy=true;localMerge.error='正在取消上传…'
-  if(localMerge.job)await cancelLocalMergeRemote(localMerge.job.id)
-  localMerge.job=null
-  closeModal()
-  localMerge.busy=false;localMerge.error=''
-  notify('本地合并已取消')
-}
-async function retryLocalMergeUpload(){
-  if(!localMerge.job)return
-  localMerge.error='';localMerge.cancelled=false;localMerge.busy=true
-  try{
-    await uploadLocalMergeChunks(localMerge.job)
-    if(localMerge.cancelled){await cancelLocalMergeRemote(localMerge.job.id);return}
-    const snapshot=await api<AudioMergeResponse>(`/api/audio-merges/local/${localMerge.job.id}/complete`,{method:'POST'})
-    audioMergeJobs.value=[snapshot,...audioMergeJobs.value.filter(job=>job.id!==snapshot.id)]
-    localMerge.busy=false
-    closeModal();notify(`「${snapshot.output_name}」已进入后台合并`,'success');scheduleAudioMergePoll(350)
-  }catch(e){
-    if(!localMerge.cancelled){localMerge.error=(e as Error).message;localMerge.busy=false}
-  }
-}
-function closeAudioMergeModal(){
-  if(audioMerge.local&&localMerge.job){void cancelLocalMergeUpload();return}
-  closeModal()
-}
+function closeAudioMergeModal(){closeModal()}
 function localFileByName(name:string){return localMerge.picks.find(pick=>pick.name===name)}
 const localCoverCandidates=computed(()=>localMerge.picks.filter(pick=>pick.kind==='cover'))
-const localUploadPercent=computed(()=>localMerge.total>0?Math.min(100,Math.round(localMerge.uploaded/localMerge.total*100)):0)
 
 function downloadTerminal(status:DownloadJob['status']){return status==='done'||status==='failed'||status==='cancelled'}
 function scheduleDownloadPoll(delay=1000){
@@ -1093,7 +1079,6 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
                     <strong :title="name">{{ name }}</strong><small>{{ formatSize(localFileByName(name)?.size||0) }}</small>
                     <span v-if="localSubtitleFor(name)" class="merge-subtitle-match" :title="localSubtitleFor(name)"><i>CC</i>将打包 · {{ localSubtitleFor(name) }}</span>
                     <span v-else class="merge-subtitle-match missing"><i>CC</i>未找到同名 .vtt</span>
-                    <span v-if="localMerge.job&&(localMerge.fileDone[name]||0)<(localFileByName(name)?.size||0)" class="local-file-progress"><i><b :style="{width:localFileByName(name)?Math.round((localMerge.fileDone[name]||0)/localFileByName(name)!.size*100)+'%':'0%'}"></b></i>{{ localFileByName(name)?Math.round((localMerge.fileDone[name]||0)/localFileByName(name)!.size*100):0 }}%</span>
                   </div>
                   <span class="merge-order-actions"><button :disabled="index===0||localMerge.busy" title="上移" aria-label="上移" @click="moveLocalMergeInput(index,-1)">↑</button><button :disabled="index===localMerge.order.length-1||localMerge.busy" title="下移" aria-label="下移" @click="moveLocalMergeInput(index,1)">↓</button></span>
                 </article>
@@ -1107,17 +1092,11 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
               <p v-if="localMerge.coverPreview" class="local-cover-preview"><img :src="localMerge.coverPreview" alt="已选封面预览"><button v-if="localMerge.cover" type="button" class="merge-cover-remove" :disabled="localMerge.busy" @click="clearLocalCover">不使用封面</button></p>
               <p v-else class="local-cover-none">未选择封面{{ localCoverCandidates.length?`（${localCoverCandidates.length} 张图片均未命名为 cover / folder / front / album 等）`:'' }}</p>
             </div>
-            <div v-if="localMerge.job" class="local-upload-status">
-              <div><strong>{{ localMerge.error?'上传中断':'正在上传素材' }}</strong><small>{{ formatSize(localMerge.uploaded) }} / {{ formatSize(localMerge.total) }} · {{ localUploadPercent }}%</small></div>
-              <i><b :style="{width:`${localUploadPercent}%`}"></b></i>
-              <p v-if="localMerge.error" class="form-error">{{ localMerge.error }}</p>
-            </div>
           </div>
-          <p v-if="localMerge.error&&!localMerge.job" class="form-error merge-error">{{ localMerge.error }}</p>
+          <p v-if="localMerge.error" class="form-error merge-error">{{ localMerge.error }}</p>
           <footer>
-            <button class="secondary" @click="closeAudioMergeModal">{{ localMerge.busy?'取消上传':'取消' }}</button>
-            <button v-if="localMerge.job&&localMerge.error" class="primary" @click="retryLocalMergeUpload">重试上传</button>
-            <button v-else class="primary" :disabled="localMerge.busy||!localMerge.picks.length" @click="startLocalMerge">{{ localMerge.busy?`正在上传 ${localUploadPercent}%…`:'上传并合并' }}</button>
+            <button class="secondary" @click="closeModal">取消</button>
+            <button class="primary" :disabled="localMerge.busy||!localMerge.picks.length" @click="startLocalMerge">{{ localMerge.busy?'正在创建…':'上传并合并' }}</button>
           </footer>
         </template>
       </section>
