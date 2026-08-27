@@ -12,7 +12,7 @@ import FileTable from './components/FileTable.vue'
 import MediaPreview from './components/MediaPreview.vue'
 import { isArchive, isAudio, isBook, isEditable, isImage, isMedia, isVideo, thumbSRC } from './fileTypes'
 import { formatDate, formatSize } from './format'
-import { localMergeAudioExts, localMergeCoverExts, localNaturalLess, localSubtitlePriority, selectLocalCover } from './localMerge'
+import { classifyLocalMergeFile, localNaturalLess, localSubtitlePriority, localMergeTopLevelName, selectLocalCover } from './localMerge'
 import ReaderView from './Reader.vue'
 import type { ArchiveJob, AudioMergeFormat, AudioMergeResponse, DownloadJob, FolderOption, LocalMergeCreateResponse, LocalMergePick, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
 
@@ -565,8 +565,9 @@ async function clearAudioMerges(){
 // ── 从本地目录合并：WAV + VTT + 封面 → 无损 ALAC M4A ────────────────────────
 const LOCAL_MERGE_CONCURRENCY = 3
 const LOCAL_MERGE_CHUNK_RETRIES = 3
-function showLocalAudioMerge(){localMergeInput.value?.click()}
-function chooseLocalMergeDir(){localMergeInput.value?.click()}
+interface LocalMergeEntryFile { name:string; size:number; file:File }
+function showLocalAudioMerge(){void pickLocalMergeDir()}
+function chooseLocalMergeDir(){void pickLocalMergeDir()}
 function localSubtitleFor(audioName:string){
   return localMerge.picks
     .filter(pick=>pick.kind==='subtitle')
@@ -574,24 +575,48 @@ function localSubtitleFor(audioName:string){
     .filter(match=>match.priority>=0)
     .sort((a,b)=>a.priority-b.priority)[0]?.name
 }
-function onLocalMergeDir(list:FileList){
-  const files=Array.from(list)
+// pickLocalMergeDir prefers the File System Access API so the chosen folder's
+// audio/vtt/cover files are enumerated and read directly, instead of entering
+// the browser's webkitdirectory "Select Folder to Upload" mode. Browsers
+// without showDirectoryPicker (e.g. Firefox) fall back to that input, whose
+// paths are then flattened by onLocalMergeDir.
+async function pickLocalMergeDir(){
+  if(typeof window.showDirectoryPicker === 'function'){
+    try{
+      const handle=await window.showDirectoryPicker({ mode:'read' })
+      const entries:LocalMergeEntryFile[]=[]
+      for await (const entry of handle.entries()){
+        if(entry[1].kind!=='file')continue
+        const fileHandle=entry[1] as FileSystemFileHandle
+        const file=await fileHandle.getFile()
+        entries.push({ name:entry[0], size:file.size, file })
+      }
+      if(!entries.length){notify('所选目录里没有文件');return}
+      applyLocalMergeEntries(entries, handle.name)
+    }catch(e){
+      if((e as DOMException)?.name==='AbortError')return
+      notify((e as Error).message)
+    }
+    return
+  }
+  localMergeInput.value?.click()
+}
+// applyLocalMergeEntries is the single directory-scan → merge pipeline
+// hand-off: classify the picked files, validate them and populate the shared
+// local merge state before opening the audio merge modal. Everything after
+// this point (order, subtitles, cover, ALAC/M4A output, upload and task
+// status) reuses the existing audio merge flow.
+function applyLocalMergeEntries(entries:LocalMergeEntryFile[],dirName:string){
   const picks:LocalMergePick[]=[]
-  for(const file of files){
-    const relative=(file.webkitRelativePath||file.name).replaceAll('\\','/')
-    if(relative.includes('/'))continue // 只处理目录顶层文件
-    const ext=file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
-    let kind:'audio'|'subtitle'|'cover'|null=null
-    if(localMergeAudioExts.has(ext))kind='audio'
-    else if(ext==='.vtt')kind='subtitle'
-    else if(localMergeCoverExts.has(ext))kind='cover'
+  for(const entry of entries){
+    const kind=classifyLocalMergeFile(entry.name)
     if(!kind)continue
-    picks.push({file,name:file.name,size:file.size,kind,preview:kind==='cover'?URL.createObjectURL(file):undefined})
+    picks.push({file:entry.file,name:entry.name,size:entry.size,kind,preview:kind==='cover'?URL.createObjectURL(entry.file):undefined})
   }
   const audios=picks.filter(pick=>pick.kind==='audio')
   const subtitles=picks.filter(pick=>pick.kind==='subtitle')
   const covers=picks.filter(pick=>pick.kind==='cover')
-  if(audios.length<2){notify(`至少需要 2 个 WAV 音频文件（当前 ${audios.length} 个）`);return}
+  if(audios.length<2){notify(`至少需要 2 个音频文件（当前 ${audios.length} 个）`);return}
   if(audios.length>256){notify('音频文件不能超过 256 个');return}
   if(subtitles.length>512||covers.length>64){notify('字幕或封面文件过多');return}
   if(audios.some(audio=>audio.size>64*1024*1024*1024)){notify('单个音频文件不能超过 64 GiB');return}
@@ -600,16 +625,31 @@ function onLocalMergeDir(list:FileList){
   const total=picks.reduce((sum,pick)=>sum+pick.size,0)
   if(total>128*1024*1024*1024){notify('所选素材合计超过 128 GiB');return}
   for(const pick of localMerge.picks)if(pick.preview)URL.revokeObjectURL(pick.preview)
-  const folderName=files[0]?.webkitRelativePath.split('/')[0]||''
   localMerge.picks=picks
-  localMerge.dirName=folderName
+  localMerge.dirName=dirName
   localMerge.order=[...audios.map(pick=>pick.name)].sort((a,b)=>localNaturalLess(a,b)?-1:1)
   localMerge.cover=selectLocalCover(covers.map(pick=>pick.name))
   localMerge.coverPreview=localMerge.cover?picks.find(pick=>pick.name===localMerge.cover)?.preview||'':''
-  localMerge.name=`${folderName||`${audios[0].name.replace(/\.[^.]+$/,'')} 等`}.m4a`
+  localMerge.name=`${dirName||`${audios[0].name.replace(/\.[^.]+$/,'')} 等`}.m4a`
   localMerge.error='';localMerge.job=null;localMerge.chunkSize=0;localMerge.uploaded=0;localMerge.total=total;localMerge.fileDone={};localMerge.busy=false;localMerge.cancelled=false
   audioMerge.local=true;audioMerge.error=''
   openModal('audioMerge')
+}
+// onLocalMergeDir handles the webkitdirectory fallback input. Its relative
+// paths include the picked folder as the first segment, so top-level files
+// are identified with localMergeTopLevelName instead of a naive "/" check.
+function onLocalMergeDir(list:FileList){
+  const files=Array.from(list)
+  if(!files.length)return
+  const dirName=(files[0].webkitRelativePath||'').replaceAll('\\','/').split('/')[0]||''
+  const entries:LocalMergeEntryFile[]=[]
+  for(const file of files){
+    const relative=(file.webkitRelativePath||file.name).replaceAll('\\','/')
+    const name=localMergeTopLevelName(relative)
+    if(!name)continue
+    entries.push({name,size:file.size,file})
+  }
+  applyLocalMergeEntries(entries,dirName)
 }
 function selectLocalCoverFile(name:string){localMerge.cover=name;localMerge.coverPreview=localMerge.picks.find(pick=>pick.name===name)?.preview||'';localMerge.error=''}
 function clearLocalCover(){localMerge.cover='';localMerge.coverPreview='';localMerge.error=''}

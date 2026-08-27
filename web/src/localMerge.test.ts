@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { localCoverScore, localMergeAudioExts, localMergeCoverExts, localNaturalLess, localSubtitlePriority, selectLocalCover } from './localMerge'
+import { classifyLocalMergeFile, localCoverScore, localMergeAudioExts, localMergeCoverExts, localMergeTopLevelName, localNaturalLess, localSubtitlePriority, selectLocalCover } from './localMerge'
 
 describe('local merge natural sort', () => {
   it('orders numeric runs by value', () => {
@@ -43,6 +43,45 @@ describe('local merge cover selection', () => {
   })
   it('handles an empty folder', () => {
     expect(selectLocalCover([])).toBe('')
+  })
+})
+
+describe('local merge directory scan', () => {
+  it('classifies audio, subtitle and cover files by extension', () => {
+    expect(classifyLocalMergeFile('track1.wav')).toBe('audio')
+    expect(classifyLocalMergeFile('track1.mp3')).toBe('audio')
+    expect(classifyLocalMergeFile('track1.flac')).toBe('audio')
+    expect(classifyLocalMergeFile('track1.m4a')).toBe('audio')
+    expect(classifyLocalMergeFile('track1.wav.vtt')).toBe('subtitle')
+    expect(classifyLocalMergeFile('track1.vtt')).toBe('subtitle')
+    expect(classifyLocalMergeFile('cover.jpg')).toBe('cover')
+    expect(classifyLocalMergeFile('notes.txt')).toBeNull()
+    expect(classifyLocalMergeFile('README')).toBeNull()
+  })
+  it('keeps only top-level files from a webkitdirectory relative path', () => {
+    expect(localMergeTopLevelName('Album/01.wav')).toBe('01.wav')
+    expect(localMergeTopLevelName('Album/01.wav.vtt')).toBe('01.wav.vtt')
+    expect(localMergeTopLevelName('Album/sub/02.wav')).toBeNull()
+    expect(localMergeTopLevelName('Album')).toBeNull()
+  })
+  it('recognizes audio and the matching .wav.vtt subtitles in a folder', () => {
+    const names = ['02.wav', '01.wav.vtt', '01.wav', '02.wav.vtt', 'cover.jpg', 'notes.txt']
+    const picks = names.map(name => ({ name, kind: classifyLocalMergeFile(name) }))
+    const audios = picks
+      .filter(pick => pick.kind === 'audio')
+      .sort((a, b) => (localNaturalLess(a.name, b.name) ? -1 : 1))
+    expect(audios.map(audio => audio.name)).toEqual(['01.wav', '02.wav'])
+    for (const audio of audios) {
+      const subtitle = picks
+        .filter(pick => pick.kind === 'subtitle')
+        .map(pick => ({ name: pick.name, priority: localSubtitlePriority(audio.name, pick.name) }))
+        .filter(match => match.priority >= 0)
+        .sort((a, b) => a.priority - b.priority)[0]
+      expect(subtitle?.name).toBe(`${audio.name}.vtt`)
+    }
+    const cover = picks.filter(pick => pick.kind === 'cover').map(pick => pick.name)
+    expect(cover).toEqual(['cover.jpg'])
+    expect(selectLocalCover(cover)).toBe('cover.jpg')
   })
 })
 

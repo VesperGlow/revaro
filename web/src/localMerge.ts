@@ -4,6 +4,32 @@ export const localMergeAudioExts = new Set(['.mp3', '.wav', '.flac', '.m4a', '.a
 export const localMergeCoverExts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
 export const localMergeCoverKeywords = ['cover', 'folder', 'front', 'album', 'art', 'poster', 'thumb', '封面']
 
+export type LocalMergeKind = 'audio' | 'subtitle' | 'cover'
+
+// classifyLocalMergeFile maps a file name to the kind the local merge pipeline
+// understands, mirroring the server's classifyLocalMergeFile. Unknown files
+// return null so they can be silently skipped when scanning a directory.
+export function classifyLocalMergeFile(name: string): LocalMergeKind | null {
+  const dot = name.lastIndexOf('.')
+  if (dot < 0) return null
+  const ext = name.slice(dot).toLowerCase()
+  if (localMergeAudioExts.has(ext)) return 'audio'
+  if (ext === '.vtt') return 'subtitle'
+  if (localMergeCoverExts.has(ext)) return 'cover'
+  return null
+}
+
+// localMergeTopLevelName extracts the file name from a webkitdirectory-style
+// relative path when the file sits directly in the picked folder root. Paths
+// from <input webkitdirectory> look like "folder/file.wav" (top level) or
+// "folder/sub/file.wav" (nested), so only two path segments qualify. The
+// File System Access API enumerates root entries directly and never calls
+// this helper.
+export function localMergeTopLevelName(relativePath: string): string | null {
+  const parts = relativePath.replaceAll('\\', '/').split('/').filter(Boolean)
+  return parts.length === 2 ? parts[1] : null
+}
+
 // naturalLess orders names the way humans expect: case-insensitively, with
 // numeric runs compared by value ("track2.wav" before "track10.wav").
 export function localNaturalLess(a: string, b: string): boolean {
