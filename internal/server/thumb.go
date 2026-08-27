@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 	_ "golang.org/x/image/bmp"
 	xdraw "golang.org/x/image/draw"
@@ -125,13 +124,7 @@ func (s *Server) generateThumb(ctx context.Context, f File) ([]byte, bool) {
 			return nil, false
 		}
 		defer func() { <-imageThumbSlots }()
-		var raw []byte
-		var err error
-		if storage.IsManifestKey(f.objectKey) {
-			raw, err = s.storage.ReadFile(ctx, f.objectKey, maxThumbSource)
-		} else {
-			raw, err = s.storage.GetObject(ctx, f.objectKey, maxThumbSource)
-		}
+		raw, err := s.storage.GetObject(ctx, f.objectKey, maxThumbSource)
 		if err != nil || len(raw) == 0 {
 			return nil, false
 		}

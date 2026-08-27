@@ -1,6 +1,6 @@
 # revaro
 
-revaro 是一个轻量、单用户、自托管的私人 S3 网盘。SQLite 是逻辑文件系统和 metadata source of truth；每个逻辑文件在 S3 中对应一个 `blobs/<随机 UUID>` 不透明完整对象，真实文件名、目录和回收站位置不会进入 Object Key。浏览器通过短效 Presigned URL 直接上传、下载和 Range 预览，Go 服务只处理认证、元数据与 S3 控制面。旧版 FastCDC `manifests/ + blocks/` 数据仍可读取，并在后台逐文件合并迁移，不要求停机。服务端还内置 BT/直链离线下载、EPUB/TXT 阅读器、音视频播放器、字幕、播放进度、在线解压、缩略图和文本编辑器。
+revaro 是一个轻量、单用户、自托管的私人 S3 网盘。SQLite 是逻辑文件系统和 metadata source of truth；每个逻辑文件在 S3 中对应一个 `blobs/<随机 UUID>` 不透明完整对象，真实文件名、目录和回收站位置不会进入 Object Key。浏览器通过短效 Presigned URL 直接上传、下载和 Range 预览，Go 服务只处理认证、元数据与 S3 控制面。服务端还内置 BT/直链离线下载、EPUB/TXT 阅读器、音视频播放器、字幕、播放进度、在线解压、缩略图和文本编辑器。
 
 ## 架构
 
@@ -17,9 +17,8 @@ flowchart LR
 - 小文件使用 Presigned PUT；大文件使用 S3 Multipart。Multipart part 只是传输分片，Complete 后仍是一个完整、支持原生 HTTP Range 的 S3 object。
 - 普通下载、图片、PDF、文本以及浏览器原生支持的音视频返回短效 Presigned GET，让 Wasabi 直接承担流量、seek、取消和 backpressure。
 - 移动和重命名只更新 SQLite，不执行 `CopyObject`。
-- 旧 `manifests/ + blocks/` 只作为兼容读取格式；后台迁移原子切换 SQLite 指针，旧块随后由引用 GC 回收。
 - FFmpeg/ffprobe 对新 blob 直接使用 Presigned Wasabi URL。fMP4 MSE 只重封装，必要时只转音频；不兼容视频才进入有限 HLS 转码缓存。seek/关闭会取消旧命令与旧 Range 请求。
-- 删除会把文件或整棵目录树软删除到回收站；默认保留 30 天，永久删除后的无引用 blob、旧 manifest/block 和缩略图由 GC 回收。
+- 删除会把文件或整棵目录树软删除到回收站；默认保留 30 天，永久删除后的无引用 blob 和缩略图由 GC 回收。
 
 ## 快速开始（Docker / Podman）
 
@@ -99,7 +98,6 @@ set -a; . ./.env; set +a
 | `S3_PATH_STYLE` | `false` | MinIO 等存储通常设为 `true` |
 | `S3_PROXY_TRANSFERS` | UpCloud 为 `true`，其他为 `false` | 仅影响升级前的旧整对象；新 `blobs/` 始终直连公网 S3 |
 | `PRESIGN_EXPIRES` | `15m` | 上传、下载和预览 URL 有效期 |
-| `BLOCK_*` / `FASTCDC_*` | 见 `.env.example` | 仅供尚未迁移的旧 manifest/block 兼容 Reader 使用；新文件不使用块缓存 |
 | `MEDIA_CACHE_CAPACITY` | `2147483648` | FFmpeg HLS fallback 的 SSD 临时缓存总上限；另有 20 分钟 TTL/LRU |
 | `UPLOAD_EXPIRES` | `24h` | 未完成上传的清理期限，也决定垃圾回收宽限期下限 |
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
@@ -245,7 +243,7 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 
 文件操作区的“分享”按钮可以创建一个高熵公开链接。链接长期有效，任何持有者无需登录即可访问；重新生成链接会立即废弃旧地址，“停止分享”会撤销当前地址。文件进入回收站后分享立即不可访问，恢复后重新生效；永久删除会同时删除分享记录。
 
-公开入口对新 blob 每次签发短期 S3 URL 并返回 302；旧 FastCDC 文件在迁移完成前仍由兼容 Reader 提供 Range。分享地址是稳定的逻辑文件地址，每次访问都会记录掩码后的 token 前缀。
+公开入口对 blob 每次签发短期 S3 URL 并返回 302。分享地址是稳定的逻辑文件地址，每次访问都会记录掩码后的 token 前缀。
 
 分享 URL 等同于访问凭据，请不要发布到公开仓库、聊天群或日志中。若怀疑泄露，请立即重新生成或停止分享。
 
@@ -267,7 +265,7 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 
 当前目录中的图片、GIF 和视频会组成一个循环媒体序列。桌面端使用收敛后的左右按钮或键盘方向键切换；移动端不显示翻页按钮，直接左右滑动。图片支持滚轮、双击、按钮与双指手势缩放，放大后可拖动查看。视频使用画面内叠层控件与自动隐藏的进度、音量、字幕、全屏控制，并把持久化视频缩略图作为播放封面。浏览器原生支持的视频仍优先走 Range 直放；MKV 等容器会先由 FFmpeg 以 `-c copy` 重封装为 fragmented MP4，再通过 MSE 交给浏览器/GPU 解码，HEVC 不会在这条路径中转成 H.264。前端同时检查 MSE MIME 支持和 Media Capabilities；编码、音频或移动端硬解不兼容，以及 MSE 追加/解码失败时，会携带明确原因自动回退到原有 HLS。HLS session cache、相近起点复用与独立字幕缓存继续保留，完整进度条可跨尚未生成的区间重新起流跳转。音频文件会打开独立播放器。预览弹窗点击媒体周围的空白区域即可关闭，底部下载按钮始终下载原始文件。
 
-文件网格与列表为图片、视频和 EPUB 提供持久化缩略图。视频 FFmpeg 直接对 Wasabi blob 发 Range；旧 FastCDC 文件临时使用兼容 Reader。缩略图仍存于 `thumbs/` 前缀并由 GC 管理。
+文件网格与列表为图片、视频和 EPUB 提供持久化缩略图。视频 FFmpeg 直接对 S3 blob 发 Range。缩略图存于 `thumbs/` 前缀并由 GC 管理。
 
 所有新媒体都使用 S3 原生 Range；只有实时 remux/transcode 的 stdout/HLS 数据经过 Revaro。
 
@@ -291,11 +289,10 @@ FLAC 与 ALAC 都使用真正的无损编码；自动化测试会把同规格 WA
 
 - **Blob**：每个逻辑文件一个 `blobs/<UUID>` S3 object，key 不包含真实名称和路径。
 - **文件树**：`files` 保存 parent/name/object_key/size/MIME/ETag/软删除状态；移动、重命名、回收站和复制都不移动 S3 object。
-- **兼容层**：旧 `manifests/` 与 `blocks/` 保持只读，后台迁移逐个生成 blob 并原子切换 `files.object_key`。
 
 上传流程：创建 `pending` 文件与随机 object key；小文件直传 Presigned PUT，大文件分批获取 Multipart part URL 并并发 PUT。浏览器把 part ETag 交回服务端完成 Multipart，服务端 `HeadObject` 校验总大小后把文件切换为 `ready`。过期或取消会 AbortMultipart/DeleteObject。
 
-下载流程：新 blob 302 到 Presigned GET，由 S3 原生处理 Range、If-Range、seek 和客户端取消。旧 manifest 在迁移期间由兼容 Reader 拼接。永久删除后，GC 按 SQLite 可达性回收 blob、旧 manifest/block、缩略图与旧 `objects/`。
+下载流程：blob 302 到 Presigned GET，由 S3 原生处理 Range、If-Range、seek 和客户端取消。永久删除后，GC 按 SQLite 可达性回收 blob 与缩略图。
 
 ## 数据模型与一致性
 
@@ -308,7 +305,7 @@ FLAC 与 ALAC 都使用真正的无损编码；自动化测试会把同规格 WA
 
 SQLite 开启 `foreign_keys`、`busy_timeout` 与 WAL。文件名唯一性由数据库索引保证；目录移动通过 recursive CTE 阻止自环和移动到子孙目录。
 
-启动时及之后每 15 分钟扫描过期上传和回收站；周期 GC 默认每小时收集无引用 blob、旧 manifest/block、缩略图和遗留对象。宽限期为 `UPLOAD_EXPIRES + 1h`，进行中的 object key 已由 pending SQLite 行引用。SQLite/S3 无分布式事务，孤儿对象由宽限期 GC 兜底。
+启动时及之后每 15 分钟扫描过期上传和回收站；周期 GC 默认每小时收集无引用 blob 和缩略图。宽限期为 `UPLOAD_EXPIRES + 1h`，进行中的 object key 已由 pending SQLite 行引用。SQLite/S3 无分布式事务，孤儿对象由宽限期 GC 兜底。
 
 ## 备份与恢复
 
@@ -332,7 +329,7 @@ docker compose start revaro
 - 写请求必须携带与 `APP_BASE_URL` 匹配的 Origin（无 Origin 的写请求直接拒绝），JSON body 上限、文件名/长度校验、参数化 SQL、登录内存限速。
 - Presigned URL 短期有效；日志不记录密码、Cookie、S3 Secret 或完整 Presigned URL。
 - 完成上传不信任浏览器状态：后端校验 Multipart part 列表、调用 CompleteMultipart，再用 `HeadObject` 核对完整对象大小后才提交 SQLite；过期上传无法完成。
-- GC 以 SQLite 中 ready/pending 文件、缩略图和媒体记录的可达 key 为准；旧 manifest 无法解析时会保守中止旧 block 回收，避免误删。
+- GC 以 SQLite 中 ready/pending 文件、缩略图和媒体记录的可达 key 为准。
 - 容器以非 root UID `10001` 运行。
 
 ## 当前限制
@@ -357,4 +354,4 @@ go build ./...
 docker build -t revaro:test .
 ```
 
-前端有 ESLint 与 `vue-tsc`，后端使用 Go 单元测试；覆盖 single/multipart blob 生命周期、旧 manifest Range 兼容、迁移/GC、媒体、字幕、回收站、分享、阅读器、解压和离线下载等路径。GitHub Actions 会对每次 push / PR 重复执行这些检查。
+前端有 ESLint 与 `vue-tsc`，后端使用 Go 单元测试；覆盖 single/multipart blob 生命周期、GC、媒体、字幕、回收站、分享、阅读器、解压和离线下载等路径。GitHub Actions 会对每次 push / PR 重复执行这些检查。

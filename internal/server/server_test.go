@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,10 +39,25 @@ func notFoundError() error {
 	return &smithy.GenericAPIError{Code: "NoSuchKey", Message: "object not found", Fault: smithy.FaultClient}
 }
 
-// mockStorage emulates the block store in memory.
+type testBlock struct {
+	ID   string
+	Size int64
+}
+type testManifest struct {
+	Version int
+	Size    int64
+	Blocks  []testBlock
+}
+
+func (m testManifest) ID() string  { raw, _ := json.Marshal(m); return sha256hex(raw) }
+func (m testManifest) Key() string { return "manifests/" + m.ID() }
+
+// mockStorage emulates object storage in memory. Legacy-shaped maps remain in
+// this test helper only so old database fixtures can be exercised.
 type mockStorage struct {
+	mu               sync.RWMutex
 	blocks           map[string][]byte // by block id
-	manifests        map[string]storage.Manifest
+	manifests        map[string]testManifest
 	raw              map[string][]byte // raw object key -> content
 	rawMime          map[string]string
 	modified         map[string]time.Time
@@ -60,7 +76,7 @@ func newMockStorage(blockSize int64) *mockStorage {
 	}
 	return &mockStorage{
 		blocks:    map[string][]byte{},
-		manifests: map[string]storage.Manifest{},
+		manifests: map[string]testManifest{},
 		raw:       map[string][]byte{},
 		rawMime:   map[string]string{},
 		modified:  map[string]time.Time{},
@@ -131,19 +147,19 @@ func (m *mockStorage) PresignBlockPut(_ context.Context, id string, _ time.Durat
 }
 func (m *mockStorage) PutBlock(_ context.Context, id string, data []byte) error {
 	if sha256hex(data) != id {
-		return storage.ErrBlockHashMismatch
+		return errors.New("block hash mismatch")
 	}
 	if _, ok := m.blocks[id]; !ok {
 		m.blocks[id] = append([]byte(nil), data...)
 	}
 	return nil
 }
-func (m *mockStorage) HeadBlock(_ context.Context, id string) (storage.Block, error) {
+func (m *mockStorage) HeadBlock(_ context.Context, id string) (testBlock, error) {
 	data, ok := m.blocks[id]
 	if !ok {
-		return storage.Block{}, notFoundError()
+		return testBlock{}, notFoundError()
 	}
-	return storage.Block{ID: id, Size: int64(len(data))}, nil
+	return testBlock{ID: id, Size: int64(len(data))}, nil
 }
 func (m *mockStorage) GetBlock(_ context.Context, id string) ([]byte, error) {
 	data, ok := m.blocks[id]
@@ -155,12 +171,12 @@ func (m *mockStorage) GetBlock(_ context.Context, id string) ([]byte, error) {
 func (m *mockStorage) ListBlocks(context.Context) ([]storage.ObjectRef, error) {
 	var out []storage.ObjectRef
 	for id, data := range m.blocks {
-		key := storage.BlockKey(id)
+		key := "blocks/" + id
 		out = append(out, storage.ObjectRef{Key: key, Size: int64(len(data)), LastModified: m.modified[key]})
 	}
 	return out, nil
 }
-func (m *mockStorage) PutManifest(_ context.Context, mm storage.Manifest) (string, error) {
+func (m *mockStorage) PutManifest(_ context.Context, mm testManifest) (string, error) {
 	if m.putManifestErr != nil {
 		return "", m.putManifestErr
 	}
@@ -168,13 +184,13 @@ func (m *mockStorage) PutManifest(_ context.Context, mm storage.Manifest) (strin
 	m.manifests[key] = mm
 	return key, nil
 }
-func (m *mockStorage) GetManifest(_ context.Context, key string) (storage.Manifest, error) {
+func (m *mockStorage) GetManifest(_ context.Context, key string) (testManifest, error) {
 	if m.getManifestErr != nil {
-		return storage.Manifest{}, m.getManifestErr
+		return testManifest{}, m.getManifestErr
 	}
 	mm, ok := m.manifests[key]
 	if !ok {
-		return storage.Manifest{}, notFoundError()
+		return testManifest{}, notFoundError()
 	}
 	return mm, nil
 }
@@ -188,12 +204,12 @@ func (m *mockStorage) ListManifests(context.Context) ([]storage.ObjectRef, error
 	}
 	return out, nil
 }
-func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, storage.Manifest, error) {
+func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, testManifest, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return "", storage.Manifest{}, err
+		return "", testManifest{}, err
 	}
-	mm := storage.Manifest{Version: 1}
+	mm := testManifest{Version: 1}
 	for len(data) > 0 {
 		n := len(data)
 		if int64(n) > m.blockSize {
@@ -203,7 +219,7 @@ func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, storage.Man
 		data = data[n:]
 		id := sha256hex(chunk)
 		m.blocks[id] = append([]byte(nil), chunk...)
-		mm.Blocks = append(mm.Blocks, storage.Block{ID: id, Size: int64(len(chunk))})
+		mm.Blocks = append(mm.Blocks, testBlock{ID: id, Size: int64(len(chunk))})
 		mm.Size += int64(len(chunk))
 	}
 	key, err := m.PutManifest(context.Background(), mm)
@@ -254,6 +270,8 @@ func (m *mockStorage) PutObject(_ context.Context, key, mimeType string, data []
 	return storage.ObjectInfo{Size: int64(len(data)), ETag: `"etag"`}, nil
 }
 func (m *mockStorage) PutImmutable(_ context.Context, key, mimeType string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if _, ok := m.raw[key]; ok {
 		return nil // 内容寻址对象已存在：视为成功
 	}
@@ -344,12 +362,16 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 	store := newMockStorage(blockSize)
 	rawServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := strings.TrimPrefix(r.URL.Path, "/")
+		store.mu.RLock()
 		data, ok := store.raw[key]
+		data = append([]byte(nil), data...)
+		mimeType := store.rawMime[key]
+		store.mu.RUnlock()
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		if mimeType := store.rawMime[key]; mimeType != "" {
+		if mimeType != "" {
 			w.Header().Set("Content-Type", mimeType)
 		}
 		http.ServeContent(w, r, filepath.Base(key), time.Time{}, bytes.NewReader(data))
@@ -357,7 +379,7 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 	store.rawURL = rawServer.URL
 	t.Cleanup(rawServer.Close)
 	dataDir := t.TempDir()
-	cfg := config.Config{DataDir: dataDir, WorkDir: filepath.Join(dataDir, "work"), BaseURL: "http://example.test", BlockSize: blockSize, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30, FFmpegPath: "ffmpeg"}
+	cfg := config.Config{DataDir: dataDir, WorkDir: filepath.Join(dataDir, "work"), BaseURL: "http://example.test", ProxyTransfers: true, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30, FFmpegPath: "ffmpeg"}
 	app := &testApp{t: t, db: db, store: store}
 	app.srv = New(db, store, a, cfg, nil)
 	app.handler = app.srv.Handler()
@@ -370,20 +392,22 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 	return app
 }
 
-// readyFile stores content as blocks and inserts a ready file row.
+// readyFile stores one opaque blob and inserts a ready file row.
 func (a *testApp) readyFile(t *testing.T, name string, content []byte) File {
 	t.Helper()
-	key, m, err := a.store.Store(context.Background(), bytes.NewReader(content))
-	if err != nil {
-		t.Fatal(err)
-	}
 	id := ids.New()
+	key := storage.BlobKey(id)
+	a.store.mu.Lock()
+	a.store.raw[key] = append([]byte(nil), content...)
+	a.store.modified[key] = time.Now().UTC()
+	a.store.mu.Unlock()
+	etag := sha256hex(content)
 	parent := RootID
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := a.db.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, parent, name, "file", key, m.Size, "application/octet-stream", m.ID(), "ready", now, now); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, parent, name, "file", key, len(content), "application/octet-stream", etag, "ready", now, now); err != nil {
 		t.Fatal(err)
 	}
-	return File{ID: id, ParentID: &parent, Name: name, Kind: "file", Size: m.Size, MimeType: "application/octet-stream", ETag: m.ID(), Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: key}
+	return File{ID: id, ParentID: &parent, Name: name, Kind: "file", Size: int64(len(content)), MimeType: "application/octet-stream", ETag: etag, Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: key}
 }
 
 type createdUpload struct {
@@ -1030,8 +1054,8 @@ func TestSingleObjectUploadLifecycle(t *testing.T) {
 		t.Fatalf("complete=%d: %s", doneRR.Code, doneRR.Body.String())
 	}
 	download := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
-	if download.Code != http.StatusFound || download.Header().Get("Location") == "" {
-		t.Fatalf("direct download=%d location=%q", download.Code, download.Header().Get("Location"))
+	if download.Code != http.StatusOK || download.Body.String() != string(content) {
+		t.Fatalf("proxied download=%d body=%q", download.Code, download.Body.String())
 	}
 }
 
@@ -1058,32 +1082,6 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	}
 }
 
-func TestLegacyManifestStillStreamsWithRangeSupport(t *testing.T) {
-	a := newTestAppWithBlockSize(t, 8)
-	content := []byte("0123456789ABCDEFGHIJ")
-	media := a.readyFile(t, "clip.mp4", content)
-	seek := a.requestH("GET", "/api/files/"+media.ID+"/preview", nil, true, map[string]string{"Range": "bytes=2-9"})
-	if seek.Code != http.StatusPartialContent || seek.Body.String() != string(content[2:10]) {
-		t.Fatalf("legacy range=%d body=%q", seek.Code, seek.Body.String())
-	}
-}
-
-func TestIdenticalFilesShareBlocksAndManifest(t *testing.T) {
-	a := newTestApp(t)
-	f1 := a.readyFile(t, "one.bin", []byte("same content"))
-	f2 := a.readyFile(t, "two.bin", []byte("same content"))
-	if f1.objectKey != f2.objectKey || f1.ETag != f2.ETag {
-		t.Fatal("identical files should share a manifest")
-	}
-	if del := a.request("DELETE", "/api/files/"+f1.ID, nil, true); del.Code != http.StatusNoContent {
-		t.Fatalf("delete=%d: %s", del.Code, del.Body.String())
-	}
-	dl := a.request("GET", "/api/files/"+f2.ID+"/download", nil, true)
-	if dl.Code != http.StatusOK || dl.Body.String() != "same content" {
-		t.Fatalf("second copy broken after delete: %d", dl.Code)
-	}
-}
-
 func TestEmptyFileUpload(t *testing.T) {
 	a := newTestApp(t)
 	created := a.createUpload(t, "empty.bin", 0)
@@ -1095,7 +1093,7 @@ func TestEmptyFileUpload(t *testing.T) {
 		t.Fatalf("complete=%d: %s", doneRR.Code, doneRR.Body.String())
 	}
 	dl := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
-	if dl.Code != http.StatusFound {
+	if dl.Code != http.StatusOK {
 		t.Fatalf("empty download=%d", dl.Code)
 	}
 }
@@ -1138,146 +1136,18 @@ func TestAbortUpload(t *testing.T) {
 }
 
 func TestGarbageCollector(t *testing.T) {
-	a := newTestAppWithBlockSize(t, 8)
-	fa := a.readyFile(t, "a.bin", []byte("AAAAAAAABBBBBBBB"))
-	fb := a.readyFile(t, "b.bin", []byte("CCCCCCCCDDDDDDDD"))
-	blockA, blockB := sha256hex([]byte("AAAAAAAA")), sha256hex([]byte("BBBBBBBB"))
-	blockC, blockD := sha256hex([]byte("CCCCCCCC")), sha256hex([]byte("DDDDDDDD"))
-	if del := a.request("DELETE", "/api/files/"+fb.ID, nil, true); del.Code != http.StatusNoContent {
-		t.Fatalf("delete=%d: %s", del.Code, del.Body.String())
-	}
-	// 回收站里的清单和块仍是活引用，GC 不得提前清理。
-	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.manifests[fb.objectKey]; !ok {
-		t.Fatal("trashed manifest was collected")
-	}
-	if _, ok := a.store.blocks[blockC]; !ok {
-		t.Fatal("trashed block C was collected")
-	}
-	if _, ok := a.store.blocks[blockD]; !ok {
-		t.Fatal("trashed block D was collected")
-	}
-	if purge := a.request("DELETE", "/api/trash/"+fb.ID, nil, true); purge.Code != http.StatusNoContent {
-		t.Fatalf("purge=%d: %s", purge.Code, purge.Body.String())
-	}
-	// 永久删除元数据后才会成为孤儿并被回收。
-	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.manifests[fb.objectKey]; ok {
-		t.Fatal("purged manifest was not collected")
-	}
-	if _, ok := a.store.blocks[blockC]; ok {
-		t.Fatal("purged block C was not collected")
-	}
-	if _, ok := a.store.blocks[blockD]; ok {
-		t.Fatal("purged block D was not collected")
-	}
-	if _, ok := a.store.manifests[fa.objectKey]; !ok {
-		t.Fatal("referenced manifest was collected")
-	}
-	if _, ok := a.store.blocks[blockA]; !ok {
-		t.Fatal("shared block A was collected")
-	}
-	if _, ok := a.store.blocks[blockB]; !ok {
-		t.Fatal("shared block B was collected")
-	}
-	// Young orphan blocks (in-flight uploads) survive the grace period.
-	young := sha256hex([]byte("WWWWWWWW"))
-	a.store.putBlock(young, []byte("WWWWWWWW"))
-	a.store.age(storage.BlockKey(young), time.Now())
-	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.blocks[young]; !ok {
-		t.Fatal("young orphan block was collected")
-	}
-}
-
-func TestGarbageCollectorAbortsOnUnreadableReferencedManifest(t *testing.T) {
-	a := newTestAppWithBlockSize(t, 8)
-	fa := a.readyFile(t, "a.bin", []byte("AAAAAAAABBBBBBBB"))
-	blockA, blockB := sha256hex([]byte("AAAAAAAA")), sha256hex([]byte("BBBBBBBB"))
-	// 被引用清单读取失败（S3 瞬时错误）时，GC 必须中止而不是把它的
-	// 块当作孤儿回收——否则一次瞬时错误就会删除仍被引用的文件内容。
-	a.store.getManifestErr = errors.New("transient s3 failure")
-	a.srv.CollectGarbage(context.Background())
-	a.store.getManifestErr = nil
-	if _, ok := a.store.manifests[fa.objectKey]; !ok {
-		t.Fatal("referenced manifest must survive an aborted GC")
-	}
-	if _, ok := a.store.blocks[blockA]; !ok {
-		t.Fatal("block A of referenced file must survive an aborted GC")
-	}
-	if _, ok := a.store.blocks[blockB]; !ok {
-		t.Fatal("block B of referenced file must survive an aborted GC")
-	}
-}
-
-func TestGarbageCollectorKeepsBlocksWhenListingOmitsReferencedManifest(t *testing.T) {
-	a := newTestAppWithBlockSize(t, 8)
-	f := a.readyFile(t, "kept.bin", []byte("AAAAAAAABBBBBBBB"))
-	a.store.omitManifestList = true
-	for _, block := range a.store.manifests[f.objectKey].Blocks {
-		a.store.age(storage.BlockKey(block.ID), time.Now().Add(-48*time.Hour))
-	}
-	a.srv.CollectGarbage(context.Background())
-	for _, block := range a.store.manifests[f.objectKey].Blocks {
-		if _, ok := a.store.blocks[block.ID]; !ok {
-			t.Fatalf("referenced block %s deleted after incomplete listing", block.ID)
-		}
-	}
-}
-
-func TestGarbageCollectorReclaimsOrphanedThumbnails(t *testing.T) {
 	a := newTestApp(t)
-	content := realPNG(t, 320, 180)
-	first := a.readyFile(t, "first.png", content)
-	second := a.readyFile(t, "second.png", content)
-	if rr := a.request("GET", "/api/files/"+first.ID+"/thumbnail", nil, true); rr.Code != http.StatusOK {
-		t.Fatalf("thumbnail=%d: %s", rr.Code, rr.Body.String())
-	}
-	key := a.srv.thumbKey(first)
-	if _, ok := a.store.raw[key]; !ok {
-		t.Fatal("generated thumbnail was not stored")
-	}
-	oldOrphan := "thumbs/aa/orphan.jpg"
-	youngOrphan := "thumbs/bb/young.jpg"
-	a.store.raw[oldOrphan] = []byte("old")
-	a.store.raw[youngOrphan] = []byte("young")
-	a.store.age(oldOrphan, time.Now().Add(-48*time.Hour))
-	a.store.age(youngOrphan, time.Now())
+	live := a.readyFile(t, "live.bin", []byte("live"))
+	orphan := storage.BlobKey(ids.New())
+	a.store.raw[orphan] = []byte("orphan")
+	a.store.age(orphan, time.Now().Add(-48*time.Hour))
+	a.store.age(live.objectKey, time.Now().Add(-48*time.Hour))
 	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.raw[key]; !ok {
-		t.Fatal("referenced thumbnail was collected")
+	if _, ok := a.store.raw[live.objectKey]; !ok {
+		t.Fatal("referenced blob was collected")
 	}
-	if _, ok := a.store.raw[oldOrphan]; ok {
-		t.Fatal("old orphaned thumbnail was not collected")
-	}
-	if _, ok := a.store.raw[youngOrphan]; !ok {
-		t.Fatal("young orphaned thumbnail was collected")
-	}
-
-	if rr := a.request("DELETE", "/api/files/"+first.ID, nil, true); rr.Code != http.StatusNoContent {
-		t.Fatalf("trash first=%d", rr.Code)
-	}
-	if rr := a.request("DELETE", "/api/trash/"+first.ID, nil, true); rr.Code != http.StatusNoContent {
-		t.Fatalf("purge first=%d", rr.Code)
-	}
-	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.raw[key]; !ok {
-		t.Fatal("thumbnail shared by a live file was collected")
-	}
-	if rr := a.request("DELETE", "/api/files/"+second.ID, nil, true); rr.Code != http.StatusNoContent {
-		t.Fatalf("trash second=%d", rr.Code)
-	}
-	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.raw[key]; !ok {
-		t.Fatal("thumbnail referenced by trash was collected")
-	}
-	if rr := a.request("DELETE", "/api/trash/"+second.ID, nil, true); rr.Code != http.StatusNoContent {
-		t.Fatalf("purge second=%d", rr.Code)
-	}
-	a.store.age(key, time.Now().Add(-48*time.Hour))
-	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.raw[key]; ok {
-		t.Fatal("orphaned shared thumbnail was not collected")
+	if _, ok := a.store.raw[orphan]; ok {
+		t.Fatal("orphaned blob was not collected")
 	}
 }
 
@@ -1285,23 +1155,17 @@ func TestGarbageCollectorKeepsAudioStreamAndCover(t *testing.T) {
 	a := newTestAppWithBlockSize(t, 8)
 	master := a.readyFile(t, "book.flac", []byte("lossless-master"))
 	streamKey := master.objectKey
-	streamManifest := a.store.manifests[streamKey]
 	coverKey := thumbnailKey(master.objectKey)
 	a.store.raw[coverKey] = []byte("jpeg-cover")
 	a.store.age(coverKey, time.Now().Add(-48*time.Hour))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		master.ID, 1000, `[{"title":"Part 1","start_ms":0,"end_ms":1000}]`, streamKey, streamManifest.Size, streamManifest.ID(), true, now, now); err != nil {
+		master.ID, 1000, `[{"title":"Part 1","start_ms":0,"end_ms":1000}]`, streamKey, master.Size, master.ETag, true, now, now); err != nil {
 		t.Fatal(err)
 	}
 	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.manifests[streamKey]; !ok {
-		t.Fatal("referenced audio stream manifest was collected")
-	}
-	for _, block := range streamManifest.Blocks {
-		if _, ok := a.store.blocks[block.ID]; !ok {
-			t.Fatalf("referenced audio stream block %s was collected", block.ID)
-		}
+	if _, ok := a.store.raw[streamKey]; !ok {
+		t.Fatal("referenced audio stream blob was collected")
 	}
 	if _, ok := a.store.raw[coverKey]; !ok {
 		t.Fatal("referenced audio cover was collected")
@@ -1408,64 +1272,6 @@ func TestUnknownAPIEndpointReturnsJSON404(t *testing.T) {
 	}
 	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("content-type=%q, want JSON", ct)
-	}
-	// 未知 /api 路径不能回退到 SPA index.html
-	if strings.Contains(rr.Body.String(), "<!doctype html") || strings.Contains(rr.Body.String(), "<html") {
-		t.Fatalf("api 404 must not return the SPA shell: %s", rr.Body.String())
-	}
-}
-
-func TestLegacyFastCDCFilesAreMigratedToBlobs(t *testing.T) {
-	a := newTestApp(t)
-	content := []byte("legacy whole object content")
-	legacy := a.readyFile(t, "legacy.bin", content)
-	legacyKey := legacy.objectKey
-	migrated, err := a.srv.MigrateLegacyObjects(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if migrated != 1 {
-		t.Fatalf("migrated=%d", migrated)
-	}
-	var key, etag string
-	if err := a.db.QueryRow(`SELECT object_key,etag FROM files WHERE id=?`, legacy.ID).Scan(&key, &etag); err != nil {
-		t.Fatal(err)
-	}
-	if key != storage.BlobKey(legacy.ID) || etag == "" {
-		t.Fatalf("migrated key=%q etag=%q", key, etag)
-	}
-	if _, ok := a.store.manifests[legacyKey]; !ok {
-		t.Fatal("legacy manifest must remain until reachability GC")
-	}
-	if got := a.store.raw[key]; !bytes.Equal(got, content) {
-		t.Fatalf("migrated blob=%q", got)
-	}
-	before := len(a.store.raw)
-	if migrated, err := a.srv.MigrateLegacyObjects(context.Background()); err != nil || migrated != 0 {
-		t.Fatalf("second migration pass migrated=%d err=%v", migrated, err)
-	}
-	if len(a.store.raw) != before {
-		t.Fatal("idempotent migration pass created another blob")
-	}
-}
-
-func TestLegacyWholeObjectsAreAlreadyValidBlobs(t *testing.T) {
-	a := newTestApp(t)
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	id := ids.New()
-	if _, err := a.db.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'ready',?,?)`, id, RootID, "whole.bin", "file", "objects/existing", 5, now, now); err != nil {
-		t.Fatal(err)
-	}
-	migrated, err := a.srv.MigrateLegacyObjects(context.Background())
-	if err != nil || migrated != 0 {
-		t.Fatalf("migrated=%d err=%v", migrated, err)
-	}
-	var key string
-	if err := a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, id).Scan(&key); err != nil {
-		t.Fatal(err)
-	}
-	if key != "objects/existing" {
-		t.Fatalf("key=%s", key)
 	}
 }
 

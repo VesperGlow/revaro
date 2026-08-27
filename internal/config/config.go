@@ -12,42 +12,33 @@ import (
 )
 
 type Config struct {
-	Addr             string
-	DataDir          string
-	WorkDir          string
-	BaseURL          string
-	CookieSecure     bool
-	AdminUsername    string
-	AdminPassword    string
-	S3Endpoint       string
-	S3PublicEndpoint string
-	S3Region         string
-	S3Bucket         string
-	S3AccessKey      string
-	S3SecretKey      string
-	S3PathStyle      bool
-	ProxyTransfers   bool
-	PresignExpires   time.Duration
-	// Legacy FastCDC settings are retained only until existing manifests finish
-	// background migration. New blob uploads never consult these values.
-	BlockMinSize          int64
-	BlockSize             int64
-	BlockMaxSize          int64
-	BlockRAMCacheCapacity int64
-	BlockSSDCacheCapacity int64
-	BlockCacheMinFree     int64
-	BlockCacheDir         string
-	MediaCacheCapacity    int64
-	UploadExpires         time.Duration
-	TrashRetention        time.Duration
-	GCInterval            time.Duration
-	FFmpegPath            string
-	BTEnabled             bool
-	BTListenPort          int
-	BTMaxFiles            int
-	BTMaxTotalSize        int64
-	BTMetadataWait        time.Duration
-	BTStaleAfter          time.Duration
+	Addr               string
+	DataDir            string
+	WorkDir            string
+	BaseURL            string
+	CookieSecure       bool
+	AdminUsername      string
+	AdminPassword      string
+	S3Endpoint         string
+	S3PublicEndpoint   string
+	S3Region           string
+	S3Bucket           string
+	S3AccessKey        string
+	S3SecretKey        string
+	S3PathStyle        bool
+	ProxyTransfers     bool
+	PresignExpires     time.Duration
+	MediaCacheCapacity int64
+	UploadExpires      time.Duration
+	TrashRetention     time.Duration
+	GCInterval         time.Duration
+	FFmpegPath         string
+	BTEnabled          bool
+	BTListenPort       int
+	BTMaxFiles         int
+	BTMaxTotalSize     int64
+	BTMetadataWait     time.Duration
+	BTStaleAfter       time.Duration
 }
 
 func Load() (Config, error) {
@@ -113,52 +104,8 @@ func Load() (Config, error) {
 	if c.BTStaleAfter, err = durationEnv("BT_STALE_AFTER", 48*time.Hour); err != nil {
 		return c, err
 	}
-	if c.BlockSize, err = int64Env("BLOCK_SIZE", 4*1024*1024); err != nil {
-		return c, err
-	}
-	if c.BlockMinSize, err = int64Env("FASTCDC_MIN_SIZE", c.BlockSize/4); err != nil {
-		return c, err
-	}
-	defaultMax := min(c.BlockSize*4, int64(1024*1024*1024))
-	if c.BlockMaxSize, err = int64Env("FASTCDC_MAX_SIZE", defaultMax); err != nil {
-		return c, err
-	}
-	if c.BlockRAMCacheCapacity, err = int64Env("BLOCK_RAM_CACHE_CAPACITY", 0); err != nil {
-		return c, err
-	}
-	if c.BlockSSDCacheCapacity, err = int64Env("BLOCK_SSD_CACHE_CAPACITY", 0); err != nil {
-		return c, err
-	}
-	if c.BlockCacheMinFree, err = int64Env("BLOCK_CACHE_MIN_FREE", 0); err != nil {
-		return c, err
-	}
-	c.BlockCacheDir = env("BLOCK_CACHE_DIR", filepath.Join(c.DataDir, "block-cache"))
 	if c.MediaCacheCapacity, err = int64Env("MEDIA_CACHE_CAPACITY", 2*1024*1024*1024); err != nil {
 		return c, err
-	}
-	if c.BlockSize < 1*1024*1024 || c.BlockSize > 1024*1024*1024 {
-		return c, errors.New("BLOCK_SIZE must be between 1 MiB and 1 GiB")
-	}
-	if c.BlockMinSize < 64*1024 || c.BlockMinSize > c.BlockSize {
-		return c, errors.New("FASTCDC_MIN_SIZE must be between 64 KiB and BLOCK_SIZE")
-	}
-	if c.BlockMaxSize < c.BlockSize || c.BlockMaxSize > 1024*1024*1024 {
-		return c, errors.New("FASTCDC_MAX_SIZE must be between BLOCK_SIZE and 1 GiB")
-	}
-	if c.ProxyTransfers && c.BlockMaxSize > 64*1024*1024 {
-		return c, errors.New("FASTCDC_MAX_SIZE must not exceed 64 MiB when S3_PROXY_TRANSFERS is enabled")
-	}
-	if c.BlockRAMCacheCapacity < 0 || c.BlockRAMCacheCapacity > 16*1024*1024*1024 {
-		return c, errors.New("BLOCK_RAM_CACHE_CAPACITY must be between 0 and 16 GiB")
-	}
-	if c.BlockSSDCacheCapacity < 0 || c.BlockSSDCacheCapacity > 1<<40 {
-		return c, errors.New("BLOCK_SSD_CACHE_CAPACITY must be between 0 and 1 TiB")
-	}
-	if c.BlockCacheMinFree < 0 || c.BlockCacheMinFree > 1<<40 {
-		return c, errors.New("BLOCK_CACHE_MIN_FREE must be between 0 and 1 TiB")
-	}
-	if c.BlockCacheDir == "" {
-		return c, errors.New("BLOCK_CACHE_DIR must not be empty")
 	}
 	if c.WorkDir == "" {
 		return c, errors.New("APP_WORK_DIR must not be empty")
@@ -220,24 +167,6 @@ func (c Config) IsUpCloud() bool {
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	return host == "upcloudobjects.com" || strings.HasSuffix(host, ".upcloudobjects.com")
-}
-
-// ChunkSizes also supplies useful defaults for tests and embedded callers
-// that construct Config directly instead of using Load.
-func (c Config) ChunkSizes() (minimum, average, maximum int64) {
-	average = c.BlockSize
-	if average <= 0 {
-		average = 4 * 1024 * 1024
-	}
-	minimum = c.BlockMinSize
-	if minimum <= 0 {
-		minimum = max(1, average/4)
-	}
-	maximum = c.BlockMaxSize
-	if maximum <= 0 {
-		maximum = min(average*4, int64(1024*1024*1024))
-	}
-	return minimum, average, maximum
 }
 
 func env(name, fallback string) string {

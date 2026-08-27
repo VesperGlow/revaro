@@ -47,7 +47,7 @@ func main() {
 		log.Error("administrator initialization failed", "error", err)
 		os.Exit(1)
 	}
-	store, err := storage.NewS3WithDB(context.Background(), cfg, db)
+	store, err := storage.NewS3(context.Background(), cfg)
 	if err != nil {
 		log.Error("S3 client initialization failed", "error", err)
 		os.Exit(1)
@@ -68,15 +68,6 @@ func main() {
 	defer app.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	// Old manifests remain readable while one low-priority pass collapses them
-	// into opaque whole-file blobs. Startup and normal requests never wait for it.
-	go func() {
-		if migrated, err := app.MigrateLegacyObjects(ctx); err != nil && ctx.Err() == nil {
-			log.Error("legacy FastCDC migration paused; it will resume on the next start", "error", err)
-		} else if err == nil {
-			log.Info("legacy FastCDC migration complete remaining=0", "migrated", migrated)
-		}
-	}()
 	gcRequests := make(chan struct{}, 1)
 	requestGC := func() {
 		select {

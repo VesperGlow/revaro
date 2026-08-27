@@ -420,7 +420,8 @@ func (s *Server) createLocalAudioMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	mergeCtx, cancel := context.WithTimeout(context.Background(), audioMergeTimeout)
 	job := &audioMergeJob{
-		ID: ids.New(), Status: "uploading", Progress: localMergeUploadProgressStart, Message: "正在等待上传本地素材",
+		changed: s.jobs.Changed,
+		ID:      ids.New(), Status: "uploading", Progress: localMergeUploadProgressStart, Message: "正在等待上传本地素材",
 		OutputName: in.Name, OutputFormat: "alac", OutputFileID: outputID, ParentID: in.ParentID,
 		InputCount: int(audioCount), Source: "local", CreatedAt: now, UpdatedAt: now, cancel: cancel, mergeCtx: mergeCtx,
 		localUpload: true, stagingDir: staging, uploadSlotHeld: true,

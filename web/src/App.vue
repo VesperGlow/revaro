@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from './api'
 import type { ApiError, DriveFile } from './api'
 import AppDialog from './components/AppDialog.vue'
@@ -9,11 +9,10 @@ import AppTopbar from './components/AppTopbar.vue'
 import FileBrowserHeader from './components/FileBrowserHeader.vue'
 import FileGrid from './components/FileGrid.vue'
 import FileTable from './components/FileTable.vue'
-import MediaPreview from './components/MediaPreview.vue'
+import { useJobEvents } from './composables/useJobEvents'
 import { isArchive, isAudio, isBook, isEditable, isImage, isMedia, isVideo, thumbSRC } from './fileTypes'
 import { formatDate, formatSize } from './format'
 import { classifyLocalMergeFile, localNaturalLess, localSubtitlePriority, localMergeTopLevelName, selectLocalCover } from './localMerge'
-import ReaderView from './Reader.vue'
 import type { ArchiveJob, AudioMergeFormat, AudioMergeResponse, DownloadJob, FolderOption, LocalMergeCreateResponse, LocalMergePick, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -85,10 +84,9 @@ const dialog = reactive({open:false,title:'',message:'',confirmLabel:'确定',ca
 let dialogResolve:((value:string|boolean|null)=>void)|null=null
 let activeUploads = 0
 let toastTimer = 0
-let audioMergePollTimer = 0
-let downloadPollTimer = 0
-let archivePollTimer = 0
 let uploadRefreshTimer = 0
+const MediaPreview=defineAsyncComponent(()=>import('./components/MediaPreview.vue'))
+const ReaderView=defineAsyncComponent(()=>import('./Reader.vue'))
 
 const editorDirty = computed(() => editor.content !== editor.original || editor.name !== editor.originalName)
 const editorBytes = computed(() => new Blob([editor.content]).size)
@@ -149,7 +147,7 @@ async function submitLogin() {
   login.busy=true;login.error='';login.notice=''
   try {
     const me=await api<ProfileResponse>('/api/auth/login',{method:'POST',body:JSON.stringify({username:login.username,password:login.password,second_factor:login.secondFactor})})
-    user.value=me.username;hasAvatar.value=me.has_avatar;login.password='';login.secondFactor='';login.totpRequired=false;await openFolder(ROOT);void refreshAudioMergeJobs();void refreshDownloadJobs();void refreshArchiveJobs()
+    user.value=me.username;hasAvatar.value=me.has_avatar;login.password='';login.secondFactor='';login.totpRequired=false;await openFolder(ROOT);jobEvents.connect();void refreshJobsFromEvent()
   }catch(e){
     const code=((e as ApiError).data as {error?:{code?:string}}|null)?.error?.code
     if(code==='totp_required'){login.totpRequired=true;login.error='请输入身份验证器验证码或恢复码'}
@@ -158,7 +156,7 @@ async function submitLogin() {
   }
   finally{login.busy=false}
 }
-async function logout(){await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];downloadJobs.value=[];archiveJobs.value=[];window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(archivePollTimer)}
+async function logout(){jobEvents.stop();await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];downloadJobs.value=[];archiveJobs.value=[]}
 function showAccount(){account.username=user.value||'';account.currentPassword='';account.password='';account.confirmPassword='';account.error='';accountPanel.value=null;usernameEditing.value=false;usernameSaving.value=false;usernameError.value='';avatar.error='';resetTwoFactor();openModal('account');loadTwoFactorStatus()}
 async function startUsernameEdit(){
   if(usernameSaving.value)return
@@ -527,13 +525,9 @@ async function startAudioMerge(){
   audioMerge.name=name;audioMerge.busy=true
   try{
     const data=await api<AudioMergeResponse>('/api/audio-merges',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name,format:audioMerge.format,file_ids:audioMerge.order.map(item=>item.id),cover_jpeg:audioMerge.coverData,cover_file_id:audioMerge.coverFileId})})
-    audioMergeJobs.value=[data,...audioMergeJobs.value.filter(job=>job.id!==data.id)];clearSelection();closeModal();notify(`「${data.output_name}」已加入后台队列`,'success');scheduleAudioMergePoll(350)
+    audioMergeJobs.value=[data,...audioMergeJobs.value.filter(job=>job.id!==data.id)];clearSelection();closeModal();notify(`「${data.output_name}」已加入后台队列`,'success')
   }catch(e){audioMerge.error=(e as Error).message}
   finally{audioMerge.busy=false}
-}
-function scheduleAudioMergePoll(delay=1000){
-  window.clearTimeout(audioMergePollTimer)
-  if(audioMergeJobs.value.some(job=>!audioMergeTerminal(job.status)))audioMergePollTimer=window.setTimeout(()=>void refreshAudioMergeJobs(),delay)
 }
 function audioMergeTerminal(status:AudioMergeResponse['status']){return status==='done'||status==='failed'||status==='cancelled'}
 async function refreshAudioMergeJobs(){
@@ -548,14 +542,13 @@ async function refreshAudioMergeJobs(){
         else if(job.status==='failed')notify(job.error||`「${job.output_name}」合并失败`)
       }
     }
-    scheduleAudioMergePoll()
-  }catch{scheduleAudioMergePoll(3000)}
+  }catch{/* SSE 重连后会再次同步 */}
 }
 async function cancelAudioMerge(job:AudioMergeResponse){
   if(audioMergeTerminal(job.status))return
   const session=localUploads.get(job.id)
   if(session)session.cancelled=true
-  try{await api(`/api/audio-merges/${job.id}`,{method:'DELETE'});job.status='cancelling';job.message='正在取消合并';scheduleAudioMergePoll(300)}catch(e){notify((e as Error).message)}
+  try{await api(`/api/audio-merges/${job.id}`,{method:'DELETE'});job.status='cancelling';job.message='正在取消合并'}catch(e){notify((e as Error).message)}
 }
 async function clearAudioMerges(){
   const finished=audioMergeJobs.value.filter(job=>audioMergeTerminal(job.status))
@@ -694,7 +687,6 @@ async function startLocalMerge(){
     resetLocalMergeState()
     closeModal()
     notify(`「${created.output_name}」已开始上传素材`,'success')
-    scheduleAudioMergePoll(350)
     void uploadLocalMergeChunks(created,session)
   }catch(e){
     localMerge.error=(e as Error).message
@@ -725,7 +717,6 @@ async function uploadLocalMergeChunks(created:LocalMergeCreateResponse,session:L
     const snapshot=await api<AudioMergeResponse>(`/api/audio-merges/local/${created.id}/complete`,{method:'POST'})
     audioMergeJobs.value=[snapshot,...audioMergeJobs.value.filter(job=>job.id!==snapshot.id)]
     notify(`「${snapshot.output_name}」素材上传完成，开始后台合并`,'success')
-    scheduleAudioMergePoll(350)
   }catch(e){
     if(session.cancelled){await cancelLocalMergeRemote(created.id);return}
     await cancelLocalMergeRemote(created.id)
@@ -761,10 +752,6 @@ function localFileByName(name:string){return localMerge.picks.find(pick=>pick.na
 const localCoverCandidates=computed(()=>localMerge.picks.filter(pick=>pick.kind==='cover'))
 
 function downloadTerminal(status:DownloadJob['status']){return status==='done'||status==='failed'||status==='cancelled'}
-function scheduleDownloadPoll(delay=1000){
-  window.clearTimeout(downloadPollTimer)
-  if(downloadJobs.value.some(job=>!downloadTerminal(job.status)&&job.status!=='waiting'&&job.status!=='paused'))downloadPollTimer=window.setTimeout(()=>void refreshDownloadJobs(),delay)
-}
 async function refreshDownloadJobs(){
   try{
     const previous=new Map(downloadJobs.value.map(job=>[job.id,job.status]))
@@ -780,8 +767,7 @@ async function refreshDownloadJobs(){
       if(job.status==='done')void api(`/api/downloads/${job.id}`,{method:'DELETE'},30*60*1000).catch(()=>{})
     }
     if(refreshFolder)void openFolder(currentId.value)
-    scheduleDownloadPoll()
-  }catch{scheduleDownloadPoll(3000)}
+  }catch{/* SSE 重连后会再次同步 */}
 }
 function downloadsChanged(){void refreshDownloadJobs()}
 
@@ -792,15 +778,10 @@ async function extractArchive(item:DriveFile){
   try{
     const job=await api<ArchiveJob>(`/api/files/${item.id}/extract`,{method:'POST'})
     archiveJobs.value=[job,...archiveJobs.value.filter(existing=>existing.id!==job.id)]
-    clearSelection();notify(`「${item.name}」已加入解压队列`,'success');scheduleArchivePoll(500)
+    clearSelection();notify(`「${item.name}」已加入解压队列`,'success')
   }catch(e){notify((e as Error).message)}
 }
 function archiveTerminal(status:ArchiveJob['status']){return status==='done'||status==='failed'}
-function archivePolling(status:ArchiveJob['status']){return !archiveTerminal(status)&&status!=='waiting_password'}
-function scheduleArchivePoll(delay=1200){
-  window.clearTimeout(archivePollTimer)
-  if(archiveJobs.value.some(job=>archivePolling(job.status)))archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),delay)
-}
 async function refreshArchiveJobs(){
   try{
     const previous=new Map(archiveJobs.value.map(job=>[job.id,job.status]))
@@ -816,14 +797,13 @@ async function refreshArchiveJobs(){
       else if(before&&before!=='waiting_password'&&job.status==='waiting_password')notify(job.error||`「${job.name}」需要解压密码`)
     }
     if(refreshFolder)void openFolder(currentId.value)
-    scheduleArchivePoll()
-  }catch{window.clearTimeout(archivePollTimer);archivePollTimer=window.setTimeout(()=>void refreshArchiveJobs(),3000)}
+  }catch{/* SSE 重连后会再次同步 */}
 }
 async function submitArchivePassword(job:ArchiveJob,password:string){
   try{
     const updated=await api<ArchiveJob>(`/api/archive-jobs/${job.id}/password`,{method:'POST',body:JSON.stringify({password})})
     archiveJobs.value=archiveJobs.value.map(existing=>existing.id===updated.id?updated:existing)
-    notify(`正在验证「${job.name}」的解压密码`,'success');scheduleArchivePoll(500)
+    notify(`正在验证「${job.name}」的解压密码`,'success')
   }catch(e){notify((e as Error).message)}
 }
 async function clearArchiveJobs(){
@@ -962,8 +942,18 @@ function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled
 // 完成记录保留在上传进度中，等用户主动清除。
 function scheduleAutoClear(){}
 function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
-onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){void refreshAudioMergeJobs();void refreshDownloadJobs();void refreshArchiveJobs()}})})
-onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(audioMergePollTimer);window.clearTimeout(downloadPollTimer);window.clearTimeout(archivePollTimer);window.clearTimeout(uploadRefreshTimer);tasks.forEach(task=>task.requests.forEach(request=>request.abort()))})
+let jobRefreshRunning=false
+let jobRefreshPending=false
+async function refreshJobsFromEvent(){
+  if(!user.value)return
+  if(jobRefreshRunning){jobRefreshPending=true;return}
+  jobRefreshRunning=true
+  try{await Promise.all([refreshAudioMergeJobs(),refreshDownloadJobs(),refreshArchiveJobs()])}
+  finally{jobRefreshRunning=false;if(jobRefreshPending){jobRefreshPending=false;void refreshJobsFromEvent()}}
+}
+const jobEvents=useJobEvents(()=>void refreshJobsFromEvent())
+onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){jobEvents.connect();void refreshJobsFromEvent()}})})
+onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(uploadRefreshTimer);tasks.forEach(task=>task.requests.forEach(request=>request.abort()))})
 </script>
 
 <template>

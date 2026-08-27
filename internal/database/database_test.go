@@ -24,8 +24,8 @@ func TestOpenCreatesSchemaAndMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('storage_manifests','storage_manifest_blocks')`).Scan(&manifestTables); err != nil {
 		t.Fatal(err)
 	}
-	if manifestTables != 2 {
-		t.Fatalf("expected persistent manifest index tables, got %d", manifestTables)
+	if manifestTables != 0 {
+		t.Fatalf("legacy manifest index tables remain: %d", manifestTables)
 	}
 	var blobTables int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='media_metadata'`).Scan(&blobTables); err != nil {

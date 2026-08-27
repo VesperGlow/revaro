@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -210,61 +208,11 @@ func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSessi
 }
 
 func (s *Server) startMediaHLSSource(ctx context.Context, f File) (string, func(), error) {
-	if !storage.IsManifestKey(f.objectKey) {
-		// FFmpeg/ffprobe talk to Wasabi directly. They issue their own bounded
-		// Range requests, and CommandContext closes them immediately when a seek
-		// replaces the session or the browser disconnects.
-		u, err := s.storage.PresignGetObject(ctx, f.objectKey, f.Name, responseMime(f), true, s.cfg.PresignExpires)
-		if err != nil {
-			return "", nil, err
-		}
-		return u, func() {}, nil
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	u, err := s.storage.PresignGetObject(ctx, f.objectKey, f.Name, responseMime(f), true, s.cfg.PresignExpires)
 	if err != nil {
 		return "", nil, err
 	}
-	token := ids.New()
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/"+token || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", responseMime(f))
-		rc, openErr := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
-		if openErr != nil {
-			http.Error(w, "source unavailable", http.StatusBadGateway)
-			return
-		}
-		defer rc.Close()
-		http.ServeContent(w, r, f.Name, time.Time{}, rc)
-	})
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			s.log.Warn("media HLS source server stopped", "file", f.ID, "error", serveErr)
-		}
-	}()
-	var closeOnce sync.Once
-	closeSource := func() {
-		closeOnce.Do(func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = server.Shutdown(shutdownCtx)
-			_ = listener.Close()
-			select {
-			case <-done:
-			case <-shutdownCtx.Done():
-			}
-		})
-	}
-	go func() {
-		<-ctx.Done()
-		closeSource()
-	}()
-	return "http://" + listener.Addr().String() + "/" + token, closeSource, nil
+	return u, func() {}, nil
 }
 
 func (s *Server) audioHLSAsset(w http.ResponseWriter, r *http.Request) {

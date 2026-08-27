@@ -586,9 +586,6 @@ func (s *Server) embeddedSubtitleAsWebVTT(ctx context.Context, video File, strea
 }
 
 func (s *Server) readFileWithLimit(ctx context.Context, f File, limit int64) ([]byte, error) {
-	if storage.IsManifestKey(f.objectKey) {
-		return s.storage.ReadFile(ctx, f.objectKey, limit)
-	}
 	return s.storage.GetObject(ctx, f.objectKey, limit)
 }
 

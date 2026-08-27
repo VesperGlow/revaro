@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"image/png"
 	"io"
 	"log/slog"
@@ -42,7 +41,6 @@ const maxAvatarBytes = 2 << 20
 const avatarObjectKey = "profile/avatar"
 const maxBlocksPerRequest = 1000
 const maxCompleteBody = 32 << 20
-const maxManifestBlocks = 262144
 const maxLogicalFileSize = 1 << 40 // 1 TiB
 
 type Server struct {
@@ -79,6 +77,7 @@ type Server struct {
 	archiveMu          sync.RWMutex
 	archiveJobs        map[string]*archiveJob
 	downloads          *downloadManager
+	jobs               *JobManager
 }
 
 type File struct {
@@ -108,6 +107,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	hlsCtx, hlsCancel := context.WithCancel(context.Background())
 	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
+		jobs:    NewJobManager(),
 		limiter: newLoginLimiter(), s3Origin: s3Origin,
 		shareSlots:      make(chan struct{}, 8),
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
@@ -160,6 +160,9 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 // Close stops transient playback transcoders and removes their temporary HLS
 // segments. Persisted files and merge jobs are not affected.
 func (s *Server) Close() {
+	if s.jobs != nil {
+		s.jobs.Close()
+	}
 	if s.downloads != nil {
 		s.downloads.Close()
 	}
@@ -236,6 +239,7 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/profile/avatar", s.deleteAvatar)
 			r.Patch("/profile/username", s.changeUsername)
 			r.Get("/storage/stats", s.storageStats)
+			r.Get("/events", s.jobEvents)
 			r.Get("/files/{id}", s.getFile)
 			r.Get("/files/{id}/children", s.children)
 			r.Get("/files/{id}/download", s.download)
@@ -1411,80 +1415,37 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, inline bool)
 	s.serveFileContent(w, r, f, inline)
 }
 
-// serveFileContent redirects new opaque blobs to S3 so Range, cancellation and
-// backpressure stay end-to-end. Only legacy manifests use the compatibility
-// Reader/ReaderAt data plane while background migration is unfinished.
+// serveFileContent redirects opaque blobs to S3 so Range, cancellation and
+// backpressure stay end-to-end.
 func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File, inline bool) {
 	mimeType := safeDeliveryMime(responseMime(f))
 	if mimeType == "application/octet-stream" {
 		inline = false
 	}
-	if !storage.IsManifestKey(f.objectKey) {
-		if s.cfg.ProxyTransfers && !strings.HasPrefix(f.objectKey, "blobs/") {
-			s.serveRawObject(w, r, f, inline)
-			return
-		}
-		u, err := s.storage.PresignGetObject(r.Context(), f.objectKey, f.Name, mimeType, inline, s.cfg.PresignExpires)
+	if s.cfg.ProxyTransfers {
+		rc, err := s.storage.Open(r.Context(), f.objectKey)
 		if err != nil {
-			problem(w, 502, "could not create download URL")
+			problem(w, http.StatusBadGateway, "object storage read failed")
 			return
 		}
-		http.Redirect(w, r, u, http.StatusFound)
+		defer rc.Close()
+		w.Header().Set("Content-Type", mimeType)
+		disposition := "attachment"
+		if inline {
+			disposition = "inline"
+		}
+		w.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+strings.ReplaceAll(url.PathEscape(f.Name), "+", "%20"))
+		http.ServeContent(w, r, f.Name, time.Time{}, rc)
 		return
 	}
-	readCtx := storage.WithDynamicReadAhead(r.Context())
-	rc, err := s.storage.Open(readCtx, f.objectKey)
+	u, err := s.storage.PresignGetObject(r.Context(), f.objectKey, f.Name, mimeType, inline, s.cfg.PresignExpires)
 	if err != nil {
-		s.log.Error("file open failed", "file", f.ID, "error", err)
-		problem(w, 502, "object storage read failed")
+		problem(w, http.StatusBadGateway, "could not create download URL")
 		return
 	}
-	defer rc.Close()
-	w.Header().Set("Content-Type", mimeType)
-	disposition := "attachment"
-	if inline {
-		disposition = "inline"
-	}
-	w.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+strings.ReplaceAll(url.PathEscape(f.Name), "+", "%20"))
-	var modtime time.Time
-	if t, err := time.Parse(time.RFC3339Nano, f.UpdatedAt); err == nil {
-		modtime = t
-	}
-	http.ServeContent(w, r, f.Name, modtime, rc)
+	http.Redirect(w, r, u, http.StatusFound)
 }
-
-func (s *Server) serveRawObject(w http.ResponseWriter, r *http.Request, f File, inline bool) {
-	mimeType := safeDeliveryMime(responseMime(f))
-	if mimeType == "application/octet-stream" {
-		inline = false
-	}
-	rc, err := s.storage.OpenRaw(r.Context(), f.objectKey)
-	if err != nil {
-		s.log.Error("legacy object open failed", "file", f.ID, "error", err)
-		problem(w, http.StatusBadGateway, "object storage read failed")
-		return
-	}
-	defer rc.Close()
-	w.Header().Set("Content-Type", mimeType)
-	disposition := "attachment"
-	if inline {
-		disposition = "inline"
-	}
-	w.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+strings.ReplaceAll(url.PathEscape(f.Name), "+", "%20"))
-	if f.Size >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
-	}
-	if _, err := io.Copy(w, rc); err != nil {
-		s.log.Error("legacy object stream failed", "file", f.ID, "error", err)
-	}
-}
-
-// readContent reads a whole file with a size guard, transparently handling
-// legacy whole-object keys that predate block storage.
 func (s *Server) readContent(ctx context.Context, f File) ([]byte, error) {
-	if storage.IsManifestKey(f.objectKey) {
-		return s.storage.ReadFile(ctx, f.objectKey, maxDocumentBytes)
-	}
 	return s.storage.GetObject(ctx, f.objectKey, maxDocumentBytes)
 }
 
@@ -2041,18 +2002,6 @@ func parallel(indices []int, limit int, fn func(int) error) error {
 	return firstErr
 }
 
-func blockIDFromKey(key string) string {
-	rest, ok := strings.CutPrefix(key, "blocks/")
-	if !ok || len(rest) != 2+1+62 || rest[2] != '/' {
-		return ""
-	}
-	id := rest[:2] + rest[3:]
-	if !storage.ValidBlockID(id) {
-		return ""
-	}
-	return id
-}
-
 // referencedStorageKeys returns every content object and derived thumbnail the
 // metadata can still reach, across active and trashed file states.
 func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, map[string]bool, error) {
@@ -2101,200 +2050,40 @@ func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, ma
 	return objects, thumbnails, nil
 }
 
-// CollectGarbage deletes manifests that no metadata references and blocks
-// that no surviving manifest references, once they are older than the
-// grace period. The grace period must exceed UPLOAD_EXPIRES: blocks of an
-// in-flight upload are unreferenced by construction, and any block older
-// than the grace period cannot belong to an upload that is still pending.
+// CollectGarbage deletes unreferenced blobs and derived thumbnails after the
+// upload grace period.
 func (s *Server) CollectGarbage(ctx context.Context) {
-	grace := s.cfg.UploadExpires + time.Hour
-	cutoff := time.Now().UTC().Add(-grace)
+	cutoff := time.Now().UTC().Add(-(s.cfg.UploadExpires + time.Hour))
 	referenced, referencedThumbnails, err := s.referencedStorageKeys(ctx)
 	if err != nil {
 		s.log.Error("GC metadata scan failed", "error", err)
 		return
 	}
-	// Resolve every referenced manifest directly from metadata before relying
-	// on an eventually-consistent object listing. If even one cannot be read,
-	// its block set is unknown and deleting any block would be unsafe.
-	keepBlocks := map[string]bool{}
-	for key := range referenced {
-		if !storage.IsManifestKey(key) {
-			continue
-		}
-		m, err := s.storage.GetManifest(ctx, key)
-		if err != nil {
-			s.log.Error("GC aborted: referenced manifest unreadable", "key", key, "error", err)
-			return
-		}
-		for _, b := range m.Blocks {
-			keepBlocks[b.ID] = true
-		}
-	}
-	manifests, err := s.storage.ListManifests(ctx)
-	if err != nil {
-		s.log.Error("GC manifest listing failed", "error", err)
-		return
-	}
-	var doomedManifests []string
-	for _, ref := range manifests {
-		// 未被任何元数据引用的清单无需解析内容：年龄超过宽限期即可回收。
-		if !referenced[ref.Key] {
-			if ref.LastModified.Before(cutoff) {
-				doomedManifests = append(doomedManifests, ref.Key)
-			}
-			continue
-		}
-	}
-	var deletedManifests, deletedBlocks, deletedBlobs, deletedLegacy, deletedThumbnails int
-	for _, key := range doomedManifests {
-		if err := s.storage.DeleteObject(ctx, key); err != nil {
-			s.log.Warn("GC manifest delete failed", "key", key, "error", err)
-			continue
-		}
-		deletedManifests++
-	}
-	blocks, err := s.storage.ListBlocks(ctx)
-	if err != nil {
-		s.log.Error("GC block listing failed", "error", err)
-		return
-	}
-	for _, ref := range blocks {
-		id := blockIDFromKey(ref.Key)
-		if id == "" || keepBlocks[id] {
-			continue
-		}
-		if !ref.LastModified.Before(cutoff) {
-			continue // young orphan: possibly an in-flight upload
-		}
-		if err := s.storage.DeleteObject(ctx, ref.Key); err != nil {
-			s.log.Warn("GC block delete failed", "key", ref.Key, "error", err)
-			continue
-		}
-		deletedBlocks++
-	}
-	blobs, err := s.storage.ListPrefix(ctx, "blobs/")
-	if err != nil {
-		s.log.Warn("GC blob listing failed", "error", err)
-	} else {
-		for _, ref := range blobs {
-			if referenced[ref.Key] || !ref.LastModified.Before(cutoff) {
-				continue
-			}
-			if err := s.storage.DeleteObject(ctx, ref.Key); err != nil {
-				s.log.Warn("GC blob delete failed", "key", ref.Key, "error", err)
-				continue
-			}
-			deletedBlobs++
-		}
-	}
-	// Leftover whole objects from before block storage.
-	legacy, err := s.storage.ListPrefix(ctx, "objects/")
-	if err != nil {
-		s.log.Warn("GC legacy listing failed", "error", err)
-	} else {
-		for _, ref := range legacy {
-			if referenced[ref.Key] || !ref.LastModified.Before(cutoff) {
-				continue
-			}
-			if err := s.storage.DeleteObject(ctx, ref.Key); err != nil {
-				s.log.Warn("GC legacy delete failed", "key", ref.Key, "error", err)
-				continue
-			}
-			deletedLegacy++
-		}
-	}
-	thumbnails, err := s.storage.ListPrefix(ctx, "thumbs/")
-	if err != nil {
-		s.log.Warn("GC thumbnail listing failed", "error", err)
-	} else {
-		for _, ref := range thumbnails {
-			if referencedThumbnails[ref.Key] || !ref.LastModified.Before(cutoff) {
-				continue
-			}
-			if err := s.storage.DeleteObject(ctx, ref.Key); err != nil {
-				s.log.Warn("GC thumbnail delete failed", "key", ref.Key, "error", err)
-				continue
-			}
-			deletedThumbnails++
-		}
-	}
-	if deletedManifests+deletedBlocks+deletedBlobs+deletedLegacy+deletedThumbnails > 0 {
-		s.log.Info("garbage collection finished", "manifests", deletedManifests, "blocks", deletedBlocks, "blobs", deletedBlobs, "legacy_objects", deletedLegacy, "thumbnails", deletedThumbnails)
+	deletedBlobs := s.collectUnreferencedPrefix(ctx, "blobs/", cutoff, referenced)
+	deletedThumbnails := s.collectUnreferencedPrefix(ctx, "thumbs/", cutoff, referencedThumbnails)
+	if deletedBlobs+deletedThumbnails > 0 {
+		s.log.Info("garbage collection finished", "blobs", deletedBlobs, "thumbnails", deletedThumbnails)
 	}
 }
 
-// MigrateLegacyObjects gradually collapses the old FastCDC representation
-// into one opaque blob per logical file. It is idempotent and keeps manifests
-// readable until each SQLite row is atomically switched; shared manifests are
-// intentionally left for the normal reachability GC.
-func (s *Server) MigrateLegacyObjects(ctx context.Context) (int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,object_key,size,mime_type,name FROM files WHERE kind='file' AND status='ready' AND object_key LIKE 'manifests/%' ORDER BY created_at`)
+func (s *Server) collectUnreferencedPrefix(ctx context.Context, prefix string, cutoff time.Time, referenced map[string]bool) int {
+	objects, err := s.storage.ListPrefix(ctx, prefix)
 	if err != nil {
-		return 0, err
+		s.log.Warn("GC object listing failed", "prefix", prefix, "error", err)
+		return 0
 	}
-	type item struct {
-		id, key, mimeType, name string
-		size                    int64
+	deleted := 0
+	for _, object := range objects {
+		if referenced[object.Key] || !object.LastModified.Before(cutoff) {
+			continue
+		}
+		if err := s.storage.DeleteObject(ctx, object.Key); err != nil {
+			s.log.Warn("GC object delete failed", "key", object.Key, "error", err)
+			continue
+		}
+		deleted++
 	}
-	var items []item
-	for rows.Next() {
-		var it item
-		if err := rows.Scan(&it.id, &it.key, &it.size, &it.mimeType, &it.name); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		items = append(items, it)
-	}
-	rows.Close()
-	migrated := 0
-	for _, it := range items {
-		body, err := s.storage.Open(ctx, it.key)
-		if err != nil {
-			return migrated, fmt.Errorf("open legacy manifest %s: %w", it.key, err)
-		}
-		// File IDs are already random UUIDs. Reusing the same opaque key on
-		// every pass makes a restart overwrite an upload completed before the
-		// SQLite switch instead of leaking another unreferenced blob.
-		key := storage.BlobKey(it.id)
-		stored, err := s.storage.StoreBlob(ctx, key, it.mimeType, body, it.size)
-		body.Close()
-		if err != nil {
-			return migrated, fmt.Errorf("collapse legacy manifest %s: %w", it.key, err)
-		}
-		if stored.Size != it.size {
-			_ = s.storage.DeleteObject(ctx, key)
-			return migrated, fmt.Errorf("collapse legacy manifest %s: stored size %d, want %d", it.key, stored.Size, it.size)
-		}
-		if thumb, thumbErr := s.storage.GetObject(ctx, thumbnailKey(it.key), maxThumbSource); thumbErr == nil {
-			_ = s.storage.PutImmutable(ctx, thumbnailKey(key), "image/jpeg", thumb)
-		}
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return migrated, err
-		}
-		res, err := tx.ExecContext(ctx, `UPDATE files SET object_key=?,size=?,etag=?,updated_at=? WHERE id=? AND object_key=?`, key, stored.Size, stored.ETag, now, it.id, it.key)
-		if err == nil {
-			_, err = tx.ExecContext(ctx, `UPDATE audio_media SET stream_object_key=?,stream_size=?,stream_etag=?,updated_at=? WHERE file_id=? AND stream_object_key=?`, key, stored.Size, stored.ETag, now, it.id, it.key)
-		}
-		if err != nil {
-			tx.Rollback()
-			return migrated, fmt.Errorf("update migrated file %s: %w", it.id, err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			tx.Rollback()
-			_ = s.storage.DeleteObject(ctx, key)
-			continue // changed under us; leave it alone
-		}
-		if err := tx.Commit(); err != nil {
-			_ = s.storage.DeleteObject(ctx, key)
-			return migrated, err
-		}
-		migrated++
-		s.log.Info("legacy FastCDC file migrated", "file", it.id, "name", it.name, "size", stored.Size, "blob_key", key)
-	}
-	return migrated, nil
+	return deleted
 }
 
 func validateName(name string) error {

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { DriveFile } from '../api'
 import { isAudio, isImage, isVideo, previewURL } from '../fileTypes'
 import { formatSize } from '../format'
-import AudioPlayer from './AudioPlayer.vue'
-import VideoPlayer from './VideoPlayer.vue'
+const AudioPlayer=defineAsyncComponent(()=>import('./AudioPlayer.vue'))
+const VideoPlayer=defineAsyncComponent(()=>import('./VideoPlayer.vue'))
 
 const props=defineProps<{selected:DriveFile;items:DriveFile[]}>()
 const emit=defineEmits<{close:[];change:[item:DriveFile];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()

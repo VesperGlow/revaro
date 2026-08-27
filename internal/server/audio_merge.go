@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -91,6 +90,7 @@ type audioMergeJob struct {
 	UpdatedAt    string
 	cancel       context.CancelFunc
 	mergeCtx     context.Context
+	changed      func()
 	// Local-directory merge state. Files are chunk-uploaded into stagingDir
 	// under APP_WORK_DIR and never touch object storage.
 	localUpload    bool
@@ -169,12 +169,18 @@ func (j *audioMergeJob) update(status string, progress int, message string) {
 		j.Message = message
 	}
 	j.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if j.changed != nil {
+		defer j.changed()
+	}
 }
 
 func (j *audioMergeJob) finish(status, message, jobError string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.Status, j.Message, j.Error = status, message, jobError
+	if j.changed != nil {
+		defer j.changed()
+	}
 	if status == "done" {
 		j.Progress = 100
 	}
@@ -589,7 +595,8 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), audioMergeTimeout)
 	job := &audioMergeJob{
-		ID: ids.New(), Status: "queued", Progress: 1, Message: "等待合并任务开始",
+		changed: s.jobs.Changed,
+		ID:      ids.New(), Status: "queued", Progress: 1, Message: "等待合并任务开始",
 		OutputName: in.Name, OutputFormat: profile.Format, OutputFileID: outputID, ParentID: in.ParentID, InputCount: len(inputs),
 		Source: "revaro", CreatedAt: now, UpdatedAt: now, cancel: cancel,
 	}
@@ -884,9 +891,6 @@ func (s *Server) storeAudioArtifact(ctx context.Context, path, mimeType string, 
 }
 
 func (s *Server) openMergeSource(ctx context.Context, f File) (io.ReadCloser, error) {
-	if storage.IsManifestKey(f.objectKey) {
-		return s.storage.Open(storage.WithDynamicReadAhead(ctx), f.objectKey)
-	}
 	return s.storage.OpenRaw(ctx, f.objectKey)
 }
 

@@ -3,29 +3,24 @@ package storage
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/config"
-	"github.com/VesperGlow/revaro/internal/fastcdc"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
-	"golang.org/x/sync/singleflight"
 )
 
 var ErrObjectTooLarge = errors.New("object exceeds read limit")
-var ErrBlockHashMismatch = errors.New("block content hash does not match block id")
 
 type ObjectInfo struct {
 	Size int64
@@ -44,9 +39,8 @@ type ObjectRef struct {
 	LastModified time.Time
 }
 
-// Storage is the object-storage control plane. New logical files are opaque
-// whole objects; the manifest/block methods below are read/GC compatibility
-// hooks for installations that still contain pre-migration FastCDC data.
+// Storage is the object-storage control plane. Logical files are opaque whole
+// objects under blobs/<UUID>; multipart is transport-only.
 type Storage interface {
 	Ping(context.Context) error
 
@@ -60,16 +54,7 @@ type Storage interface {
 	HeadObject(context.Context, string) (ObjectInfo, error)
 	StoreBlob(context.Context, string, string, io.Reader, int64) (ObjectInfo, error)
 
-	// Legacy blocks: variable-size chunks under blocks/xx/<sha256>.
-	GetBlock(context.Context, string) ([]byte, error)
-	ListBlocks(context.Context) ([]ObjectRef, error)
-
-	// Manifests: JSON block lists under manifests/xx/<sha256-of-json>.
-	PutManifest(context.Context, Manifest) (string, error)
-	GetManifest(context.Context, string) (Manifest, error)
-	ListManifests(context.Context) ([]ObjectRef, error)
-
-	// Reading a legacy logical file back as a stream.
+	// Reading one opaque blob as a seekable, range-backed stream.
 	Open(context.Context, string) (ReadSeekCloserAt, error)
 	ReadFile(context.Context, string, int64) ([]byte, error)
 
@@ -86,49 +71,16 @@ type Storage interface {
 }
 
 type S3 struct {
-	client        *s3.Client
-	presign       *s3.PresignClient
-	bucket        string
-	maxBlockSize  int64
-	blockMinSize  int64
-	blockSize     int64
-	blockCacheDir string
-	blockDiskCap  int64
-	blockMinFree  int64
-	manifestDB    *sql.DB
-	legacyOnce    sync.Once
-	legacyErr     error
-	chunking      fastcdc.Config
-	cacheOnce     sync.Once
-	blockCache    *blockLRU
-	diskCache     *diskBlockCache
-	ramCapacity   int64
-	manifests     *manifestIndex
-	blockFlightMu sync.Mutex
-	blockFlights  map[string]*blockDownload
-	manifestGroup singleflight.Group
-}
-
-type blockDownload struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	waiters int
-	data    []byte
-	err     error
+	client  *s3.Client
+	presign *s3.PresignClient
+	bucket  string
 }
 
 func NewS3(ctx context.Context, c config.Config) (*S3, error) {
-	return newS3(ctx, c, nil)
+	return newS3(ctx, c)
 }
 
-// NewS3WithDB enables the persistent SQLite manifest index used by the
-// application. NewS3 remains available for storage-only callers and tests.
-func NewS3WithDB(ctx context.Context, c config.Config, db *sql.DB) (*S3, error) {
-	return newS3(ctx, c, db)
-}
-
-func newS3(ctx context.Context, c config.Config, db *sql.DB) (*S3, error) {
+func newS3(ctx context.Context, c config.Config) (*S3, error) {
 	options := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(c.S3Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(c.S3AccessKey, c.S3SecretKey, "")),
@@ -158,35 +110,9 @@ func newS3(ctx context.Context, c config.Config, db *sql.DB) (*S3, error) {
 			o.BaseEndpoint = aws.String(c.S3PublicEndpoint)
 		}
 	})
-	minimum, average, maximum := c.ChunkSizes()
 	return &S3{
 		client: client, presign: s3.NewPresignClient(presignClient), bucket: c.S3Bucket,
-		maxBlockSize: maximum, blockMinSize: minimum, blockSize: average,
-		blockCacheDir: c.BlockCacheDir, blockDiskCap: c.BlockSSDCacheCapacity, blockMinFree: c.BlockCacheMinFree,
-		ramCapacity: c.BlockRAMCacheCapacity, manifestDB: db,
 	}, nil
-}
-
-// initLegacy initializes the FastCDC compatibility data plane on first use.
-// Normal blobs/<UUID> operations never allocate block caches, scan the cache
-// directory, or construct the manifest index.
-func (s *S3) initLegacy() error {
-	s.legacyOnce.Do(func() {
-		chunking, err := fastcdc.NewConfig(int(s.blockMinSize), int(s.blockSize), int(s.maxBlockSize))
-		if err != nil {
-			s.legacyErr = fmt.Errorf("configure FastCDC: %w", err)
-			return
-		}
-		diskCache, err := newDiskBlockCache(s.blockCacheDir, s.blockDiskCap, s.blockMinFree, s.maxBlockSize)
-		if err != nil {
-			s.legacyErr = fmt.Errorf("initialize persistent block cache: %w", err)
-			return
-		}
-		s.chunking = chunking
-		s.diskCache = diskCache
-		s.manifests = newManifestIndex(s.manifestDB)
-	})
-	return s.legacyErr
 }
 
 func (s *S3) Ping(ctx context.Context) error {
@@ -437,176 +363,6 @@ func ValidMultipartPartCount(size, partSize int64) (int, error) {
 	return count, nil
 }
 
-// PresignBlockPut issues a conditional PUT URL for one block. The URL binds
-// If-None-Match: * as a signed header and the SHA-256 checksum as a signed
-// query parameter (AWS SigV4 hoists eligible x-amz-* headers). Existing
-// content-addressed blocks therefore cannot be overwritten, and S3 rejects
-// payloads whose checksum does not match their key.
-func (s *S3) PresignBlockPut(ctx context.Context, id string, expiry time.Duration) (string, error) {
-	checksum, err := BlockChecksumSHA256(id)
-	if err != nil {
-		return "", err
-	}
-	in := &s3.PutObjectInput{
-		Bucket:         aws.String(s.bucket),
-		Key:            aws.String(BlockKey(id)),
-		ContentType:    aws.String("application/octet-stream"),
-		IfNoneMatch:    aws.String("*"),
-		ChecksumSHA256: aws.String(checksum),
-	}
-	out, err := s.presign.PresignPutObject(ctx, in, s3.WithPresignExpires(expiry))
-	if err != nil {
-		return "", err
-	}
-	return out.URL, nil
-}
-
-// PutBlock stores a block received through the application upload proxy. The
-// body must match the content-addressed key so a client cannot poison a block.
-func (s *S3) PutBlock(ctx context.Context, id string, data []byte) error {
-	if err := s.initLegacy(); err != nil {
-		return err
-	}
-	if !ValidBlockID(id) || hashBytes(data) != id {
-		return ErrBlockHashMismatch
-	}
-	if int64(len(data)) > s.maxBlockSize {
-		return errors.New("block exceeds configured block size")
-	}
-	if err := s.putConditional(ctx, BlockKey(id), blockMime, data); err != nil {
-		return err
-	}
-	_ = s.diskCache.put(id, data)
-	s.cachedBlocks().put(id, data)
-	return nil
-}
-
-func (s *S3) HeadBlock(ctx context.Context, id string) (Block, error) {
-	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(BlockKey(id))})
-	if err != nil {
-		return Block{}, err
-	}
-	return Block{ID: id, Size: aws.ToInt64(out.ContentLength)}, nil
-}
-
-func (s *S3) GetBlock(ctx context.Context, id string) ([]byte, error) {
-	if err := s.initLegacy(); err != nil {
-		return nil, err
-	}
-	return s.getBlock(ctx, Block{ID: id, Size: -1})
-}
-
-func (s *S3) getBlock(ctx context.Context, block Block) ([]byte, error) {
-	if err := s.initLegacy(); err != nil {
-		return nil, err
-	}
-	id := block.ID
-	if !ValidBlockID(id) {
-		return nil, fmt.Errorf("invalid block id %q", id)
-	}
-	cache := s.cachedBlocks()
-	if data, ok := cache.get(id); ok {
-		if block.Size < 0 || int64(len(data)) == block.Size {
-			return data, nil
-		}
-	}
-	if data, ok := s.diskCache.get(id, block.Size); ok {
-		cache.put(id, data)
-		return data, nil
-	}
-	return s.joinBlockDownload(ctx, block)
-}
-
-// joinBlockDownload coalesces concurrent misses without assigning ownership
-// of the S3 request to an arbitrary caller. Every waiter has independent
-// cancellation; the shared GET is cancelled as soon as the last waiter leaves.
-func (s *S3) joinBlockDownload(ctx context.Context, block Block) ([]byte, error) {
-	s.blockFlightMu.Lock()
-	if s.blockFlights == nil {
-		s.blockFlights = make(map[string]*blockDownload)
-	}
-	flight := s.blockFlights[block.ID]
-	if flight == nil {
-		flightCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		flight = &blockDownload{ctx: flightCtx, cancel: cancel, done: make(chan struct{})}
-		s.blockFlights[block.ID] = flight
-		go s.runBlockDownload(block, flight)
-	}
-	flight.waiters++
-	s.blockFlightMu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		s.leaveBlockDownload(block.ID, flight)
-		return nil, ctx.Err()
-	case <-flight.done:
-		return flight.data, flight.err
-	}
-}
-
-func (s *S3) leaveBlockDownload(id string, flight *blockDownload) {
-	s.blockFlightMu.Lock()
-	defer s.blockFlightMu.Unlock()
-	if s.blockFlights[id] != flight {
-		return
-	}
-	flight.waiters--
-	if flight.waiters <= 0 {
-		delete(s.blockFlights, id)
-		flight.cancel()
-	}
-}
-
-func (s *S3) runBlockDownload(block Block, flight *blockDownload) {
-	flight.data, flight.err = s.fetchBlockRemote(flight.ctx, block)
-	s.blockFlightMu.Lock()
-	if s.blockFlights[block.ID] == flight {
-		delete(s.blockFlights, block.ID)
-	}
-	close(flight.done)
-	s.blockFlightMu.Unlock()
-}
-
-func (s *S3) fetchBlockRemote(ctx context.Context, block Block) ([]byte, error) {
-	id := block.ID
-	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(BlockKey(id))})
-	if err != nil {
-		return nil, err
-	}
-	defer out.Body.Close()
-	if block.Size >= 0 && out.ContentLength != nil && aws.ToInt64(out.ContentLength) != block.Size {
-		return nil, fmt.Errorf("block %s size mismatch: S3 says %d bytes, manifest says %d", id, aws.ToInt64(out.ContentLength), block.Size)
-	}
-	data, err := io.ReadAll(io.LimitReader(out.Body, s.maxBlockSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > s.maxBlockSize {
-		return nil, fmt.Errorf("block %s exceeds configured block size", id)
-	}
-	if block.Size >= 0 && int64(len(data)) != block.Size {
-		return nil, fmt.Errorf("block %s size mismatch: stored %d bytes, manifest says %d", id, len(data), block.Size)
-	}
-	if hashBytes(data) != id {
-		return nil, ErrBlockHashMismatch
-	}
-	_ = s.diskCache.put(id, data)
-	s.cachedBlocks().put(id, data)
-	return data, nil
-}
-
-func (s *S3) cachedBlocks() *blockLRU {
-	s.cacheOnce.Do(func() {
-		if s.blockCache == nil {
-			s.blockCache = newBlockLRU(s.ramCapacity)
-		}
-	})
-	return s.blockCache
-}
-
 // putConditional stores an immutable content-addressed object. A concurrent
 // upload of identical content loses the race with 412, which is treated as
 // success because the object that exists is identical by construction.
@@ -630,13 +386,6 @@ func (s *S3) putConditional(ctx context.Context, key, mime string, data []byte) 
 		return nil
 	}
 	return err
-}
-
-func (s *S3) ListBlocks(ctx context.Context) ([]ObjectRef, error) {
-	return s.ListPrefix(ctx, blockPrefix)
-}
-func (s *S3) ListManifests(ctx context.Context) ([]ObjectRef, error) {
-	return s.ListPrefix(ctx, manifestPrefix)
 }
 
 func (s *S3) ListPrefix(ctx context.Context, prefix string) ([]ObjectRef, error) {
@@ -743,10 +492,10 @@ func (s *S3) DeleteObject(ctx context.Context, key string) error {
 	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
 	if err == nil {
-		return newManifestIndex(s.manifestDB).delete(ctx, key)
+		return nil
 	}
 	if IsNotFound(err) {
-		return newManifestIndex(s.manifestDB).delete(ctx, key)
+		return nil
 	}
 	return err
 }

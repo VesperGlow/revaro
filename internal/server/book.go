@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/reader"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -205,22 +203,6 @@ func (s *Server) saveBookProgress(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// openBookSource 兼容升级前的整对象键（启动迁移完成前的小窗口）。
 func (s *Server) openBookSource(ctx context.Context, f File) (io.ReadSeekCloser, error) {
-	rc, err := s.storage.Open(ctx, f.objectKey)
-	if err == nil {
-		return rc, nil
-	}
-	if !storage.IsManifestKey(f.objectKey) {
-		data, rawErr := s.storage.GetObject(ctx, f.objectKey, reader.MaxEPUB)
-		if rawErr != nil {
-			return nil, err
-		}
-		return readSeekNopCloser{Reader: bytes.NewReader(data)}, nil
-	}
-	return nil, err
+	return s.storage.Open(ctx, f.objectKey)
 }
-
-type readSeekNopCloser struct{ *bytes.Reader }
-
-func (readSeekNopCloser) Close() error { return nil }

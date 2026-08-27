@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sys/unix"
 )
@@ -45,6 +44,7 @@ type archiveJob struct {
 	tempDir          string
 	archivePath      string
 	passwordDeadline time.Time
+	changed          func()
 
 	ID         string `json:"id"`
 	FileID     string `json:"file_id"`
@@ -65,6 +65,9 @@ func (job *archiveJob) update(status string, progress int, message string) {
 	job.Status, job.Progress, job.Message = status, max(job.Progress, min(progress, 100)), message
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
+	if job.changed != nil {
+		job.changed()
+	}
 }
 
 func (job *archiveJob) fail(message string) {
@@ -73,6 +76,9 @@ func (job *archiveJob) fail(message string) {
 	job.passwordDeadline = time.Time{}
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
+	if job.changed != nil {
+		job.changed()
+	}
 }
 
 func (job *archiveJob) needsPassword(message string) {
@@ -81,6 +87,9 @@ func (job *archiveJob) needsPassword(message string) {
 	job.passwordDeadline = time.Now().Add(archivePasswordWaitTTL)
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
+	if job.changed != nil {
+		job.changed()
+	}
 }
 
 func (job *archiveJob) resumeWithPassword() bool {
@@ -92,6 +101,9 @@ func (job *archiveJob) resumeWithPassword() bool {
 	job.Status, job.Error, job.Message = "checking", "", "正在验证密码"
 	job.passwordDeadline = time.Time{}
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if job.changed != nil {
+		defer job.changed()
+	}
 	return true
 }
 
@@ -179,7 +191,7 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		parentID = *f.ParentID
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	job := &archiveJob{ID: ids.New(), FileID: f.ID, ParentID: parentID, Name: f.Name, Status: "queued", Progress: 0, Message: "等待解压", CreatedAt: now, UpdatedAt: now}
+	job := &archiveJob{ID: ids.New(), FileID: f.ID, ParentID: parentID, Name: f.Name, Status: "queued", Progress: 0, Message: "等待解压", CreatedAt: now, UpdatedAt: now, changed: s.jobs.Changed}
 	s.archiveMu.Lock()
 	s.archiveJobs[job.ID] = job
 	s.archiveMu.Unlock()
@@ -509,9 +521,6 @@ type extractedObject struct {
 }
 
 func (s *Server) openArchiveSource(ctx context.Context, f File) (io.ReadCloser, error) {
-	if storage.IsManifestKey(f.objectKey) {
-		return s.storage.Open(storage.WithDynamicReadAhead(ctx), f.objectKey)
-	}
 	return s.storage.OpenRaw(ctx, f.objectKey)
 }
 
