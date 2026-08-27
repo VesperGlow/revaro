@@ -12,7 +12,7 @@ const progress=computed(()=>activeJobs.value.length?Math.round(activeJobs.value.
 const circumference=100.53
 const dashOffset=computed(()=>circumference*(1-progress.value/100))
 const center=ref<HTMLDetailsElement|null>(null)
-const statusText=(job:AudioMergeResponse)=>job.status==='queued'?'队列中':job.status==='preparing'?'准备源文件':job.status==='merging'?'正在合并':job.status==='saving'?'正在保存':job.status==='cancelling'?'正在取消':job.status==='done'?'已完成':job.status==='cancelled'?'已取消':job.error||'失败'
+const statusText=(job:AudioMergeResponse)=>job.status==='uploading'?'正在上传素材':job.status==='queued'?'队列中':job.status==='preparing'?'准备源文件':job.status==='merging'?'正在合并':job.status==='saving'?'正在保存':job.status==='cancelling'?'正在取消':job.status==='done'?'已完成':job.status==='cancelled'?'已取消':job.error||'失败'
 
 function closeFromOutside(event:PointerEvent){const target=event.target;if(center.value?.open&&target instanceof Node&&!center.value.contains(target))center.value.open=false}
 function closeFromEscape(event:KeyboardEvent){if(event.key==='Escape'&&center.value?.open){center.value.open=false;center.value.querySelector<HTMLElement>('summary')?.focus()}}

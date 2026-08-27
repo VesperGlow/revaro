@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -85,9 +86,21 @@ type audioMergeJob struct {
 	OutputFileID string
 	ParentID     string
 	InputCount   int
+	Source       string
 	CreatedAt    string
 	UpdatedAt    string
 	cancel       context.CancelFunc
+	mergeCtx     context.Context
+	// Local-directory merge state. Files are chunk-uploaded into stagingDir
+	// under APP_WORK_DIR and never touch object storage.
+	localUpload    bool
+	stagingDir     string
+	uploadSlotHeld bool
+	uploadedBytes  int64
+	files          []localMergeFile
+	audioOrder     []int // staging file index per audio, in final play order
+	subtitleFor    []int // subtitle file index per audio order entry, or -1
+	coverIndex     int   // cover file index, or -1
 }
 
 type audioMergeSnapshot struct {
@@ -101,6 +114,7 @@ type audioMergeSnapshot struct {
 	OutputFileID string `json:"output_file_id,omitempty"`
 	ParentID     string `json:"parent_id"`
 	InputCount   int    `json:"input_count"`
+	Source       string `json:"source,omitempty"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 }
@@ -112,7 +126,33 @@ func (j *audioMergeJob) snapshot() audioMergeSnapshot {
 		ID: j.ID, Status: j.Status, Progress: j.Progress, Message: j.Message,
 		Error: j.Error, OutputName: j.OutputName, OutputFormat: j.OutputFormat, OutputFileID: j.OutputFileID,
 		ParentID:   j.ParentID,
-		InputCount: j.InputCount, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt,
+		InputCount: j.InputCount, Source: j.Source, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt,
+	}
+}
+
+// cleanupStaging removes the local merge staging directory once. Callers may
+// invoke it any number of times; only the first call touches the filesystem.
+func (j *audioMergeJob) cleanupStaging(log *slog.Logger) {
+	j.mu.Lock()
+	dir := j.stagingDir
+	j.stagingDir = ""
+	j.mu.Unlock()
+	if dir == "" {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		log.Warn("local merge staging cleanup failed", "job", j.ID, "path", dir, "error", err)
+	}
+}
+
+// releaseUploadSlot returns the bounded local-merge upload slot exactly once.
+func (j *audioMergeJob) releaseUploadSlot(s *Server) {
+	j.mu.Lock()
+	held := j.uploadSlotHeld
+	j.uploadSlotHeld = false
+	j.mu.Unlock()
+	if held {
+		<-s.localMergeJobSlots
 	}
 }
 
@@ -261,7 +301,7 @@ func audioSubtitleMatchPriority(audioName, subtitleName string) (int, bool) {
 	return 0, false
 }
 
-func (s *Server) prepareMergedSubtitles(ctx context.Context, sources []*File, durations []time.Duration) ([]storedAudioSubtitle, error) {
+func (s *Server) prepareMergedSubtitles(ctx context.Context, sources []*File, durations []time.Duration, openSource func(context.Context, File) (io.ReadCloser, error)) ([]storedAudioSubtitle, error) {
 	merged := make([]storedAudioSubtitle, 0)
 	var offset int64
 	var mergedTextBytes int
@@ -274,7 +314,7 @@ func (s *Server) prepareMergedSubtitles(ctx context.Context, sources []*File, du
 		if source.Size <= 0 || source.Size > maxAudioSubtitleBytes {
 			return nil, audioMergeUserError{message: fmt.Sprintf("字幕「%s」为空或超过 8 MiB", source.Name)}
 		}
-		reader, err := s.openMergeSource(ctx, source)
+		reader, err := openSource(ctx, source)
 		if err != nil {
 			return nil, fmt.Errorf("open subtitle %s: %w", source.ID, err)
 		}
@@ -551,7 +591,7 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 	job := &audioMergeJob{
 		ID: ids.New(), Status: "queued", Progress: 1, Message: "等待合并任务开始",
 		OutputName: in.Name, OutputFormat: profile.Format, OutputFileID: outputID, ParentID: in.ParentID, InputCount: len(inputs),
-		CreatedAt: now, UpdatedAt: now, cancel: cancel,
+		Source: "revaro", CreatedAt: now, UpdatedAt: now, cancel: cancel,
 	}
 	s.audioMergeMu.Lock()
 	s.audioMergeJobs[job.ID] = job
@@ -599,6 +639,17 @@ func (s *Server) cancelAudioMerge(w http.ResponseWriter, r *http.Request) {
 		s.audioMergeMu.Lock()
 		delete(s.audioMergeJobs, job.ID)
 		s.audioMergeMu.Unlock()
+		job.cleanupStaging(s.log)
+		job.releaseUploadSlot(s)
+	} else if snapshot.Status == "uploading" {
+		// Local-directory upload in progress: drop the staging directory,
+		// the reserved output placeholder and the upload slot immediately.
+		s.audioMergeMu.Lock()
+		delete(s.audioMergeJobs, job.ID)
+		s.audioMergeMu.Unlock()
+		job.cleanupStaging(s.log)
+		job.releaseUploadSlot(s)
+		_, _ = s.db.ExecContext(r.Context(), `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
 	} else {
 		job.update("cancelling", snapshot.Progress, "正在取消合并")
 		job.cancel()
@@ -609,9 +660,16 @@ func (s *Server) cancelAudioMerge(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runAudioMerge(ctx context.Context, job *audioMergeJob, inputs []File, subtitles []*File, profile audioOutputProfile, cover []byte) {
 	defer job.cancel()
 	err := s.executeAudioMerge(ctx, job, inputs, subtitles, profile, cover)
+	s.audioMergeFinished(job, err, profile, len(inputs))
+}
+
+// audioMergeFinished records the outcome of a merge, removes the pending
+// output placeholder on failure, releases shared resources and schedules the
+// terminal job removal. Shared by object-storage and local-directory merges.
+func (s *Server) audioMergeFinished(job *audioMergeJob, err error, profile audioOutputProfile, inputCount int) {
 	if err == nil {
 		job.finish("done", "合并完成", "")
-		s.log.Info("audio merge completed", "job", job.ID, "file", job.OutputFileID, "format", profile.Format, "inputs", len(inputs))
+		s.log.Info("audio merge completed", "job", job.ID, "file", job.OutputFileID, "format", profile.Format, "inputs", inputCount)
 	} else {
 		_, _ = s.db.ExecContext(context.Background(), `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
 		if errors.Is(err, context.Canceled) {
@@ -628,10 +686,14 @@ func (s *Server) runAudioMerge(ctx context.Context, job *audioMergeJob, inputs [
 		}
 		s.log.Error("audio merge failed", "job", job.ID, "output", job.OutputName, "error", err)
 	}
+	job.cleanupStaging(s.log)
+	job.releaseUploadSlot(s)
 	time.AfterFunc(6*time.Hour, func() {
 		s.audioMergeMu.Lock()
 		delete(s.audioMergeJobs, job.ID)
 		s.audioMergeMu.Unlock()
+		job.cleanupStaging(s.log)
+		job.releaseUploadSlot(s)
 	})
 }
 
@@ -709,6 +771,14 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 		}
 	}
 
+	return s.encodeMergedAudio(ctx, job, profile, workDir, inputs, paths, durations, probes, subtitleSources, s.openMergeSource, cover)
+}
+
+// encodeMergedAudio runs the shared FFmpeg pipeline for an audio merge whose
+// source files are already materialized at local paths: chapter metadata,
+// cover embedding, subtitle time-shifting, ALAC/FLAC/AAC encoding and finally
+// storing the master artifact as a normal blobs/<UUID> object.
+func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, profile audioOutputProfile, workDir string, inputs []File, paths []string, durations []time.Duration, probes []audioProbe, subtitleSources []*File, openSubtitle func(context.Context, File) (io.ReadCloser, error), cover []byte) error {
 	metadataPath, err := writeChapterMetadata(workDir, job.OutputName, inputs, durations)
 	if err != nil {
 		return err
@@ -723,7 +793,7 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 	storedSubtitles := make([]storedAudioSubtitle, 0)
 	subtitlePath := ""
 	if profile.Subtitles {
-		storedSubtitles, err = s.prepareMergedSubtitles(ctx, subtitleSources, durations)
+		storedSubtitles, err = s.prepareMergedSubtitles(ctx, subtitleSources, durations, openSubtitle)
 		if err != nil {
 			return err
 		}
@@ -735,10 +805,16 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 		}
 	}
 	outputPath := filepath.Join(workDir, "merged"+profile.Extension)
-	if err := runAudioFFmpeg(ctx, s.cfg.FFmpegPath, paths, metadataPath, coverPath, subtitlePath, job.OutputName, durations, probes, profile, outputPath, 86, job); err != nil {
+	if err := runAudioFFmpeg(ctx, s.cfg.FFmpegPath, paths, metadataPath, coverPath, subtitlePath, job.OutputName, durations, probes, profile, outputPath, 40, 86, job); err != nil {
 		return err
 	}
+	return s.finalizeAudioMerge(ctx, job, outputPath, profile, cover, inputs, durations, storedSubtitles)
+}
 
+// finalizeAudioMerge uploads the encoded master to object storage as a normal
+// blobs/<UUID> object, stores the cover thumbnail and commits the file record
+// with chapters and subtitle metadata.
+func (s *Server) finalizeAudioMerge(ctx context.Context, job *audioMergeJob, outputPath string, profile audioOutputProfile, cover []byte, inputs []File, durations []time.Duration, storedSubtitles []storedAudioSubtitle) error {
 	job.update("saving", 88, "正在写入 Revaro 对象存储")
 	key, masterSize, masterETag, err := s.storeAudioArtifact(ctx, outputPath, profile.MimeType, 88, 99, "正在保存合并音频", job)
 	if err != nil {
@@ -951,7 +1027,7 @@ func escapeFFMetadata(value string) string {
 	return replacer.Replace(value)
 }
 
-func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadataPath, coverPath, subtitlePath, outputName string, durations []time.Duration, probes []audioProbe, profile audioOutputProfile, outputPath string, progressEnd int, job *audioMergeJob) error {
+func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadataPath, coverPath, subtitlePath, outputName string, durations []time.Duration, probes []audioProbe, profile audioOutputProfile, outputPath string, progressStart, progressEnd int, job *audioMergeJob) error {
 	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
 	for _, path := range paths {
 		args = append(args, "-i", path)
@@ -1027,7 +1103,7 @@ func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadata
 		if strings.HasPrefix(line, "out_time_us=") && total > 0 {
 			micros, parseErr := strconv.ParseInt(strings.TrimPrefix(line, "out_time_us="), 10, 64)
 			if parseErr == nil {
-				progress := 40 + int(time.Duration(micros)*time.Microsecond*time.Duration(progressEnd-40)/total)
+				progress := progressStart + int(time.Duration(micros)*time.Microsecond*time.Duration(progressEnd-progressStart)/total)
 				job.update("merging", min(progress, progressEnd), "FFmpeg 正在按顺序合并音频")
 			}
 		}

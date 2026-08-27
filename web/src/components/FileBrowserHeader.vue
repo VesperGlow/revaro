@@ -22,6 +22,7 @@ const emit=defineEmits<{
   createFolder:[]
   uploadFiles:[]
   uploadFolder:[]
+  localAudioMerge:[]
   leaveTrash:[]
   emptyTrash:[]
 }>()
@@ -35,10 +36,11 @@ function runCreate(action:'document'|'folder'){
   if(action==='document')emit('newDocument')
   else emit('createFolder')
 }
-function runUpload(action:'files'|'folder'){
+function runUpload(action:'files'|'folder'|'localMerge'){
   uploadMenu.value?.removeAttribute('open')
   if(action==='files')emit('uploadFiles')
-  else emit('uploadFolder')
+  else if(action==='folder')emit('uploadFolder')
+  else emit('localAudioMerge')
 }
 function closeMenus(event:PointerEvent){
   const target=event.target as Node|null
@@ -87,6 +89,7 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
       <div class="desktop-create-actions">
         <button class="secondary" @click="$emit('newDocument')">＋ 新建文档</button>
         <button class="secondary" @click="$emit('createFolder')">＋ 新建文件夹</button>
+        <button class="secondary merge-local-action" title="选择电脑上的音频目录，合并为无损 ALAC M4A" @click="$emit('localAudioMerge')">♬ 从本地目录合并</button>
       </div>
       <details ref="createMenu" class="create-menu">
         <summary class="secondary">＋ 新建</summary>
@@ -100,6 +103,7 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
         <div class="upload-menu-popover">
           <button @click="runUpload('files')"><span>↥</span><div><b>上传文件</b><small>可一次选择多个文件</small></div></button>
           <button @click="runUpload('folder')"><span>▰</span><div><b>上传文件夹</b><small>保留完整目录结构</small></div></button>
+          <button @click="runUpload('localMerge')"><span>♬</span><div><b>从本地目录合并</b><small>WAV + VTT + 封面，输出 ALAC M4A</small></div></button>
         </div>
       </details>
     </div>

@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -56,6 +57,9 @@ type Server struct {
 	audioMergeSlots    chan struct{}
 	audioMergeMu       sync.RWMutex
 	audioMergeJobs     map[string]*audioMergeJob
+	localMergeJobSlots chan struct{}
+	localMergeUploads  chan struct{}
+	diskFree           func(string) (int64, error) // override for tests; nil uses statfs
 	audioHLSSlots      chan struct{}
 	audioHLSMu         sync.RWMutex
 	audioHLSSessions   map[string]*audioHLSSession
@@ -107,7 +111,9 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		limiter: newLoginLimiter(), s3Origin: s3Origin,
 		shareSlots:      make(chan struct{}, 8),
 		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
-		audioHLSSlots: make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
+		localMergeJobSlots: make(chan struct{}, maxLocalMergeUploadingJobs),
+		localMergeUploads:  make(chan struct{}, localMergeUploadConcurrency),
+		audioHLSSlots:      make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
 		videoFMP4Slots: make(chan struct{}, 2), videoFMP4Sessions: make(map[string]*videoFMP4Session),
 		videoSubtitleCache: make(map[string]*videoSubtitleCacheEntry),
@@ -130,6 +136,19 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		logger.Error("interrupted audio merge cleanup failed", "error", err)
 	} else if removed, _ := result.RowsAffected(); removed > 0 {
 		logger.Info("interrupted audio merges cleaned", "files", removed)
+	}
+	// Local-directory merge staging survives neither the process nor a clean
+	// shutdown; remove any leftover job directories from previous runs.
+	if stale, err := filepath.Glob(filepath.Join(cfg.WorkDir, "revaro-local-merge-*")); err == nil {
+		for _, dir := range stale {
+			if err := os.RemoveAll(dir); err != nil {
+				logger.Warn("stale local merge staging cleanup failed", "path", dir, "error", err)
+			} else {
+				logger.Info("stale local merge staging cleaned", "path", dir)
+			}
+		}
+	} else if !errors.Is(err, filepath.ErrBadPattern) {
+		logger.Warn("local merge staging scan failed", "error", err)
 	}
 	go s.cleanupAudioHLSSessions()
 	go s.cleanupVideoHLSSessions()
@@ -272,6 +291,9 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/audio-merges", s.listAudioMerges)
 			r.Get("/audio-merges/{id}", s.getAudioMerge)
 			r.Delete("/audio-merges/{id}", s.cancelAudioMerge)
+			r.Post("/audio-merges/local", s.createLocalAudioMerge)
+			r.Post("/audio-merges/local/{id}/files/{fileIndex}/chunks/{chunkIndex}", s.uploadLocalMergeChunk)
+			r.Post("/audio-merges/local/{id}/complete", s.completeLocalAudioMerge)
 			r.Post("/downloads", s.createDownload)
 			r.Get("/downloads", s.listDownloads)
 			r.Get("/downloads/{id}", s.getDownload)

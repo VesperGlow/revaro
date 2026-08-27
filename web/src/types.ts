@@ -25,7 +25,7 @@ export interface AudioMediaResponse { duration:number; chapters:AudioChapter[]; 
 export interface AudioHLSResponse { session_id:string; playlist_url:string; start:number }
 export interface AudioMergeResponse {
   id:string
-  status:'queued'|'preparing'|'merging'|'saving'|'cancelling'|'done'|'failed'|'cancelled'
+  status:'uploading'|'queued'|'preparing'|'merging'|'saving'|'cancelling'|'done'|'failed'|'cancelled'
   progress:number
   message:string
   error?:string
@@ -34,9 +34,17 @@ export interface AudioMergeResponse {
   output_file_id?:string
   parent_id:string
   input_count:number
+  source?:'revaro'|'local'
   created_at:string
   updated_at:string
 }
+
+export interface LocalMergeFileInfo { name:string; size:number; kind:'audio'|'subtitle'|'cover'; chunk_count:number }
+export interface LocalMergeCreateResponse extends AudioMergeResponse {
+  chunk_size:number
+  files:LocalMergeFileInfo[]
+}
+export interface LocalMergePick { file:File; name:string; size:number; kind:'audio'|'subtitle'|'cover'; preview?:string }
 
 export type DownloadStatus = 'metadata'|'waiting'|'queued'|'downloading'|'paused'|'importing'|'done'|'failed'|'cancelled'
 export interface DownloadFile {

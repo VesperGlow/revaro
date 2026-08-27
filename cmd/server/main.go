@@ -105,6 +105,7 @@ func main() {
 	}()
 	runHousekeeping := func() {
 		app.CleanupExpiredUploads(context.Background())
+		app.CleanupExpiredLocalMerges(context.Background())
 		if app.CleanupExpiredTrash(context.Background()) > 0 {
 			// Expired trash must release its content even when periodic orphan
 			// collection is disabled with GC_INTERVAL=0.
