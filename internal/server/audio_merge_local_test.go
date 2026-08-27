@@ -35,6 +35,20 @@ func createLocalMerge(t *testing.T, a *testApp, name string, files []localMergeT
 	return a.request("POST", "/api/audio-merges/local", body, true)
 }
 
+// fakeFFmpeg points the merge endpoint at an executable stub so tests that
+// only exercise job creation, upload and validation keep working on machines
+// (like CI runners) without a real ffmpeg installation. Tests that run the
+// actual encode pipeline check for ffprobe and skip instead.
+func fakeFFmpeg(t *testing.T, a *testApp) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a.srv.cfg.FFmpegPath = path
+}
+
 func localMergeContent(name string, size int64) []byte {
 	data := make([]byte, size)
 	for i := range data {
@@ -202,6 +216,7 @@ func keys(m map[string][]byte) []string {
 
 func TestLocalAudioMergeSubtitleNameCompatibility(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	// 兼容规则：track.vtt、track.wav.vtt、以及导出器保留旧音频扩展名的 track.mp3.vtt。
 	files := []localMergeTestFile{
 		{Name: "01 序章.wav", Size: 1}, {Name: "01 序章.vtt", Size: 1},
@@ -236,6 +251,7 @@ func TestLocalAudioMergeSubtitleNameCompatibility(t *testing.T) {
 
 func TestLocalAudioMergeCoverAutoSelection(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	audios := []localMergeTestFile{{Name: "track.wav", Size: 1}, {Name: "track2.wav", Size: 1}}
 	// 只有一张图片时自动选择。
 	createdRR := createLocalMerge(t, a, "单图.m4a", append(audios, localMergeTestFile{Name: "artwork.png", Size: 1}), nil, nil)
@@ -316,6 +332,7 @@ func TestLocalAudioMergeFailureCleansStaging(t *testing.T) {
 
 func TestLocalAudioMergeCancelDuringUpload(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	first := localMergeContent("a.wav", 100)
 	second := localMergeContent("b.wav", 100)
 	// 8 MiB 分块，单文件 100 字节只有 1 个分块；只上传第一个文件后取消。
@@ -353,6 +370,7 @@ func TestLocalAudioMergeCancelDuringUpload(t *testing.T) {
 
 func TestLocalAudioMergeDiskSpaceInsufficient(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	// 创建时空间不足：直接拒绝。
 	a.srv.diskFree = func(string) (int64, error) { return 0, nil }
 	files := []localMergeTestFile{{Name: "a.wav", Size: 10}, {Name: "b.wav", Size: 10}}
@@ -392,6 +410,7 @@ func TestLocalAudioMergeDiskSpaceInsufficient(t *testing.T) {
 
 func TestLocalAudioMergeRejectsInvalidInputs(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	valid := []localMergeTestFile{{Name: "a.wav", Size: 10}, {Name: "b.wav", Size: 10}}
 	cover := "cover.jpg"
 	for name, tc := range map[string]struct {
@@ -429,6 +448,7 @@ func TestLocalAudioMergeRejectsInvalidInputs(t *testing.T) {
 
 func TestLocalAudioMergeChunkValidation(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	files := []localMergeTestFile{{Name: "a.wav", Size: 100}, {Name: "b.wav", Size: 100}}
 	createdRR := createLocalMerge(t, a, "分块校验.m4a", files, nil, nil)
 	if createdRR.Code != http.StatusCreated {
@@ -483,6 +503,7 @@ func TestLocalAudioMergeChunkValidation(t *testing.T) {
 
 func TestLocalMergeConcurrencyLimit(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	audio := []localMergeTestFile{{Name: "a.wav", Size: 1}, {Name: "b.wav", Size: 1}}
 	var created []localMergeCreated
 	for i := 0; i < maxLocalMergeUploadingJobs+1; i++ {
@@ -555,6 +576,7 @@ func TestNewCleansStaleLocalMergeStaging(t *testing.T) {
 
 func TestLocalMergeUploadProgressAndSlotRelease(t *testing.T) {
 	a := newTestApp(t)
+	fakeFFmpeg(t, a)
 	files := []localMergeTestFile{{Name: "a.wav", Size: 100}, {Name: "b.wav", Size: 100}}
 	createdRR := createLocalMerge(t, a, "进度.m4a", files, nil, nil)
 	created := decode[localMergeCreated](t, createdRR)

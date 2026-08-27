@@ -501,6 +501,7 @@ func (s *Server) uploadLocalMergeChunk(w http.ResponseWriter, r *http.Request) {
 	if chunkIndex == job.files[fileIndex].Chunks-1 {
 		expected = job.files[fileIndex].Size - localMergeChunkSize*int64(job.files[fileIndex].Chunks-1)
 	}
+	stagingDir := job.stagingDir
 	job.mu.Unlock()
 
 	select {
@@ -509,7 +510,7 @@ func (s *Server) uploadLocalMergeChunk(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 		return
 	}
-	chunksDir := filepath.Join(job.stagingDir, "chunks")
+	chunksDir := filepath.Join(stagingDir, "chunks")
 	if err := os.MkdirAll(chunksDir, 0o700); err != nil {
 		problem(w, http.StatusInternalServerError, "无法写入本地暂存目录")
 		return
@@ -657,7 +658,9 @@ func (s *Server) executeLocalAudioMerge(ctx context.Context, job *audioMergeJob)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	job.mu.Lock()
 	workDir := job.stagingDir
+	job.mu.Unlock()
 	job.update("preparing", 50, "正在整理本地素材")
 	if err := s.assembleLocalMerge(ctx, job, workDir); err != nil {
 		return err
