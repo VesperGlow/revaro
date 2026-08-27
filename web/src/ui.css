@@ -1,4 +1,14 @@
 /* Shared file-manager primitives. Loaded last so component-local legacy values converge here. */
+:root{
+  --ink:#17212b;--ink-subtle:#44515f;--muted:#768392;--muted-soft:#98a2ae;
+  --line:#e2e6eb;--line-strong:#d2d8e0;--surface:#fff;--surface-subtle:#f6f7f9;
+  --surface-hover:#f0f3f6;--surface-selected:#f2f7ff;--blue:#2867d7;--blue-hover:#2059bd;
+  --blue-soft:#eaf2ff;--danger:#d33b3b;--success:#278657;--radius-sm:7px;--radius-md:10px;
+  --radius-lg:14px;--radius-xl:18px;--shadow-popover:0 12px 32px #17212b1a;
+  --shadow-dialog:0 24px 64px #17212b29;--focus-ring:0 0 0 3px #2867d72e;
+  --control-sm:36px;--control-md:40px;--control-lg:44px;--space-1:4px;--space-2:8px;
+  --space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px
+}
 .transfer-center>summary,.download-center>summary,.merge-center>summary,.archive-center>summary,.trash-button{
   width:var(--control-md);height:var(--control-md);border-radius:var(--radius-md);color:var(--muted)
 }
