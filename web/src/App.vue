@@ -9,7 +9,6 @@ import AppTopbar from './components/AppTopbar.vue'
 import DocumentEditor from './components/DocumentEditor.vue'
 import FileBrowserHeader from './components/FileBrowserHeader.vue'
 import FileGrid from './components/FileGrid.vue'
-import FileTable from './components/FileTable.vue'
 import MoveCopyDialog from './components/MoveCopyDialog.vue'
 import SelectionToolbar from './components/SelectionToolbar.vue'
 import ShareDialog from './components/ShareDialog.vue'
@@ -83,7 +82,6 @@ const folderInput = ref<HTMLInputElement|null>(null)
 const localMergeInput = ref<HTMLInputElement|null>(null)
 const avatarInput = ref<HTMLInputElement|null>(null)
 const audioCoverInput = ref<HTMLInputElement|null>(null)
-const viewMode = ref<'list'|'grid'>('list')
 const dialog = reactive({open:false,title:'',message:'',confirmLabel:'确定',cancelLabel:'取消',tone:'default' as 'default'|'danger',input:false,value:'',placeholder:''})
 let dialogResolve:((value:string|boolean|null)=>void)|null=null
 let activeUploads = 0
@@ -325,7 +323,6 @@ function closeModal(){if(modal.value)window.history.back()}
 function goUp(){const parent=current.value?.parent_id;if(parent)openFolder(parent)}
 async function openTrash(){loading.value=true;try{const data=await api<{items:DriveFile[];total_bytes:number;file_count:number}>('/api/trash');trashMode.value=true;items.value=data.items;directoryStats.total_bytes=data.total_bytes;directoryStats.file_count=data.file_count;current.value=null;breadcrumbs.value=[];selected.value=null;clearSelection()}catch(e){notify((e as Error).message)}finally{loading.value=false}}
 async function createFolder(){const name=await promptDialog({title:'新建文件夹',message:'给这个文件夹起个名字。',placeholder:'文件夹名称',confirmLabel:'创建'});if(!name)return;try{await api('/api/directories',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name})});await openFolder(currentId.value);notify('文件夹已创建','success')}catch(e){notify((e as Error).message)}}
-async function removeItem(item:DriveFile){if(!await confirmDialog({title:'移入回收站？',message:`「${item.name}」${item.kind==='directory'?'及其中的全部内容':''}会移入回收站，之后仍可恢复。`,confirmLabel:'移入回收站',tone:'danger'}))return;try{await api(`/api/files/${item.id}`,{method:'DELETE'});await openFolder(currentId.value);notify('已移入回收站','success')}catch(e){notify((e as Error).message)}}
 async function removeSelected(){
   const targets=[...selectedItems.value]
   if(!targets.length)return
@@ -340,9 +337,7 @@ async function removeSelected(){
   if(errors.length)notify(`已移入 ${removed} 项，${errors.length} 项失败：${errors[0]}`)
   else notify(`已将 ${removed} 项移入回收站`,'success')
 }
-async function restoreItem(item:DriveFile){try{await api(`/api/trash/${item.id}/restore`,{method:'POST'});await openTrash();notify('已恢复到原位置','success')}catch(e){notify((e as Error).message)}}
 async function restoreSelected(){for(const item of [...selectedItems.value]){try{await api(`/api/trash/${item.id}/restore`,{method:'POST'})}catch(e){notify(`${item.name}：${(e as Error).message}`);return}}await openTrash();notify('所选项目已恢复','success')}
-async function purgeItem(item:DriveFile){if(!await confirmDialog({title:'永久删除？',message:`「${item.name}」${item.kind==='directory'?'及其中的全部内容':''}将无法恢复，对应的无引用数据块会在垃圾回收后清理。`,confirmLabel:'永久删除',tone:'danger'}))return;try{await api(`/api/trash/${item.id}`,{method:'DELETE'});await openTrash();notify('已永久删除','success')}catch(e){notify((e as Error).message)}}
 async function purgeSelected(){const targets=[...selectedItems.value];if(!targets.length||!await confirmDialog({title:`永久删除 ${targets.length} 项？`,message:'这个操作无法撤销。无引用的数据块会在垃圾回收后清理。',confirmLabel:'永久删除',tone:'danger'}))return;for(const item of targets){try{await api(`/api/trash/${item.id}`,{method:'DELETE'})}catch(e){notify(`${item.name}：${(e as Error).message}`);return}}await openTrash();notify('已永久删除所选项目','success')}
 async function emptyTrash(){if(!items.value.length||!await confirmDialog({title:'清空回收站？',message:`回收站中的 ${items.value.length} 项及其内容都会永久删除，无法恢复。`,confirmLabel:'清空回收站',tone:'danger'}))return;try{await api('/api/trash',{method:'DELETE'});await openTrash();notify('回收站已清空','success')}catch(e){notify((e as Error).message)}}
 function showRename(item:DriveFile){selected.value=item;renameValue.value=item.name;openModal('rename')}
@@ -428,7 +423,6 @@ async function saveDocument(){
 }
 async function closeEditor(){if(editorDirty.value&&!await confirmDialog({title:'放弃未保存的修改？',message:'关闭后，本次修改将无法恢复。',confirmLabel:'放弃修改',tone:'danger'}))return;closeModal()}
 function closeBackdrop(){if(modal.value==='editor')void closeEditor();else if(modal.value==='audioMerge')closeAudioMergeModal();else closeModal()}
-function setViewMode(mode:'list'|'grid'){viewMode.value=mode;localStorage.setItem('revaro-view-mode',mode)}
 function toggleSelection(item:DriveFile){
   const next=new Set(selectedIds.value)
   if(next.has(item.id))next.delete(item.id);else next.add(item.id)
@@ -439,7 +433,7 @@ function selectAll(){selectedIds.value=selectedItems.value.length===items.value.
 function clearSelectionFromBlank(event:MouseEvent){
   if(!selectedItems.value.length||modal.value)return
   const target=event.target
-  if(!(target instanceof Element)||target.closest('button,a,input,textarea,select,[role="toolbar"],.file-card,.file-row'))return
+  if(!(target instanceof Element)||target.closest('button,a,input,textarea,select,[role="toolbar"],.file-card'))return
   clearSelection()
 }
 function download(item:DriveFile){
@@ -956,7 +950,7 @@ async function refreshJobsFromEvent(){
   finally{jobRefreshRunning=false;if(jobRefreshPending){jobRefreshPending=false;void refreshJobsFromEvent()}}
 }
 const jobEvents=useJobEvents(()=>void refreshJobsFromEvent())
-onMounted(()=>{const saved=localStorage.getItem('revaro-view-mode');if(saved==='list'||saved==='grid')viewMode.value=saved;window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){jobEvents.connect();void refreshJobsFromEvent()}})})
+onMounted(()=>{window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){jobEvents.connect();void refreshJobsFromEvent()}})})
 onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);window.clearTimeout(uploadRefreshTimer);tasks.forEach(task=>task.requests.forEach(request=>request.abort()))})
 </script>
 
@@ -980,14 +974,13 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
     <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" :downloads="downloadJobs" :archive-jobs="archiveJobs" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" @clear-archive-jobs="clearArchiveJobs" @archive-password="submitArchivePassword" @downloads-changed="downloadsChanged" />
     <section class="content" @click="clearSelectionFromBlank">
-      <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :view-mode="viewMode" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @set-view="setViewMode" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @local-audio-merge="showLocalAudioMerge" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
+      <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @local-audio-merge="showLocalAudioMerge" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}">
       <input ref="folderInput" hidden type="file" multiple webkitdirectory @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFolder(el.files);el.value=''}">
       <input ref="localMergeInput" hidden type="file" multiple webkitdirectory @change="e=>{const el=e.target as HTMLInputElement;if(el.files)onLocalMergeDir(el.files);el.value=''}">
       <SelectionToolbar v-if="selectedItems.length&&!modal" :selected-items="selectedItems" :selected-bytes="selectedBytes" :selected-files="selectedFiles" :single-selected="singleSelected" :item-count="items.length" :trash-mode="trashMode" :can-merge-audio="canMergeSelectedAudio" @clear="clearSelection" @restore="restoreSelected" @purge="purgeSelected" @select-all="selectAll" @open="openItem" @merge-audio="showAudioMerge" @extract="extractArchive" @download="downloadSelected" @share="showShare" @rename="showRename" @move="showMoveSelected" @remove="removeSelected" />
       <div v-if="loading" class="state"><div class="spinner"></div><p>正在读取文件…</p></div>
       <div v-else-if="!items.length" class="state empty"><div class="empty-icon">⌁</div><h3>{{ trashMode?'回收站是空的':'这里还是空的' }}</h3><p>{{ trashMode?'删除的项目会先来到这里。':'拖放文件到这里，或新建一篇文档。' }}</p><div v-if="!trashMode" class="empty-actions"><button class="secondary" @click="newDocument">新建文档</button><button class="primary" @click="chooseFiles">上传文件</button></div></div>
-      <FileTable v-else-if="viewMode==='list'" :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" @select-all="selectAll" @edit="openEditor" @preview="showPreview" @read="openReader" @download="download" @extract="extractArchive" @share="showShare" @rename="showRename" @move="showMove" @remove="removeItem" @restore="restoreItem" @purge="purgeItem" />
       <FileGrid v-else :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" />
     </section>
 

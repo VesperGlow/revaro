@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, FolderUp, Grid2X2, List, Music2, Upload } from 'lucide-vue-next'
+import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, FolderUp, Music2, Upload } from 'lucide-vue-next'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
 
@@ -11,14 +11,12 @@ const props=defineProps<{
   itemCount:number
   totalBytes:number
   fileCount:number
-  viewMode:'list'|'grid'
   trashMode:boolean
 }>()
 
 const emit=defineEmits<{
   openFolder:[id:string]
   up:[]
-  setView:[mode:'list'|'grid']
   newDocument:[]
   createFolder:[]
   uploadFiles:[]
@@ -69,14 +67,6 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
           <ArrowUp aria-hidden="true" />
         </button>
         <h1 :title="trashMode?'回收站':current?.name || '我的文件'">{{ trashMode?'回收站':current?.name || '我的文件' }}</h1>
-        <div class="view-switch" role="group" aria-label="文件显示方式">
-          <button :class="{active:viewMode==='list'}" title="列表视图" aria-label="列表视图" @click="$emit('setView','list')">
-            <List aria-hidden="true" />
-          </button>
-          <button :class="{active:viewMode==='grid'}" title="大图标视图" aria-label="大图标视图" @click="$emit('setView','grid')">
-            <Grid2X2 aria-hidden="true" />
-          </button>
-        </div>
       </div>
       <p class="folder-meta">
         <span>{{ itemCount }} 个项目</span><i></i><template v-if="trashMode"><span>{{ formatSize(totalBytes) }}</span><i></i><span>已删除的文件将在 30 天后永久删除</span></template><template v-else>
