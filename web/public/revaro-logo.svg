@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 174 40" role="img" aria-labelledby="title">
+  <title id="title">revaro</title>
+  <defs>
+    <linearGradient id="ribbon-a" x1="4" y1="7" x2="42" y2="35" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8eabc2"/>
+      <stop offset="1" stop-color="#4f7396"/>
+    </linearGradient>
+    <linearGradient id="ribbon-b" x1="11" y1="35" x2="44" y2="4" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b0c6d7"/>
+      <stop offset="1" stop-color="#6f91ad"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#ribbon-a)" d="M3 36V15C3 6 9 1 17 1c5 0 9 2 13 7l8 11c2 3 5 3 7 0l3-5 7 10-2 4c-6 10-17 11-24 2L20 18c-3-4-7-2-7 3v7c0 5-4 8-10 8Z"/>
+  <path fill="url(#ribbon-b)" d="M13 28v-7c0-5 4-7 7-3l9 12c7 9 18 8 24-2L66 2H54L43 21c-2 4-5 5-8 1L27 11c-3-4-6-6-10-6-2 0-4 1-6 2 6-7 16-8 23 1l6 8 7-14h12L47 29c-6 13-21 14-30 3l-4-4Z" opacity=".92"/>
+  <text x="73" y="31" fill="#4f7396" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="31" font-weight="650" letter-spacing="-1.5">revaro</text>
+</svg>
