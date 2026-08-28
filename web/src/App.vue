@@ -1074,7 +1074,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
         </template>
       </section>
       <section v-else-if="modal==='account'" class="modal account-modal">
-        <header><div><p class="eyebrow dark">PROFILE & SECURITY</p><h2>账户设置</h2></div><button @click="closeModal">×</button></header>
+        <header><div><h2>账户设置</h2></div><button @click="closeModal">×</button></header>
         <div class="account-layout">
           <section class="avatar-settings">
             <div class="avatar-large"><img v-if="hasAvatar" class="ui-image" :src="avatarURL" alt="个人头像" draggable="false"><span v-else>{{ user.slice(0,1).toUpperCase() }}</span></div>
