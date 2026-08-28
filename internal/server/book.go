@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/reader"
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -204,5 +205,5 @@ func (s *Server) saveBookProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) openBookSource(ctx context.Context, f File) (io.ReadSeekCloser, error) {
-	return s.storage.Open(ctx, f.objectKey)
+	return s.storage.Open(storage.WithDynamicReadAhead(ctx), f.objectKey)
 }

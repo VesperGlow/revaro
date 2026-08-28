@@ -152,7 +152,11 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusTooManyRequests, "another compatibility video stream is already active")
 		return
 	}
-	dir, err := os.MkdirTemp("", "revaro-video-hls-")
+	if err := os.MkdirAll(s.cfg.WorkDir, 0o700); err != nil {
+		problem(w, 500, "could not create media workspace")
+		return
+	}
+	dir, err := os.MkdirTemp(s.cfg.WorkDir, "revaro-video-hls-")
 	if err != nil {
 		<-s.videoHLSSlots
 		problem(w, http.StatusInternalServerError, "could not create compatibility stream")

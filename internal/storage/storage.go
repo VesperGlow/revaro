@@ -65,6 +65,8 @@ type Storage interface {
 	DeleteObject(context.Context, string) error
 	PresignGetObject(context.Context, string, string, string, bool, time.Duration) (string, error)
 	ListPrefix(context.Context, string) ([]ObjectRef, error)
+	WalkPrefix(context.Context, string, func([]ObjectRef) error) error
+	DeleteObjects(context.Context, []string) error
 	// PutImmutable stores a content-addressed derived object (thumbnail
 	// cache); an existing object is never overwritten.
 	PutImmutable(context.Context, string, string, []byte) error
@@ -390,6 +392,11 @@ func (s *S3) putConditional(ctx context.Context, key, mime string, data []byte) 
 
 func (s *S3) ListPrefix(ctx context.Context, prefix string) ([]ObjectRef, error) {
 	var out []ObjectRef
+	err := s.WalkPrefix(ctx, prefix, func(page []ObjectRef) error { out = append(out, page...); return nil })
+	return out, err
+}
+
+func (s *S3) WalkPrefix(ctx context.Context, prefix string, visit func([]ObjectRef) error) error {
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
 		Prefix: aws.String(prefix),
@@ -397,17 +404,42 @@ func (s *S3) ListPrefix(ctx context.Context, prefix string) ([]ObjectRef, error)
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
+		refs := make([]ObjectRef, 0, len(page.Contents))
 		for _, obj := range page.Contents {
-			out = append(out, ObjectRef{
+			refs = append(refs, ObjectRef{
 				Key:          aws.ToString(obj.Key),
 				Size:         aws.ToInt64(obj.Size),
 				LastModified: aws.ToTime(obj.LastModified),
 			})
 		}
+		if err := visit(refs); err != nil {
+			return err
+		}
 	}
-	return out, nil
+	return ctx.Err()
+}
+
+func (s *S3) DeleteObjects(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if len(keys) > 1000 {
+		return errors.New("S3 delete batch exceeds 1000 keys")
+	}
+	objects := make([]types.ObjectIdentifier, len(keys))
+	for i, key := range keys {
+		objects[i] = types.ObjectIdentifier{Key: aws.String(key)}
+	}
+	out, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(s.bucket), Delete: &types.Delete{Objects: objects, Quiet: aws.Bool(true)}})
+	if err != nil {
+		return err
+	}
+	if len(out.Errors) > 0 {
+		return fmt.Errorf("delete object %s: %s", aws.ToString(out.Errors[0].Key), aws.ToString(out.Errors[0].Message))
+	}
+	return nil
 }
 
 func (s *S3) PresignGetObject(ctx context.Context, key, filename, mime string, inline bool, expiry time.Duration) (string, error) {

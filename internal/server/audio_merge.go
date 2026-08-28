@@ -712,8 +712,8 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 		return ctx.Err()
 	}
 	job.update("preparing", 3, "正在从对象存储准备音频")
-	tempRoot := s.cfg.DataDir
-	workDir, err := os.MkdirTemp(tempRoot, ".revaro-audio-merge-")
+	tempRoot := s.cfg.WorkDir
+	workDir, err := os.MkdirTemp(tempRoot, "revaro-audio-merge-")
 	if err != nil {
 		return fmt.Errorf("create audio merge workspace: %w", err)
 	}

@@ -68,6 +68,7 @@ type mockStorage struct {
 	omitManifestList bool
 	multipart        map[string]string
 	rawURL           string
+	deleteBatchSizes []int
 }
 
 func newMockStorage(blockSize int64) *mockStorage {
@@ -326,6 +327,30 @@ func (m *mockStorage) ListPrefix(_ context.Context, prefix string) ([]storage.Ob
 		}
 	}
 	return out, nil
+}
+func (m *mockStorage) WalkPrefix(ctx context.Context, prefix string, visit func([]storage.ObjectRef) error) error {
+	objects, err := m.ListPrefix(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	const pageSize = 100
+	for len(objects) > 0 {
+		n := min(pageSize, len(objects))
+		if err := visit(objects[:n]); err != nil {
+			return err
+		}
+		objects = objects[n:]
+	}
+	return ctx.Err()
+}
+func (m *mockStorage) DeleteObjects(ctx context.Context, keys []string) error {
+	m.deleteBatchSizes = append(m.deleteBatchSizes, len(keys))
+	for _, key := range keys {
+		if err := m.DeleteObject(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // test helpers
@@ -1148,6 +1173,28 @@ func TestGarbageCollector(t *testing.T) {
 	}
 	if _, ok := a.store.raw[orphan]; ok {
 		t.Fatal("orphaned blob was not collected")
+	}
+}
+
+func TestGarbageCollectorStreamsPagesAndBoundsDeleteBatches(t *testing.T) {
+	a := newTestApp(t)
+	old := time.Now().Add(-48 * time.Hour)
+	for i := 0; i < 2505; i++ {
+		key := fmt.Sprintf("blobs/orphan-%04d", i)
+		a.store.raw[key] = []byte("x")
+		a.store.age(key, old)
+	}
+	a.srv.CollectGarbage(context.Background())
+	if len(a.store.raw) != 0 {
+		t.Fatalf("%d orphan objects survived", len(a.store.raw))
+	}
+	for _, size := range a.store.deleteBatchSizes {
+		if size <= 0 || size > 1000 {
+			t.Fatalf("invalid delete batch size %d", size)
+		}
+	}
+	if len(a.store.deleteBatchSizes) < 2 {
+		t.Fatalf("expected multiple bounded delete batches, got %v", a.store.deleteBatchSizes)
 	}
 }
 

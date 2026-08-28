@@ -221,15 +221,17 @@ func (p *piece) NewReader() (torrentstorage.PieceReader, error) {
 		return os.Open(p.path)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	data, err := p.client.objects.GetObject(ctx, p.objectKey, p.size)
+	reader, err := p.client.objects.Open(appstorage.WithDynamicReadAhead(ctx), p.objectKey)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	if int64(len(data)) != p.size {
-		return nil, fmt.Errorf("torrent piece %d has size %d, expected %d", p.index, len(data), p.size)
+	if reader.Size() != p.size {
+		reader.Close()
+		cancel()
+		return nil, fmt.Errorf("torrent piece %d has size %d, expected %d", p.index, reader.Size(), p.size)
 	}
-	return &memoryReader{data: data}, nil
+	return &pieceReader{ReadSeekCloserAt: reader, cancel: cancel}, nil
 }
 
 func (p *piece) MarkComplete() error {
@@ -238,16 +240,21 @@ func (p *piece) MarkComplete() error {
 	if p.complete {
 		return nil
 	}
-	data, err := os.ReadFile(p.path)
+	file, err := os.Open(p.path)
 	if err != nil {
 		return err
 	}
-	if int64(len(data)) != p.size {
-		return fmt.Errorf("verified torrent piece %d has size %d, expected %d", p.index, len(data), p.size)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() != p.size {
+		return fmt.Errorf("verified torrent piece %d has size %d, expected %d", p.index, info.Size(), p.size)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if _, err := p.client.objects.PutObject(ctx, p.objectKey, "application/octet-stream", data); err != nil {
+	if _, err := p.client.objects.StoreBlob(ctx, p.objectKey, "application/octet-stream", file, p.size); err != nil {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -284,16 +291,9 @@ func (p *piece) MarkNotComplete() error {
 	return nil
 }
 
-type memoryReader struct{ data []byte }
-
-func (r *memoryReader) ReadAt(p []byte, off int64) (int, error) {
-	if off < 0 || off >= int64(len(r.data)) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.data[off:])
-	if n < len(p) {
-		return n, io.EOF
-	}
-	return n, nil
+type pieceReader struct {
+	appstorage.ReadSeekCloserAt
+	cancel context.CancelFunc
 }
-func (r *memoryReader) Close() error { return nil }
+
+func (r *pieceReader) Close() error { r.cancel(); return r.ReadSeekCloserAt.Close() }

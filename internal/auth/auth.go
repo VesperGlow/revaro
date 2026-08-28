@@ -248,7 +248,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (string, error
 		return "", errors.New("missing session")
 	}
 	var expiry, username string
-	err := s.DB.QueryRowContext(ctx, `SELECT expires_at FROM sessions WHERE token_hash=?`, TokenHash(token)).Scan(&expiry)
+	err := s.DB.QueryRowContext(ctx, `SELECT sess.expires_at,admin.value FROM sessions sess JOIN settings admin ON admin.key='admin_username' WHERE sess.token_hash=?`, TokenHash(token)).Scan(&expiry, &username)
 	if err != nil {
 		return "", errors.New("invalid session")
 	}
@@ -256,9 +256,6 @@ func (s *Service) Authenticate(ctx context.Context, token string) (string, error
 	if err != nil || !t.After(time.Now().UTC()) {
 		s.Logout(ctx, token)
 		return "", errors.New("expired session")
-	}
-	if err := s.DB.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='admin_username'`).Scan(&username); err != nil {
-		return "", err
 	}
 	return username, nil
 }
@@ -285,10 +282,7 @@ func (s *Service) now() time.Time {
 }
 func (s *Service) verifyCredentials(ctx context.Context, username, password string) error {
 	var savedUser, savedHash string
-	if err := s.DB.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='admin_username'`).Scan(&savedUser); err != nil {
-		return err
-	}
-	if err := s.DB.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='admin_password_hash'`).Scan(&savedHash); err != nil {
+	if err := s.DB.QueryRowContext(ctx, `SELECT MAX(CASE WHEN key='admin_username' THEN value END),MAX(CASE WHEN key='admin_password_hash' THEN value END) FROM settings WHERE key IN ('admin_username','admin_password_hash')`).Scan(&savedUser, &savedHash); err != nil {
 		return err
 	}
 	var valid bool

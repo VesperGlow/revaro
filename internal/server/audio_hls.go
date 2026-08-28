@@ -112,7 +112,11 @@ func (s *Server) startAudioHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir, err := os.MkdirTemp("", "revaro-audio-hls-")
+	if err := os.MkdirAll(s.cfg.WorkDir, 0o700); err != nil {
+		problem(w, 500, "could not create media workspace")
+		return
+	}
+	dir, err := os.MkdirTemp(s.cfg.WorkDir, "revaro-audio-hls-")
 	if err != nil {
 		<-s.audioHLSSlots
 		problem(w, http.StatusInternalServerError, "could not create compatibility stream")

@@ -556,8 +556,9 @@ func TestLocalMergeDiskBudget(t *testing.T) {
 func TestNewCleansStaleLocalMergeStaging(t *testing.T) {
 	a := newTestApp(t)
 	stale := filepath.Join(a.srv.cfg.WorkDir, "revaro-local-merge-stale-job")
-	keep := filepath.Join(a.srv.cfg.WorkDir, "revaro-extract-something")
-	for _, dir := range []string{stale, keep} {
+	staleExtract := filepath.Join(a.srv.cfg.WorkDir, "revaro-extract-something")
+	keep := filepath.Join(a.srv.cfg.WorkDir, "user-files")
+	for _, dir := range []string{stale, staleExtract, keep} {
 		if err := os.MkdirAll(filepath.Join(dir, "chunks"), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -568,6 +569,9 @@ func TestNewCleansStaleLocalMergeStaging(t *testing.T) {
 	_ = New(a.db, a.store, a.srv.auth, a.srv.cfg, nil)
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale local merge staging survived restart: %v", err)
+	}
+	if _, err := os.Stat(staleExtract); !os.IsNotExist(err) {
+		t.Fatalf("stale extraction staging survived restart: %v", err)
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("unrelated work directory was removed: %v", err)

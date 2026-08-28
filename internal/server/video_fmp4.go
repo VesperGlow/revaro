@@ -253,12 +253,37 @@ func (s *Server) fmp4File(w http.ResponseWriter, r *http.Request) (File, bool) {
 }
 
 func (s *Server) probeFMP4File(ctx context.Context, f File) (fmp4MediaInfo, error) {
-	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, f)
+	metadata, err := s.ensureMediaMetadata(ctx, f)
 	if err != nil {
 		return fmp4MediaInfo{}, err
 	}
-	defer closeSource()
-	return probeFMP4Source(ctx, s.cfg.FFmpegPath, sourceURL)
+	info := fmp4MediaInfo{duration: float64(metadata.DurationMS) / 1000, videoCodec: metadata.VideoCodec, audioCodec: metadata.AudioCodec, width: metadata.Width, height: metadata.Height, bitrate: metadata.Bitrate, frameRate: parseFMP4FrameRate(metadata.FrameRate)}
+	if info.duration <= 0 || info.videoCodec == "" {
+		return fmp4MediaInfo{}, errors.New("video duration or codec is unavailable")
+	}
+	info.videoCodecString, err = fmp4VideoCodecString(info.videoCodec, metadata.VideoProfile, metadata.VideoLevel)
+	if err != nil {
+		return fmp4MediaInfo{}, err
+	}
+	info.audioCodecString, _ = fmp4AudioCodecString(info.audioCodec)
+	info.videoContentType = `video/mp4; codecs="` + info.videoCodecString + `"`
+	info.aacAudioContentType = `audio/mp4; codecs="mp4a.40.2"`
+	info.mimeType = info.videoContentType
+	if info.audioCodecString != "" {
+		info.audioContentType = `audio/mp4; codecs="` + info.audioCodecString + `"`
+		info.mimeType = `video/mp4; codecs="` + info.videoCodecString + `, ` + info.audioCodecString + `"`
+	}
+	info.aacMIMEType = `video/mp4; codecs="` + info.videoCodecString + `, mp4a.40.2"`
+	if info.audioCodec == "" {
+		info.aacMIMEType = info.mimeType
+	}
+	if info.bitrate <= 0 {
+		info.bitrate = 8_000_000
+	}
+	if info.frameRate <= 0 {
+		info.frameRate = 30
+	}
+	return info, nil
 }
 
 func (s *Server) logVideoFMP4Selection(fileID string, session *videoFMP4Session, fallbackReason string, fresh bool) {

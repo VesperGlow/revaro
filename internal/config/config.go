@@ -56,7 +56,7 @@ func Load() (Config, error) {
 		S3SecretKey:      os.Getenv("S3_SECRET_KEY"),
 		FFmpegPath:       os.Getenv("FFMPEG_PATH"),
 	}
-	c.WorkDir = env("APP_WORK_DIR", filepath.Join(c.DataDir, "work"))
+	c.WorkDir = env("APP_WORK_DIR", "/work")
 	if c.FFmpegPath == "" {
 		c.FFmpegPath = "ffmpeg"
 	}

@@ -89,8 +89,6 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	defer unsubscribe()
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
-	progress := time.NewTicker(2 * time.Second)
-	defer progress.Stop()
 	send := func(event string, data any) error {
 		raw, err := json.Marshal(data)
 		if err != nil {
@@ -112,10 +110,6 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
-			if send("jobs", map[string]any{"changed": true}) != nil {
-				return
-			}
-		case <-progress.C:
 			if send("jobs", map[string]any{"changed": true}) != nil {
 				return
 			}

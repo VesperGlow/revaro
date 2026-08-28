@@ -83,13 +83,13 @@ type downloadFile struct {
 }
 
 func newDownloadManager(s *Server) (*downloadManager, error) {
-	pieceStore, err := btstore.New(s.db, s.storage, filepath.Join(s.cfg.DataDir, "torrent-cache"), s.log)
+	pieceStore, err := btstore.New(s.db, s.storage, filepath.Join(s.cfg.WorkDir, "revaro-bt-incomplete"), s.log)
 	if err != nil {
 		return nil, err
 	}
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DefaultStorage = pieceStore
-	cfg.DataDir = filepath.Join(s.cfg.DataDir, "torrent-cache")
+	cfg.DataDir = filepath.Join(s.cfg.WorkDir, "revaro-bt-incomplete")
 	cfg.ListenPort = s.cfg.BTListenPort
 	cfg.NoDefaultPortForwarding = true
 	cfg.Seed = false
@@ -579,6 +579,7 @@ func (m *downloadManager) monitor(runtime *downloadRuntime) {
 			runtime.lastRead, runtime.lastTick = read, now
 			runtime.mu.Unlock()
 			_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET completed_size=?,download_speed=?,peers=?,updated_at=? WHERE id=? AND status='downloading'`, completed, max(speed, 0), stats.ActivePeers, time.Now().UTC().Format(time.RFC3339Nano), runtime.jobID)
+			m.server.jobs.Changed()
 			if allComplete && job.SelectedSize > 0 {
 				runtime.torrent.DisallowDataDownload()
 				runtime.torrent.DisallowDataUpload()
@@ -646,6 +647,7 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 			speed = int64(float64(total-lastBytes) / elapsed.Seconds())
 		}
 		_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=?,import_speed=?,current_file=?,updated_at=? WHERE id=? AND status='importing'`, total, max(speed, 0), currentFile, now.UTC().Format(time.RFC3339Nano), job.ID)
+		m.server.jobs.Changed()
 		lastBytes, lastUpdate = total, now
 	}
 	for _, item := range job.Files {
@@ -887,6 +889,7 @@ func (m *downloadManager) get(ctx context.Context, jobID string, withFiles bool)
 
 func (m *downloadManager) setStatus(jobID, status, jobError string) {
 	_, _ = m.server.db.Exec(`UPDATE download_jobs SET status=?,error=?,download_speed=CASE WHEN ?='downloading' THEN download_speed ELSE 0 END,import_speed=CASE WHEN ?='importing' THEN import_speed ELSE 0 END,current_file=CASE WHEN ?='importing' THEN current_file ELSE '' END,updated_at=? WHERE id=?`, status, jobError, status, status, status, time.Now().UTC().Format(time.RFC3339Nano), jobID)
+	m.server.jobs.Changed()
 }
 
 func (m *downloadManager) fail(jobID string, err error) {

@@ -19,7 +19,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.DataDir != "/data" || c.WorkDir != "/data/work" || c.MediaCacheCapacity != 2<<30 || c.PresignExpires != 15*time.Minute {
+	if c.DataDir != "/data" || c.WorkDir != "/work" || c.MediaCacheCapacity != 2<<30 || c.PresignExpires != 15*time.Minute {
 		t.Fatalf("defaults: %+v", c)
 	}
 }

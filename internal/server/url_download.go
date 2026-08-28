@@ -194,6 +194,7 @@ func (m *downloadManager) startURLDownload(jobID string) {
 }
 
 func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRuntime) {
+	defer m.server.jobs.Changed()
 	defer func() {
 		m.urlMu.Lock()
 		if m.urlJobs[jobID] == runtime {
@@ -265,6 +266,7 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 			speed = int64(float64(total-lastBytes) / elapsed.Seconds())
 		}
 		_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE url_download_jobs SET completed_size=?,download_speed=?,updated_at=? WHERE id=? AND status='downloading'`, total, max(speed, 0), now.UTC().Format(time.RFC3339Nano), jobID)
+		m.server.jobs.Changed()
 		lastBytes, lastUpdate = total, now
 	}
 	reader := &urlProgressReader{reader: response.Body, limit: m.server.cfg.BTMaxTotalSize, onProgress: progress}
@@ -322,6 +324,7 @@ func (m *downloadManager) commitURLDownload(ctx context.Context, jobID, name, mi
 
 func (m *downloadManager) failURLDownload(jobID string, err error) {
 	_, _ = m.server.db.Exec(`UPDATE url_download_jobs SET status='failed',download_speed=0,error=?,updated_at=? WHERE id=? AND status IN ('queued','downloading')`, err.Error(), time.Now().UTC().Format(time.RFC3339Nano), jobID)
+	m.server.jobs.Changed()
 	m.server.log.Error("direct download task failed", "job", jobID, "error", err)
 }
 

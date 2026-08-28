@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -233,45 +232,16 @@ func supportedEmbeddedSubtitleCodec(codec string) bool {
 }
 
 func (s *Server) findEmbeddedVideoSubtitles(ctx context.Context, video File) ([]embeddedVideoSubtitle, error) {
-	ffprobe, err := ffprobeFor(s.cfg.FFmpegPath)
+	metadata, err := s.ensureMediaMetadata(ctx, video)
 	if err != nil {
 		return nil, err
 	}
-	sourceURL, cleanup, err := s.startMediaHLSSource(ctx, video)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-select_streams", "s", "-show_entries", "stream=index,codec_name:stream_tags=language,title:stream_disposition=default,forced", "-of", "json", sourceURL)
-	output := &limitedBuffer{limit: 2 << 20}
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stdout, cmd.Stderr = output, stderr
-	if err := cmd.Run(); err != nil {
-		return nil, mediaCommandError("ffprobe subtitles", err, ctx.Err(), stderr.String())
-	}
-	var result struct {
-		Streams []struct {
-			Index int    `json:"index"`
-			Codec string `json:"codec_name"`
-			Tags  struct {
-				Language string `json:"language"`
-				Title    string `json:"title"`
-			} `json:"tags"`
-			Disposition struct {
-				Default int `json:"default"`
-				Forced  int `json:"forced"`
-			} `json:"disposition"`
-		} `json:"streams"`
-	}
-	if err := json.Unmarshal(output.buf.Bytes(), &result); err != nil {
-		return nil, err
-	}
-	tracks := make([]embeddedVideoSubtitle, 0, len(result.Streams))
-	for _, stream := range result.Streams {
+	tracks := make([]embeddedVideoSubtitle, 0, len(metadata.Subtitles))
+	for _, stream := range metadata.Subtitles {
 		if !supportedEmbeddedSubtitleCodec(stream.Codec) {
 			continue
 		}
-		tracks = append(tracks, embeddedVideoSubtitle{Index: stream.Index, Codec: stream.Codec, Language: stream.Tags.Language, Title: stream.Tags.Title, Default: stream.Disposition.Default != 0, Forced: stream.Disposition.Forced != 0})
+		tracks = append(tracks, embeddedVideoSubtitle{Index: stream.Index, Codec: stream.Codec, Language: stream.Language, Title: stream.Title, Default: stream.Default, Forced: stream.Forced})
 	}
 	return tracks, nil
 }

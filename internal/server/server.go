@@ -32,6 +32,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/pquerna/otp"
+	"golang.org/x/sync/singleflight"
 )
 
 const RootID = "00000000-0000-0000-0000-000000000000"
@@ -73,6 +74,7 @@ type Server struct {
 	videoSubtitleCache map[string]*videoSubtitleCacheEntry
 	videoSubtitleBytes int64
 	mediaAnalysis      *mediaAnalysisScheduler
+	mediaProbeGroup    singleflight.Group
 	archiveSlots       chan struct{}
 	archiveMu          sync.RWMutex
 	archiveJobs        map[string]*archiveJob
@@ -137,18 +139,20 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	} else if removed, _ := result.RowsAffected(); removed > 0 {
 		logger.Info("interrupted audio merges cleaned", "files", removed)
 	}
-	// Local-directory merge staging survives neither the process nor a clean
-	// shutdown; remove any leftover job directories from previous runs.
-	if stale, err := filepath.Glob(filepath.Join(cfg.WorkDir, "revaro-local-merge-*")); err == nil {
+	// Only Revaro-owned, recognizable workspaces are eligible for startup
+	// cleanup. Unknown APP_WORK_DIR contents are never touched.
+	_ = os.MkdirAll(cfg.WorkDir, 0o700)
+	for _, pattern := range []string{"revaro-local-merge-*", "revaro-audio-merge-*", "revaro-audio-hls-*", "revaro-video-hls-*", "revaro-extract-*"} {
+		stale, err := filepath.Glob(filepath.Join(cfg.WorkDir, pattern))
+		if err != nil {
+			logger.Warn("stale workspace scan failed", "pattern", pattern, "error", err)
+			continue
+		}
 		for _, dir := range stale {
 			if err := os.RemoveAll(dir); err != nil {
-				logger.Warn("stale local merge staging cleanup failed", "path", dir, "error", err)
-			} else {
-				logger.Info("stale local merge staging cleaned", "path", dir)
+				logger.Warn("stale workspace cleanup failed", "path", dir, "error", err)
 			}
 		}
-	} else if !errors.Is(err, filepath.ErrBadPattern) {
-		logger.Warn("local merge staging scan failed", "error", err)
 	}
 	go s.cleanupAudioHLSSessions()
 	go s.cleanupVideoHLSSessions()
@@ -847,11 +851,7 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var totalBytes, fileCount int64
-	if err := s.db.QueryRowContext(r.Context(), `WITH RECURSIVE tree(id,kind,size,status) AS (
-		SELECT id,kind,size,status FROM files WHERE id=? AND deleted_at IS NULL
-		UNION ALL
-		SELECT f.id,f.kind,f.size,f.status FROM files f JOIN tree t ON f.parent_id=t.id WHERE f.deleted_at IS NULL
-	) SELECT COALESCE(SUM(size),0),COUNT(*) FROM tree WHERE kind='file' AND status='ready'`, parent.ID).Scan(&totalBytes, &fileCount); err != nil {
+	if err := s.db.QueryRowContext(r.Context(), `SELECT total_bytes,file_count FROM directory_stats WHERE directory_id=?`, parent.ID).Scan(&totalBytes, &fileCount); err != nil {
 		problem(w, 500, "could not calculate directory usage")
 		return
 	}
@@ -1423,7 +1423,7 @@ func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File
 		inline = false
 	}
 	if s.cfg.ProxyTransfers {
-		rc, err := s.storage.Open(r.Context(), f.objectKey)
+		rc, err := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
 		if err != nil {
 			problem(w, http.StatusBadGateway, "object storage read failed")
 			return
@@ -2067,21 +2067,26 @@ func (s *Server) CollectGarbage(ctx context.Context) {
 }
 
 func (s *Server) collectUnreferencedPrefix(ctx context.Context, prefix string, cutoff time.Time, referenced map[string]bool) int {
-	objects, err := s.storage.ListPrefix(ctx, prefix)
-	if err != nil {
-		s.log.Warn("GC object listing failed", "prefix", prefix, "error", err)
-		return 0
-	}
 	deleted := 0
-	for _, object := range objects {
-		if referenced[object.Key] || !object.LastModified.Before(cutoff) {
-			continue
+	err := s.storage.WalkPrefix(ctx, prefix, func(objects []storage.ObjectRef) error {
+		keys := make([]string, 0, len(objects))
+		for _, object := range objects {
+			if !referenced[object.Key] && object.LastModified.Before(cutoff) {
+				keys = append(keys, object.Key)
+			}
 		}
-		if err := s.storage.DeleteObject(ctx, object.Key); err != nil {
-			s.log.Warn("GC object delete failed", "key", object.Key, "error", err)
-			continue
+		for len(keys) > 0 {
+			n := min(len(keys), 1000)
+			if err := s.storage.DeleteObjects(ctx, keys[:n]); err != nil {
+				return err
+			}
+			deleted += n
+			keys = keys[n:]
 		}
-		deleted++
+		return ctx.Err()
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.log.Warn("GC streaming pass failed", "prefix", prefix, "error", err)
 	}
 	return deleted
 }
