@@ -986,7 +986,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
 
     <div v-if="dragActive&&!trashMode" class="drop-zone"><div><span>↓</span><h2>释放以上传到 {{ current?.name || '我的文件' }}</h2><p>文件将通过 Presigned URL 直传 S3</p></div></div>
 
-    <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),'video-previewing':modal==='preview'&&!!selected&&isVideo(selected),editing:modal==='editor',reading:modal==='reader'}" @click.self="closeBackdrop">
+    <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),'video-previewing':modal==='preview'&&!!selected&&isVideo(selected),editing:modal==='editor',reading:modal==='reader',accounting:modal==='account'}" @click.self="closeBackdrop">
       <section v-if="modal==='rename'" class="modal"><header><div><p class="eyebrow dark">EDIT</p><h2>重命名</h2></div><button @click="closeModal">×</button></header><label>新名称<input v-model="renameValue" maxlength="1024" @keyup.enter="saveRename"></label><footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="modalBusy" @click="saveRename">保存</button></footer></section>
       <MoveCopyDialog v-else-if="modal==='move'" :mode="transferMode" :targets="moveTargets" :folders="folders" :busy="modalBusy" @close="closeModal" @select="transferTo" />
       <section v-else-if="modal==='audioMerge'" class="modal audio-merge-modal">

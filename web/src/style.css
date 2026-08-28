@@ -3504,17 +3504,17 @@ button img,
   stroke: none;
 }
 .folder-type-icon {
-  width: 116px;
-  height: 116px;
+  width: 112px;
+  height: 112px;
 }
 .folder-back {
-  fill: #8faec6;
+  fill: #9bb4c7;
 }
 .folder-front {
-  fill: #a9c1d4;
+  fill: #b4c8d8;
 }
 .folder-highlight {
-  fill: #d4e1eb;
+  fill: #dbe6ee;
 }
 .icon-base {
   fill: #e4e8ed;
@@ -6232,10 +6232,10 @@ button:disabled {
   letter-spacing: -0.02em;
 }
 .top-actions {
-  gap: 4px;
+  gap: 5px;
 }
 .account-button {
-  margin-left: 5px;
+  margin-left: 7px;
   padding: 4px 8px 4px 4px;
   border-radius: var(--radius-md);
 }
@@ -6592,6 +6592,10 @@ button:disabled {
 }
 .account-modal > header > button {
   align-self: center;
+}
+.modal-backdrop.accounting {
+  background: #17212b78;
+  backdrop-filter: none;
 }
 .avatar,
 .account-avatar,

@@ -1,11 +1,12 @@
 /* Shared file-manager primitives. Loaded last so component-local legacy values converge here. */
 :root{
   --ink:#17212b;--ink-subtle:#44515f;--muted:#768392;--muted-soft:#98a2ae;
-  --line:#e2e6eb;--line-strong:#d2d8e0;--surface:#fff;--surface-subtle:#f6f7f9;
-  --surface-hover:#f0f3f6;--surface-selected:#f2f7ff;--blue:#2867d7;--blue-hover:#2059bd;
-  --blue-soft:#eaf2ff;--danger:#d33b3b;--success:#278657;--radius-sm:7px;--radius-md:10px;
+  --line:#e2e6eb;--line-strong:#d2d8e0;--surface:#fff;--paper:#f3f6f8;--surface-subtle:var(--paper);
+  --surface-hover:#eef3f6;--surface-selected:#f2f6f9;--accent:#4f7396;--accent-hover:#3f607f;
+  --accent-soft:#e8f0f6;--accent-faint:#f2f6f9;--accent-border:#ccdbe7;--blue:var(--accent);--blue-hover:var(--accent-hover);
+  --blue-soft:var(--accent-soft);--danger:#d33b3b;--success:#278657;--radius-sm:7px;--radius-md:10px;
   --radius-lg:14px;--radius-xl:18px;--shadow-popover:0 12px 32px #17212b1a;
-  --shadow-dialog:0 24px 64px #17212b29;--focus-ring:0 0 0 3px #2867d72e;
+  --shadow-dialog:0 24px 64px #17212b33;--focus-ring:0 0 0 3px #4f73962e;
   --control-sm:36px;--control-md:40px;--control-lg:44px;--space-1:4px;--space-2:8px;
   --space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px
 }
@@ -44,7 +45,7 @@
 .dialog-copy h2{color:var(--ink);font-size:18px}.dialog-copy p{color:var(--muted)}
 .app-dialog input{border-color:var(--line-strong);border-radius:var(--radius-md)}.app-dialog input:focus{border-color:var(--blue);box-shadow:var(--focus-ring)}
 .app-dialog button{border-radius:var(--radius-md)}.app-dialog .dialog-confirm{background:var(--blue)}
-.account-modal{border:1px solid var(--line);border-radius:var(--radius-xl);box-shadow:var(--shadow-dialog)}
+.account-modal{border:1px solid #d8e0e7;border-radius:var(--radius-xl);background:var(--surface);box-shadow:0 26px 70px #17212b38}
 .avatar-settings,.account-setting-row,.account-session-row{border-color:var(--line);border-radius:var(--radius-lg)}
 .avatar-settings,.account-setting-row.security-row{background:var(--surface-subtle)}
 .account-setting-row{background:var(--surface)}.setting-label,.username-line strong{color:var(--ink)}
