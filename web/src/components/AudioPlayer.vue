@@ -306,7 +306,8 @@ onBeforeUnmount(()=>{
           <output v-if="seekHover.visible" class="audio-seek-tooltip" :style="{left:`${seekHover.percent}%`}">{{ formatTime(seekHover.time) }}</output>
           <input :value="displayedTime" type="range" min="0" :max="duration||0" step="0.1" aria-label="播放进度" @input="previewSeek" @change="commitSeek" @pointermove="updateSeekHover" @pointerleave="hideSeekHover">
         </div>
-        <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span><span>-{{ formatTime(Math.max(0,duration-displayedTime)) }}</span></div>
+        <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span></div>
+        <span v-if="compatibilityStarting||compatibilityMode" class="audio-stream-status" :class="{busy:compatibilityStarting}">{{ compatibilityStarting?'正在准备兼容播放…':'HLS 兼容播放' }}</span>
         <div class="audio-player-options audio-transport-row">
           <label class="audio-rate"><span>倍速</span><select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label>
           <div class="audio-controls">
@@ -316,7 +317,6 @@ onBeforeUnmount(()=>{
           </div>
           <div class="audio-option-end"><div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div><details ref="actionMenu" class="audio-action-menu"><summary aria-label="更多操作"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></summary><div><button @click="actionMenu?.removeAttribute('open');emit('download',item)">下载</button><button @click="actionMenu?.removeAttribute('open');emit('move',item)">移动</button><button @click="actionMenu?.removeAttribute('open');emit('copy',item)">复制</button></div></details></div>
         </div>
-        <span class="audio-stream-status" :class="{busy:compatibilityStarting||waiting}"><i></i>{{ compatibilityStarting?'正在启动 HLS 兼容流':waiting?'正在缓冲需要的片段':compatibilityMode?'HLS 兼容流':'原文件流式播放' }}</span>
         <p v-if="error" class="audio-player-error">{{ error }}</p>
         <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @ended="onEnded" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
       </section>
