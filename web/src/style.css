@@ -6664,3 +6664,200 @@ button:disabled {
 .audio-preview .audio-chapter-list button.active > i {
   color: var(--accent);
 }
+
+/* Final Revaro audio-player polish. Keep the media layout and behavior intact. */
+.modal-backdrop.audio-previewing,
+.audio-preview .preview-stage,
+.audio-preview .chapter-audio-player {
+  background: var(--paper);
+  color: var(--ink);
+}
+.audio-preview .audio-upper {
+  background: var(--surface);
+}
+.audio-preview .audio-now-playing {
+  background: var(--surface-subtle);
+}
+.audio-preview .audio-cover {
+  border-color: var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--surface-hover);
+  box-shadow: 0 12px 28px #17212b17;
+}
+.audio-preview .audio-cover > span {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.audio-preview .audio-chapter-current > span {
+  color: var(--accent);
+  font-weight: 750;
+  letter-spacing: .08em;
+}
+.audio-preview .audio-chapter-current strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+.audio-preview .audio-chapter-current small {
+  color: var(--muted);
+}
+.audio-subtitle-panel,
+.audio-preview .audio-chapters {
+  border-color: var(--line);
+  background: var(--surface);
+}
+.audio-subtitle-panel > header,
+.audio-preview .audio-chapters > header {
+  border-color: var(--line);
+}
+.audio-subtitle-panel > header strong,
+.audio-preview .audio-chapters > header strong {
+  color: var(--ink);
+}
+.audio-subtitle-panel > header span,
+.audio-preview .audio-chapters > header small,
+.audio-preview .audio-chapters > header > span {
+  color: var(--muted);
+}
+.audio-subtitle-stage {
+  background: var(--surface);
+}
+.audio-subtitle-lines button {
+  color: var(--ink-subtle);
+  opacity: .35;
+  transition: color .22s, opacity .22s, transform .22s;
+}
+.audio-subtitle-lines button.mid { opacity: .5; }
+.audio-subtitle-lines button.near { opacity: .68; }
+.audio-subtitle-lines button:hover { color: var(--ink); opacity: .82; }
+.audio-subtitle-lines button.active {
+  color: var(--accent-hover);
+  opacity: 1;
+  transform: scale(1.018);
+}
+.audio-subtitle-lines button.active span {
+  font-weight: 720;
+}
+.audio-subtitle-empty { color: var(--muted); }
+.audio-subtitle-empty > b {
+  border-color: var(--accent-border);
+  background: var(--accent-faint);
+  color: var(--accent);
+}
+.audio-subtitle-empty strong { color: var(--ink-subtle); }
+.audio-subtitle-empty small { color: var(--muted); }
+.audio-preview .audio-playback {
+  border-color: var(--line);
+  background: var(--surface-subtle);
+  box-shadow: none;
+}
+.audio-preview .audio-track-wrap::before { background: var(--line-strong); }
+.audio-preview .audio-track-buffer { background: #bac5ce; opacity: .62; }
+.audio-preview .audio-track-played { background: var(--accent); }
+.audio-preview .audio-track-thumb {
+  border-color: var(--surface);
+  background: var(--accent);
+  box-shadow: 0 2px 8px #4f739647;
+}
+.audio-preview .audio-time,
+.audio-preview .audio-player-options,
+.audio-stream-status { color: var(--muted); }
+.audio-preview .audio-controls button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-subtle);
+  box-shadow: none;
+}
+.audio-preview .audio-controls button:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-faint);
+  color: var(--accent);
+  transform: none;
+}
+.audio-preview .audio-controls .audio-play {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 6px 16px #4f739630;
+}
+.audio-preview .audio-controls .audio-play:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  box-shadow: 0 7px 18px #4f739638;
+}
+.audio-preview .audio-rate select,
+.audio-action-menu summary {
+  min-height: var(--control-sm);
+  border-color: var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-subtle);
+  box-shadow: none;
+}
+.audio-preview .audio-rate select:focus-visible,
+.audio-action-menu summary:focus-visible,
+.audio-volume button:focus-visible,
+.audio-preview .audio-controls button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.audio-volume button { border-radius: var(--radius-sm); color: var(--ink-subtle); }
+.audio-volume button:hover { background: var(--accent-faint); color: var(--accent); }
+.audio-volume > input { background: var(--line-strong); accent-color: var(--accent); }
+.audio-stream-status i {
+  background: var(--muted-soft);
+  box-shadow: 0 0 0 3px #76839216;
+}
+.audio-stream-status.busy i {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px #4f73961c;
+}
+.audio-preview .audio-chapter-scrollbar { background: var(--accent-border); }
+.audio-preview .audio-chapter-list button {
+  border-radius: var(--radius-md);
+  color: var(--muted);
+}
+.audio-preview .audio-chapter-list button:hover {
+  border-color: transparent;
+  background: var(--surface-hover);
+}
+.audio-preview .audio-chapter-list button.active {
+  border-color: var(--accent-border);
+  background: var(--accent-faint);
+  color: var(--accent);
+  box-shadow: none;
+}
+.audio-preview .audio-chapter-list button > b,
+.audio-preview .audio-chapter-list button > i {
+  background: var(--surface-subtle);
+  color: var(--muted);
+}
+.audio-preview .audio-chapter-list button.active > b,
+.audio-preview .audio-chapter-list button.active > i {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: none;
+}
+.audio-preview .audio-chapter-list button > i svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.audio-preview .audio-chapter-list button strong { color: var(--ink-subtle); }
+.audio-preview .audio-chapter-list button.active strong { color: var(--accent-hover); }
+.audio-action-menu > div {
+  border-color: var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+}
+.audio-action-menu > div button:hover { background: var(--surface-hover); color: var(--accent); }
+@media (max-width: 850px) {
+  .audio-preview .audio-now-playing { border-bottom: 1px solid var(--line); }
+  .audio-preview .audio-cover { border-radius: var(--radius-lg); box-shadow: 0 6px 16px #17212b14; }
+}
+@media (max-width: 430px) {
+  .audio-preview .audio-upper { grid-template-columns: minmax(112px,.78fr) minmax(0,1.22fr); }
+  .audio-preview .audio-now-playing { padding: 10px 8px; }
+  .audio-preview .audio-playback { padding-right: max(8px,env(safe-area-inset-right,0px)); padding-left: max(8px,env(safe-area-inset-left,0px)); }
+  .audio-preview .audio-transport-row { column-gap: 3px; }
+}
