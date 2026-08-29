@@ -617,10 +617,13 @@ fn setup_video_encode(
     unsafe {
         (*context.as_mut_ptr()).profile = ffmpeg::ffi::FF_PROFILE_H264_HIGH;
     }
+    // `safe` represented AVCodecContext.thread_safe_callbacks and disappeared
+    // with FFmpeg 6.  Only set the cross-version fields; Default fills fields
+    // exposed by older libavcodec versions without tying us to their ABI.
     context.set_threading(codec::threading::Config {
         kind: codec::threading::Type::Frame,
         count: 1,
-        safe: true,
+        ..Default::default()
     });
     if global_header {
         context.set_flags(codec::Flags::GLOBAL_HEADER);
