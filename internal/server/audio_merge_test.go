@@ -531,29 +531,8 @@ func TestAudioMergeListsMultipleBackgroundJobs(t *testing.T) {
 	}
 }
 
-func TestNormalizeAudioLayoutDoesNotSilentlyDownmix(t *testing.T) {
-	for _, tc := range []struct {
-		layout   string
-		channels int
-		want     string
-		ok       bool
-	}{
-		{channels: 1, want: "mono", ok: true},
-		{channels: 2, want: "stereo", ok: true},
-		{layout: "5.1(side)", channels: 6, want: "5.1(side)", ok: true},
-		{layout: "unknown", channels: 6},
-		{layout: "5.1;movie", channels: 6},
-	} {
-		got, ok := normalizeAudioLayout(tc.layout, tc.channels)
-		if got != tc.want || ok != tc.ok {
-			t.Fatalf("normalizeAudioLayout(%q, %d)=(%q, %t), want (%q, %t)", tc.layout, tc.channels, got, ok, tc.want, tc.ok)
-		}
-	}
-}
-
 func TestAudioMergeValidatesSelection(t *testing.T) {
 	a := newTestApp(t)
-	a.srv.cfg.FFmpegPath = "definitely-missing-ffmpeg"
 	audio := a.readyFile(t, "voice.wav", []byte("not needed for validation"))
 	document := a.readyFile(t, "notes.txt", []byte("text"))
 

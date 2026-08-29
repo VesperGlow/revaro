@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { DriveFile } from './api'
 
-// 视频缩略图：直接渲染持久化 URL（服务端 ffmpeg 生成/前端上传过，浏览器
+// 视频缩略图：直接渲染持久化 URL（服务端 Rust/libav 生成或前端上传，浏览器
 // 长期缓存，命中时秒出）；加载期间显示占位符号、成功后盖住，不再出现
 // "裂图"。404 才走前端抽帧兜底并上传持久化。
 const props = defineProps<{ file: DriveFile }>()

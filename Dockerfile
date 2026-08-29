@@ -19,13 +19,28 @@ COPY . .
 COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/revaro ./cmd/server
 
-FROM alpine:3.22
-RUN apk add --no-cache ca-certificates tzdata ffmpeg 7zip \
-    && addgroup -S -g 10001 revaro \
-    && adduser -S -D -H -u 10001 -G revaro revaro \
-    && mkdir -p /data \
-    && chown revaro:revaro /data
+FROM rust:1.89-bookworm AS dataplane
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    clang cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
+    libssl-dev libxml2-dev libacl1-dev libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswresample-dev libswscale-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src/data-plane
+COPY data-plane/Cargo.toml data-plane/Cargo.lock ./
+COPY data-plane/src ./src
+RUN cargo build --locked --release && cp target/release/revaro-data-plane /out-revaro-data-plane
+
+FROM debian:bookworm-slim
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates tzdata libavcodec59 libavformat59 libavutil57 libavfilter8 libswresample4 libswscale6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 revaro \
+    && useradd --system --uid 10001 --gid revaro --no-create-home revaro \
+    && mkdir -p /data/.cache /data/work && chown -R revaro:revaro /data
 COPY --from=backend /out/revaro /usr/local/bin/revaro
+COPY --from=dataplane /out-revaro-data-plane /usr/local/bin/revaro-data-plane
+ENV HOME=/data \
+    XDG_CACHE_HOME=/data/.cache \
+    APP_WORK_DIR=/data/work
 USER revaro
 VOLUME ["/data"]
 EXPOSE 8080 51413/tcp 51413/udp

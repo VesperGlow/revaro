@@ -35,19 +35,10 @@ func createLocalMerge(t *testing.T, a *testApp, name string, files []localMergeT
 	return a.request("POST", "/api/audio-merges/local", body, true)
 }
 
-// fakeFFmpeg points the merge endpoint at an executable stub so tests that
-// only exercise job creation, upload and validation keep working on machines
-// (like CI runners) without a real ffmpeg installation. Tests that run the
-// actual encode pipeline check for ffprobe and skip instead.
-func fakeFFmpeg(t *testing.T, a *testApp) {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ffmpeg")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	a.srv.cfg.FFmpegPath = path
-}
+// fakeFFmpeg is a no-op now that the merge pipeline runs in the Rust data
+// plane: the ffmpeg CLI availability check was removed, so tests no longer
+// need an executable stub to pass job creation.
+func fakeFFmpeg(_ *testing.T, _ *testApp) {}
 
 func localMergeContent(name string, size int64) []byte {
 	data := make([]byte, size)

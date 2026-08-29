@@ -3,18 +3,16 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -101,10 +99,6 @@ func (s *Server) startAudioHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "HLS start time is beyond the audio duration")
 		return
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
-		return
-	}
 	select {
 	case s.audioHLSSlots <- struct{}{}:
 	default:
@@ -159,7 +153,7 @@ func waitForAudioHLS(requestCtx context.Context, session *audioHLSSession) error
 		_, done, sessionErr := session.snapshot()
 		if done {
 			if sessionErr == "" {
-				return errors.New("ffmpeg produced no HLS segments")
+				return errors.New("data plane produced no HLS segments")
 			}
 			return errors.New(sessionErr)
 		}
@@ -175,36 +169,12 @@ func waitForAudioHLS(requestCtx context.Context, session *audioHLSSession) error
 
 func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSession) {
 	defer func() { <-s.audioHLSSlots }()
-	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, f)
-	if err != nil {
-		session.finish(err)
+	engine, ok := s.storage.(storage.MediaEngine)
+	if !ok {
+		session.finish(errors.New("Rust media engine is unavailable"))
 		return
 	}
-	defer closeSource()
-
-	args := []string{"-hide_banner", "-loglevel", "error"}
-	if session.Start > 0 {
-		args = append(args, "-ss", strconv.FormatFloat(session.Start, 'f', 3, 64))
-	}
-	args = append(args,
-		"-i", sourceURL, "-map", "0:a:0", "-vn",
-		"-t", strconv.FormatFloat(mediaFallbackDuration.Seconds(), 'f', 0, 64),
-		"-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-		"-f", "hls", "-hls_time", "6", "-hls_list_size", "0",
-		"-hls_playlist_type", "event", "-hls_flags", "temp_file+independent_segments",
-		"-hls_segment_filename", filepath.Join(session.Dir, "segment-%06d.ts"), session.Playlist,
-	)
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, args...)
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stderr = stderr
-	err = cmd.Run()
-	if err != nil {
-		if ctx.Err() != nil {
-			err = ctx.Err()
-		} else {
-			err = fmt.Errorf("ffmpeg HLS: %w: %s", err, strings.TrimSpace(stderr.String()))
-		}
-	}
+	_, err := engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, true)
 	if err != nil {
 		s.log.Warn("audio HLS transcoder stopped", "file", f.ID, "session", session.ID, "error", err)
 	}

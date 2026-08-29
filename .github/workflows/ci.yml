@@ -51,6 +51,19 @@ jobs:
           govulncheck ./...
       - name: Build binary
         run: CGO_ENABLED=0 go build -trimpath ./cmd/server
+      - name: Install Rust media build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev libssl-dev libxml2-dev libacl1-dev libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswresample-dev libswscale-dev
+      - uses: dtolnay/rust-toolchain@1.89
+        with:
+          components: rustfmt, clippy
+      - name: Test Rust data plane
+        working-directory: data-plane
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
 
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

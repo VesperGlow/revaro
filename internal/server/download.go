@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -14,15 +13,13 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/VesperGlow/revaro/internal/btstore"
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/anacrolix/torrent"
-	"github.com/anacrolix/torrent/iplist"
-	"github.com/anacrolix/torrent/metainfo"
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -30,8 +27,7 @@ const maxTorrentMetadataBytes = 4 << 20
 
 type downloadManager struct {
 	server *Server
-	client *torrent.Client
-	pieces *btstore.Client
+	bt     storage.TorrentEngine
 	http   *http.Client
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -46,7 +42,7 @@ type downloadManager struct {
 type downloadRuntime struct {
 	mu        sync.Mutex
 	jobID     string
-	torrent   *torrent.Torrent
+	torrentID int
 	ctx       context.Context
 	cancel    context.CancelFunc
 	lastRead  int64
@@ -83,37 +79,18 @@ type downloadFile struct {
 }
 
 func newDownloadManager(s *Server) (*downloadManager, error) {
-	pieceStore, err := btstore.New(s.db, s.storage, filepath.Join(s.cfg.WorkDir, "revaro-bt-incomplete"), s.log)
-	if err != nil {
-		return nil, err
-	}
-	cfg := torrent.NewDefaultClientConfig()
-	cfg.DefaultStorage = pieceStore
-	cfg.DataDir = filepath.Join(s.cfg.WorkDir, "revaro-bt-incomplete")
-	cfg.ListenPort = s.cfg.BTListenPort
-	cfg.NoDefaultPortForwarding = true
-	cfg.Seed = false
-	cfg.MaxUnverifiedBytes = 128 << 20
-	cfg.EstablishedConnsPerTorrent = 40
-	cfg.HalfOpenConnsPerTorrent = 16
-	cfg.TotalHalfOpenConns = 48
-	cfg.Slogger = s.log.With("component", "bittorrent")
-	cfg.IPBlocklist = privateIPBlocklist()
-	cfg.HTTPDialContext = publicDialContext
-	cfg.TrackerDialContext = publicDialContext
-	client, err := torrent.NewClient(cfg)
-	if err != nil {
-		return nil, err
+	engine, ok := s.storage.(storage.TorrentEngine)
+	if !ok {
+		return nil, errors.New("Rust torrent engine is unavailable")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &downloadManager{
-		server: s, client: client, pieces: pieceStore, http: newURLDownloadClient(),
+		server: s, bt: engine, http: newURLDownloadClient(),
 		ctx: ctx, cancel: cancel, jobs: make(map[string]*downloadRuntime),
 		urlJobs: make(map[string]*urlDownloadRuntime), urlSlots: make(chan struct{}, 2),
 	}
 	go m.restore()
 	go m.restoreURLDownloads()
-	go m.cleanupCompletedPieces()
 	go m.cleanupLoop()
 	go m.cleanupURLLoop()
 	return m, nil
@@ -135,33 +112,7 @@ func (m *downloadManager) Close() {
 	}
 	m.urlJobs = make(map[string]*urlDownloadRuntime)
 	m.urlMu.Unlock()
-	if m.client != nil {
-		m.client.Close()
-	}
-	if m.pieces != nil {
-		_ = m.pieces.Close()
-	}
 }
-
-type privateAddressBlocklist struct{}
-
-func (privateAddressBlocklist) NumRanges() int { return 1 }
-
-func (privateAddressBlocklist) Lookup(ip net.IP) (iplist.Range, bool) {
-	blocked := ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
-	if v4 := ip.To4(); v4 != nil {
-		// CGNAT and benchmarking ranges are not covered by net.IP.IsPrivate.
-		blocked = blocked || (v4[0] == 100 && v4[1]&0xc0 == 0x40) ||
-			(v4[0] == 198 && (v4[1] == 18 || v4[1] == 19)) || v4[0] >= 224
-	}
-	if !blocked {
-		return iplist.Range{}, false
-	}
-	return iplist.Range{First: ip, Last: ip, Description: "non-public address"}, true
-}
-
-func privateIPBlocklist() iplist.Ranger { return privateAddressBlocklist{} }
 
 func publicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
@@ -216,106 +167,57 @@ func (m *downloadManager) restore() {
 }
 
 func (m *downloadManager) attach(jobID, sourceType, source string, encodedMeta []byte, previousStatus string) error {
-	var t *torrent.Torrent
-	var err error
-	if len(encodedMeta) > 0 {
-		mi, loadErr := metainfo.Load(bytes.NewReader(encodedMeta))
-		if loadErr != nil {
-			return loadErr
-		}
-		t, err = m.client.AddTorrent(mi)
-	} else if sourceType == "magnet" {
-		t, err = m.client.AddMagnet(source)
-	} else {
-		decoded, decodeErr := base64.StdEncoding.DecodeString(source)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		mi, loadErr := metainfo.Load(bytes.NewReader(decoded))
-		if loadErr != nil {
-			return loadErr
-		}
-		t, err = m.client.AddTorrent(mi)
+	if source == "" && len(encodedMeta) > 0 {
+		sourceType, source = "torrent", base64.StdEncoding.EncodeToString(encodedMeta)
 	}
+	result, err := m.bt.AddTorrent(m.ctx, sourceType, source, nil, true)
 	if err != nil {
 		return err
 	}
-	t.DisallowDataDownload()
 	ctx, cancel := context.WithCancel(m.ctx)
-	runtime := &downloadRuntime{jobID: jobID, torrent: t, ctx: ctx, cancel: cancel, lastTick: time.Now()}
+	runtime := &downloadRuntime{jobID: jobID, torrentID: result.ID, ctx: ctx, cancel: cancel, lastTick: time.Now()}
 	m.mu.Lock()
 	m.jobs[jobID] = runtime
 	m.mu.Unlock()
-	go m.awaitMetadata(ctx, runtime, previousStatus)
-	return nil
-}
-
-func (m *downloadManager) awaitMetadata(ctx context.Context, runtime *downloadRuntime, previousStatus string) {
-	timer := time.NewTimer(m.server.cfg.BTMetadataWait)
-	defer timer.Stop()
-	select {
-	case <-runtime.torrent.GotInfo():
-	case <-timer.C:
-		m.fail(runtime.jobID, errors.New("获取种子元数据超时"))
-		return
-	case <-ctx.Done():
-		return
-	}
-	if err := m.persistMetadata(runtime.jobID, runtime.torrent); err != nil {
-		m.fail(runtime.jobID, err)
-		return
+	if err := m.persistMetadata(jobID, result.Details); err != nil {
+		cancel()
+		return err
 	}
 	switch previousStatus {
 	case "queued", "downloading":
-		if err := m.startRuntime(runtime); err != nil {
-			m.fail(runtime.jobID, err)
-		}
+		return m.startRuntime(runtime)
 	case "paused":
-		m.applySelectedPriorities(runtime, false)
+		m.setStatus(jobID, "paused", "")
 	case "importing":
 		go m.importRuntime(runtime)
 	default:
-		m.setStatus(runtime.jobID, "waiting", "")
+		m.setStatus(jobID, "waiting", "")
 	}
+	return nil
 }
 
-func (m *downloadManager) persistMetadata(jobID string, t *torrent.Torrent) error {
-	info := t.Info()
-	if info == nil {
-		return errors.New("torrent metadata is unavailable")
-	}
-	if !info.HasV1() {
-		return errors.New("目前只支持 BitTorrent v1 或包含 v1 的混合种子")
-	}
-	files := t.Files()
+func (m *downloadManager) persistMetadata(jobID string, details storage.TorrentDetails) error {
+	files := details.Files
 	if len(files) == 0 || len(files) > m.server.cfg.BTMaxFiles {
 		return fmt.Errorf("种子文件数必须在 1 到 %d 之间", m.server.cfg.BTMaxFiles)
 	}
 	var total int64
 	validated := make([]downloadFile, 0, len(files))
 	for index, file := range files {
-		if file.Length() < 0 || total > m.server.cfg.BTMaxTotalSize-file.Length() {
+		if file.Length < 0 || total > m.server.cfg.BTMaxTotalSize-file.Length {
 			return fmt.Errorf("种子总大小超过 %d 字节限制", m.server.cfg.BTMaxTotalSize)
 		}
-		total += file.Length()
-		rel, err := safeTorrentPath(file.DisplayPath())
+		total += file.Length
+		rel, err := safeTorrentPath(strings.Join(file.Components, "/"))
 		if err != nil {
 			return fmt.Errorf("种子包含不安全的文件路径: %w", err)
 		}
-		validated = append(validated, downloadFile{Index: index, Path: rel, Size: file.Length()})
+		validated = append(validated, downloadFile{Index: index, Path: rel, Size: file.Length})
 	}
 	if len(files) > 1 {
-		if err := validateName(strings.TrimSpace(t.Name())); err != nil {
+		if err := validateName(strings.TrimSpace(details.Name)); err != nil {
 			return fmt.Errorf("种子根目录名称无效: %w", err)
 		}
-	}
-	var meta bytes.Buffer
-	mi := t.Metainfo()
-	if err := mi.Write(&meta); err != nil {
-		return err
-	}
-	if meta.Len() > maxTorrentMetadataBytes {
-		return errors.New("种子元数据超过 4 MiB")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := m.server.db.BeginTx(m.ctx, nil)
@@ -323,7 +225,7 @@ func (m *downloadManager) persistMetadata(jobID string, t *torrent.Torrent) erro
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(m.ctx, `UPDATE download_jobs SET info_hash=?,name=?,metainfo=?,source='',updated_at=? WHERE id=?`, t.InfoHash().HexString(), strings.TrimSpace(t.Name()), meta.Bytes(), now, jobID); err != nil {
+	if _, err = tx.ExecContext(m.ctx, `UPDATE download_jobs SET info_hash=?,name=?,updated_at=? WHERE id=?`, details.InfoHash, strings.TrimSpace(details.Name), now, jobID); err != nil {
 		return err
 	}
 	var existing int
@@ -381,29 +283,12 @@ func (m *downloadManager) create(ctx context.Context, parentID, magnet, torrentB
 		if len(source) > 16384 || !strings.HasPrefix(strings.ToLower(source), "magnet:?") {
 			return downloadJob{}, errors.New("磁力链接无效或过长")
 		}
-		spec, err := torrent.TorrentSpecFromMagnetUri(source)
-		if err != nil {
-			return downloadJob{}, errors.New("磁力链接无效")
-		}
-		if spec.InfoHash == (metainfo.Hash{}) {
-			return downloadJob{}, errors.New("目前只支持包含 btih 的 BitTorrent v1 或混合磁力链接")
-		}
-		knownHash = spec.InfoHash.HexString()
 	} else {
 		sourceType, source = "torrent", torrentBase64
 		decoded, err := base64.StdEncoding.DecodeString(source)
 		if err != nil || len(decoded) == 0 || len(decoded) > maxTorrentMetadataBytes {
 			return downloadJob{}, errors.New(".torrent 文件无效或超过 4 MiB")
 		}
-		mi, err := metainfo.Load(bytes.NewReader(decoded))
-		if err != nil {
-			return downloadJob{}, errors.New(".torrent 文件无法解析")
-		}
-		info, err := mi.UnmarshalInfo()
-		if err != nil || !info.HasV1() {
-			return downloadJob{}, errors.New("目前只支持 BitTorrent v1 或包含 v1 的混合种子")
-		}
-		knownHash = mi.HashInfoBytes().HexString()
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	jobID := ids.New()
@@ -482,8 +367,7 @@ func (m *downloadManager) startRuntime(runtime *downloadRuntime) error {
 		return nil
 	}
 	runtime.starting = true
-	stats := runtime.torrent.Stats()
-	runtime.lastRead = stats.BytesReadUsefulData.Int64()
+	runtime.lastRead = 0
 	runtime.lastTick = time.Now()
 	runtime.mu.Unlock()
 	if err := m.applySelectedPriorities(runtime, true); err != nil {
@@ -503,7 +387,7 @@ func (m *downloadManager) applySelectedPriorities(runtime *downloadRuntime, allo
 		return err
 	}
 	defer rows.Close()
-	selected := make(map[int]bool)
+	selected := []int{}
 	for rows.Next() {
 		var index int
 		var yes bool
@@ -511,28 +395,20 @@ func (m *downloadManager) applySelectedPriorities(runtime *downloadRuntime, allo
 			return err
 		}
 		if yes {
-			selected[index] = true
+			selected = append(selected, index)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	files := runtime.torrent.Files()
-	for index, file := range files {
-		if allow && selected[index] {
-			file.SetPriority(torrent.PiecePriorityNormal)
-		} else {
-			file.SetPriority(torrent.PiecePriorityNone)
-		}
-	}
 	if allow {
-		runtime.torrent.AllowDataDownload()
-		runtime.torrent.AllowDataUpload()
+		if err := m.bt.SelectTorrentFiles(runtime.ctx, runtime.torrentID, selected); err != nil {
+			return err
+		}
+		return m.bt.StartTorrent(runtime.ctx, runtime.torrentID)
 	} else {
-		runtime.torrent.DisallowDataDownload()
-		runtime.torrent.DisallowDataUpload()
+		return m.bt.PauseTorrent(runtime.ctx, runtime.torrentID)
 	}
-	return nil
 }
 
 func (m *downloadManager) monitor(runtime *downloadRuntime) {
@@ -554,35 +430,16 @@ func (m *downloadManager) monitor(runtime *downloadRuntime) {
 			if job.Status != "downloading" {
 				return
 			}
-			files := runtime.torrent.Files()
-			var completed int64
-			allComplete := true
-			for _, item := range job.Files {
-				if !item.Selected || item.Index < 0 || item.Index >= len(files) {
-					continue
-				}
-				got := min(files[item.Index].BytesCompleted(), item.Size)
-				completed += got
-				if got < item.Size {
-					allComplete = false
-				}
+			stats, err := m.bt.TorrentStats(runtime.ctx, runtime.torrentID)
+			if err != nil {
+				m.fail(runtime.jobID, fmt.Errorf("读取下载进度: %w", err))
+				return
 			}
-			stats := runtime.torrent.Stats()
-			now := time.Now()
-			read := stats.BytesReadUsefulData.Int64()
-			runtime.mu.Lock()
-			deltaSeconds := now.Sub(runtime.lastTick).Seconds()
-			speed := int64(0)
-			if deltaSeconds > 0 && read >= runtime.lastRead {
-				speed = int64(float64(read-runtime.lastRead) / deltaSeconds)
-			}
-			runtime.lastRead, runtime.lastTick = read, now
-			runtime.mu.Unlock()
-			_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET completed_size=?,download_speed=?,peers=?,updated_at=? WHERE id=? AND status='downloading'`, completed, max(speed, 0), stats.ActivePeers, time.Now().UTC().Format(time.RFC3339Nano), runtime.jobID)
+			completed := min(stats.ProgressBytes, job.SelectedSize)
+			_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET completed_size=?,download_speed=?,peers=?,updated_at=? WHERE id=? AND status='downloading'`, completed, max(stats.DownloadSpeed, 0), max(stats.Peers, 0), time.Now().UTC().Format(time.RFC3339Nano), runtime.jobID)
 			m.server.jobs.Changed()
-			if allComplete && job.SelectedSize > 0 {
-				runtime.torrent.DisallowDataDownload()
-				runtime.torrent.DisallowDataUpload()
+			if stats.Finished && job.SelectedSize > 0 {
+				_ = m.bt.PauseTorrent(runtime.ctx, runtime.torrentID)
 				_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET status='importing',download_speed=0,peers=0,imported_size=0,import_speed=0,current_file='',error='',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), runtime.jobID)
 				go m.importRuntime(runtime)
 				return
@@ -594,23 +451,6 @@ func (m *downloadManager) monitor(runtime *downloadRuntime) {
 type importedDownloadFile struct {
 	path, objectKey, mimeType, etag string
 	size                            int64
-}
-
-type downloadImportProgressReader struct {
-	reader     io.Reader
-	read       int64
-	onProgress func(int64)
-}
-
-func (r *downloadImportProgressReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
-	if n > 0 {
-		r.read += int64(n)
-		if r.onProgress != nil {
-			r.onProgress(r.read)
-		}
-	}
-	return n, err
 }
 
 func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
@@ -631,69 +471,54 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	// addressing makes already uploaded blocks cheap to deduplicate, while a
 	// reset counter keeps the displayed progress honest after a restart.
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=0,import_speed=0,current_file='',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
-	files := runtime.torrent.Files()
-	stored := make([]importedDownloadFile, 0)
-	var imported int64
-	lastBytes := int64(0)
-	lastUpdate := time.Now()
-	persistProgress := func(total int64, currentFile string, force bool) {
-		now := time.Now()
-		elapsed := now.Sub(lastUpdate)
-		if !force && elapsed < 500*time.Millisecond && total-lastBytes < 4<<20 {
-			return
-		}
-		speed := int64(0)
-		if elapsed > 0 && total >= lastBytes {
-			speed = int64(float64(total-lastBytes) / elapsed.Seconds())
-		}
-		_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=?,import_speed=?,current_file=?,updated_at=? WHERE id=? AND status='importing'`, total, max(speed, 0), currentFile, now.UTC().Format(time.RFC3339Nano), job.ID)
-		m.server.jobs.Changed()
-		lastBytes, lastUpdate = total, now
-	}
+	requests := make([]storage.TorrentImportFile, 0)
+	paths := make(map[int]downloadFile)
 	for _, item := range job.Files {
 		if !item.Selected {
 			continue
 		}
-		if item.Index < 0 || item.Index >= len(files) {
-			m.fail(runtime.jobID, errors.New("种子文件索引发生变化"))
-			return
-		}
-		reader := files[item.Index].NewReader()
-		reader.SetContext(runtime.ctx)
-		persistProgress(imported, item.Path, true)
-		progressReader := &downloadImportProgressReader{reader: io.LimitReader(reader, item.Size)}
-		progressReader.onProgress = func(fileBytes int64) { persistProgress(imported+fileBytes, item.Path, false) }
 		fileName := path.Base(item.Path)
 		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		key, storedObject, storeErr := m.server.storeBlob(runtime.ctx, progressReader, item.Size, mimeType)
-		reader.Close()
-		if storeErr != nil || storedObject.Size != item.Size {
-			if storeErr == nil {
-				storeErr = fmt.Errorf("导入大小 %d 与预期 %d 不一致", storedObject.Size, item.Size)
-			}
-			m.fail(runtime.jobID, fmt.Errorf("导入 %s: %w", item.Path, storeErr))
+		key := storage.BlobKey(ids.New())
+		requests = append(requests, storage.TorrentImportFile{Index: item.Index, Key: key, MIME: mimeType, Size: item.Size})
+		paths[item.Index] = item
+	}
+	started := time.Now()
+	results, err := m.bt.ImportTorrent(runtime.ctx, runtime.torrentID, requests)
+	if err != nil {
+		m.fail(runtime.jobID, fmt.Errorf("导入种子文件: %w", err))
+		return
+	}
+	stored := make([]importedDownloadFile, 0, len(results))
+	var imported int64
+	for _, result := range results {
+		item, ok := paths[result.Index]
+		if !ok || result.Size != item.Size {
+			m.fail(runtime.jobID, errors.New("种子导入结果不一致"))
 			return
 		}
-		imported += storedObject.Size
-		persistProgress(imported, item.Path, true)
-		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: key, size: storedObject.Size, mimeType: mimeType, etag: storedObject.ETag})
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(item.Path)))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: result.Key, size: result.Size, mimeType: mimeType, etag: result.ETag})
+		imported += result.Size
 	}
-	if err := m.commitImported(runtime.ctx, job, stored, len(files) > 1); err != nil {
+	elapsed := max(time.Since(started), time.Millisecond)
+	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=?,import_speed=?,current_file='',updated_at=? WHERE id=? AND status='importing'`, imported, int64(float64(imported)/elapsed.Seconds()), time.Now().UTC().Format(time.RFC3339Nano), job.ID)
+	if err := m.commitImported(runtime.ctx, job, stored, len(job.Files) > 1); err != nil {
 		m.fail(runtime.jobID, err)
 		return
 	}
-	if job.InfoHash != "" {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		if err := m.pieces.DeleteTorrent(cleanupCtx, job.InfoHash); err != nil {
-			m.server.log.Warn("completed torrent temporary pieces cleanup failed", "job", job.ID, "error", err)
-		}
-		cancel()
-	}
 	runtime.cancel()
-	runtime.torrent.Drop()
+	deleteCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	if err := m.bt.DeleteTorrent(deleteCtx, runtime.torrentID); err != nil {
+		m.server.log.Warn("completed torrent cleanup failed", "job", job.ID, "error", err)
+	}
+	cancel()
 	m.mu.Lock()
 	delete(m.jobs, runtime.jobID)
 	m.mu.Unlock()
@@ -782,8 +607,9 @@ func (m *downloadManager) pause(ctx context.Context, jobID string) error {
 	if err != nil || (job.Status != "downloading" && job.Status != "queued") {
 		return errors.New("任务当前不能暂停")
 	}
-	runtime.torrent.DisallowDataDownload()
-	runtime.torrent.DisallowDataUpload()
+	if err := m.bt.PauseTorrent(ctx, runtime.torrentID); err != nil {
+		return err
+	}
 	m.setStatus(jobID, "paused", "")
 	return nil
 }
@@ -813,7 +639,7 @@ func (m *downloadManager) resume(ctx context.Context, jobID string) error {
 }
 
 func (m *downloadManager) remove(ctx context.Context, jobID string) error {
-	job, err := m.get(ctx, jobID, false)
+	_, err := m.get(ctx, jobID, false)
 	if err != nil {
 		return err
 	}
@@ -825,12 +651,7 @@ func (m *downloadManager) remove(ctx context.Context, jobID string) error {
 		if runtime.cancel != nil {
 			runtime.cancel()
 		}
-		runtime.torrent.DisallowDataDownload()
-		runtime.torrent.DisallowDataUpload()
-		runtime.torrent.Drop()
-	}
-	if job.InfoHash != "" && !m.piecesUsedByOtherJob(ctx, job.ID, job.InfoHash) {
-		if err := m.pieces.DeleteTorrent(ctx, job.InfoHash); err != nil {
+		if err := m.bt.DeleteTorrent(ctx, runtime.torrentID); err != nil {
 			return err
 		}
 	}
@@ -838,12 +659,6 @@ func (m *downloadManager) remove(ctx context.Context, jobID string) error {
 		return err
 	}
 	return nil
-}
-
-func (m *downloadManager) piecesUsedByOtherJob(ctx context.Context, jobID, infoHash string) bool {
-	var count int
-	err := m.server.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE id<>? AND info_hash=? AND status IN ('metadata','waiting','queued','downloading','paused','importing')`, jobID, infoHash).Scan(&count)
-	return err != nil || count > 0
 }
 
 func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
@@ -899,10 +714,10 @@ func (m *downloadManager) fail(jobID string, err error) {
 	delete(m.jobs, jobID)
 	m.mu.Unlock()
 	if runtime != nil {
-		runtime.torrent.DisallowDataDownload()
-		runtime.torrent.DisallowDataUpload()
 		runtime.cancel()
-		runtime.torrent.Drop()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		_ = m.bt.DeleteTorrent(ctx, runtime.torrentID)
+		cancel()
 	}
 	m.server.log.Error("built-in torrent task failed", "job", jobID, "error", err)
 }
@@ -932,39 +747,6 @@ func (m *downloadManager) cleanupLoop() {
 				_ = m.remove(context.Background(), id)
 			}
 		}
-	}
-}
-
-func (m *downloadManager) cleanupCompletedPieces() {
-	rows, err := m.server.db.QueryContext(m.ctx, `
-		SELECT DISTINCT pieces.info_hash
-		FROM download_pieces AS pieces
-		WHERE EXISTS (
-			SELECT 1 FROM download_jobs AS completed
-			WHERE completed.info_hash=pieces.info_hash AND completed.status='done'
-		) AND NOT EXISTS (
-			SELECT 1 FROM download_jobs AS active
-			WHERE active.info_hash=pieces.info_hash
-			  AND active.status IN ('metadata','waiting','queued','downloading','paused','importing')
-		)`)
-	if err != nil {
-		m.server.log.Warn("completed torrent piece cleanup scan failed", "error", err)
-		return
-	}
-	var hashes []string
-	for rows.Next() {
-		var hash string
-		if rows.Scan(&hash) == nil {
-			hashes = append(hashes, hash)
-		}
-	}
-	rows.Close()
-	for _, hash := range hashes {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		if err := m.pieces.DeleteTorrent(ctx, hash); err != nil {
-			m.server.log.Warn("completed torrent piece cleanup failed", "info_hash", hash, "error", err)
-		}
-		cancel()
 	}
 }
 
@@ -1085,4 +867,150 @@ func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+// parseByteRange parses a single HTTP byte range (`bytes=start-end`,
+// `bytes=start-` or `bytes=-suffix`) against the known size. Media players
+// only ever request a single range, so a multi-range header is ignored.
+func parseByteRange(header string, size int64) (start, end int64, ok bool) {
+	if size <= 0 {
+		return 0, 0, false
+	}
+	if header == "" {
+		return 0, size - 1, true
+	}
+	const prefix = "bytes="
+	if !strings.HasPrefix(header, prefix) {
+		return 0, 0, false
+	}
+	spec := strings.TrimPrefix(header, prefix)
+	if comma := strings.IndexByte(spec, ','); comma >= 0 {
+		return 0, 0, false
+	}
+	before, after, found := strings.Cut(spec, "-")
+	if !found {
+		return 0, 0, false
+	}
+	before, after = strings.TrimSpace(before), strings.TrimSpace(after)
+	if before == "" {
+		suffix, err := strconv.ParseInt(after, 10, 64)
+		if err != nil || suffix <= 0 {
+			return 0, 0, false
+		}
+		if suffix > size {
+			suffix = size
+		}
+		return size - suffix, size - 1, true
+	}
+	start, err := strconv.ParseInt(before, 10, 64)
+	if err != nil || start < 0 || start >= size {
+		return 0, 0, false
+	}
+	end = size - 1
+	if after != "" {
+		parsed, parseErr := strconv.ParseInt(after, 10, 64)
+		if parseErr != nil {
+			return 0, 0, false
+		}
+		end = parsed
+	}
+	if end >= size {
+		end = size - 1
+	}
+	if end < start {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+var (
+	errDownloadRange = errors.New("invalid download byte range")
+	errDownloadFile  = errors.New("download file unavailable")
+	errDownloadState = errors.New("download is not streamable")
+)
+
+// openFileStream returns a stream over one selected torrent file. It forwards
+// the requested byte range to the Rust torrent engine, whose librqbit stream
+// prioritizes the pieces covering the seek offset while the file is still
+// downloading.
+func (m *downloadManager) openFileStream(ctx context.Context, jobID string, fileIndex int, rangeHeader string) (io.ReadCloser, int64, int64, int64, string, error) {
+	m.mu.RLock()
+	runtime := m.jobs[jobID]
+	m.mu.RUnlock()
+	if runtime == nil {
+		return nil, 0, 0, 0, "", fmt.Errorf("%w: 下载任务未运行", errDownloadState)
+	}
+	job, err := m.get(ctx, jobID, true)
+	if err != nil {
+		return nil, 0, 0, 0, "", err
+	}
+	if job.Status != "downloading" && job.Status != "paused" && job.Status != "importing" {
+		return nil, 0, 0, 0, "", fmt.Errorf("%w: 任务当前不能边下边播", errDownloadState)
+	}
+	var file downloadFile
+	found := false
+	for _, item := range job.Files {
+		if item.Index == fileIndex && item.Selected {
+			file, found = item, true
+			break
+		}
+	}
+	if !found {
+		return nil, 0, 0, 0, "", fmt.Errorf("%w: 下载文件不存在或未选择", errDownloadFile)
+	}
+	if file.Size == 0 && rangeHeader == "" {
+		return io.NopCloser(strings.NewReader("")), 0, -1, 0, "application/octet-stream", nil
+	}
+	start, end, ok := parseByteRange(rangeHeader, file.Size)
+	if !ok {
+		return nil, 0, 0, file.Size, "", fmt.Errorf("%w: 无效的字节范围", errDownloadRange)
+	}
+	body, err := m.bt.StreamTorrent(ctx, runtime.torrentID, fileIndex, start, end)
+	if err != nil {
+		return nil, 0, 0, 0, "", err
+	}
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(file.Path)))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return body, start, end, file.Size, mimeType, nil
+}
+
+func (s *Server) streamDownloadFile(w http.ResponseWriter, r *http.Request) {
+	if s.downloads == nil {
+		problem(w, http.StatusServiceUnavailable, "内置离线下载不可用")
+		return
+	}
+	index, err := strconv.Atoi(chi.URLParam(r, "index"))
+	if err != nil || index < 0 {
+		problem(w, http.StatusNotFound, "下载文件不存在")
+		return
+	}
+	rangeHeader := r.Header.Get("Range")
+	body, start, end, size, mimeType, err := s.downloads.openFileStream(r.Context(), chi.URLParam(r, "id"), index, rangeHeader)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, errDownloadRange):
+			status = http.StatusRequestedRangeNotSatisfiable
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+		case errors.Is(err, errDownloadFile), errors.Is(err, sql.ErrNoRows):
+			status = http.StatusNotFound
+		case errors.Is(err, errDownloadState):
+			status = http.StatusConflict
+		}
+		problem(w, status, err.Error())
+		return
+	}
+	defer body.Close()
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Length", strconv.FormatInt(max(0, end-start+1), 10))
+	if rangeHeader != "" {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	_, _ = io.Copy(w, body)
 }

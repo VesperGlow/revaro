@@ -9,4 +9,5 @@ web/.npm-cache/
 # 前端构建产物（由 npm run build 生成，go:embed 打进二进制）
 internal/webui/dist/
 coverage.out
+data-plane/target/
 .DS_Store

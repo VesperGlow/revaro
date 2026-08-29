@@ -6,24 +6,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"image"
 	"image/jpeg"
 	"io"
 	"net/http"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 	_ "golang.org/x/image/bmp"
 	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
 
-// 持久化缩略图：图片与 EPUB 封面由 Go 重采样、视频由 ffmpeg 抽帧，
+// 持久化缩略图：图片与 EPUB 封面由 Go 重采样、视频由 Rust/libav 抽帧，
 // 统一存入 S3 的 thumbs/ 前缀（内容寻址、条件写入），前端用带 etag 的
 // 不可变 URL 请求，浏览器可长期缓存，刷新/重进目录不再重新加载。
 
@@ -43,7 +42,7 @@ var videoExts = map[string]bool{
 	".ts": true, ".m2ts": true, ".mts": true,
 }
 
-// ffmpeg 抽帧全局并发上限：目录里多个视频首次生成时不至于打满 CPU/磁盘。
+// Rust libav 抽帧全局并发上限：目录里多个视频首次生成时不至于打满 CPU/磁盘。
 var videoThumbSlots = make(chan struct{}, 1)
 var imageThumbSlots = make(chan struct{}, 2)
 
@@ -154,8 +153,9 @@ func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) 
 	if f.Size <= 0 {
 		return nil, false
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		return nil, false // 无 ffmpeg：回退前端抽帧上传
+	engine, ok := s.storage.(storage.MediaEngine)
+	if !ok {
+		return nil, false
 	}
 	select {
 	case videoThumbSlots <- struct{}{}:
@@ -165,38 +165,8 @@ func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) 
 	}
 	genCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	sourceURL, closeSource, err := s.startMediaHLSSource(genCtx, f)
-	if err != nil {
-		return nil, false
-	}
-	defer closeSource()
-	cmd := exec.CommandContext(genCtx, s.cfg.FFmpegPath,
-		"-hide_banner", "-loglevel", "error",
-		"-ss", "1", "-i", sourceURL,
-		"-frames:v", "1",
-		"-vf", fmt.Sprintf("scale='min(%d,iw)':-2", thumbMaxDim),
-		"-f", "image2", "-")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, false
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, false
-	}
-	data, err := io.ReadAll(io.LimitReader(stdout, maxThumbBytes+1))
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, false
-	}
-	// 输出达到上限说明异常（正常缩略图远小于此）：立即终止 ffmpeg，
-	// 否则它会继续写满 stdout 管道并阻塞到 CommandContext 超时。
-	if len(data) > maxThumbBytes {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, false
-	}
-	if err := cmd.Wait(); err != nil {
+	data, err := engine.MediaThumbnail(genCtx, f.objectKey, thumbMaxDim)
+	if err != nil || len(data) > maxThumbBytes {
 		return nil, false
 	}
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {

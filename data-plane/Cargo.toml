@@ -1,0 +1,40 @@
+[package]
+name = "revaro-data-plane"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+axum = { version = "0.8", features = ["http2", "json"] }
+aws-config = "1"
+aws-credential-types = "1"
+aws-sdk-s3 = "1"
+aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
+bytes = "1.10"
+libarchive2 = "0.2.1"
+librqbit = "9.0.1"
+base64 = "0.22"
+futures-util = "0.3"
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "filter", "software-resampling", "software-scaling"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+http-body-util = "0.1"
+http-body = "1"
+percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+subtle = "2.6"
+tokio = { version = "1.47", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tokio-stream = "0.1"
+tower-http = { version = "0.6", features = ["limit", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[dev-dependencies]
+anyhow = "1"
+tempfile = "3"

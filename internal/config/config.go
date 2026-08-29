@@ -32,13 +32,14 @@ type Config struct {
 	UploadExpires      time.Duration
 	TrashRetention     time.Duration
 	GCInterval         time.Duration
-	FFmpegPath         string
 	BTEnabled          bool
 	BTListenPort       int
 	BTMaxFiles         int
 	BTMaxTotalSize     int64
 	BTMetadataWait     time.Duration
 	BTStaleAfter       time.Duration
+	DataPlaneAddr      string
+	DataPlaneBinary    string
 }
 
 func Load() (Config, error) {
@@ -54,12 +55,10 @@ func Load() (Config, error) {
 		S3Bucket:         os.Getenv("S3_BUCKET"),
 		S3AccessKey:      os.Getenv("S3_ACCESS_KEY"),
 		S3SecretKey:      os.Getenv("S3_SECRET_KEY"),
-		FFmpegPath:       os.Getenv("FFMPEG_PATH"),
+		DataPlaneAddr:    env("DATA_PLANE_ADDR", "127.0.0.1:7081"),
+		DataPlaneBinary:  env("DATA_PLANE_BINARY", "revaro-data-plane"),
 	}
 	c.WorkDir = env("APP_WORK_DIR", "/work")
-	if c.FFmpegPath == "" {
-		c.FFmpegPath = "ffmpeg"
-	}
 	var err error
 	if c.CookieSecure, err = boolEnv("COOKIE_SECURE", strings.HasPrefix(c.BaseURL, "https://")); err != nil {
 		return c, err

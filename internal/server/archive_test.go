@@ -2,12 +2,8 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"errors"
-	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,11 +34,6 @@ func TestArchiveNamesAndPaths(t *testing.T) {
 	if got := archiveExpandedLimit(1 << 30); got != maxArchiveExpandedBytes {
 		t.Fatalf("large archive expansion limit=%d", got)
 	}
-	for _, attributes := range []string{"A_ lrwxrwxrwx", "reparse point"} {
-		if !archiveAttributesUnsafe(attributes) {
-			t.Fatalf("unsafe archive attributes accepted: %q", attributes)
-		}
-	}
 }
 
 func TestArchiveFailureIsDetailedAndStructured(t *testing.T) {
@@ -50,12 +41,12 @@ func TestArchiveFailureIsDetailedAndStructured(t *testing.T) {
 	var logs bytes.Buffer
 	app.srv.log = slog.New(slog.NewJSONHandler(&logs, nil))
 	job := &archiveJob{ID: "job-1", FileID: "file-1", Status: "extracting"}
-	app.srv.failArchiveJob(job, errors.New("7-Zip: invalid archive"))
+	app.srv.failArchiveJob(job, errors.New("invalid archive"))
 	snapshot := job.snapshot()
-	if snapshot.Status != "failed" || snapshot.Error != "解压失败：7-Zip: invalid archive" || snapshot.Message != snapshot.Error {
+	if snapshot.Status != "failed" || snapshot.Error != "解压失败：invalid archive" || snapshot.Message != snapshot.Error {
 		t.Fatalf("job status=%q error=%q message=%q", snapshot.Status, snapshot.Error, snapshot.Message)
 	}
-	for _, value := range []string{`"level":"WARN"`, `"file":"file-1"`, `"job":"job-1"`, `"status":"extracting"`, `"error":"7-Zip: invalid archive"`} {
+	for _, value := range []string{`"level":"WARN"`, `"file":"file-1"`, `"job":"job-1"`, `"status":"extracting"`, `"error":"invalid archive"`} {
 		if !strings.Contains(logs.String(), value) {
 			t.Fatalf("structured log missing %s: %s", value, logs.String())
 		}
@@ -66,27 +57,6 @@ func TestArchiveDiskSpaceFailureIsExplicit(t *testing.T) {
 	message := archiveFailureMessage(errors.New("write /tmp/output: no space left on device"))
 	if !strings.Contains(message, "临时磁盘空间不足") {
 		t.Fatalf("message=%q", message)
-	}
-	size, err := archiveExpandedSize([]archiveEntry{{Path: "one", Size: 3}, {Path: "dir", IsDir: true}, {Path: "two", Size: 5}})
-	if err != nil || size != 8 {
-		t.Fatalf("expanded size=%d err=%v", size, err)
-	}
-}
-
-func TestEncryptedArchiveIsDetectedBeforeExtraction(t *testing.T) {
-	listing := "Path = secret.txt\nSize = 42\nAttributes = A\nEncrypted = +\n\n"
-	if _, err := parseArchiveListing(listing, 1024, false); !errors.Is(err, errArchivePasswordRequired) {
-		t.Fatalf("encrypted listing error=%v, want password required", err)
-	}
-	entries, err := parseArchiveListing(listing, 1024, true)
-	if err != nil || len(entries) != 1 || !entries[0].Encrypted {
-		t.Fatalf("password-supplied listing=%+v err=%v", entries, err)
-	}
-	if err := archivePasswordFailure("ERROR: Wrong password?", false); !errors.Is(err, errArchivePasswordRequired) {
-		t.Fatalf("missing-password classification=%v", err)
-	}
-	if err := archivePasswordFailure("ERROR: Wrong password?", true); !errors.Is(err, errArchiveWrongPassword) {
-		t.Fatalf("wrong-password classification=%v", err)
 	}
 }
 
@@ -126,45 +96,5 @@ func TestArchivePasswordStateKeepsAndCleansStaging(t *testing.T) {
 	app.srv.cleanupArchiveJobStaging(job)
 	if stagedDir, stagedPath := job.staged(); stagedDir != "" || stagedPath != "" {
 		t.Fatalf("staging references were not cleared: dir=%q path=%q", stagedDir, stagedPath)
-	}
-}
-
-func TestArchiveTemporaryDirectoryUsesConfiguredWorkDir(t *testing.T) {
-	app := newTestApp(t)
-	workDir := filepath.Join(t.TempDir(), "archive-work")
-	app.srv.cfg.WorkDir = workDir
-	tempDir, err := app.srv.newArchiveTempDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if filepath.Dir(tempDir) != workDir {
-		t.Fatalf("temporary directory=%q, want parent %q", tempDir, workDir)
-	}
-	job := &archiveJob{ID: "job-work-dir", FileID: "file-work-dir"}
-	job.setStaged(tempDir, filepath.Join(tempDir, "source.zip"))
-	app.srv.cleanupArchiveJobStaging(job)
-	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
-		t.Fatalf("archive temporary directory was not cleaned: %v", err)
-	}
-}
-
-func TestArchiveSourceSupportsManifestAndLegacyRawObjects(t *testing.T) {
-	app := newTestApp(t)
-	manifestFile := app.readyFile(t, "manifest.zip", []byte("manifest archive"))
-	app.store.raw["legacy/archive.zip"] = []byte("legacy archive")
-	legacyFile := File{objectKey: "legacy/archive.zip"}
-	for _, test := range []struct {
-		file File
-		want string
-	}{{manifestFile, "manifest archive"}, {legacyFile, "legacy archive"}} {
-		source, err := app.srv.openArchiveSource(context.Background(), test.file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := io.ReadAll(source)
-		_ = source.Close()
-		if err != nil || string(got) != test.want {
-			t.Fatalf("source=%q err=%v, want %q", got, err, test.want)
-		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/VesperGlow/revaro/internal/auth"
 	"github.com/VesperGlow/revaro/internal/config"
 	"github.com/VesperGlow/revaro/internal/database"
+	"github.com/VesperGlow/revaro/internal/dataplane"
 	"github.com/VesperGlow/revaro/internal/server"
 	"github.com/VesperGlow/revaro/internal/storage"
 )
@@ -34,6 +35,14 @@ func main() {
 		log.Error("configuration invalid", "error", err)
 		os.Exit(1)
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	dataProcess, err := dataplane.Start(ctx, cfg.DataPlaneBinary, cfg.DataPlaneAddr, log)
+	if err != nil {
+		log.Error("data plane startup failed", "error", err)
+		os.Exit(1)
+	}
+	defer dataProcess.Close()
 	db, err := database.Open(cfg.DatabasePath())
 	if err != nil {
 		log.Error("database startup failed", "error", err)
@@ -47,11 +56,7 @@ func main() {
 		log.Error("administrator initialization failed", "error", err)
 		os.Exit(1)
 	}
-	store, err := storage.NewS3(context.Background(), cfg)
-	if err != nil {
-		log.Error("S3 client initialization failed", "error", err)
-		os.Exit(1)
-	}
+	store := storage.NewDataPlane(dataProcess.Addr(), dataProcess.Token())
 	checkCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	err = store.Ping(checkCtx)
 	cancel()
@@ -66,8 +71,6 @@ func main() {
 	log.Info("S3 connection ready", "bucket", cfg.S3Bucket, "provider", provider, "proxy_transfers", cfg.ProxyTransfers)
 	app := server.New(db, store, authService, cfg, log)
 	defer app.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	gcRequests := make(chan struct{}, 1)
 	requestGC := func() {
 		select {
@@ -141,7 +144,12 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case childErr := <-dataProcess.Done():
+		log.Error("Rust data plane stopped unexpectedly", "error", childErr)
+		stop()
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

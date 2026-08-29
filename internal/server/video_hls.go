@@ -2,12 +2,9 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,6 +14,7 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -129,14 +127,6 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid HLS start time")
 		return
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
-		return
-	}
-	if _, err := ffprobeFor(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
-		return
-	}
 	s.log.Info("video HLS requested", "file", f.ID, "fallback_reason", strings.TrimSpace(in.FallbackReason))
 	// A seek always destroys the previous workspace before starting at the new
 	// offset. That cancels FFmpeg and its in-flight Wasabi Range immediately;
@@ -224,7 +214,7 @@ func waitForVideoHLS(requestCtx context.Context, session *videoHLSSession) error
 				return nil
 			}
 			if sessionErr == "" {
-				return errors.New("ffmpeg produced no HLS segments")
+				return errors.New("data plane produced no HLS segments")
 			}
 			return errors.New(sessionErr)
 		}
@@ -258,105 +248,32 @@ func videoHLSPlaylistState(path string) (int, float64) {
 	return segments, duration
 }
 
-type videoProbe struct {
-	Streams []struct {
-		CodecType string `json:"codec_type"`
-		CodecName string `json:"codec_name"`
-	} `json:"streams"`
-	Format struct {
-		Duration string `json:"duration"`
-	} `json:"format"`
-}
-
-func probeVideoSource(ctx context.Context, ffmpeg, sourceURL string) (float64, string, string, error) {
-	ffprobe, err := ffprobeFor(ffmpeg)
-	if err != nil {
-		return 0, "", "", err
-	}
-	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name", "-of", "json", sourceURL)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, "", "", err
-	}
-	var result videoProbe
-	if err := json.Unmarshal(output, &result); err != nil {
-		return 0, "", "", err
-	}
-	duration, _ := strconv.ParseFloat(result.Format.Duration, 64)
-	videoCodec, audioCodec := "", ""
-	for _, stream := range result.Streams {
-		if stream.CodecType == "video" && videoCodec == "" {
-			videoCodec = stream.CodecName
-		}
-		if stream.CodecType == "audio" && audioCodec == "" {
-			audioCodec = stream.CodecName
-		}
-	}
-	if duration <= 0 || videoCodec == "" {
-		return 0, "", "", errors.New("video duration or codec is unavailable")
-	}
-	return duration, videoCodec, audioCodec, nil
-}
-
 func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSession) {
 	defer func() { <-s.videoHLSSlots }()
-	sourceURL, closeSource, err := s.startMediaHLSSource(ctx, f)
+	engine, ok := s.storage.(storage.MediaEngine)
+	if !ok {
+		session.finish(errors.New("Rust media engine is unavailable"))
+		return
+	}
+	probe, err := engine.ProbeMedia(ctx, f.objectKey)
 	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.log.Warn("video HLS transcoder stopped", "file", f.ID, "session", session.ID, "error", err)
+		}
 		session.finish(err)
 		return
 	}
-	defer closeSource()
-	duration, videoCodec, audioCodec, err := probeVideoSource(ctx, s.cfg.FFmpegPath, sourceURL)
-	if err != nil {
-		session.finish(fmt.Errorf("ffprobe: %w", err))
-		return
-	}
+	duration, videoCodec, audioCodec := float64(probe.DurationMS)/1000, probe.VideoCodec, probe.AudioCodec
 	if session.Start >= duration {
 		session.finish(errors.New("HLS start time is beyond the video duration"))
 		return
 	}
-	transcoding := videoCodec != "h264"
+	transcoding := videoCodec != "h264" || (audioCodec != "" && audioCodec != "aac")
 	session.setProbe(duration, videoCodec, audioCodec, transcoding)
 	s.log.Info("video playback selected", "file", f.ID, "video_codec", videoCodec, "audio_codec", audioCodec,
 		"selected_mode", "hls-transcode", "video_transcoding", transcoding, "audio_transcoding", audioCodec != "" && audioCodec != "aac",
 		"fallback_reason", session.fallbackReason)
-	args := []string{"-hide_banner", "-loglevel", "error"}
-	if session.Start > 0 {
-		args = append(args, "-ss", strconv.FormatFloat(session.Start, 'f', 3, 64))
-	}
-	args = append(args, "-i", sourceURL, "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn")
-	args = append(args, "-t", strconv.FormatFloat(mediaFallbackDuration.Seconds(), 'f', 0, 64))
-	if transcoding {
-		args = append(args,
-			"-c:v", "libx264", "-preset", "superfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads", "0",
-			"-vf", "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-			"-force_key_frames", "expr:gte(t,n_forced*4)")
-	} else {
-		args = append(args, "-c:v", "copy")
-	}
-	if audioCodec == "aac" {
-		args = append(args, "-c:a", "copy")
-	} else {
-		args = append(args, "-c:a", "aac", "-b:a", "160k", "-ar", "48000")
-	}
-	args = append(args,
-		"-max_muxing_queue_size", "2048", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0",
-		"-hls_playlist_type", "event", "-hls_flags", "temp_file+independent_segments",
-		"-hls_segment_filename", filepath.Join(session.Dir, "segment-%06d.ts"), session.Playlist)
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, args...)
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stderr = stderr
-	err = cmd.Run()
-	if err != nil {
-		if ctx.Err() != nil {
-			err = ctx.Err()
-		} else {
-			err = mediaCommandError("ffmpeg HLS", err, nil, stderr.String())
-		}
-	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.log.Warn("video HLS transcoder stopped", "file", f.ID, "session", session.ID, "error", err)
-	}
+	_, err = engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, false)
 	session.finish(err)
 }
 

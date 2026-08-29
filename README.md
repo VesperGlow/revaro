@@ -17,7 +17,7 @@ flowchart LR
 - 小文件使用 Presigned PUT；大文件使用 S3 Multipart。Multipart part 只是传输分片，Complete 后仍是一个完整、支持原生 HTTP Range 的 S3 object。
 - 普通下载、图片、PDF、文本以及浏览器原生支持的音视频返回短效 Presigned GET，让 Wasabi 直接承担流量、seek、取消和 backpressure。
 - 移动和重命名只更新 SQLite，不执行 `CopyObject`。
-- FFmpeg/ffprobe 对新 blob 直接使用 Presigned Wasabi URL。fMP4 MSE 只重封装，必要时只转音频；不兼容视频才进入有限 HLS 转码缓存。seek/关闭会取消旧命令与旧 Range 请求。
+- Rust media engine 通过 S3 Range reader 将 blob 交给精简 libav。fMP4 优先零复制重封装，必要时转 AAC；不兼容视频进入有界 HLS H.264/AAC 转码。seek/关闭会取消旧任务与 Range 请求。
 - 删除会把文件或整棵目录树软删除到回收站；默认保留 30 天，永久删除后的无引用 blob 和缩略图由 GC 回收。
 
 ## 快速开始（Docker / Podman）
@@ -102,7 +102,6 @@ set -a; . ./.env; set +a
 | `UPLOAD_EXPIRES` | `24h` | 未完成上传的清理期限，也决定垃圾回收宽限期下限 |
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
 | `GC_INTERVAL` | `1h` | 周期孤儿对象回收间隔；`0` 表示禁用周期扫描（回收站到期删除仍会触发一次回收） |
-| `FFMPEG_PATH` | `ffmpeg` | 视频缩略图抽帧使用的 ffmpeg 可执行文件路径 |
 | `BT_ENABLED` | `true` | 启用内置磁力 / `.torrent` 离线下载 |
 | `BT_LISTEN_PORT` | `51413` | 容器内 BT TCP/UDP 监听端口；Compose 的宿主机端口由 `BT_PORT` 设置 |
 | `BT_MAX_FILES` | `10000` | 单个种子允许的最大文件数 |
@@ -203,8 +202,8 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 | `GET` | `/api/files/{id}/book/assets/{n}` | EPUB 内嵌图片 |
 | `GET` | `/api/files/{id}/book/cover` | EPUB 内嵌封面 |
 | `GET` / `PUT` | `/api/files/{id}/book/progress` | 阅读进度（页数与总页数） |
-| `GET` | `/api/files/{id}/thumbnail` | 持久化缩略图（图片/EPUB 封面服务端生成、视频 ffmpeg 抽帧，不可变缓存） |
-| `PUT` | `/api/files/{id}/thumbnail` | 上传前端抽帧的 JPEG 缩略图（无 ffmpeg 部署的兜底） |
+| `GET` | `/api/files/{id}/thumbnail` | 持久化缩略图（图片/EPUB 封面服务端生成、视频由 Rust/libav 抽帧，不可变缓存） |
+| `PUT` | `/api/files/{id}/thumbnail` | 上传前端抽帧的 JPEG 缩略图（客户端兜底） |
 | `POST` | `/api/documents` | 在指定目录新建 UTF-8 文本文档 |
 | `GET` / `POST` / `DELETE` | `/api/files/{id}/share` | 查询、创建/重置或停止公开分享 |
 | `GET` | `/s/{token}` | 无需登录，通过稳定分享地址读取文件 |
@@ -298,7 +297,7 @@ FLAC 与 ALAC 都使用真正的无损编码；自动化测试会把同规格 WA
 
 - `files`：文件树、显示名、随机 blob key、大小、MIME、ETag、状态与软删除/恢复位置；固定 root ID 为 `00000000-0000-0000-0000-000000000000`。
 - `uploads`：single/multipart 模式、S3 upload ID、part size、预期大小与过期时间。
-- `media_metadata`：ffprobe 得到的 container、codec、duration、bitrate、画面尺寸和 chapters。
+- `media_metadata`：Rust/libav 探测得到的 container、codec、duration、bitrate、画面尺寸和 chapters。
 - `shares`：文件与高熵公开 token 的一对一映射。
 - `sessions`：只保存 Session Token 的 SHA-256 hash，不保存明文 Token。
 - `settings`：管理员用户名、Argon2id 密码 hash 和头像媒体类型；头像内容以普通对象保存在 S3。
@@ -341,7 +340,7 @@ docker compose start revaro
 - 上传暂不做跨浏览器断点恢复；取消或过期会 AbortMultipart/DeleteObject，孤儿 blob 由宽限期 GC 兜底。
 - 回收站项目仍占用对象存储空间；永久删除后内容对象进入异步垃圾回收，直到下一次宽限期后的回收才释放空间。
 - 阅读器不解析 PDF/MOBI；EPUB 上限 128 MiB、TXT 上限 16 MiB，且解析缓存为单实例内存（最多 3 本）。
-- 视频缩略图、兼容播放、字幕转换和音频合并依赖容器内置的 ffmpeg/ffprobe（可用 `FFMPEG_PATH` 指定）。
+- 视频缩略图、兼容播放、字幕转换和音频合并由 Rust data plane 的精简 libav 完成；不调用 ffmpeg/ffprobe CLI，也不自行实现 codec。
 - BT 目前支持 BitTorrent v1/兼容磁力任务的下载与选文件，不提供完成后做种、RSS、Tracker 登录或远程下载规则；边界 piece 可能包含未选文件的少量相邻数据，这是 BT 分片模型的正常现象。
 
 ## 测试

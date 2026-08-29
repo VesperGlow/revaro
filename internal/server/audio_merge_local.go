@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -246,10 +245,6 @@ func (s *Server) createLocalAudioMerge(w http.ResponseWriter, r *http.Request) {
 	parent, err := s.file(r.Context(), in.ParentID)
 	if err != nil || parent.Kind != "directory" || parent.Status != "ready" {
 		problem(w, http.StatusBadRequest, "parent directory is invalid")
-		return
-	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
 		return
 	}
 
@@ -666,14 +661,8 @@ func (s *Server) executeLocalAudioMerge(ctx context.Context, job *audioMergeJob)
 	if err := s.assembleLocalMerge(ctx, job, workDir); err != nil {
 		return err
 	}
-	probe, probeErr := ffprobeFor(s.cfg.FFmpegPath)
-	if probeErr != nil {
-		return fmt.Errorf("ffprobe is required for chaptered audio merge: %w", probeErr)
-	}
 	inputs := make([]File, 0, len(job.audioOrder))
 	paths := make([]string, 0, len(job.audioOrder))
-	durations := make([]time.Duration, 0, len(job.audioOrder))
-	probes := make([]audioProbe, 0, len(job.audioOrder))
 	for position, fileIndex := range job.audioOrder {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -684,14 +673,8 @@ func (s *Server) executeLocalAudioMerge(ctx context.Context, job *audioMergeJob)
 			ext = ".audio"
 		}
 		path := filepath.Join(workDir, fmt.Sprintf("input-%04d%s", position, ext))
-		info, probeErr := probeAudio(ctx, probe, path)
-		if probeErr != nil {
-			return fmt.Errorf("probe local audio input %s: %w", file.Name, probeErr)
-		}
 		inputs = append(inputs, File{Name: file.Name, Size: file.Size, Kind: "file", Status: "ready"})
 		paths = append(paths, path)
-		durations = append(durations, info.Duration)
-		probes = append(probes, info)
 	}
 	cover, err := s.localMergeCover(ctx, job, workDir)
 	if err != nil {
@@ -710,7 +693,7 @@ func (s *Server) executeLocalAudioMerge(ctx context.Context, job *audioMergeJob)
 		subtitleSources[position] = &source
 	}
 	profile, _ := audioOutput("alac")
-	return s.encodeMergedAudio(ctx, job, profile, workDir, inputs, paths, durations, probes, subtitleSources, openLocal, cover)
+	return s.encodeMergedAudio(ctx, job, profile, workDir, inputs, paths, subtitleSources, openLocal, cover)
 }
 
 func (s *Server) localMergeCover(ctx context.Context, job *audioMergeJob, workDir string) ([]byte, error) {

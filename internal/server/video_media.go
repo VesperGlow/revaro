@@ -1,13 +1,10 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -129,21 +126,6 @@ func (s *Server) cachedVideoSubtitle(ctx context.Context, key string, convert fu
 	case <-entry.ready:
 		return entry.data, entry.err
 	}
-}
-
-func mediaCommandError(operation string, runErr, ctxErr error, stderr string) error {
-	detail := strings.TrimSpace(stderr)
-	base := runErr
-	if ctxErr != nil {
-		base = ctxErr
-	}
-	if base == nil {
-		base = errors.New("command failed")
-	}
-	if detail == "" {
-		return fmt.Errorf("%s: %w", operation, base)
-	}
-	return fmt.Errorf("%s: %w: %s", operation, base, detail)
 }
 
 func isVideoSource(f File) bool {
@@ -405,11 +387,7 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheKey := fmt.Sprintf("external-v1:%s:%s:%s", subtitle.ID, subtitle.ETag, subtitle.UpdatedAt)
 	vtt, err := s.cachedVideoSubtitle(r.Context(), cacheKey, func(workCtx context.Context) ([]byte, error) {
-		raw, readErr := s.readFileWithLimit(workCtx, *subtitle, maxVideoSubtitleBytes)
-		if readErr != nil {
-			return nil, readErr
-		}
-		return s.subtitleAsWebVTT(workCtx, subtitle.Name, raw)
+		return s.subtitleAsWebVTT(workCtx, *subtitle)
 	})
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) && r.Context().Err() != nil {
 		return
@@ -522,84 +500,22 @@ func writeVideoSubtitle(w http.ResponseWriter, vtt []byte) {
 }
 
 func (s *Server) embeddedSubtitleAsWebVTT(ctx context.Context, video File, streamIndex int) ([]byte, error) {
-	sourceURL, cleanup, err := s.startMediaHLSSource(ctx, video)
-	if err != nil {
-		return nil, err
+	engine, ok := s.storage.(storage.MediaEngine)
+	if !ok {
+		return nil, errors.New("Rust media engine is unavailable")
 	}
-	defer cleanup()
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, "-hide_banner", "-loglevel", "error", "-i", sourceURL, "-map", fmt.Sprintf("0:%d", streamIndex), "-f", "webvtt", "pipe:1")
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stderr = stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	converted, readErr := io.ReadAll(io.LimitReader(stdout, maxConvertedSubtitleBytes+1))
-	if readErr != nil || len(converted) > maxConvertedSubtitleBytes {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		if readErr != nil {
-			return nil, readErr
-		}
-		return nil, errors.New("converted subtitle is too large")
-	}
-	if err := cmd.Wait(); err != nil {
-		return nil, mediaCommandError("ffmpeg embedded subtitle conversion", err, ctx.Err(), stderr.String())
-	}
-	if !bytes.HasPrefix(bytes.TrimSpace(converted), []byte("WEBVTT")) {
-		return nil, errors.New("ffmpeg produced invalid WebVTT")
-	}
-	return converted, nil
+	return engine.SubtitleWebVTT(ctx, video.objectKey, "", &streamIndex)
 }
 
 func (s *Server) readFileWithLimit(ctx context.Context, f File, limit int64) ([]byte, error) {
 	return s.storage.GetObject(ctx, f.objectKey, limit)
 }
 
-func (s *Server) subtitleAsWebVTT(ctx context.Context, name string, raw []byte) ([]byte, error) {
-	raw = bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf})
-	if strings.EqualFold(filepath.Ext(name), ".vtt") {
-		raw = bytes.TrimLeft(raw, " \t\r\n")
-		if !bytes.HasPrefix(raw, []byte("WEBVTT")) {
-			return nil, errors.New("invalid WebVTT header")
-		}
-		return raw, nil
+func (s *Server) subtitleAsWebVTT(ctx context.Context, subtitle File) ([]byte, error) {
+	engine, ok := s.storage.(storage.MediaEngine)
+	if !ok {
+		return nil, errors.New("Rust media engine is unavailable")
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		return nil, err
-	}
-	inputFormat := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
-	if inputFormat == "ssa" {
-		inputFormat = "ass"
-	}
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpegPath, "-hide_banner", "-loglevel", "error", "-f", inputFormat, "-i", "pipe:0", "-map", "0:s:0", "-f", "webvtt", "pipe:1")
-	cmd.Stdin = bytes.NewReader(raw)
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stderr = stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	converted, readErr := io.ReadAll(io.LimitReader(stdout, maxConvertedSubtitleBytes+1))
-	if readErr != nil || len(converted) > maxConvertedSubtitleBytes {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		if readErr != nil {
-			return nil, readErr
-		}
-		return nil, errors.New("converted subtitle is too large")
-	}
-	if err := cmd.Wait(); err != nil {
-		return nil, mediaCommandError("ffmpeg subtitle conversion", err, ctx.Err(), stderr.String())
-	}
-	if !bytes.HasPrefix(bytes.TrimSpace(converted), []byte("WEBVTT")) {
-		return nil, errors.New("ffmpeg produced invalid WebVTT")
-	}
-	return converted, nil
+	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(subtitle.Name)), ".")
+	return engine.SubtitleWebVTT(ctx, subtitle.objectKey, format, nil)
 }

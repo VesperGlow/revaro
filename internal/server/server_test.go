@@ -30,13 +30,12 @@ import (
 	"github.com/VesperGlow/revaro/internal/database"
 	"github.com/VesperGlow/revaro/internal/ids"
 	"github.com/VesperGlow/revaro/internal/storage"
-	"github.com/aws/smithy-go"
 	"github.com/pquerna/otp/totp"
 )
 
 // notFoundError emulates the S3 NoSuchKey API error the real store returns.
 func notFoundError() error {
-	return &smithy.GenericAPIError{Code: "NoSuchKey", Message: "object not found", Fault: smithy.FaultClient}
+	return storage.ErrNotFound
 }
 
 type testBlock struct {
@@ -374,6 +373,15 @@ type testApp struct {
 func newTestApp(t *testing.T) *testApp {
 	return newTestAppWithBlockSize(t, 4<<20)
 }
+
+// requireMediaEngine skips tests that exercise the Rust libav/archive/torrent
+// engines, which are only present when the real data plane is wired in.
+func (a *testApp) requireMediaEngine(t *testing.T) {
+	t.Helper()
+	if _, ok := a.srv.storage.(storage.MediaEngine); !ok {
+		t.Skip("Rust media engine is unavailable")
+	}
+}
 func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 	t.Helper()
 	db, err := database.Open(t.TempDir() + "/revaro.db")
@@ -404,7 +412,7 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 	store.rawURL = rawServer.URL
 	t.Cleanup(rawServer.Close)
 	dataDir := t.TempDir()
-	cfg := config.Config{DataDir: dataDir, WorkDir: filepath.Join(dataDir, "work"), BaseURL: "http://example.test", ProxyTransfers: true, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30, FFmpegPath: "ffmpeg"}
+	cfg := config.Config{DataDir: dataDir, WorkDir: filepath.Join(dataDir, "work"), BaseURL: "http://example.test", ProxyTransfers: true, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30}
 	app := &testApp{t: t, db: db, store: store}
 	app.srv = New(db, store, a, cfg, nil)
 	app.handler = app.srv.Handler()

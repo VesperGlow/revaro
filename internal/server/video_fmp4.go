@@ -2,18 +2,17 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -241,12 +240,8 @@ func (s *Server) fmp4File(w http.ResponseWriter, r *http.Request) (File, bool) {
 		problem(w, http.StatusNotFound, "ready video file not found")
 		return File{}, false
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
-		return File{}, false
-	}
-	if _, err := ffprobeFor(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffprobe is unavailable")
+	if _, ok := s.storage.(storage.MediaEngine); !ok {
+		problem(w, http.StatusServiceUnavailable, "media engine is unavailable")
 		return File{}, false
 	}
 	return f, true
@@ -292,7 +287,7 @@ func (s *Server) logVideoFMP4Selection(fileID string, session *videoFMP4Session,
 		selectedMode = "mse-copy-video-aac-audio"
 	}
 	s.log.Info("video playback selected", "file", fileID, "video_codec", session.VideoCodec,
-		"audio_codec", session.AudioCodec, "selected_mode", selectedMode, "transport", "ffmpeg-stdout-http-mse",
+		"audio_codec", session.AudioCodec, "selected_mode", selectedMode, "transport", "data-plane-http-mse",
 		"video_transcoding", false, "audio_transcoding", session.AudioTranscoding,
 		"fallback_reason", strings.TrimSpace(fallbackReason), "session", session.ID,
 		"requested_start", session.RequestedStart, "fresh_recovery", fresh)
@@ -325,74 +320,6 @@ func videoFMP4Response(session *videoFMP4Session) startVideoFMP4Response {
 		RequestedStart: session.RequestedStart, OutputAudioCodec: session.OutputAudioCodec,
 		AudioTranscoding: session.AudioTranscoding, SelectedMode: selectedMode,
 	}
-}
-
-func probeFMP4Source(ctx context.Context, ffmpeg, sourceURL string) (fmp4MediaInfo, error) {
-	ffprobe, err := ffprobeFor(ffmpeg)
-	if err != nil {
-		return fmp4MediaInfo{}, err
-	}
-	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-show_entries",
-		"format=duration,bit_rate:stream=codec_type,codec_name,profile,level,width,height,avg_frame_rate,bit_rate",
-		"-of", "json", sourceURL)
-	output := &limitedBuffer{limit: 2 << 20}
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stdout, cmd.Stderr = output, stderr
-	if err := cmd.Run(); err != nil {
-		return fmp4MediaInfo{}, mediaCommandError("ffprobe fMP4 metadata", err, ctx.Err(), stderr.String())
-	}
-	var probe fmp4Probe
-	if err := json.Unmarshal([]byte(output.String()), &probe); err != nil {
-		return fmp4MediaInfo{}, fmt.Errorf("decode ffprobe fMP4 metadata: %w", err)
-	}
-	var info fmp4MediaInfo
-	info.duration, _ = strconv.ParseFloat(probe.Format.Duration, 64)
-	info.bitrate, _ = strconv.ParseInt(probe.Format.Bitrate, 10, 64)
-	var videoProfile string
-	var videoLevel int
-	for _, stream := range probe.Streams {
-		switch stream.CodecType {
-		case "video":
-			if info.videoCodec == "" {
-				info.videoCodec, videoProfile, videoLevel = strings.ToLower(stream.CodecName), stream.Profile, stream.Level
-				info.width, info.height = stream.Width, stream.Height
-				info.frameRate = parseFMP4FrameRate(stream.FrameRate)
-				if bitrate, parseErr := strconv.ParseInt(stream.Bitrate, 10, 64); parseErr == nil && bitrate > 0 {
-					info.bitrate = bitrate
-				}
-			}
-		case "audio":
-			if info.audioCodec == "" {
-				info.audioCodec = strings.ToLower(stream.CodecName)
-			}
-		}
-	}
-	if info.duration <= 0 || info.videoCodec == "" {
-		return fmp4MediaInfo{}, errors.New("video duration or codec is unavailable")
-	}
-	info.videoCodecString, err = fmp4VideoCodecString(info.videoCodec, videoProfile, videoLevel)
-	if err != nil {
-		return fmp4MediaInfo{}, err
-	}
-	info.audioCodecString, _ = fmp4AudioCodecString(info.audioCodec)
-	info.videoContentType = `video/mp4; codecs="` + info.videoCodecString + `"`
-	info.aacAudioContentType = `audio/mp4; codecs="mp4a.40.2"`
-	info.mimeType = info.videoContentType
-	if info.audioCodecString != "" {
-		info.audioContentType = `audio/mp4; codecs="` + info.audioCodecString + `"`
-		info.mimeType = `video/mp4; codecs="` + info.videoCodecString + `, ` + info.audioCodecString + `"`
-	}
-	info.aacMIMEType = `video/mp4; codecs="` + info.videoCodecString + `, mp4a.40.2"`
-	if info.audioCodec == "" {
-		info.aacMIMEType = info.mimeType
-	}
-	if info.bitrate <= 0 {
-		info.bitrate = 8_000_000
-	}
-	if info.frameRate <= 0 {
-		info.frameRate = 30
-	}
-	return info, nil
 }
 
 func fmp4OutputTypes(info fmp4MediaInfo, audioMode string) (string, string, string) {
@@ -462,34 +389,6 @@ func fmp4AudioCodecString(codec string) (string, error) {
 	}
 }
 
-// videoFMP4Args writes a fragmented MP4 directly to stdout. Each seek stream
-// has a local clock; the browser places it at RequestedStart with the exact MSE
-// timestampOffset instead of estimating timestamps from HLS EXTINF values.
-// Video is always stream-copied; only incompatible audio may become AAC.
-func videoFMP4Args(sourceURL string, session *videoFMP4Session) []string {
-	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
-	if session.RequestedStart > 0 {
-		args = append(args, "-ss", strconv.FormatFloat(session.RequestedStart, 'f', 3, 64))
-	}
-	args = append(args, "-i", sourceURL,
-		"-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-c:v", "copy")
-	if session.VideoCodec == "hevc" || session.VideoCodec == "h265" {
-		args = append(args, "-tag:v", "hvc1")
-	} else if session.VideoCodec == "h264" || session.VideoCodec == "avc" {
-		args = append(args, "-tag:v", "avc1")
-	}
-	if session.AudioTranscoding {
-		args = append(args, "-c:a", "aac", "-b:a", "192k", "-ar", "48000")
-	} else {
-		args = append(args, "-c:a", "copy")
-	}
-	return append(args,
-		"-max_muxing_queue_size", "2048", "-avoid_negative_ts", "make_zero",
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
-		"-frag_duration", "2000000", "-min_frag_duration", "500000",
-		"-flush_packets", "1", "-f", "mp4", "pipe:1")
-}
-
 func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
 	session := s.videoFMP4Session(chi.URLParam(r, "session"))
 	if session == nil {
@@ -515,31 +414,19 @@ func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusTooManyRequests, "another fMP4 stream is already active")
 		return
 	}
-	sourceURL, closeSource, err := s.startMediaHLSSource(streamCtx, session.File)
+	engine := s.storage.(storage.MediaEngine)
+	stdout, err := engine.StreamFMP4(streamCtx, session.File.objectKey, session.RequestedStart, session.AudioCodec != "", session.AudioTranscoding)
 	if err != nil {
-		problem(w, http.StatusBadGateway, "could not open video stream source")
-		return
-	}
-	defer closeSource()
-	cmd := exec.CommandContext(streamCtx, s.cfg.FFmpegPath, videoFMP4Args(sourceURL, session)...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		problem(w, http.StatusInternalServerError, "could not create fMP4 stdout stream")
-		return
-	}
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
 		problem(w, http.StatusBadGateway, "could not start fMP4 stream")
 		return
 	}
+	defer stdout.Close()
 	buffer := make([]byte, 128<<10)
 	firstN, firstErr := stdout.Read(buffer)
 	if firstN == 0 {
-		waitErr := cmd.Wait()
 		if streamCtx.Err() == nil {
 			s.log.Warn("fMP4 stdout ended before headers", "file", session.FileID, "session", session.ID,
-				"error", mediaCommandError("ffmpeg fMP4 stdout", waitErr, nil, stderr.String()))
+				"error", firstErr)
 			problem(w, http.StatusBadGateway, "fMP4 stream produced no data")
 		}
 		return
@@ -561,16 +448,15 @@ func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		// FFmpeg also closes its local Range request and the underlying Reader.
 		streamCancel()
 	}
-	waitErr := cmd.Wait()
 	if streamCtx.Err() != nil || writeErr != nil {
 		s.log.Info("fMP4 stdout stream cancelled", "file", session.FileID, "session", session.ID,
 			"requested_start", session.RequestedStart, "bytes", bytesSent, "request_error", writeErr)
 		return
 	}
-	if waitErr != nil {
+	if firstErr != nil && !errors.Is(firstErr, io.EOF) {
 		s.log.Warn("fMP4 stdout stream failed", "file", session.FileID, "session", session.ID,
 			"requested_start", session.RequestedStart, "bytes", bytesSent,
-			"error", mediaCommandError("ffmpeg fMP4 stdout", waitErr, nil, stderr.String()))
+			"error", firstErr)
 		return
 	}
 	s.log.Info("fMP4 stdout stream completed", "file", session.FileID, "session", session.ID,

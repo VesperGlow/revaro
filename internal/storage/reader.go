@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type dynamicReadAheadKey struct{}
@@ -25,7 +22,7 @@ type ReadSeekCloserAt interface {
 }
 
 type objectReader struct {
-	store       *S3
+	store       rangeStore
 	ctx         context.Context
 	key         string
 	size        int64
@@ -40,14 +37,19 @@ type objectReader struct {
 	adaptive    bool
 }
 
-func (s *S3) Open(ctx context.Context, key string) (ReadSeekCloserAt, error) {
-	info, err := s.HeadObject(ctx, key)
+type rangeStore interface {
+	HeadObject(context.Context, string) (ObjectInfo, error)
+	OpenRange(context.Context, string, int64, int64) (io.ReadCloser, error)
+}
+
+func openObject(ctx context.Context, store rangeStore, key string) (ReadSeekCloserAt, error) {
+	info, err := store.HeadObject(ctx, key)
 	if err != nil {
 		return nil, err
 	}
 	readerCtx, cancel := context.WithCancel(ctx)
 	adaptive, _ := ctx.Value(dynamicReadAheadKey{}).(bool)
-	return &objectReader{store: s, ctx: readerCtx, cancel: cancel, key: key, size: info.Size, windowStart: -1, windowSize: 1 << 20, lastEnd: -1, adaptive: adaptive}, nil
+	return &objectReader{store: store, ctx: readerCtx, cancel: cancel, key: key, size: info.Size, windowStart: -1, windowSize: 1 << 20, lastEnd: -1, adaptive: adaptive}, nil
 }
 func (r *objectReader) Size() int64 { return r.size }
 func (r *objectReader) Read(p []byte) (int, error) {
@@ -101,14 +103,14 @@ func (r *objectReader) readAt(p []byte, off int64) (int, error) {
 		fetchSize = max(fetchSize, r.windowSize)
 	}
 	end := min(r.size, off+fetchSize) - 1
-	out, err := r.store.client.GetObject(r.ctx, &s3.GetObjectInput{Bucket: aws.String(r.store.bucket), Key: aws.String(r.key), Range: aws.String(fmt.Sprintf("bytes=%d-%d", off, end))})
+	body, err := r.store.OpenRange(r.ctx, r.key, off, end)
 	if err != nil {
 		return 0, err
 	}
-	defer out.Body.Close()
+	defer body.Close()
 	if cache {
 		buf := make([]byte, end-off+1)
-		n, readErr := io.ReadFull(out.Body, buf)
+		n, readErr := io.ReadFull(body, buf)
 		if readErr != nil && readErr != io.ErrUnexpectedEOF {
 			return 0, readErr
 		}
@@ -120,7 +122,7 @@ func (r *objectReader) readAt(p []byte, off int64) (int, error) {
 		}
 		return n, nil
 	}
-	n, err := io.ReadFull(out.Body, p[:end-off+1])
+	n, err := io.ReadFull(body, p[:end-off+1])
 	if err != nil {
 		return n, err
 	}
@@ -166,7 +168,4 @@ func (r *objectReader) Close() error {
 	}
 	r.mu.Unlock()
 	return nil
-}
-func (s *S3) ReadFile(ctx context.Context, key string, limit int64) ([]byte, error) {
-	return s.GetObject(ctx, key, limit)
 }

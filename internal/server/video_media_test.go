@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -46,19 +45,6 @@ func TestVideoSubtitleLanguage(t *testing.T) {
 	}
 }
 
-func TestWebVTTSubtitlePassThrough(t *testing.T) {
-	app := newTestApp(t)
-	want := []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n")
-	input := append([]byte{0xef, 0xbb, 0xbf}, append([]byte("\n"), want...)...)
-	got, err := app.srv.subtitleAsWebVTT(context.Background(), "Movie.vtt", input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("got=%q want=%q", got, want)
-	}
-}
-
 func TestVideoSubtitleConversionContinuesAfterRequestCancellationAndIsCached(t *testing.T) {
 	app := newTestApp(t)
 	started := make(chan struct{})
@@ -93,17 +79,6 @@ func TestVideoSubtitleConversionContinuesAfterRequestCancellationAndIsCached(t *
 	}
 }
 
-func TestMediaCommandErrorNeverLosesExitOrContextError(t *testing.T) {
-	err := mediaCommandError("ffmpeg subtitle conversion", errors.New("exit status 1"), nil, "")
-	if got := err.Error(); !strings.Contains(got, "exit status 1") {
-		t.Fatalf("missing exit error: %q", got)
-	}
-	err = mediaCommandError("ffmpeg subtitle conversion", errors.New("signal: killed"), context.Canceled, "")
-	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("missing context error: %v", err)
-	}
-}
-
 func TestOffsetVideoSubtitleUsesHLSSessionTimeline(t *testing.T) {
 	input := []byte("WEBVTT\n\nold\n00:00:05.000 --> 00:00:09.000\nold\n\ncrossing\n00:00:09.500 --> 00:00:11.000 line:90%\ncross\n\nafter\n00:01:12.250 --> 00:01:14.500\nafter\n")
 	got := string(offsetVideoSubtitle(input, 10))
@@ -134,6 +109,7 @@ func TestOffsetVideoSubtitleLeavesCanonicalCacheUnchanged(t *testing.T) {
 
 func TestVideoSubtitleAPI(t *testing.T) {
 	app := newTestApp(t)
+	app.requireMediaEngine(t)
 	video := app.readyFile(t, "Movie.mkv", []byte("not needed by metadata endpoint"))
 	subtitle := app.readyFile(t, "Movie.zh-CN.vtt", []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n你好\n"))
 	app.readyFile(t, "Other.srt", []byte("unrelated"))
@@ -201,6 +177,7 @@ Dialogue: 0,0:06:15.00,0:06:20.00,Default,,0,0,0,,六分钟字幕
 		t.Fatal(err)
 	}
 	app := newTestApp(t)
+	app.requireMediaEngine(t)
 	video := app.readyFile(t, "Movie.mkv", data)
 	info := app.request("GET", "/api/files/"+video.ID+"/video", nil, true)
 	if info.Code != http.StatusOK {

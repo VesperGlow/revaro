@@ -1,16 +1,13 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -19,6 +16,7 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sys/unix"
 )
@@ -26,8 +24,6 @@ import (
 const (
 	maxArchiveEntries       = 100000
 	maxArchiveExpandedBytes = int64(64 << 30)
-	maxArchiveListingBytes  = 64 << 20
-	archiveDiskReserve      = int64(64 << 20)
 	archivePasswordWaitTTL  = 30 * time.Minute
 )
 
@@ -45,6 +41,7 @@ type archiveJob struct {
 	archivePath      string
 	passwordDeadline time.Time
 	changed          func()
+	cancel           context.CancelFunc
 
 	ID         string `json:"id"`
 	FileID     string `json:"file_id"`
@@ -166,23 +163,13 @@ func archiveBaseName(name string) string {
 	return strings.TrimSuffix(name, filepath.Ext(name))
 }
 
-func sevenZipExecutable() (string, error) {
-	if path, err := exec.LookPath("7zz"); err == nil {
-		return path, nil
-	}
-	if path, err := exec.LookPath("7z"); err == nil {
-		return path, nil
-	}
-	return "", errors.New("7-Zip is unavailable")
-}
-
 func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	f, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
 	if err != nil || f.Kind != "file" || f.Status != "ready" || !isArchiveName(f.Name) {
 		problem(w, http.StatusNotFound, "ready archive file not found")
 		return
 	}
-	if _, err := sevenZipExecutable(); err != nil {
+	if _, ok := s.storage.(storage.ArchiveExtractor); !ok {
 		problem(w, http.StatusServiceUnavailable, "online extraction is unavailable")
 		return
 	}
@@ -195,7 +182,9 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	s.archiveMu.Lock()
 	s.archiveJobs[job.ID] = job
 	s.archiveMu.Unlock()
-	go s.runArchiveExtract(s.audioHLSCtx, f, parentID, job, "")
+	jobCtx, jobCancel := context.WithCancel(s.audioHLSCtx)
+	job.cancel = jobCancel
+	go s.runArchiveExtract(jobCtx, f, parentID, job, "")
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
 
@@ -227,7 +216,9 @@ func (s *Server) resumeArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusConflict, "archive source is no longer available")
 		return
 	}
-	go s.runArchiveExtract(s.audioHLSCtx, f, job.ParentID, job, in.Password)
+	jobCtx, jobCancel := context.WithCancel(s.audioHLSCtx)
+	job.cancel = jobCancel
+	go s.runArchiveExtract(jobCtx, f, job.ParentID, job, in.Password)
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
 
@@ -287,13 +278,6 @@ func (s *Server) deleteArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type archiveEntry struct {
-	Path      string
-	Size      int64
-	IsDir     bool
-	Encrypted bool
-}
-
 func validateArchivePath(path string) error {
 	path = filepath.ToSlash(strings.TrimSpace(path))
 	if path == "" || strings.HasPrefix(path, "/") || filepath.IsAbs(path) || strings.ContainsRune(path, 0) {
@@ -331,35 +315,6 @@ func archiveDiskAvailable(path string) (int64, error) {
 	return int64(available), nil
 }
 
-func ensureArchiveDiskSpace(path string, required int64) error {
-	if required < 0 || required > int64(^uint64(0)>>1)-archiveDiskReserve {
-		return errors.New("temporary disk space requirement is invalid")
-	}
-	available, err := archiveDiskAvailable(path)
-	if err != nil {
-		return fmt.Errorf("check temporary disk space: %w", err)
-	}
-	needed := required + archiveDiskReserve
-	if available < needed {
-		return fmt.Errorf("temporary disk space is insufficient: need at least %d MiB, only %d MiB is available", (needed+(1<<20)-1)>>20, available>>20)
-	}
-	return nil
-}
-
-func archiveExpandedSize(entries []archiveEntry) (int64, error) {
-	var total int64
-	for _, entry := range entries {
-		if entry.IsDir {
-			continue
-		}
-		if entry.Size < 0 || total > int64(^uint64(0)>>1)-entry.Size {
-			return 0, errors.New("archive expanded size is invalid")
-		}
-		total += entry.Size
-	}
-	return total, nil
-}
-
 func archiveFailureMessage(err error) string {
 	if err == nil {
 		return "解压失败：未知错误"
@@ -384,133 +339,6 @@ func (s *Server) failArchiveJob(job *archiveJob, err error) {
 	s.cleanupArchiveJobStaging(job)
 }
 
-func archiveAttributesUnsafe(attributes string) bool {
-	lower := strings.ToLower(attributes)
-	if strings.Contains(lower, "reparse") {
-		return true
-	}
-	for _, field := range strings.Fields(lower) {
-		if len(field) >= 10 && field[0] == 'l' {
-			return true
-		}
-	}
-	return false
-}
-
-func archivePasswordArg(password string) string {
-	if password == "" {
-		return "-p-"
-	}
-	return "-p" + password
-}
-
-func archivePasswordFailure(detail string, supplied bool) error {
-	lower := strings.ToLower(detail)
-	for _, marker := range []string{"wrong password", "password is incorrect", "incorrect password", "can not open encrypted archive", "cannot open encrypted archive"} {
-		if strings.Contains(lower, marker) {
-			if supplied {
-				return errArchiveWrongPassword
-			}
-			return errArchivePasswordRequired
-		}
-	}
-	return nil
-}
-
-func inspectArchive(ctx context.Context, executable, archivePath string, archiveSize int64, password string) ([]archiveEntry, error) {
-	stdout := &limitedBuffer{limit: maxArchiveListingBytes}
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd := exec.CommandContext(ctx, executable, "l", "-slt", "-ba", archivePasswordArg(password), archivePath)
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String() + "\n" + stdout.String())
-		if passwordErr := archivePasswordFailure(detail, password != ""); passwordErr != nil {
-			return nil, fmt.Errorf("%w: %s", passwordErr, detail)
-		}
-		return nil, mediaCommandError("7-Zip archive inspection", err, ctx.Err(), detail)
-	}
-	if stdout.buf.Len() >= maxArchiveListingBytes {
-		return nil, errors.New("archive file list is too large")
-	}
-	return parseArchiveListing(stdout.String(), archiveSize, password != "")
-}
-
-func parseArchiveListing(listing string, archiveSize int64, passwordSupplied bool) ([]archiveEntry, error) {
-	var entries []archiveEntry
-	var path, attributes string
-	var linked, encrypted bool
-	var size int64
-	flush := func() error {
-		if path == "" {
-			return nil
-		}
-		if err := validateArchivePath(path); err != nil {
-			return err
-		}
-		if linked || archiveAttributesUnsafe(attributes) {
-			return errors.New("archive links are not allowed")
-		}
-		entries = append(entries, archiveEntry{Path: filepath.ToSlash(filepath.Clean(path)), Size: size, IsDir: strings.Contains(attributes, "D"), Encrypted: encrypted})
-		path, attributes, size, linked, encrypted = "", "", 0, false, false
-		return nil
-	}
-	scanner := bufio.NewScanner(strings.NewReader(listing))
-	scanner.Buffer(make([]byte, 64<<10), 2<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			if err := flush(); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		key, value, ok := strings.Cut(line, " = ")
-		if !ok {
-			continue
-		}
-		switch key {
-		case "Path":
-			path = value
-		case "Size":
-			size, _ = strconv.ParseInt(value, 10, 64)
-		case "Attributes":
-			attributes = value
-		case "Encrypted":
-			encrypted = value == "+"
-		case "Symbolic Link", "Hard Link", "Reparse Point":
-			linked = linked || value != ""
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	if err := flush(); err != nil {
-		return nil, err
-	}
-	if len(entries) == 0 {
-		return nil, errors.New("archive is empty")
-	}
-	if !passwordSupplied {
-		for _, entry := range entries {
-			if entry.Encrypted {
-				return nil, errArchivePasswordRequired
-			}
-		}
-	}
-	if len(entries) > maxArchiveEntries {
-		return nil, fmt.Errorf("archive contains more than %d entries", maxArchiveEntries)
-	}
-	limit := archiveExpandedLimit(archiveSize)
-	var total int64
-	for _, entry := range entries {
-		if entry.Size < 0 || total > limit-entry.Size {
-			return nil, fmt.Errorf("archive expands beyond the %d GiB safety limit", limit>>30)
-		}
-		total += entry.Size
-	}
-	return entries, nil
-}
-
 type extractedObject struct {
 	rel      string
 	path     string
@@ -520,26 +348,15 @@ type extractedObject struct {
 	mimeType string
 }
 
-func (s *Server) openArchiveSource(ctx context.Context, f File) (io.ReadCloser, error) {
-	return s.storage.OpenRaw(ctx, f.objectKey)
-}
-
-func (s *Server) newArchiveTempDir() (string, error) {
-	if err := os.MkdirAll(s.cfg.WorkDir, 0o700); err != nil {
-		return "", fmt.Errorf("create archive work directory: %w", err)
-	}
-	return os.MkdirTemp(s.cfg.WorkDir, "revaro-extract-")
-}
-
 func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string, job *archiveJob, password string) {
 	fail := func(err error) { s.failArchiveJob(job, err) }
 	requestPassword := func(err error) {
 		message := "压缩包已加密，请输入密码后继续"
-		if errors.Is(err, errArchiveWrongPassword) {
+		if errors.Is(err, storage.ErrArchiveWrongPassword) {
 			message = "压缩包密码错误，请重新输入"
 		}
 		job.needsPassword(message)
-		s.log.Info("archive job waiting for password", "file", job.FileID, "job", job.ID, "status", "waiting_password", "error", err)
+		s.log.Info("archive job waiting for password", "file", job.FileID, "job", job.ID)
 	}
 	select {
 	case s.archiveSlots <- struct{}{}:
@@ -548,112 +365,117 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		fail(ctx.Err())
 		return
 	}
-	tempDir, archivePath := job.staged()
-	if tempDir == "" || archivePath == "" {
-		var err error
-		tempDir, err = s.newArchiveTempDir()
-		if err != nil {
-			fail(fmt.Errorf("create temporary extraction directory: %w", err))
-			return
-		}
-		archivePath = filepath.Join(tempDir, "source"+filepath.Ext(f.Name))
-		job.setStaged(tempDir, archivePath)
+	extractor, ok := s.storage.(storage.ArchiveExtractor)
+	if !ok {
+		fail(errors.New("Rust archive engine is unavailable"))
+		return
 	}
-	outputDir := filepath.Join(tempDir, "output")
-	if _, statErr := os.Stat(archivePath); errors.Is(statErr, os.ErrNotExist) {
-		if err := ensureArchiveDiskSpace(tempDir, f.Size); err != nil {
-			fail(err)
+	expectedRoot := filepath.Join(s.cfg.WorkDir, "revaro-extract-"+job.ID)
+	job.setStaged(expectedRoot, filepath.Join(expectedRoot, "source.archive"))
+	job.update("checking", 2, "正在准备压缩包")
+	pollCtx, pollCancel := context.WithCancel(ctx)
+	defer pollCancel()
+	go s.pollArchiveProgress(pollCtx, job, extractor, f.Size)
+	outputDir, err := extractor.ExtractArchive(ctx, f.objectKey, job.ID, f.Size, password)
+	pollCancel()
+	if err != nil {
+		if errors.Is(err, storage.ErrArchivePasswordRequired) || errors.Is(err, storage.ErrArchiveWrongPassword) {
+			requestPassword(err)
 			return
 		}
-		job.update("checking", 2, "正在检测压缩包是否加密")
-		source, err := s.openArchiveSource(ctx, f)
-		if err != nil {
-			fail(fmt.Errorf("read archive from S3 while checking encryption: %w", err))
+		fail(err)
+		return
+	}
+	if err := s.importExtractedArchive(ctx, f, parentID, job, outputDir); err != nil {
+		fail(err)
+	}
+}
+
+// pollArchiveProgress mirrors the Rust data-plane extraction progress into the
+// in-memory job while ExtractArchive is blocked. The Rust side reports two
+// phases: "downloading" (source staged from S3) and "extracting" (entries
+// written to the workspace).
+func (s *Server) pollArchiveProgress(ctx context.Context, job *archiveJob, extractor storage.ArchiveExtractor, archiveSize int64) {
+	ticker := time.NewTicker(400 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
 			return
-		}
-		out, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-		if err == nil {
-			_, err = io.Copy(out, source)
-			closeErr := out.Close()
-			if err == nil {
-				err = closeErr
+		case <-ticker.C:
+			progress, err := extractor.ArchiveProgress(ctx, job.ID)
+			if err != nil {
+				return
+			}
+			switch progress.Phase {
+			case "downloading":
+				percent := 2
+				if archiveSize > 0 {
+					percent = 2 + int(min(progress.DownloadedBytes, archiveSize)*6/archiveSize)
+				}
+				job.update("downloading", min(percent, 8), "正在下载压缩包")
+			case "extracting":
+				job.update("extracting", 25, "正在解压")
 			}
 		}
-		_ = source.Close()
-		if err != nil {
-			fail(fmt.Errorf("stage archive for encryption check: %w", err))
-			return
+	}
+}
+
+func (s *Server) cancelArchiveExtract(w http.ResponseWriter, r *http.Request) {
+	s.archiveMu.RLock()
+	job := s.archiveJobs[chi.URLParam(r, "id")]
+	s.archiveMu.RUnlock()
+	if job == nil {
+		problem(w, http.StatusNotFound, "archive job not found")
+		return
+	}
+	if archiveJobTerminal(job.snapshot().Status) {
+		problem(w, http.StatusConflict, "archive job is already finished")
+		return
+	}
+	extractor, ok := s.storage.(storage.ArchiveExtractor)
+	if ok {
+		if err := extractor.CancelArchive(r.Context(), job.ID); err != nil {
+			s.log.Warn("archive cancel request failed", "file", job.FileID, "job", job.ID, "error", err)
 		}
-	} else if statErr != nil {
-		fail(fmt.Errorf("inspect staged archive: %w", statErr))
-		return
 	}
-	executable, err := sevenZipExecutable()
-	if err != nil {
-		fail(err)
-		return
+	job.mu.Lock()
+	job.Status, job.Message, job.Error = "failed", "已取消", "解压任务已取消"
+	job.passwordDeadline = time.Time{}
+	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	cancel := job.cancel
+	job.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	job.update("checking", 18, "正在验证密码与压缩包安全性")
-	entries, inspectErr := inspectArchive(ctx, executable, archivePath, f.Size, password)
-	if inspectErr != nil {
-		if errors.Is(inspectErr, errArchivePasswordRequired) || errors.Is(inspectErr, errArchiveWrongPassword) {
-			requestPassword(inspectErr)
-			return
-		}
-		fail(inspectErr)
-		return
+	if job.changed != nil {
+		job.changed()
 	}
-	expandedEstimate, sizeErr := archiveExpandedSize(entries)
-	if sizeErr != nil {
-		fail(sizeErr)
-		return
-	}
-	if err = ensureArchiveDiskSpace(tempDir, expandedEstimate); err != nil {
-		fail(err)
-		return
-	}
-	// A wrong password can leave a partial output tree. The staged source stays
-	// cached, but every extraction attempt gets a fresh output directory.
-	if err = os.RemoveAll(outputDir); err != nil {
-		fail(fmt.Errorf("reset extraction output directory: %w", err))
-		return
-	}
-	if err = os.Mkdir(outputDir, 0o700); err != nil {
-		fail(fmt.Errorf("create extraction output directory: %w", err))
-		return
-	}
-	job.update("extracting", 25, "正在解压")
-	stderr := &limitedBuffer{limit: 128 << 10}
-	cmd := exec.CommandContext(ctx, executable, "x", "-y", "-bd", "-bb0", archivePasswordArg(password), "-o"+outputDir, archivePath)
-	cmd.Stdout, cmd.Stderr = io.Discard, stderr
-	if err = cmd.Run(); err != nil {
-		if passwordErr := archivePasswordFailure(stderr.String(), password != ""); passwordErr != nil {
-			requestPassword(passwordErr)
-			return
-		}
-		fail(mediaCommandError("7-Zip extraction", err, ctx.Err(), stderr.String()))
-		return
-	}
+	s.cleanupArchiveJobStaging(job)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID string, job *archiveJob, outputDir string) error {
 	var paths []string
 	var expanded int64
 	expandedLimit := archiveExpandedLimit(f.Size)
-	err = filepath.WalkDir(outputDir, func(path string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(outputDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if path == outputDir {
 			return nil
 		}
-		rel, relErr := filepath.Rel(outputDir, path)
-		if relErr != nil {
-			return relErr
+		rel, err := filepath.Rel(outputDir, path)
+		if err != nil {
+			return err
 		}
 		if err := validateArchivePath(rel); err != nil {
 			return err
 		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return infoErr
+		info, err := entry.Info()
+		if err != nil {
+			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 || (!info.Mode().IsRegular() && !info.IsDir()) {
 			return errors.New("archive contains unsupported links or special files")
@@ -668,24 +490,21 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		return nil
 	})
 	if err != nil {
-		fail(fmt.Errorf("validate extracted files: %w", err))
-		return
+		return fmt.Errorf("validate extracted files: %w", err)
 	}
 	if len(paths) > maxArchiveEntries {
-		fail(fmt.Errorf("archive contains more than %d entries", maxArchiveEntries))
-		return
+		return fmt.Errorf("archive contains more than %d entries", maxArchiveEntries)
 	}
 	job.update("importing", 35, "正在写入网盘")
 	objects := make([]extractedObject, 0)
 	for _, path := range paths {
-		info, statErr := os.Stat(path)
-		if statErr != nil || !info.Mode().IsRegular() {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		file, openErr := os.Open(path)
-		if openErr != nil {
-			fail(fmt.Errorf("open extracted file %q: %w", filepath.Base(path), openErr))
-			return
+		file, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("open extracted file %q: %w", filepath.Base(path), err)
 		}
 		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
 		if mimeType == "" {
@@ -694,12 +513,10 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		key, stored, storeErr := s.storeBlob(ctx, file, info.Size(), mimeType)
 		_ = file.Close()
 		if storeErr != nil {
-			fail(fmt.Errorf("upload extracted file %q to S3: %w", filepath.Base(path), storeErr))
-			return
+			return fmt.Errorf("upload extracted file %q to S3: %w", filepath.Base(path), storeErr)
 		}
 		if stored.Size != info.Size() {
-			fail(fmt.Errorf("upload extracted file %q: stored size %d does not match local size %d", filepath.Base(path), stored.Size, info.Size()))
-			return
+			return fmt.Errorf("upload extracted file %q: stored size %d does not match local size %d", filepath.Base(path), stored.Size, info.Size())
 		}
 		rel, _ := filepath.Rel(outputDir, path)
 		objects = append(objects, extractedObject{rel: filepath.ToSlash(rel), path: path, size: info.Size(), key: key, etag: stored.ETag, mimeType: mimeType})
@@ -707,8 +524,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	}
 	rootID, rootName, err := s.commitExtractedArchive(ctx, parentID, archiveBaseName(f.Name), outputDir, paths, objects)
 	if err != nil {
-		fail(fmt.Errorf("commit extracted files: %w", err))
-		return
+		return fmt.Errorf("commit extracted files: %w", err)
 	}
 	job.mu.Lock()
 	job.Status, job.Progress, job.Message, job.OutputID, job.OutputName = "done", 100, "解压完成", rootID, rootName
@@ -717,6 +533,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	job.mu.Unlock()
 	s.cleanupArchiveJobStaging(job)
 	s.log.Info("archive job completed", "file", job.FileID, "job", job.ID, "output", rootID, "name", rootName)
+	return nil
 }
 
 func (s *Server) cleanupArchiveJobs() {

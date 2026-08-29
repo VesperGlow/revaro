@@ -1,8 +1,6 @@
 package server
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -22,6 +19,7 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
+	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -559,10 +557,6 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		totalSize += f.Size
 		inputs = append(inputs, f)
 	}
-	if _, err := exec.LookPath(s.cfg.FFmpegPath); err != nil {
-		problem(w, http.StatusServiceUnavailable, "ffmpeg is unavailable")
-		return
-	}
 	if in.CoverJPEG != "" && in.CoverFile != "" {
 		problem(w, http.StatusBadRequest, "choose either an uploaded cover or a directory image")
 		return
@@ -725,12 +719,6 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 	}
 	var copiedBytes int64
 	paths := make([]string, 0, len(inputs))
-	durations := make([]time.Duration, 0, len(inputs))
-	probes := make([]audioProbe, 0, len(inputs))
-	probe, probeErr := ffprobeFor(s.cfg.FFmpegPath)
-	if probeErr != nil {
-		return fmt.Errorf("ffprobe is required for chaptered audio merge: %w", probeErr)
-	}
 	for index, input := range inputs {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -768,34 +756,36 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 			return fmt.Errorf("audio source %s size mismatch: got %d, want %d", input.ID, n, input.Size)
 		}
 		paths = append(paths, path)
-		if probe != "" {
-			info, probeErr := probeAudio(ctx, probe, path)
-			if probeErr != nil {
-				return fmt.Errorf("probe audio input %s: %w", input.ID, probeErr)
-			}
-			durations = append(durations, info.Duration)
-			probes = append(probes, info)
-		}
 	}
 
-	return s.encodeMergedAudio(ctx, job, profile, workDir, inputs, paths, durations, probes, subtitleSources, s.openMergeSource, cover)
+	return s.encodeMergedAudio(ctx, job, profile, workDir, inputs, paths, subtitleSources, s.openMergeSource, cover)
 }
 
 // encodeMergedAudio runs the shared FFmpeg pipeline for an audio merge whose
 // source files are already materialized at local paths: chapter metadata,
 // cover embedding, subtitle time-shifting, ALAC/FLAC/AAC encoding and finally
 // storing the master artifact as a normal blobs/<UUID> object.
-func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, profile audioOutputProfile, workDir string, inputs []File, paths []string, durations []time.Duration, probes []audioProbe, subtitleSources []*File, openSubtitle func(context.Context, File) (io.ReadCloser, error), cover []byte) error {
-	metadataPath, err := writeChapterMetadata(workDir, job.OutputName, inputs, durations)
+func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, profile audioOutputProfile, workDir string, inputs []File, paths []string, subtitleSources []*File, openSubtitle func(context.Context, File) (io.ReadCloser, error), cover []byte) error {
+	engine, ok := s.storage.(storage.MediaEngine)
+	if !ok {
+		return errors.New("Rust media engine is unavailable")
+	}
+	outputPath := filepath.Join(workDir, "merged"+profile.Extension)
+	job.update("merging", 40, "Rust media engine 正在按顺序合并音频")
+	inputNames := make([]string, len(inputs))
+	for index := range inputs {
+		inputNames[index] = inputs[index].Name
+	}
+	merged, err := engine.MergeAudio(ctx, paths, inputNames, outputPath, profile.Format, job.OutputName)
 	if err != nil {
 		return err
 	}
-	coverPath := ""
-	if len(cover) > 0 {
-		coverPath = filepath.Join(workDir, "cover.jpg")
-		if err := os.WriteFile(coverPath, cover, 0o600); err != nil {
-			return fmt.Errorf("write audio cover: %w", err)
-		}
+	durations := make([]time.Duration, len(merged.DurationsMS))
+	for index, milliseconds := range merged.DurationsMS {
+		durations[index] = time.Duration(milliseconds) * time.Millisecond
+	}
+	if len(durations) != len(inputs) {
+		return errors.New("Rust media engine returned inconsistent audio durations")
 	}
 	storedSubtitles := make([]storedAudioSubtitle, 0)
 	subtitlePath := ""
@@ -811,10 +801,24 @@ func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, prof
 			}
 		}
 	}
-	outputPath := filepath.Join(workDir, "merged"+profile.Extension)
-	if err := runAudioFFmpeg(ctx, s.cfg.FFmpegPath, paths, metadataPath, coverPath, subtitlePath, job.OutputName, durations, probes, profile, outputPath, 40, 86, job); err != nil {
-		return err
+	coverPath := ""
+	if len(cover) > 0 {
+		embeddedCover, coverErr := resizeToJPEG(cover, 2048)
+		if coverErr != nil {
+			return fmt.Errorf("prepare embedded audio cover: %w", coverErr)
+		}
+		coverPath = filepath.Join(workDir, "embedded-cover.jpg")
+		if err := os.WriteFile(coverPath, embeddedCover, 0o600); err != nil {
+			return fmt.Errorf("write embedded audio cover: %w", err)
+		}
 	}
+	if coverPath != "" || subtitlePath != "" {
+		job.update("merging", 82, "正在嵌入封面与字幕")
+		if err := engine.DecorateAudio(ctx, outputPath, coverPath, subtitlePath); err != nil {
+			return err
+		}
+	}
+	job.update("merging", 86, "音频母版编码完成")
 	return s.finalizeAudioMerge(ctx, job, outputPath, profile, cover, inputs, durations, storedSubtitles)
 }
 
@@ -876,7 +880,7 @@ func (s *Server) storeAudioArtifact(ctx context.Context, path, mimeType string, 
 		return "", 0, "", err
 	}
 	if info.Size() <= 0 {
-		return "", 0, "", errors.New("ffmpeg produced an empty audio file")
+		return "", 0, "", errors.New("audio encoder produced an empty file")
 	}
 	var storedBytes int64
 	reader := &mergeProgressReader{ctx: ctx, r: input, onRead: func(n int64) {
@@ -911,92 +915,6 @@ func (r *mergeProgressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func ffprobeFor(ffmpeg string) (string, error) {
-	resolved, err := exec.LookPath(ffmpeg)
-	if err != nil {
-		return "", err
-	}
-	candidate := filepath.Join(filepath.Dir(resolved), "ffprobe")
-	if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-		return candidate, nil
-	}
-	return exec.LookPath("ffprobe")
-}
-
-type audioProbe struct {
-	Duration   time.Duration
-	SampleRate int
-	Channels   int
-	Layout     string
-}
-
-func probeAudio(ctx context.Context, ffprobe, path string) (audioProbe, error) {
-	out, err := exec.CommandContext(ctx, ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries", "format=duration:stream=sample_rate,channels,channel_layout", "-of", "json", path).Output()
-	if err != nil {
-		return audioProbe{}, err
-	}
-	var result struct {
-		Format struct {
-			Duration string `json:"duration"`
-		} `json:"format"`
-		Streams []struct {
-			SampleRate    string `json:"sample_rate"`
-			Channels      int    `json:"channels"`
-			ChannelLayout string `json:"channel_layout"`
-		} `json:"streams"`
-	}
-	if err := json.Unmarshal(out, &result); err != nil || len(result.Streams) == 0 {
-		return audioProbe{}, errors.New("audio stream information is unavailable")
-	}
-	seconds, err := strconv.ParseFloat(result.Format.Duration, 64)
-	if err != nil || seconds <= 0 {
-		return audioProbe{}, errors.New("audio duration is unavailable")
-	}
-	rate, err := strconv.Atoi(result.Streams[0].SampleRate)
-	if err != nil || rate < 8000 || rate > 384000 || result.Streams[0].Channels < 1 || result.Streams[0].Channels > 8 {
-		return audioProbe{}, errors.New("audio stream format is unsupported")
-	}
-	layout, ok := normalizeAudioLayout(result.Streams[0].ChannelLayout, result.Streams[0].Channels)
-	if !ok {
-		return audioProbe{}, errors.New("audio channel layout is unavailable")
-	}
-	return audioProbe{Duration: time.Duration(seconds * float64(time.Second)), SampleRate: rate, Channels: result.Streams[0].Channels, Layout: layout}, nil
-}
-
-func normalizeAudioLayout(layout string, channels int) (string, bool) {
-	if layout == "" || layout == "unknown" {
-		if channels == 1 {
-			return "mono", true
-		}
-		if channels == 2 {
-			return "stereo", true
-		}
-		return "", false
-	}
-	for _, r := range layout {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && !strings.ContainsRune("._()+-", r) {
-			return "", false
-		}
-	}
-	return layout, true
-}
-
-func audioMergeTarget(probes []audioProbe) (int, string) {
-	rate, channels, layout := 48000, 2, "stereo"
-	if len(probes) > 0 {
-		rate, channels, layout = probes[0].SampleRate, probes[0].Channels, probes[0].Layout
-	}
-	for _, probe := range probes[1:] {
-		if probe.SampleRate > rate {
-			rate = probe.SampleRate
-		}
-		if probe.Channels > channels {
-			channels, layout = probe.Channels, probe.Layout
-		}
-	}
-	return rate, layout
-}
-
 func buildStoredAudioChapters(inputs []File, durations []time.Duration) []storedAudioChapter {
 	chapters := make([]storedAudioChapter, 0, len(inputs))
 	var start int64
@@ -1011,131 +929,3 @@ func buildStoredAudioChapters(inputs []File, durations []time.Duration) []stored
 	}
 	return chapters
 }
-
-func writeChapterMetadata(workDir, outputName string, inputs []File, durations []time.Duration) (string, error) {
-	var body strings.Builder
-	body.WriteString(";FFMETADATA1\n")
-	body.WriteString("title=" + escapeFFMetadata(strings.TrimSuffix(outputName, filepath.Ext(outputName))) + "\n")
-	var start int64
-	for index, input := range inputs {
-		end := start + durations[index].Milliseconds()
-		fmt.Fprintf(&body, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n", start, end, escapeFFMetadata(strings.TrimSuffix(input.Name, filepath.Ext(input.Name))))
-		start = end
-	}
-	path := filepath.Join(workDir, "chapters.ffmetadata")
-	return path, os.WriteFile(path, []byte(body.String()), 0o600)
-}
-
-func escapeFFMetadata(value string) string {
-	replacer := strings.NewReplacer("\\", "\\\\", "=", "\\=", ";", "\\;", "#", "\\#", "\n", " ", "\r", " ")
-	return replacer.Replace(value)
-}
-
-func runAudioFFmpeg(ctx context.Context, ffmpeg string, paths []string, metadataPath, coverPath, subtitlePath, outputName string, durations []time.Duration, probes []audioProbe, profile audioOutputProfile, outputPath string, progressStart, progressEnd int, job *audioMergeJob) error {
-	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
-	for _, path := range paths {
-		args = append(args, "-i", path)
-	}
-	nextInputIndex := len(paths)
-	metadataIndex := -1
-	if metadataPath != "" {
-		metadataIndex = nextInputIndex
-		nextInputIndex++
-		args = append(args, "-f", "ffmetadata", "-i", metadataPath)
-	}
-	coverIndex := -1
-	if coverPath != "" {
-		coverIndex = nextInputIndex
-		nextInputIndex++
-		args = append(args, "-i", coverPath)
-	}
-	subtitleIndex := -1
-	if subtitlePath != "" {
-		subtitleIndex = nextInputIndex
-		args = append(args, "-i", subtitlePath)
-	}
-	parts := make([]string, 0, len(paths)+1)
-	labels := make([]string, 0, len(paths))
-	targetRate, targetLayout := audioMergeTarget(probes)
-	targetSampleFormat := "fltp"
-	if profile.Lossless {
-		targetSampleFormat = "s32"
-	}
-	for index := range paths {
-		label := fmt.Sprintf("a%d", index)
-		parts = append(parts, fmt.Sprintf("[%d:a:0]aresample=%d,aformat=sample_fmts=%s:sample_rates=%d:channel_layouts=%s,asetpts=N/SR/TB[%s]", index, targetRate, targetSampleFormat, targetRate, targetLayout, label))
-		labels = append(labels, "["+label+"]")
-	}
-	parts = append(parts, strings.Join(labels, "")+fmt.Sprintf("concat=n=%d:v=0:a=1[outa]", len(paths)))
-	args = append(args, "-filter_complex", strings.Join(parts, ";"), "-map", "[outa]")
-	if metadataIndex >= 0 {
-		index := strconv.Itoa(metadataIndex)
-		args = append(args, "-map_metadata", index)
-		if profile.Chapters {
-			args = append(args, "-map_chapters", index)
-		}
-	}
-	if coverIndex >= 0 {
-		args = append(args, "-map", strconv.Itoa(coverIndex)+":v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic", "-metadata:s:v:0", "title=Cover", "-metadata:s:v:0", "comment=Cover (front)")
-	} else {
-		args = append(args, "-vn")
-	}
-	if subtitleIndex >= 0 {
-		args = append(args, "-map", strconv.Itoa(subtitleIndex)+":s:0", "-c:s", "mov_text", "-metadata:s:s:0", "language=und", "-metadata:s:s:0", "title=字幕", "-disposition:s:0", "default")
-	}
-	args = append(args, "-metadata", "title="+strings.TrimSuffix(outputName, filepath.Ext(outputName)), "-c:a", profile.Codec)
-	args = append(args, profile.EncoderArgs...)
-	args = append(args, "-progress", "pipe:1", "-nostats", "-f", profile.Container, outputPath)
-	cmd := exec.CommandContext(ctx, ffmpeg, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr := &limitedBuffer{limit: 64 << 10}
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	job.update("merging", 40, "FFmpeg 正在按顺序合并音频")
-	var total time.Duration
-	for _, duration := range durations {
-		total += duration
-	}
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "out_time_us=") && total > 0 {
-			micros, parseErr := strconv.ParseInt(strings.TrimPrefix(line, "out_time_us="), 10, 64)
-			if parseErr == nil {
-				progress := progressStart + int(time.Duration(micros)*time.Microsecond*time.Duration(progressEnd-progressStart)/total)
-				job.update("merging", min(progress, progressEnd), "FFmpeg 正在按顺序合并音频")
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return err
-	}
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("ffmpeg: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	job.update("merging", progressEnd, "音频母版编码完成")
-	return nil
-}
-
-type limitedBuffer struct {
-	buf   bytes.Buffer
-	limit int
-}
-
-func (b *limitedBuffer) Write(p []byte) (int, error) {
-	original := len(p)
-	remaining := b.limit - b.buf.Len()
-	if remaining > 0 {
-		_, _ = b.buf.Write(p[:min(len(p), remaining)])
-	}
-	return original, nil
-}
-
-func (b *limitedBuffer) String() string { return b.buf.String() }
