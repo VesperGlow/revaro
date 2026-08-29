@@ -15,7 +15,7 @@ done
 
 fixture_root=$(mktemp -d "${TMPDIR:-/tmp}/revaro-real-integration.XXXXXX")
 work_root="$fixture_root/work"
-mkdir -p "$work_root/hls-copy" "$work_root/hls-transcode"
+mkdir -p "$work_root/hls-copy" "$work_root/hls-transcode" "$work_root/hls-long"
 token=0123456789abcdef0123456789abcdef
 addr=127.0.0.1:17081
 server_pid=
@@ -82,6 +82,20 @@ assert_probe "$fixture_root/long.mp4" '((.streams[0].duration|tonumber)-(.stream
 request -d "{\"key\":\"integration/vp9-opus.webm\",\"output_dir\":\"$work_root/hls-transcode\",\"start_seconds\":7}" \
   "http://$addr/v1/media/hls" >/dev/null
 assert_probe "$work_root/hls-transcode/index.m3u8" '[.streams[].codec_name] == ["h264","aac"] and (.format.start_time|tonumber) < 0.1'
+
+# Production scheduling regression: the long transcode keeps the single heavy
+# permit, but startup returns after a playable prefix and probe uses a separate
+# light pool. The HLS job remains alive without an HTTP generation deadline.
+long_hls=$(request -d "{\"key\":\"integration/long-vp9-opus.webm\",\"output_dir\":\"$work_root/hls-long\",\"start_seconds\":0}" \
+  "http://$addr/v1/media/hls")
+long_hls_job=$(jq -er .job_id <<<"$long_hls")
+probe_started=$(date +%s)
+request -d '{"key":"integration/hevc-aac.mp4"}' "http://$addr/v1/media/probe" >"$fixture_root/concurrent-probe.json"
+probe_elapsed=$(($(date +%s)-probe_started))
+test "$probe_elapsed" -lt 5
+jq -e '.video_codec == "hevc" and .duration_ms > 0' "$fixture_root/concurrent-probe.json" >/dev/null
+request "http://$addr/v1/media/hls/$long_hls_job" | jq -e '.error == null' >/dev/null
+request -X DELETE "http://$addr/v1/media/hls/$long_hls_job" >/dev/null
 
 request -d "{\"inputs\":[\"$work_root/mono.wav\",\"$work_root/mono.wav\"],\"input_names\":[\"mono original.wav\",\"mono second.wav\"],\"output\":\"$work_root/mono.m4a\",\"format\":\"aac\"}" \
   "http://$addr/v1/media/audio/merge" >/dev/null

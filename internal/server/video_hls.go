@@ -273,8 +273,48 @@ func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSessi
 	s.log.Info("video playback selected", "file", f.ID, "video_codec", videoCodec, "audio_codec", audioCodec,
 		"selected_mode", "hls-transcode", "video_transcoding", transcoding, "audio_transcoding", audioCodec != "" && audioCodec != "aac",
 		"fallback_reason", session.fallbackReason)
-	_, err = engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, false)
+	started, err := engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, false)
+	if err == nil {
+		err = waitForDataPlaneHLSJob(ctx, engine, started.JobID)
+	}
 	session.finish(err)
+}
+
+func waitForDataPlaneHLSJob(ctx context.Context, engine storage.MediaEngine, jobID string) error {
+	jobs, ok := engine.(storage.MediaHLSJobEngine)
+	if !ok || jobID == "" { // compatible with in-process test engines and older data planes
+		return nil
+	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status, err := jobs.HLSJobStatus(ctx, jobID)
+		if err != nil {
+			if ctx.Err() != nil {
+				cancelDataPlaneHLSJob(jobs, jobID)
+				return ctx.Err()
+			}
+			return err
+		}
+		if status.Done {
+			if status.Error != "" {
+				return errors.New(status.Error)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			cancelDataPlaneHLSJob(jobs, jobID)
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func cancelDataPlaneHLSJob(jobs storage.MediaHLSJobEngine, jobID string) {
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = jobs.CancelHLSJob(cancelCtx, jobID)
 }
 
 func (s *Server) videoHLSAsset(w http.ResponseWriter, r *http.Request) {

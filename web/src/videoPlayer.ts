@@ -113,13 +113,9 @@ export interface MSECompatibility {
   fallbackReason:string
 }
 
-function supportedMIME(contentType:string,videoCodec:string):string{
+function supportedMIME(contentType:string):string{
   if(!contentType)return ''
   if(MediaSource.isTypeSupported(contentType))return contentType
-  if(/^(hevc|h265)$/i.test(videoCodec)){
-    const generic=contentType.replace(/hvc1\.[^," ]+/i,'hvc1')
-    if(generic!==contentType&&MediaSource.isTypeSupported(generic))return generic
-  }
   return ''
 }
 
@@ -130,11 +126,11 @@ export async function mseCompatibility(metadata:VideoFMP4Metadata):Promise<MSECo
     fallbackReason:'浏览器没有 MediaSource Extensions',
   }
   if(typeof MediaSource==='undefined')return unavailable
-  const videoMIME=supportedMIME(metadata.video_mime_type,metadata.video_codec)
+  const videoMIME=supportedMIME(metadata.video_mime_type)
   const audioSupported=!metadata.audio_codec||Boolean(metadata.audio_mime_type&&MediaSource.isTypeSupported(metadata.audio_mime_type))
   const aacAudioSupported=!metadata.audio_codec||Boolean(metadata.aac_audio_mime_type&&MediaSource.isTypeSupported(metadata.aac_audio_mime_type))
-  const copyMIME=supportedMIME(metadata.mime_type,metadata.video_codec)
-  const aacMIME=supportedMIME(metadata.aac_mime_type,metadata.video_codec)
+  const copyMIME=supportedMIME(metadata.mime_type)
+  const aacMIME=supportedMIME(metadata.aac_mime_type)
   let videoSupported=Boolean(videoMIME)
   let powerEfficient:boolean|undefined
   if(videoSupported&&navigator.mediaCapabilities?.decodingInfo){

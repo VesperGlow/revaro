@@ -174,7 +174,10 @@ func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSessi
 		session.finish(errors.New("Rust media engine is unavailable"))
 		return
 	}
-	_, err := engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, true)
+	started, err := engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, true)
+	if err == nil {
+		err = waitForDataPlaneHLSJob(ctx, engine, started.JobID)
+	}
 	if err != nil {
 		s.log.Warn("audio HLS transcoder stopped", "file", f.ID, "session", session.ID, "error", err)
 	}

@@ -2,13 +2,18 @@ use std::{
     env,
     io::{self, Read, Write},
     path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 use axum::{
     Json,
     body::Body,
-    extract::State,
-    http::{HeaderValue, header},
+    extract::{Path as AxumPath, State},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use ffmpeg::{
@@ -72,7 +77,28 @@ pub struct HlsResponse {
     video_codec: String,
     audio_codec: String,
     transcoding: bool,
+    job_id: String,
 }
+
+#[derive(Default)]
+struct HlsJobState {
+    done: bool,
+    error: String,
+}
+
+pub(crate) struct HlsJob {
+    cancel: CancellationToken,
+    state: Mutex<HlsJobState>,
+}
+
+#[derive(Serialize)]
+pub struct HlsStatusResponse {
+    done: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    error: String,
+}
+
+static NEXT_HLS_JOB: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Serialize, Default)]
 pub struct ProbeResponse {
@@ -114,7 +140,7 @@ pub async fn probe(
     Json(q): Json<ProbeRequest>,
 ) -> Result<Json<ProbeResponse>, ApiError> {
     let _permit = state
-        .media_slots
+        .media_light_slots
         .clone()
         .acquire_owned()
         .await
@@ -136,7 +162,7 @@ pub async fn thumbnail(
 ) -> Result<Response, ApiError> {
     let max_dimension = q.max_dimension.unwrap_or(480).clamp(64, 2048);
     let _permit = state
-        .media_slots
+        .media_light_slots
         .clone()
         .acquire_owned()
         .await
@@ -160,8 +186,14 @@ pub async fn fmp4(
     State(state): State<AppState>,
     Json(q): Json<Fmp4Request>,
 ) -> Result<Response, ApiError> {
-    let permit = state
-        .media_slots
+    let transcode_video = q.transcode_video.unwrap_or(false);
+    let transcode_audio = q.transcode_audio.unwrap_or(false);
+    let slots = if transcode_video || transcode_audio {
+        &state.media_heavy_slots
+    } else {
+        &state.media_stream_slots
+    };
+    let permit = slots
         .clone()
         .acquire_owned()
         .await
@@ -171,8 +203,6 @@ pub async fn fmp4(
     let (tx, rx) = mpsc::channel::<Result<bytes::Bytes, io::Error>>(4);
     let start = q.start_seconds.unwrap_or(0.0).max(0.0);
     let include_audio = q.include_audio.unwrap_or(true);
-    let transcode_video = q.transcode_video.unwrap_or(false);
-    let transcode_audio = q.transcode_audio.unwrap_or(false);
     task::spawn_blocking(move || {
         let _permit = permit;
         let result = remux_fmp4(
@@ -213,29 +243,149 @@ pub async fn hls(
             "HLS output directory is outside work root",
         ));
     }
-    let _permit = state
-        .media_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(ApiError::internal)?;
     let cancel = state.shutdown.child_token();
     let reader = state.s3.range_reader(q.key, cancel.clone()).await?;
-    let mut guard = CancelOnDrop(cancel.clone());
-    let result = task::spawn_blocking(move || {
-        remux_hls(
-            reader,
-            &output_dir,
-            q.start_seconds.unwrap_or_default(),
-            q.audio_only.unwrap_or(false),
-            cancel,
-        )
-    })
-    .await
-    .map_err(ApiError::internal)?
-    .map_err(ApiError::bad_request)?;
-    guard.disarm();
-    Ok(Json(result))
+    let id = format!("hls-{}", NEXT_HLS_JOB.fetch_add(1, Ordering::Relaxed));
+    let job = Arc::new(HlsJob {
+        cancel: cancel.clone(),
+        state: Mutex::new(HlsJobState::default()),
+    });
+    let mut request_guard = CancelOnDrop(cancel.clone());
+    state
+        .hls_jobs
+        .lock()
+        .map_err(ApiError::internal)?
+        .insert(id.clone(), job.clone());
+    let heavy_slots = state.media_heavy_slots.clone();
+    let start = q.start_seconds.unwrap_or_default();
+    let audio_only = q.audio_only.unwrap_or(false);
+    let playlist = output_dir.join("index.m3u8");
+    let worker_job = job.clone();
+    task::spawn(async move {
+        let result = match heavy_slots.acquire_owned().await {
+            Ok(permit) => task::spawn_blocking(move || {
+                let _permit = permit;
+                remux_hls(reader, &output_dir, start, audio_only, cancel)
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|value| value),
+            Err(error) => Err(error.to_string()),
+        };
+        let mut status = worker_job
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        status.done = true;
+        if let Err(error) = result {
+            status.error = error;
+        }
+    });
+
+    // Return as soon as a playable prefix exists. The worker, heavy permit and
+    // Range reader remain owned by the job rather than by this HTTP request.
+    let startup_segments = if audio_only { 1 } else { 2 };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        if playlist_segment_count(&playlist).await >= startup_segments {
+            request_guard.disarm();
+            return Ok(Json(HlsResponse {
+                duration_ms: 0,
+                video_codec: String::new(),
+                audio_codec: String::new(),
+                transcoding: false,
+                job_id: id,
+            }));
+        }
+        let (done, job_error) = {
+            let status = job.state.lock().map_err(ApiError::internal)?;
+            (status.done, status.error.clone())
+        };
+        if done {
+            if playlist_segment_count(&playlist).await > 0 && job_error.is_empty() {
+                request_guard.disarm();
+                return Ok(Json(HlsResponse {
+                    duration_ms: 0,
+                    video_codec: String::new(),
+                    audio_codec: String::new(),
+                    transcoding: false,
+                    job_id: id,
+                }));
+            }
+            let error = if job_error.is_empty() {
+                "data plane produced no HLS segments".into()
+            } else {
+                job_error
+            };
+            state
+                .hls_jobs
+                .lock()
+                .map_err(ApiError::internal)?
+                .remove(&id);
+            return Err(ApiError::bad_request(error));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            job.cancel.cancel();
+            state
+                .hls_jobs
+                .lock()
+                .map_err(ApiError::internal)?
+                .remove(&id);
+            return Err(ApiError::bad_request("HLS startup timed out"));
+        }
+        tokio::time::sleep(Duration::from_millis(75)).await;
+    }
+}
+
+async fn playlist_segment_count(path: &Path) -> usize {
+    tokio::fs::read_to_string(path)
+        .await
+        .ok()
+        .map(|body| {
+            body.lines()
+                .filter(|line| line.starts_with("#EXTINF:"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+pub async fn hls_status(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<HlsStatusResponse>, ApiError> {
+    let job = state
+        .hls_jobs
+        .lock()
+        .map_err(ApiError::internal)?
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| ApiError::bad_request("HLS job not found"))?;
+    let status = job.state.lock().map_err(ApiError::internal)?;
+    let response = HlsStatusResponse {
+        done: status.done,
+        error: status.error.clone(),
+    };
+    drop(status);
+    if response.done {
+        state
+            .hls_jobs
+            .lock()
+            .map_err(ApiError::internal)?
+            .remove(&id);
+    }
+    Ok(Json(response))
+}
+
+pub async fn cancel_hls(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> StatusCode {
+    if let Ok(mut jobs) = state.hls_jobs.lock()
+        && let Some(job) = jobs.remove(&id)
+    {
+        job.cancel.cancel();
+    }
+    StatusCode::NO_CONTENT
 }
 
 pub async fn subtitle(
@@ -243,7 +393,7 @@ pub async fn subtitle(
     Json(q): Json<SubtitleRequest>,
 ) -> Result<Response, ApiError> {
     let _permit = state
-        .media_slots
+        .media_light_slots
         .clone()
         .acquire_owned()
         .await
@@ -877,6 +1027,7 @@ fn remux_hls(
         video_codec,
         audio_codec,
         transcoding,
+        job_id: String::new(),
     })
 }
 

@@ -101,6 +101,15 @@ type MediaHLS struct {
 	VideoCodec  string `json:"video_codec"`
 	AudioCodec  string `json:"audio_codec"`
 	Transcoding bool   `json:"transcoding"`
+	JobID       string `json:"job_id"`
+}
+type MediaHLSJobStatus struct {
+	Done  bool   `json:"done"`
+	Error string `json:"error"`
+}
+type MediaHLSJobEngine interface {
+	HLSJobStatus(context.Context, string) (MediaHLSJobStatus, error)
+	CancelHLSJob(context.Context, string) error
 }
 type MediaAudioMerge struct {
 	DurationsMS []int64 `json:"durations_ms"`

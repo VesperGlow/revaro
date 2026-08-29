@@ -1,4 +1,10 @@
-use std::{env, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    env,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -27,7 +33,10 @@ mod s3;
 struct AppState {
     bearer: Arc<[u8]>,
     s3: s3::S3State,
-    media_slots: Arc<tokio::sync::Semaphore>,
+    media_light_slots: Arc<tokio::sync::Semaphore>,
+    media_stream_slots: Arc<tokio::sync::Semaphore>,
+    media_heavy_slots: Arc<tokio::sync::Semaphore>,
+    hls_jobs: Arc<Mutex<HashMap<String, Arc<media::HlsJob>>>>,
     bt: bt::BtState,
     archive: archive::ArchiveState,
     archive_slots: Arc<tokio::sync::Semaphore>,
@@ -73,7 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         bearer: Arc::from(format!("Bearer {token}").into_bytes()),
         s3,
-        media_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+        // Keep one CPU-heavy encoder on 2C/4G, while allowing probes and other
+        // short control-plane media work to remain responsive.
+        media_light_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+        media_stream_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+        media_heavy_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+        hls_jobs: Arc::new(Mutex::new(HashMap::new())),
         bt: bt::BtState::from_env().await?,
         archive: archive::ArchiveState::default(),
         archive_slots: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -108,6 +122,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/media/thumbnail", post(media::thumbnail))
         .route("/v1/media/fmp4", post(media::fmp4))
         .route("/v1/media/hls", post(media::hls))
+        .route(
+            "/v1/media/hls/{job_id}",
+            get(media::hls_status).delete(media::cancel_hls),
+        )
         .route("/v1/media/audio/merge", post(media_audio::merge))
         .route("/v1/media/audio/decorate", post(media_audio::decorate))
         .route("/v1/media/subtitle", post(media::subtitle))

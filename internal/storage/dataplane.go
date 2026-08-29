@@ -381,6 +381,14 @@ func (d *DataPlane) GenerateHLS(ctx context.Context, key, outputDir string, star
 	err := d.jsonRequest(ctx, http.MethodPost, "/v1/media/hls", nil, map[string]any{"key": key, "output_dir": outputDir, "start_seconds": start, "audio_only": audioOnly}, &out)
 	return out, err
 }
+func (d *DataPlane) HLSJobStatus(ctx context.Context, jobID string) (MediaHLSJobStatus, error) {
+	var out MediaHLSJobStatus
+	err := d.jsonRequest(ctx, http.MethodGet, "/v1/media/hls/"+url.PathEscape(jobID), nil, nil, &out)
+	return out, err
+}
+func (d *DataPlane) CancelHLSJob(ctx context.Context, jobID string) error {
+	return d.jsonRequest(ctx, http.MethodDelete, "/v1/media/hls/"+url.PathEscape(jobID), nil, nil, nil)
+}
 func (d *DataPlane) MergeAudio(ctx context.Context, inputs, inputNames []string, output, format, title string) (MediaAudioMerge, error) {
 	var out MediaAudioMerge
 	err := d.jsonRequest(ctx, http.MethodPost, "/v1/media/audio/merge", nil, map[string]any{"inputs": inputs, "input_names": inputNames, "output": output, "format": format, "title": title}, &out)

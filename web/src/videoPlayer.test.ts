@@ -70,6 +70,12 @@ describe('mseCompatibility',()=>{
     const result=await mseCompatibility(value)
     expect(result.mode).toBe('hls');expect(result.fallbackReason).toContain('HEVC')
   })
+  it('requires support for the exact HEVC MSE codec string',async()=>{
+    const value=metadata('hevc','aac')
+    browserSupports(['video/mp4; codecs="hvc1"',value.audio_mime_type!,value.aac_audio_mime_type!])
+    const result=await mseCompatibility(value)
+    expect(result.mode).toBe('hls');expect(result.videoSupported).toBe(false)
+  })
   it('does not enable H.264 fallback for an audio-only capability failure',async()=>{
     const value=metadata('hevc','eac3');browserSupports([value.video_mime_type])
     expect((await mseCompatibility(value)).mode).toBe('error')

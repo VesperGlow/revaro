@@ -76,7 +76,7 @@ pub async fn merge(
             .ok_or_else(|| ApiError::bad_request("invalid audio output filename"))?,
     );
     let _permit = state
-        .media_slots
+        .media_heavy_slots
         .clone()
         .acquire_owned()
         .await
@@ -120,7 +120,7 @@ pub async fn decorate(
         return Err(ApiError::bad_request("audio decoration has no assets"));
     }
     let _permit = state
-        .media_slots
+        .media_heavy_slots
         .clone()
         .acquire_owned()
         .await
