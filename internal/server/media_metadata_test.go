@@ -2,10 +2,26 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestMediaMetadataCacheRequiresCurrentProbeVersion(t *testing.T) {
+	app := newTestApp(t)
+	file := app.readyFile(t, "legacy.mkv", []byte("not media"))
+	_, err := app.srv.db.Exec(`INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, file.ID, 1234, "matroska", "hevc", "aac", 1, 1, 1, "[]", time.Now().UTC().Format(time.RFC3339Nano), "", "", 0, "[]", file.ETag, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var duration int64
+	err = app.srv.db.QueryRow(`SELECT duration_ms FROM media_metadata WHERE file_id=? AND source_etag=? AND probe_version=?`, file.ID, file.ETag, mediaProbeVersion).Scan(&duration)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("legacy probe cache unexpectedly reusable: duration=%d err=%v", duration, err)
+	}
+}
 
 func TestMediaAnalysisSchedulerLimitsConcurrencyAndDeduplicatesFileIDs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

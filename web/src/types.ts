@@ -73,7 +73,7 @@ export interface DownloadJob {
   files?:DownloadFile[]
 }
 
-export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string }
+export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string; default?:boolean; forced?:boolean }
 export interface VideoMediaResponse { subtitles:VideoSubtitleTrack[] }
 export interface VideoFMP4Metadata {
   duration:number

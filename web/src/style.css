@@ -5922,6 +5922,31 @@ button img,
   background: #f2f7ff;
   color: #2563eb;
 }
+.audio-chapter-menu > div {
+  width: min(330px, calc(100vw - 24px));
+  max-height: min(420px, 55vh);
+  overflow-y: auto;
+}
+.audio-chapter-menu > div button {
+  display: grid;
+  grid-template-columns: 28px minmax(0,1fr);
+  align-items: center;
+  gap: 9px;
+}
+.audio-chapter-menu > div button > b {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface-hover,#f2f7ff);
+  font-size: 10px;
+}
+.audio-chapter-menu > div button > span { min-width: 0; }
+.audio-chapter-menu > div button strong,
+.audio-chapter-menu > div button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audio-chapter-menu > div button small { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.audio-chapter-menu > div button.active { background: var(--accent-faint,#eef5ff); color: var(--accent-hover,#2563eb); }
 @media (max-width: 850px) {
   .image-preview {
     grid-template-rows: 58px minmax(0, 1fr) !important;

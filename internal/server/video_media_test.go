@@ -166,7 +166,7 @@ Dialogue: 0,0:06:15.00,0:06:20.00,Default,,0,0,0,,六分钟字幕
 	}
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-f", "lavfi", "-i", "color=c=black:s=160x90:r=1:d=1", "-i", assPath,
-		"-map", "0:v:0", "-map", "1:s:0", "-c:v", "mpeg4", "-c:s", "ass",
+		"-map", "0:v:0", "-map", "1:s:0", "-map", "1:s:0", "-c:v", "mpeg4", "-c:s", "ass",
 		"-metadata:s:s:0", "language=chi", "-metadata:s:s:0", "title=简体 ASS",
 		"-disposition:s:0", "default", mkvPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -186,7 +186,7 @@ Dialogue: 0,0:06:15.00,0:06:20.00,Default,,0,0,0,,六分钟字幕
 	payload := decode[struct {
 		Subtitles []videoSubtitleResponse `json:"subtitles"`
 	}](t, info)
-	if len(payload.Subtitles) != 1 || payload.Subtitles[0].ID != "embedded-1" || payload.Subtitles[0].Language != "zh-CN" {
+	if len(payload.Subtitles) != 2 || payload.Subtitles[0].ID != "embedded-1" || payload.Subtitles[0].Language != "zh-CN" || !payload.Subtitles[0].Default || payload.Subtitles[1].ID != "embedded-2" {
 		t.Fatalf("embedded subtitles=%+v", payload.Subtitles)
 	}
 	global := app.request("GET", payload.Subtitles[0].URL, nil, true)
@@ -201,5 +201,9 @@ Dialogue: 0,0:06:15.00,0:06:20.00,Default,,0,0,0,,六分钟字幕
 	hls := app.request("GET", payload.Subtitles[0].URL+"?start=360.000", nil, true)
 	if hls.Code != http.StatusOK || !strings.Contains(hls.Body.String(), "00:00:15.000 --> 00:00:20.000") || strings.Contains(hls.Body.String(), "开始字幕") {
 		t.Fatalf("HLS offset subtitle=%d body=%q", hls.Code, hls.Body.String())
+	}
+	metadataFree := app.request("GET", payload.Subtitles[1].URL, nil, true)
+	if metadataFree.Code != http.StatusOK || !strings.Contains(metadataFree.Body.String(), "六分钟字幕") {
+		t.Fatalf("metadata-free ASS subtitle=%d body=%q", metadataFree.Code, metadataFree.Body.String())
 	}
 }

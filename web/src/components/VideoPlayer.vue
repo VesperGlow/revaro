@@ -5,7 +5,7 @@ import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
 import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
-import { attachFMP4Stream, createUnifiedVideoPlayer, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, createUnifiedVideoPlayer, initialSubtitleIndex, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -55,6 +55,7 @@ let mseRecoveryAnchor=-1
 let progressLoaded=false
 let restoredPosition=false
 let serverPosition=0
+let userSeeked=false
 
 const positionKey=computed(()=>`revaro-video-position:${props.item.id}`)
 const sessionKey=computed(()=>`revaro-video-hls-session:${props.item.id}`)
@@ -103,9 +104,10 @@ function restoreDirectPosition(){
 }
 function persistProgress(remote=false){
   const position=Math.max(0,currentTime.value)
-  if(position<=0)return
+  if(position<=0&&!userSeeked)return
   localStorage.setItem(positionKey.value,String(Math.floor(position)))
   if(!remote)return
+  serverPosition=position
   void api(`/api/files/${props.item.id}/media/progress`,{method:'PUT',body:JSON.stringify({position,duration:duration.value})}).catch(()=>{})
 }
 function applySubtitle(){
@@ -164,6 +166,7 @@ interface MSEStartOptions { fresh?:boolean;suspectSessionID?:string;recoveryReas
 async function startMSEStream(start:number,autoplay=true,recovery:MSEStartOptions={}){
   if(typeof MediaSource==='undefined'){await startCompatibilityStream(start,autoplay,'浏览器没有 MediaSource Extensions');return}
   const generation=++playbackGeneration
+  currentTime.value=start
   const previousFMP4=recovery.suspectSessionID||fmp4SessionId||sessionStorage.getItem(fmp4SessionKey.value)||''
   if(recovery.fresh){fmp4SessionId='';sessionStorage.removeItem(fmp4SessionKey.value)}
   const previousHLS=hlsSessionId;hlsSessionId=''
@@ -226,7 +229,7 @@ async function startMSEStream(start:number,autoplay=true,recovery:MSEStartOption
 function recoverFromMSE(reason:string){
   if(mseRecoveryStarted||starting.value)return
   mseRecoveryStarted=true
-  const target=currentTime.value||savedPosition()
+  const target=authoritativeSeekTarget(currentTime.value,savedPosition(),userSeeked)
   if(mseRecoveryAnchor<0||Math.abs(target-mseRecoveryAnchor)>5){mseRecoveryAnchor=target;mseFreshFailures=0}
   const action=mseRecoveryAction(mseFreshFailures)
   const autoplay=playing.value||autoplayPending.value
@@ -244,6 +247,7 @@ function recoverFromMSE(reason:string){
 }
 async function startCompatibilityStream(start:number,autoplay=true,fallbackReason='MSE 不可用',discardFMP4=false){
   const generation=++playbackGeneration
+  currentTime.value=start
   const previous=hlsSessionId
   const previousFMP4=fmp4SessionId;fmp4SessionId=''
   prepareKind.value=previous||previousFMP4||player?'seek':'initial';prepareMode.value='hls'
@@ -290,6 +294,7 @@ function onLoadedMetadata(){
 }
 function onTimeUpdate(){
   const el=video.value;if(!el)return
+  if(starting.value)return
   currentTime.value=(directMode.value?0:streamOffset.value)+el.currentTime
   if(mseFreshFailures&&mseRecoveryAnchor>=0&&Math.abs(currentTime.value-mseRecoveryAnchor)>10){
     console.info('[revaro][mse] recovery streak cleared after playback advanced',{from:mseRecoveryAnchor,to:currentTime.value})
@@ -316,7 +321,12 @@ function seekTo(target:number){
   const el=video.value
   if(!el||!Number.isFinite(target))return
   target=Math.max(0,Math.min(target,duration.value||target))
-  if(starting.value){currentTime.value=target;return}
+  userSeeked=true;currentTime.value=target
+  if(starting.value){
+    if(mseMode.value)void startMSEStream(target,autoplayPending.value)
+    else if(!directMode.value)void startCompatibilityStream(target,autoplayPending.value,'用户在流准备期间重新定位')
+    return
+  }
   if(player?.seek(target)){currentTime.value=target;return}
   if(mseMode.value){buffering.value=true;showControls(true);return}
   void startCompatibilityStream(target,playing.value,'目标位置不在 HLS 已缓冲范围')
@@ -329,7 +339,7 @@ function togglePlayback(){
   if(el.paused)void player?.play().catch(()=>{});else player?.pause()
 }
 function onPlay(){playing.value=true;buffering.value=false;showControls()}
-function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
+function onPause(){playing.value=false;if(starting.value)return;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
 function showVolumeFeedback(){volumeFeedback.value=true;window.clearTimeout(volumeTimer);volumeTimer=window.setTimeout(()=>volumeFeedback.value=false,900);showControls(true)}
 function changeVolume(event:Event){const value=Math.max(0,Math.min(1,Number((event.target as HTMLInputElement).value)));volume.value=value;if(value>0)lastAudibleVolume=value;muted.value=value===0;localStorage.setItem(volumeKey,String(value));player?.setVolume(value,muted.value);showVolumeFeedback()}
 function toggleMute(){if(muted.value||volume.value===0){if(volume.value===0)volume.value=lastAudibleVolume;muted.value=false}else muted.value=true;player?.setVolume(volume.value,muted.value);showVolumeFeedback()}
@@ -360,7 +370,7 @@ onMounted(async()=>{
   const progressPromise=loadProgress()
   try{
     const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`)
-    subtitles.value=media.subtitles||[];activeSubtitle.value=subtitles.value.length?0:-1
+    subtitles.value=media.subtitles||[];activeSubtitle.value=initialSubtitleIndex(subtitles.value)
     console.info('[revaro] subtitles discovered:',subtitles.value.length)
     console.info('[revaro] subtitle selected:',selectedSubtitle.value?.id||'off')
     await nextTick();applySubtitle()
@@ -408,7 +418,7 @@ onBeforeUnmount(()=>{
 .video-player-shell{--player-bg:#070b0f;--player-overlay:#101820c7;--player-text:#f3f6f8;--player-muted:#b5c0ca;--player-accent:#91adc5;--player-accent-strong:#abc1d4;--player-track:#ffffff3d;--player-border:#c5d4df33;position:relative;isolation:isolate;justify-self:center;width:min(1500px,100%);max-width:100%;height:min(820px,calc(100vh - 178px));height:min(820px,calc(100dvh - 178px));min-width:0;min-height:280px;overflow:hidden;border-radius:15px;background:var(--player-bg);box-shadow:0 18px 46px #10182042;outline:none}
 .video-player-shell:fullscreen{width:100vw;height:100vh;height:100dvh;border-radius:0}
 .video-player-shell video{display:block;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;background:var(--player-bg);object-fit:contain;box-shadow:none;cursor:pointer}
-.video-player-shell video::cue{padding:.12em .38em;background:#081018c7;color:var(--player-text);font-weight:650;text-shadow:0 1px 3px #000,0 0 8px #000}
+.video-player-shell video::cue{padding:0;background:transparent;color:#fff;font-size:clamp(16px,2.2vw,30px);font-weight:650;line-height:1.25;text-align:center;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 2px 4px #000,0 0 7px #000}
 .video-player-shell.cursor-hidden,.video-player-shell.cursor-hidden *{cursor:none!important}
 .video-top-shade{position:absolute;z-index:9;inset:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:max(18px,env(safe-area-inset-top,0px)) max(22px,env(safe-area-inset-right,0px)) 72px max(22px,env(safe-area-inset-left,0px));background:linear-gradient(180deg,#071018db 0%,#0710188c 42%,transparent 100%);color:var(--player-text);opacity:0;pointer-events:none;transition:opacity .2s}
 .video-top-shade.visible{opacity:1}.video-title-group{display:flex;align-items:center;min-width:0;gap:10px}.video-top-shade strong{min-width:0;max-width:100%;overflow:hidden;color:var(--player-text);font-size:15px;font-weight:650;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000}.video-top-shade>span{flex:0 0 auto;padding:5px 9px;border:1px solid var(--player-border);border-radius:999px;background:#10182070;color:var(--player-muted);font-size:10px;backdrop-filter:blur(8px)}

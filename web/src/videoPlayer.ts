@@ -58,6 +58,20 @@ export function setExclusiveSubtitleTrack<T extends MutableTextTrack>(tracks:Arr
   for(let index=0;index<tracks.length;index+=1)tracks[index].mode=selected&&tracks[index]===selected?'showing':'disabled'
 }
 
+export interface SelectableSubtitle { default?:boolean;forced?:boolean }
+export function initialSubtitleIndex(tracks:SelectableSubtitle[]):number{
+  if(!tracks.length)return -1
+  const preferred=tracks.findIndex(track=>track.default)
+  if(preferred>=0)return preferred
+  const forced=tracks.findIndex(track=>track.forced)
+  return forced>=0?forced:0
+}
+
+export function authoritativeSeekTarget(current:number,saved:number,userSeeked:boolean):number{
+  if(userSeeked&&Number.isFinite(current))return Math.max(0,current)
+  return Number.isFinite(current)&&current>0?current:Math.max(0,Number.isFinite(saved)?saved:0)
+}
+
 export interface UnifiedVideoPlayer {
   readonly mode:VideoPlaybackMode
   readonly offset:number

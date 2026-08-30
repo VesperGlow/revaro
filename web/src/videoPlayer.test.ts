@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, initialSubtitleIndex, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,video_codec:videoCodec,audio_codec:audioCodec,
@@ -102,11 +102,26 @@ describe('video subtitle timeline and lifecycle',()=>{
     setExclusiveSubtitleTrack(tracks,second);expect(tracks.map(track=>track.mode)).toEqual(['disabled','showing'])
     setExclusiveSubtitleTrack(tracks,null);expect(tracks.map(track=>track.mode)).toEqual(['disabled','disabled'])
   })
+  it('selects disposition defaults without relying on language or title metadata',()=>{
+    expect(initialSubtitleIndex([{default:false},{default:true},{forced:true}])).toBe(1)
+    expect(initialSubtitleIndex([{forced:false},{forced:true}])).toBe(1)
+    expect(initialSubtitleIndex([{},{}])).toBe(0)
+  })
   it('hands seeks outside buffered ranges to a new stream session',()=>{
     const selected={mode:'showing' as TextTrackMode},seekOutside=vi.fn(()=>true)
     const element={currentTime:360,seekable:{length:0,start:()=>0,end:()=>0},textTracks:[selected]} as unknown as HTMLVideoElement
     const player=createUnifiedVideoPlayer('mse',element,0,()=>{},seekOutside)
     expect(player.seek(1200)).toBe(true);expect(seekOutside).toHaveBeenCalledWith(1200);expect(selected.mode).toBe('showing')
+  })
+})
+
+describe('video seek authority',()=>{
+  it('never replaces an explicit zero seek with saved resume progress',()=>{
+    expect(authoritativeSeekTarget(0,86,true)).toBe(0)
+  })
+  it('uses resume progress only before the first explicit seek',()=>{
+    expect(authoritativeSeekTarget(0,86,false)).toBe(86)
+    expect(authoritativeSeekTarget(80,86,false)).toBe(80)
   })
 })
 

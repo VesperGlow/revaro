@@ -77,6 +77,8 @@ type probedMediaMetadata struct {
 	Subtitles    []embeddedSubtitle
 }
 
+const mediaProbeVersion = 1
+
 type embeddedSubtitle struct {
 	Index    int    `json:"index"`
 	Codec    string `json:"codec"`
@@ -119,7 +121,7 @@ func (s *Server) ensureMediaMetadata(ctx context.Context, f File) (probedMediaMe
 func (s *Server) probeMediaMetadata(ctx context.Context, f File) (probedMediaMetadata, error) {
 	var metadata probedMediaMetadata
 	var chaptersJSON, subtitlesJSON string
-	err := s.db.QueryRowContext(ctx, `SELECT duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,frame_rate,video_profile,video_level,subtitles_json FROM media_metadata WHERE file_id=? AND source_etag=?`, f.ID, f.ETag).
+	err := s.db.QueryRowContext(ctx, `SELECT duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,frame_rate,video_profile,video_level,subtitles_json FROM media_metadata WHERE file_id=? AND source_etag=? AND probe_version=?`, f.ID, f.ETag, mediaProbeVersion).
 		Scan(&metadata.DurationMS, &metadata.Container, &metadata.VideoCodec, &metadata.AudioCodec, &metadata.Width, &metadata.Height, &metadata.Bitrate, &chaptersJSON, &metadata.FrameRate, &metadata.VideoProfile, &metadata.VideoLevel, &subtitlesJSON)
 	if err == nil {
 		_ = json.Unmarshal([]byte(chaptersJSON), &metadata.Chapters)
@@ -146,8 +148,8 @@ func (s *Server) probeMediaMetadata(ctx context.Context, f File) (probedMediaMet
 	chapters, _ := json.Marshal(metadata.Chapters)
 	subtitles, _ := json.Marshal(metadata.Subtitles)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(file_id) DO UPDATE SET duration_ms=excluded.duration_ms,container=excluded.container,video_codec=excluded.video_codec,audio_codec=excluded.audio_codec,width=excluded.width,height=excluded.height,bitrate=excluded.bitrate,chapters_json=excluded.chapters_json,analyzed_at=excluded.analyzed_at,frame_rate=excluded.frame_rate,video_profile=excluded.video_profile,video_level=excluded.video_level,subtitles_json=excluded.subtitles_json,source_etag=excluded.source_etag`,
-		f.ID, metadata.DurationMS, metadata.Container, metadata.VideoCodec, metadata.AudioCodec, metadata.Width, metadata.Height, max(metadata.Bitrate, int64(0)), string(chapters), now, metadata.FrameRate, metadata.VideoProfile, metadata.VideoLevel, string(subtitles), f.ETag)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(file_id) DO UPDATE SET duration_ms=excluded.duration_ms,container=excluded.container,video_codec=excluded.video_codec,audio_codec=excluded.audio_codec,width=excluded.width,height=excluded.height,bitrate=excluded.bitrate,chapters_json=excluded.chapters_json,analyzed_at=excluded.analyzed_at,frame_rate=excluded.frame_rate,video_profile=excluded.video_profile,video_level=excluded.video_level,subtitles_json=excluded.subtitles_json,source_etag=excluded.source_etag,probe_version=excluded.probe_version`,
+		f.ID, metadata.DurationMS, metadata.Container, metadata.VideoCodec, metadata.AudioCodec, metadata.Width, metadata.Height, max(metadata.Bitrate, int64(0)), string(chapters), now, metadata.FrameRate, metadata.VideoProfile, metadata.VideoLevel, string(subtitles), f.ETag, mediaProbeVersion)
 	if err == nil {
 		s.log.Info("media metadata analyzed", "file", f.ID, "container", metadata.Container, "video_codec", metadata.VideoCodec, "audio_codec", metadata.AudioCodec, "duration_ms", metadata.DurationMS, "chapters", len(metadata.Chapters))
 	}

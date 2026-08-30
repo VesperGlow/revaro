@@ -37,6 +37,8 @@ type videoSubtitleResponse struct {
 	Label    string `json:"label"`
 	Language string `json:"language"`
 	URL      string `json:"url"`
+	Default  bool   `json:"default"`
+	Forced   bool   `json:"forced"`
 }
 
 type embeddedVideoSubtitle struct {
@@ -171,7 +173,8 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 		id := "embedded-" + strconv.Itoa(subtitle.Index)
 		tracks = append(tracks, videoSubtitleResponse{
 			ID: id, Name: label, Label: label, Language: language,
-			URL: "/api/files/" + video.ID + "/video/subtitles/" + id,
+			URL:     "/api/files/" + video.ID + "/video/subtitles/" + id,
+			Default: subtitle.Default, Forced: subtitle.Forced,
 		})
 	}
 	for _, subtitle := range files {
