@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,video_codec:videoCodec,audio_codec:audioCodec,
@@ -141,6 +141,10 @@ describe('authoritative media element clock',()=>{
     expect(shouldSyncMediaClock(true,true)).toBe(false)
     expect(shouldSyncMediaClock(true,false)).toBe(true)
     expect(shouldSyncMediaClock(false,true)).toBe(true)
+  })
+  it('keeps the sampler alive through a transient MSE pause until teardown',()=>{
+    expect(shouldContinueMediaClock(true)).toBe(true)
+    expect(shouldContinueMediaClock(false)).toBe(false)
   })
 })
 

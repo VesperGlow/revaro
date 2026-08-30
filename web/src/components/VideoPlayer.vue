@@ -5,7 +5,7 @@ import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
 import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
-import { attachFMP4Stream, authoritativeSeekTarget, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -305,8 +305,12 @@ function runPlaybackClock(){
   stopPlaybackClock()
   const tick=()=>{
     const el=video.value
-    if(!el||el.paused){clockFrame=0;return}
-    syncPlaybackClock()
+    if(!shouldContinueMediaClock(Boolean(el))){clockFrame=0;return}
+    if(!el)return
+    // Keep the sampler alive across transient/stale pause events produced while
+    // an MSE source is attached. A later presented frame is authoritative even
+    // when the browser does not emit another play/timeupdate event.
+    if(!el.paused)syncPlaybackClock()
     clockFrame=window.requestAnimationFrame(tick)
   }
   clockFrame=window.requestAnimationFrame(tick)
@@ -356,7 +360,7 @@ function togglePlayback(){
   if(el.paused)void player?.play().catch(()=>{});else player?.pause()
 }
 function onPlay(){playing.value=true;buffering.value=false;runPlaybackClock();showControls()}
-function onPause(){playing.value=false;stopPlaybackClock();if(starting.value)return;syncPlaybackClock();window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
+function onPause(){playing.value=false;if(starting.value)return;syncPlaybackClock();window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
 function showVolumeFeedback(){volumeFeedback.value=true;window.clearTimeout(volumeTimer);volumeTimer=window.setTimeout(()=>volumeFeedback.value=false,900);showControls(true)}
 function changeVolume(event:Event){const value=Math.max(0,Math.min(1,Number((event.target as HTMLInputElement).value)));volume.value=value;if(value>0)lastAudibleVolume=value;muted.value=value===0;localStorage.setItem(volumeKey,String(value));player?.setVolume(value,muted.value);showVolumeFeedback()}
 function toggleMute(){if(muted.value||volume.value===0){if(volume.value===0)volume.value=lastAudibleVolume;muted.value=false}else muted.value=true;player?.setVolume(volume.value,muted.value);showVolumeFeedback()}

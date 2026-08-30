@@ -5350,7 +5350,9 @@ button img,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 28px;
+  /* The preview close button occupies the top-right 58px. Reserve that space
+     so large cue counts (for example 613 条) remain fully visible. */
+  padding: 0 76px 0 28px;
   border-bottom: 1px solid #e8ecf2;
 }
 .audio-subtitle-panel > header strong {
@@ -5358,8 +5360,10 @@ button img,
   font-size: 15px;
 }
 .audio-subtitle-panel > header span {
+  flex: 0 0 auto;
   color: #929fb0;
   font-size: 11px;
+  white-space: nowrap;
 }
 .audio-subtitle-stage {
   min-width: 0;

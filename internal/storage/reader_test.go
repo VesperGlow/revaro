@@ -8,11 +8,18 @@ import (
 	"testing"
 )
 
-type memoryRangeStore struct { data []byte; gets atomic.Int64 }
-func (s *memoryRangeStore) HeadObject(context.Context, string) (ObjectInfo, error) { return ObjectInfo{Size: int64(len(s.data))}, nil }
+type memoryRangeStore struct {
+	data []byte
+	gets atomic.Int64
+}
+
+func (s *memoryRangeStore) HeadObject(context.Context, string) (ObjectInfo, error) {
+	return ObjectInfo{Size: int64(len(s.data))}, nil
+}
 func (s *memoryRangeStore) OpenRange(_ context.Context, _ string, start, end int64) (io.ReadCloser, error) {
-	s.gets.Add(1); end = min(end, int64(len(s.data)-1))
-	return io.NopCloser(bytes.NewReader(s.data[start:end+1])), nil
+	s.gets.Add(1)
+	end = min(end, int64(len(s.data)-1))
+	return io.NopCloser(bytes.NewReader(s.data[start : end+1])), nil
 }
 
 func TestObjectReaderCoalescesSequentialSmallRangeReads(t *testing.T) {

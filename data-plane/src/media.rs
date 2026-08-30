@@ -1114,6 +1114,7 @@ fn embedded_subtitle(
             .pts()
             .map(|pts| pts as f64 * f64::from(base))
             .unwrap_or_default();
+        let packet_duration = packet.duration() as f64 * f64::from(base);
         let mut subtitle = ffmpeg::Subtitle::new();
         if !decoder
             .decode(&packet, &mut subtitle)
@@ -1126,13 +1127,17 @@ fn embedded_subtitle(
             .map(|pts| pts as f64 / 1_000_000.0)
             .unwrap_or(packet_start)
             + subtitle.start() as f64 / 1000.0;
-        let end =
-            start + ((subtitle.end().saturating_sub(subtitle.start())).max(1) as f64 / 1000.0);
+        let display_duration = subtitle.end().saturating_sub(subtitle.start()) as f64 / 1000.0;
+        // libavcodec leaves start/end_display_time at zero for Matroska ASS.
+        // In that case the Matroska block duration carried by the packet is
+        // authoritative. Treating the missing display duration as 1 ms made
+        // otherwise valid embedded ASS cues effectively impossible to see.
+        let end = start + subtitle_cue_duration(display_duration, packet_duration);
         let mut lines = Vec::new();
         for rect in subtitle.rects() {
             match rect {
                 ffmpeg::subtitle::Rect::Text(value) => lines.push(value.get().to_string()),
-                ffmpeg::subtitle::Rect::Ass(value) => lines.push(strip_ass(value.get())),
+                ffmpeg::subtitle::Rect::Ass(value) => lines.push(strip_decoded_ass(value.get())),
                 _ => {}
             }
         }
@@ -1213,6 +1218,24 @@ fn strip_ass(value: &str) -> String {
         }
     }
     result.replace("\\N", "\n").replace("\\n", "\n")
+}
+
+fn strip_decoded_ass(value: &str) -> String {
+    // AVSubtitleRect::ass omits "Dialogue:" and the Start/End columns. Its
+    // nine fields are ReadOrder, Layer, Style, Name, three margins, Effect,
+    // and Text. Commas in Text must remain intact.
+    let fields: Vec<_> = value.splitn(9, ',').collect();
+    strip_ass(if fields.len() == 9 { fields[8] } else { value })
+}
+
+fn subtitle_cue_duration(display_duration: f64, packet_duration: f64) -> f64 {
+    if display_duration.is_finite() && display_duration > 0.0 {
+        display_duration
+    } else if packet_duration.is_finite() && packet_duration > 0.0 {
+        packet_duration
+    } else {
+        0.001
+    }
 }
 
 fn vtt_time(value: f64) -> String {
@@ -1521,5 +1544,15 @@ mod tests {
     fn rational_time_is_bounded() {
         assert_eq!(millis(90_000, Rational(1, 90_000)), 1000);
         assert_eq!(millis(-1, Rational(1, 1)), 0);
+    }
+
+    #[test]
+    fn decoded_ass_uses_packet_duration_and_removes_packet_fields() {
+        assert_eq!(subtitle_cue_duration(0.0, 2.84), 2.84);
+        assert_eq!(subtitle_cue_duration(1.25, 2.84), 1.25);
+        assert_eq!(
+            strip_decoded_ass(r"2,0,Dial_CH,,0,0,0,,{\an8}你好,世界\N第二行"),
+            "你好,世界\n第二行"
+        );
     }
 }

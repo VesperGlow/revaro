@@ -179,7 +179,7 @@ type renderBudget struct {
 }
 
 type limitedBuilder struct {
-	b strings.Builder
+	b      strings.Builder
 	budget *renderBudget
 }
 
@@ -203,7 +203,7 @@ func (b *limitedBuilder) WriteByte(value byte) error {
 }
 
 func (b *limitedBuilder) String() string { return b.b.String() }
-func (b *limitedBuilder) Reset() { b.b.Reset() }
+func (b *limitedBuilder) Reset()         { b.b.Reset() }
 
 type epubBuilder struct {
 	zip          *zip.Reader

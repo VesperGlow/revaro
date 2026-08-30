@@ -81,6 +81,10 @@ export function shouldSyncMediaClock(starting:boolean,paused:boolean):boolean{
   return !starting||!paused
 }
 
+export function shouldContinueMediaClock(elementPresent:boolean):boolean{
+  return elementPresent
+}
+
 export interface UnifiedVideoPlayer {
   readonly mode:VideoPlaybackMode
   readonly offset:number
