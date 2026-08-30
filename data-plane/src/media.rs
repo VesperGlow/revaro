@@ -125,14 +125,14 @@ pub struct Chapter {
 
 #[derive(Serialize)]
 pub struct Subtitle {
-    index: usize,
+    pub(crate) index: usize,
     codec: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    language: String,
+    pub(crate) language: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    title: String,
-    default: bool,
-    forced: bool,
+    pub(crate) title: String,
+    pub(crate) default: bool,
+    pub(crate) forced: bool,
 }
 
 pub async fn probe(
@@ -839,7 +839,16 @@ fn setup_audio_encode(
         .encoder()
         .audio()
         .map_err(|e| e.to_string())?;
-    let layout = ChannelLayout::STEREO;
+    let source_layout = if decoder.channel_layout().is_empty() {
+        ChannelLayout::default(decoder.channels().into())
+    } else {
+        decoder.channel_layout()
+    };
+    let layout = if decoder.channels() > 6 {
+        ChannelLayout::STEREO
+    } else {
+        source_layout
+    };
     context.set_rate(48_000);
     context.set_channel_layout(layout);
     context.set_format(
@@ -849,7 +858,7 @@ fn setup_audio_encode(
             .next()
             .ok_or("AAC encoder exposes no sample formats")?,
     );
-    context.set_bit_rate(AAC_DEFAULT_BITRATE);
+    context.set_bit_rate((layout.channels() as usize * 96_000).clamp(AAC_DEFAULT_BITRATE, 384_000));
     context.set_time_base((1, 48_000));
     if global_header {
         context.set_flags(codec::Flags::GLOBAL_HEADER);
@@ -1537,6 +1546,209 @@ fn remux_fmp4(
     Ok(())
 }
 
+pub(crate) struct PreparedWebMedia {
+    pub duration_ms: i64,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub subtitles: Vec<(Subtitle, Vec<u8>)>,
+}
+
+fn web_video_supported(id: codec::Id) -> bool {
+    matches!(id, codec::Id::H264 | codec::Id::HEVC)
+}
+
+// Some(false) means packet copy; Some(true) means AAC encode.
+fn web_audio_mode(id: codec::Id) -> Option<bool> {
+    match id {
+        codec::Id::AAC => Some(false),
+        codec::Id::FLAC | codec::Id::AC3 | codec::Id::EAC3 => Some(true),
+        _ => None,
+    }
+}
+
+// Narrow BT ingest remux: one video, one audio, text subtitles out-of-band.
+// The seekable MP4 output permits faststart instead of the live MSE fragments.
+pub(crate) fn prepare_web_media(
+    input_path: &Path,
+    output_path: &Path,
+    cancel: CancellationToken,
+) -> Result<PreparedWebMedia, String> {
+    ffmpeg::init().map_err(|e| e.to_string())?;
+    let mut input = format::input(input_path).map_err(|e| format!("open media: {e}"))?;
+    let duration_ms = (input.duration() / 1000).max(0);
+    let mut output =
+        format::output_as(output_path, "mp4").map_err(|e| format!("create MP4: {e}"))?;
+    let global_header = output
+        .format()
+        .flags()
+        .contains(format::Flags::GLOBAL_HEADER);
+    let mut mapping = vec![None; input.nb_streams() as usize];
+    let mut transforms = Vec::new();
+    let mut video_codec = String::new();
+    let mut audio_codec = String::new();
+    let mut subtitle_meta = Vec::new();
+    for stream in input.streams() {
+        let id = stream.parameters().id();
+        let codec_name = id.name().to_ascii_lowercase();
+        match stream.parameters().medium() {
+            Type::Video if video_codec.is_empty() => {
+                if !web_video_supported(id) {
+                    return Err(format!("unsupported video codec: {codec_name}"));
+                }
+                video_codec = codec_name;
+                let transform = copy_stream(&stream, &mut output, 0.0)?;
+                if id == codec::Id::HEVC {
+                    let dest = match transform {
+                        Transform::Copy { dest, .. } => dest,
+                        _ => unreachable!(),
+                    };
+                    if let Some(target) = output.stream_mut(dest) {
+                        unsafe {
+                            (*target.parameters().as_mut_ptr()).codec_tag =
+                                u32::from_le_bytes(*b"hvc1");
+                        }
+                    }
+                }
+                mapping[stream.index()] = Some(transforms.len());
+                transforms.push(transform);
+            }
+            Type::Audio if audio_codec.is_empty() => {
+                let Some(transcode) = web_audio_mode(id) else {
+                    return Err(format!("unsupported audio codec: {codec_name}"));
+                };
+                audio_codec = codec_name;
+                let transform = if !transcode {
+                    copy_stream(&stream, &mut output, 0.0)?
+                } else {
+                    setup_audio_encode(&stream, &mut output, global_header, 0.0)
+                        .map(Transform::Audio)?
+                };
+                mapping[stream.index()] = Some(transforms.len());
+                transforms.push(transform);
+            }
+            Type::Subtitle if matches!(id, codec::Id::ASS | codec::Id::SSA | codec::Id::SUBRIP) => {
+                let metadata = stream.metadata();
+                subtitle_meta.push(Subtitle {
+                    index: stream.index(),
+                    codec: codec_name,
+                    language: metadata.get("language").unwrap_or("").to_owned(),
+                    title: metadata.get("title").unwrap_or("").to_owned(),
+                    default: stream
+                        .disposition()
+                        .contains(ffmpeg::format::stream::Disposition::DEFAULT),
+                    forced: stream
+                        .disposition()
+                        .contains(ffmpeg::format::stream::Disposition::FORCED),
+                });
+            }
+            _ => {}
+        }
+    }
+    if video_codec.is_empty() {
+        return Err("unsupported video codec: none".into());
+    }
+    let mut options = Dictionary::new();
+    options.set("movflags", "+faststart");
+    output
+        .write_header_with(options)
+        .map_err(|e| format!("write MP4 header: {e}"))?;
+    assign_output_time_bases(&mut transforms, &output);
+    for (stream, mut packet) in input.packets() {
+        if cancel.is_cancelled() {
+            return Err("web media preparation cancelled".into());
+        }
+        if let Some(index) = mapping[stream.index()] {
+            process_transform(&mut transforms[index], &mut packet, &mut output)?;
+        }
+    }
+    for transform in &mut transforms {
+        flush_transform(transform, &mut output)?;
+    }
+    output
+        .write_trailer()
+        .map_err(|e| format!("finish MP4: {e}"))?;
+    let mut subtitles = Vec::new();
+    for meta in subtitle_meta {
+        let index = meta.index;
+        let data = embedded_subtitle_path(input_path, index, cancel.clone())?;
+        subtitles.push((meta, data));
+    }
+    Ok(PreparedWebMedia {
+        duration_ms,
+        video_codec,
+        audio_codec,
+        subtitles,
+    })
+}
+
+fn embedded_subtitle_path(
+    path: &Path,
+    index: usize,
+    cancel: CancellationToken,
+) -> Result<Vec<u8>, String> {
+    let mut input = format::input(path).map_err(|e| e.to_string())?;
+    let stream = input
+        .stream(index)
+        .ok_or("subtitle stream index is out of range")?;
+    let base = stream.time_base();
+    let mut decoder = codec::context::Context::from_parameters(stream.parameters())
+        .map_err(|e| e.to_string())?
+        .decoder()
+        .subtitle()
+        .map_err(|e| e.to_string())?;
+    let mut output = String::from("WEBVTT\n\n");
+    for (packet_stream, packet) in input.packets() {
+        if cancel.is_cancelled() {
+            return Err("subtitle conversion cancelled".into());
+        }
+        if packet_stream.index() != index {
+            continue;
+        }
+        let packet_start = packet
+            .pts()
+            .map(|pts| pts as f64 * f64::from(base))
+            .unwrap_or_default();
+        let packet_duration = packet.duration() as f64 * f64::from(base);
+        let mut subtitle = ffmpeg::Subtitle::new();
+        if !decoder
+            .decode(&packet, &mut subtitle)
+            .map_err(|e| e.to_string())?
+        {
+            continue;
+        }
+        let start = subtitle
+            .pts()
+            .map(|pts| pts as f64 / 1_000_000.0)
+            .unwrap_or(packet_start)
+            + subtitle.start() as f64 / 1000.0;
+        let end = start
+            + subtitle_cue_duration(
+                subtitle.end().saturating_sub(subtitle.start()) as f64 / 1000.0,
+                packet_duration,
+            );
+        let lines: Vec<_> = subtitle
+            .rects()
+            .filter_map(|rect| match rect {
+                ffmpeg::subtitle::Rect::Text(v) => Some(v.get().to_owned()),
+                ffmpeg::subtitle::Rect::Ass(v) => Some(strip_decoded_ass(v.get())),
+                _ => None,
+            })
+            .collect();
+        if !lines.is_empty() {
+            output.push_str(&format!(
+                "{} --> {}\n{}\n\n",
+                vtt_time(start),
+                vtt_time(end),
+                lines.join("\n")
+            ));
+        }
+        if output.len() > 16 << 20 {
+            return Err("converted subtitle is too large".into());
+        }
+    }
+    Ok(output.into_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1554,5 +1766,17 @@ mod tests {
             strip_decoded_ass(r"2,0,Dial_CH,,0,0,0,,{\an8}你好,世界\N第二行"),
             "你好,世界\n第二行"
         );
+    }
+
+    #[test]
+    fn web_ingest_codec_policy_is_narrow_and_copy_preserving() {
+        assert!(web_video_supported(codec::Id::H264));
+        assert!(web_video_supported(codec::Id::HEVC));
+        assert!(!web_video_supported(codec::Id::VP9));
+        assert_eq!(web_audio_mode(codec::Id::AAC), Some(false));
+        assert_eq!(web_audio_mode(codec::Id::FLAC), Some(true));
+        assert_eq!(web_audio_mode(codec::Id::AC3), Some(true));
+        assert_eq!(web_audio_mode(codec::Id::EAC3), Some(true));
+        assert_eq!(web_audio_mode(codec::Id::OPUS), None);
     }
 }

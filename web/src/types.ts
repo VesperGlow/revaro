@@ -47,6 +47,7 @@ export interface LocalMergeCreateResponse extends AudioMergeResponse {
 export interface LocalMergePick { file:File; name:string; size:number; kind:'audio'|'subtitle'|'cover'; preview?:string }
 
 export type DownloadStatus = 'metadata'|'waiting'|'queued'|'downloading'|'paused'|'importing'|'done'|'failed'|'cancelled'
+export type MediaIngestStatus = 'queued'|'probing'|'processing'|'uploading'|'completed'|'unsupported'|'failed'|'cancelled'
 export interface DownloadFile {
   index:number
   path:string
@@ -60,6 +61,7 @@ export interface DownloadJob {
   info_hash?:string
   name:string
   status:DownloadStatus
+  ingest_state?:MediaIngestStatus
   selected_size:number
   completed_size:number
   download_speed:number
@@ -74,7 +76,7 @@ export interface DownloadJob {
 }
 
 export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string; default?:boolean; forced?:boolean }
-export interface VideoMediaResponse { subtitles:VideoSubtitleTrack[] }
+export interface VideoMediaResponse { optimized?:boolean; playback_url?:string; playback_size?:number; playback_etag?:string; subtitles:VideoSubtitleTrack[] }
 export interface VideoFMP4Metadata {
   duration:number
   mime_type:string

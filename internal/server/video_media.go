@@ -156,6 +156,46 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "ready video file not found")
 		return
 	}
+	var playbackKey, playbackETag string
+	var playbackSize int64
+	if s.db.QueryRowContext(r.Context(), `SELECT object_key,size,etag FROM web_media_playback WHERE file_id=?`, video.ID).Scan(&playbackKey, &playbackSize, &playbackETag) == nil {
+		playbackURL, err := s.storage.PresignGetObject(r.Context(), playbackKey, "playback.mp4", "video/mp4", true, 12*time.Hour)
+		if err != nil {
+			problem(w, http.StatusBadGateway, "could not sign optimized video")
+			return
+		}
+		tracks := []videoSubtitleResponse{}
+		rows, err := s.db.QueryContext(r.Context(), `SELECT track_index,object_key,language,title,is_default,is_forced FROM web_media_subtitles WHERE file_id=? ORDER BY track_index`, video.ID)
+		if err != nil {
+			problem(w, 500, "could not read optimized subtitles")
+			return
+		}
+		for rows.Next() {
+			var index int
+			var key, language, title string
+			var def, forced bool
+			if rows.Scan(&index, &key, &language, &title, &def, &forced) != nil {
+				continue
+			}
+			label := strings.TrimSpace(title)
+			if label == "" {
+				_, label = embeddedSubtitleLanguage(language)
+			}
+			if label == "" {
+				label = fmt.Sprintf("内嵌字幕 %d", index+1)
+			}
+			url, signErr := s.storage.PresignGetObject(r.Context(), key, fmt.Sprintf("subtitle-%d.vtt", index), "text/vtt; charset=utf-8", true, 12*time.Hour)
+			if signErr != nil {
+				rows.Close()
+				problem(w, 502, "could not sign optimized subtitles")
+				return
+			}
+			tracks = append(tracks, videoSubtitleResponse{ID: "optimized-" + strconv.Itoa(index), Name: label, Label: label, Language: language, URL: url, Default: def, Forced: forced})
+		}
+		rows.Close()
+		writeJSON(w, http.StatusOK, map[string]any{"optimized": true, "playback_url": playbackURL, "playback_size": playbackSize, "playback_etag": playbackETag, "subtitles": tracks})
+		return
+	}
 	s.scheduleMediaAnalysis(video)
 	files, err := s.findVideoSubtitles(r.Context(), video)
 	if err != nil {

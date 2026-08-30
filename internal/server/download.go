@@ -62,6 +62,7 @@ type downloadJob struct {
 	InfoHash      string         `json:"info_hash,omitempty"`
 	Name          string         `json:"name"`
 	Status        string         `json:"status"`
+	IngestState   string         `json:"ingest_state"`
 	SelectedSize  int64          `json:"selected_size"`
 	CompletedSize int64          `json:"completed_size"`
 	DownloadSpeed int64          `json:"download_speed"`
@@ -197,7 +198,7 @@ var blockedDownloadPrefixes = func() []netip.Prefix {
 }()
 
 func (m *downloadManager) restore() {
-	rows, err := m.server.db.QueryContext(m.ctx, `SELECT id,source_type,source,metainfo,status FROM download_jobs WHERE status IN ('metadata','waiting','queued','downloading','paused','importing') ORDER BY created_at`)
+	rows, err := m.server.db.QueryContext(m.ctx, `SELECT id,source_type,source,metainfo,CASE WHEN status='failed' AND ingest_state='unsupported' THEN 'unsupported' ELSE status END FROM download_jobs WHERE status IN ('metadata','waiting','queued','downloading','paused','importing') OR (status='failed' AND ingest_state='unsupported') ORDER BY created_at`)
 	if err != nil {
 		m.server.log.Error("download task restore scan failed", "error", err)
 		return
@@ -247,6 +248,10 @@ func (m *downloadManager) attach(jobID, sourceType, source string, encodedMeta [
 		if !m.runBackground(func() { m.importRuntime(runtime) }) {
 			cancel()
 		}
+	case "unsupported":
+		// Keep the restored torrent paused so explicit deletion or stale-task
+		// cleanup can remove the retained unsupported staging safely.
+		_ = m.bt.PauseTorrent(runtime.ctx, runtime.torrentID)
 	default:
 		m.setStatus(jobID, "waiting", "")
 	}
@@ -515,6 +520,8 @@ func (m *downloadManager) monitor(runtime *downloadRuntime) {
 type importedDownloadFile struct {
 	path, objectKey, mimeType, etag string
 	size                            int64
+	index                           int
+	web                             *storage.WebMediaAsset
 }
 
 func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
@@ -546,11 +553,20 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		key := storage.BlobKey(ids.New())
-		requests = append(requests, storage.TorrentImportFile{Index: item.Index, Key: key, MIME: mimeType, Size: item.Size})
+		key := ""
+		webPrefix := ""
+		if strings.HasPrefix(strings.ToLower(mimeType), "video/") || videoExts[strings.ToLower(filepath.Ext(fileName))] {
+			webPrefix = fmt.Sprintf("derived/media/%s/%d", job.ID, item.Index)
+		} else {
+			key = storage.BlobKey(fmt.Sprintf("bt-%s-%d", job.ID, item.Index))
+		}
+		requests = append(requests, storage.TorrentImportFile{Index: item.Index, Key: key, MIME: mimeType, Size: item.Size, WebPrefix: webPrefix})
 		paths[item.Index] = item
 	}
 	started := time.Now()
+	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET ingest_state='probing',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
+	m.server.jobs.Changed()
+	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET ingest_state='processing',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	results, err := m.bt.ImportTorrent(runtime.ctx, runtime.torrentID, requests)
 	if err != nil {
 		m.cleanupTorrentImport(requests)
@@ -561,7 +577,17 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	var imported int64
 	for _, result := range results {
 		item, ok := paths[result.Index]
-		if !ok || result.Size != item.Size {
+		if !ok {
+			m.cleanupTorrentImport(requests)
+			m.fail(runtime.jobID, errors.New("种子导入结果不一致"))
+			return
+		}
+		if result.WebMedia != nil && result.WebMedia.State == "unsupported" {
+			m.cleanupTorrentImport(requests)
+			m.unsupported(runtime.jobID, result.Index, result.WebMedia.Error)
+			return
+		}
+		if (result.WebMedia == nil && result.Size != item.Size) || (result.WebMedia != nil && (result.WebMedia.State != "completed" || result.Size != result.WebMedia.Size || result.Key != result.WebMedia.Key)) {
 			m.cleanupTorrentImport(requests)
 			m.fail(runtime.jobID, errors.New("种子导入结果不一致"))
 			return
@@ -570,10 +596,14 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: result.Key, size: result.Size, mimeType: mimeType, etag: result.ETag})
+		if result.WebMedia != nil {
+			mimeType = "video/mp4"
+		}
+		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: result.Key, size: result.Size, mimeType: mimeType, etag: result.ETag, index: result.Index, web: result.WebMedia})
 		imported += result.Size
 	}
 	elapsed := max(time.Since(started), time.Millisecond)
+	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET ingest_state='uploading',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=?,import_speed=?,current_file='',updated_at=? WHERE id=? AND status='importing'`, imported, int64(float64(imported)/elapsed.Seconds()), time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	if err := m.commitImported(runtime.ctx, job, stored, len(job.Files) > 1); err != nil {
 		m.cleanupTorrentImport(requests)
@@ -597,6 +627,16 @@ func (m *downloadManager) cleanupTorrentImport(files []storage.TorrentImportFile
 	for _, file := range files {
 		if file.Key != "" {
 			keys = append(keys, file.Key)
+		}
+		if file.WebPrefix != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			objects, err := m.server.storage.ListPrefix(ctx, file.WebPrefix+"/")
+			cancel()
+			if err == nil {
+				for _, object := range objects {
+					keys = append(keys, object.Key)
+				}
+			}
 		}
 	}
 	for len(keys) > 0 {
@@ -672,14 +712,34 @@ func (m *downloadManager) commitImported(ctx context.Context, job downloadJob, f
 			currentParent, currentPath = dirID, nextPath
 		}
 		name := parts[len(parts)-1]
-		if _, err := tx.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, ids.New(), currentParent, name, file.objectKey, file.size, file.mimeType, file.etag, now, now); err != nil {
+		fileID := fmt.Sprintf("bt-%s-%d", job.ID, file.index)
+		if _, err := tx.Exec(`INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, fileID, currentParent, name, file.objectKey, file.size, file.mimeType, file.etag, now, now); err != nil {
 			if isConflict(err) {
 				return errors.New("目标目录中存在同名文件")
 			}
 			return err
 		}
+		if file.web != nil {
+			state := file.web.State
+			if state == "" {
+				state = "failed"
+			}
+			if _, err := tx.Exec(`INSERT INTO web_media_ingests(file_id,download_job_id,file_index,state,video_codec,audio_codec,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, fileID, job.ID, file.index, state, file.web.VideoCodec, file.web.AudioCodec, file.web.Error, now, now); err != nil {
+				return err
+			}
+			if state == "completed" {
+				if _, err := tx.Exec(`INSERT INTO web_media_playback(file_id,object_key,size,etag,duration_ms,video_codec,audio_codec,created_at) VALUES(?,?,?,?,?,?,?,?)`, fileID, file.web.Key, file.web.Size, file.web.ETag, file.web.DurationMS, file.web.VideoCodec, file.web.AudioCodec, now); err != nil {
+					return err
+				}
+				for _, sub := range file.web.Subtitles {
+					if _, err := tx.Exec(`INSERT INTO web_media_subtitles(file_id,track_index,object_key,size,etag,language,title,is_default,is_forced) VALUES(?,?,?,?,?,?,?,?,?)`, fileID, sub.Index, sub.Key, sub.Size, sub.ETag, sub.Language, sub.Title, sub.Default, sub.Forced); err != nil {
+						return err
+					}
+				}
+			}
+		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE download_jobs SET status='done',completed_size=selected_size,download_speed=0,imported_size=selected_size,import_speed=0,current_file='',peers=0,error='',updated_at=? WHERE id=?`, now, job.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE download_jobs SET status='done',ingest_state='completed',completed_size=selected_size,download_speed=0,imported_size=selected_size,import_speed=0,current_file='',peers=0,error='',updated_at=? WHERE id=?`, now, job.ID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -728,7 +788,7 @@ func (m *downloadManager) resume(ctx context.Context, jobID string) error {
 }
 
 func (m *downloadManager) remove(ctx context.Context, jobID string) error {
-	_, err := m.get(ctx, jobID, false)
+	job, err := m.get(ctx, jobID, true)
 	if err != nil {
 		return err
 	}
@@ -740,6 +800,9 @@ func (m *downloadManager) remove(ctx context.Context, jobID string) error {
 		if runtime.cancel != nil {
 			runtime.cancel()
 		}
+		if job.Status != "done" {
+			m.cleanupTorrentImport(m.importRequests(job))
+		}
 		if err := m.bt.DeleteTorrent(ctx, runtime.torrentID); err != nil {
 			return err
 		}
@@ -750,8 +813,30 @@ func (m *downloadManager) remove(ctx context.Context, jobID string) error {
 	return nil
 }
 
+func (m *downloadManager) importRequests(job downloadJob) []storage.TorrentImportFile {
+	requests := make([]storage.TorrentImportFile, 0, len(job.Files))
+	for _, item := range job.Files {
+		if !item.Selected {
+			continue
+		}
+		fileName := path.Base(item.Path)
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		request := storage.TorrentImportFile{Index: item.Index, MIME: mimeType, Size: item.Size}
+		if strings.HasPrefix(strings.ToLower(mimeType), "video/") || videoExts[strings.ToLower(filepath.Ext(fileName))] {
+			request.WebPrefix = fmt.Sprintf("derived/media/%s/%d", job.ID, item.Index)
+		} else {
+			request.Key = storage.BlobKey(fmt.Sprintf("bt-%s-%d", job.ID, item.Index))
+		}
+		requests = append(requests, request)
+	}
+	return requests
+}
+
 func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
-	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs ORDER BY created_at DESC`)
+	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,ingest_state,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -759,7 +844,7 @@ func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
 	items := []downloadJob{}
 	for rows.Next() {
 		var job downloadJob
-		if err := rows.Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.IngestState, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, job)
@@ -769,7 +854,7 @@ func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
 
 func (m *downloadManager) get(ctx context.Context, jobID string, withFiles bool) (downloadJob, error) {
 	var job downloadJob
-	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,ingest_state,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.IngestState, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return job, err
 	}
@@ -797,6 +882,7 @@ func (m *downloadManager) setStatus(jobID, status, jobError string) {
 }
 
 func (m *downloadManager) fail(jobID string, err error) {
+	_, _ = m.server.db.Exec(`UPDATE download_jobs SET ingest_state='failed' WHERE id=?`, jobID)
 	m.setStatus(jobID, "failed", err.Error())
 	m.mu.Lock()
 	runtime := m.jobs[jobID]
@@ -809,6 +895,27 @@ func (m *downloadManager) fail(jobID string, err error) {
 		cancel()
 	}
 	m.server.log.Error("built-in torrent task failed", "job", jobID, "error", err)
+}
+
+func (m *downloadManager) unsupported(jobID string, fileIndex int, message string) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := m.server.db.Begin()
+	if err == nil {
+		_, err = tx.Exec(`INSERT INTO web_media_ingests(download_job_id,file_index,file_id,state,error,created_at,updated_at) VALUES(?,?,NULL,'unsupported',?,?,?) ON CONFLICT(download_job_id,file_index) DO UPDATE SET file_id=NULL,state='unsupported',error=excluded.error,updated_at=excluded.updated_at`, jobID, fileIndex, message, now, now)
+		if err == nil {
+			_, err = tx.Exec(`UPDATE download_jobs SET status='failed',ingest_state='unsupported',download_speed=0,import_speed=0,peers=0,error=?,updated_at=? WHERE id=?`, message, now, jobID)
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+	}
+	if err != nil {
+		m.server.log.Error("could not persist unsupported BT media state", "job", jobID, "error", err)
+	}
+	m.server.jobs.Changed()
+	m.server.log.Warn("built-in torrent media unsupported; staging retained", "job", jobID, "file_index", fileIndex, "error", message)
 }
 
 func (m *downloadManager) cleanupLoop() {

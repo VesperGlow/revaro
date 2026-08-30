@@ -3,6 +3,7 @@ use std::{
     env,
     io::SeekFrom,
     path::{Component, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use axum::{
@@ -31,7 +32,13 @@ pub struct BtState {
 
 impl BtState {
     pub async fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
-        let root = PathBuf::from(env::var("APP_WORK_DIR")?).join("revaro-bt");
+        let work_root = PathBuf::from(env::var("APP_WORK_DIR")?);
+        let web_root = work_root.join("revaro-bt-web");
+        if tokio::fs::try_exists(&web_root).await? {
+            tokio::fs::remove_dir_all(&web_root).await?;
+        }
+        tokio::fs::create_dir_all(&web_root).await?;
+        let root = work_root.join("revaro-bt");
         tokio::fs::create_dir_all(&root).await?;
         let blocklist = root.join("private-addresses.blocklist");
         tokio::fs::write(
@@ -237,6 +244,8 @@ struct ImportFile {
     key: String,
     mime: String,
     size: u64,
+    #[serde(default)]
+    web_prefix: String,
 }
 
 #[derive(Serialize)]
@@ -245,6 +254,89 @@ pub struct ImportedFile {
     key: String,
     size: i64,
     etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_media: Option<WebMediaAsset>,
+}
+
+#[derive(Serialize)]
+struct WebMediaSubtitle {
+    index: usize,
+    key: String,
+    size: i64,
+    etag: String,
+    language: String,
+    title: String,
+    default: bool,
+    forced: bool,
+}
+#[derive(Serialize)]
+struct WebMediaAsset {
+    state: String,
+    error: String,
+    key: String,
+    size: i64,
+    etag: String,
+    duration_ms: i64,
+    video_codec: String,
+    audio_codec: String,
+    subtitles: Vec<WebMediaSubtitle>,
+}
+static NEXT_PREP: AtomicU64 = AtomicU64::new(1);
+struct PrepCancel(tokio_util::sync::CancellationToken);
+impl PrepCancel {
+    fn disarm(&mut self) {
+        self.0 = tokio_util::sync::CancellationToken::new();
+    }
+}
+impl Drop for PrepCancel {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+struct WorkCleanup(PathBuf);
+impl Drop for WorkCleanup {
+    fn drop(&mut self) {
+        let path = self.0.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = tokio::fs::remove_dir_all(path).await;
+            });
+        }
+    }
+}
+
+struct UploadedCleanup {
+    s3: crate::s3::S3State,
+    keys: Vec<String>,
+    armed: bool,
+}
+impl UploadedCleanup {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+impl Drop for UploadedCleanup {
+    fn drop(&mut self) {
+        if !self.armed || self.keys.is_empty() {
+            return;
+        }
+        let s3 = self.s3.clone();
+        let keys = std::mem::take(&mut self.keys);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                for key in keys {
+                    let _ = s3
+                        .client
+                        .delete_object()
+                        .bucket(&s3.bucket)
+                        .key(key)
+                        .send()
+                        .await;
+                }
+            });
+        }
+    }
 }
 
 pub async fn import(
@@ -275,7 +367,10 @@ pub async fn import(
     let mut seen = HashSet::new();
     let mut imported = Vec::with_capacity(q.files.len());
     for requested in q.files {
-        if !seen.insert(requested.index) || requested.key.is_empty() || requested.key.len() > 1024 {
+        if !seen.insert(requested.index)
+            || requested.key.len() > 1024
+            || (requested.web_prefix.is_empty() && requested.key.is_empty())
+        {
             return Err(ApiError::bad_request(
                 "invalid or duplicate torrent import file",
             ));
@@ -315,26 +410,181 @@ pub async fn import(
         if !metadata.is_file() || metadata.len() != requested.size {
             return Err(ApiError::bad_request("torrent file size mismatch"));
         }
-        let reader = tokio::fs::File::open(canonical)
-            .await
-            .map_err(ApiError::internal)?;
-        let object = state
-            .s3
-            .store_reader(
-                &requested.key,
-                Some(&requested.mime),
-                reader,
-                Some(requested.size),
-            )
-            .await?;
-        imported.push(ImportedFile {
-            index: requested.index,
-            key: requested.key,
-            size: object.size,
-            etag: object.etag,
-        });
+        let web_media = if requested.web_prefix.is_empty() {
+            None
+        } else {
+            if requested.web_prefix.len() > 900
+                || requested.web_prefix.contains("..")
+                || !requested.web_prefix.starts_with("derived/media/")
+            {
+                return Err(ApiError::bad_request("invalid Web media prefix"));
+            }
+            Some(prepare_and_upload_web(&state, &canonical, &requested.web_prefix).await?)
+        };
+        if let Some(web) = web_media {
+            imported.push(ImportedFile {
+                index: requested.index,
+                key: web.key.clone(),
+                size: web.size,
+                etag: web.etag.clone(),
+                web_media: Some(web),
+            });
+        } else {
+            let reader = tokio::fs::File::open(&canonical)
+                .await
+                .map_err(ApiError::internal)?;
+            let object = state
+                .s3
+                .store_reader(
+                    &requested.key,
+                    Some(&requested.mime),
+                    reader,
+                    Some(requested.size),
+                )
+                .await?;
+            imported.push(ImportedFile {
+                index: requested.index,
+                key: requested.key,
+                size: object.size,
+                etag: object.etag,
+                web_media: None,
+            });
+        }
     }
     Ok(Json(imported))
+}
+
+async fn prepare_and_upload_web(
+    state: &AppState,
+    source: &std::path::Path,
+    prefix: &str,
+) -> Result<WebMediaAsset, ApiError> {
+    let serial = NEXT_PREP.fetch_add(1, Ordering::Relaxed);
+    let work = PathBuf::from(env::var("APP_WORK_DIR").map_err(ApiError::internal)?)
+        .join("revaro-bt-web")
+        .join(format!("{}-{serial}", std::process::id()));
+    tokio::fs::create_dir(&work)
+        .await
+        .map_err(ApiError::internal)?;
+    let _work_cleanup = WorkCleanup(work.clone());
+    let output = work.join("playback.mp4");
+    let source = source.to_owned();
+    let output_for_task = output.clone();
+    let cancel = state.shutdown.child_token();
+    let mut cancel_guard = PrepCancel(cancel.clone());
+    let prepared = tokio::task::spawn_blocking(move || {
+        crate::media::prepare_web_media(&source, &output_for_task, cancel)
+    })
+    .await
+    .map_err(ApiError::internal)?;
+    cancel_guard.disarm();
+    let prepared = match prepared {
+        Ok(value) => value,
+        Err(error) if error.starts_with("unsupported ") => {
+            return Ok(WebMediaAsset {
+                state: "unsupported".into(),
+                error,
+                key: String::new(),
+                size: 0,
+                etag: String::new(),
+                duration_ms: 0,
+                video_codec: String::new(),
+                audio_codec: String::new(),
+                subtitles: vec![],
+            });
+        }
+        Err(error) => {
+            return Err(ApiError::upstream_domain("media", error));
+        }
+    };
+    let playback_key = format!("{prefix}/playback.mp4");
+    let playback_len = tokio::fs::metadata(&output)
+        .await
+        .map_err(ApiError::internal)?
+        .len();
+    let mut cleanup = UploadedCleanup {
+        s3: state.s3.clone(),
+        keys: vec![playback_key.clone()],
+        armed: true,
+    };
+    let playback = state
+        .s3
+        .store_reader(
+            &playback_key,
+            Some("video/mp4"),
+            tokio::fs::File::open(&output)
+                .await
+                .map_err(ApiError::internal)?,
+            Some(playback_len),
+        )
+        .await?;
+    let result: Result<Vec<WebMediaSubtitle>, ApiError> = async {
+        let mut tracks = Vec::new();
+        for (meta, bytes) in prepared.subtitles {
+            let key = format!("{prefix}/subtitles/{}.vtt", meta.index);
+            cleanup.keys.push(key.clone());
+            let local = work.join(format!("subtitle-{}.vtt", meta.index));
+            tokio::fs::write(&local, &bytes)
+                .await
+                .map_err(ApiError::internal)?;
+            let object = state
+                .s3
+                .store_reader(
+                    &key,
+                    Some("text/vtt; charset=utf-8"),
+                    tokio::fs::File::open(&local)
+                        .await
+                        .map_err(ApiError::internal)?,
+                    Some(bytes.len() as u64),
+                )
+                .await?;
+            tracks.push(WebMediaSubtitle {
+                index: meta.index,
+                key,
+                size: object.size,
+                etag: object.etag,
+                language: meta.language,
+                title: meta.title,
+                default: meta.default,
+                forced: meta.forced,
+            });
+        }
+        for key in &cleanup.keys {
+            state
+                .s3
+                .client
+                .head_object()
+                .bucket(&state.s3.bucket)
+                .key(key)
+                .send()
+                .await
+                .map_err(ApiError::upstream)?;
+        }
+        Ok(tracks)
+    }
+    .await;
+    let subtitles = match result {
+        Ok(value) => value,
+        Err(error) => return Err(error),
+    };
+    cleanup.disarm();
+    Ok(WebMediaAsset {
+        state: "completed".into(),
+        error: String::new(),
+        key: playback_key,
+        size: playback.size,
+        etag: playback.etag,
+        duration_ms: prepared.duration_ms,
+        video_codec: prepared.video_codec,
+        audio_codec: if prepared.audio_codec == "aac" {
+            "aac".into()
+        } else if prepared.audio_codec.is_empty() {
+            String::new()
+        } else {
+            "aac".into()
+        },
+        subtitles,
+    })
 }
 
 pub async fn delete(

@@ -16,6 +16,7 @@ const actionMenu=ref<HTMLDetailsElement|null>(null)
 const subtitles=ref<VideoSubtitleTrack[]>([])
 const activeSubtitle=ref(-1)
 const directMode=ref(/\.(mp4|m4v|webm|ogv|mov)$/i.test(props.item.name))
+const optimizedMode=ref(false)
 const mseMode=ref(false)
 const directSource=ref(directMode.value?previewURL(props.item):'')
 const starting=ref(false)
@@ -335,6 +336,7 @@ function onEnded(){
 }
 function onVideoError(){
   if(starting.value)return
+  if(optimizedMode.value){error.value='Web 播放文件无法解码';return}
   if(directMode.value&&!directFallbackStarted){directFallbackStarted=true;void startMSEStream(currentTime.value||savedPosition(),true);return}
   if(mseMode.value)recoverFromMSE('浏览器报告 MSE 媒体解码错误')
 }
@@ -391,6 +393,7 @@ onMounted(async()=>{
   const progressPromise=loadProgress()
   try{
     const media=await api<VideoMediaResponse>(`/api/files/${props.item.id}/video`)
+    if(media.optimized&&media.playback_url){optimizedMode.value=true;directMode.value=true;directSource.value=media.playback_url}
     subtitles.value=media.subtitles||[];activeSubtitle.value=initialSubtitleIndex(subtitles.value)
     console.info('[revaro] subtitles discovered:',subtitles.value.length)
     console.info('[revaro] subtitle selected:',selectedSubtitle.value?.id||'off')

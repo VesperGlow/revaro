@@ -141,16 +141,39 @@ type TorrentStats struct {
 	Finished      bool  `json:"finished"`
 }
 type TorrentImportFile struct {
-	Index int    `json:"index"`
-	Key   string `json:"key"`
-	MIME  string `json:"mime"`
-	Size  int64  `json:"size"`
+	Index     int    `json:"index"`
+	Key       string `json:"key"`
+	MIME      string `json:"mime"`
+	Size      int64  `json:"size"`
+	WebPrefix string `json:"web_prefix,omitempty"`
 }
 type TorrentImportedFile struct {
-	Index int    `json:"index"`
-	Key   string `json:"key"`
-	Size  int64  `json:"size"`
-	ETag  string `json:"etag"`
+	Index    int            `json:"index"`
+	Key      string         `json:"key"`
+	Size     int64          `json:"size"`
+	ETag     string         `json:"etag"`
+	WebMedia *WebMediaAsset `json:"web_media,omitempty"`
+}
+type WebMediaSubtitle struct {
+	Index    int    `json:"index"`
+	Key      string `json:"key"`
+	Size     int64  `json:"size"`
+	ETag     string `json:"etag"`
+	Language string `json:"language"`
+	Title    string `json:"title"`
+	Default  bool   `json:"default"`
+	Forced   bool   `json:"forced"`
+}
+type WebMediaAsset struct {
+	State      string             `json:"state"`
+	Error      string             `json:"error,omitempty"`
+	Key        string             `json:"key,omitempty"`
+	Size       int64              `json:"size,omitempty"`
+	ETag       string             `json:"etag,omitempty"`
+	DurationMS int64              `json:"duration_ms"`
+	VideoCodec string             `json:"video_codec"`
+	AudioCodec string             `json:"audio_codec"`
+	Subtitles  []WebMediaSubtitle `json:"subtitles,omitempty"`
 }
 type TorrentEngine interface {
 	AddTorrent(context.Context, string, string, []int, bool) (TorrentAddResult, error)
