@@ -9,8 +9,9 @@ export async function api<T>(path:string, init:RequestInit = {}, timeoutMs = 600
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type','application/json')
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+	const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
   try {
-    const response = await fetch(path, { ...init, headers, signal: init.signal ?? controller.signal, credentials:'same-origin' })
+    const response = await fetch(path, { ...init, headers, signal, credentials:'same-origin' })
     if (!response.ok) {
       let message = `请求失败 (${response.status})`
       let payload: unknown = null

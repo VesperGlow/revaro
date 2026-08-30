@@ -44,6 +44,20 @@ type Params struct {
 
 var DefaultParams = Params{Memory: 64 * 1024, Iterations: 3, Parallelism: 2, SaltLength: 16, KeyLength: 32}
 
+// Password hashes are persisted in SQLite and must be treated as untrusted
+// input: a corrupted or manually modified row must not be able to make login
+// allocate arbitrary memory or CPU time.
+const (
+	minArgonMemory      = 1024
+	maxArgonMemory      = 256 * 1024
+	maxArgonIterations  = 10
+	maxArgonParallelism = 8
+	minArgonSaltLength  = 8
+	maxArgonSaltLength  = 64
+	minArgonKeyLength   = 16
+	maxArgonKeyLength   = 64
+)
+
 type Service struct {
 	DB       *sql.DB
 	Username string
@@ -339,6 +353,9 @@ func TokenHash(token string) string {
 }
 
 func HashPassword(password string, p Params) (string, error) {
+	if err := validateParams(p); err != nil {
+		return "", err
+	}
 	salt := make([]byte, p.SaltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
@@ -348,6 +365,9 @@ func HashPassword(password string, p Params) (string, error) {
 }
 
 func VerifyPassword(password, encoded string) (bool, error) {
+	if len(encoded) > 1024 {
+		return false, errors.New("password hash is too long")
+	}
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false, errors.New("invalid password hash")
@@ -380,6 +400,21 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	got := argon2.IDKey([]byte(password), salt, uint32(t), uint32(m), uint8(p), uint32(len(want)))
+	parsed := Params{Memory: uint32(m), Iterations: uint32(t), Parallelism: uint8(p), SaltLength: uint32(len(salt)), KeyLength: uint32(len(want))}
+	if err := validateParams(parsed); err != nil {
+		return false, err
+	}
+	got := argon2.IDKey([]byte(password), salt, parsed.Iterations, parsed.Memory, parsed.Parallelism, parsed.KeyLength)
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}
+
+func validateParams(p Params) error {
+	if p.Memory < minArgonMemory || p.Memory > maxArgonMemory ||
+		p.Iterations < 1 || p.Iterations > maxArgonIterations ||
+		p.Parallelism < 1 || p.Parallelism > maxArgonParallelism ||
+		p.SaltLength < minArgonSaltLength || p.SaltLength > maxArgonSaltLength ||
+		p.KeyLength < minArgonKeyLength || p.KeyLength > maxArgonKeyLength {
+		return errors.New("argon2 parameters are outside supported limits")
+	}
+	return nil
 }

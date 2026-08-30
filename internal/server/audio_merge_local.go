@@ -413,7 +413,7 @@ func (s *Server) createLocalAudioMerge(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	mergeCtx, cancel := context.WithTimeout(context.Background(), audioMergeTimeout)
+	mergeCtx, cancel := context.WithTimeout(s.audioHLSCtx, audioMergeTimeout)
 	job := &audioMergeJob{
 		changed: s.jobs.Changed,
 		ID:      ids.New(), Status: "uploading", Progress: localMergeUploadProgressStart, Message: "正在等待上传本地素材",
@@ -636,7 +636,9 @@ func (s *Server) abortLocalMergeUpload(job *audioMergeJob, message string) {
 	job.finish("failed", "合并失败", message)
 	job.cleanupStaging(s.log)
 	job.releaseUploadSlot(s)
-	_, _ = s.db.ExecContext(context.Background(), `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_, _ = s.db.ExecContext(cleanupCtx, `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
+	cancel()
 	s.log.Warn("local merge upload aborted", "job", job.ID, "output", job.OutputName, "error", message)
 }
 

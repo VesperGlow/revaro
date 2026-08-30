@@ -14,6 +14,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -318,8 +319,14 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
-	if err := s.db.PingContext(r.Context()); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := s.db.PingContext(ctx); err != nil {
 		problem(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	if err := s.storage.Ping(ctx); err != nil {
+		problem(w, http.StatusServiceUnavailable, "object storage unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
@@ -378,10 +385,7 @@ func (s *Server) originGuard(next http.Handler) http.Handler {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if ip == "" {
-		ip = r.RemoteAddr
-	}
+	ip := s.clientIP(r)
 	if !s.limiter.allow(ip) {
 		w.Header().Set("Retry-After", "60")
 		problem(w, http.StatusTooManyRequests, "too many login attempts; try again later")
@@ -427,6 +431,40 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "revaro_session", Value: token, Path: "/", HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode, Expires: expires, MaxAge: int(time.Until(expires).Seconds())})
 	s.log.Info("user logged in", "user", in.Username)
 	writeJSON(w, http.StatusOK, map[string]any{"username": in.Username, "has_avatar": s.hasAvatar(r.Context())})
+}
+
+func (s *Server) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(strings.TrimSpace(host))
+	if err != nil || !prefixContains(s.cfg.TrustedProxies, peer.Unmap()) {
+		return host
+	}
+	// Walk right-to-left: trusted proxies append their peer. The first
+	// untrusted address is the client; spoofed values farther left are ignored.
+	chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(chain) - 1; i >= 0; i-- {
+		candidate, parseErr := netip.ParseAddr(strings.TrimSpace(chain[i]))
+		if parseErr != nil {
+			continue
+		}
+		candidate = candidate.Unmap()
+		if !prefixContains(s.cfg.TrustedProxies, candidate) {
+			return candidate.String()
+		}
+	}
+	return peer.Unmap().String()
+}
+
+func prefixContains(prefixes []netip.Prefix, addr netip.Addr) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("revaro_session"); err == nil {
@@ -1717,7 +1755,9 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		tx.Rollback()
 		if s3UploadID != "" {
-			_ = s.storage.AbortMultipart(context.Background(), objectKey, s3UploadID)
+			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = s.storage.AbortMultipart(abortCtx, objectKey, s3UploadID)
+			cancel()
 		}
 		if isConflict(err) {
 			problem(w, 409, "an item with that name already exists")
@@ -1728,7 +1768,9 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if err = tx.Commit(); err != nil {
 		if s3UploadID != "" {
-			_ = s.storage.AbortMultipart(context.Background(), objectKey, s3UploadID)
+			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = s.storage.AbortMultipart(abortCtx, objectKey, s3UploadID)
+			cancel()
 		}
 		problem(w, 500, "could not create upload")
 		return
@@ -2168,6 +2210,8 @@ type loginLimiter struct {
 	slots    chan struct{}
 }
 
+const maxLoginLimiterEntries = 10000
+
 func newLoginLimiter() *loginLimiter {
 	return &loginLimiter{attempts: map[string]loginAttempt{}, slots: make(chan struct{}, 2)}
 }
@@ -2175,6 +2219,13 @@ func (l *loginLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	if len(l.attempts) >= maxLoginLimiterEntries {
+		for key, attempt := range l.attempts {
+			if now.After(attempt.reset) {
+				delete(l.attempts, key)
+			}
+		}
+	}
 	if now.After(l.global.reset) {
 		l.global = loginAttempt{}
 	}
@@ -2197,7 +2248,9 @@ func (l *loginLimiter) fail(ip string) {
 		a = loginAttempt{reset: now.Add(15 * time.Minute)}
 	}
 	a.count++
-	l.attempts[ip] = a
+	if _, exists := l.attempts[ip]; exists || len(l.attempts) < maxLoginLimiterEntries {
+		l.attempts[ip] = a
+	}
 	if now.After(l.global.reset) {
 		l.global = loginAttempt{reset: now.Add(15 * time.Minute)}
 	}

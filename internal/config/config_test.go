@@ -46,3 +46,16 @@ func TestLoadRejectsInvalidActiveSettings(t *testing.T) {
 		t.Fatal("invalid media cache accepted")
 	}
 }
+
+func TestTrustedProxyCIDRs(t *testing.T) {
+	validEnv(t)
+	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8, 2001:db8::/32")
+	c, err := Load()
+	if err != nil || len(c.TrustedProxies) != 2 {
+		t.Fatalf("trusted proxies = %v, %v", c.TrustedProxies, err)
+	}
+	t.Setenv("TRUSTED_PROXIES", "not-a-cidr")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid trusted proxy CIDR accepted")
+	}
+}

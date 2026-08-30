@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,6 +41,7 @@ type Config struct {
 	BTStaleAfter       time.Duration
 	DataPlaneAddr      string
 	DataPlaneBinary    string
+	TrustedProxies     []netip.Prefix
 }
 
 func Load() (Config, error) {
@@ -59,6 +61,15 @@ func Load() (Config, error) {
 		DataPlaneBinary:  env("DATA_PLANE_BINARY", "revaro-data-plane"),
 	}
 	c.WorkDir = env("APP_WORK_DIR", "/work")
+	if raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); raw != "" {
+		for _, item := range strings.Split(raw, ",") {
+			prefix, parseErr := netip.ParsePrefix(strings.TrimSpace(item))
+			if parseErr != nil {
+				return c, fmt.Errorf("TRUSTED_PROXIES contains invalid CIDR %q", item)
+			}
+			c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
+		}
+	}
 	var err error
 	if c.CookieSecure, err = boolEnv("COOKIE_SECURE", strings.HasPrefix(c.BaseURL, "https://")); err != nil {
 		return c, err

@@ -161,6 +161,21 @@ func TestPasswordHashIsSalted(t *testing.T) {
 	}
 }
 
+func TestPasswordHashRejectsResourceExhaustionParameters(t *testing.T) {
+	for _, encoded := range []string{
+		"$argon2id$v=19$m=4294967295,t=3,p=2$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAA",
+		"$argon2id$v=19$m=65536,t=4294967295,p=2$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAA",
+		"$argon2id$v=19$m=65536,t=3,p=255$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAA",
+	} {
+		if _, err := VerifyPassword("password", encoded); err == nil {
+			t.Fatalf("unsafe parameters accepted: %s", encoded)
+		}
+	}
+	if _, err := HashPassword("password", Params{Memory: maxArgonMemory + 1, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32}); err == nil {
+		t.Fatal("unsafe hash parameters accepted")
+	}
+}
+
 func TestTOTPLifecycleRecoveryReplayAndPasswordChange(t *testing.T) {
 	db, err := database.Open(t.TempDir() + "/revaro.db")
 	if err != nil {

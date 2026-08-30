@@ -6,9 +6,9 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 axum = { version = "0.8", features = ["http2", "json"] }
-aws-config = "1"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-credential-types = "1"
-aws-sdk-s3 = "1"
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "http-1x", "rt-tokio"] }
 aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 bytes = "1.10"
 libarchive2 = "0.2.1"

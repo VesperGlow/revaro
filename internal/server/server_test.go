@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -32,6 +33,30 @@ import (
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/pquerna/otp/totp"
 )
+
+func TestClientIPOnlyTrustsConfiguredProxy(t *testing.T) {
+	s := &Server{cfg: config.Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}}
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	r.RemoteAddr = "10.1.2.3:1234"
+	r.Header.Set("X-Forwarded-For", "198.51.100.7, 203.0.113.8")
+	if got := s.clientIP(r); got != "203.0.113.8" {
+		t.Fatalf("trusted proxy client IP = %q", got)
+	}
+	r.RemoteAddr = "192.0.2.10:1234"
+	if got := s.clientIP(r); got != "192.0.2.10" {
+		t.Fatalf("untrusted peer spoofed client IP = %q", got)
+	}
+}
+
+func TestLoginLimiterHasBoundedState(t *testing.T) {
+	l := newLoginLimiter()
+	for i := 0; i < maxLoginLimiterEntries+100; i++ {
+		l.fail(fmt.Sprintf("192.0.2.%d", i))
+	}
+	if len(l.attempts) > maxLoginLimiterEntries {
+		t.Fatalf("limiter entries = %d", len(l.attempts))
+	}
+}
 
 // notFoundError emulates the S3 NoSuchKey API error the real store returns.
 func notFoundError() error {
@@ -1573,6 +1598,7 @@ func TestVideoThumbnailWithFFmpeg(t *testing.T) {
 		t.Skip("ffmpeg not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	// 用 ffmpeg 现场生成一段 2 秒测试视频，确保服务端在第 1 秒抽帧时
 	// 不会刚好落在媒体结尾。
 	tmp := t.TempDir() + "/test.mp4"

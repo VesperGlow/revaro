@@ -72,13 +72,13 @@ impl Drop for MultipartAbortGuard {
         );
         if let Ok(runtime) = Handle::try_current() {
             runtime.spawn(async move {
-                let _ = client
+                let abort = client
                     .abort_multipart_upload()
                     .bucket(bucket)
                     .key(key)
                     .upload_id(upload_id)
-                    .send()
-                    .await;
+                    .send();
+                let _ = tokio::time::timeout(Duration::from_secs(30), abort).await;
             });
         }
     }

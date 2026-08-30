@@ -775,13 +775,11 @@ fn setup_video_encode(
     unsafe {
         (*context.as_mut_ptr()).profile = ffmpeg::ffi::FF_PROFILE_H264_HIGH;
     }
-    // `safe` represented AVCodecContext.thread_safe_callbacks and disappeared
-    // with FFmpeg 6.  Only set the cross-version fields; Default fills fields
-    // exposed by older libavcodec versions without tying us to their ABI.
+    // Keep encoder threading explicitly bounded: media-level semaphores cap
+    // concurrent jobs and each encoder uses one worker thread.
     context.set_threading(codec::threading::Config {
         kind: codec::threading::Type::Frame,
         count: 1,
-        ..Default::default()
     });
     if global_header {
         context.set_flags(codec::Flags::GLOBAL_HEADER);
@@ -839,7 +837,6 @@ fn setup_audio_encode(
     let layout = ChannelLayout::STEREO;
     context.set_rate(48_000);
     context.set_channel_layout(layout);
-    context.set_channels(layout.channels());
     context.set_format(
         codec
             .formats()

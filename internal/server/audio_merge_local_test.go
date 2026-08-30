@@ -84,6 +84,7 @@ func TestLocalAudioMergeEndToEndALAC(t *testing.T) {
 		t.Skip("ffprobe not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	firstWAV := audioFixture(t, "wav", 440)
 	secondWAV := audioFixture(t, "wav", 880)
 	firstVTT := vttFixture("第一段字幕")
@@ -288,6 +289,7 @@ func TestLocalAudioMergeFailureCleansStaging(t *testing.T) {
 		t.Skip("ffmpeg not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	badVTT := []byte("这不是 WebVTT 内容\n")
 	firstWAV := audioFixture(t, "wav", 440)
 	secondWAV := audioFixture(t, "wav", 880)

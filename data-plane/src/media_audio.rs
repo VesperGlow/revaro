@@ -16,6 +16,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{AppState, audio_fifo::AudioFrameAccumulator, error::ApiError};
 
+struct TempOutput(std::path::PathBuf);
+
+impl Drop for TempOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[derive(Deserialize)]
 pub struct MergeRequest {
     inputs: Vec<String>,
@@ -269,7 +277,6 @@ fn merge_blocking(
     };
     context.set_rate(rate as i32);
     context.set_channel_layout(layout);
-    context.set_channels(layout.channels());
     context.set_format(
         codec
             .formats()
@@ -402,6 +409,7 @@ fn decorate_blocking(
         ".{}.decorated.{extension}",
         input_path.file_name().unwrap_or_default().to_string_lossy()
     ));
+    let _temp_output = TempOutput(temp.clone());
     let mut output = format::output(&temp).map_err(|e| format!("create decorated audio: {e}"))?;
     let mut audio_out = output
         .add_stream(encoder::find(codec::Id::None))

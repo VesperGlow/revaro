@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -31,6 +32,19 @@ func TestParseByteRangeHTTPForms(t *testing.T) {
 		start, end, ok := parseByteRange(tc.header, tc.size)
 		if start != tc.start || end != tc.end || ok != tc.ok {
 			t.Errorf("parseByteRange(%q,%d)=(%d,%d,%t), want (%d,%d,%t)", tc.header, tc.size, start, end, ok, tc.start, tc.end, tc.ok)
+		}
+	}
+}
+
+func TestPublicDownloadIPRejectsSpecialUseNetworks(t *testing.T) {
+	for _, value := range []string{"127.0.0.1", "10.0.0.1", "100.64.0.1", "169.254.169.254", "192.0.2.1", "198.18.0.1", "203.0.113.1", "::1", "2001:db8::1"} {
+		if isPublicDownloadIP(net.ParseIP(value)) {
+			t.Errorf("special-use IP accepted: %s", value)
+		}
+	}
+	for _, value := range []string{"1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"} {
+		if !isPublicDownloadIP(net.ParseIP(value)) {
+			t.Errorf("public IP rejected: %s", value)
 		}
 	}
 }

@@ -70,16 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shutdown = CancellationToken::new();
     let s3 = s3::S3State::from_env().await?;
-    let stale_age = env::var("S3_MULTIPART_STALE_SECONDS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(24 * 60 * 60));
-    match s3.abort_stale_multipart_uploads(stale_age).await {
-        Ok(count) if count > 0 => tracing::warn!(count, "aborted stale multipart uploads"),
-        Err(_) => tracing::warn!("could not clean stale multipart uploads"),
-        _ => {}
-    }
     let state = AppState {
         bearer: Arc::from(format!("Bearer {token}").into_bytes()),
         s3,
@@ -147,6 +137,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, protocol = PROTOCOL_VERSION, "data plane ready");
+
+    // Multipart cleanup can require many paginated S3 calls. It is
+    // housekeeping, not a readiness prerequisite, so run it after bind with
+    // both a deadline and shutdown cancellation.
+    let cleanup_s3 = state.s3.clone();
+    let cleanup_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        let stale_age = env::var("S3_MULTIPART_STALE_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(24 * 60 * 60));
+        let cleanup = tokio::time::timeout(
+            Duration::from_secs(120),
+            cleanup_s3.abort_stale_multipart_uploads(stale_age),
+        );
+        tokio::select! {
+            _ = cleanup_shutdown.cancelled() => {},
+            result = cleanup => match result {
+                Ok(Ok(count)) if count > 0 => tracing::warn!(count, "aborted stale multipart uploads"),
+                Ok(Ok(_)) => {},
+                Ok(Err(error)) => tracing::warn!(?error, "could not clean stale multipart uploads"),
+                Err(_) => tracing::warn!("stale multipart cleanup timed out"),
+            }
+        }
+    });
     let shutdown_for_signal = shutdown.clone();
     let bt_for_signal = state.bt.clone();
     axum::serve(listener, app)

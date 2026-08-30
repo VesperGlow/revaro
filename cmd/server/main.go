@@ -22,6 +22,14 @@ import (
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	exitCode := 0
+	// This defer is registered before resource-owning defers below, so those
+	// always run before a non-zero process exit.
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
 	if len(os.Args) > 1 {
 		if os.Args[1] == "reset-admin" {
 			resetAdministrator(log)
@@ -37,24 +45,31 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if err := ensureWorkDir(cfg.WorkDir); err != nil {
+		log.Error("work directory startup check failed", "path", cfg.WorkDir, "error", err)
+		os.Exit(1)
+	}
 	dataProcess, err := dataplane.Start(ctx, cfg.DataPlaneBinary, cfg.DataPlaneAddr, log)
 	if err != nil {
 		log.Error("data plane startup failed", "error", err)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	defer dataProcess.Close()
 	db, err := database.Open(cfg.DatabasePath())
 	if err != nil {
 		log.Error("database startup failed", "error", err)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	defer db.Close()
 	log.Info("database ready", "path", cfg.DatabasePath())
 	authService := &auth.Service{DB: db}
-	initialCredentials, err := authService.Initialize(context.Background(), cfg.AdminUsername, cfg.AdminPassword)
+	initialCredentials, err := authService.Initialize(ctx, cfg.AdminUsername, cfg.AdminPassword)
 	if err != nil {
 		log.Error("administrator initialization failed", "error", err)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	store := storage.NewDataPlane(dataProcess.Addr(), dataProcess.Token())
 	checkCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -62,7 +77,8 @@ func main() {
 	cancel()
 	if err != nil {
 		log.Error("S3 connection check failed", "bucket", cfg.S3Bucket, "error", err)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	provider := "s3"
 	if cfg.IsUpCloud() {
@@ -91,21 +107,27 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticks:
-				app.CollectGarbage(context.Background())
+				gcCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+				app.CollectGarbage(gcCtx)
+				cancel()
 			case <-gcRequests:
-				app.CollectGarbage(context.Background())
+				gcCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+				app.CollectGarbage(gcCtx)
+				cancel()
 			}
 		}
 	}()
 	runHousekeeping := func() {
-		app.CleanupExpiredUploads(context.Background())
-		app.CleanupExpiredLocalMerges(context.Background())
-		if app.CleanupExpiredTrash(context.Background()) > 0 {
+		housekeepingCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		app.CleanupExpiredUploads(housekeepingCtx)
+		app.CleanupExpiredLocalMerges(housekeepingCtx)
+		if app.CleanupExpiredTrash(housekeepingCtx) > 0 {
 			// Expired trash must release its content even when periodic orphan
 			// collection is disabled with GC_INTERVAL=0.
 			requestGC()
 		}
-		authService.Cleanup(context.Background())
+		authService.Cleanup(housekeepingCtx)
 	}
 	runHousekeeping()
 	if cfg.GCInterval > 0 {
@@ -130,24 +152,34 @@ func main() {
 	listener, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
 		log.Error("server listen failed", "addr", cfg.Addr, "error", err)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	log.Info("server started", "addr", cfg.Addr)
 	if initialCredentials.Generated {
-		log.Warn("initial administrator credentials; shown once, sign in and change them immediately", "username", initialCredentials.Username, "password", initialCredentials.Password)
+		path, err := writeCredentials(cfg.DataDir, initialCredentials)
+		if err != nil {
+			log.Error("could not securely write initial administrator credentials", "error", err)
+			exitCode = 1
+			return
+		}
+		log.Warn("initial administrator credentials written to a mode-0600 file; sign in, change them, then remove the file", "path", path)
 	} else if initialCredentials.Created {
 		log.Info("administrator initialized from environment", "username", initialCredentials.Username)
 	}
-	go func() {
-		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server stopped unexpectedly", "error", err)
-			os.Exit(1)
-		}
-	}()
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- httpServer.Serve(listener) }()
 	select {
 	case <-ctx.Done():
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("server stopped unexpectedly", "error", err)
+			exitCode = 1
+		}
+		stop()
 	case childErr := <-dataProcess.Done():
 		log.Error("Rust data plane stopped unexpectedly", "error", childErr)
+		exitCode = 1
 		stop()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -177,7 +209,48 @@ func resetAdministrator(log *slog.Logger) {
 	credentials, err := (&auth.Service{DB: db}).ResetCredentials(context.Background(), username)
 	if err != nil {
 		log.Error("administrator reset failed", "error", err)
+		_ = db.Close()
 		os.Exit(1)
 	}
-	log.Warn("administrator credentials reset; shown once, sign in and change them immediately", "username", credentials.Username, "password", credentials.Password)
+	path, err := writeCredentials(dataDir, credentials)
+	if err != nil {
+		log.Error("could not securely write reset administrator credentials", "error", err)
+		_ = db.Close()
+		os.Exit(1)
+	}
+	log.Warn("administrator credentials reset and written to a mode-0600 file; remove it after signing in", "path", path)
+}
+
+func ensureWorkDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(path, ".revaro-write-check-*")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return os.Remove(name)
+}
+
+func writeCredentials(dataDir string, credentials auth.InitialCredentials) (string, error) {
+	path := filepath.Join(dataDir, "initial-admin-credentials")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return "", err
+	}
+	_, writeErr := file.WriteString("username=" + credentials.Username + "\npassword=" + credentials.Password + "\n")
+	closeErr := file.Close()
+	if writeErr != nil {
+		return "", writeErr
+	}
+	return path, closeErr
 }

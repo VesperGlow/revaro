@@ -31,7 +31,7 @@ docker compose up -d
 docker compose logs revaro
 ```
 
-打开 <http://localhost:8080>。如果没有配置 `ADMIN_PASSWORD`，首次成功启动时会在 `revaro` 容器日志中打印一次管理员用户名和随机密码；登录后点击右上角头像进入账户设置并立即修改。MinIO 控制台位于 <http://localhost:9001>。
+打开 <http://localhost:8080>。如果没有配置 `ADMIN_PASSWORD`，首次成功启动会把管理员用户名和随机密码写入数据卷中的 `/data/initial-admin-credentials`（权限 `0600`）；登录并修改密码后删除该文件。MinIO 控制台位于 <http://localhost:9001>。
 
 Podman 用户可以运行：
 
@@ -89,6 +89,7 @@ set -a; . ./.env; set +a
 | `COOKIE_SECURE` | 根据 Base URL | 生产必须为 `true`；HTTP 本地开发设为 `false` |
 | `ADMIN_USERNAME` | `admin` | 首次初始化使用的管理员用户名 |
 | `ADMIN_PASSWORD` | 随机生成 | 可选；设置时至少 12 字符，未设置时首次启动生成一次性密码；只保存 Argon2id hash |
+| `TRUSTED_PROXIES` | 空 | 可信反向代理 CIDR 列表（逗号分隔）；仅这些来源的 `X-Forwarded-For` 会用于登录限流 |
 | `S3_ENDPOINT` | AWS 默认 | S3-compatible endpoint；AWS S3 可留空 |
 | `S3_PUBLIC_ENDPOINT` | 与 `S3_ENDPOINT` 相同 | 浏览器和 FFmpeg 可访问的 Presigned URL endpoint |
 | `S3_REGION` | `us-east-1` | Bucket region |
@@ -113,9 +114,9 @@ set -a; . ./.env; set +a
 
 新 blob 的上传、下载、预览和媒体 Range 都直接访问 `S3_PUBLIC_ENDPOINT`，因此 endpoint 必须能被浏览器和运行 FFmpeg 的主机访问，Bucket 仍保持私有并配置下文 CORS。UpCloud 的 checksum 兼容选项仍会自动启用，但“仅私网、关闭 Public access”的旧代理部署不适用于新上传模型。
 
-管理员设置只在数据库第一次初始化时读取。之后修改环境变量不会重置已有密码，避免部署配置漂移意外改密。随机密码只在新数据库首次成功启动时打印一次，不会在容器重启时再次显示；可通过右上角头像进入账户设置修改用户名和密码，修改后所有现有会话都会失效。
+管理员设置只在数据库第一次初始化时读取。之后修改环境变量不会重置已有密码，避免部署配置漂移意外改密。随机密码只在新数据库首次成功启动时写入一次；可通过右上角头像进入账户设置修改用户名和密码，修改后所有现有会话都会失效。
 
-首次凭据会进入容器日志，任何能够读取日志的人都可能看到它。请在首次登录后立即修改密码，并限制部署平台与日志系统的访问权限；如果不希望凭据出现在日志中，请在首次启动前显式配置 `ADMIN_PASSWORD`。
+首次凭据不会进入容器日志，而是写入 `APP_DATA_DIR/initial-admin-credentials`。该文件权限为 `0600`，仍应在首次登录并修改密码后立即删除；也可以在首次启动前显式配置 `ADMIN_PASSWORD`，避免生成凭据文件。
 
 如果已有数据库的管理员凭据丢失，不要删除数据卷。停止服务后运行一次恢复命令，它会保留文件与元数据、撤销已有会话，并在终端打印新的随机凭据：
 

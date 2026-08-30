@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"path"
 	"path/filepath"
 	"sort"
@@ -126,7 +127,7 @@ func publicDialContext(ctx context.Context, network, address string) (net.Conn, 
 	var lastDialErr error
 	for _, candidate := range resolved {
 		ip := candidate.IP
-		if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		if !isPublicDownloadIP(ip) {
 			continue
 		}
 		connection, dialErr := (&net.Dialer{Timeout: 20 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -140,6 +141,39 @@ func publicDialContext(ctx context.Context, network, address string) (net.Conn, 
 	}
 	return nil, errors.New("destination resolves only to a blocked address")
 }
+
+func isPublicDownloadIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+		return false
+	}
+	// Go's IsGlobalUnicast intentionally includes special-use ranges that are
+	// not valid Internet download destinations (documentation, benchmarking,
+	// carrier NAT, protocol assignment and discard-only networks).
+	for _, prefix := range blockedDownloadPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return true
+}
+
+var blockedDownloadPrefixes = func() []netip.Prefix {
+	raw := []string{
+		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24",
+		"198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4",
+		"2001:db8::/32", "2001:2::/48", "2001:10::/28", "100::/64",
+	}
+	prefixes := make([]netip.Prefix, 0, len(raw))
+	for _, value := range raw {
+		prefixes = append(prefixes, netip.MustParsePrefix(value))
+	}
+	return prefixes
+}()
 
 func (m *downloadManager) restore() {
 	rows, err := m.server.db.QueryContext(m.ctx, `SELECT id,source_type,source,metainfo,status FROM download_jobs WHERE status IN ('metadata','waiting','queued','downloading','paused','importing') ORDER BY created_at`)
@@ -489,6 +523,7 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	started := time.Now()
 	results, err := m.bt.ImportTorrent(runtime.ctx, runtime.torrentID, requests)
 	if err != nil {
+		m.cleanupTorrentImport(requests)
 		m.fail(runtime.jobID, fmt.Errorf("导入种子文件: %w", err))
 		return
 	}
@@ -497,6 +532,7 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	for _, result := range results {
 		item, ok := paths[result.Index]
 		if !ok || result.Size != item.Size {
+			m.cleanupTorrentImport(requests)
 			m.fail(runtime.jobID, errors.New("种子导入结果不一致"))
 			return
 		}
@@ -510,6 +546,7 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	elapsed := max(time.Since(started), time.Millisecond)
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=?,import_speed=?,current_file='',updated_at=? WHERE id=? AND status='importing'`, imported, int64(float64(imported)/elapsed.Seconds()), time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	if err := m.commitImported(runtime.ctx, job, stored, len(job.Files) > 1); err != nil {
+		m.cleanupTorrentImport(requests)
 		m.fail(runtime.jobID, err)
 		return
 	}
@@ -523,6 +560,28 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	delete(m.jobs, runtime.jobID)
 	m.mu.Unlock()
 	m.server.log.Info("built-in torrent download imported", "job", job.ID, "name", job.Name, "files", len(stored), "size", job.SelectedSize)
+}
+
+func (m *downloadManager) cleanupTorrentImport(files []storage.TorrentImportFile) {
+	keys := make([]string, 0, len(files))
+	for _, file := range files {
+		if file.Key != "" {
+			keys = append(keys, file.Key)
+		}
+	}
+	for len(keys) > 0 {
+		batch := keys
+		if len(batch) > 1000 {
+			batch = keys[:1000]
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := m.server.storage.DeleteObjects(ctx, batch)
+		cancel()
+		if err != nil {
+			m.server.log.Warn("failed torrent import object cleanup failed", "objects", len(batch), "error", err)
+		}
+		keys = keys[len(batch):]
+	}
 }
 
 func (m *downloadManager) commitImported(ctx context.Context, job downloadJob, files []importedDownloadFile, multi bool) error {
@@ -744,7 +803,9 @@ func (m *downloadManager) cleanupLoop() {
 			}
 			rows.Close()
 			for _, id := range ids {
-				_ = m.remove(context.Background(), id)
+				cleanupCtx, cancel := context.WithTimeout(m.ctx, time.Minute)
+				_ = m.remove(cleanupCtx, id)
+				cancel()
 			}
 		}
 	}

@@ -587,7 +587,7 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), audioMergeTimeout)
+	ctx, cancel := context.WithTimeout(s.audioHLSCtx, audioMergeTimeout)
 	job := &audioMergeJob{
 		changed: s.jobs.Changed,
 		ID:      ids.New(), Status: "queued", Progress: 1, Message: "等待合并任务开始",
@@ -672,7 +672,9 @@ func (s *Server) audioMergeFinished(job *audioMergeJob, err error, profile audio
 		job.finish("done", "合并完成", "")
 		s.log.Info("audio merge completed", "job", job.ID, "file", job.OutputFileID, "format", profile.Format, "inputs", inputCount)
 	} else {
-		_, _ = s.db.ExecContext(context.Background(), `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, _ = s.db.ExecContext(cleanupCtx, `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
+		cancel()
 		if errors.Is(err, context.Canceled) {
 			job.finish("cancelled", "合并已取消", "")
 		} else if errors.Is(err, context.DeadlineExceeded) {

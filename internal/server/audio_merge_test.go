@@ -116,6 +116,7 @@ func TestAudioMergeOutputFormats(t *testing.T) {
 		t.Skip("ffprobe not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	a.srv.cfg.DataDir = t.TempDir()
 	first := a.readyFile(t, "01 耳语.wav", audioFixture(t, "wav", 440))
 	second := a.readyFile(t, "02 敲击.mp3", audioFixture(t, "mp3", 880))
@@ -232,6 +233,7 @@ func TestAudioMergeEmbedsMatchingWebVTT(t *testing.T) {
 		t.Skip("ffprobe not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	a.srv.cfg.DataDir = t.TempDir()
 	first := a.readyFile(t, "01 耳语.wav", audioFixture(t, "wav", 440))
 	second := a.readyFile(t, "02 敲击.wav", audioFixture(t, "wav", 880))
@@ -307,6 +309,7 @@ func TestAudioHLSFallbackStreamsAndCleansUp(t *testing.T) {
 		t.Skip("ffmpeg not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	a.srv.cfg.DataDir = t.TempDir()
 	first := a.readyFile(t, "01 耳语.wav", audioFixture(t, "wav", 440))
 	second := a.readyFile(t, "02 敲击.mp3", audioFixture(t, "mp3", 880))
@@ -374,6 +377,7 @@ func TestAudioMergeLosslessFormatsArePCMExact(t *testing.T) {
 		t.Skip("ffmpeg not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	a.srv.cfg.DataDir = t.TempDir()
 	firstData := audioFixture(t, "wav", 330)
 	secondData := audioFixture(t, "wav", 990)
@@ -435,6 +439,7 @@ func TestAudioMergeEmbedsAndServesCover(t *testing.T) {
 		t.Skip("ffmpeg not available")
 	}
 	a := newTestApp(t)
+	a.requireMediaEngine(t)
 	a.srv.cfg.DataDir = t.TempDir()
 	first := a.readyFile(t, "01 夜晚.wav", audioFixture(t, "wav", 280))
 	second := a.readyFile(t, "02 雨声.wav", audioFixture(t, "wav", 560))
