@@ -23,6 +23,7 @@ use tower_http::trace::TraceLayer;
 const PROTOCOL_VERSION: u16 = 1;
 
 mod archive;
+mod audio_fifo;
 mod bt;
 mod error;
 mod media;

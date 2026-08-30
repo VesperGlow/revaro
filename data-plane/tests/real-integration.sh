@@ -29,7 +29,7 @@ start_server() {
     S3_REGION="${S3_REGION:-us-east-1}" S3_ENDPOINT="$S3_ENDPOINT" S3_PUBLIC_ENDPOINT="$S3_ENDPOINT" \
     S3_ACCESS_KEY="$S3_ACCESS_KEY" S3_SECRET_KEY="$S3_SECRET_KEY" S3_BUCKET="$S3_BUCKET" \
     S3_PATH_STYLE="${S3_PATH_STYLE:-true}" S3_MULTIPART_STALE_SECONDS="${S3_MULTIPART_STALE_SECONDS:-0}" \
-    "$DATA_PLANE_BIN" >"$fixture_root/data-plane.log" 2>&1 &
+    "$DATA_PLANE_BIN" >>"$fixture_root/data-plane.log" 2>&1 &
   server_pid=$!
   for _ in $(seq 1 600); do
     curl -fsS -H "Authorization: Bearer $token" "http://$addr/v1/health" >/dev/null && return
@@ -54,15 +54,20 @@ ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=320x240:rate=25 \
 ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=320x240:rate=24 \
   -f lavfi -i sine=frequency=550:sample_rate=48000 -t 12 -c:v libx265 \
   -x265-params pools=1:frame-threads=1 -pix_fmt yuv420p -c:a aac "$fixture_root/hevc-aac.mp4"
+ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=320x240:rate=24 \
+  -f lavfi -i sine=frequency=660:sample_rate=44100 -t 24 -c:v libx265 \
+  -x265-params pools=1:frame-threads=1 -pix_fmt yuv420p -c:a flac "$fixture_root/hevc-flac.mkv"
 # Ten minutes at low resolution catches accumulated audio PTS drift cheaply.
 ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=160x90:rate=10 \
   -f lavfi -i sine=frequency=220:sample_rate=48000 -t 600 -c:v libvpx-vp9 -threads 1 -b:v 120k \
   -c:a libopus "$fixture_root/long-vp9-opus.webm"
 ffmpeg -hide_banner -loglevel error -f lavfi -i sine=duration=3:sample_rate=48000 -ac 1 "$work_root/mono.wav"
+ffmpeg -hide_banner -loglevel error -f lavfi -i sine=duration=4:sample_rate=44100 -ac 2 -c:a libmp3lame "$work_root/stereo.mp3"
 ffmpeg -hide_banner -loglevel error -f lavfi -i anullsrc=channel_layout=5.1:sample_rate=48000 -t 3 "$work_root/surround.wav"
+ffmpeg -hide_banner -loglevel error -f lavfi -i sine=duration=180:sample_rate=44100 -ac 1 "$work_root/long-mono.wav"
 
 mc alias set revaro-it "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null
-for name in h264-aac.mp4 vp9-opus.webm hevc-aac.mp4 long-vp9-opus.webm; do
+for name in h264-aac.mp4 vp9-opus.webm hevc-aac.mp4 hevc-flac.mkv long-vp9-opus.webm; do
   mc cp --quiet "$fixture_root/$name" "revaro-it/$S3_BUCKET/integration/$name"
 done
 start_server
@@ -76,12 +81,26 @@ assert_probe "$fixture_root/transcoded.mp4" '[.streams[].codec_name] == ["h264",
 request -d '{"key":"integration/hevc-aac.mp4","start_seconds":3,"include_audio":true,"transcode_video":true,"transcode_audio":false}' \
   "http://$addr/v1/media/fmp4" >"$fixture_root/hevc-transcoded.mp4"
 assert_probe "$fixture_root/hevc-transcoded.mp4" '[.streams[].codec_name] == ["h264","aac"] and (.format.start_time|tonumber) < 0.1'
+request -d '{"key":"integration/hevc-flac.mkv","start_seconds":7,"include_audio":true,"transcode_video":false,"transcode_audio":true}' \
+  "http://$addr/v1/media/fmp4" >"$fixture_root/hevc-flac-fmp4.mp4"
+assert_probe "$fixture_root/hevc-flac-fmp4.mp4" '[.streams[].codec_name] == ["hevc","aac"] and ((.streams[0].duration|tonumber)-(.streams[1].duration|tonumber)|fabs) < 0.1'
 request -d '{"key":"integration/long-vp9-opus.webm","start_seconds":300,"include_audio":true,"transcode_video":true,"transcode_audio":true}' \
   "http://$addr/v1/media/fmp4" >"$fixture_root/long.mp4"
 assert_probe "$fixture_root/long.mp4" '((.streams[0].duration|tonumber)-(.streams[1].duration|tonumber)|fabs) < 0.1'
 request -d "{\"key\":\"integration/vp9-opus.webm\",\"output_dir\":\"$work_root/hls-transcode\",\"start_seconds\":7}" \
   "http://$addr/v1/media/hls" >/dev/null
 assert_probe "$work_root/hls-transcode/index.m3u8" '[.streams[].codec_name] == ["h264","aac"] and (.format.start_time|tonumber) < 0.1'
+mkdir "$work_root/hls-hevc-flac"
+hevc_hls=$(request -d "{\"key\":\"integration/hevc-flac.mkv\",\"output_dir\":\"$work_root/hls-hevc-flac\",\"start_seconds\":7}" \
+  "http://$addr/v1/media/hls")
+hevc_hls_job=$(jq -er .job_id <<<"$hevc_hls")
+for _ in $(seq 1 400); do
+  status=$(request "http://$addr/v1/media/hls/$hevc_hls_job")
+  jq -e '.done == true' <<<"$status" >/dev/null && break
+  sleep .1
+done
+jq -e '.done == true and (.error == null)' <<<"$status" >/dev/null
+assert_probe "$work_root/hls-hevc-flac/index.m3u8" '[.streams[].codec_name] == ["h264","aac"] and (.format.duration|tonumber) > 12'
 
 # Production scheduling regression: the long transcode keeps the single heavy
 # permit, but startup returns after a playable prefix and probe uses a separate
@@ -108,6 +127,18 @@ assert_probe "$work_root/mono.m4a" 'any(.streams[]; .codec_name == "mov_text") a
 request -d "{\"inputs\":[\"$work_root/surround.wav\",\"$work_root/surround.wav\"],\"input_names\":[\"surround A.wav\",\"surround B.wav\"],\"output\":\"$work_root/surround.m4a\",\"format\":\"aac\"}" \
   "http://$addr/v1/media/audio/merge" >/dev/null
 assert_probe "$work_root/surround.m4a" '.streams[0].channels == 6 and .chapters[1].tags.title == "surround B.wav"'
+request -d "{\"inputs\":[\"$work_root/stereo.mp3\",\"$work_root/mono.wav\"],\"input_names\":[\"stereo 44.1k MP3\",\"mono 48k WAV\"],\"output\":\"$work_root/mixed-aac.m4a\",\"format\":\"aac\"}" \
+  "http://$addr/v1/media/audio/merge" >/dev/null
+assert_probe "$work_root/mixed-aac.m4a" '.streams[0].codec_name == "aac" and .streams[0].sample_rate == "48000" and .streams[0].channels == 2'
+request -d "{\"inputs\":[\"$work_root/mono.wav\",\"$work_root/mono.wav\"],\"input_names\":[\"mono A\",\"mono B\"],\"output\":\"$work_root/merged-alac.m4a\",\"format\":\"alac\"}" \
+  "http://$addr/v1/media/audio/merge" >/dev/null
+assert_probe "$work_root/merged-alac.m4a" '.streams[0].codec_name == "alac" and .streams[0].channels == 1'
+request -d "{\"inputs\":[\"$work_root/surround.wav\",\"$work_root/surround.wav\"],\"input_names\":[\"5.1 A\",\"5.1 B\"],\"output\":\"$work_root/merged-flac.flac\",\"format\":\"flac\"}" \
+  "http://$addr/v1/media/audio/merge" >/dev/null
+assert_probe "$work_root/merged-flac.flac" '.streams[0].codec_name == "flac" and .streams[0].channels == 6'
+request -d "{\"inputs\":[\"$work_root/long-mono.wav\",\"$work_root/long-mono.wav\"],\"input_names\":[\"long 44.1k WAV A\",\"long 44.1k WAV B\"],\"output\":\"$work_root/long-aac.m4a\",\"format\":\"aac\"}" \
+  "http://$addr/v1/media/audio/merge" >/dev/null
+assert_probe "$work_root/long-aac.m4a" '.streams[0].codec_name == "aac" and (.format.duration|tonumber) > 359.9'
 
 # Exercise streaming upload and exact S3 byte ranges independently of libav.
 head -c $((6 * 1024 * 1024)) /dev/urandom >"$fixture_root/s3-stream.bin"
@@ -158,6 +189,12 @@ start_server
 sleep .2
 if mc ls --incomplete "revaro-it/$S3_BUCKET/integration/" | grep -q orphan.bin; then
   echo 'stale multipart upload survived restart cleanup' >&2; exit 1
+fi
+
+if grep -Eqi 'more samples than frame size|Qavg: nan|unexpected EOF' "$fixture_root/data-plane.log"; then
+  echo 'audio encoder regression signature found in data-plane log' >&2
+  grep -Ei 'more samples than frame size|Qavg: nan|unexpected EOF' "$fixture_root/data-plane.log" >&2
+  exit 1
 fi
 
 echo "real data-plane integration fixtures passed ($fixture_root)"

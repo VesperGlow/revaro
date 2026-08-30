@@ -34,7 +34,7 @@ use tokio::{sync::mpsc, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::{AppState, error::ApiError};
+use crate::{AppState, audio_fifo::AudioFrameAccumulator, error::ApiError};
 
 #[derive(Deserialize)]
 pub struct ProbeRequest {
@@ -544,6 +544,7 @@ struct AudioEncode {
     input_time_base: Rational,
     start_pts: i64,
     initialized: bool,
+    accumulator: AudioFrameAccumulator,
 }
 
 impl AudioEncode {
@@ -557,6 +558,33 @@ impl AudioEncode {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    fn encode_accumulated(
+        &mut self,
+        output: &mut format::context::Output,
+        finishing: bool,
+    ) -> Result<(), String> {
+        while let Some(mut frame) = self.accumulator.next_frame(finishing)? {
+            frame.set_pts(Some(self.next_pts));
+            self.next_pts += frame.samples() as i64;
+            self.encoder.send_frame(&frame).map_err(|e| e.to_string())?;
+            self.drain(output)?;
+        }
+        Ok(())
+    }
+
+    fn resample_and_queue(
+        &mut self,
+        decoded: &frame::Audio,
+        output: &mut format::context::Output,
+    ) -> Result<(), String> {
+        let mut resampled = frame::Audio::empty();
+        self.resampler
+            .run(decoded, &mut resampled)
+            .map_err(|e| e.to_string())?;
+        self.accumulator.push(&resampled)?;
+        self.encode_accumulated(output, false)
     }
 
     fn send(
@@ -581,19 +609,7 @@ impl AudioEncode {
                 );
                 self.initialized = true;
             }
-            let mut resampled = frame::Audio::empty();
-            self.resampler
-                .run(&decoded, &mut resampled)
-                .map_err(|e| e.to_string())?;
-            if resampled.samples() == 0 {
-                continue;
-            }
-            resampled.set_pts(Some(self.next_pts));
-            self.next_pts += resampled.samples() as i64;
-            self.encoder
-                .send_frame(&resampled)
-                .map_err(|e| e.to_string())?;
-            self.drain(output)?;
+            self.resample_and_queue(&decoded, output)?;
         }
         Ok(())
     }
@@ -614,26 +630,16 @@ impl AudioEncode {
                 );
                 self.initialized = true;
             }
-            let mut resampled = frame::Audio::empty();
-            self.resampler
-                .run(&decoded, &mut resampled)
-                .map_err(|e| e.to_string())?;
-            if resampled.samples() == 0 {
-                continue;
-            }
-            resampled.set_pts(Some(self.next_pts));
-            self.next_pts += resampled.samples() as i64;
-            self.encoder
-                .send_frame(&resampled)
-                .map_err(|e| e.to_string())?;
-            self.drain(output)?;
+            self.resample_and_queue(&decoded, output)?;
         }
-        loop {
+        let mut resampler_drained = false;
+        for _ in 0..32 {
             let samples = self
                 .resampler
                 .delay()
-                .map(|delay| delay.output.max(1) as usize)
-                .unwrap_or_else(|| self.encoder.frame_size().max(1) as usize);
+                .map(|delay| delay.output.max(0) as usize)
+                .unwrap_or(0)
+                .saturating_add(self.accumulator.frame_size().max(32));
             let mut delayed = frame::Audio::new(
                 self.encoder.format(),
                 samples,
@@ -643,18 +649,20 @@ impl AudioEncode {
                 .resampler
                 .flush(&mut delayed)
                 .map_err(|e| e.to_string())?;
-            if delayed.samples() > 0 {
-                delayed.set_pts(Some(self.next_pts));
-                self.next_pts += delayed.samples() as i64;
-                self.encoder
-                    .send_frame(&delayed)
-                    .map_err(|e| e.to_string())?;
-                self.drain(output)?;
+            let produced = delayed.samples();
+            if produced > 0 {
+                self.accumulator.push(&delayed)?;
+                self.encode_accumulated(output, false)?;
             }
-            if remaining.is_none() {
+            if remaining.is_none() || produced == 0 {
+                resampler_drained = true;
                 break;
             }
         }
+        if !resampler_drained {
+            return Err("audio resampler did not drain within bounded iterations".into());
+        }
+        self.encode_accumulated(output, true)?;
         self.encoder.send_eof().map_err(|e| e.to_string())?;
         self.drain(output)
     }
@@ -864,6 +872,7 @@ fn setup_audio_encode(
         opened.rate(),
     )
     .map_err(|e| e.to_string())?;
+    let accumulator = AudioFrameAccumulator::new(&opened)?;
     Ok(AudioEncode {
         decoder,
         encoder: opened,
@@ -874,6 +883,7 @@ fn setup_audio_encode(
         input_time_base: stream.time_base(),
         start_pts: seconds_to_pts(start_seconds, stream.time_base()),
         initialized: false,
+        accumulator,
     })
 }
 

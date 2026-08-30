@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task;
 use tokio_util::sync::CancellationToken;
 
-use crate::{AppState, error::ApiError};
+use crate::{AppState, audio_fifo::AudioFrameAccumulator, error::ApiError};
 
 #[derive(Deserialize)]
 pub struct MergeRequest {
@@ -161,6 +161,7 @@ impl Drop for CancelOnDrop {
 
 struct AudioOutput {
     encoder: codec::encoder::Audio,
+    accumulator: AudioFrameAccumulator,
     time_base: Rational,
     next_pts: i64,
 }
@@ -174,6 +175,20 @@ impl AudioOutput {
             packet
                 .write_interleaved(output)
                 .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn encode_accumulated(
+        &mut self,
+        output: &mut format::context::Output,
+        finishing: bool,
+    ) -> Result<(), String> {
+        while let Some(mut frame) = self.accumulator.next_frame(finishing)? {
+            frame.set_pts(Some(self.next_pts));
+            self.next_pts += frame.samples() as i64;
+            self.encoder.send_frame(&frame).map_err(|e| e.to_string())?;
+            self.drain(output)?;
         }
         Ok(())
     }
@@ -291,8 +306,10 @@ fn merge_blocking(
     output
         .write_header()
         .map_err(|e| format!("write audio header: {e}"))?;
+    let accumulator = AudioFrameAccumulator::new(&opened)?;
     let mut target = AudioOutput {
         encoder: opened,
+        accumulator,
         time_base: output_time_base,
         next_pts: 0,
     };
@@ -332,6 +349,7 @@ fn merge_blocking(
             .map_err(|e| e.to_string())?;
         process_filtered(&mut graph, &mut target, &mut output)?;
     }
+    target.encode_accumulated(&mut output, true)?;
     target.encoder.send_eof().map_err(|e| e.to_string())?;
     target.drain(&mut output)?;
     output
@@ -655,13 +673,8 @@ fn process_filtered(
         .frame(&mut filtered)
         .is_ok()
     {
-        filtered.set_pts(Some(target.next_pts));
-        target.next_pts += filtered.samples() as i64;
-        target
-            .encoder
-            .send_frame(&filtered)
-            .map_err(|e| e.to_string())?;
-        target.drain(output)?;
+        target.accumulator.push(&filtered)?;
+        target.encode_accumulated(output, false)?;
     }
     Ok(())
 }
