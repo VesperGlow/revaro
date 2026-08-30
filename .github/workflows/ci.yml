@@ -65,10 +65,13 @@ jobs:
             cargo test --locked
           '
       - name: Audit Rust dependencies
-        uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: data-plane
+        working-directory: data-plane
+        # cargo-audit exits non-zero for vulnerabilities. Its default warning
+        # policy reports informational/unmaintained/unsound advisories without
+        # treating them as vulnerabilities; do not add `--deny warnings` here.
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --file Cargo.lock
 
   publish:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
