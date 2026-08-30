@@ -72,6 +72,15 @@ export function authoritativeSeekTarget(current:number,saved:number,userSeeked:b
   return Number.isFinite(current)&&current>0?current:Math.max(0,Number.isFinite(saved)?saved:0)
 }
 
+export function mediaElementTimelineTime(elementTime:number,mode:VideoPlaybackMode,offset:number):number{
+  if(!Number.isFinite(elementTime))return 0
+  return Math.max(0,elementTime+(mode==='direct'?0:Math.max(0,Number.isFinite(offset)?offset:0)))
+}
+
+export function shouldSyncMediaClock(starting:boolean,paused:boolean):boolean{
+  return !starting||!paused
+}
+
 export interface UnifiedVideoPlayer {
   readonly mode:VideoPlaybackMode
   readonly offset:number

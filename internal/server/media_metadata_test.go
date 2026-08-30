@@ -2,24 +2,62 @@ package server
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+	"encoding/json"
+	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/VesperGlow/revaro/internal/storage"
 )
 
-func TestMediaMetadataCacheRequiresCurrentProbeVersion(t *testing.T) {
+func TestLegacyMediaMetadataIsReprobedAndEmbeddedSubtitlesBecomePlayable(t *testing.T) {
 	app := newTestApp(t)
-	file := app.readyFile(t, "legacy.mkv", []byte("not media"))
-	_, err := app.srv.db.Exec(`INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, file.ID, 1234, "matroska", "hevc", "aac", 1, 1, 1, "[]", time.Now().UTC().Format(time.RFC3339Nano), "", "", 0, "[]", file.ETag, 0)
+	file := app.readyFile(t, "legacy.mkv", []byte("unchanged media object"))
+	_, err := app.srv.db.Exec(`INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, file.ID, 1234, "matroska", "hevc", "aac", 1920, 1080, 1, "[]", time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano), "24/1", "Main", 120, "[]", file.ETag, mediaProbeVersion-1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var duration int64
-	err = app.srv.db.QueryRow(`SELECT duration_ms FROM media_metadata WHERE file_id=? AND source_etag=? AND probe_version=?`, file.ID, file.ETag, mediaProbeVersion).Scan(&duration)
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("legacy probe cache unexpectedly reusable: duration=%d err=%v", duration, err)
+	var probes atomic.Int32
+	app.srv.probeMediaSource = func(context.Context, File) (storage.MediaProbe, error) {
+		probes.Add(1)
+		return storage.MediaProbe{DurationMS: 1234, Container: "matroska", VideoCodec: "hevc", AudioCodec: "aac", Width: 1920, Height: 1080, Subtitles: []storage.MediaSubtitle{
+			{Index: 2, Codec: "ass", Language: "chi", Title: "简体", Default: true},
+			{Index: 3, Codec: "ass"},
+		}}, nil
+	}
+
+	response := app.request(http.MethodGet, "/api/files/"+file.ID+"/video", nil, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy media info=%d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Subtitles []videoSubtitleResponse `json:"subtitles"`
+	}
+	payload = decode[struct {
+		Subtitles []videoSubtitleResponse `json:"subtitles"`
+	}](t, response)
+	if probes.Load() != 1 || len(payload.Subtitles) != 2 || payload.Subtitles[0].ID != "embedded-2" || payload.Subtitles[1].ID != "embedded-3" {
+		t.Fatalf("probes=%d subtitles=%+v", probes.Load(), payload.Subtitles)
+	}
+	var version int
+	var persisted string
+	if err := app.srv.db.QueryRow(`SELECT probe_version,subtitles_json FROM media_metadata WHERE file_id=?`, file.ID).Scan(&version, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	var tracks []embeddedSubtitle
+	if err := json.Unmarshal([]byte(persisted), &tracks); err != nil || version != mediaProbeVersion || len(tracks) != 2 {
+		t.Fatalf("updated metadata version=%d tracks=%+v err=%v", version, tracks, err)
+	}
+
+	cacheKey := "embedded-v1:" + file.ID + ":" + file.ETag + ":" + file.UpdatedAt + ":3"
+	ready := make(chan struct{})
+	close(ready)
+	app.srv.videoSubtitleCache[cacheKey] = &videoSubtitleCacheEntry{ready: ready, data: []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nlegacy ASS\n"), completedAt: time.Now()}
+	track := app.request(http.MethodGet, payload.Subtitles[1].URL, nil, true)
+	if track.Code != http.StatusOK || !strings.Contains(track.Body.String(), "legacy ASS") {
+		t.Fatalf("re-probed subtitle is not playable: %d %q", track.Code, track.Body.String())
 	}
 }
 

@@ -5,7 +5,7 @@ import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
 import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
-import { attachFMP4Stream, authoritativeSeekTarget, createUnifiedVideoPlayer, initialSubtitleIndex, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
@@ -47,6 +47,7 @@ let saveTimer=0
 let remoteSaveTimer=0
 let controlsTimer=0
 let volumeTimer=0
+let clockFrame=0
 let lastAudibleVolume=.9
 let directFallbackStarted=false
 let mseRecoveryStarted=false
@@ -270,13 +271,14 @@ async function startCompatibilityStream(start:number,autoplay=true,fallbackReaso
       const hlsPlayer=new Hls({enableWorker:true,lowLatencyMode:false,startFragPrefetch:false,backBufferLength:30,maxBufferLength:30,maxMaxBufferLength:60,maxBufferSize:64*1024*1024,maxBufferHole:.5,highBufferWatchdogPeriod:2,manifestLoadingTimeOut:15000,fragLoadingTimeOut:25000})
       hls=hlsPlayer;player=createUnifiedVideoPlayer('hls',el,response.start,()=>{hlsPlayer.destroy();if(hls===hlsPlayer)hls=null})
       player.setVolume(volume.value,muted.value)
-      hlsPlayer.on(Hls.Events.MEDIA_ATTACHED,()=>hlsPlayer.loadSource(response.playlist_url))
-      hlsPlayer.on(Hls.Events.MANIFEST_PARSED,()=>{el.currentTime=Math.max(0,start-response.start);starting.value=false;buffering.value=true;applySubtitle();console.info('[revaro] video playback mode=hls fallback=',fallbackReason);if(autoplayPending.value)void player?.play().catch(()=>{});showControls()})
-      hlsPlayer.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal){starting.value=false;buffering.value=false;error.value=`兼容视频流播放失败：${data.details||'未知错误'}`;showControls(true)}else if(String(data.details).includes('buffer'))buffering.value=true})
+      const currentSession=()=>generation===playbackGeneration&&hls===hlsPlayer
+      hlsPlayer.on(Hls.Events.MEDIA_ATTACHED,()=>{if(currentSession())hlsPlayer.loadSource(response.playlist_url)})
+      hlsPlayer.on(Hls.Events.MANIFEST_PARSED,()=>{if(!currentSession())return;el.currentTime=Math.max(0,start-response.start);starting.value=false;buffering.value=true;applySubtitle();console.info('[revaro] video playback mode=hls fallback=',fallbackReason);if(autoplayPending.value)void player?.play().catch(()=>{});showControls()})
+      hlsPlayer.on(Hls.Events.ERROR,(_event,data)=>{if(!currentSession())return;if(data.fatal){starting.value=false;buffering.value=false;error.value=`兼容视频流播放失败：${data.details||'未知错误'}`;showControls(true)}else if(String(data.details).includes('buffer'))buffering.value=true})
       hlsPlayer.attachMedia(el)
     }else if(el.canPlayType('application/vnd.apple.mpegurl')){
       const localStart=Math.max(0,start-response.start)
-      if(localStart>0)el.addEventListener('loadedmetadata',()=>{el.currentTime=localStart},{once:true})
+      if(localStart>0)el.addEventListener('loadedmetadata',()=>{if(generation===playbackGeneration)el.currentTime=localStart},{once:true})
       el.src=response.playlist_url;el.load();player=createUnifiedVideoPlayer('hls',el,response.start,()=>{el.pause();el.removeAttribute('src');el.load()});player.setVolume(volume.value,muted.value)
       starting.value=false;buffering.value=true;applySubtitle();console.info('[revaro] video playback mode=native-hls fallback=',fallbackReason);if(autoplayPending.value)void player.play().catch(()=>{});showControls()
     }else throw new Error('当前浏览器不支持 HLS 播放')
@@ -292,10 +294,25 @@ function onLoadedMetadata(){
   if(directMode.value){duration.value=Number.isFinite(el.duration)?el.duration:0;restoreDirectPosition()}
   applySubtitle()
 }
+function syncPlaybackClock(){
+  const el=video.value
+  if(!el||!shouldSyncMediaClock(starting.value,el.paused))return false
+  currentTime.value=mediaElementTimelineTime(el.currentTime,directMode.value?'direct':mseMode.value?'mse':'hls',streamOffset.value)
+  return true
+}
+function stopPlaybackClock(){window.cancelAnimationFrame(clockFrame);clockFrame=0}
+function runPlaybackClock(){
+  stopPlaybackClock()
+  const tick=()=>{
+    const el=video.value
+    if(!el||el.paused){clockFrame=0;return}
+    syncPlaybackClock()
+    clockFrame=window.requestAnimationFrame(tick)
+  }
+  clockFrame=window.requestAnimationFrame(tick)
+}
 function onTimeUpdate(){
-  const el=video.value;if(!el)return
-  if(starting.value)return
-  currentTime.value=(directMode.value?0:streamOffset.value)+el.currentTime
+  if(!syncPlaybackClock())return
   if(mseFreshFailures&&mseRecoveryAnchor>=0&&Math.abs(currentTime.value-mseRecoveryAnchor)>10){
     console.info('[revaro][mse] recovery streak cleared after playback advanced',{from:mseRecoveryAnchor,to:currentTime.value})
     mseFreshFailures=0;mseRecoveryAnchor=-1
@@ -338,8 +355,8 @@ function togglePlayback(){
   if(starting.value){autoplayPending.value=!autoplayPending.value;showControls(true);return}
   if(el.paused)void player?.play().catch(()=>{});else player?.pause()
 }
-function onPlay(){playing.value=true;buffering.value=false;showControls()}
-function onPause(){playing.value=false;if(starting.value)return;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
+function onPlay(){playing.value=true;buffering.value=false;runPlaybackClock();showControls()}
+function onPause(){playing.value=false;stopPlaybackClock();if(starting.value)return;syncPlaybackClock();window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true);showControls(true)}
 function showVolumeFeedback(){volumeFeedback.value=true;window.clearTimeout(volumeTimer);volumeTimer=window.setTimeout(()=>volumeFeedback.value=false,900);showControls(true)}
 function changeVolume(event:Event){const value=Math.max(0,Math.min(1,Number((event.target as HTMLInputElement).value)));volume.value=value;if(value>0)lastAudibleVolume=value;muted.value=value===0;localStorage.setItem(volumeKey,String(value));player?.setVolume(value,muted.value);showVolumeFeedback()}
 function toggleMute(){if(muted.value||volume.value===0){if(volume.value===0)volume.value=lastAudibleVolume;muted.value=false}else muted.value=true;player?.setVolume(volume.value,muted.value);showVolumeFeedback()}
@@ -380,7 +397,7 @@ onMounted(async()=>{
   else{await progressPromise;void startMSEStream(savedPosition(),true)}
 })
 onBeforeUnmount(()=>{
-  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);persistProgress(false);playbackGeneration++;disableSubtitleTracks()
+  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);stopPlaybackClock();persistProgress(false);playbackGeneration++;disableSubtitleTracks()
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const hlsSession=hlsSessionId;hlsSessionId='';const fmp4Session=fmp4SessionId;fmp4SessionId='';resetPlayback()
   releaseHLSSession(hlsSession);if(fmp4Session)void fetch(`/api/video/fmp4/${fmp4Session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})

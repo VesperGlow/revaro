@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"sync"
 	"time"
 
-	"github.com/VesperGlow/revaro/internal/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 type mediaAnalysisScheduler struct {
@@ -77,7 +78,8 @@ type probedMediaMetadata struct {
 	Subtitles    []embeddedSubtitle
 }
 
-const mediaProbeVersion = 1
+const mediaProbeVersion = 2
+const emptyMediaProbeTTL = 24 * time.Hour
 
 type embeddedSubtitle struct {
 	Index    int    `json:"index"`
@@ -120,19 +122,19 @@ func (s *Server) ensureMediaMetadata(ctx context.Context, f File) (probedMediaMe
 
 func (s *Server) probeMediaMetadata(ctx context.Context, f File) (probedMediaMetadata, error) {
 	var metadata probedMediaMetadata
-	var chaptersJSON, subtitlesJSON string
-	err := s.db.QueryRowContext(ctx, `SELECT duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,frame_rate,video_profile,video_level,subtitles_json FROM media_metadata WHERE file_id=? AND source_etag=? AND probe_version=?`, f.ID, f.ETag, mediaProbeVersion).
-		Scan(&metadata.DurationMS, &metadata.Container, &metadata.VideoCodec, &metadata.AudioCodec, &metadata.Width, &metadata.Height, &metadata.Bitrate, &chaptersJSON, &metadata.FrameRate, &metadata.VideoProfile, &metadata.VideoLevel, &subtitlesJSON)
+	var chaptersJSON, subtitlesJSON, analyzedAt string
+	err := s.db.QueryRowContext(ctx, `SELECT duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,frame_rate,video_profile,video_level,subtitles_json,analyzed_at FROM media_metadata WHERE file_id=? AND source_etag=? AND probe_version=?`, f.ID, f.ETag, mediaProbeVersion).
+		Scan(&metadata.DurationMS, &metadata.Container, &metadata.VideoCodec, &metadata.AudioCodec, &metadata.Width, &metadata.Height, &metadata.Bitrate, &chaptersJSON, &metadata.FrameRate, &metadata.VideoProfile, &metadata.VideoLevel, &subtitlesJSON, &analyzedAt)
 	if err == nil {
 		_ = json.Unmarshal([]byte(chaptersJSON), &metadata.Chapters)
 		_ = json.Unmarshal([]byte(subtitlesJSON), &metadata.Subtitles)
-		return metadata, nil
+		analyzed, parseErr := time.Parse(time.RFC3339Nano, analyzedAt)
+		if len(metadata.Subtitles) > 0 || parseErr == nil && time.Since(analyzed) < emptyMediaProbeTTL {
+			return metadata, nil
+		}
+		s.log.Info("refreshing empty media probe result", "file", f.ID, "analyzed_at", analyzedAt)
 	}
-	engine, ok := s.storage.(storage.MediaEngine)
-	if !ok {
-		return metadata, errors.New("Rust media engine is unavailable")
-	}
-	result, err := engine.ProbeMedia(ctx, f.objectKey)
+	result, err := s.probeMediaSource(ctx, f)
 	if err != nil {
 		return metadata, err
 	}
@@ -154,4 +156,27 @@ func (s *Server) probeMediaMetadata(ctx context.Context, f File) (probedMediaMet
 		s.log.Info("media metadata analyzed", "file", f.ID, "container", metadata.Container, "video_codec", metadata.VideoCodec, "audio_codec", metadata.AudioCodec, "duration_ms", metadata.DurationMS, "chapters", len(metadata.Chapters))
 	}
 	return metadata, err
+}
+
+func (s *Server) reanalyzeMedia(w http.ResponseWriter, r *http.Request) {
+	file, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || file.Kind != "file" || file.Status != "ready" || !isAudioSource(file) && !isVideoSource(file) {
+		problem(w, http.StatusNotFound, "ready media file not found")
+		return
+	}
+	// Drain any scheduled/in-flight analysis before invalidating the row. This
+	// prevents an older probe from racing the forced result and writing last.
+	_, _ = s.ensureMediaMetadata(r.Context(), file)
+	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM media_metadata WHERE file_id=?`, file.ID); err != nil {
+		problem(w, http.StatusInternalServerError, "could not invalidate media analysis")
+		return
+	}
+	s.mediaProbeGroup.Forget(file.ID)
+	s.clearVideoSubtitleCache(file.ID)
+	metadata, err := s.ensureMediaMetadata(r.Context(), file)
+	if err != nil {
+		problem(w, http.StatusUnprocessableEntity, "media re-analysis failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "subtitles": len(metadata.Subtitles)})
 }

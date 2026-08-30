@@ -9,7 +9,6 @@ import type { AudioChapter, AudioHLSResponse, AudioMediaResponse, AudioSubtitle 
 const props=defineProps<{item:DriveFile}>()
 const audio=ref<HTMLAudioElement|null>(null)
 const actionMenu=ref<HTMLDetailsElement|null>(null)
-const chapterList=ref<HTMLElement|null>(null)
 const subtitleList=ref<HTMLElement|null>(null)
 const media=ref<AudioMediaResponse|null>(null)
 const loading=ref(true)
@@ -25,7 +24,6 @@ const compatibilityStarting=ref(false)
 const hlsOffset=ref(0)
 const seekPreview=ref<number|null>(null)
 const seekHover=ref({visible:false,time:0,percent:0})
-const chapterScrollbar=ref({visible:false,top:0,height:0})
 const savedVolume=Number(localStorage.getItem('revaro-audio-volume')??0.85)
 const volume=ref(Number.isFinite(savedVolume)?Math.max(0,Math.min(1,savedVolume)):0.85)
 const muted=ref(localStorage.getItem('revaro-audio-muted')==='true')
@@ -38,7 +36,6 @@ let autoplayRequested=true
 let hls:HlsInstance|null=null
 let hlsSessionId=''
 let hlsGeneration=0
-let chapterResizeObserver:ResizeObserver|null=null
 let progressPromise:Promise<void>|null=null
 
 // Keep the initial source stable so chapter metadata arriving later does not
@@ -89,15 +86,9 @@ function formatTime(seconds:number){
   const value=Math.floor(seconds);const hours=Math.floor(value/3600);const minutes=Math.floor(value%3600/60);const secs=value%60
   return hours?`${hours}:${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}`:`${minutes}:${String(secs).padStart(2,'0')}`
 }
-function updateChapterScrollbar(){
-  const el=chapterList.value
-  if(!el)return
-  const visible=el.scrollHeight>el.clientHeight+1
-  const height=visible?Math.max(30,el.clientHeight*el.clientHeight/el.scrollHeight):0
-  const travel=Math.max(0,el.clientHeight-height)
-  const top=visible&&el.scrollHeight>el.clientHeight?el.scrollTop/(el.scrollHeight-el.clientHeight)*travel:0
-  const current=chapterScrollbar.value
-  if(current.visible!==visible||Math.abs(current.top-top)>.5||Math.abs(current.height-height)>.5)chapterScrollbar.value={visible,top,height}
+function revealCurrentChapter(){
+  if(!actionMenu.value?.open)return
+  void nextTick().then(()=>actionMenu.value?.querySelector<HTMLElement>(`[data-chapter-index="${currentChapterIndex.value}"]`)?.scrollIntoView({block:'nearest'}))
 }
 async function togglePlayback(){
   if(!audio.value||compatibilityStarting.value)return
@@ -250,25 +241,17 @@ onMounted(()=>{
   progressPromise=loadProgress()
   applyVolume();audio.value?.load();void audio.value?.play().catch(()=>{})
   void api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`).then(value=>{media.value=value;restorePosition()}).catch(()=>{/* 普通音频继续走原始 Range 预览 */})
-  void nextTick().then(()=>{
-    updateChapterScrollbar()
-    if(chapterList.value&&'ResizeObserver' in window){chapterResizeObserver=new ResizeObserver(updateChapterScrollbar);chapterResizeObserver.observe(chapterList.value)}
-  })
   document.addEventListener('pointerdown',closeActionMenuFromOutside)
   document.addEventListener('keydown',closeActionMenuFromEscape)
 })
-watch(()=>chapters.value.length,()=>void nextTick().then(updateChapterScrollbar))
-watch(currentChapterIndex,index=>void nextTick().then(()=>{
-  chapterList.value?.querySelector<HTMLElement>(`[data-chapter-index="${index}"]`)?.scrollIntoView({block:'nearest'})
-  updateChapterScrollbar()
-}))
+watch(currentChapterIndex,revealCurrentChapter)
 watch(subtitleFocusIndex,index=>{
   if(index<0)return
   void nextTick().then(()=>subtitleList.value?.querySelector<HTMLElement>(`[data-subtitle-index="${index}"]`)?.scrollIntoView({behavior:'smooth',block:'center'}))
 })
 onBeforeUnmount(()=>{
   document.removeEventListener('pointerdown',closeActionMenuFromOutside);document.removeEventListener('keydown',closeActionMenuFromEscape)
-  window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);persistProgress(false);chapterResizeObserver?.disconnect();hlsGeneration++
+  window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);persistProgress(false);hlsGeneration++
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const session=hlsSessionId;hlsSessionId='';resetLocalHLS()
   if(session)void fetch(`/api/audio/hls/${session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
@@ -313,22 +296,11 @@ onBeforeUnmount(()=>{
             <button class="audio-play" :disabled="loading||compatibilityStarting" :title="playing?'暂停':'播放'" :aria-label="playing?'暂停':'播放'" @click="togglePlayback"><span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path v-if="playing" d="M8 6v12M16 6v12"/><path v-else class="play-shape" d="m9 6 9 6-9 6Z"/></svg></button>
             <button title="下一节" aria-label="下一节" :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l10 6-10 6Z"/></svg></button>
           </div>
-          <div class="audio-option-end"><div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div><details ref="actionMenu" class="audio-action-menu audio-chapter-menu"><summary aria-label="章节菜单"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></summary><div role="menu"><button v-for="(chapter,index) in chapters" :key="chapter.id" :class="{active:index===currentChapterIndex}" role="menuitem" @click="actionMenu?.removeAttribute('open');seek(chapter.start,true)"><b>{{ index+1 }}</b><span><strong>{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }}</small></span></button></div></details></div>
+          <div class="audio-option-end"><div class="audio-volume"><button type="button" :title="muted?'取消静音':'静音'" :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path v-if="muted||volume===0" d="m17 9 5 6m0-6-5 6"/><path v-else-if="volume<.5" d="M17 9.5a4 4 0 0 1 0 5"/><path v-else d="M17 8a6 6 0 0 1 0 8m2.5-10.5a9 9 0 0 1 0 13"/></svg></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><span>{{ muted?0:Math.round(volume*100) }}%</span></div><details ref="actionMenu" class="audio-action-menu audio-chapter-menu" @toggle="revealCurrentChapter"><summary aria-label="章节菜单"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></summary><div role="menu"><button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :class="{active:index===currentChapterIndex}" role="menuitem" @click="actionMenu?.removeAttribute('open');seek(chapter.start,true)"><b>{{ index+1 }}</b><span><strong>{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }}</small></span></button></div></details></div>
         </div>
         <p v-if="error" class="audio-player-error">{{ error }}</p>
         <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @ended="onEnded" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
       </section>
     </main>
-    <aside class="audio-chapters">
-      <header><div><strong>分节</strong><small>保留合并前的文件名</small></div><span>{{ chapters.length }} 节</span></header>
-      <div class="audio-chapter-scroll-area">
-        <div ref="chapterList" class="audio-chapter-list" @scroll.passive="updateChapterScrollbar">
-          <button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :class="{active:index===currentChapterIndex}" @click="seek(chapter.start,true)">
-            <b>{{ index+1 }}</b><span><strong :title="chapter.title">{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }} · {{ formatTime(Math.max(0,chapter.end-chapter.start)) }}</small></span><i><span v-if="index===currentChapterIndex&&playing" class="chapter-equalizer"><b></b><b></b><b></b></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></i>
-          </button>
-        </div>
-        <span v-if="chapterScrollbar.visible" class="audio-chapter-scrollbar" :style="{height:`${chapterScrollbar.height}px`,transform:`translateY(${chapterScrollbar.top}px)`}" aria-hidden="true"></span>
-      </div>
-    </aside>
   </div>
 </template>

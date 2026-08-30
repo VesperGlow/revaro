@@ -57,6 +57,17 @@ type videoSubtitleCacheEntry struct {
 	completedAt time.Time
 }
 
+func (s *Server) clearVideoSubtitleCache(fileID string) {
+	s.videoSubtitleMu.Lock()
+	defer s.videoSubtitleMu.Unlock()
+	for key, entry := range s.videoSubtitleCache {
+		if strings.Contains(key, ":"+fileID+":") && !entry.completedAt.IsZero() {
+			s.videoSubtitleBytes -= int64(len(entry.data))
+			delete(s.videoSubtitleCache, key)
+		}
+	}
+}
+
 // cachedVideoSubtitle keeps conversion work independent from the lifetime of
 // the browser's <track> request. HLS media attachment can legitimately replace
 // the video element and cancel that request; the FFmpeg conversion should still

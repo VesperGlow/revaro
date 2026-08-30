@@ -76,6 +76,7 @@ type Server struct {
 	videoSubtitleBytes int64
 	mediaAnalysis      *mediaAnalysisScheduler
 	mediaProbeGroup    singleflight.Group
+	probeMediaSource   func(context.Context, File) (storage.MediaProbe, error)
 	archiveSlots       chan struct{}
 	archiveMu          sync.RWMutex
 	archiveJobs        map[string]*archiveJob
@@ -126,6 +127,13 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		mediaAnalysis:      newMediaAnalysisScheduler(2),
 		archiveSlots:       make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
+	}
+	s.probeMediaSource = func(ctx context.Context, file File) (storage.MediaProbe, error) {
+		engine, ok := s.storage.(storage.MediaEngine)
+		if !ok {
+			return storage.MediaProbe{}, errors.New("Rust media engine is unavailable")
+		}
+		return engine.ProbeMedia(ctx, file.objectKey)
 	}
 	if cfg.BTEnabled {
 		manager, err := newDownloadManager(s)
@@ -283,6 +291,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/audio/hls/{session}/{asset}", s.audioHLSAsset)
 			r.Delete("/audio/hls/{session}", s.stopAudioHLS)
 			r.Get("/files/{id}/video", s.videoMediaInfo)
+			r.Post("/files/{id}/media/reanalyze", s.reanalyzeMedia)
 			r.Get("/files/{id}/video/subtitles/{subtitle}", s.videoSubtitle)
 			r.Get("/files/{id}/video/fmp4", s.videoFMP4Metadata)
 			r.Post("/files/{id}/video/fmp4", s.startVideoFMP4)

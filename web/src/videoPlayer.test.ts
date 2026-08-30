@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, initialSubtitleIndex, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldHideVideoCursor, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,video_codec:videoCodec,audio_codec:audioCodec,
@@ -122,6 +122,25 @@ describe('video seek authority',()=>{
   it('uses resume progress only before the first explicit seek',()=>{
     expect(authoritativeSeekTarget(0,86,false)).toBe(86)
     expect(authoritativeSeekTarget(80,86,false)).toBe(80)
+  })
+})
+
+describe('authoritative media element clock',()=>{
+  it('tracks continuous direct, MSE, and HLS playback from the element',()=>{
+    expect(mediaElementTimelineTime(12.25,'direct',0)).toBe(12.25)
+    expect(mediaElementTimelineTime(2.25,'mse',10)).toBe(12.25)
+    expect(mediaElementTimelineTime(2.25,'hls',10)).toBe(12.25)
+  })
+  it.each([
+    ['short seek',80,0,80],['long seek',2,0,2],['seek to zero',0,0,0],
+    ['MSE recreation',1.5,120,121.5],['repeated restart seek',.5,4,4.5],['continued playback',19,4,23],
+  ])('%s converges to the current element timeline',(_name,elementTime,offset,want)=>{
+    expect(mediaElementTimelineTime(elementTime,'mse',offset)).toBe(want)
+  })
+  it('suppresses only paused teardown events, never an actively playing clock',()=>{
+    expect(shouldSyncMediaClock(true,true)).toBe(false)
+    expect(shouldSyncMediaClock(true,false)).toBe(true)
+    expect(shouldSyncMediaClock(false,true)).toBe(true)
   })
 })
 
