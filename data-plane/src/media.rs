@@ -775,12 +775,17 @@ fn setup_video_encode(
     unsafe {
         (*context.as_mut_ptr()).profile = ffmpeg::ffi::FF_PROFILE_H264_HIGH;
     }
-    // Keep encoder threading explicitly bounded: media-level semaphores cap
-    // concurrent jobs and each encoder uses one worker thread.
-    context.set_threading(codec::threading::Config {
+    // FFmpeg 5 bindings still expose `safe` while FFmpeg 6+ removed it.
+    // Default fills version-specific fields without referring to either ABI;
+    // newer bindings make the update syntactically redundant, hence the
+    // narrowly scoped lint allowance.
+    #[allow(clippy::needless_update)]
+    let threading = codec::threading::Config {
         kind: codec::threading::Type::Frame,
         count: 1,
-    });
+        ..Default::default()
+    };
+    context.set_threading(threading);
     if global_header {
         context.set_flags(codec::Flags::GLOBAL_HEADER);
     }

@@ -1,4 +1,4 @@
-# revaro
+# Revaro 1.0.0
 
 revaro 是一个轻量、单用户、自托管的私人 S3 网盘。SQLite 是逻辑文件系统和 metadata source of truth；每个逻辑文件在 S3 中对应一个 `blobs/<随机 UUID>` 不透明完整对象，真实文件名、目录和回收站位置不会进入 Object Key。浏览器通过短效 Presigned URL 直接上传、下载和 Range 预览，Go 服务只处理认证、元数据与 S3 控制面。服务端还内置 BT/直链离线下载、EPUB/TXT 阅读器、音视频播放器、字幕、播放进度、在线解压、缩略图和文本编辑器。
 
@@ -45,7 +45,7 @@ podman compose up -d
 docker pull ghcr.io/vesperglow/revaro:latest
 ```
 
-每次 `main` 更新会发布 `latest` 和完整 commit SHA 标签；`v*` Git tag 还会发布对应版本标签。若 GHCR Package 尚未设为 Public，请先登录 GHCR，或在 GitHub Package 设置中将其改为公开。
+每次 `main` 更新会发布 `latest`；语义化版本 Git tag 会同时发布完整、次要和主版本镜像标签。例如 `v1.0.0` 会发布 `1.0.0`、`1.0`、`1` 和 `latest`。若 GHCR Package 尚未设为 Public，请先登录 GHCR，或在 GitHub Package 设置中将其改为公开。
 
 生产环境应将 `APP_BASE_URL` 改为实际 HTTPS 地址（`COOKIE_SECURE` 会据此自动启用），使用高熵密码，并将 Bucket CORS 的来源改为同一个 HTTPS Origin。Compose 的 Web 管理端口默认只监听 `127.0.0.1`，应通过同机 HTTPS 反向代理对外提供服务；自带 MinIO 主要用于单机部署和本地体验，也可以删除 `minio` / `minio-init` 服务并指向已有 S3-compatible 存储。
 
