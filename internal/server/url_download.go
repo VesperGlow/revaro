@@ -190,7 +190,14 @@ func (m *downloadManager) startURLDownload(jobID string) {
 	runtime := &urlDownloadRuntime{ctx: ctx, cancel: cancel}
 	m.urlJobs[jobID] = runtime
 	m.urlMu.Unlock()
-	go m.runURLDownload(jobID, runtime)
+	if !m.runBackground(func() { m.runURLDownload(jobID, runtime) }) {
+		m.urlMu.Lock()
+		if m.urlJobs[jobID] == runtime {
+			delete(m.urlJobs, jobID)
+		}
+		m.urlMu.Unlock()
+		cancel()
+	}
 }
 
 func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRuntime) {

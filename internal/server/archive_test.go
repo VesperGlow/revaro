@@ -2,12 +2,53 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
+
+func TestCancelArchiveDoesNotRemoveActiveWorkerWorkspace(t *testing.T) {
+	app := newTestApp(t)
+	workspace := filepath.Join(t.TempDir(), "active")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jobCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	job := &archiveJob{ID: "active-job", FileID: "file", Status: "extracting", cancel: cancel}
+	job.setStaged(workspace, filepath.Join(workspace, "source.archive"))
+	app.srv.archiveJobs[job.ID] = job
+
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", job.ID)
+	req := httptest.NewRequest(http.MethodDelete, "/api/archive-jobs/"+job.ID, nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
+	rr := httptest.NewRecorder()
+	app.srv.cancelArchiveExtract(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("cancel status=%d", rr.Code)
+	}
+	if _, err := os.Stat(workspace); err != nil {
+		t.Fatalf("active worker workspace was removed by handler: %v", err)
+	}
+	if snapshot := job.snapshot(); archiveJobTerminal(snapshot.Status) || snapshot.Message != "正在取消解压任务" {
+		t.Fatalf("active cancelled job became removable too early: status=%q message=%q", snapshot.Status, snapshot.Message)
+	}
+	select {
+	case <-jobCtx.Done():
+	default:
+		t.Fatal("active worker context was not cancelled")
+	}
+}
 
 func TestArchiveNamesAndPaths(t *testing.T) {
 	for _, name := range []string{"backup.zip", "movie.7z", "files.rar", "source.tar.gz", "source.tar.xz", "source.tzst"} {

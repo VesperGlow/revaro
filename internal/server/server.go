@@ -81,6 +81,9 @@ type Server struct {
 	archiveJobs        map[string]*archiveJob
 	downloads          *downloadManager
 	jobs               *JobManager
+	lifecycleMu        sync.Mutex
+	lifecycleClosing   bool
+	lifecycleWG        sync.WaitGroup
 }
 
 type File struct {
@@ -155,24 +158,48 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 			}
 		}
 	}
-	go s.cleanupAudioHLSSessions()
-	go s.cleanupVideoHLSSessions()
-	go s.cleanupVideoFMP4Sessions()
-	go s.cleanupArchiveJobs()
+	s.runBackground(s.cleanupAudioHLSSessions)
+	s.runBackground(s.cleanupVideoHLSSessions)
+	s.runBackground(s.cleanupVideoFMP4Sessions)
+	s.runBackground(s.cleanupArchiveJobs)
 	return s
 }
 
-// Close stops transient playback transcoders and removes their temporary HLS
-// segments. Persisted files and merge jobs are not affected.
+// runBackground makes the Server the owner of every goroutine that may touch
+// its database, storage client, or in-memory registries. Once shutdown starts,
+// no new work is admitted and Close can safely wait before callers tear those
+// dependencies down.
+func (s *Server) runBackground(work func()) bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.lifecycleClosing {
+		return false
+	}
+	s.lifecycleWG.Add(1)
+	go func() {
+		defer s.lifecycleWG.Done()
+		work()
+	}()
+	return true
+}
+
+// Close cancels all Server-owned work, waits for it to stop touching shared
+// dependencies, and then removes transient staging resources.
 func (s *Server) Close() {
+	s.lifecycleMu.Lock()
+	s.lifecycleClosing = true
+	s.lifecycleMu.Unlock()
+	if s.audioHLSCancel != nil {
+		s.audioHLSCancel()
+	}
 	if s.jobs != nil {
 		s.jobs.Close()
 	}
 	if s.downloads != nil {
 		s.downloads.Close()
 	}
-	if s.audioHLSCancel != nil {
-		s.audioHLSCancel()
+	if s.mediaAnalysis != nil {
+		s.mediaAnalysis.close()
 	}
 	s.audioHLSMu.Lock()
 	sessions := make([]*audioHLSSession, 0, len(s.audioHLSSessions))
@@ -204,6 +231,7 @@ func (s *Server) Close() {
 	for _, session := range fmp4Sessions {
 		session.destroy()
 	}
+	s.lifecycleWG.Wait()
 	s.archiveMu.RLock()
 	archiveJobs := make([]*archiveJob, 0, len(s.archiveJobs))
 	for _, job := range s.archiveJobs {

@@ -86,7 +86,7 @@ func (s *Server) cachedVideoSubtitle(ctx context.Context, key string, convert fu
 		}
 		entry = &videoSubtitleCacheEntry{ready: make(chan struct{})}
 		s.videoSubtitleCache[key] = entry
-		go func() {
+		started := s.runBackground(func() {
 			workCtx, cancel := context.WithTimeout(s.audioHLSCtx, 10*time.Minute)
 			defer cancel()
 			data, err := convert(workCtx)
@@ -117,7 +117,12 @@ func (s *Server) cachedVideoSubtitle(ctx context.Context, key string, convert fu
 			}
 			close(entry.ready)
 			s.videoSubtitleMu.Unlock()
-		}()
+		})
+		if !started {
+			entry.err, entry.completedAt = context.Canceled, time.Now()
+			delete(s.videoSubtitleCache, key)
+			close(entry.ready)
+		}
 	}
 	s.videoSubtitleMu.Unlock()
 	select {

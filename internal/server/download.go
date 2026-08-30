@@ -33,11 +33,14 @@ type downloadManager struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu       sync.RWMutex
-	jobs     map[string]*downloadRuntime
-	urlMu    sync.Mutex
-	urlJobs  map[string]*urlDownloadRuntime
-	urlSlots chan struct{}
+	mu               sync.RWMutex
+	jobs             map[string]*downloadRuntime
+	urlMu            sync.Mutex
+	urlJobs          map[string]*urlDownloadRuntime
+	urlSlots         chan struct{}
+	lifecycleMu      sync.Mutex
+	lifecycleClosing bool
+	lifecycleWG      sync.WaitGroup
 }
 
 type downloadRuntime struct {
@@ -90,14 +93,31 @@ func newDownloadManager(s *Server) (*downloadManager, error) {
 		ctx: ctx, cancel: cancel, jobs: make(map[string]*downloadRuntime),
 		urlJobs: make(map[string]*urlDownloadRuntime), urlSlots: make(chan struct{}, 2),
 	}
-	go m.restore()
-	go m.restoreURLDownloads()
-	go m.cleanupLoop()
-	go m.cleanupURLLoop()
+	m.runBackground(m.restore)
+	m.runBackground(m.restoreURLDownloads)
+	m.runBackground(m.cleanupLoop)
+	m.runBackground(m.cleanupURLLoop)
 	return m, nil
 }
 
+func (m *downloadManager) runBackground(work func()) bool {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.lifecycleClosing {
+		return false
+	}
+	m.lifecycleWG.Add(1)
+	go func() {
+		defer m.lifecycleWG.Done()
+		work()
+	}()
+	return true
+}
+
 func (m *downloadManager) Close() {
+	m.lifecycleMu.Lock()
+	m.lifecycleClosing = true
+	m.lifecycleMu.Unlock()
 	m.cancel()
 	m.mu.Lock()
 	for _, runtime := range m.jobs {
@@ -113,6 +133,7 @@ func (m *downloadManager) Close() {
 	}
 	m.urlJobs = make(map[string]*urlDownloadRuntime)
 	m.urlMu.Unlock()
+	m.lifecycleWG.Wait()
 }
 
 func publicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -223,7 +244,9 @@ func (m *downloadManager) attach(jobID, sourceType, source string, encodedMeta [
 	case "paused":
 		m.setStatus(jobID, "paused", "")
 	case "importing":
-		go m.importRuntime(runtime)
+		if !m.runBackground(func() { m.importRuntime(runtime) }) {
+			cancel()
+		}
 	default:
 		m.setStatus(jobID, "waiting", "")
 	}
@@ -411,7 +434,12 @@ func (m *downloadManager) startRuntime(runtime *downloadRuntime) error {
 		return err
 	}
 	m.setStatus(runtime.jobID, "downloading", "")
-	go m.monitor(runtime)
+	if !m.runBackground(func() { m.monitor(runtime) }) {
+		runtime.mu.Lock()
+		runtime.starting = false
+		runtime.mu.Unlock()
+		return context.Canceled
+	}
 	return nil
 }
 
@@ -475,7 +503,9 @@ func (m *downloadManager) monitor(runtime *downloadRuntime) {
 			if stats.Finished && job.SelectedSize > 0 {
 				_ = m.bt.PauseTorrent(runtime.ctx, runtime.torrentID)
 				_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET status='importing',download_speed=0,peers=0,imported_size=0,import_speed=0,current_file='',error='',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), runtime.jobID)
-				go m.importRuntime(runtime)
+				if !m.runBackground(func() { m.importRuntime(runtime) }) {
+					return
+				}
 				return
 			}
 		}

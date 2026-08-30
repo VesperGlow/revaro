@@ -624,7 +624,11 @@ func (s *Server) completeLocalAudioMerge(w http.ResponseWriter, r *http.Request)
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
 	job.releaseUploadSlot(s)
-	go s.runLocalAudioMerge(job)
+	if !s.runBackground(func() { s.runLocalAudioMerge(job) }) {
+		s.abortLocalMergeUpload(job, "服务正在关闭")
+		problem(w, http.StatusServiceUnavailable, "service is shutting down")
+		return
+	}
 	writeJSON(w, http.StatusOK, job.snapshot())
 }
 

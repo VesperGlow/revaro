@@ -58,6 +58,37 @@ func TestLoginLimiterHasBoundedState(t *testing.T) {
 	}
 }
 
+func TestServerCloseWaitsForOwnedWorkAndRejectsNewWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Server{
+		audioHLSCtx: ctx, audioHLSCancel: cancel,
+		jobs:              NewJobManager(),
+		audioHLSSessions:  make(map[string]*audioHLSSession),
+		videoHLSSessions:  make(map[string]*videoHLSSession),
+		videoFMP4Sessions: make(map[string]*videoFMP4Session),
+		archiveJobs:       make(map[string]*archiveJob),
+	}
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	if !s.runBackground(func() {
+		close(started)
+		<-ctx.Done()
+		close(finished)
+	}) {
+		t.Fatal("background work was rejected before shutdown")
+	}
+	<-started
+	s.Close()
+	select {
+	case <-finished:
+	default:
+		t.Fatal("Close returned before owned work exited")
+	}
+	if s.runBackground(func() {}) {
+		t.Fatal("background work was admitted after shutdown")
+	}
+}
+
 // notFoundError emulates the S3 NoSuchKey API error the real store returns.
 func notFoundError() error {
 	return storage.ErrNotFound

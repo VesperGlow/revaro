@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -87,6 +88,12 @@ func main() {
 	log.Info("S3 connection ready", "bucket", cfg.S3Bucket, "provider", provider, "proxy_transfers", cfg.ProxyTransfers)
 	app := server.New(db, store, authService, cfg, log)
 	defer app.Close()
+	backgroundCtx, backgroundCancel := context.WithCancel(ctx)
+	var backgroundWG sync.WaitGroup
+	defer func() {
+		backgroundCancel()
+		backgroundWG.Wait()
+	}()
 	gcRequests := make(chan struct{}, 1)
 	requestGC := func() {
 		select {
@@ -94,7 +101,9 @@ func main() {
 		default: // a pending request already guarantees another pass
 		}
 	}
+	backgroundWG.Add(1)
 	go func() {
+		defer backgroundWG.Done()
 		var ticker *time.Ticker
 		var ticks <-chan time.Time
 		if cfg.GCInterval > 0 {
@@ -104,21 +113,21 @@ func main() {
 		}
 		for {
 			select {
-			case <-ctx.Done():
+			case <-backgroundCtx.Done():
 				return
 			case <-ticks:
-				gcCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+				gcCtx, cancel := context.WithTimeout(backgroundCtx, 10*time.Minute)
 				app.CollectGarbage(gcCtx)
 				cancel()
 			case <-gcRequests:
-				gcCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+				gcCtx, cancel := context.WithTimeout(backgroundCtx, 10*time.Minute)
 				app.CollectGarbage(gcCtx)
 				cancel()
 			}
 		}
 	}()
 	runHousekeeping := func() {
-		housekeepingCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		housekeepingCtx, cancel := context.WithTimeout(backgroundCtx, 5*time.Minute)
 		defer cancel()
 		app.CleanupExpiredUploads(housekeepingCtx)
 		app.CleanupExpiredLocalMerges(housekeepingCtx)
@@ -133,12 +142,14 @@ func main() {
 	if cfg.GCInterval > 0 {
 		requestGC() // one initial pass, then the configured interval
 	}
+	backgroundWG.Add(1)
 	go func() {
+		defer backgroundWG.Done()
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-backgroundCtx.Done():
 				return
 			case <-ticker.C:
 				runHousekeeping()

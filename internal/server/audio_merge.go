@@ -597,7 +597,15 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 	s.audioMergeMu.Lock()
 	s.audioMergeJobs[job.ID] = job
 	s.audioMergeMu.Unlock()
-	go s.runAudioMerge(ctx, job, inputs, subtitles, profile, cover)
+	if !s.runBackground(func() { s.runAudioMerge(ctx, job, inputs, subtitles, profile, cover) }) {
+		cancel()
+		s.audioMergeFinished(job, context.Canceled, profile, len(inputs))
+		s.audioMergeMu.Lock()
+		delete(s.audioMergeJobs, job.ID)
+		s.audioMergeMu.Unlock()
+		problem(w, http.StatusServiceUnavailable, "service is shutting down")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
 
@@ -691,7 +699,18 @@ func (s *Server) audioMergeFinished(job *audioMergeJob, err error, profile audio
 	}
 	job.cleanupStaging(s.log)
 	job.releaseUploadSlot(s)
-	time.AfterFunc(6*time.Hour, func() {
+	s.scheduleAudioMergeRemoval(job, 6*time.Hour)
+}
+
+func (s *Server) scheduleAudioMergeRemoval(job *audioMergeJob, after time.Duration) bool {
+	return s.runBackground(func() {
+		timer := time.NewTimer(after)
+		defer timer.Stop()
+		select {
+		case <-s.audioHLSCtx.Done():
+			return
+		case <-timer.C:
+		}
 		s.audioMergeMu.Lock()
 		delete(s.audioMergeJobs, job.ID)
 		s.audioMergeMu.Unlock()

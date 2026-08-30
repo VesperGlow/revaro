@@ -125,7 +125,11 @@ func (s *Server) startAudioHLS(w http.ResponseWriter, r *http.Request) {
 	s.audioHLSMu.Lock()
 	s.audioHLSSessions[session.ID] = session
 	s.audioHLSMu.Unlock()
-	go s.runAudioHLS(ctx, f, session)
+	if !s.runBackground(func() { s.runAudioHLS(ctx, f, session) }) {
+		s.removeAudioHLSSession(session.ID)
+		problem(w, http.StatusServiceUnavailable, "service is shutting down")
+		return
+	}
 
 	if err := waitForAudioHLS(r.Context(), session); err != nil {
 		s.removeAudioHLSSession(session.ID)

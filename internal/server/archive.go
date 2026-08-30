@@ -184,7 +184,15 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	s.archiveMu.Unlock()
 	jobCtx, jobCancel := context.WithCancel(s.audioHLSCtx)
 	job.cancel = jobCancel
-	go s.runArchiveExtract(jobCtx, f, parentID, job, "")
+	if !s.runBackground(func() { s.runArchiveExtract(jobCtx, f, parentID, job, "") }) {
+		jobCancel()
+		job.fail("service is shutting down")
+		s.archiveMu.Lock()
+		delete(s.archiveJobs, job.ID)
+		s.archiveMu.Unlock()
+		problem(w, http.StatusServiceUnavailable, "service is shutting down")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
 
@@ -218,7 +226,12 @@ func (s *Server) resumeArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	jobCtx, jobCancel := context.WithCancel(s.audioHLSCtx)
 	job.cancel = jobCancel
-	go s.runArchiveExtract(jobCtx, f, job.ParentID, job, in.Password)
+	if !s.runBackground(func() { s.runArchiveExtract(jobCtx, f, job.ParentID, job, in.Password) }) {
+		jobCancel()
+		job.fail("service is shutting down")
+		problem(w, http.StatusServiceUnavailable, "service is shutting down")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
 
@@ -374,10 +387,14 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 	job.setStaged(expectedRoot, filepath.Join(expectedRoot, "source.archive"))
 	job.update("checking", 2, "正在准备压缩包")
 	pollCtx, pollCancel := context.WithCancel(ctx)
-	defer pollCancel()
-	go s.pollArchiveProgress(pollCtx, job, extractor, f.Size)
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		s.pollArchiveProgress(pollCtx, job, extractor, f.Size)
+	}()
 	outputDir, err := extractor.ExtractArchive(ctx, f.objectKey, job.ID, f.Size, password)
 	pollCancel()
+	<-pollDone
 	if err != nil {
 		if errors.Is(err, storage.ErrArchivePasswordRequired) || errors.Is(err, storage.ErrArchiveWrongPassword) {
 			requestPassword(err)
@@ -429,7 +446,8 @@ func (s *Server) cancelArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "archive job not found")
 		return
 	}
-	if archiveJobTerminal(job.snapshot().Status) {
+	snapshot := job.snapshot()
+	if archiveJobTerminal(snapshot.Status) {
 		problem(w, http.StatusConflict, "archive job is already finished")
 		return
 	}
@@ -440,7 +458,13 @@ func (s *Server) cancelArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	job.mu.Lock()
-	job.Status, job.Message, job.Error = "failed", "已取消", "解压任务已取消"
+	if snapshot.Status == "waiting_password" {
+		job.Status, job.Message, job.Error = "failed", "已取消", "解压任务已取消"
+	} else {
+		// Keep the job non-terminal until its worker has unwound. Otherwise a
+		// follow-up DELETE could remove the workspace while it is still in use.
+		job.Message, job.Error = "正在取消解压任务", ""
+	}
 	job.passwordDeadline = time.Time{}
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	cancel := job.cancel
@@ -451,7 +475,11 @@ func (s *Server) cancelArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	if job.changed != nil {
 		job.changed()
 	}
-	s.cleanupArchiveJobStaging(job)
+	// A running worker owns its workspace and cleans it after cancellation has
+	// unwound. Password-waiting jobs have no worker, so the handler owns cleanup.
+	if snapshot.Status == "waiting_password" {
+		s.cleanupArchiveJobStaging(job)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

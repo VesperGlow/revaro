@@ -14,6 +14,8 @@ type mediaAnalysisScheduler struct {
 	slots  chan struct{}
 	mu     sync.Mutex
 	active map[string]struct{}
+	closed bool
+	wg     sync.WaitGroup
 }
 
 func newMediaAnalysisScheduler(limit int) *mediaAnalysisScheduler {
@@ -24,13 +26,19 @@ func newMediaAnalysisScheduler(limit int) *mediaAnalysisScheduler {
 // and no more than two background media probe workers acquire a slot at a time.
 func (q *mediaAnalysisScheduler) schedule(ctx context.Context, fileID string, work func(context.Context)) bool {
 	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return false
+	}
 	if _, exists := q.active[fileID]; exists {
 		q.mu.Unlock()
 		return false
 	}
 	q.active[fileID] = struct{}{}
+	q.wg.Add(1)
 	q.mu.Unlock()
 	go func() {
+		defer q.wg.Done()
 		defer func() {
 			q.mu.Lock()
 			delete(q.active, fileID)
@@ -45,6 +53,13 @@ func (q *mediaAnalysisScheduler) schedule(ctx context.Context, fileID string, wo
 		work(ctx)
 	}()
 	return true
+}
+
+func (q *mediaAnalysisScheduler) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.wg.Wait()
 }
 
 type probedMediaMetadata struct {

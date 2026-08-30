@@ -162,7 +162,11 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 	s.videoHLSSessions[session.ID] = session
 	s.videoHLSMu.Unlock()
 	s.pruneVideoHLSSessions(session.ID)
-	go s.runVideoHLS(ctx, f, session)
+	if !s.runBackground(func() { s.runVideoHLS(ctx, f, session) }) {
+		s.removeVideoHLSSession(session.ID)
+		problem(w, http.StatusServiceUnavailable, "service is shutting down")
+		return
+	}
 	if err := waitForVideoHLS(r.Context(), session); err != nil {
 		s.removeVideoHLSSession(session.ID)
 		if errors.Is(err, context.DeadlineExceeded) {
