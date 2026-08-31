@@ -76,6 +76,9 @@ type Server struct {
 	videoSubtitleBytes int64
 	mediaAnalysis      *mediaAnalysisScheduler
 	thumbnails         *thumbnailScheduler
+	audioThumbSlots    chan struct{}
+	audioThumbGroup    singleflight.Group
+	generateAudioCover func(context.Context, File) ([]byte, error)
 	mediaProbeGroup    singleflight.Group
 	probeMediaSource   func(context.Context, File) (storage.MediaProbe, error)
 	archiveSlots       chan struct{}
@@ -101,6 +104,7 @@ type File struct {
 	UpdatedAt       string  `json:"updated_at"`
 	DeletedAt       string  `json:"deleted_at,omitempty"`
 	RestoreParentID *string `json:"restore_parent_id,omitempty"`
+	HasCover        bool    `json:"has_cover,omitempty"`
 	objectKey       string
 }
 
@@ -127,6 +131,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		videoSubtitleCache: make(map[string]*videoSubtitleCacheEntry),
 		mediaAnalysis:      newMediaAnalysisScheduler(2),
 		thumbnails:         newThumbnailScheduler(1),
+		audioThumbSlots:    make(chan struct{}, 1),
 		archiveSlots:       make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
@@ -136,6 +141,13 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 			return storage.MediaProbe{}, errors.New("Rust media engine is unavailable")
 		}
 		return engine.ProbeMedia(ctx, file.objectKey)
+	}
+	s.generateAudioCover = func(ctx context.Context, file File) ([]byte, error) {
+		engine, ok := s.storage.(storage.MediaEngine)
+		if !ok {
+			return nil, errors.New("Rust media engine is unavailable")
+		}
+		return engine.MediaAudioCover(ctx, file.objectKey, thumbMaxDim)
 	}
 	if cfg.BTEnabled {
 		manager, err := newDownloadManager(s)
@@ -930,6 +942,33 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Close(); err != nil {
 		problem(w, 500, "database error")
 		return
+	}
+	coverRows, err := s.db.QueryContext(r.Context(), `SELECT am.file_id FROM audio_media am JOIN files f ON f.id=am.file_id WHERE f.parent_id=? AND f.deleted_at IS NULL AND am.has_cover=1`, parent.ID)
+	if err != nil {
+		problem(w, 500, "could not load audio covers")
+		return
+	}
+	covered := make(map[string]bool)
+	for coverRows.Next() {
+		var fileID string
+		if err := coverRows.Scan(&fileID); err != nil {
+			coverRows.Close()
+			problem(w, 500, "could not load audio covers")
+			return
+		}
+		covered[fileID] = true
+	}
+	if err := coverRows.Err(); err != nil {
+		coverRows.Close()
+		problem(w, 500, "could not load audio covers")
+		return
+	}
+	if err := coverRows.Close(); err != nil {
+		problem(w, 500, "could not load audio covers")
+		return
+	}
+	for index := range out {
+		out[index].HasCover = covered[out[index].ID]
 	}
 	for _, file := range out {
 		s.scheduleVideoThumbnail(file)
@@ -2149,7 +2188,11 @@ func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, ma
 		}
 		objects[key] = true
 		if canHaveThumbnail(name) {
-			thumbnails[thumbnailKey(key)] = true
+			if videoExts[strings.ToLower(filepath.Ext(name))] {
+				thumbnails[videoThumbnailKey(key)] = true
+			} else {
+				thumbnails[imageThumbnailKey(key)] = true
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -2171,7 +2214,7 @@ func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, ma
 		}
 		objects[streamKey] = true
 		if hasCover {
-			thumbnails[thumbnailKey(masterKey)] = true
+			thumbnails[audioThumbnailKey(masterKey)] = true
 		}
 	}
 	if err := mediaRows.Err(); err != nil {

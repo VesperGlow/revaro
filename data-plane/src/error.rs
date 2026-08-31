@@ -80,6 +80,14 @@ impl ApiError {
         }
     }
 
+    pub fn not_found(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+            code: Some(code.into()),
+        }
+    }
+
     pub fn internal(message: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,

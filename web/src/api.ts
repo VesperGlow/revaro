@@ -1,4 +1,4 @@
-export interface DriveFile { id:string; parent_id:string|null; name:string; kind:'file'|'directory'; size:number; mime_type?:string; etag?:string; status:'pending'|'ready'|'deleting'|'failed'; created_at:string; updated_at:string; deleted_at?:string; restore_parent_id?:string }
+export interface DriveFile { id:string; parent_id:string|null; name:string; kind:'file'|'directory'; size:number; mime_type?:string; etag?:string; status:'pending'|'ready'|'deleting'|'failed'; created_at:string; updated_at:string; deleted_at?:string; restore_parent_id?:string; has_cover?:boolean }
 
 export interface ApiError extends Error { status?:number; data?:unknown }
 

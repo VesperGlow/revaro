@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, reactive } from 'vue'
 import type { DriveFile } from '../api'
-import { isAudio, isBook, isEditable, isEpub, isImage, isVideo, previewURL, thumbSRC } from '../fileTypes'
+import { hasAudioCover, isAudio, isBook, isEditable, isEpub, isImage, isVideo, previewURL, thumbSRC } from '../fileTypes'
 import { formatDate, formatSize } from '../format'
 import VideoThumb from '../VideoThumb.vue'
 
@@ -27,7 +27,7 @@ function thumbFallback(event:Event,item:DriveFile){
 
 function canOpen(item:DriveFile){return !props.trashMode||item.kind==='file'}
 function openItem(item:DriveFile){emit('open',item)}
-function hasPreview(item:DriveFile){return ((isImage(item)||isAudio(item))&&!imageBroken[item.id])||isVideo(item)||(isEpub(item)&&!coverBroken[item.id])}
+function hasPreview(item:DriveFile){return (isImage(item)&&!imageBroken[item.id])||(hasAudioCover(item)&&!imageBroken[item.id])||isVideo(item)||(isEpub(item)&&!coverBroken[item.id])}
 function isTouch(){return window.matchMedia('(hover: none), (pointer: coarse)').matches}
 function cancelHold(){window.clearTimeout(holdTimer);holdTimer=0}
 function startHold(item:DriveFile,event:PointerEvent){
@@ -60,7 +60,7 @@ onBeforeUnmount(()=>{cancelHold();window.clearTimeout(heldResetTimer)})
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
       </button>
       <div class="card-preview" :class="{'cannot-open':!canOpen(item)}" :title="trashMode&&item.kind==='directory'?'恢复后可打开文件夹':isBook(item)?'阅读':trashMode&&isEditable(item)?'只读查看':item.kind==='directory'?'打开文件夹':isEditable(item)?'编辑文档':isImage(item)?'预览图片':isVideo(item)?'播放视频':isAudio(item)?'播放音频':'文件'">
-        <img v-if="(isImage(item)||isAudio(item))&&!imageBroken[item.id]" class="ui-image" :src="thumbSRC(item)" :alt="item.name" loading="lazy" draggable="false" @error="thumbFallback($event,item)">
+        <img v-if="(isImage(item)||hasAudioCover(item))&&!imageBroken[item.id]" class="ui-image" :src="thumbSRC(item)" :alt="item.name" loading="lazy" draggable="false" @error="thumbFallback($event,item)">
         <VideoThumb v-else-if="isVideo(item)" :file="item"><span class="large-video"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5Z"/></svg></span></VideoThumb>
         <img v-else-if="isEpub(item)&&!coverBroken[item.id]" class="ui-image" :src="thumbSRC(item)" :alt="item.name" loading="lazy" draggable="false" @error="coverBroken[item.id]=true">
         <svg v-else-if="isEpub(item)" class="file-type-icon book-type-icon" viewBox="0 0 96 96" aria-hidden="true"><path class="icon-base" d="M48 24c-9-6-20-8-34-8v57c14 0 25 2 34 8 9-6 20-8 34-8V16c-14 0-25 2-34 8Z"/><path class="icon-detail" d="M48 24v57M23 31c7 0 13 1 18 4M23 44c7 0 13 1 18 4M73 31c-7 0-13 1-18 4M73 44c-7 0-13 1-18 4"/></svg>

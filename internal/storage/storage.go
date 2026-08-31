@@ -9,6 +9,7 @@ import (
 
 var ErrObjectTooLarge = errors.New("object exceeds read limit")
 var ErrNotFound = errors.New("object not found")
+var ErrNoCover = errors.New("media has no embedded cover")
 var ErrArchivePasswordRequired = errors.New("archive password is required")
 var ErrArchiveWrongPassword = errors.New("archive password is incorrect")
 
@@ -90,6 +91,7 @@ type MediaProbe struct {
 type MediaEngine interface {
 	ProbeMedia(context.Context, string) (MediaProbe, error)
 	MediaThumbnail(context.Context, string, int) ([]byte, error)
+	MediaAudioCover(context.Context, string, int) ([]byte, error)
 	StreamFMP4(context.Context, string, float64, bool, bool) (io.ReadCloser, error)
 	GenerateHLS(context.Context, string, string, float64, bool) (MediaHLS, error)
 	MergeAudio(context.Context, []string, []string, string, string, string) (MediaAudioMerge, error)

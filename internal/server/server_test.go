@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1266,7 +1267,7 @@ func TestGarbageCollectorKeepsAudioStreamAndCover(t *testing.T) {
 	a := newTestAppWithBlockSize(t, 8)
 	master := a.readyFile(t, "book.flac", []byte("lossless-master"))
 	streamKey := master.objectKey
-	coverKey := thumbnailKey(master.objectKey)
+	coverKey := audioThumbnailKey(master.objectKey)
 	a.store.raw[coverKey] = []byte("jpeg-cover")
 	a.store.age(coverKey, time.Now().Add(-48*time.Hour))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -1594,6 +1595,37 @@ func TestThumbnails(t *testing.T) {
 	if put := a.rawRequest("PUT", "/api/files/"+video.ID+"/thumbnail", realJPEG(t, 48, 27), true); put.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("client thumbnail upload remains enabled: %d", put.Code)
 	}
+	// The invalid-video background attempt reads mockStorage's in-memory map;
+	// let it unwind before this test adds the legacy audio-cover fixture.
+	a.srv.thumbnails.close()
+
+	// 音频封面沿用原有通用 v2 缓存，不受视频抽帧缓存版本影响。
+	audio := a.readyFile(t, "asmr.flac", []byte("audio-bytes"))
+	audioCover := realJPEG(t, 64, 64)
+	a.store.raw[thumbnailKey(audio.objectKey)] = audioCover
+	audioThumb := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true)
+	if audioThumb.Code != http.StatusOK || !bytes.Equal(audioThumb.Body.Bytes(), audioCover) {
+		t.Fatalf("existing audio cover was not served: status=%d", audioThumb.Code)
+	}
+	if imageThumbnailKey(video.objectKey) == audioThumbnailKey(video.objectKey) || imageThumbnailKey(video.objectKey) == videoThumbnailKey(video.objectKey) || audioThumbnailKey(video.objectKey) == videoThumbnailKey(video.objectKey) {
+		t.Fatal("typed thumbnail cache namespaces overlap")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, audio.ID, 1000, `[]`, audio.objectKey, audio.Size, audio.ETag, true, now, now); err != nil {
+		t.Fatal(err)
+	}
+	plainAudio := a.readyFile(t, "plain.mp3", []byte("plain-audio"))
+	children := a.request("GET", "/api/files/"+RootID+"/children", nil, true)
+	listing := decode[struct {
+		Items []File `json:"items"`
+	}](t, children)
+	coverFlags := make(map[string]bool)
+	for _, item := range listing.Items {
+		coverFlags[item.ID] = item.HasCover
+	}
+	if !coverFlags[audio.ID] || coverFlags[plainAudio.ID] {
+		t.Fatalf("audio cover flags: covered=%v plain=%v", coverFlags[audio.ID], coverFlags[plainAudio.ID])
+	}
 
 	// EPUB：缩略图 = 缩小后的内嵌封面。
 	epub := a.readyFile(t, "book.epub", buildEPUB(t))
@@ -1606,6 +1638,96 @@ func TestThumbnails(t *testing.T) {
 	txt := a.readyFile(t, "notes.txt", []byte("hello"))
 	if rr := a.request("GET", "/api/files/"+txt.ID+"/thumbnail", nil, true); rr.Code != http.StatusNotFound {
 		t.Fatalf("txt thumb=%d", rr.Code)
+	}
+}
+
+func TestAudioThumbnailCacheSelfHealing(t *testing.T) {
+	a := newTestApp(t)
+	audio := a.readyFile(t, "recoverable.m4a", []byte("audio-source"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, audio.ID, 1000, `[]`, audio.objectKey, audio.Size, audio.ETag, true, now, now); err != nil {
+		t.Fatal(err)
+	}
+	cover := realJPEG(t, 80, 80)
+	key := audioThumbnailKey(audio.objectKey)
+	var generated atomic.Int32
+	a.srv.generateAudioCover = func(context.Context, File) ([]byte, error) {
+		generated.Add(1)
+		return cover, nil
+	}
+
+	a.store.raw[key] = cover
+	if rr := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true); rr.Code != http.StatusOK {
+		t.Fatalf("audio cache hit=%d", rr.Code)
+	}
+	if generated.Load() != 0 {
+		t.Fatal("audio cover regenerated on cache hit")
+	}
+
+	delete(a.store.raw, key)
+	if rr := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true); rr.Code != http.StatusOK {
+		t.Fatalf("audio cache miss=%d: %s", rr.Code, rr.Body.String())
+	}
+	delete(a.store.raw, key)
+	if rr := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true); rr.Code != http.StatusOK {
+		t.Fatalf("audio cache re-delete=%d", rr.Code)
+	}
+	if generated.Load() != 2 {
+		t.Fatalf("audio generations=%d", generated.Load())
+	}
+
+	delete(a.store.raw, key)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	a.srv.generateAudioCover = func(context.Context, File) ([]byte, error) {
+		generated.Add(1)
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		return cover, nil
+	}
+	const callers = 6
+	responses := make(chan int, callers)
+	for range callers {
+		go func() {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			a.srv.audioThumbnail(rr, req, audio, key)
+			responses <- rr.Code
+		}()
+	}
+	<-started
+	close(release)
+	for range callers {
+		if code := <-responses; code != http.StatusOK {
+			t.Fatalf("concurrent audio thumbnail=%d", code)
+		}
+	}
+	if generated.Load() != 3 {
+		t.Fatalf("concurrent requests generated %d total covers", generated.Load())
+	}
+
+	delete(a.store.raw, key)
+	a.srv.generateAudioCover = func(context.Context, File) ([]byte, error) {
+		generated.Add(1)
+		return nil, storage.ErrNoCover
+	}
+	if rr := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true); rr.Code != http.StatusNotFound {
+		t.Fatalf("stale cover metadata response=%d", rr.Code)
+	}
+	var hasCover bool
+	if err := a.db.QueryRow(`SELECT has_cover FROM audio_media WHERE file_id=?`, audio.ID).Scan(&hasCover); err != nil || hasCover {
+		t.Fatalf("stale has_cover was not repaired: value=%v err=%v", hasCover, err)
+	}
+	before := generated.Load()
+	if rr := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true); rr.Code != http.StatusNotFound {
+		t.Fatalf("no-cover response=%d", rr.Code)
+	}
+	if generated.Load() != before {
+		t.Fatal("has_cover=false triggered extraction")
 	}
 }
 

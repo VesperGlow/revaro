@@ -857,7 +857,7 @@ func (s *Server) finalizeAudioMerge(ctx context.Context, job *audioMergeJob, out
 		if err != nil {
 			return fmt.Errorf("prepare audio cover thumbnail: %w", err)
 		}
-		if err := s.storage.PutImmutable(ctx, thumbnailKey(key), "image/jpeg", thumb); err != nil {
+		if err := s.storage.PutImmutable(ctx, audioThumbnailKey(key), "image/jpeg", thumb); err != nil {
 			return fmt.Errorf("store audio cover thumbnail: %w", err)
 		}
 	}

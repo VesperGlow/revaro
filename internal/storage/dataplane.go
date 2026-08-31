@@ -346,12 +346,24 @@ func (d *DataPlane) ProbeMedia(ctx context.Context, key string) (MediaProbe, err
 }
 
 func (d *DataPlane) MediaThumbnail(ctx context.Context, key string, maxDimension int) ([]byte, error) {
-	body, length, err := jsonBody(map[string]any{"key": key, "max_dimension": maxDimension})
+	return d.mediaThumbnail(ctx, key, maxDimension, false)
+}
+
+func (d *DataPlane) MediaAudioCover(ctx context.Context, key string, maxDimension int) ([]byte, error) {
+	return d.mediaThumbnail(ctx, key, maxDimension, true)
+}
+
+func (d *DataPlane) mediaThumbnail(ctx context.Context, key string, maxDimension int, attachedPictureOnly bool) ([]byte, error) {
+	body, length, err := jsonBody(map[string]any{"key": key, "max_dimension": maxDimension, "attached_picture_only": attachedPictureOnly})
 	if err != nil {
 		return nil, err
 	}
 	resp, err := d.request(ctx, http.MethodPost, "/v1/media/thumbnail", nil, body, length)
 	if err != nil {
+		var dp *dataPlaneError
+		if errors.As(err, &dp) && dp.Code == "artwork" {
+			return nil, ErrNoCover
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

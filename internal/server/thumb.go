@@ -102,12 +102,38 @@ func (q *thumbnailScheduler) close() {
 // 复制/移动仍复用同一 key，因此缩略图缓存语义保持稳定。
 // GC 也使用这个纯函数从数据库引用重建可达缩略图集合。
 func thumbnailKey(objectKey string) string {
-	sum := sha256.Sum256([]byte(objectKey + "|thumb-v3"))
+	sum := sha256.Sum256([]byte(objectKey + "|thumb-v2"))
 	id := hex.EncodeToString(sum[:])
 	return "thumbs/" + id[:2] + "/" + id[2:] + ".jpg"
 }
 
-func (s *Server) thumbKey(f File) string { return thumbnailKey(f.objectKey) }
+func imageThumbnailKey(objectKey string) string {
+	return derivedThumbnailKey(objectKey, "image-thumb-v1")
+}
+
+func audioThumbnailKey(objectKey string) string {
+	return derivedThumbnailKey(objectKey, "audio-thumb-v1")
+}
+
+func videoThumbnailKey(objectKey string) string {
+	return derivedThumbnailKey(objectKey, "video-thumb-v3")
+}
+
+func derivedThumbnailKey(objectKey, namespace string) string {
+	sum := sha256.Sum256([]byte(objectKey + "|" + namespace))
+	id := hex.EncodeToString(sum[:])
+	return "thumbs/" + id[:2] + "/" + id[2:] + ".jpg"
+}
+
+func (s *Server) thumbKey(f File) string {
+	if videoExts[strings.ToLower(filepath.Ext(f.Name))] {
+		return videoThumbnailKey(f.objectKey)
+	}
+	if isAudioSource(f) {
+		return audioThumbnailKey(f.objectKey)
+	}
+	return imageThumbnailKey(f.objectKey)
+}
 
 func canHaveThumbnail(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
@@ -146,6 +172,19 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 		serveThumb(w, r, data)
 		return
 	}
+	// Read the pre-namespace v2 key once for backwards compatibility. Copying
+	// it into the typed namespace lets subsequent GC treat it as disposable.
+	if !videoExts[strings.ToLower(filepath.Ext(f.Name))] {
+		if data, err := s.storage.GetObject(r.Context(), thumbnailKey(f.objectKey), maxThumbBytes); err == nil {
+			_ = s.storage.PutImmutable(r.Context(), key, "image/jpeg", data)
+			serveThumb(w, r, data)
+			return
+		}
+	}
+	if isAudioSource(f) {
+		s.audioThumbnail(w, r, f, key)
+		return
+	}
 	if videoExts[strings.ToLower(filepath.Ext(f.Name))] {
 		s.scheduleVideoThumbnail(f)
 		problem(w, http.StatusNotFound, "thumbnail is being generated")
@@ -158,6 +197,54 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.storage.PutImmutable(r.Context(), key, "image/jpeg", data)
 	serveThumb(w, r, data)
+}
+
+func (s *Server) audioThumbnail(w http.ResponseWriter, r *http.Request, f File, key string) {
+	var hasCover bool
+	if err := s.db.QueryRowContext(r.Context(), `SELECT has_cover FROM audio_media WHERE file_id=?`, f.ID).Scan(&hasCover); err != nil || !hasCover {
+		problem(w, http.StatusNotFound, "audio has no cover")
+		return
+	}
+	result := s.audioThumbGroup.DoChan(f.ID+":"+f.ETag, func() (any, error) {
+		ctx, cancel := context.WithTimeout(s.audioHLSCtx, 5*time.Minute)
+		defer cancel()
+		if !acquireThumbSlot(ctx, s.audioThumbSlots) {
+			return nil, ctx.Err()
+		}
+		defer func() { <-s.audioThumbSlots }()
+		// Another request may have filled the cache while this call waited.
+		if data, err := s.storage.GetObject(ctx, key, maxThumbBytes); err == nil {
+			return data, nil
+		}
+		data, err := s.generateAudioCover(ctx, f)
+		if errors.Is(err, storage.ErrNoCover) {
+			_, _ = s.db.ExecContext(ctx, `UPDATE audio_media SET has_cover=0,updated_at=? WHERE file_id=?`, time.Now().UTC().Format(time.RFC3339Nano), f.ID)
+			return nil, err
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > maxThumbBytes || len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
+			return nil, errors.New("audio cover generator returned an invalid JPEG")
+		}
+		if err := s.storage.PutImmutable(ctx, key, "image/jpeg", data); err != nil {
+			return nil, err
+		}
+		return data, nil
+	})
+	select {
+	case <-r.Context().Done():
+		return
+	case generated := <-result:
+		if generated.Err != nil {
+			if !errors.Is(generated.Err, storage.ErrNoCover) && !errors.Is(generated.Err, context.Canceled) {
+				s.log.Warn("audio cover regeneration failed", "file", f.ID, "error", generated.Err)
+			}
+			problem(w, http.StatusNotFound, "audio cover is unavailable")
+			return
+		}
+		serveThumb(w, r, generated.Val.([]byte))
+	}
 }
 
 func (s *Server) generateThumb(ctx context.Context, f File) ([]byte, bool) {

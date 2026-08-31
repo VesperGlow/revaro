@@ -45,6 +45,7 @@ pub struct ProbeRequest {
 pub struct ThumbnailRequest {
     key: String,
     max_dimension: Option<u32>,
+    attached_picture_only: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -190,10 +191,19 @@ pub async fn thumbnail(
     let cancel = state.shutdown.child_token();
     let reader = state.s3.range_reader(q.key, cancel.clone()).await?;
     let mut guard = CancelOnDrop(cancel.clone());
-    let jpeg = task::spawn_blocking(move || thumbnail_blocking(reader, max_dimension, cancel))
-        .await
-        .map_err(ApiError::internal)?
-        .map_err(ApiError::bad_request)?;
+    let attached_picture_only = q.attached_picture_only.unwrap_or(false);
+    let jpeg = task::spawn_blocking(move || {
+        thumbnail_blocking(reader, max_dimension, attached_picture_only, cancel)
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(|error| {
+        if error == "media has no attached picture" {
+            ApiError::not_found("artwork", error)
+        } else {
+            ApiError::bad_request(error)
+        }
+    })?;
     guard.disarm();
     let mut response = Body::from(jpeg).into_response();
     response
@@ -1417,14 +1427,26 @@ fn probe_blocking(
 fn thumbnail_blocking(
     reader: crate::s3::S3RangeReader,
     max_dimension: u32,
+    attached_picture_only: bool,
     cancel: CancellationToken,
 ) -> Result<Vec<u8>, String> {
     ffmpeg::init().map_err(|e| e.to_string())?;
     let mut input = open_input(reader, cancel.clone())?;
-    let stream = input
-        .streams()
-        .best(Type::Video)
-        .ok_or("media has no video stream")?;
+    let stream = if attached_picture_only {
+        input.streams().find(|stream| {
+            stream.parameters().medium() == Type::Video
+                && stream
+                    .disposition()
+                    .contains(ffmpeg::format::stream::Disposition::ATTACHED_PIC)
+        })
+    } else {
+        input.streams().best(Type::Video)
+    }
+    .ok_or(if attached_picture_only {
+        "media has no attached picture"
+    } else {
+        "media has no video stream"
+    })?;
     let stream_index = stream.index();
     let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
         .map_err(|e| e.to_string())?;
@@ -1442,6 +1464,27 @@ fn thumbnail_blocking(
     .map_err(|e| e.to_string())?;
     let mut decoded = Video::empty();
     let mut rgb = Video::empty();
+    if attached_picture_only {
+        let mut found = false;
+        for (packet_stream, packet) in input.packets() {
+            if cancel.is_cancelled() {
+                return Err("thumbnail cancelled".into());
+            }
+            if packet_stream.index() != stream_index {
+                continue;
+            }
+            decoder.send_packet(&packet).map_err(|e| e.to_string())?;
+            if decoder.receive_frame(&mut decoded).is_ok() {
+                scaler.run(&decoded, &mut rgb).map_err(|e| e.to_string())?;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err("media has no attached picture".into());
+        }
+        return encode_thumbnail_rgb(&rgb, width, height);
+    }
     // libav exposes the probed container duration in AV_TIME_BASE units. Seek
     // before decoding so only the GOP around the requested frame is read.
     // Later positions avoid black leaders and title cards; stop at the first
@@ -1490,6 +1533,10 @@ fn thumbnail_blocking(
     if !found {
         return Err("video produced no usable thumbnail frame".into());
     }
+    encode_thumbnail_rgb(&rgb, width, height)
+}
+
+fn encode_thumbnail_rgb(rgb: &Video, width: u32, height: u32) -> Result<Vec<u8>, String> {
     let row_bytes = width as usize * 3;
     let stride = rgb.stride(0);
     let plane = rgb.data(0);
