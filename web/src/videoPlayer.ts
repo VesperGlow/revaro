@@ -72,6 +72,11 @@ export function setExclusiveSubtitleTrack<T extends MutableTextTrack>(tracks:Arr
   for(let index=0;index<tracks.length;index+=1)tracks[index].mode=selected&&tracks[index]===selected?'hidden':'disabled'
 }
 
+/** Avoid the global `secondary` utility, which is the white rounded button skin. */
+export function subtitleLineClass(index:number):string{
+  return index>0?'video-subtitle-secondary-line':''
+}
+
 export interface SelectableSubtitle { default?:boolean;forced?:boolean }
 export function initialSubtitleIndex(tracks:SelectableSubtitle[]):number{
   if(!tracks.length)return -1
