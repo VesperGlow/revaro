@@ -37,6 +37,33 @@ func TestOptimizedVideoMetadataUsesSignedS3Assets(t *testing.T) {
 	}
 }
 
+func TestOptimizedVideoMetadataReturnsEmbeddedAndExternalIngestSubtitles(t *testing.T) {
+	app := newTestApp(t)
+	video := app.readyFile(t, "Movie.mkv", []byte("original"))
+	app.store.rawURL = "https://objects.example"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO download_jobs(id,parent_id,source_type,source,status,ingest_state,created_at,updated_at) VALUES('subtitle-job',?,'magnet','magnet:?xt=urn:btih:test','done','completed',?,?)`, []any{RootID, now, now}},
+		{`INSERT INTO web_media_ingests(file_id,download_job_id,file_index,state,created_at,updated_at) VALUES(?,'subtitle-job',0,'completed',?,?)`, []any{video.ID, now, now}},
+		{`INSERT INTO web_media_playback(file_id,object_key,size,etag,duration_ms,video_codec,audio_codec,created_at) VALUES(?,'derived/media/subtitle-job/0/playback.mp4',123,'p',1000,'hevc','aac',?)`, []any{video.ID, now}},
+		{`INSERT INTO web_media_subtitles(file_id,track_index,object_key,size,etag,language,title,is_default,is_forced) VALUES(?,2,'derived/media/subtitle-job/0/subtitles/2.vtt',20,'embedded','chi','chs',1,0)`, []any{video.ID}},
+		{`INSERT INTO web_media_subtitles(file_id,track_index,object_key,size,etag,language,title,is_default,is_forced) VALUES(?,1000004,'derived/media/subtitle-job/0/subtitles/1000004.vtt',30,'external','zh-Hans','Movie.zh-Hans',0,0)`, []any{video.ID}},
+	}
+	for _, statement := range statements {
+		if _, err := app.db.Exec(statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rr := app.request("GET", "/api/files/"+video.ID+"/video", nil, true)
+	body := rr.Body.String()
+	if rr.Code != http.StatusOK || !strings.Contains(body, `"id":"optimized-2"`) || !strings.Contains(body, `"id":"optimized-1000004"`) || strings.Contains(body, `/video/subtitles/`) {
+		t.Fatalf("optimized subtitle metadata=%d: %s", rr.Code, body)
+	}
+}
+
 func TestWebMediaPublicationIsAtomicAndRetryable(t *testing.T) {
 	app := newTestApp(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -68,6 +95,32 @@ func TestWebMediaPublicationIsAtomicAndRetryable(t *testing.T) {
 	}
 	if objectKey != asset.Key || size != asset.Size || mimeType != "video/mp4" || strings.Contains(objectKey, "/source") {
 		t.Fatalf("logical BT media persisted raw source: key=%q size=%d mime=%q", objectKey, size, mimeType)
+	}
+}
+
+func TestCompletedBTImportPublishesJobEvent(t *testing.T) {
+	app := newTestApp(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := downloadJob{ID: "event-job", ParentID: RootID, Name: "Movie.mkv"}
+	if _, err := app.db.Exec(`INSERT INTO download_jobs(id,parent_id,source_type,source,status,ingest_state,selected_size,completed_size,created_at,updated_at) VALUES(?,?,'magnet','magnet:?xt=urn:btih:event','importing','processing',100,100,?,?)`, job.ID, RootID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	manager := &downloadManager{server: app.srv}
+	asset := &storage.WebMediaAsset{State: "completed", Key: "derived/media/event-job/0/playback.mp4", Size: 80, ETag: "p", VideoCodec: "hevc", AudioCodec: "aac"}
+	file := importedDownloadFile{path: "Movie.mkv", objectKey: asset.Key, mimeType: "video/mp4", etag: asset.ETag, size: asset.Size, index: 0, web: asset}
+	updates, unsubscribe := app.srv.jobs.Subscribe()
+	defer unsubscribe()
+	if err := manager.publishImported(context.Background(), job, []importedDownloadFile{file}, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-updates:
+	case <-time.After(time.Second):
+		t.Fatal("completed import did not publish a jobs event")
+	}
+	completed, err := manager.get(context.Background(), job.ID, false)
+	if err != nil || completed.Status != "done" || completed.IngestState != "completed" || completed.ImportedSize != completed.SelectedSize {
+		t.Fatalf("completed job=%+v err=%v", completed, err)
 	}
 }
 

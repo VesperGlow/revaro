@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     env,
     io::SeekFrom,
-    path::{Component, PathBuf},
+    path::{Component, Path as FsPath, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -24,6 +24,76 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use crate::{AppState, error::ApiError};
+
+fn is_external_subtitle(name: &str) -> bool {
+    matches!(
+        FsPath::new(name)
+            .extension()
+            .and_then(|v| v.to_str())
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref(),
+        Some("ass" | "ssa" | "srt")
+    )
+}
+
+fn subtitle_matches_video(video: &str, subtitle: &str) -> bool {
+    let video_stem = FsPath::new(video)
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .unwrap_or("");
+    let subtitle_stem = FsPath::new(subtitle)
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .unwrap_or("");
+    if subtitle_stem.eq_ignore_ascii_case(video_stem) {
+        return true;
+    }
+    if subtitle_stem.len() <= video_stem.len()
+        || !subtitle_stem[..video_stem.len()].eq_ignore_ascii_case(video_stem)
+    {
+        return false;
+    }
+    let suffix = &subtitle_stem[video_stem.len()..];
+    let Some(delimiter) = suffix.chars().next() else {
+        return false;
+    };
+    if !matches!(delimiter, '.' | ' ' | '_' | '-' | '[' | '(') {
+        return false;
+    }
+    !suffix[delimiter.len_utf8()..]
+        .trim_start()
+        .starts_with(|value: char| value.is_ascii_digit())
+}
+
+async fn canonical_torrent_file(root: &FsPath, file: &Value) -> Result<PathBuf, ApiError> {
+    let components = file
+        .get("components")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::internal("torrent file path is missing"))?;
+    let mut path = root.to_owned();
+    for component in components {
+        let value = component
+            .as_str()
+            .ok_or_else(|| ApiError::internal("torrent file path is invalid"))?;
+        let parsed = FsPath::new(value);
+        if value.is_empty()
+            || value.contains(['/', '\\', '\0'])
+            || parsed
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(ApiError::bad_request("unsafe torrent file path"));
+        }
+        path.push(value);
+    }
+    let canonical = tokio::fs::canonicalize(path)
+        .await
+        .map_err(ApiError::internal)?;
+    if !canonical.starts_with(root) {
+        return Err(ApiError::bad_request("torrent file escapes download root"));
+    }
+    Ok(canonical)
+}
 
 #[derive(Clone)]
 pub struct BtState {
@@ -364,6 +434,29 @@ pub async fn import(
     let root = tokio::fs::canonicalize(output)
         .await
         .map_err(|e| ApiError::upstream_domain("bt", e))?;
+    // Resolve selected sidecar subtitles before consuming the request. A Web
+    // media video is published under a derived MP4 key, so sibling subtitle
+    // blobs cannot be discovered by the legacy file-neighbour lookup later.
+    // Convert and attach them while the torrent staging tree is still present.
+    let mut external_subtitles = Vec::new();
+    for requested in &q.files {
+        let Some(file) = files.get(requested.index) else {
+            continue;
+        };
+        let Some(name) = file
+            .get("components")
+            .and_then(Value::as_array)
+            .and_then(|parts| parts.last())
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if !is_external_subtitle(name) {
+            continue;
+        }
+        let path = canonical_torrent_file(&root, file).await?;
+        external_subtitles.push((requested.index, name.to_owned(), path));
+    }
     let mut seen = HashSet::new();
     let mut imported = Vec::with_capacity(q.files.len());
     for requested in q.files {
@@ -382,28 +475,7 @@ pub async fn import(
             .get("components")
             .and_then(Value::as_array)
             .ok_or_else(|| ApiError::internal("torrent file path is missing"))?;
-        let mut path = root.clone();
-        for component in components {
-            let value = component
-                .as_str()
-                .ok_or_else(|| ApiError::internal("torrent file path is invalid"))?;
-            let parsed = std::path::Path::new(value);
-            if value.is_empty()
-                || value.contains(['/', '\\', '\0'])
-                || parsed
-                    .components()
-                    .any(|part| !matches!(part, Component::Normal(_)))
-            {
-                return Err(ApiError::bad_request("unsafe torrent file path"));
-            }
-            path.push(value);
-        }
-        let canonical = tokio::fs::canonicalize(&path)
-            .await
-            .map_err(ApiError::internal)?;
-        if !canonical.starts_with(&root) {
-            return Err(ApiError::bad_request("torrent file escapes download root"));
-        }
+        let canonical = canonical_torrent_file(&root, file).await?;
         let metadata = tokio::fs::metadata(&canonical)
             .await
             .map_err(ApiError::internal)?;
@@ -419,7 +491,13 @@ pub async fn import(
             {
                 return Err(ApiError::bad_request("invalid Web media prefix"));
             }
-            Some(prepare_and_upload_web(&state, &canonical, &requested.web_prefix).await?)
+            let video_name = components.last().and_then(Value::as_str).unwrap_or("");
+            let sidecars = external_subtitles
+                .iter()
+                .filter(|(_, name, _)| subtitle_matches_video(video_name, name))
+                .map(|(index, name, path)| (*index, name.clone(), path.clone()))
+                .collect();
+            Some(prepare_and_upload_web(&state, &canonical, &requested.web_prefix, sidecars).await?)
         };
         if let Some(web) = web_media {
             imported.push(ImportedFile {
@@ -458,6 +536,7 @@ async fn prepare_and_upload_web(
     state: &AppState,
     source: &std::path::Path,
     prefix: &str,
+    external_subtitles: Vec<(usize, String, PathBuf)>,
 ) -> Result<WebMediaAsset, ApiError> {
     let serial = NEXT_PREP.fetch_add(1, Ordering::Relaxed);
     let work = PathBuf::from(env::var("APP_WORK_DIR").map_err(ApiError::internal)?)
@@ -473,7 +552,16 @@ async fn prepare_and_upload_web(
     let cancel = state.shutdown.child_token();
     let mut cancel_guard = PrepCancel(cancel.clone());
     let prepared = tokio::task::spawn_blocking(move || {
-        crate::media::prepare_web_media(&source, &output_for_task, cancel)
+        let mut prepared =
+            crate::media::prepare_web_media(&source, &output_for_task, cancel.clone())?;
+        for (file_index, name, path) in external_subtitles {
+            let data = crate::media::external_subtitle_path(&path, cancel.clone())?;
+            prepared.subtitles.push((
+                crate::media::external_subtitle_meta(1_000_000 + file_index, &name),
+                data,
+            ));
+        }
+        Ok::<_, String>(prepared)
     })
     .await
     .map_err(ApiError::internal)?;
@@ -694,6 +782,16 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn external_subtitle_sidecars_match_only_their_video() {
+        assert!(is_external_subtitle("Movie.zh-Hans.ass"));
+        assert!(is_external_subtitle("Movie.srt"));
+        assert!(!is_external_subtitle("Movie.mka"));
+        assert!(subtitle_matches_video("Movie.mkv", "Movie.ass"));
+        assert!(subtitle_matches_video("Movie.mkv", "Movie.zh-Hans.srt"));
+        assert!(!subtitle_matches_video("Movie.mkv", "Movie 2.zh-Hans.ass"));
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn progressive_seek_and_fastresume_survive_restart() -> anyhow::Result<()> {

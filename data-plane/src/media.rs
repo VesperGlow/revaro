@@ -135,6 +135,26 @@ pub struct Subtitle {
     pub(crate) forced: bool,
 }
 
+pub(crate) fn external_subtitle_meta(index: usize, name: &str) -> Subtitle {
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name);
+    let language = stem.rsplit(['.', '_', '-']).next().unwrap_or("");
+    Subtitle {
+        index,
+        codec: Path::new(name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase(),
+        language: language.to_owned(),
+        title: stem.to_owned(),
+        default: false,
+        forced: false,
+    }
+}
+
 pub async fn probe(
     State(state): State<AppState>,
     Json(q): Json<ProbeRequest>,
@@ -674,6 +694,7 @@ enum Transform {
         input_time_base: Rational,
         output_time_base: Rational,
         start_pts: i64,
+        next_dts: Option<i64>,
     },
     Video(VideoEncode),
     Audio(AudioEncode),
@@ -690,12 +711,33 @@ fn process_transform(
             input_time_base,
             output_time_base,
             start_pts,
+            next_dts,
         } => {
-            if packet.pts().is_some_and(|value| value < *start_pts) {
+            let original_pts = packet.pts();
+            let original_dts = packet.dts();
+            if original_pts
+                .or(original_dts)
+                .is_some_and(|value| value < *start_pts)
+            {
                 return Ok(());
             }
-            packet.set_pts(packet.pts().map(|value| value - *start_pts));
-            packet.set_dts(packet.dts().map(|value| value - *start_pts));
+            // Matroska commonly omits DTS for presentation-ordered streams.
+            // MP4 requires both timestamps. Preserve every supplied timestamp;
+            // when one is absent, derive it from the other (or the end of the
+            // previous packet) before rescaling the complete packet, including
+            // its duration, into the muxer's time base.
+            let pts = original_pts
+                .or(original_dts)
+                .map(|value| value - *start_pts);
+            let dts = original_dts
+                .map(|value| value - *start_pts)
+                .or(*next_dts)
+                .or(pts);
+            packet.set_pts(pts.or(dts));
+            packet.set_dts(dts);
+            if let Some(value) = dts {
+                *next_dts = Some(value.saturating_add(packet.duration().max(1)));
+            }
             packet.rescale_ts(*input_time_base, *output_time_base);
             packet.set_position(-1);
             packet.set_stream(*dest);
@@ -734,6 +776,7 @@ fn copy_stream(
         input_time_base: stream.time_base(),
         output_time_base: Rational(0, 1),
         start_pts: seconds_to_pts(start_seconds, stream.time_base()),
+        next_dts: None,
     })
 }
 
@@ -1747,6 +1790,21 @@ fn embedded_subtitle_path(
         }
     }
     Ok(output.into_bytes())
+}
+
+pub(crate) fn external_subtitle_path(
+    path: &Path,
+    cancel: CancellationToken,
+) -> Result<Vec<u8>, String> {
+    ffmpeg::init().map_err(|e| e.to_string())?;
+    let input = format::input(path).map_err(|e| format!("open external subtitle: {e}"))?;
+    let index = input
+        .streams()
+        .best(Type::Subtitle)
+        .ok_or("external subtitle contains no supported stream")?
+        .index();
+    drop(input);
+    embedded_subtitle_path(path, index, cancel)
 }
 
 #[cfg(test)]

@@ -567,6 +567,7 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET ingest_state='probing',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	m.server.jobs.Changed()
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET ingest_state='processing',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
+	m.server.jobs.Changed()
 	results, err := m.bt.ImportTorrent(runtime.ctx, runtime.torrentID, requests)
 	if err != nil {
 		m.cleanupTorrentImport(requests)
@@ -605,7 +606,8 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	elapsed := max(time.Since(started), time.Millisecond)
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET ingest_state='uploading',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=?,import_speed=?,current_file='',updated_at=? WHERE id=? AND status='importing'`, imported, int64(float64(imported)/elapsed.Seconds()), time.Now().UTC().Format(time.RFC3339Nano), job.ID)
-	if err := m.commitImported(runtime.ctx, job, stored, len(job.Files) > 1); err != nil {
+	m.server.jobs.Changed()
+	if err := m.publishImported(runtime.ctx, job, stored, len(job.Files) > 1); err != nil {
 		m.cleanupTorrentImport(requests)
 		m.fail(runtime.jobID, err)
 		return
@@ -620,6 +622,16 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	delete(m.jobs, runtime.jobID)
 	m.mu.Unlock()
 	m.server.log.Info("built-in torrent download imported", "job", job.ID, "name", job.Name, "files", len(stored), "size", job.SelectedSize)
+}
+
+func (m *downloadManager) publishImported(ctx context.Context, job downloadJob, files []importedDownloadFile, preserveRoot bool) error {
+	if err := m.commitImported(ctx, job, files, preserveRoot); err != nil {
+		return err
+	}
+	// Publish only after the terminal transaction is visible. Without this SSE
+	// notification the browser retains its last "processing" snapshot.
+	m.server.jobs.Changed()
+	return nil
 }
 
 func (m *downloadManager) cleanupTorrentImport(files []storage.TorrentImportFile) {

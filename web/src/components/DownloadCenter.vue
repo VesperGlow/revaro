@@ -13,7 +13,19 @@ const emit=defineEmits<{changed:[]}>()
 
 const terminal=(job:DownloadJob)=>job.status==='done'||job.status==='failed'||job.status==='cancelled'
 const activeJobs=computed(()=>props.jobs.filter(job=>!terminal(job)))
-const phaseCompleted=(job:DownloadJob)=>job.status==='importing'?job.imported_size:job.completed_size
+// Import is a multi-phase operation. imported_size is only authoritative once
+// the data plane has returned its verified upload result, so map the observable
+// phases onto the final quarter instead of falsely dropping a fully downloaded
+// torrent back to 0%.
+const phaseCompleted=(job:DownloadJob)=>{
+  if(job.status!=='importing')return job.completed_size
+  const total=Math.max(1,job.selected_size)
+  if(job.ingest_state==='probing')return Math.round(total*.76)
+  if(job.ingest_state==='processing')return Math.round(total*.85)
+  if(job.ingest_state==='uploading')return Math.max(Math.round(total*.95),job.imported_size)
+  if(job.ingest_state==='completed')return total
+  return Math.max(job.completed_size,job.imported_size)
+}
 const overallProgress=computed(()=>{
   const total=activeJobs.value.reduce((sum,job)=>sum+Math.max(1,job.selected_size),0)
   return total?Math.round(activeJobs.value.reduce((sum,job)=>sum+Math.min(phaseCompleted(job),Math.max(1,job.selected_size)),0)/total*100):0
