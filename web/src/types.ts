@@ -11,7 +11,6 @@ export interface UploadTask {
   requests:XMLHttpRequest[]
 }
 
-export interface FolderOption { id:string; name:string; depth:number }
 export interface ShareResponse { active:boolean; url?:string; created_at?:string }
 export interface ProfileResponse { username:string; has_avatar:boolean }
 export interface StorageStats { total_bytes:number; file_count:number }

@@ -16,7 +16,7 @@ import { useJobEvents } from './composables/useJobEvents'
 import { isArchive, isAudio, isBook, isEditable, isImage, isMedia, isVideo, thumbSRC } from './fileTypes'
 import { formatSize } from './format'
 import { classifyLocalMergeFile, localNaturalLess, localSubtitlePriority, localMergeTopLevelName, selectLocalCover } from './localMerge'
-import type { ArchiveJob, AudioMergeFormat, AudioMergeResponse, DownloadJob, FolderOption, LocalMergeCreateResponse, LocalMergePick, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
+import type { ArchiveJob, AudioMergeFormat, AudioMergeResponse, DownloadJob, LocalMergeCreateResponse, LocalMergePick, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_CONCURRENCY = 3
@@ -45,7 +45,6 @@ type ModalName = 'rename'|'move'|'preview'|'share'|'account'|'editor'|'reader'|'
 const modal = ref<ModalName|null>(null)
 const readerFile = ref<DriveFile|null>(null)
 const renameValue = ref('')
-const folders = ref<FolderOption[]>([])
 const modalBusy = ref(false)
 const account = reactive({ username:'', currentPassword:'', password:'', confirmPassword:'', error:'' })
 const accountPanel = ref<null|'password'|'totp'>(null)
@@ -347,27 +346,10 @@ async function showMoveSelected(){await showMoveTargets([...selectedItems.value]
 async function showMoveTargets(targets:DriveFile[]){
   if(!targets.length)return
   transferMode.value='move'
-  moveTargets.value=targets;selected.value=targets[0];modalBusy.value=true;openModal('move');folders.value=[]
-  try{folders.value=await loadFolderTree(new Set(targets.map(item=>item.id)))}catch(e){notify((e as Error).message);closeModal()}finally{modalBusy.value=false}
+  moveTargets.value=targets;selected.value=targets[0];modalBusy.value=false;openModal('move')
 }
 async function showCopy(item:DriveFile){
-  transferMode.value='copy';moveTargets.value=[item];selected.value=item;modalBusy.value=true;openModal('move');folders.value=[]
-  try{folders.value=await loadFolderTree()}catch(e){notify((e as Error).message);closeModal()}finally{modalBusy.value=false}
-}
-async function loadFolderTree(excludedIds=new Set<string>()):Promise<FolderOption[]>{
-  const result:FolderOption[]=[{id:ROOT,name:'我的文件',depth:0}]
-  const queue=[{id:ROOT,depth:0}]
-  // 受限并发 BFS：同层目录并行拉取，避免大目录树逐目录串行请求
-  while(queue.length){
-    const batch=queue.splice(0,8)
-    const lists=await Promise.all(batch.map(async node=>({node,data:await api<{items:DriveFile[]}>(`/api/files/${node.id}/children`)})))
-    for(const {node,data} of lists){
-      for(const child of data.items.filter(x=>x.kind==='directory'&&!excludedIds.has(x.id))){
-        result.push({id:child.id,name:child.name,depth:node.depth+1});queue.push({id:child.id,depth:node.depth+1})
-      }
-    }
-  }
-  return result
+  transferMode.value='copy';moveTargets.value=[item];selected.value=item;modalBusy.value=false;openModal('move')
 }
 async function transferTo(parentId:string){
   const targets=[...moveTargets.value]
@@ -988,7 +970,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
 
     <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),'video-previewing':modal==='preview'&&!!selected&&isVideo(selected),editing:modal==='editor',reading:modal==='reader',accounting:modal==='account'}" @click.self="closeBackdrop">
       <section v-if="modal==='rename'" class="modal"><header><div><p class="eyebrow dark">EDIT</p><h2>重命名</h2></div><button @click="closeModal">×</button></header><label>新名称<input v-model="renameValue" maxlength="1024" @keyup.enter="saveRename"></label><footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="modalBusy" @click="saveRename">保存</button></footer></section>
-      <MoveCopyDialog v-else-if="modal==='move'" :mode="transferMode" :targets="moveTargets" :folders="folders" :busy="modalBusy" @close="closeModal" @select="transferTo" />
+      <MoveCopyDialog v-else-if="modal==='move'" :mode="transferMode" :targets="moveTargets" :initial-id="currentId" :busy="modalBusy" @close="closeModal" @select="transferTo" />
       <section v-else-if="modal==='audioMerge'" class="modal audio-merge-modal">
         <header><div><p class="eyebrow dark">AUDIO MERGE</p><h2>合并音频</h2><p>{{ audioMerge.local?'从电脑目录上传素材，输出固定为无损 ALAC M4A':'FLAC / ALAC 真无损，或选择 AAC 节省空间' }}</p></div><button aria-label="关闭" @click="closeAudioMergeModal">×</button></header>
         <div class="merge-source-tabs" role="tablist" aria-label="合并来源">

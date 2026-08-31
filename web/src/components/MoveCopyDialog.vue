@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import type { DriveFile } from '../api'
-import type { FolderOption } from '../types'
+import DirectoryPickerModal from './DirectoryPickerModal.vue'
 
-defineProps<{mode:'move'|'copy';targets:DriveFile[];folders:FolderOption[];busy:boolean}>()
+const props=defineProps<{mode:'move'|'copy';targets:DriveFile[];busy:boolean;initialId?:string}>()
 defineEmits<{close:[];select:[folderId:string]}>()
+const targetText=props.targets.length===1?`“${props.targets[0]?.name}”`:`${props.targets.length} 项`
 </script>
 
-<template>
-  <section class="modal folder-modal"><header><div><p class="eyebrow dark">{{ mode==='copy'?'COPY':'MOVE' }}</p><h2>{{ mode==='copy'?'复制到':'移动到' }}</h2><p class="move-target" :title="targets.length===1?targets[0]?.name:undefined">{{ targets.length===1?`「${targets[0]?.name}」`:`${targets.length} 项` }}</p></div><button @click="$emit('close')">×</button></header><div v-if="busy" class="state small"><div class="spinner"></div></div><div v-else class="folder-list"><button v-for="folder in folders" :key="folder.id" :style="{paddingLeft:`${18+folder.depth*22}px`}" @click="$emit('select',folder.id)"><span>▰</span>{{ folder.name }}</button></div></section>
-</template>
+<template><DirectoryPickerModal :title="mode==='copy'?'复制到':'移动到'" :description="`为 ${targetText} 选择目标文件夹`" :initial-id="initialId" :excluded-ids="mode==='move'?targets.map(item=>item.id):[]" :busy="busy" @cancel="$emit('close')" @select="folderId=>$emit('select',folderId)" /></template>

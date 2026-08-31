@@ -1087,7 +1087,33 @@ func (s *Server) resumeDownload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 503, "内置离线下载不可用")
 		return
 	}
-	if err := s.downloads.resumeAny(r.Context(), chi.URLParam(r, "id")); err != nil {
+	jobID := chi.URLParam(r, "id")
+	// A failed BT task may be retried into another directory. An empty body keeps
+	// the long-standing pause/resume API behavior unchanged.
+	if r.ContentLength != 0 {
+		var in struct {
+			ParentID string `json:"parent_id"`
+		}
+		if decodeJSONLimit(w, r, &in, maxJSONBody) != nil {
+			return
+		}
+		if in.ParentID != "" {
+			var kind, status, sourceType string
+			if err := s.db.QueryRowContext(r.Context(), `SELECT kind FROM files WHERE id=? AND deleted_at IS NULL`, in.ParentID).Scan(&kind); err != nil || kind != "directory" {
+				problem(w, http.StatusBadRequest, "保存目录不存在")
+				return
+			}
+			if err := s.db.QueryRowContext(r.Context(), `SELECT status,source_type FROM download_jobs WHERE id=?`, jobID).Scan(&status, &sourceType); err != nil || status != "failed" || sourceType == "url" {
+				problem(w, http.StatusConflict, "任务当前不能更改保存目录")
+				return
+			}
+			if _, err := s.db.ExecContext(r.Context(), `UPDATE download_jobs SET parent_id=? WHERE id=?`, in.ParentID, jobID); err != nil {
+				problem(w, http.StatusInternalServerError, "无法更新保存目录")
+				return
+			}
+		}
+	}
+	if err := s.downloads.resumeAny(r.Context(), jobID); err != nil {
 		problem(w, 409, err.Error())
 		return
 	}
