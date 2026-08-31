@@ -8,11 +8,11 @@ import (
 	"errors"
 	"image"
 	"image/jpeg"
-	"io"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/storage"
@@ -28,7 +28,7 @@ import (
 
 const maxThumbBytes = 512 << 10 // 缩略图对象上限
 const maxThumbSource = 64 << 20 // 生成缩略图时允许读取的源文件上限
-const thumbMaxDim = 480         // 缩略图最长边
+const thumbMaxDim = 640         // 缩略图最长边
 
 // maxThumbPixels caps the pixel dimensions of sources we decode: a small
 // compressed file (bounded by maxThumbSource) can otherwise expand into
@@ -42,15 +42,67 @@ var videoExts = map[string]bool{
 	".ts": true, ".m2ts": true, ".mts": true,
 }
 
-// Rust libav 抽帧全局并发上限：目录里多个视频首次生成时不至于打满 CPU/磁盘。
-var videoThumbSlots = make(chan struct{}, 1)
 var imageThumbSlots = make(chan struct{}, 2)
+
+type thumbnailScheduler struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	slots  chan struct{}
+	mu     sync.Mutex
+	active map[string]struct{}
+	closed bool
+	wg     sync.WaitGroup
+}
+
+func newThumbnailScheduler(limit int) *thumbnailScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &thumbnailScheduler{ctx: ctx, cancel: cancel, slots: make(chan struct{}, limit), active: make(map[string]struct{})}
+}
+
+func (q *thumbnailScheduler) schedule(key string, work func(context.Context)) bool {
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return false
+	}
+	if _, exists := q.active[key]; exists {
+		q.mu.Unlock()
+		return false
+	}
+	q.active[key] = struct{}{}
+	q.wg.Add(1)
+	q.mu.Unlock()
+	go func() {
+		defer q.wg.Done()
+		defer func() {
+			q.mu.Lock()
+			delete(q.active, key)
+			q.mu.Unlock()
+		}()
+		select {
+		case q.slots <- struct{}{}:
+			defer func() { <-q.slots }()
+		case <-q.ctx.Done():
+			return
+		}
+		work(q.ctx)
+	}()
+	return true
+}
+
+func (q *thumbnailScheduler) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.cancel()
+	q.mu.Unlock()
+	q.wg.Wait()
+}
 
 // thumbnailKey 由不可见的 object key 派生；保存新内容会换 blob key，
 // 复制/移动仍复用同一 key，因此缩略图缓存语义保持稳定。
 // GC 也使用这个纯函数从数据库引用重建可达缩略图集合。
 func thumbnailKey(objectKey string) string {
-	sum := sha256.Sum256([]byte(objectKey + "|thumb-v2"))
+	sum := sha256.Sum256([]byte(objectKey + "|thumb-v3"))
 	id := hex.EncodeToString(sum[:])
 	return "thumbs/" + id[:2] + "/" + id[2:] + ".jpg"
 }
@@ -81,7 +133,8 @@ func hexSHA256(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// thumbnail GET：已有缩略图直接返回（长期缓存）；否则按类型生成一次并落盘。
+// thumbnail GET：已有缩略图直接返回。图片和书封仍按原逻辑生成；视频只
+// 投递有限并发后台任务，本次请求安全返回 404，绝不等待媒体解码。
 func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 	f, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
 	if err != nil || f.Kind != "file" || f.Status != "ready" {
@@ -91,6 +144,11 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 	key := s.thumbKey(f)
 	if data, err := s.storage.GetObject(r.Context(), key, maxThumbBytes); err == nil {
 		serveThumb(w, r, data)
+		return
+	}
+	if videoExts[strings.ToLower(filepath.Ext(f.Name))] {
+		s.scheduleVideoThumbnail(f)
+		problem(w, http.StatusNotFound, "thumbnail is being generated")
 		return
 	}
 	data, ok := s.generateThumb(r.Context(), f)
@@ -157,12 +215,6 @@ func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) 
 	if !ok {
 		return nil, false
 	}
-	select {
-	case videoThumbSlots <- struct{}{}:
-		defer func() { <-videoThumbSlots }()
-	case <-ctx.Done():
-		return nil, false
-	}
 	genCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	data, err := engine.MediaThumbnail(genCtx, f.objectKey, thumbMaxDim)
@@ -175,38 +227,24 @@ func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) 
 	return data, true
 }
 
-// saveThumbnail PUT：接收前端抽帧生成的视频缩略图（小 JPEG），落盘到
-// 内容寻址的 thumbs/ 对象，之后的请求直接命中。
-func (s *Server) saveThumbnail(w http.ResponseWriter, r *http.Request) {
-	f, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || f.Kind != "file" || f.Status != "ready" {
-		problem(w, http.StatusNotFound, "ready file not found")
+func (s *Server) scheduleVideoThumbnail(f File) {
+	if s.thumbnails == nil || f.Kind != "file" || f.Status != "ready" || f.objectKey == "" || !videoExts[strings.ToLower(filepath.Ext(f.Name))] {
 		return
 	}
-	if r.ContentLength > maxThumbBytes {
-		problem(w, http.StatusRequestEntityTooLarge, "thumbnail is too large")
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, maxThumbBytes+1))
-	if err != nil || len(data) > maxThumbBytes {
-		problem(w, http.StatusBadRequest, "thumbnail data is invalid")
-		return
-	}
-	if len(data) < 3 || data[0] != 0xFF || data[1] != 0xD8 || data[2] != 0xFF {
-		problem(w, http.StatusBadRequest, "thumbnail must be a JPEG image")
-		return
-	}
-	normalized, err := resizeToJPEG(data, thumbMaxDim)
-	if err != nil || len(normalized) > maxThumbBytes {
-		problem(w, http.StatusBadRequest, "thumbnail data is invalid")
-		return
-	}
-	if err := s.storage.PutImmutable(r.Context(), s.thumbKey(f), "image/jpeg", normalized); err != nil {
-		s.log.Warn("thumbnail upload failed", "file", f.ID, "error", err)
-		problem(w, http.StatusBadGateway, "could not store thumbnail")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	cacheKey := s.thumbKey(f)
+	s.thumbnails.schedule(cacheKey, func(ctx context.Context) {
+		// A request may have raced another producer (for example an import hook).
+		if _, err := s.storage.GetObject(ctx, cacheKey, maxThumbBytes); err == nil {
+			return
+		}
+		data, ok := s.generateVideoThumb(ctx, f)
+		if !ok {
+			return
+		}
+		if err := s.storage.PutImmutable(ctx, cacheKey, "image/jpeg", data); err != nil && !errors.Is(err, context.Canceled) {
+			s.log.Warn("video thumbnail storage failed", "file", f.ID, "error", err)
+		}
+	})
 }
 
 // resizeToJPEG 解码任意受支持的图片并把最长边缩到 maxDim，输出 JPEG。

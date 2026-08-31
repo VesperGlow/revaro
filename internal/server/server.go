@@ -75,6 +75,7 @@ type Server struct {
 	videoSubtitleCache map[string]*videoSubtitleCacheEntry
 	videoSubtitleBytes int64
 	mediaAnalysis      *mediaAnalysisScheduler
+	thumbnails         *thumbnailScheduler
 	mediaProbeGroup    singleflight.Group
 	probeMediaSource   func(context.Context, File) (storage.MediaProbe, error)
 	archiveSlots       chan struct{}
@@ -125,6 +126,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		videoFMP4Slots: make(chan struct{}, 2), videoFMP4Sessions: make(map[string]*videoFMP4Session),
 		videoSubtitleCache: make(map[string]*videoSubtitleCacheEntry),
 		mediaAnalysis:      newMediaAnalysisScheduler(2),
+		thumbnails:         newThumbnailScheduler(1),
 		archiveSlots:       make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
@@ -208,6 +210,9 @@ func (s *Server) Close() {
 	}
 	if s.mediaAnalysis != nil {
 		s.mediaAnalysis.close()
+	}
+	if s.thumbnails != nil {
+		s.thumbnails.close()
 	}
 	s.audioHLSMu.Lock()
 	sessions := make([]*audioHLSSession, 0, len(s.audioHLSSessions))
@@ -311,7 +316,6 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/book/progress", s.bookProgress)
 			r.Put("/files/{id}/book/progress", s.saveBookProgress)
 			r.Get("/files/{id}/thumbnail", s.thumbnail)
-			r.Put("/files/{id}/thumbnail", s.saveThumbnail)
 			r.Get("/files/{id}/share", s.getShare)
 			r.Post("/files/{id}/share", s.createShare)
 			r.Delete("/files/{id}/share", s.revokeShare)
@@ -926,6 +930,9 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Close(); err != nil {
 		problem(w, 500, "database error")
 		return
+	}
+	for _, file := range out {
+		s.scheduleVideoThumbnail(file)
 	}
 	var totalBytes, fileCount int64
 	if err := s.db.QueryRowContext(r.Context(), `SELECT total_bytes,file_count FROM directory_stats WHERE directory_id=?`, parent.ID).Scan(&totalBytes, &fileCount); err != nil {
@@ -1972,6 +1979,7 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 	f, _ := s.file(r.Context(), u.FileID)
 	s.log.Info("blob upload completed", "file", f.Name, "mode", u.Mode, "size", info.Size, "object_key", u.ObjectKey)
 	s.scheduleMediaAnalysis(f)
+	s.scheduleVideoThumbnail(f)
 	writeJSON(w, 200, f)
 }
 

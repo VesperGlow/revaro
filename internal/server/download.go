@@ -700,6 +700,7 @@ func (m *downloadManager) commitImported(ctx context.Context, job downloadJob, f
 		parentID = rootID
 	}
 	dirs := map[string]string{"": parentID}
+	importedVideos := make([]File, 0)
 	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
 	for _, file := range files {
 		rel := file.path
@@ -732,6 +733,7 @@ func (m *downloadManager) commitImported(ctx context.Context, job downloadJob, f
 			}
 			return err
 		}
+		importedVideos = append(importedVideos, File{ID: fileID, ParentID: &currentParent, Name: name, Kind: "file", Size: file.size, MimeType: file.mimeType, ETag: file.etag, Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: file.objectKey})
 		if file.web != nil {
 			state := file.web.State
 			if state == "" {
@@ -755,7 +757,13 @@ func (m *downloadManager) commitImported(ctx context.Context, job downloadJob, f
 	if _, err := tx.ExecContext(ctx, `UPDATE download_jobs SET status='done',ingest_state='completed',completed_size=selected_size,download_speed=0,imported_size=selected_size,import_speed=0,current_file='',peers=0,error='',updated_at=? WHERE id=?`, now, job.ID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, file := range importedVideos {
+		m.server.scheduleVideoThumbnail(file)
+	}
+	return nil
 }
 
 func (m *downloadManager) pause(ctx context.Context, jobID string) error {

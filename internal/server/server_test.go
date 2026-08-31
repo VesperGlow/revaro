@@ -1586,28 +1586,13 @@ func TestThumbnails(t *testing.T) {
 		t.Fatal("cached thumbnail not served consistently")
 	}
 
-	// 视频：前端抽帧后 PUT 上传，之后 GET 命中；非 JPEG 拒绝。
+	// 视频：缓存未命中时只排入后台队列，请求本身不等待解码。
 	video := a.readyFile(t, "clip.mp4", []byte("video-bytes"))
 	if missing := a.request("GET", "/api/files/"+video.ID+"/thumbnail", nil, true); missing.Code != http.StatusNotFound {
 		t.Fatalf("missing video thumb=%d", missing.Code)
 	}
-	thumb := realJPEG(t, 48, 27)
-	if put := a.rawRequest("PUT", "/api/files/"+video.ID+"/thumbnail", thumb, true); put.Code != http.StatusNoContent {
-		t.Fatalf("put thumb=%d: %s", put.Code, put.Body.String())
-	}
-	got := a.request("GET", "/api/files/"+video.ID+"/thumbnail", nil, true)
-	if got.Code != http.StatusOK || got.Header().Get("Content-Type") != "image/jpeg" {
-		t.Fatalf("stored video thumb=%d type=%q", got.Code, got.Header().Get("Content-Type"))
-	}
-	decoded, format, err := image.Decode(bytes.NewReader(got.Body.Bytes()))
-	if err != nil || format != "jpeg" {
-		t.Fatalf("stored video thumb is not a valid JPEG: format=%q err=%v", format, err)
-	}
-	if bounds := decoded.Bounds(); bounds.Dx() != 48 || bounds.Dy() != 27 {
-		t.Fatalf("stored video thumb size=%dx%d", bounds.Dx(), bounds.Dy())
-	}
-	if bad := a.rawRequest("PUT", "/api/files/"+video.ID+"/thumbnail", []byte("not-a-jpeg"), true); bad.Code != http.StatusBadRequest {
-		t.Fatalf("bad thumb accepted: %d", bad.Code)
+	if put := a.rawRequest("PUT", "/api/files/"+video.ID+"/thumbnail", realJPEG(t, 48, 27), true); put.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("client thumbnail upload remains enabled: %d", put.Code)
 	}
 
 	// EPUB：缩略图 = 缩小后的内嵌封面。
@@ -1644,6 +1629,11 @@ func TestVideoThumbnailWithFFmpeg(t *testing.T) {
 	}
 	f := a.readyFile(t, "clip.mp4", data)
 	rr := a.request("GET", "/api/files/"+f.ID+"/thumbnail", nil, true)
+	deadline := time.Now().Add(10 * time.Second)
+	for rr.Code == http.StatusNotFound && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		rr = a.request("GET", "/api/files/"+f.ID+"/thumbnail", nil, true)
+	}
 	if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "image/jpeg" {
 		t.Fatalf("video thumb=%d type=%q", rr.Code, rr.Header().Get("Content-Type"))
 	}

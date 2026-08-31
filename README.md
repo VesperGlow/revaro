@@ -204,7 +204,6 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 | `GET` | `/api/files/{id}/book/cover` | EPUB 内嵌封面 |
 | `GET` / `PUT` | `/api/files/{id}/book/progress` | 阅读进度（页数与总页数） |
 | `GET` | `/api/files/{id}/thumbnail` | 持久化缩略图（图片/EPUB 封面服务端生成、视频由 Rust/libav 抽帧，不可变缓存） |
-| `PUT` | `/api/files/{id}/thumbnail` | 上传前端抽帧的 JPEG 缩略图（客户端兜底） |
 | `POST` | `/api/documents` | 在指定目录新建 UTF-8 文本文档 |
 | `GET` / `POST` / `DELETE` | `/api/files/{id}/share` | 查询、创建/重置或停止公开分享 |
 | `GET` | `/s/{token}` | 无需登录，通过稳定分享地址读取文件 |

@@ -318,7 +318,8 @@ func (m *downloadManager) commitURLDownload(ctx context.Context, jobID, name, mi
 		return errors.New("目标目录已被删除或不可用")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, ids.New(), parentID, name, objectKey, size, mimeType, etag, now, now); err != nil {
+	fileID := ids.New()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, fileID, parentID, name, objectKey, size, mimeType, etag, now, now); err != nil {
 		if isConflict(err) {
 			return errors.New("目标目录中已经有同名文件")
 		}
@@ -327,7 +328,11 @@ func (m *downloadManager) commitURLDownload(ctx context.Context, jobID, name, mi
 	if _, err := tx.ExecContext(ctx, `UPDATE url_download_jobs SET status='done',selected_size=?,completed_size=?,download_speed=0,error='',updated_at=? WHERE id=?`, size, size, now, jobID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	m.server.scheduleVideoThumbnail(File{ID: fileID, ParentID: &parentID, Name: name, Kind: "file", Size: size, MimeType: mimeType, ETag: etag, Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: objectKey})
+	return nil
 }
 
 func (m *downloadManager) failURLDownload(jobID string, err error) {

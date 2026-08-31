@@ -1426,7 +1426,6 @@ fn thumbnail_blocking(
         .best(Type::Video)
         .ok_or("media has no video stream")?;
     let stream_index = stream.index();
-    let time_base = stream.time_base();
     let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
         .map_err(|e| e.to_string())?;
     let mut decoder = context.decoder().video().map_err(|e| e.to_string())?;
@@ -1441,35 +1440,55 @@ fn thumbnail_blocking(
         Flags::BILINEAR,
     )
     .map_err(|e| e.to_string())?;
-    let seek_timestamp =
-        i64::from(time_base.denominator()) / i64::from(time_base.numerator()).max(1);
-    let _ = input.seek(seek_timestamp, ..seek_timestamp);
     let mut decoded = Video::empty();
     let mut rgb = Video::empty();
+    // libav exposes the probed container duration in AV_TIME_BASE units. Seek
+    // before decoding so only the GOP around the requested frame is read.
+    // Later positions avoid black leaders and title cards; stop at the first
+    // frame that is not overwhelmingly near-black.
+    let duration = input.duration();
+    let positions = if duration > 0 {
+        [
+            duration * 20 / 100,
+            duration * 35 / 100,
+            duration * 50 / 100,
+        ]
+    } else {
+        [1_000_000, 2_000_000, 3_000_000]
+    };
     let mut found = false;
-    'packets: for (packet_stream, packet) in input.packets() {
+    for seek_timestamp in positions {
         if cancel.is_cancelled() {
             return Err("thumbnail cancelled".into());
         }
-        if packet_stream.index() != stream_index {
+        if input.seek(seek_timestamp, ..seek_timestamp).is_err() {
             continue;
         }
-        decoder.send_packet(&packet).map_err(|e| e.to_string())?;
-        if decoder.receive_frame(&mut decoded).is_ok() {
-            scaler.run(&decoded, &mut rgb).map_err(|e| e.to_string())?;
-            found = true;
-            break 'packets;
+        decoder.flush();
+        for (packet_stream, packet) in input.packets() {
+            if cancel.is_cancelled() {
+                return Err("thumbnail cancelled".into());
+            }
+            if packet_stream.index() != stream_index {
+                continue;
+            }
+            if decoder.send_packet(&packet).is_err() {
+                continue;
+            }
+            if decoder.receive_frame(&mut decoded).is_ok() {
+                scaler.run(&decoded, &mut rgb).map_err(|e| e.to_string())?;
+                if !frame_is_near_black(&rgb, width, height) {
+                    found = true;
+                }
+                break;
+            }
+        }
+        if found {
+            break;
         }
     }
     if !found {
-        decoder.send_eof().map_err(|e| e.to_string())?;
-        if decoder.receive_frame(&mut decoded).is_ok() {
-            scaler.run(&decoded, &mut rgb).map_err(|e| e.to_string())?;
-            found = true;
-        }
-    }
-    if !found {
-        return Err("video produced no decodable frame".into());
+        return Err("video produced no usable thumbnail frame".into());
     }
     let row_bytes = width as usize * 3;
     let stride = rgb.stride(0);
@@ -1495,6 +1514,39 @@ fn thumbnail_blocking(
         return Err("thumbnail exceeds output limit".into());
     }
     Ok(jpeg)
+}
+
+// Sample the RGB frame on a coarse grid. Treat it as near-black only when at
+// least 98% of samples have very low luma; this deliberately simple check is
+// cheap and avoids rejecting ordinary dark scenes with visible highlights.
+fn frame_is_near_black(frame: &Video, width: u32, height: u32) -> bool {
+    let stride = frame.stride(0);
+    let plane = frame.data(0);
+    rgb_is_near_black(plane, stride, width, height)
+}
+
+fn rgb_is_near_black(plane: &[u8], stride: usize, width: u32, height: u32) -> bool {
+    let step_x = (width / 64).max(1) as usize;
+    let step_y = (height / 36).max(1) as usize;
+    let mut samples = 0usize;
+    let mut black = 0usize;
+    for y in (0..height as usize).step_by(step_y) {
+        for x in (0..width as usize).step_by(step_x) {
+            let offset = y * stride + x * 3;
+            if offset + 2 >= plane.len() {
+                continue;
+            }
+            samples += 1;
+            let luma = (u16::from(plane[offset]) * 54
+                + u16::from(plane[offset + 1]) * 183
+                + u16::from(plane[offset + 2]) * 19)
+                / 256;
+            if luma < 16 {
+                black += 1;
+            }
+        }
+    }
+    samples > 0 && black * 100 >= samples * 98
 }
 
 fn fit(width: u32, height: u32, max_dimension: u32) -> (u32, u32) {
@@ -1852,6 +1904,20 @@ pub(crate) fn external_subtitle_path(
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn near_black_detection_allows_visible_frames() {
+        let black = vec![0_u8; 16 * 9 * 3];
+        assert!(rgb_is_near_black(&black, 16 * 3, 16, 9));
+
+        let mut visible = black;
+        // More than 2% bright samples makes the deliberately coarse detector
+        // accept the frame, while a tiny isolated compression speck does not.
+        for index in 0..4 {
+            visible[index * 3..index * 3 + 3].copy_from_slice(&[180, 180, 180]);
+        }
+        assert!(!rgb_is_near_black(&visible, 16 * 3, 16, 9));
+    }
     #[test]
     fn rational_time_is_bounded() {
         assert_eq!(millis(90_000, Rational(1, 90_000)), 1000);
