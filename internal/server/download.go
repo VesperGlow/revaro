@@ -198,7 +198,7 @@ var blockedDownloadPrefixes = func() []netip.Prefix {
 }()
 
 func (m *downloadManager) restore() {
-	rows, err := m.server.db.QueryContext(m.ctx, `SELECT id,source_type,source,metainfo,CASE WHEN status='failed' AND ingest_state='unsupported' THEN 'unsupported' ELSE status END FROM download_jobs WHERE status IN ('metadata','waiting','queued','downloading','paused','importing') OR (status='failed' AND ingest_state='unsupported') ORDER BY created_at`)
+	rows, err := m.server.db.QueryContext(m.ctx, `SELECT id,source_type,source,metainfo,status FROM download_jobs WHERE status IN ('metadata','waiting','queued','downloading','paused','importing','failed') ORDER BY created_at`)
 	if err != nil {
 		m.server.log.Error("download task restore scan failed", "error", err)
 		return
@@ -248,9 +248,10 @@ func (m *downloadManager) attach(jobID, sourceType, source string, encodedMeta [
 		if !m.runBackground(func() { m.importRuntime(runtime) }) {
 			cancel()
 		}
-	case "unsupported":
-		// Keep the restored torrent paused so explicit deletion or stale-task
-		// cleanup can remove the retained unsupported staging safely.
+	case "failed":
+		// Failed downloads and ingests retain their staging. Reattach them in a
+		// paused state so a user retry can continue without fetching the payload
+		// again; removal and stale-task cleanup remain explicit deletion paths.
 		_ = m.bt.PauseTorrent(runtime.ctx, runtime.torrentID)
 	default:
 		m.setStatus(jobID, "waiting", "")
@@ -783,8 +784,25 @@ func (m *downloadManager) resume(ctx context.Context, jobID string) error {
 		return errors.New("下载任务未运行")
 	}
 	job, err := m.get(ctx, jobID, false)
-	if err != nil || job.Status != "paused" {
+	if err != nil || (job.Status != "paused" && job.Status != "failed") {
 		return errors.New("任务当前不能继续")
+	}
+	if job.Status == "failed" && job.CompletedSize >= job.SelectedSize && job.SelectedSize > 0 {
+		runtime.mu.Lock()
+		finishing := runtime.importing
+		runtime.mu.Unlock()
+		if finishing {
+			return errors.New("上一次导入仍在收尾，请稍后重试")
+		}
+		_, err := m.server.db.ExecContext(ctx, `UPDATE download_jobs SET status='importing',ingest_state='probing',imported_size=0,import_speed=0,current_file='',download_speed=0,peers=0,error='',updated_at=? WHERE id=? AND status='failed'`, time.Now().UTC().Format(time.RFC3339Nano), jobID)
+		if err != nil {
+			return err
+		}
+		m.server.jobs.Changed()
+		if !m.runBackground(func() { m.importRuntime(runtime) }) {
+			return context.Canceled
+		}
+		return nil
 	}
 	runtime.mu.Lock()
 	active := runtime.starting
@@ -896,17 +914,20 @@ func (m *downloadManager) setStatus(jobID, status, jobError string) {
 func (m *downloadManager) fail(jobID string, err error) {
 	_, _ = m.server.db.Exec(`UPDATE download_jobs SET ingest_state='failed' WHERE id=?`, jobID)
 	m.setStatus(jobID, "failed", err.Error())
-	m.mu.Lock()
+	m.mu.RLock()
 	runtime := m.jobs[jobID]
-	delete(m.jobs, jobID)
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	if runtime != nil {
-		runtime.cancel()
+		// A failed processing/uploading attempt is retryable. Pause and retain
+		// librqbit's verified files; only success, user removal/cancellation, or
+		// the configured stale cleanup path may delete torrent staging.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		_ = m.bt.DeleteTorrent(ctx, runtime.torrentID)
+		if pauseErr := m.bt.PauseTorrent(ctx, runtime.torrentID); pauseErr != nil {
+			m.server.log.Warn("failed torrent pause for retained staging", "job", jobID, "error", pauseErr)
+		}
 		cancel()
 	}
-	m.server.log.Error("built-in torrent task failed", "job", jobID, "error", err)
+	m.server.log.Error("built-in torrent task failed; staging retained for retry", "job", jobID, "error", err)
 }
 
 func (m *downloadManager) unsupported(jobID string, fileIndex int, message string) {

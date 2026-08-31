@@ -8,9 +8,52 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/VesperGlow/revaro/internal/storage"
 )
+
+type retainedTorrentEngine struct {
+	mu      sync.Mutex
+	paused  int
+	deleted int
+	imports int
+}
+
+func (e *retainedTorrentEngine) AddTorrent(context.Context, string, string, []int, bool) (storage.TorrentAddResult, error) {
+	return storage.TorrentAddResult{}, nil
+}
+func (e *retainedTorrentEngine) TorrentDetails(context.Context, int) (storage.TorrentDetails, error) {
+	return storage.TorrentDetails{}, nil
+}
+func (e *retainedTorrentEngine) TorrentStats(context.Context, int) (storage.TorrentStats, error) {
+	return storage.TorrentStats{}, nil
+}
+func (e *retainedTorrentEngine) SelectTorrentFiles(context.Context, int, []int) error { return nil }
+func (e *retainedTorrentEngine) StartTorrent(context.Context, int) error              { return nil }
+func (e *retainedTorrentEngine) PauseTorrent(context.Context, int) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.paused++
+	return nil
+}
+func (e *retainedTorrentEngine) ImportTorrent(context.Context, int, []storage.TorrentImportFile) ([]storage.TorrentImportedFile, error) {
+	e.mu.Lock()
+	e.imports++
+	e.mu.Unlock()
+	return nil, errors.New("fixture ingest failure")
+}
+func (e *retainedTorrentEngine) DeleteTorrent(context.Context, int) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.deleted++
+	return nil
+}
+func (e *retainedTorrentEngine) StreamTorrent(context.Context, int, int, int64, int64) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
 
 func TestParseByteRangeHTTPForms(t *testing.T) {
 	for _, tc := range []struct {
@@ -130,5 +173,77 @@ func TestSafeTorrentPath(t *testing.T) {
 		if _, err := safeTorrentPath(value); err == nil {
 			t.Errorf("unsafe path %q accepted", value)
 		}
+	}
+}
+
+func TestFailedTorrentStagingIsRetainedUntilExplicitRemoval(t *testing.T) {
+	app := newTestApp(t)
+	engine := &retainedTorrentEngine{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager := &downloadManager{
+		server: app.srv, bt: engine, ctx: ctx, cancel: cancel,
+		jobs: make(map[string]*downloadRuntime), urlJobs: make(map[string]*urlDownloadRuntime),
+	}
+	app.srv.downloads = manager
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	const jobID = "retained-failed-torrent"
+	if _, err := app.db.Exec(`INSERT INTO download_jobs(id,parent_id,source_type,source,status,ingest_state,selected_size,completed_size,created_at,updated_at) VALUES(?,?,'magnet','magnet:?xt=urn:btih:retained','importing','processing',100,100,?,?)`, jobID, RootID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	runtimeCtx, runtimeCancel := context.WithCancel(ctx)
+	runtime := &downloadRuntime{jobID: jobID, torrentID: 42, ctx: runtimeCtx, cancel: runtimeCancel}
+	manager.jobs[jobID] = runtime
+
+	manager.fail(jobID, errors.New("mux failed"))
+	engine.mu.Lock()
+	paused, deleted := engine.paused, engine.deleted
+	engine.mu.Unlock()
+	if paused != 1 || deleted != 0 {
+		t.Fatalf("after failure paused=%d deleted=%d", paused, deleted)
+	}
+	if runtimeCtx.Err() != nil || manager.jobs[jobID] != runtime {
+		t.Fatal("failed torrent runtime was cancelled or detached")
+	}
+	var status, ingestState string
+	if err := app.db.QueryRow(`SELECT status,ingest_state FROM download_jobs WHERE id=?`, jobID).Scan(&status, &ingestState); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || ingestState != "failed" {
+		t.Fatalf("status=%q ingest_state=%q", status, ingestState)
+	}
+	if err := manager.resume(context.Background(), jobID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		engine.mu.Lock()
+		imports, retryDeletes := engine.imports, engine.deleted
+		engine.mu.Unlock()
+		runtime.mu.Lock()
+		importing := runtime.importing
+		runtime.mu.Unlock()
+		var retryStatus string
+		_ = app.db.QueryRow(`SELECT status FROM download_jobs WHERE id=?`, jobID).Scan(&retryStatus)
+		if imports == 1 && retryStatus == "failed" && !importing {
+			if retryDeletes != 0 {
+				t.Fatalf("retry failure deleted=%d torrents", retryDeletes)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retry did not invoke torrent import")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := manager.remove(context.Background(), jobID); err != nil {
+		t.Fatal(err)
+	}
+	engine.mu.Lock()
+	deleted = engine.deleted
+	engine.mu.Unlock()
+	if deleted != 1 {
+		t.Fatalf("explicit removal deleted=%d torrents", deleted)
 	}
 }

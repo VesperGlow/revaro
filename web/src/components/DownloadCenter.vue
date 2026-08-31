@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CirclePlay, Download, Pause, Play, Plus, Trash2, X } from 'lucide-vue-next'
+import { CirclePlay, Download, Pause, Play, Plus, RotateCcw, Trash2, X } from 'lucide-vue-next'
 import { api } from '../api'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
@@ -127,7 +127,7 @@ watch(()=>props.jobs.length,(length,previous)=>{if(!length&&previous&&center.val
       <div v-else class="download-list">
         <article v-for="job in jobs" :key="job.id">
           <button class="task-main" @click="job.source_type!=='url'&&['waiting','queued','downloading','paused','importing'].includes(job.status)&&openJob(job)"><span class="task-icon"><Download /></span><span class="task-copy"><strong :title="job.name">{{ job.name||'获取种子元数据…' }}</strong><small>{{ job.selected_size||job.completed_size?`${formatSize(job.selected_size||job.completed_size)} · `:'' }}{{ statusText(job) }}</small><i><b :class="job.status" :style="{width:`${progress(job)}%`}"></b></i></span><em>{{ job.selected_size||job.status==='done'?`${progress(job)}%`:'—' }}</em></button>
-          <span class="task-actions"><button v-if="job.status==='downloading'||job.status==='queued'" title="暂停" aria-label="暂停" @click="taskAction(job,'pause')"><Pause /></button><button v-else-if="job.status==='paused'" title="继续" aria-label="继续" @click="taskAction(job,'resume')"><Play /></button><button v-else-if="job.status==='waiting'" title="选择文件" @click="openJob(job)">选择</button><button title="删除任务" aria-label="删除任务" @click="removeTask(job)"><Trash2 /></button></span>
+          <span class="task-actions"><button v-if="job.status==='downloading'||job.status==='queued'" title="暂停" aria-label="暂停" @click="taskAction(job,'pause')"><Pause /></button><button v-else-if="job.status==='paused'" title="继续" aria-label="继续" @click="taskAction(job,'resume')"><Play /></button><button v-else-if="job.status==='failed'&&job.source_type!=='url'" title="重试任务" aria-label="重试任务" @click="taskAction(job,'resume')"><RotateCcw /></button><button v-else-if="job.status==='waiting'" title="选择文件" @click="openJob(job)">选择</button><button title="删除任务" aria-label="删除任务" @click="removeTask(job)"><Trash2 /></button></span>
         </article>
       </div>
     </section>

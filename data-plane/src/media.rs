@@ -690,11 +690,14 @@ impl AudioEncode {
 
 enum Transform {
     Copy {
+        source: usize,
         dest: usize,
         input_time_base: Rational,
         output_time_base: Rational,
         start_pts: i64,
         next_dts: Option<i64>,
+        timestamp_offset: i64,
+        last_mux_dts: Option<i64>,
     },
     Video(VideoEncode),
     Audio(AudioEncode),
@@ -707,11 +710,14 @@ fn process_transform(
 ) -> Result<(), String> {
     match transform {
         Transform::Copy {
+            source,
             dest,
             input_time_base,
             output_time_base,
             start_pts,
             next_dts,
+            timestamp_offset,
+            last_mux_dts,
         } => {
             let original_pts = packet.pts();
             let original_dts = packet.dts();
@@ -739,9 +745,12 @@ fn process_transform(
                 *next_dts = Some(value.saturating_add(packet.duration().max(1)));
             }
             packet.rescale_ts(*input_time_base, *output_time_base);
+            normalize_copy_timestamps(packet, timestamp_offset, last_mux_dts);
             packet.set_position(-1);
             packet.set_stream(*dest);
-            packet.write_interleaved(output).map_err(|e| e.to_string())
+            packet
+                .write_interleaved(output)
+                .map_err(|e| format!("mux copied input stream {source} as MP4 stream {dest}: {e}"))
         }
         Transform::Video(video) => video.send(packet, output),
         Transform::Audio(audio) => audio.send(packet, output),
@@ -772,12 +781,44 @@ fn copy_stream(
         (*target.parameters().as_mut_ptr()).codec_tag = 0;
     }
     Ok(Transform::Copy {
+        source: stream.index(),
         dest: target.index(),
         input_time_base: stream.time_base(),
         output_time_base: Rational(0, 1),
         start_pts: seconds_to_pts(start_seconds, stream.time_base()),
         next_dts: None,
+        timestamp_offset: 0,
+        last_mux_dts: None,
     })
+}
+
+// Some Matroska remuxes contain a timestamp discontinuity at the beginning of
+// a track (observed as video DTS 3690 followed by 0). The MP4 muxer rejects the
+// second packet with EINVAL. Keep the supplied PTS/DTS relationship, but carry
+// a stable offset across the discontinuity so decoded timestamps remain
+// strictly increasing instead of adjusting just one packet and failing again.
+fn normalize_copy_timestamps(
+    packet: &mut Packet,
+    timestamp_offset: &mut i64,
+    last_mux_dts: &mut Option<i64>,
+) {
+    let Some(raw_dts) = packet.dts() else {
+        return;
+    };
+    let mut dts = raw_dts.saturating_add(*timestamp_offset);
+    if let Some(last) = *last_mux_dts
+        && dts <= last
+    {
+        let step = packet.duration().max(1);
+        let increase = last.saturating_add(step).saturating_sub(dts);
+        *timestamp_offset = timestamp_offset.saturating_add(increase);
+        dts = raw_dts.saturating_add(*timestamp_offset);
+    }
+    packet.set_dts(Some(dts));
+    if let Some(pts) = packet.pts() {
+        packet.set_pts(Some(pts.saturating_add(*timestamp_offset)));
+    }
+    *last_mux_dts = Some(dts);
 }
 
 fn setup_video_encode(
@@ -1810,6 +1851,7 @@ pub(crate) fn external_subtitle_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
     #[test]
     fn rational_time_is_bounded() {
         assert_eq!(millis(90_000, Rational(1, 90_000)), 1000);
@@ -1836,5 +1878,124 @@ mod tests {
         assert_eq!(web_audio_mode(codec::Id::AC3), Some(true));
         assert_eq!(web_audio_mode(codec::Id::EAC3), Some(true));
         assert_eq!(web_audio_mode(codec::Id::OPUS), None);
+    }
+
+    #[test]
+    fn copied_packet_timestamp_reset_gets_a_stable_offset() {
+        let mut offset = 0;
+        let mut last = None;
+        let mut first = Packet::empty();
+        first.set_dts(Some(3690));
+        first.set_pts(Some(3690));
+        first.set_duration(40);
+        normalize_copy_timestamps(&mut first, &mut offset, &mut last);
+        assert_eq!(
+            (first.dts(), first.pts(), offset),
+            (Some(3690), Some(3690), 0)
+        );
+
+        let mut reset = Packet::empty();
+        reset.set_dts(Some(0));
+        reset.set_pts(Some(80));
+        reset.set_duration(40);
+        normalize_copy_timestamps(&mut reset, &mut offset, &mut last);
+        assert_eq!(
+            (reset.dts(), reset.pts(), offset),
+            (Some(3730), Some(3810), 3730)
+        );
+
+        let mut following = Packet::empty();
+        following.set_dts(Some(40));
+        following.set_pts(Some(120));
+        following.set_duration(40);
+        normalize_copy_timestamps(&mut following, &mut offset, &mut last);
+        assert_eq!(
+            (following.dts(), following.pts(), offset),
+            (Some(3770), Some(3850), 3730)
+        );
+    }
+
+    #[test]
+    fn web_ingest_handles_hevc_aac_eac3_and_two_ass_tracks() {
+        if Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(Stdio::null())
+            .status()
+            .is_err()
+        {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let ass = "[Script Info]\nScriptType: v4.00+\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:00.80,Default,,0,0,0,,fixture\n";
+        let ass_one = temp.path().join("one.ass");
+        let ass_two = temp.path().join("two.ass");
+        std::fs::write(&ass_one, ass).unwrap();
+        std::fs::write(&ass_two, ass).unwrap();
+        let input = temp.path().join("kaguya-layout.mkv");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=128x72:rate=12",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=660:sample_rate=48000",
+            ])
+            .arg("-i")
+            .arg(&ass_one)
+            .arg("-i")
+            .arg(&ass_two)
+            .args([
+                "-t",
+                "1",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:a:0",
+                "-map",
+                "3:s:0",
+                "-map",
+                "4:s:0",
+                "-c:v",
+                "libx265",
+                "-x265-params",
+                "pools=1:frame-threads=1",
+                "-pix_fmt",
+                "yuv420p10le",
+                "-c:a:0",
+                "aac",
+                "-c:a:1",
+                "eac3",
+                "-c:s",
+                "ass",
+                "-y",
+            ])
+            .arg(&input)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        if !status.success() {
+            return;
+        }
+        let output = temp.path().join("playback.mp4");
+        let prepared = prepare_web_media(&input, &output, CancellationToken::new()).unwrap();
+        assert_eq!(prepared.video_codec, "hevc");
+        assert_eq!(prepared.audio_codec, "aac");
+        assert_eq!(prepared.subtitles.len(), 2);
+        let probe = format::input(&output).unwrap();
+        let codecs: Vec<_> = probe.streams().map(|s| s.parameters().id()).collect();
+        assert_eq!(codecs, [codec::Id::HEVC, codec::Id::AAC]);
     }
 }
