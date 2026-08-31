@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 const css=readFileSync(new URL('./style.css',import.meta.url),'utf8')
+const videoPlayer=readFileSync(new URL('./components/VideoPlayer.vue',import.meta.url),'utf8')
 
 describe('audio subtitle header layout',()=>{
   it('keeps the cue count clear of the floating close button',()=>{
@@ -16,5 +17,16 @@ describe('media control visual composition',()=>{
   it('merges the audio timeline with the content boundary',()=>{
     expect(css).toContain('.audio-preview .audio-playback::before')
     expect(css).toContain('margin-top: -17px')
+  })
+
+  it('balances the desktop transport row within the area below the timeline',()=>{
+    expect(css).toContain('padding-bottom: max(18px,env(safe-area-inset-bottom,0px))')
+    expect(css).toContain('@media (max-width:700px)')
+    expect(css).toContain('padding-bottom:max(7px,env(safe-area-inset-bottom,0px))')
+  })
+
+  it('keeps subtitles clear of visible desktop controls while preserving mobile spacing',()=>{
+    expect(videoPlayer).toContain('.video-subtitle-overlay.raised{bottom:calc(var(--subtitle-image-bottom) + clamp(100px,14%,150px))}')
+    expect(videoPlayer).toContain('.video-subtitle-overlay.raised{bottom:calc(var(--subtitle-image-bottom) + 84px)}')
   })
 })

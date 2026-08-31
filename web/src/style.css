@@ -7050,7 +7050,7 @@ button:disabled {
 .audio-preview .audio-playback {
   position: relative;
   padding-top: 0;
-  padding-bottom: max(10px,env(safe-area-inset-bottom,0px));
+  padding-bottom: max(18px,env(safe-area-inset-bottom,0px));
   border-top: 0;
 }
 .audio-preview .audio-playback::before {
