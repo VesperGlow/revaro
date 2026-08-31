@@ -402,7 +402,7 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusNotFound, "embedded subtitle not found")
 			return
 		}
-		cacheKey := fmt.Sprintf("embedded-v1:%s:%s:%s:%d", video.ID, video.ETag, video.UpdatedAt, index)
+		cacheKey := fmt.Sprintf("embedded-v2:%s:%s:%s:%d", video.ID, video.ETag, video.UpdatedAt, index)
 		vtt, convertErr := s.cachedVideoSubtitle(r.Context(), cacheKey, func(workCtx context.Context) ([]byte, error) {
 			allowed, probeErr := s.findEmbeddedVideoSubtitles(workCtx, video)
 			if probeErr != nil {
@@ -444,7 +444,7 @@ func (s *Server) videoSubtitle(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "matching subtitle not found")
 		return
 	}
-	cacheKey := fmt.Sprintf("external-v1:%s:%s:%s", subtitle.ID, subtitle.ETag, subtitle.UpdatedAt)
+	cacheKey := fmt.Sprintf("external-v2:%s:%s:%s", subtitle.ID, subtitle.ETag, subtitle.UpdatedAt)
 	vtt, err := s.cachedVideoSubtitle(r.Context(), cacheKey, func(workCtx context.Context) ([]byte, error) {
 		return s.subtitleAsWebVTT(workCtx, *subtitle)
 	})

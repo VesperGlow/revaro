@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     io::{self, Read, Write},
     path::Path,
@@ -1237,10 +1238,16 @@ fn embedded_subtitle(
         // otherwise valid embedded ASS cues effectively impossible to see.
         let end = start + subtitle_cue_duration(display_duration, packet_duration);
         let mut lines = Vec::new();
+        let mut settings = "";
         for rect in subtitle.rects() {
             match rect {
                 ffmpeg::subtitle::Rect::Text(value) => lines.push(value.get().to_string()),
-                ffmpeg::subtitle::Rect::Ass(value) => lines.push(strip_decoded_ass(value.get())),
+                ffmpeg::subtitle::Rect::Ass(value) => {
+                    if settings.is_empty() {
+                        settings = decoded_ass_vtt_settings(value.get());
+                    }
+                    lines.push(strip_decoded_ass(value.get()));
+                }
                 _ => {}
             }
         }
@@ -1248,6 +1255,7 @@ fn embedded_subtitle(
             output.push_str(&vtt_time(start));
             output.push_str(" --> ");
             output.push_str(&vtt_time(end));
+            output.push_str(settings);
             output.push('\n');
             output.push_str(&lines.join("\n"));
             output.push_str("\n\n");
@@ -1275,6 +1283,49 @@ fn srt_to_vtt(text: &str) -> String {
 
 fn ass_to_vtt(text: &str) -> String {
     let mut out = String::from("WEBVTT\n\n");
+    let mut style_alignments = HashMap::new();
+    let mut style_format: Vec<String> = Vec::new();
+    let mut in_styles = false;
+    let mut legacy_ssa_styles = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            legacy_ssa_styles = trimmed.eq_ignore_ascii_case("[V4 Styles]");
+            in_styles = trimmed.eq_ignore_ascii_case("[V4+ Styles]") || legacy_ssa_styles;
+        } else if in_styles {
+            if let Some(value) = trimmed.strip_prefix("Format:") {
+                style_format = value
+                    .split(',')
+                    .map(|v| v.trim().to_ascii_lowercase())
+                    .collect();
+            } else if let Some(value) = trimmed.strip_prefix("Style:") {
+                let fields: Vec<_> = value.split(',').map(str::trim).collect();
+                let name = style_format
+                    .iter()
+                    .position(|v| v == "name")
+                    .and_then(|i| fields.get(i));
+                let alignment = style_format
+                    .iter()
+                    .position(|v| v == "alignment")
+                    .and_then(|i| fields.get(i))
+                    .and_then(|v| v.parse::<u8>().ok());
+                if let (Some(name), Some(alignment)) = (name, alignment) {
+                    // Legacy SSA uses 5/6/7 for top and 9/10/11 for middle;
+                    // normalize it to ASS's numpad-style alignment values.
+                    let alignment = if legacy_ssa_styles {
+                        match alignment {
+                            5..=7 => alignment + 2,
+                            9..=11 => alignment - 5,
+                            _ => alignment,
+                        }
+                    } else {
+                        alignment
+                    };
+                    style_alignments.insert(name.to_ascii_lowercase(), alignment);
+                }
+            }
+        }
+    }
     for line in text.lines() {
         let Some(raw) = line.strip_prefix("Dialogue:") else {
             continue;
@@ -1286,11 +1337,21 @@ fn ass_to_vtt(text: &str) -> String {
         let (Some(start), Some(end)) = (ass_time(fields[1]), ass_time(fields[2])) else {
             continue;
         };
+        let (body, override_alignment) = clean_ass_text(fields[9]);
+        if body.is_empty() {
+            continue;
+        }
+        let alignment = override_alignment.or_else(|| {
+            style_alignments
+                .get(&fields[3].trim().to_ascii_lowercase())
+                .copied()
+        });
         out.push_str(&vtt_time(start));
         out.push_str(" --> ");
         out.push_str(&vtt_time(end));
+        out.push_str(ass_vtt_settings(alignment));
         out.push('\n');
-        out.push_str(&strip_ass(fields[9]));
+        out.push_str(&body);
         out.push_str("\n\n");
     }
     out
@@ -1310,17 +1371,61 @@ fn strip_ass(value: &str) -> String {
     } else {
         value
     };
+    clean_ass_text(body).0
+}
+
+fn clean_ass_text(body: &str) -> (String, Option<u8>) {
     let mut result = String::new();
     let mut tag = false;
+    let mut tag_body = String::new();
+    let mut alignment = None;
+    let mut drawing = false;
     for ch in body.chars() {
         match ch {
-            '{' => tag = true,
-            '}' => tag = false,
-            _ if !tag => result.push(ch),
-            _ => {}
+            '{' if !tag => {
+                tag = true;
+                tag_body.clear();
+            }
+            '}' if tag => {
+                for candidate in 1..=9 {
+                    if tag_body.contains(&format!(r"\an{candidate}")) {
+                        alignment = Some(candidate);
+                    }
+                }
+                for command in tag_body.split('\\').map(str::trim) {
+                    if let Some(level) = command
+                        .strip_prefix('p')
+                        .and_then(|v| v.split_whitespace().next())
+                        .and_then(|v| v.parse::<u8>().ok())
+                    {
+                        drawing = level > 0;
+                    }
+                }
+                tag = false;
+            }
+            _ if tag => tag_body.push(ch),
+            _ if drawing => {}
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            _ => result.push(ch),
         }
     }
-    result.replace("\\N", "\n").replace("\\n", "\n")
+    (
+        result
+            .replace("\\N", "\n")
+            .replace("\\n", "\n")
+            .replace("\\h", " "),
+        alignment,
+    )
+}
+
+fn ass_vtt_settings(alignment: Option<u8>) -> &'static str {
+    match alignment {
+        Some(7..=9) => " line:10%",
+        Some(4..=6) => " line:50%",
+        _ => "",
+    }
 }
 
 fn strip_decoded_ass(value: &str) -> String {
@@ -1329,6 +1434,11 @@ fn strip_decoded_ass(value: &str) -> String {
     // and Text. Commas in Text must remain intact.
     let fields: Vec<_> = value.splitn(9, ',').collect();
     strip_ass(if fields.len() == 9 { fields[8] } else { value })
+}
+
+fn decoded_ass_vtt_settings(value: &str) -> &'static str {
+    let fields: Vec<_> = value.splitn(9, ',').collect();
+    ass_vtt_settings(clean_ass_text(if fields.len() == 9 { fields[8] } else { value }).1)
 }
 
 fn subtitle_cue_duration(display_duration: f64, packet_duration: f64) -> f64 {
@@ -1909,19 +2019,26 @@ fn embedded_subtitle_path(
                 subtitle.end().saturating_sub(subtitle.start()) as f64 / 1000.0,
                 packet_duration,
             );
-        let lines: Vec<_> = subtitle
-            .rects()
-            .filter_map(|rect| match rect {
-                ffmpeg::subtitle::Rect::Text(v) => Some(v.get().to_owned()),
-                ffmpeg::subtitle::Rect::Ass(v) => Some(strip_decoded_ass(v.get())),
-                _ => None,
-            })
-            .collect();
+        let mut lines = Vec::new();
+        let mut settings = "";
+        for rect in subtitle.rects() {
+            match rect {
+                ffmpeg::subtitle::Rect::Text(v) => lines.push(v.get().to_owned()),
+                ffmpeg::subtitle::Rect::Ass(v) => {
+                    if settings.is_empty() {
+                        settings = decoded_ass_vtt_settings(v.get());
+                    }
+                    lines.push(strip_decoded_ass(v.get()));
+                }
+                _ => {}
+            }
+        }
         if !lines.is_empty() {
             output.push_str(&format!(
-                "{} --> {}\n{}\n\n",
+                "{} --> {}{}\n{}\n\n",
                 vtt_time(start),
                 vtt_time(end),
+                settings,
                 lines.join("\n")
             ));
         }
@@ -1979,6 +2096,46 @@ mod tests {
             strip_decoded_ass(r"2,0,Dial_CH,,0,0,0,,{\an8}你好,世界\N第二行"),
             "你好,世界\n第二行"
         );
+        assert_eq!(
+            decoded_ass_vtt_settings(r"2,0,Dial_CH,,0,0,0,,{\an8}顶部"),
+            " line:10%"
+        );
+    }
+
+    #[test]
+    fn ass_conversion_discards_styles_and_keeps_basic_position() {
+        let input = r#"[V4+ Styles]
+Format: Name, Fontname, PrimaryColour, BackColour, BorderStyle, Outline, Shadow, Alignment
+Style: Top,Arial,&H00000000,&H00FFFFFF,3,4,4,8
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.50,Top,,0,0,0,,{\c&H000000&\bord5\shad4}黑字{\p1}特效{\p0}\N第二行 <tag> & text
+Dialogue: 0,0:00:04.00,0:00:05.00,Top,,0,0,0,,{\an2\3c&HFFFFFF&}底部
+"#;
+        let output = ass_to_vtt(input);
+        assert!(
+            output.contains(
+                "00:00:01.000 --> 00:00:03.500 line:10%\n黑字\n第二行 &lt;tag&gt; &amp; text"
+            ),
+            "{output}"
+        );
+        assert!(
+            output.contains("00:00:04.000 --> 00:00:05.000\n底部"),
+            "{output}"
+        );
+        for discarded in [
+            "PrimaryColour",
+            "BackColour",
+            "BorderStyle",
+            "\\bord",
+            "\\shad",
+            "\\p1",
+        ] {
+            assert!(
+                !output.contains(discarded),
+                "style leaked into WebVTT: {output}"
+            );
+        }
     }
 
     #[test]

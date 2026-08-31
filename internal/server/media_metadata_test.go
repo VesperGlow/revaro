@@ -51,7 +51,7 @@ func TestLegacyMediaMetadataIsReprobedAndEmbeddedSubtitlesBecomePlayable(t *test
 		t.Fatalf("updated metadata version=%d tracks=%+v err=%v", version, tracks, err)
 	}
 
-	cacheKey := "embedded-v1:" + file.ID + ":" + file.ETag + ":" + file.UpdatedAt + ":3"
+	cacheKey := "embedded-v2:" + file.ID + ":" + file.ETag + ":" + file.UpdatedAt + ":3"
 	ready := make(chan struct{})
 	close(ready)
 	app.srv.videoSubtitleCache[cacheKey] = &videoSubtitleCacheEntry{ready: ready, data: []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nlegacy ASS\n"), completedAt: time.Now()}

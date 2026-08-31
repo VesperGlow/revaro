@@ -99,7 +99,7 @@ describe('video subtitle timeline and lifecycle',()=>{
   })
   it('shows only the selected track',()=>{
     const first={mode:'disabled' as TextTrackMode},second={mode:'disabled' as TextTrackMode},tracks=[first,second]
-    setExclusiveSubtitleTrack(tracks,second);expect(tracks.map(track=>track.mode)).toEqual(['disabled','showing'])
+    setExclusiveSubtitleTrack(tracks,second);expect(tracks.map(track=>track.mode)).toEqual(['disabled','hidden'])
     setExclusiveSubtitleTrack(tracks,null);expect(tracks.map(track=>track.mode)).toEqual(['disabled','disabled'])
   })
   it('anchors subtitles to the contained image through letterboxing',()=>{

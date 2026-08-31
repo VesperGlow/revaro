@@ -66,7 +66,10 @@ export function subtitleTrackKey(id:string,mode:VideoPlaybackMode,streamOffset=0
 }
 
 export function setExclusiveSubtitleTrack<T extends MutableTextTrack>(tracks:ArrayLike<T>,selected:T|null):void{
-  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=selected&&tracks[index]===selected?'showing':'disabled'
+  // Revaro renders active cues in its own overlay. Keep the selected track
+  // hidden so the browser parses it and emits cuechange without also drawing
+  // a second, platform-styled caption (often a black/white background box).
+  for(let index=0;index<tracks.length;index+=1)tracks[index].mode=selected&&tracks[index]===selected?'hidden':'disabled'
 }
 
 export interface SelectableSubtitle { default?:boolean;forced?:boolean }

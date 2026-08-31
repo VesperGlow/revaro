@@ -16,6 +16,7 @@ const actionMenu=ref<HTMLDetailsElement|null>(null)
 const subtitles=ref<VideoSubtitleTrack[]>([])
 const activeSubtitle=ref(-1)
 const activeSubtitleLines=ref<string[]>([])
+const subtitlePlacement=ref<'top'|'middle'|'bottom'>('bottom')
 const subtitleImageBottom=ref(0)
 const subtitleImageInset=ref(0)
 const directMode=ref(/\.(mp4|m4v|webm|ogv|mov)$/i.test(props.item.name))
@@ -99,7 +100,17 @@ function updateSubtitleBounds(){
 }
 function updateActiveSubtitle(){
   const cues=cueTrack?.activeCues
-  activeSubtitleLines.value=cues?Array.from(cues).flatMap(cue=>(cue as VTTCue).text.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)):[]
+  const cue=cues?.[0] as VTTCue|undefined
+  const line=cue&&typeof cue.line==='number'&&!cue.snapToLines?cue.line:100
+  subtitlePlacement.value=line<=25?'top':line<75?'middle':'bottom'
+  activeSubtitleLines.value=cues?Array.from(cues).flatMap(cue=>subtitleCueLines((cue as VTTCue).text)):[]
+}
+function subtitleCueLines(text:string):string[]{
+  // cue.text is the WebVTT source, not rendered text. Strip valid VTT inline
+  // markup before Vue escapes/displays it in Revaro's style.
+  const plain=text.replace(/<\/?(?:b|i|u|ruby|rt)(?:\s[^>]*)?>/gi,'').replace(/<v(?:\s[^>]*)?>/gi,'').replace(/<c(?:\.[^\s>]*)*>/gi,'').replace(/<\/[vc]>/gi,'')
+  const decoded=new DOMParser().parseFromString(plain,'text/html').body.textContent||''
+  return decoded.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)
 }
 function bindCueTrack(track:TextTrack|null){
   if(cueTrack===track){updateActiveSubtitle();return}
@@ -155,7 +166,7 @@ async function chooseSubtitle(event:Event){
 function onSubtitleLoad(event:Event){
   if(event.currentTarget!==subtitleElement.value)return
   const track=(event.currentTarget as HTMLTrackElement).track
-  applySubtitle();track.mode='showing'
+  applySubtitle();track.mode='hidden'
   updateActiveSubtitle()
   console.info('[revaro] subtitle track loaded')
   console.info('[revaro] subtitle cues:',track.cues?.length??0)
@@ -443,7 +454,7 @@ onBeforeUnmount(()=>{
       <track v-if="selectedSubtitle" ref="subtitleElement" :key="selectedSubtitleKey" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" default @load="onSubtitleLoad" @error="onSubtitleError">
       你的浏览器不支持这个视频格式。
     </video>
-    <div v-if="activeSubtitleLines.length" class="video-subtitle-overlay" :class="{raised:controlsVisible||!playing}" :style="subtitleStyle" aria-live="off"><span v-for="(line,index) in activeSubtitleLines" :key="`${index}:${line}`" :class="{secondary:index>0}">{{ line }}</span></div>
+    <div v-if="activeSubtitleLines.length" class="video-subtitle-overlay" :class="[subtitlePlacement,{raised:controlsVisible||!playing}]" :style="subtitleStyle" aria-live="off"><span v-for="(line,index) in activeSubtitleLines" :key="`${index}:${line}`" :class="{secondary:index>0}">{{ line }}</span></div>
     <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong :title="item.name">{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>
     <button v-if="!playing&&!starting&&!error" class="video-center-play" aria-label="播放" @click.stop="togglePlayback"><svg viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
     <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:'正在准备视频' }}</strong><small v-if="prepareKind==='initial'">{{ prepareMode==='mse'?'MSE 原码流 · fMP4 实时封装':'HLS 兼容流 · 正在生成启动缓冲' }}</small></div>
@@ -471,6 +482,7 @@ onBeforeUnmount(()=>{
 .video-player-shell video{display:block;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;background:var(--player-bg);object-fit:contain;box-shadow:none;cursor:pointer}
 .video-player-shell video::cue{color:transparent;background:transparent;text-shadow:none}
 .video-subtitle-overlay{position:absolute;z-index:7;right:calc(var(--subtitle-image-inset) + 4%);bottom:calc(var(--subtitle-image-bottom) + clamp(28px,5.2%,56px));left:calc(var(--subtitle-image-inset) + 4%);display:flex;align-items:center;color:#fff;text-align:center;pointer-events:none;transition:bottom .18s ease;flex-direction:column;gap:2px}.video-subtitle-overlay.raised{bottom:calc(var(--subtitle-image-bottom) + clamp(100px,14%,150px))}.video-subtitle-overlay span{max-width:min(92%,1100px);font-size:clamp(18px,2.35vw,32px);font-weight:700;line-height:1.16;overflow-wrap:anywhere;text-shadow:-1.5px -1.5px 0 #000,1.5px -1.5px 0 #000,-1.5px 1.5px 0 #000,1.5px 1.5px 0 #000,0 2px 5px #000,0 0 8px #000}.video-subtitle-overlay span.secondary{font-size:clamp(15px,1.8vw,25px);font-weight:600}
+.video-subtitle-overlay.top{top:calc(var(--subtitle-image-bottom) + 7%);bottom:auto}.video-subtitle-overlay.middle{top:50%;bottom:auto;transform:translateY(-50%)}
 .video-player-shell.cursor-hidden,.video-player-shell.cursor-hidden *{cursor:none!important}
 .video-top-shade{position:absolute;z-index:9;inset:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:max(18px,env(safe-area-inset-top,0px)) max(22px,env(safe-area-inset-right,0px)) 72px max(22px,env(safe-area-inset-left,0px));background:linear-gradient(180deg,#071018db 0%,#0710188c 42%,transparent 100%);color:var(--player-text);opacity:0;pointer-events:none;transition:opacity .2s}
 .video-top-shade.visible{opacity:1}.video-title-group{display:flex;align-items:center;min-width:0;gap:10px}.video-top-shade strong{min-width:0;max-width:100%;overflow:hidden;color:var(--player-text);font-size:15px;font-weight:650;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000}.video-top-shade>span{flex:0 0 auto;padding:5px 9px;border:1px solid var(--player-border);border-radius:999px;background:#10182070;color:var(--player-muted);font-size:10px;backdrop-filter:blur(8px)}
