@@ -70,16 +70,23 @@ impl ArchiveState {
     fn register(&self, job_id: &str, cancel: CancellationToken, progress: Arc<Mutex<Progress>>) {
         self.jobs
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(job_id.to_string(), ArchiveJobHandle { cancel, progress });
     }
 
     fn remove(&self, job_id: &str) {
-        self.jobs.lock().unwrap().remove(job_id);
+        self.jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(job_id);
     }
 
     fn get(&self, job_id: &str) -> Option<ArchiveJobHandle> {
-        self.jobs.lock().unwrap().get(job_id).cloned()
+        self.jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(job_id)
+            .cloned()
     }
 }
 
@@ -114,7 +121,13 @@ pub async fn progress(
     let value = state
         .archive
         .get(&job_id)
-        .map(|handle| handle.progress.lock().unwrap().clone())
+        .map(|handle| {
+            handle
+                .progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        })
         .unwrap_or_default();
     Ok(Json(value))
 }
@@ -154,7 +167,10 @@ pub async fn extract(
     };
     let mut guard = CancelOnDrop(cancel.clone());
     if tokio::fs::metadata(&source).await.is_err() {
-        progress.lock().unwrap().phase = "downloading".to_string();
+        progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .phase = "downloading".to_string();
         let object = state
             .s3
             .client
@@ -185,7 +201,10 @@ pub async fn extract(
                 result = file.write_all(&buffer[..n]) => result.map_err(ApiError::internal)?,
             }
             copied += n as u64;
-            progress.lock().unwrap().downloaded_bytes = copied as i64;
+            progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .downloaded_bytes = copied as i64;
         }
         file.flush().await.map_err(ApiError::internal)?;
         Ok(copied)
@@ -214,7 +233,10 @@ pub async fn extract(
         .await
         .map_err(ApiError::internal)?;
 
-    progress.lock().unwrap().phase = "extracting".to_string();
+    progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .phase = "extracting".to_string();
     let password = q.password.unwrap_or_default();
     let password_empty = password.is_empty();
     let limit = expanded_limit(q.archive_size);
@@ -358,7 +380,9 @@ fn extract_blocking(
                     }
                     file.write_all(&buffer[..n])?;
                     {
-                        let mut progress = progress.lock().unwrap();
+                        let mut progress = progress
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
                         progress.entries = count;
                         progress.expanded_bytes = total + written;
                     }

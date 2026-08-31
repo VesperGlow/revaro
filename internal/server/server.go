@@ -1048,10 +1048,12 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 	f := File{ID: ids.New(), ParentID: &in.ParentID, Name: in.Name, Kind: "file", Size: stored.Size, MimeType: documentMime(in.Name), ETag: stored.ETag, Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: key}
 	_, err = s.db.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, f.ID, in.ParentID, f.Name, f.Kind, f.objectKey, f.Size, f.MimeType, f.ETag, f.Status, now, now)
 	if isConflict(err) {
+		s.discardBlob(key)
 		problem(w, http.StatusConflict, "an item with that name already exists")
 		return
 	}
 	if err != nil {
+		s.discardBlob(key)
 		problem(w, http.StatusInternalServerError, "could not create document")
 		return
 	}
@@ -1118,10 +1120,12 @@ func (s *Server) updateDocument(w http.ResponseWriter, r *http.Request) {
 	// 而不是在检查与写入之间被静默覆盖（TOCTOU）。
 	res, err := s.db.ExecContext(r.Context(), `UPDATE files SET object_key=?,size=?,mime_type=?,etag=?,updated_at=? WHERE id=? AND (etag=? OR ?='' OR etag='')`, key, stored.Size, documentMime(f.Name), stored.ETag, now, f.ID, in.ETag, in.ETag)
 	if err != nil {
+		s.discardBlob(key)
 		problem(w, http.StatusInternalServerError, "document content changed but metadata update failed")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		s.discardBlob(key)
 		problem(w, http.StatusConflict, "document changed elsewhere; reopen it before saving")
 		return
 	}
@@ -1533,6 +1537,43 @@ func (s *Server) storeBlob(ctx context.Context, body io.Reader, size int64, mime
 		return "", storage.ObjectInfo{}, err
 	}
 	return key, info, nil
+}
+
+// discardBlob promptly rolls back an object uploaded before its metadata
+// transaction failed. Periodic GC remains the fallback if S3 is unavailable.
+func (s *Server) discardBlob(key string) {
+	s.discardBlobs([]string{key})
+}
+
+func (s *Server) discardBlobs(keys []string) {
+	filtered := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if key != "" {
+			filtered = append(filtered, key)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	s.runBackground(func() {
+		parent := s.audioHLSCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+		defer cancel()
+		for len(filtered) > 0 {
+			batch := filtered
+			if len(batch) > 1000 {
+				batch = filtered[:1000]
+			}
+			if err := s.storage.DeleteObjects(ctx, batch); err != nil {
+				s.log.Warn("uncommitted blob cleanup failed", "objects", len(batch), "error", err)
+				return
+			}
+			filtered = filtered[len(batch):]
+		}
+	})
 }
 
 func responseMime(f File) string {

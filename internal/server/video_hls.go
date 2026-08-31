@@ -142,13 +142,20 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusTooManyRequests, "another compatibility video stream is already active")
 		return
 	}
+	// The worker owns the slot only after runBackground accepts it. Keep
+	// ownership here until then so every setup/shutdown error returns capacity.
+	slotOwned := true
+	defer func() {
+		if slotOwned {
+			<-s.videoHLSSlots
+		}
+	}()
 	if err := os.MkdirAll(s.cfg.WorkDir, 0o700); err != nil {
 		problem(w, 500, "could not create media workspace")
 		return
 	}
 	dir, err := os.MkdirTemp(s.cfg.WorkDir, "revaro-video-hls-")
 	if err != nil {
-		<-s.videoHLSSlots
 		problem(w, http.StatusInternalServerError, "could not create compatibility stream")
 		return
 	}
@@ -167,6 +174,7 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusServiceUnavailable, "service is shutting down")
 		return
 	}
+	slotOwned = false
 	if err := waitForVideoHLS(r.Context(), session); err != nil {
 		s.removeVideoHLSSession(session.ID)
 		if errors.Is(err, context.DeadlineExceeded) {

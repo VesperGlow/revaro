@@ -291,6 +291,7 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 	}
 	progress(stored.Size)
 	if err := m.commitURLDownload(runtime.ctx, jobID, name, mimeType, key, stored.Size, stored.ETag); err != nil {
+		m.server.discardBlob(key)
 		if runtime.ctx.Err() == nil {
 			m.failURLDownload(jobID, err)
 		}

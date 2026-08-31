@@ -4,12 +4,22 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"io"
 	"strings"
 	"testing"
 	unicodeutf16 "unicode/utf16"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
+
+type repeatingByteReader byte
+
+func (r repeatingByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
+}
 
 func fakePNG(w, h int) []byte {
 	data := make([]byte, 33)
@@ -168,7 +178,13 @@ func TestEPUBRejectsDecompressionBomb(t *testing.T) {
 	write("mimetype", "application/epub+zip")
 	write("META-INF/container.xml", `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`)
 	write("OEBPS/content.opf", `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>炸弹</dc:title></metadata><manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>`)
-	write("OEBPS/ch1.xhtml", strings.Repeat("A", maxDecompressedTotal+1))
+	bomb, err := zw.Create("OEBPS/ch1.xhtml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.CopyN(bomb, repeatingByteReader('A'), maxDecompressedTotal+1); err != nil {
+		t.Fatal(err)
+	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}

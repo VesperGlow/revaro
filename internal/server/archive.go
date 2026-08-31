@@ -525,6 +525,17 @@ func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID st
 	}
 	job.update("importing", 35, "正在写入网盘")
 	objects := make([]extractedObject, 0)
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		keys := make([]string, 0, len(objects))
+		for _, object := range objects {
+			keys = append(keys, object.key)
+		}
+		s.discardBlobs(keys)
+	}()
 	for _, path := range paths {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() {
@@ -544,6 +555,7 @@ func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID st
 			return fmt.Errorf("upload extracted file %q to S3: %w", filepath.Base(path), storeErr)
 		}
 		if stored.Size != info.Size() {
+			s.discardBlob(key)
 			return fmt.Errorf("upload extracted file %q: stored size %d does not match local size %d", filepath.Base(path), stored.Size, info.Size())
 		}
 		rel, _ := filepath.Rel(outputDir, path)
@@ -554,6 +566,7 @@ func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID st
 	if err != nil {
 		return fmt.Errorf("commit extracted files: %w", err)
 	}
+	committed = true
 	job.mu.Lock()
 	job.Status, job.Progress, job.Message, job.OutputID, job.OutputName = "done", 100, "解压完成", rootID, rootName
 	job.passwordDeadline = time.Time{}

@@ -3,11 +3,43 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestHLSSetupFailureReturnsConcurrencySlot(t *testing.T) {
+	for _, tc := range []struct {
+		name, fileName, mimeType, endpoint string
+	}{
+		{"audio", "track.mp3", "audio/mpeg", "/api/files/%s/audio/hls"},
+		{"video", "movie.mp4", "video/mp4", "/api/files/%s/video/hls"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestApp(t)
+			file := app.readyFile(t, tc.fileName, []byte("not needed for setup failure"))
+			if _, err := app.db.Exec(`UPDATE files SET mime_type=? WHERE id=?`, tc.mimeType, file.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(app.srv.cfg.WorkDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(app.srv.cfg.WorkDir, []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			endpoint := fmt.Sprintf(tc.endpoint, file.ID)
+			for attempt := 0; attempt < 2; attempt++ {
+				response := app.request(http.MethodPost, endpoint, map[string]any{"start": 0}, true)
+				if response.Code != http.StatusInternalServerError {
+					t.Fatalf("attempt %d status=%d body=%s", attempt+1, response.Code, response.Body.String())
+				}
+			}
+		})
+	}
+}
 
 func writeHLSPlaylist(t *testing.T, path string, segments int) {
 	t.Helper()

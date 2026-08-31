@@ -20,6 +20,8 @@ const src = computed(() => captured.value || thumbURL.value)
 let disposed = false
 let io: IntersectionObserver|null = null
 let started = false
+let cancelCapture:(()=>void)|null=null
+let persistController:AbortController|null=null
 
 onMounted(() => {
   const cached = sessionCache.get(cacheKey())
@@ -30,6 +32,10 @@ onBeforeUnmount(() => {
   disposed = true
   io?.disconnect()
   io = null
+  cancelCapture?.()
+  cancelCapture = null
+  persistController?.abort()
+  persistController = null
 })
 
 function cacheKey(){ return props.file.id + ':' + (props.file.etag || '') }
@@ -94,8 +100,10 @@ function captureFrame(): Promise<string|null> {
       finished = true
       window.clearTimeout(timer)
       cleanup()
+      cancelCapture = null
       resolve(url)
     }
+    cancelCapture = () => finish(null)
     video.addEventListener('loadeddata', () => {
       if (finished) return
       if (video.duration > 0 && video.currentTime === 0) video.currentTime = Math.min(1, video.duration * 0.1)
@@ -110,15 +118,21 @@ function captureFrame(): Promise<string|null> {
 async function persist(dataURL: string){
   try {
     const blob = await (await fetch(dataURL)).blob()
+    if(disposed)return
+    const controller=new AbortController()
+    persistController=controller
     const response = await fetch(`/api/files/${props.file.id}/thumbnail`, {
       method: 'PUT',
       headers: { 'Content-Type': 'image/jpeg' },
       body: blob,
       credentials: 'same-origin',
+      signal: controller.signal,
     })
     if (!response.ok) console.warn('视频缩略图持久化失败', response.status)
   } catch (error) {
-    console.warn('视频缩略图持久化失败', error)
+    if(!disposed)console.warn('视频缩略图持久化失败', error)
+  } finally {
+    persistController=null
   }
 }
 </script>
