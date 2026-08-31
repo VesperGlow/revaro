@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, containedVideoInsets, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,video_codec:videoCodec,audio_codec:audioCodec,
@@ -101,6 +101,11 @@ describe('video subtitle timeline and lifecycle',()=>{
     const first={mode:'disabled' as TextTrackMode},second={mode:'disabled' as TextTrackMode},tracks=[first,second]
     setExclusiveSubtitleTrack(tracks,second);expect(tracks.map(track=>track.mode)).toEqual(['disabled','showing'])
     setExclusiveSubtitleTrack(tracks,null);expect(tracks.map(track=>track.mode)).toEqual(['disabled','disabled'])
+  })
+  it('anchors subtitles to the contained image through letterboxing',()=>{
+    expect(containedVideoInsets(1000,1000,1920,1080)).toEqual({bottom:218.75,horizontal:0})
+    expect(containedVideoInsets(1200,600,1080,1920)).toEqual({bottom:0,horizontal:431.25})
+    expect(containedVideoInsets(0,600,1920,1080)).toEqual({bottom:0,horizontal:0})
   })
   it('selects disposition defaults without relying on language or title metadata',()=>{
     expect(initialSubtitleIndex([{default:false},{default:true},{forced:true}])).toBe(1)

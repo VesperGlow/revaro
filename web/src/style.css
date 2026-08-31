@@ -7045,3 +7045,27 @@ button:disabled {
   .audio-preview .audio-transport-row .audio-controls { gap:3px; }
   .audio-chapter-menu > div { position:fixed;right:10px;bottom:max(78px,calc(env(safe-area-inset-bottom,0px) + 66px));left:10px;width:auto;max-height:min(52vh,440px); }
 }
+
+/* The timeline is the content/transport boundary; keep controls close without reducing targets. */
+.audio-preview .audio-playback {
+  position: relative;
+  padding-top: 0;
+  padding-bottom: max(10px,env(safe-area-inset-bottom,0px));
+  border-top: 0;
+}
+.audio-preview .audio-playback::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--line-strong);
+  content: "";
+}
+.audio-preview .audio-playback .audio-track-wrap { margin-top: -17px; margin-bottom: 0; }
+.audio-preview .audio-time { margin-top: 0; }
+.audio-preview .audio-transport-row { margin-top: 3px; }
+@media (max-width:700px) {
+  .audio-preview .audio-playback { padding-top: 0;padding-bottom:max(7px,env(safe-area-inset-bottom,0px)); }
+  .audio-preview .audio-transport-row { margin-top: 2px; }
+}

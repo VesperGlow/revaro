@@ -41,6 +41,17 @@ export function shouldHideVideoCursor(state:VideoCursorState):boolean{
   return state.playing&&!state.controlsVisible&&!state.starting&&!state.buffering&&!state.error
 }
 
+export interface ContainedVideoInsets { bottom:number;horizontal:number }
+
+/** Insets of the image produced by object-fit: contain inside its element. */
+export function containedVideoInsets(containerWidth:number,containerHeight:number,videoWidth:number,videoHeight:number):ContainedVideoInsets{
+  if(containerWidth<=0||containerHeight<=0||videoWidth<=0||videoHeight<=0)return {bottom:0,horizontal:0}
+  const containerRatio=containerWidth/containerHeight
+  const videoRatio=videoWidth/videoHeight
+  if(videoRatio>containerRatio)return {bottom:(containerHeight-containerWidth/videoRatio)/2,horizontal:0}
+  return {bottom:0,horizontal:(containerWidth-containerHeight*videoRatio)/2}
+}
+
 type MutableTextTrack=Pick<TextTrack,'mode'>
 
 export function subtitleURLForPlayback(url:string,mode:VideoPlaybackMode,streamOffset=0):string{

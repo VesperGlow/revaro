@@ -11,3 +11,10 @@ describe('audio subtitle header layout',()=>{
     expect(css).toContain('white-space: nowrap')
   })
 })
+
+describe('media control visual composition',()=>{
+  it('merges the audio timeline with the content boundary',()=>{
+    expect(css).toContain('.audio-preview .audio-playback::before')
+    expect(css).toContain('margin-top: -17px')
+  })
+})
