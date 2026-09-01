@@ -6,7 +6,7 @@ import { formatSize } from '../format'
 import type { BackgroundTask } from '../types'
 import DownloadCreateDialog from './DownloadCreateDialog.vue'
 
-const props=defineProps<{tasks:BackgroundTask[];parentId:string}>()
+const props=withDefaults(defineProps<{tasks:BackgroundTask[];parentId:string;hideTrigger?:boolean}>(),{hideTrigger:false})
 const emit=defineEmits<{changed:[];cancel:[task:BackgroundTask];retry:[task:BackgroundTask]}>()
 const center=ref<HTMLDetailsElement|null>(null)
 const download=ref<InstanceType<typeof DownloadCreateDialog>|null>(null)
@@ -19,6 +19,7 @@ const progress=computed(()=>active.value.length?Math.round(active.value.reduce((
 const labels:Record<string,string>={upload:'上传',bt:'BT 下载',url_download:'直链下载',archive_extract:'解压',audio_merge:'音频合并',video_hls:'视频 HLS',audio_hls:'音频 HLS',video_fmp4:'视频转换',subtitle:'字幕处理'}
 const status=(task:BackgroundTask)=>task.status==='waiting_input'?(task.type==='archive_extract'?'等待输入密码':'等待输入'):task.status==='retrying'?'等待重试':task.status==='queued'?'排队中':task.status==='running'?task.phase:task.status==='completed'?'已完成':task.status==='cancelled'?'已取消':task.error||'失败'
 function closeCenter(){if(center.value)center.value.open=false}
+function openCenter(){if(center.value)center.value.open=true}
 function openDownload(){closeCenter();download.value?.openCreate()}
 function openTask(task:BackgroundTask){if(task.type==='bt'&&['metadata','waiting'].includes(task.phase)){closeCenter();download.value?.openById(task.source_id||task.id)}else if(task.status==='waiting_input'&&task.type==='archive_extract'){closeCenter();passwordTask.value=task;password.value='';error.value=''}}
 async function submitPassword(){if(!passwordTask.value||!password.value)return;try{await api(`/api/tasks/${passwordTask.value.id}/input`,{method:'POST',body:JSON.stringify({password:password.value})});passwordTask.value=null;password.value='';emit('changed')}catch(e){error.value=(e as Error).message}}
@@ -28,11 +29,12 @@ function closeFromOutside(event:PointerEvent){const target=event.target;if(cente
 function closeFromEscape(event:KeyboardEvent){if(event.key!=='Escape')return;if(passwordTask.value){passwordTask.value=null;return}if(center.value?.open){closeCenter();center.value.querySelector<HTMLElement>('summary')?.focus()}}
 onMounted(()=>{document.addEventListener('pointerdown',closeFromOutside);document.addEventListener('keydown',closeFromEscape)})
 onBeforeUnmount(()=>{document.removeEventListener('pointerdown',closeFromOutside);document.removeEventListener('keydown',closeFromEscape)})
+defineExpose({openCenter,closeCenter})
 </script>
 
 <template>
   <details ref="center" class="task-center">
-    <summary title="任务中心"><Activity/><span v-if="active.length">{{ active.length }}</span></summary>
+    <summary v-show="!hideTrigger" title="任务中心"><Activity/><span v-if="active.length">{{ active.length }}</span></summary>
     <section class="task-panel">
       <header><div><strong>任务中心</strong><small>{{ active.length?`${active.length} 项运行中 · ${progress}%`:'最近任务' }}</small></div><span><button v-if="terminal.length" @click.prevent.stop="clearFinished">清除完成</button><button @click.prevent.stop="openDownload"><Plus/>新建下载</button></span></header>
       <p v-if="!tasks.length" class="empty">还没有后台任务</p>
