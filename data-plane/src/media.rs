@@ -3,6 +3,7 @@ use std::{
     env,
     io::{self, Read, Write},
     path::Path,
+    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -137,12 +138,54 @@ pub struct Subtitle {
     pub(crate) forced: bool,
 }
 
+fn external_subtitle_language(name: &str) -> String {
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    let normalized = stem.replace(['_', ' '], "-");
+    if has_subtitle_language_token(
+        &normalized,
+        &["cht", "tc", "traditional", "zh-tw", "zh-hk", "zh-hant"],
+    ) {
+        "cht".into()
+    } else if has_subtitle_language_token(
+        &normalized,
+        &["chs", "sc", "simplified", "zh-cn", "zh-sg", "zh-hans", "zh"],
+    ) {
+        "chs".into()
+    } else if ["ja", "jp", "jpn", "japanese"]
+        .iter()
+        .any(|token| normalized.split(['.', '-']).any(|part| part == *token))
+    {
+        "jpn".into()
+    } else if ["en", "eng", "english"]
+        .iter()
+        .any(|token| normalized.split(['.', '-']).any(|part| part == *token))
+    {
+        "eng".into()
+    } else if ["ko", "kr", "kor", "korean"]
+        .iter()
+        .any(|token| normalized.split(['.', '-']).any(|part| part == *token))
+    {
+        "kor".into()
+    } else {
+        "und".into()
+    }
+}
+
+fn has_subtitle_language_token(value: &str, tokens: &[&str]) -> bool {
+    tokens.iter().any(|token| {
+        value.split('.').any(|part| part == *token) || value.ends_with(&format!("-{token}"))
+    })
+}
+
 pub(crate) fn external_subtitle_meta(index: usize, name: &str) -> Subtitle {
     let stem = Path::new(name)
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or(name);
-    let language = stem.rsplit(['.', '_', '-']).next().unwrap_or("");
     Subtitle {
         index,
         codec: Path::new(name)
@@ -150,11 +193,88 @@ pub(crate) fn external_subtitle_meta(index: usize, name: &str) -> Subtitle {
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_ascii_lowercase(),
-        language: language.to_owned(),
+        language: external_subtitle_language(name),
         title: stem.to_owned(),
         default: false,
         forced: false,
     }
+}
+
+pub(crate) fn remux_mkv_sidecars(
+    source: &Path,
+    output: &Path,
+    subtitles: &[(usize, String, std::path::PathBuf)],
+) -> Result<(), String> {
+    if subtitles.is_empty() {
+        return Err("MKV subtitle remux requires at least one sidecar".into());
+    }
+    ffmpeg::init().map_err(|e| e.to_string())?;
+    let input = format::input(source).map_err(|e| format!("open MKV for subtitle remux: {e}"))?;
+    let original_streams = input.nb_streams() as usize;
+    let original_subtitles = input
+        .streams()
+        .filter(|stream| stream.parameters().medium() == Type::Subtitle)
+        .count();
+    let original_av: Vec<_> = input
+        .streams()
+        .filter(|stream| matches!(stream.parameters().medium(), Type::Video | Type::Audio))
+        .map(|stream| (stream.parameters().medium(), stream.parameters().id()))
+        .collect();
+    drop(input);
+
+    let mut command = Command::new("ffmpeg");
+    command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"]);
+    command.arg(source);
+    for (_, _, path) in subtitles {
+        command.arg("-i").arg(path);
+    }
+    command.args(["-map", "0"]);
+    for input_index in 1..=subtitles.len() {
+        command.args(["-map", &format!("{input_index}:s:0")]);
+    }
+    command.args(["-map_metadata", "0", "-map_chapters", "0", "-c", "copy"]);
+    for (offset, (_, name, _)) in subtitles.iter().enumerate() {
+        let stream_index = original_subtitles + offset;
+        let title = Path::new(name)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(name);
+        command
+            .arg(format!("-metadata:s:s:{stream_index}"))
+            .arg(format!("language={}", external_subtitle_language(name)))
+            .arg(format!("-metadata:s:s:{stream_index}"))
+            .arg(format!("title={title}"));
+        if Path::new(name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("vtt"))
+        {
+            command.arg(format!("-c:s:{stream_index}")).arg("srt");
+        }
+    }
+    command.arg("-y").arg(output);
+    let result = command
+        .output()
+        .map_err(|e| format!("start ffmpeg MKV subtitle remux: {e}"))?;
+    if !result.status.success() {
+        return Err(format!(
+            "ffmpeg MKV subtitle remux failed: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
+    }
+    let remuxed = format::input(output).map_err(|e| format!("validate remuxed MKV: {e}"))?;
+    if remuxed.nb_streams() as usize != original_streams + subtitles.len() {
+        return Err("remuxed MKV stream count mismatch".into());
+    }
+    let remuxed_av: Vec<_> = remuxed
+        .streams()
+        .filter(|stream| matches!(stream.parameters().medium(), Type::Video | Type::Audio))
+        .map(|stream| (stream.parameters().medium(), stream.parameters().id()))
+        .collect();
+    if remuxed_av != original_av {
+        return Err("remuxed MKV changed video or audio codecs".into());
+    }
+    Ok(())
 }
 
 pub async fn probe(
@@ -1919,7 +2039,12 @@ pub(crate) fn prepare_web_media(
                 mapping[stream.index()] = Some(transforms.len());
                 transforms.push(transform);
             }
-            Type::Subtitle if matches!(id, codec::Id::ASS | codec::Id::SSA | codec::Id::SUBRIP) => {
+            Type::Subtitle
+                if matches!(
+                    id,
+                    codec::Id::ASS | codec::Id::SSA | codec::Id::SUBRIP | codec::Id::WEBVTT
+                ) =>
+            {
                 let metadata = stream.metadata();
                 subtitle_meta.push(Subtitle {
                     index: stream.index(),
@@ -2100,6 +2225,119 @@ mod tests {
             decoded_ass_vtt_settings(r"2,0,Dial_CH,,0,0,0,,{\an8}顶部"),
             " line:10%"
         );
+    }
+
+    #[test]
+    fn sidecar_language_metadata_uses_matroska_language_codes() {
+        assert_eq!(external_subtitle_language("Movie.chs.ass"), "chs");
+        assert_eq!(external_subtitle_language("Movie.zh-CN.srt"), "chs");
+        assert_eq!(external_subtitle_language("Movie.zh_tw.vtt"), "cht");
+        assert_eq!(external_subtitle_language("Movie.ja.ass"), "jpn");
+        assert_eq!(external_subtitle_language("Movie.unknown.srt"), "und");
+    }
+
+    #[test]
+    fn mkv_sidecar_remux_copies_av_and_appends_soft_subtitles() {
+        if Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(Stdio::null())
+            .status()
+            .is_err()
+        {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let original_ass = temp.path().join("original.ass");
+        let japanese_ass = temp.path().join("Movie.ja.ass");
+        let chinese_srt = temp.path().join("Movie.zh-CN.srt");
+        let traditional_vtt = temp.path().join("Movie.zh-TW.vtt");
+        let source = temp.path().join("Movie.mkv");
+        let output = temp.path().join("remuxed.mkv");
+        std::fs::write(&original_ass, "[Script Info]\nScriptType: v4.00+\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:00.80,Default,,0,0,0,,original\n").unwrap();
+        std::fs::write(&japanese_ass, "[Script Info]\nScriptType: v4.00+\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:00.80,Default,,0,0,0,,日本語\n").unwrap();
+        std::fs::write(&chinese_srt, "1\n00:00:00,000 --> 00:00:00,800\n中文\n").unwrap();
+        std::fs::write(
+            &traditional_vtt,
+            "WEBVTT\n\n00:00:00.000 --> 00:00:00.800\n繁體\n",
+        )
+        .unwrap();
+        let created = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=32x32:r=2:d=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-i",
+            ])
+            .arg(&original_ass)
+            .args([
+                "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0", "-c:v", "mpeg4", "-c:a", "aac",
+                "-c:s", "ass", "-y",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(created.success());
+        let source_probe = format::input(&source).unwrap();
+        let source_av: Vec<_> = source_probe
+            .streams()
+            .filter(|stream| matches!(stream.parameters().medium(), Type::Video | Type::Audio))
+            .map(|stream| stream.parameters().id())
+            .collect();
+        drop(source_probe);
+
+        remux_mkv_sidecars(
+            &source,
+            &output,
+            &[
+                (4, "Movie.ja.ass".into(), japanese_ass),
+                (5, "Movie.zh-CN.srt".into(), chinese_srt),
+                (6, "Movie.zh-TW.vtt".into(), traditional_vtt),
+            ],
+        )
+        .unwrap();
+        let remuxed = format::input(&output).unwrap();
+        let remuxed_av: Vec<_> = remuxed
+            .streams()
+            .filter(|stream| matches!(stream.parameters().medium(), Type::Video | Type::Audio))
+            .map(|stream| stream.parameters().id())
+            .collect();
+        let subtitles: Vec<_> = remuxed
+            .streams()
+            .filter(|stream| stream.parameters().medium() == Type::Subtitle)
+            .map(|stream| {
+                (
+                    stream.metadata().get("language").unwrap_or("").to_owned(),
+                    stream.metadata().get("title").unwrap_or("").to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(remuxed_av, source_av);
+        assert_eq!(subtitles.len(), 4);
+        assert_eq!(subtitles[1], ("jpn".into(), "Movie.ja".into()));
+        assert_eq!(subtitles[2], ("chs".into(), "Movie.zh-CN".into()));
+        assert_eq!(subtitles[3], ("cht".into(), "Movie.zh-TW".into()));
+
+        let before = std::fs::read(&source).unwrap();
+        let invalid = temp.path().join("Movie.bad.ass");
+        let failed_output = temp.path().join("failed.mkv");
+        std::fs::write(&invalid, "not an ASS subtitle").unwrap();
+        assert!(
+            remux_mkv_sidecars(
+                &source,
+                &failed_output,
+                &[(7, "Movie.bad.ass".into(), invalid)],
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), before);
     }
 
     #[test]

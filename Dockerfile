@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/revaro 
 
 FROM rust:1.98-bookworm AS dataplane-base
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    clang cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
+    clang cmake pkg-config ffmpeg zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
     libssl-dev libxml2-dev libacl1-dev libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswresample-dev libswscale-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src/data-plane
@@ -33,7 +33,7 @@ RUN cargo build --locked --release && cp target/release/revaro-data-plane /out-r
 
 FROM debian:bookworm-slim
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata libavcodec59 libavformat59 libavutil57 libavfilter8 libswresample4 libswscale6 \
+    ca-certificates tzdata ffmpeg libavcodec59 libavformat59 libavutil57 libavfilter8 libswresample4 libswscale6 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \

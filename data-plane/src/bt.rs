@@ -32,7 +32,7 @@ fn is_external_subtitle(name: &str) -> bool {
             .and_then(|v| v.to_str())
             .map(|v| v.to_ascii_lowercase())
             .as_deref(),
-        Some("ass" | "ssa" | "srt")
+        Some("ass" | "ssa" | "srt" | "vtt")
     )
 }
 
@@ -324,6 +324,8 @@ pub struct ImportedFile {
     key: String,
     size: i64,
     etag: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    consumed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     web_media: Option<WebMediaAsset>,
 }
@@ -457,9 +459,15 @@ pub async fn import(
         let path = canonical_torrent_file(&root, file).await?;
         external_subtitles.push((requested.index, name.to_owned(), path));
     }
+    let requested_count = q.files.len();
+    let mut requested_files = q.files;
+    // Process videos before sidecars even when torrent order lists subtitles
+    // first, so successfully embedded sidecars can be omitted from storage.
+    requested_files.sort_by_key(|file| file.web_prefix.is_empty());
+    let mut consumed_subtitles = HashSet::new();
     let mut seen = HashSet::new();
-    let mut imported = Vec::with_capacity(q.files.len());
-    for requested in q.files {
+    let mut imported = Vec::with_capacity(requested_count);
+    for requested in requested_files {
         if !seen.insert(requested.index)
             || requested.key.len() > 1024
             || (requested.web_prefix.is_empty() && requested.key.is_empty())
@@ -482,9 +490,18 @@ pub async fn import(
         if !metadata.is_file() || metadata.len() != requested.size {
             return Err(ApiError::bad_request("torrent file size mismatch"));
         }
-        let web_media = if requested.web_prefix.is_empty() {
-            None
-        } else {
+        if consumed_subtitles.contains(&requested.index) {
+            imported.push(ImportedFile {
+                index: requested.index,
+                key: String::new(),
+                size: 0,
+                etag: String::new(),
+                consumed: true,
+                web_media: None,
+            });
+            continue;
+        }
+        if !requested.web_prefix.is_empty() {
             if requested.web_prefix.len() > 900
                 || requested.web_prefix.contains("..")
                 || !requested.web_prefix.starts_with("derived/media/")
@@ -494,40 +511,61 @@ pub async fn import(
             let video_name = components.last().and_then(Value::as_str).unwrap_or("");
             let sidecars = external_subtitles
                 .iter()
-                .filter(|(_, name, _)| subtitle_matches_video(video_name, name))
+                .filter(|(_, name, path)| {
+                    path.parent() == canonical.parent() && subtitle_matches_video(video_name, name)
+                })
                 .map(|(index, name, path)| (*index, name.clone(), path.clone()))
-                .collect();
-            Some(prepare_and_upload_web(&state, &canonical, &requested.web_prefix, sidecars).await?)
-        };
-        if let Some(web) = web_media {
-            imported.push(ImportedFile {
-                index: requested.index,
-                key: web.key.clone(),
-                size: web.size,
-                etag: web.etag.clone(),
-                web_media: Some(web),
-            });
-        } else {
-            let reader = tokio::fs::File::open(&canonical)
-                .await
-                .map_err(ApiError::internal)?;
-            let object = state
-                .s3
-                .store_reader(
-                    &requested.key,
-                    Some(&requested.mime),
-                    reader,
-                    Some(requested.size),
-                )
-                .await?;
+                .collect::<Vec<_>>();
+            let embed_sidecars = canonical
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("mkv"));
+            let embedded_indices: Vec<_> = if embed_sidecars {
+                sidecars.iter().map(|(index, _, _)| *index).collect()
+            } else {
+                Vec::new()
+            };
+            let (web, object) = prepare_and_upload_web(
+                &state,
+                &canonical,
+                &requested.key,
+                &requested.mime,
+                &requested.web_prefix,
+                sidecars,
+                embed_sidecars,
+            )
+            .await?;
+            consumed_subtitles.extend(embedded_indices);
             imported.push(ImportedFile {
                 index: requested.index,
                 key: requested.key,
                 size: object.size,
                 etag: object.etag,
-                web_media: None,
+                consumed: false,
+                web_media: Some(web),
             });
+            continue;
         }
+        let reader = tokio::fs::File::open(&canonical)
+            .await
+            .map_err(ApiError::internal)?;
+        let object = state
+            .s3
+            .store_reader(
+                &requested.key,
+                Some(&requested.mime),
+                reader,
+                Some(requested.size),
+            )
+            .await?;
+        imported.push(ImportedFile {
+            index: requested.index,
+            key: requested.key,
+            size: object.size,
+            etag: object.etag,
+            consumed: false,
+            web_media: None,
+        });
     }
     Ok(Json(imported))
 }
@@ -535,9 +573,12 @@ pub async fn import(
 async fn prepare_and_upload_web(
     state: &AppState,
     source: &std::path::Path,
+    source_key: &str,
+    source_mime: &str,
     prefix: &str,
     external_subtitles: Vec<(usize, String, PathBuf)>,
-) -> Result<WebMediaAsset, ApiError> {
+    embed_sidecars: bool,
+) -> Result<(WebMediaAsset, crate::s3::ObjectInfo), ApiError> {
     let serial = NEXT_PREP.fetch_add(1, Ordering::Relaxed);
     let work = PathBuf::from(env::var("APP_WORK_DIR").map_err(ApiError::internal)?)
         .join("revaro-bt-web")
@@ -547,14 +588,39 @@ async fn prepare_and_upload_web(
         .map_err(ApiError::internal)?;
     let _work_cleanup = WorkCleanup(work.clone());
     let output = work.join("playback.mp4");
+    let remuxed = work.join("source.mkv");
     let source = source.to_owned();
+    let media_source = if external_subtitles.is_empty() || !embed_sidecars {
+        source.clone()
+    } else {
+        let source_for_task = source.clone();
+        let remuxed_for_task = remuxed.clone();
+        let subtitles_for_task = external_subtitles.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::media::remux_mkv_sidecars(
+                &source_for_task,
+                &remuxed_for_task,
+                &subtitles_for_task,
+            )
+        })
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(|e| ApiError::upstream_domain("media", e))?;
+        remuxed.clone()
+    };
+    let source_for_upload = media_source.clone();
+    let web_sidecars = if embed_sidecars {
+        Vec::new()
+    } else {
+        external_subtitles
+    };
     let output_for_task = output.clone();
     let cancel = state.shutdown.child_token();
     let mut cancel_guard = PrepCancel(cancel.clone());
     let prepared = tokio::task::spawn_blocking(move || {
         let mut prepared =
-            crate::media::prepare_web_media(&source, &output_for_task, cancel.clone())?;
-        for (file_index, name, path) in external_subtitles {
+            crate::media::prepare_web_media(&media_source, &output_for_task, cancel.clone())?;
+        for (file_index, name, path) in web_sidecars {
             let data = crate::media::external_subtitle_path(&path, cancel.clone())?;
             prepared.subtitles.push((
                 crate::media::external_subtitle_meta(1_000_000 + file_index, &name),
@@ -569,17 +635,23 @@ async fn prepare_and_upload_web(
     let prepared = match prepared {
         Ok(value) => value,
         Err(error) if error.starts_with("unsupported ") => {
-            return Ok(WebMediaAsset {
-                state: "unsupported".into(),
-                error,
-                key: String::new(),
-                size: 0,
-                etag: String::new(),
-                duration_ms: 0,
-                video_codec: String::new(),
-                audio_codec: String::new(),
-                subtitles: vec![],
-            });
+            return Ok((
+                WebMediaAsset {
+                    state: "unsupported".into(),
+                    error,
+                    key: String::new(),
+                    size: 0,
+                    etag: String::new(),
+                    duration_ms: 0,
+                    video_codec: String::new(),
+                    audio_codec: String::new(),
+                    subtitles: vec![],
+                },
+                crate::s3::ObjectInfo {
+                    size: 0,
+                    etag: String::new(),
+                },
+            ));
         }
         Err(error) => {
             return Err(ApiError::upstream_domain("media", error));
@@ -592,9 +664,24 @@ async fn prepare_and_upload_web(
         .len();
     let mut cleanup = UploadedCleanup {
         s3: state.s3.clone(),
-        keys: vec![playback_key.clone()],
+        keys: vec![source_key.to_owned(), playback_key.clone()],
         armed: true,
     };
+    let source_len = tokio::fs::metadata(&source_for_upload)
+        .await
+        .map_err(ApiError::internal)?
+        .len();
+    let source_object = state
+        .s3
+        .store_reader(
+            source_key,
+            Some(source_mime),
+            tokio::fs::File::open(&source_for_upload)
+                .await
+                .map_err(ApiError::internal)?,
+            Some(source_len),
+        )
+        .await?;
     let playback = state
         .s3
         .store_reader(
@@ -656,23 +743,26 @@ async fn prepare_and_upload_web(
         Err(error) => return Err(error),
     };
     cleanup.disarm();
-    Ok(WebMediaAsset {
-        state: "completed".into(),
-        error: String::new(),
-        key: playback_key,
-        size: playback.size,
-        etag: playback.etag,
-        duration_ms: prepared.duration_ms,
-        video_codec: prepared.video_codec,
-        audio_codec: if prepared.audio_codec == "aac" {
-            "aac".into()
-        } else if prepared.audio_codec.is_empty() {
-            String::new()
-        } else {
-            "aac".into()
+    Ok((
+        WebMediaAsset {
+            state: "completed".into(),
+            error: String::new(),
+            key: playback_key,
+            size: playback.size,
+            etag: playback.etag,
+            duration_ms: prepared.duration_ms,
+            video_codec: prepared.video_codec,
+            audio_codec: if prepared.audio_codec == "aac" {
+                "aac".into()
+            } else if prepared.audio_codec.is_empty() {
+                String::new()
+            } else {
+                "aac".into()
+            },
+            subtitles,
         },
-        subtitles,
-    })
+        source_object,
+    ))
 }
 
 pub async fn delete(
@@ -787,6 +877,7 @@ mod tests {
     fn external_subtitle_sidecars_match_only_their_video() {
         assert!(is_external_subtitle("Movie.zh-Hans.ass"));
         assert!(is_external_subtitle("Movie.srt"));
+        assert!(is_external_subtitle("Movie.vtt"));
         assert!(!is_external_subtitle("Movie.mka"));
         assert!(subtitle_matches_video("Movie.mkv", "Movie.ass"));
         assert!(subtitle_matches_video("Movie.mkv", "Movie.zh-Hans.srt"));

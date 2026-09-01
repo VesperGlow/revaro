@@ -554,12 +554,10 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		key := ""
+		key := storage.BlobKey(fmt.Sprintf("bt-%s-%d", job.ID, item.Index))
 		webPrefix := ""
 		if strings.HasPrefix(strings.ToLower(mimeType), "video/") || videoExts[strings.ToLower(filepath.Ext(fileName))] {
 			webPrefix = fmt.Sprintf("derived/media/%s/%d", job.ID, item.Index)
-		} else {
-			key = storage.BlobKey(fmt.Sprintf("bt-%s-%d", job.ID, item.Index))
 		}
 		requests = append(requests, storage.TorrentImportFile{Index: item.Index, Key: key, MIME: mimeType, Size: item.Size, WebPrefix: webPrefix})
 		paths[item.Index] = item
@@ -584,12 +582,15 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 			m.fail(runtime.jobID, errors.New("种子导入结果不一致"))
 			return
 		}
+		if result.Consumed {
+			continue
+		}
 		if result.WebMedia != nil && result.WebMedia.State == "unsupported" {
 			m.cleanupTorrentImport(requests)
 			m.unsupported(runtime.jobID, result.Index, result.WebMedia.Error)
 			return
 		}
-		if (result.WebMedia == nil && result.Size != item.Size) || (result.WebMedia != nil && (result.WebMedia.State != "completed" || result.Size != result.WebMedia.Size || result.Key != result.WebMedia.Key)) {
+		if result.WebMedia == nil && result.Size != item.Size || result.WebMedia != nil && (result.WebMedia.State != "completed" || result.Key == "") {
 			m.cleanupTorrentImport(requests)
 			m.fail(runtime.jobID, errors.New("种子导入结果不一致"))
 			return
@@ -597,9 +598,6 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(item.Path)))
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
-		}
-		if result.WebMedia != nil {
-			mimeType = "video/mp4"
 		}
 		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: result.Key, size: result.Size, mimeType: mimeType, etag: result.ETag, index: result.Index, web: result.WebMedia})
 		imported += result.Size

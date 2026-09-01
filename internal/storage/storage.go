@@ -154,6 +154,7 @@ type TorrentImportedFile struct {
 	Key      string         `json:"key"`
 	Size     int64          `json:"size"`
 	ETag     string         `json:"etag"`
+	Consumed bool           `json:"consumed,omitempty"`
 	WebMedia *WebMediaAsset `json:"web_media,omitempty"`
 }
 type WebMediaSubtitle struct {
