@@ -37,6 +37,7 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: revaro-e2e-minio-secret
+      MINIO_API_CORS_ALLOW_ORIGIN: http://127.0.0.1:18080
     volumes:
       - minio-e2e-data:/data
 
@@ -49,30 +50,11 @@ services:
       - -c
       - |
           set -eu
-
           until mc alias set local http://minio:9000 minioadmin revaro-e2e-minio-secret; do
             sleep 1
           done
-
           mc mb --ignore-existing local/revaro-e2e
           mc anonymous set none local/revaro-e2e
-
-          cat > /tmp/cors.xml <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-            <CORSRule>
-              <AllowedOrigin>http://127.0.0.1:18080</AllowedOrigin>
-              <AllowedMethod>GET</AllowedMethod>
-              <AllowedMethod>HEAD</AllowedMethod>
-              <AllowedMethod>PUT</AllowedMethod>
-              <AllowedHeader>*</AllowedHeader>
-              <ExposeHeader>ETag</ExposeHeader>
-              <MaxAgeSeconds>3600</MaxAgeSeconds>
-            </CORSRule>
-          </CORSConfiguration>
-          EOF
-
-          mc cors set local/revaro-e2e /tmp/cors.xml
 
 volumes:
   revaro-e2e-data:
