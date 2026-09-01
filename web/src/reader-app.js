@@ -1,3 +1,9 @@
+import { assembleSegments } from './reader/segments.js'
+import { findTocTarget, tocTargetPage } from './reader/navigation.js'
+import { createProgressStore } from './reader/progress.js'
+import { createReaderPreferences } from './reader/preferences.js'
+import { fetchBookContent, fetchBookInfo, readerAPI } from './reader/api.js'
+
 // ReaderApp: 自包含的阅读器模块（CSS 分栏分页版），原样移植自 VesperGlow/reader
 // 的 reader.js，仅把 API 路径接到网盘（/api/files/:id/book/...）并去掉了
 // 目录抽屉的历史栈操作（由网盘的弹窗历史接管返回键）。
@@ -18,11 +24,10 @@ export const ReaderApp = (function () {
   let boundViewport = null; // 已绑定事件的骨架实例
   let active = null; // 当前展示的书 state
   let onExit = null;
-  let progressSaveChain = Promise.resolve();
-  let progressSaveTimer = null;
-  const PROGRESS_SAVE_DELAY = 1200; // 翻页停下这么久后才真正写一次，合并快速翻页的连续写入
   let resizeTimer = null;
   let suppressZoneClick = 0; // 滑动翻页后短暂吞掉热区补发的 click，避免一次滑动翻两页/误切工具栏
+  const progressStore = createProgressStore(() => active, readerAPI);
+  const { toggleTools, toggleTheme, setReaderFontSize, stepFontSize, loadPrefs } = createReaderPreferences(() => els, relayoutActive);
 
   // state: { bookId, info, kind, segments, pages, currentSeg, currentCol,
   //          currentX, currentTop, toc, tocEntries,
@@ -196,16 +201,6 @@ export const ReaderApp = (function () {
     document.body.classList.remove('reader-open');
   }
 
-  async function api(url, options = {}) {
-    const response = await fetch(url, options);
-    if (response.status === 401) {
-      location.href = '/';
-      throw new Error('请先登录');
-    }
-    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error?.message || '打开失败');
-    return response;
-  }
-
   // ---- 运行时缓存（keep-alive） ----
   function touchLRU(bookId) {
     const index = order.indexOf(bookId);
@@ -294,13 +289,13 @@ export const ReaderApp = (function () {
     const info = options.book || await fetchBookInfo(bookId);
     if (!info) throw new Error('书籍不存在');
     setHeader(info);
-    const savedProgress = api(`/api/files/${bookId}/book/progress`)
+    const savedProgress = readerAPI(`/api/files/${bookId}/book/progress`)
       .then(response => response.json())
       .catch(() => ({ page: 0, total_pages: null }));
 
     setLoading('正在读取书籍…');
     // 解析已在服务端完成：EPUB 返回逐章清洗好的正文，TXT 返回原文 + 目录偏移。
-    const model = await fetchContent(bookId);
+    const model = await fetchBookContent(bookId);
     const segments = assembleSegments(model);
     const state = {
       bookId, info, kind: info.kind, segments,
@@ -313,74 +308,6 @@ export const ReaderApp = (function () {
       ? Math.min(1, Math.max(0, Number(progress.page) / (Number(progress.total_pages) - 1)))
       : 0;
     return state;
-  }
-
-  // 分段渲染：每章一个分栏段，翻页只滑动当前段的小层，不再把整本书
-  // 扛进一个巨型合成层（那是重型页面里翻页卡顿的根源）。
-  function assembleSegments(model) {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'book-segments';
-    if (model.kind === 'txt') {
-      const text = model.text || '';
-      const marks = (model.toc || [])
-        .map((entry, index) => ({ offset: Number(entry.offset) || 0, index }))
-        .sort((a, b) => a.offset - b.offset);
-      // 以章节目录为界切段；没有目录时按固定长度切段，避免单段过大
-      const cuts = [0];
-      for (const m of marks) if (m.offset > 0 && m.offset < text.length) cuts.push(m.offset);
-      cuts.push(text.length);
-      if (!marks.length && text.length > 60000) {
-        const size = 20000;
-        cuts.length = 0;
-        for (let pos = 0; pos < text.length; pos += size) cuts.push(pos);
-        cuts.push(text.length);
-      }
-      for (let k = 0; k < cuts.length - 1; k++) {
-        const start = cuts[k], end = cuts[k + 1];
-        if (end <= start) continue;
-        const node = document.createElement('div');
-        node.className = 'book-content txt';
-        if (start > 0) {
-          for (const m of marks) {
-            if (m.offset === start) {
-              const anchor = document.createElement('span');
-              anchor.className = 'toc-anchor';
-              anchor.dataset.toc = String(m.index);
-              node.appendChild(anchor);
-            }
-          }
-        }
-        node.appendChild(document.createTextNode(text.slice(start, end)));
-        wrapper.appendChild(node);
-      }
-      if (!wrapper.childNodes.length) wrapper.appendChild(document.createElement('div'));
-      return wrapper;
-    }
-    const chapters = (model.chapters && model.chapters.length) ? model.chapters : [{ html: model.html || '' }];
-    for (const chapter of chapters) {
-      const node = document.createElement('div');
-      node.className = 'book-content epub';
-      node.innerHTML = chapter.html || '';
-      wrapper.appendChild(node);
-    }
-    if (!wrapper.childNodes.length) wrapper.appendChild(document.createElement('div'));
-    return wrapper;
-  }
-
-  async function fetchBookInfo(bookId) {
-    const data = await (await api(`/api/files/${bookId}`)).json();
-    const file = data && data.file;
-    if (!file) return null;
-    return {
-      id: file.id,
-      title: file.name,
-      kind: /\.epub$/i.test(file.name) ? 'epub' : 'txt',
-    };
-  }
-
-  async function fetchContent(bookId) {
-    const response = await api(`/api/files/${bookId}/book/content`);
-    return await response.json();
   }
 
   // ---- 分段分栏布局 / 翻页 ----
@@ -532,27 +459,6 @@ export const ReaderApp = (function () {
     });
   }
 
-  function findTocTarget(state, entry, index) {
-    const root = state.segments;
-    if (state.kind === 'txt') return root.querySelector(`[data-toc="${index}"]`);
-    if (entry.fragment) {
-      const byId = Array.from(root.querySelectorAll('[id], [data-frag-ids]')).find(element =>
-        element.id === entry.fragment || (element.dataset.fragIds || '').split(' ').includes(entry.fragment));
-      if (byId) return byId;
-    }
-    return Array.from(root.querySelectorAll('[data-source-path]')).find(element => element.dataset.sourcePath === entry.path) || null;
-  }
-
-  // 点目录时按"当前已稳定的版面"实时算页码，而不是用 measure() 时预存的值。
-  function tocTargetPage(state, entry, index) {
-    const target = findTocTarget(state, entry, index);
-    if (!target) return Math.max(0, entry.page || 0);
-    const owner = target.closest('.book-content');
-    if (!owner || typeof owner._startPage !== 'number') return Math.max(0, entry.page || 0);
-    const page = owner._startPage + Math.round((target.getBoundingClientRect().left - owner.getBoundingClientRect().left) / state.pageStep);
-    return Math.min(Math.max(0, page), Math.max(0, state.pageCount - 1));
-  }
-
   function turnPage(direction) {
     if (!active) return;
     const target = active.currentPage + (direction === 'next' ? 1 : -1);
@@ -581,35 +487,6 @@ export const ReaderApp = (function () {
     renderToc();
     updatePageLabel();
     queueProgressSave(active.currentPage);
-  }
-
-  function toggleTools() {
-    els.themeRoot.classList.toggle('tools-hidden');
-    if (els.themeRoot.classList.contains('tools-hidden')) els.fontPopover?.classList.add('hidden');
-  }
-
-  function toggleTheme() {
-    els.themeRoot.classList.toggle('dark');
-    try { localStorage.setItem('reader-theme', els.themeRoot.classList.contains('dark') ? 'dark' : 'light'); } catch (_) {}
-  }
-
-  function stepFontSize(delta) {
-    const current = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--reader-font-size'), 10) || 19;
-    setReaderFontSize(current + delta);
-  }
-
-  function loadPrefs() {
-    try {
-      const size = Number(localStorage.getItem('reader-font-size'));
-      if (Number.isFinite(size) && size > 0) {
-        const pixels = Math.max(14, Math.min(32, size));
-        document.documentElement.style.setProperty('--reader-font-size', `${pixels}px`);
-        if (els.fontSlider) els.fontSlider.value = pixels;
-      }
-      const theme = localStorage.getItem('reader-theme');
-      if (theme === 'dark') els.themeRoot.classList.add('dark');
-      else if (theme === 'light') els.themeRoot.classList.remove('dark');
-    } catch (_) {}
   }
 
   // ---- 目录 ----
@@ -677,40 +554,18 @@ export const ReaderApp = (function () {
 
   // 翻页时只防抖排期，不立即写；停下 PROGRESS_SAVE_DELAY 后落一次，把连续翻页合并成一次写入。
   function queueProgressSave(page) {
-    if (!active) return;
-    const bookId = active.bookId;
-    const totalPages = active.pageCount;
-    if (progressSaveTimer) clearTimeout(progressSaveTimer);
-    progressSaveTimer = setTimeout(() => {
-      progressSaveTimer = null;
-      commitProgressSave(bookId, totalPages, page);
-    }, PROGRESS_SAVE_DELAY);
-  }
-
-  function commitProgressSave(bookId, totalPages, page) {
-    progressSaveChain = progressSaveChain.then(() => api(`/api/files/${bookId}/book/progress`, {
-      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ page, total_pages: totalPages }), keepalive: true,
-    })).catch(error => console.error('保存阅读进度失败', error));
+    progressStore.queue(page);
   }
 
   // 离开页面/切书等场景立即落盘（绕过防抖），确保不丢进度。
   function saveProgress() {
-    if (!active) return;
-    if (progressSaveTimer) { clearTimeout(progressSaveTimer); progressSaveTimer = null; }
-    commitProgressSave(active.bookId, active.pageCount, active.currentPage);
+    progressStore.save();
   }
 
   function setLoading(message) { els.loading.textContent = message; }
   function fail(message) { els.loading.classList.remove('hidden'); setLoading(message); }
   function escapeHtml(value) { const div = document.createElement('div'); div.textContent = value; return div.innerHTML; }
 
-  function setReaderFontSize(size) {
-    const pixels = Math.max(14, Math.min(32, Number(size) || 18));
-    document.documentElement.style.setProperty('--reader-font-size', `${pixels}px`);
-    if (els.fontSlider) els.fontSlider.value = pixels;
-    try { localStorage.setItem('reader-font-size', pixels); } catch (_) {}
-    relayoutActive();
-  }
   window.setReaderFontSize = setReaderFontSize;
 
   function getState() {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Activity, Menu, Trash2 } from 'lucide-vue-next'
+import { Activity, Menu, ServerCog, Trash2 } from 'lucide-vue-next'
 import type { BackgroundTask } from '../types'
 import TaskCenter from './TaskCenter.vue'
+import SystemStatus from './SystemStatus.vue'
 
 const props=defineProps<{
   user:string
@@ -25,6 +26,7 @@ defineEmits<{
 const mobile=ref(false)
 const mobileMenu=ref<HTMLDetailsElement|null>(null)
 const mobileTaskCenter=ref<InstanceType<typeof TaskCenter>|null>(null)
+const mobileSystemStatus=ref<InstanceType<typeof SystemStatus>|null>(null)
 const activeTasks=computed(()=>props.tasks.filter(task=>['running','queued','retrying','waiting_input'].includes(task.status)))
 const failedTasks=computed(()=>props.tasks.filter(task=>task.status==='failed'))
 let mediaQuery:MediaQueryList|null=null
@@ -33,6 +35,10 @@ function closeMobileMenu(event:PointerEvent){const target=event.target;if(mobile
 function openMobileTaskCenter(){
   if(mobileMenu.value)mobileMenu.value.open=false
   nextTick(()=>mobileTaskCenter.value?.openCenter())
+}
+function openMobileSystemStatus(){
+  if(mobileMenu.value)mobileMenu.value.open=false
+  nextTick(()=>mobileSystemStatus.value?.openPanel())
 }
 onMounted(()=>{mediaQuery=window.matchMedia('(max-width:850px)');updateMobile();mediaQuery.addEventListener('change',updateMobile);document.addEventListener('pointerdown',closeMobileMenu)})
 onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);document.removeEventListener('pointerdown',closeMobileMenu)})
@@ -44,6 +50,7 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
     <div class="top-actions">
       <template v-if="!mobile">
         <TaskCenter :tasks="tasks" :parent-id="downloadParentId" @changed="$emit('tasksChanged')" @cancel="$emit('cancelTask',$event)" @retry="$emit('retryTask',$event)" />
+        <SystemStatus />
         <button class="trash-button" title="回收站" aria-label="打开回收站" @click="$emit('trash')"><Trash2 aria-hidden="true" /></button>
       </template>
       <button class="account-button" title="打开账户设置" @click="$emit('account')">
@@ -54,10 +61,12 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
         <summary title="任务与工具" aria-label="打开任务与工具菜单"><Menu aria-hidden="true" /><i v-if="failedTasks.length" class="task-menu-badge failed" aria-label="存在失败任务">!</i><i v-else-if="activeTasks.length" class="task-menu-badge active" :aria-label="`${activeTasks.length} 个活动任务`"></i></summary>
         <section>
           <button class="mobile-tool-item" @click="openMobileTaskCenter"><span class="mobile-task-icon"><Activity aria-hidden="true" /></span><b>任务中心</b><small v-if="failedTasks.length" class="failed">{{ failedTasks.length }} 项失败</small><small v-else-if="activeTasks.length">{{ activeTasks.length }} 项活动</small></button>
+          <button class="mobile-tool-item" @click="openMobileSystemStatus"><span class="mobile-task-icon"><ServerCog aria-hidden="true" /></span><b>系统状态</b></button>
           <button class="mobile-trash" @click="mobileMenu?.removeAttribute('open');$emit('trash')"><span class="trash-button"><Trash2 aria-hidden="true" /></span><b>回收站</b></button>
         </section>
       </details>
       <TaskCenter v-if="mobile" ref="mobileTaskCenter" hide-trigger :tasks="tasks" :parent-id="downloadParentId" @changed="$emit('tasksChanged')" @cancel="$emit('cancelTask',$event)" @retry="$emit('retryTask',$event)" />
+      <SystemStatus v-if="mobile" ref="mobileSystemStatus" hide-trigger />
     </div>
   </header>
 </template>

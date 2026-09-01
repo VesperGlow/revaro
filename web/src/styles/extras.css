@@ -1,0 +1,107 @@
+@media (max-width: 850px) {
+  .audio-preview .audio-playback {
+    padding-top: 10px;
+    padding-bottom: max(11px,env(safe-area-inset-bottom,0px));
+  }
+  .audio-preview .audio-stream-status { margin-top: 4px; }
+  .audio-preview .audio-transport-row {
+    grid-template-columns: minmax(0,1fr) auto minmax(0,1fr);
+    gap: 8px;
+    margin-top: 5px;
+  }
+  .audio-preview .audio-transport-row .audio-controls { gap: 7px; }
+  .audio-preview .audio-transport-row .audio-controls > button:not(.audio-play) {
+    width: 40px;
+    height: 40px;
+  }
+}
+@media (max-width: 430px) {
+  .audio-preview .audio-time { font-size: 10px; }
+  .audio-preview .audio-stream-status {
+    min-height: 22px;
+    margin-top: 3px;
+    padding: 2px 7px;
+    font-size: 9px;
+  }
+  .audio-preview .audio-transport-row {
+    grid-template-columns: minmax(58px,1fr) auto minmax(58px,1fr);
+    column-gap: 2px;
+  }
+  .audio-preview .audio-rate { gap: 3px; }
+  .audio-preview .audio-rate select {
+    width: 58px;
+    min-width: 58px;
+    padding-right: 17px;
+    padding-left: 7px;
+  }
+  .audio-preview .audio-transport-row .audio-controls { gap: 1px; }
+  .audio-preview .audio-transport-row .audio-controls > button:not(.audio-play) {
+    width: 34px;
+    height: 34px;
+  }
+  .audio-preview .audio-transport-row .audio-controls .audio-play {
+    width: 50px;
+    height: 50px;
+    margin: 0;
+  }
+  .audio-preview .audio-transport-row .audio-option-end { gap: 2px; }
+  .audio-preview .audio-volume button,
+  .audio-action-menu summary {
+    width: 30px;
+    height: 30px;
+    min-height: 30px;
+  }
+}
+
+/* Final structural override: chapters live only in the transport popup. */
+.audio-preview .chapter-audio-player { display:block;grid-template-columns:none;width:100%;height:100%;min-width:0;overflow:hidden; }
+.audio-preview .audio-main { display:grid;grid-template-rows:minmax(0,1fr) auto;width:100%;height:100%;min-width:0; }
+.audio-preview .audio-upper { display:grid;grid-template-columns:minmax(280px,38fr) minmax(0,62fr);min-width:0;min-height:0; }
+.audio-preview .audio-now-playing { min-width:0;padding:clamp(16px,2vw,28px); }
+.audio-preview .audio-cover { width:min(calc(100% - 36px),360px,44vh); }
+.audio-preview .audio-subtitle-panel { min-width:0; }
+.audio-preview .audio-playback { width:100%;padding-right:clamp(20px,5vw,76px);padding-left:clamp(20px,5vw,76px); }
+.audio-preview .audio-playback .audio-track-wrap,
+.audio-preview .audio-playback .audio-time,
+.audio-preview .audio-playback .audio-player-options { width:100%;max-width:1280px; }
+.audio-preview .audio-transport-row { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);column-gap:clamp(12px,3vw,48px); }
+.audio-preview .audio-transport-row .audio-controls { justify-self:center; }
+.audio-preview .audio-transport-row .audio-option-end { justify-self:end; }
+.audio-chapter-menu > div { overscroll-behavior:contain; }
+@media (max-width:700px) {
+  .audio-preview .chapter-audio-player,.audio-preview .audio-main { overflow:hidden; }
+  .audio-preview .audio-upper { grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(180px,1fr);overflow-y:auto; }
+  .audio-preview .audio-now-playing { display:grid;grid-template-columns:minmax(96px,30vw) minmax(0,1fr);align-items:center;padding:12px max(12px,env(safe-area-inset-right,0px)) 12px max(12px,env(safe-area-inset-left,0px));gap:14px; }
+  .audio-preview .audio-cover { grid-row:1;width:100%;max-width:150px; }
+  .audio-preview .audio-chapter-current { grid-column:2;grid-row:1;width:100%;margin:0;text-align:left; }
+  .audio-preview .audio-subtitle-panel { min-height:180px;border-top:1px solid var(--line);border-left:0; }
+  .audio-preview .audio-playback { padding-right:max(10px,env(safe-area-inset-right,0px));padding-left:max(10px,env(safe-area-inset-left,0px)); }
+  .audio-preview .audio-transport-row { grid-template-columns:minmax(58px,1fr) auto minmax(58px,1fr);column-gap:4px; }
+  .audio-preview .audio-transport-row .audio-controls { gap:3px; }
+  .audio-chapter-menu > div { position:fixed;right:10px;bottom:max(78px,calc(env(safe-area-inset-bottom,0px) + 66px));left:10px;width:auto;max-height:min(52vh,440px); }
+}
+
+/* The timeline is the content/transport boundary; keep controls close without reducing targets. */
+.audio-preview .audio-playback {
+  position: relative;
+  padding-top: 0;
+  padding-bottom: max(18px,env(safe-area-inset-bottom,0px));
+  border-top: 0;
+}
+.audio-preview .audio-playback::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--line-strong);
+  content: "";
+}
+.audio-preview .audio-playback .audio-track-wrap { margin-top: -17px; margin-bottom: 0; }
+.audio-preview .audio-time { margin-top: 0; }
+.audio-preview .audio-transport-row { margin-top: 3px; }
+@media (max-width:700px) {
+  .audio-preview .audio-playback { padding-top: 0;padding-bottom:max(7px,env(safe-area-inset-bottom,0px)); }
+  .audio-preview .audio-transport-row { margin-top: 2px; }
+}
+

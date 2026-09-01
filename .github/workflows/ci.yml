@@ -73,9 +73,53 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit --file Cargo.lock
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web and Chromium dependencies
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Build and start the real Revaro stack
+        run: docker compose -f compose.e2e.yml up -d --build
+      - name: Wait for readiness
+        run: |
+          for attempt in {1..90}; do
+            curl --fail --silent http://127.0.0.1:18080/readyz && exit 0
+            sleep 2
+          done
+          docker compose -f compose.e2e.yml logs
+          exit 1
+      - name: Run Chromium E2E
+        working-directory: web
+        run: npm run e2e
+      - name: Collect container logs
+        if: failure()
+        run: docker compose -f compose.e2e.yml logs --no-color > e2e-container.log
+      - name: Upload E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-e2e-diagnostics
+          if-no-files-found: ignore
+          path: |
+            web/playwright-report/
+            web/test-results/
+            e2e-container.log
+      - name: Stop E2E stack
+        if: always()
+        run: docker compose -f compose.e2e.yml down -v
+
   publish:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: test
+    needs: [test, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read

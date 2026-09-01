@@ -16,6 +16,16 @@ export interface BackgroundTask { id:string;type:string;status:TaskStatus;phase:
 export interface ShareResponse { active:boolean; url?:string; created_at?:string }
 export interface ProfileResponse { username:string; has_avatar:boolean }
 export interface StorageStats { total_bytes:number; file_count:number }
+export interface SystemStatus {
+  status:'ok'|'degraded'
+  database:{status:string;bytes:number}
+  storage:{status:string}
+  cache:{status:string;memory_bytes:number;disk_bytes:number;memory_entries:number;disk_entries:number}
+  tasks:{status:string;running:number;queued:number;waiting:number;failed:number}
+  object_cleanup:{status:string;pending:number}
+  media_sessions:{status:string;audio_hls:number;video_hls:number;fmp4:number}
+  bt:{status:string;enabled:boolean;available:boolean}
+}
 export interface TOTPStatusResponse { enabled:boolean; recovery_codes:number }
 export interface TOTPSetupResponse { secret:string; uri:string; qr_data_url:string }
 export interface TOTPRecoveryResponse { enabled:boolean; recovery_codes:string[] }

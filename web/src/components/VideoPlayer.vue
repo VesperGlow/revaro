@@ -4,21 +4,18 @@ import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
-import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse, VideoSubtitleTrack } from '../types'
-import { attachFMP4Stream, authoritativeSeekTarget, containedVideoInsets, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseRecoveryAction, setExclusiveSubtitleTrack, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleLineClass, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
+import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse } from '../types'
+import { attachFMP4Stream, authoritativeSeekTarget, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseRecoveryAction, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleLineClass, type UnifiedVideoPlayer } from '../videoPlayer'
+import { useVideoSubtitles } from '../composables/useVideoSubtitles'
+import { useVideoProgress } from '../composables/useVideoProgress'
+import VideoControls from './VideoControls.vue'
+import VideoStatusOverlay from './VideoStatusOverlay.vue'
+import { formatVideoTime as formatTime, releaseFMP4Session, releaseHLSSession } from '../videoSession'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()
 const shell=ref<HTMLElement|null>(null)
 const video=ref<HTMLVideoElement|null>(null)
-const subtitleElement=ref<HTMLTrackElement|null>(null)
-const actionMenu=ref<HTMLDetailsElement|null>(null)
-const subtitles=ref<VideoSubtitleTrack[]>([])
-const activeSubtitle=ref(-1)
-const activeSubtitleLines=ref<string[]>([])
-const subtitlePlacement=ref<'top'|'middle'|'bottom'>('bottom')
-const subtitleImageBottom=ref(0)
-const subtitleImageInset=ref(0)
 const directMode=ref(/\.(mp4|m4v|webm|ogv|mov)$/i.test(props.item.name))
 const optimizedMode=ref(false)
 const mseMode=ref(false)
@@ -58,14 +55,8 @@ let directFallbackStarted=false
 let mseRecoveryStarted=false
 let mseFreshFailures=0
 let mseRecoveryAnchor=-1
-let progressLoaded=false
-let restoredPosition=false
-let serverPosition=0
-let userSeeked=false
 let videoResizeObserver:ResizeObserver|null=null
-let cueTrack:TextTrack|null=null
 
-const positionKey=computed(()=>`revaro-video-position:${props.item.id}`)
 const sessionKey=computed(()=>`revaro-video-hls-session:${props.item.id}`)
 const fmp4SessionKey=computed(()=>`revaro-video-fmp4-session:${props.item.id}`)
 const volumeKey='revaro-video-volume'
@@ -82,106 +73,10 @@ const progress=computed(()=>duration.value?Math.min(100,timelinePosition.value/d
 const effectiveVolume=computed(()=>muted.value?0:volume.value)
 const volumePercent=computed(()=>Math.round(effectiveVolume.value*100))
 const volumeState=computed<'muted'|'low'|'high'>(()=>effectiveVolume.value===0?'muted':effectiveVolume.value<.5?'low':'high')
-const selectedSubtitle=computed(()=>activeSubtitle.value>=0?subtitles.value[activeSubtitle.value]:undefined)
-const subtitlePlaybackMode=computed<VideoPlaybackMode>(()=>directMode.value?'direct':mseMode.value||prepareMode.value==='mse'?'mse':'hls')
-const selectedSubtitleURL=computed(()=>{
-  const track=selectedSubtitle.value
-  if(!track)return ''
-  return subtitleURLForPlayback(track.url,subtitlePlaybackMode.value,streamOffset.value)
-})
-const selectedSubtitleKey=computed(()=>selectedSubtitle.value?subtitleTrackKey(selectedSubtitle.value.id,subtitlePlaybackMode.value,streamOffset.value):'')
 const cursorHidden=computed(()=>shouldHideVideoCursor({playing:playing.value,controlsVisible:controlsVisible.value,starting:starting.value,buffering:buffering.value,error:error.value}))
-const subtitleStyle=computed(()=>({'--subtitle-image-bottom':`${subtitleImageBottom.value}px`,'--subtitle-image-inset':`${subtitleImageInset.value}px`} as Record<string,string>))
+const {subtitleElement,subtitles,activeSubtitle,activeSubtitleLines,subtitlePlacement,selectedSubtitle,selectedSubtitleURL,selectedSubtitleKey,subtitleStyle,updateSubtitleBounds,applySubtitle,disableSubtitleTracks,chooseSubtitle,onSubtitleLoad,onSubtitleError}=useVideoSubtitles({video,directMode,mseMode,prepareMode,streamOffset,getPlayer:()=>player})
+const {savedPosition,loadProgress,restoreDirectPosition,persistProgress,markUserSeeked,didUserSeek}=useVideoProgress({itemId:props.item.id,video,currentTime,duration,directMode})
 
-function updateSubtitleBounds(){
-  const el=video.value;if(!el)return
-  const bounds=containedVideoInsets(el.clientWidth,el.clientHeight,el.videoWidth,el.videoHeight)
-  subtitleImageBottom.value=bounds.bottom;subtitleImageInset.value=bounds.horizontal
-}
-function updateActiveSubtitle(){
-  const cues=cueTrack?.activeCues
-  const cue=cues?.[0] as VTTCue|undefined
-  const line=cue&&typeof cue.line==='number'&&!cue.snapToLines?cue.line:100
-  subtitlePlacement.value=line<=25?'top':line<75?'middle':'bottom'
-  activeSubtitleLines.value=cues?Array.from(cues).flatMap(cue=>subtitleCueLines((cue as VTTCue).text)):[]
-}
-function subtitleCueLines(text:string):string[]{
-  // cue.text is the WebVTT source, not rendered text. Strip valid VTT inline
-  // markup before Vue escapes/displays it in Revaro's style.
-  const plain=text.replace(/<\/?(?:b|i|u|ruby|rt)(?:\s[^>]*)?>/gi,'').replace(/<v(?:\s[^>]*)?>/gi,'').replace(/<c(?:\.[^\s>]*)*>/gi,'').replace(/<\/[vc]>/gi,'')
-  const decoded=new DOMParser().parseFromString(plain,'text/html').body.textContent||''
-  return decoded.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)
-}
-function bindCueTrack(track:TextTrack|null){
-  if(cueTrack===track){updateActiveSubtitle();return}
-  cueTrack?.removeEventListener('cuechange',updateActiveSubtitle);cueTrack=track
-  cueTrack?.addEventListener('cuechange',updateActiveSubtitle);updateActiveSubtitle()
-}
-
-function formatTime(seconds:number){
-  if(!Number.isFinite(seconds)||seconds<0)return '0:00'
-  const value=Math.floor(seconds);const hours=Math.floor(value/3600);const minutes=Math.floor(value%3600/60);const secs=value%60
-  return hours?`${hours}:${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}`:`${minutes}:${String(secs).padStart(2,'0')}`
-}
-function savedPosition(){
-  if(serverPosition>0)return serverPosition
-  const value=Number(localStorage.getItem(positionKey.value)||0);return Number.isFinite(value)&&value>0?value:0
-}
-async function loadProgress(){
-  try{const value=await api<{position:number}>(`/api/files/${props.item.id}/media/progress`);serverPosition=Number.isFinite(value.position)?value.position:0}
-  catch{/* 本机进度仍可兜底 */}
-  progressLoaded=true;restoreDirectPosition()
-}
-function restoreDirectPosition(){
-  const el=video.value;if(!progressLoaded||restoredPosition||!directMode.value||!el||!duration.value)return
-  restoredPosition=true;const saved=savedPosition();if(saved>0&&saved<duration.value-5){el.currentTime=saved;currentTime.value=saved}
-}
-function persistProgress(remote=false){
-  const position=Math.max(0,currentTime.value)
-  if(position<=0&&!userSeeked)return
-  localStorage.setItem(positionKey.value,String(Math.floor(position)))
-  if(!remote)return
-  serverPosition=position
-  void api(`/api/files/${props.item.id}/media/progress`,{method:'PUT',body:JSON.stringify({position,duration:duration.value})}).catch(()=>{})
-}
-function applySubtitle(){
-  const tracks=video.value?.textTracks
-  if(!tracks)return
-  const current=activeSubtitle.value>=0?subtitleElement.value?.track:null
-  if(player)player.setSubtitle(current||null)
-  else setExclusiveSubtitleTrack(tracks,current||null)
-  bindCueTrack(current||null)
-}
-function disableSubtitleTracks(){
-  const tracks=video.value?.textTracks
-  if(tracks)setExclusiveSubtitleTrack(tracks,null)
-  bindCueTrack(null)
-}
-async function chooseSubtitle(event:Event){
-  activeSubtitle.value=Number((event.target as HTMLSelectElement).value)
-  if(activeSubtitle.value<0){disableSubtitleTracks();console.info('[revaro] subtitle selected: off');return}
-  await nextTick();applySubtitle()
-  console.info('[revaro] subtitle selected:',selectedSubtitle.value?.id||'none')
-}
-function onSubtitleLoad(event:Event){
-  if(event.currentTarget!==subtitleElement.value)return
-  const track=(event.currentTarget as HTMLTrackElement).track
-  applySubtitle();track.mode='hidden'
-  updateActiveSubtitle()
-  console.info('[revaro] subtitle track loaded')
-  console.info('[revaro] subtitle cues:',track.cues?.length??0)
-  console.info('[revaro] subtitle mode:',track.mode)
-}
-function onSubtitleError(event:Event){
-  const element=event.currentTarget as HTMLTrackElement
-  const url=selectedSubtitleURL.value
-  console.error('[revaro] subtitle error','url:',url,'track readyState:',element.readyState)
-  if(!url)return
-  void fetch(url,{credentials:'same-origin',cache:'no-store'}).then(async response=>{
-    console.error('[revaro] subtitle HTTP status:',response.status,'content-type:',response.headers.get('content-type')||'missing','track readyState:',element.readyState)
-    await response.body?.cancel()
-  }).catch(caught=>console.error('[revaro] subtitle diagnostic request failed:',caught))
-}
 function resetPlayback(){
   player?.destroy();player=null;hls?.destroy();hls=null
   if(video.value){video.value.pause();video.value.removeAttribute('src');video.value.load()}
@@ -191,14 +86,6 @@ function showControls(persist=false){
   if(!persist&&playing.value)controlsTimer=window.setTimeout(()=>controlsVisible.value=false,2400)
 }
 
-async function releaseFMP4Session(id:string,discard=false,reason=''){
-  if(!id)return
-  const query=discard?`?discard=1&reason=${encodeURIComponent(reason)}`:''
-  try{await api(`/api/video/fmp4/${id}${query}`,{method:'DELETE'})}catch{/* 服务端 TTL 仍会兜底 */}
-}
-function releaseHLSSession(id:string){
-  if(id)void fetch(`/api/video/hls/${id}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
-}
 interface MSEStartOptions { fresh?:boolean;suspectSessionID?:string;recoveryReason?:string }
 async function startMSEStream(start:number,autoplay=true,recovery:MSEStartOptions={}){
   if(typeof MediaSource==='undefined'){await startCompatibilityStream(start,autoplay,'浏览器没有 MediaSource Extensions');return}
@@ -266,7 +153,7 @@ async function startMSEStream(start:number,autoplay=true,recovery:MSEStartOption
 function recoverFromMSE(reason:string){
   if(mseRecoveryStarted||starting.value)return
   mseRecoveryStarted=true
-  const target=authoritativeSeekTarget(currentTime.value,savedPosition(),userSeeked)
+  const target=authoritativeSeekTarget(currentTime.value,savedPosition(),didUserSeek())
   if(mseRecoveryAnchor<0||Math.abs(target-mseRecoveryAnchor)>5){mseRecoveryAnchor=target;mseFreshFailures=0}
   const action=mseRecoveryAction(mseFreshFailures)
   const autoplay=playing.value||autoplayPending.value
@@ -376,11 +263,12 @@ function onVideoError(){
   if(directMode.value&&!directFallbackStarted){directFallbackStarted=true;void startMSEStream(currentTime.value||savedPosition(),true);return}
   if(mseMode.value)recoverFromMSE('浏览器报告 MSE 媒体解码错误')
 }
+function retryPlayback(){if(mseMode.value)void startMSEStream(currentTime.value||savedPosition(),true);else void startCompatibilityStream(currentTime.value||savedPosition(),true,'用户重试 HLS')}
 function seekTo(target:number){
   const el=video.value
   if(!el||!Number.isFinite(target))return
   target=Math.max(0,Math.min(target,duration.value||target))
-  userSeeked=true;currentTime.value=target
+  markUserSeeked();currentTime.value=target
   if(starting.value){
     if(mseMode.value)void startMSEStream(target,autoplayPending.value)
     else if(!directMode.value)void startCompatibilityStream(target,autoplayPending.value,'用户在流准备期间重新定位')
@@ -406,7 +294,6 @@ async function toggleFullscreen(){
   if(shell.value)await player?.requestFullscreen(shell.value)
 }
 function onFullscreenChange(){fullscreen.value=document.fullscreenElement===shell.value}
-function closeActionMenuFromOutside(event:PointerEvent){const target=event.target;if(actionMenu.value?.open&&target instanceof Node&&!actionMenu.value.contains(target))actionMenu.value.open=false}
 function onKey(event:KeyboardEvent){
   if(event.target instanceof HTMLInputElement||event.target instanceof HTMLSelectElement)return
   if(event.key===' '||event.key==='k'){event.preventDefault();togglePlayback()}
@@ -424,7 +311,6 @@ watch(selectedSubtitleURL,url=>{
 
 onMounted(async()=>{
   document.addEventListener('fullscreenchange',onFullscreenChange)
-  document.addEventListener('pointerdown',closeActionMenuFromOutside)
   if(video.value&&typeof ResizeObserver!=='undefined'){videoResizeObserver=new ResizeObserver(updateSubtitleBounds);videoResizeObserver.observe(video.value)}
   const storedVolume=Number(localStorage.getItem(volumeKey));if(Number.isFinite(storedVolume)&&storedVolume>=0&&storedVolume<=1){volume.value=storedVolume;muted.value=storedVolume===0;if(storedVolume>0)lastAudibleVolume=storedVolume}
   const progressPromise=loadProgress()
@@ -441,7 +327,7 @@ onMounted(async()=>{
   else{await progressPromise;void startMSEStream(savedPosition(),true)}
 })
 onBeforeUnmount(()=>{
-  document.removeEventListener('fullscreenchange',onFullscreenChange);document.removeEventListener('pointerdown',closeActionMenuFromOutside);videoResizeObserver?.disconnect();videoResizeObserver=null;window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);stopPlaybackClock();persistProgress(false);playbackGeneration++;disableSubtitleTracks()
+  document.removeEventListener('fullscreenchange',onFullscreenChange);videoResizeObserver?.disconnect();videoResizeObserver=null;window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);stopPlaybackClock();persistProgress(false);playbackGeneration++;disableSubtitleTracks()
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const hlsSession=hlsSessionId;hlsSessionId='';const fmp4Session=fmp4SessionId;fmp4SessionId='';resetPlayback()
   releaseHLSSession(hlsSession);if(fmp4Session)void fetch(`/api/video/fmp4/${fmp4Session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
@@ -455,56 +341,9 @@ onBeforeUnmount(()=>{
       你的浏览器不支持这个视频格式。
     </video>
     <div v-if="activeSubtitleLines.length" class="video-subtitle-overlay" :class="[subtitlePlacement,{raised:controlsVisible||!playing}]" :style="subtitleStyle" aria-live="off"><span v-for="(line,index) in activeSubtitleLines" :key="`${index}:${line}`" :class="subtitleLineClass(index)">{{ line }}</span></div>
-    <div class="video-top-shade" :class="{visible:controlsVisible||!playing}"><div class="video-title-group"><button class="video-back" aria-label="退出播放" @click.stop="emit('close')"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><strong :title="item.name">{{ item.name }}</strong></div><span v-if="!directMode">{{ compatibilityLabel }}</span></div>
-    <button v-if="!playing&&!starting&&!error" class="video-center-play" aria-label="播放" @click.stop="togglePlayback"><svg viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
-    <div v-if="starting" class="video-loading" :class="{compact:prepareKind==='seek'}"><span></span><strong>{{ prepareKind==='seek'?`正在定位到 ${formatTime(timelinePosition)}`:'正在准备视频' }}</strong><small v-if="prepareKind==='initial'">{{ prepareMode==='mse'?'MSE 原码流 · fMP4 实时封装':'HLS 兼容流 · 正在生成启动缓冲' }}</small></div>
-    <div v-else-if="buffering" class="video-buffering"><span></span><strong>正在缓冲</strong></div>
-    <p v-if="error" class="video-error">{{ error }} <button @click="mseMode?startMSEStream(currentTime||savedPosition(),true):startCompatibilityStream(currentTime||savedPosition(),true,'用户重试 HLS')">重试</button></p>
-    <div class="video-controls" :class="{visible:controlsVisible||!playing}" @click.stop>
-      <input class="video-seek" type="range" min="0" :max="Math.max(duration,1)" step=".25" :value="Math.min(timelinePosition,Math.max(duration,1))" :style="{'--video-progress':`${progress}%`}" :disabled="!duration" aria-label="视频进度" @input="previewSeek" @change="commitSeek">
-      <div class="video-control-row">
-        <button class="video-icon-button" :aria-label="playing||(starting&&autoplayPending)?'暂停':'播放'" @click="togglePlayback"><svg v-if="playing||(starting&&autoplayPending)" viewBox="0 0 24 24"><path d="M8 6v12M16 6v12"/></svg><svg v-else viewBox="0 0 24 24"><path d="m9 7 9 5-9 5Z"/></svg></button>
-        <button class="video-icon-button video-mute" :class="volumeState" :aria-label="volumeState==='muted'?'取消静音':'静音'" @click="toggleMute"><svg viewBox="0 0 24 24"><path d="M5 10h3l4-3v10l-4-3H5Z"/><path v-if="volumeState==='low'" d="M15 9c1.5 1.5 1.5 4.5 0 6"/><template v-else-if="volumeState==='high'"><path d="M15 9c1.5 1.5 1.5 4.5 0 6"/><path d="M18 7c3 3 3 7 0 10"/></template><path v-else d="m16 10 4 4m0-4-4 4"/></svg></button>
-        <label class="video-volume-control" :class="{active:volumeFeedback,muted:volumeState==='muted'}" :style="{'--volume-progress':`${volumePercent}%`}"><input class="video-volume" type="range" min="0" max="1" step=".01" :value="effectiveVolume" aria-label="音量" :aria-valuetext="`${volumePercent}%`" @pointerdown="volumeFeedback=true" @pointerup="showVolumeFeedback" @input="changeVolume"><output>{{ volumePercent }}%</output></label>
-        <span class="video-time">{{ formatTime(timelinePosition) }} / {{ formatTime(duration) }}</span>
-        <span class="video-control-spacer"></span>
-        <label class="video-subtitles" :class="{disabled:!subtitles.length}"><span>CC</span><select :value="activeSubtitle" :disabled="!subtitles.length" aria-label="字幕" @change="chooseSubtitle"><option value="-1">关闭字幕</option><option v-for="(track,index) in subtitles" :key="track.id" :value="index">{{ track.label }}</option></select></label>
-        <details ref="actionMenu" class="video-action-menu"><summary class="video-icon-button" aria-label="更多操作"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg></summary><div><button @click="actionMenu?.removeAttribute('open');emit('download',item)">下载</button><button @click="actionMenu?.removeAttribute('open');emit('move',item)">移动</button><button @click="actionMenu?.removeAttribute('open');emit('copy',item)">复制</button></div></details>
-        <button class="video-icon-button" :aria-label="fullscreen?'退出全屏':'全屏'" @click="toggleFullscreen"><svg viewBox="0 0 24 24"><path v-if="!fullscreen" d="M8 4H4v4M16 4h4v4M8 20H4v-4M16 20h4v-4"/><path v-else d="M4 8h4V4M20 8h-4V4M4 16h4v4M20 16h-4v4"/></svg></button>
-      </div>
-    </div>
+    <VideoStatusOverlay :item-name="item.name" :direct-mode="directMode" :compatibility-label="compatibilityLabel" :controls-visible="controlsVisible" :playing="playing" :starting="starting" :error="error" :prepare-kind="prepareKind" :prepare-mode="prepareMode" :timeline-position="timelinePosition" :buffering="buffering" :format-time="formatTime" @close="emit('close')" @toggle-playback="togglePlayback" @retry="retryPlayback" />
+    <VideoControls :visible="controlsVisible||!playing" :playing="playing" :starting="starting" :autoplay-pending="autoplayPending" :duration="duration" :timeline-position="timelinePosition" :progress="progress" :volume-state="volumeState" :volume-feedback="volumeFeedback" :volume-percent="volumePercent" :effective-volume="effectiveVolume" :subtitles="subtitles" :active-subtitle="activeSubtitle" :fullscreen="fullscreen" :format-time="formatTime" @toggle-playback="togglePlayback" @preview-seek="previewSeek" @commit-seek="commitSeek" @toggle-mute="toggleMute" @volume-start="volumeFeedback=true" @volume-end="showVolumeFeedback" @change-volume="changeVolume" @choose-subtitle="chooseSubtitle" @download="emit('download',item)" @move="emit('move',item)" @copy="emit('copy',item)" @toggle-fullscreen="toggleFullscreen" />
   </div>
 </template>
 
-<style scoped>
-.video-player-shell{--player-bg:#070b0f;--player-overlay:#101820c7;--player-text:#f3f6f8;--player-muted:#b5c0ca;--player-accent:#91adc5;--player-accent-strong:#abc1d4;--player-track:#ffffff3d;--player-border:#c5d4df33;position:relative;isolation:isolate;justify-self:center;width:min(1500px,100%);max-width:100%;height:min(820px,calc(100vh - 178px));height:min(820px,calc(100dvh - 178px));min-width:0;min-height:280px;overflow:hidden;border-radius:15px;background:var(--player-bg);box-shadow:0 18px 46px #10182042;outline:none}
-.video-player-shell:fullscreen{width:100vw;height:100vh;height:100dvh;border-radius:0}
-.video-player-shell video{display:block;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;background:var(--player-bg);object-fit:contain;box-shadow:none;cursor:pointer}
-.video-subtitle-overlay{position:absolute;z-index:7;right:calc(var(--subtitle-image-inset) + 4%);bottom:calc(var(--subtitle-image-bottom) + clamp(28px,5.2%,56px));left:calc(var(--subtitle-image-inset) + 4%);display:flex;align-items:center;color:#fff;text-align:center;pointer-events:none;transition:bottom .18s ease;flex-direction:column;gap:2px}.video-subtitle-overlay.raised{bottom:calc(var(--subtitle-image-bottom) + clamp(100px,14%,150px))}.video-subtitle-overlay span{max-width:min(92%,1100px);padding:0;border:0;border-radius:0;background:transparent;color:#fff;font-size:clamp(18px,2.35vw,32px);font-weight:700;line-height:1.16;overflow-wrap:anywhere;box-shadow:none;text-shadow:-1.5px -1.5px 0 #000,1.5px -1.5px 0 #000,-1.5px 1.5px 0 #000,1.5px 1.5px 0 #000,0 2px 5px #000,0 0 8px #000}.video-subtitle-overlay span.video-subtitle-secondary-line{font-size:clamp(15px,1.8vw,25px);font-weight:600}
-.video-subtitle-overlay.top{top:calc(var(--subtitle-image-bottom) + 7%);bottom:auto}.video-subtitle-overlay.middle{top:50%;bottom:auto;transform:translateY(-50%)}
-.video-player-shell.cursor-hidden,.video-player-shell.cursor-hidden *{cursor:none!important}
-.video-top-shade{position:absolute;z-index:9;inset:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:max(18px,env(safe-area-inset-top,0px)) max(22px,env(safe-area-inset-right,0px)) 72px max(22px,env(safe-area-inset-left,0px));background:linear-gradient(180deg,#071018db 0%,#0710188c 42%,transparent 100%);color:var(--player-text);opacity:0;pointer-events:none;transition:opacity .2s}
-.video-top-shade.visible{opacity:1}.video-title-group{display:flex;align-items:center;min-width:0;gap:10px}.video-top-shade strong{min-width:0;max-width:100%;overflow:hidden;color:var(--player-text);font-size:15px;font-weight:650;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000}.video-top-shade>span{flex:0 0 auto;padding:5px 9px;border:1px solid var(--player-border);border-radius:999px;background:#10182070;color:var(--player-muted);font-size:10px;backdrop-filter:blur(8px)}
-.video-back{display:grid;place-items:center;flex:0 0 auto;width:40px;height:40px;padding:0;border:1px solid var(--player-border);border-radius:50%;background:var(--player-overlay);color:var(--player-text);box-shadow:0 4px 16px #0004;pointer-events:auto;backdrop-filter:blur(10px)}.video-back:hover,.video-back:focus-visible{border-color:#c5d4df5c;background:#1b2833dc;color:var(--player-accent-strong);outline:none}.video-back svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
-.video-center-play{position:absolute;z-index:6;top:50%;left:50%;display:grid;place-items:center;width:72px;height:72px;padding:0;border:1px solid var(--player-border);border-radius:50%;background:var(--player-overlay);color:var(--player-text);box-shadow:0 10px 30px #0008;transform:translate(-50%,-50%);transition:transform .16s,background .16s,border-color .16s;backdrop-filter:blur(10px)}.video-center-play:hover,.video-center-play:focus-visible{border-color:#abc1d477;background:#18242edb;color:var(--player-accent-strong);outline:none;transform:translate(-50%,-50%) scale(1.05)}.video-center-play svg{width:31px;height:31px;fill:currentColor;stroke:none;transform:translateX(1px)}
-.video-controls{position:absolute;z-index:8;right:0;bottom:0;left:0;min-width:0;padding:78px max(20px,env(safe-area-inset-right,0px)) max(12px,env(safe-area-inset-bottom,0px)) max(20px,env(safe-area-inset-left,0px));background:linear-gradient(180deg,transparent 0%,#070b0f82 38%,#070b0feb 100%);color:var(--player-text);opacity:0;pointer-events:none;transform:translateY(8px);transition:opacity .2s,transform .2s}.video-controls.visible{opacity:1;pointer-events:auto;transform:none}
-.video-seek{display:block;width:100%;height:17px;margin:-6px 0 0;padding:6px 0;appearance:none;background:transparent;cursor:pointer}.video-seek::-webkit-slider-runnable-track{height:4px;border-radius:999px;background:linear-gradient(to right,var(--player-accent) var(--video-progress),var(--player-track) var(--video-progress))}.video-seek::-moz-range-track{height:4px;border-radius:999px;background:linear-gradient(to right,var(--player-accent) var(--video-progress),var(--player-track) var(--video-progress))}.video-seek::-webkit-slider-thumb{width:14px;height:14px;margin-top:-5px;appearance:none;border:2px solid var(--player-text);border-radius:50%;background:var(--player-accent);box-shadow:0 0 0 3px #91adc52b}.video-seek::-moz-range-thumb{width:11px;height:11px;border:2px solid var(--player-text);border-radius:50%;background:var(--player-accent);box-shadow:0 0 0 3px #91adc52b}.video-seek:focus-visible{outline:2px solid var(--player-accent);outline-offset:3px}
-.video-control-row{display:flex;align-items:center;min-width:0;min-height:50px;gap:6px}.video-icon-button{display:grid;place-items:center;flex:0 0 auto;width:46px;height:46px;padding:0;border:0;border-radius:50%;background:transparent;color:#fff}.video-icon-button:hover,.video-icon-button:focus-visible{background:#ffffff1f;outline:none}.video-icon-button svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.video-icon-button svg path[d*="9 7"]{fill:currentColor;stroke:none}.video-mute.low{color:#dbeafe}.video-mute.muted{color:#fda4af}
-.video-volume-control{position:relative;display:flex;align-items:center;flex:0 1 126px;width:126px;height:40px;min-width:82px;padding:0 9px;border-radius:10px;transition:background .15s}.video-volume-control:hover,.video-volume-control:focus-within,.video-volume-control.active{background:#ffffff17}.video-volume{width:100%;height:32px;margin:0;appearance:none;background:transparent;cursor:pointer;touch-action:pan-x}.video-volume::-webkit-slider-runnable-track{height:6px;border-radius:999px;background:linear-gradient(to right,#fff var(--volume-progress),#ffffff52 var(--volume-progress))}.video-volume::-moz-range-track{height:6px;border-radius:999px;background:linear-gradient(to right,#fff var(--volume-progress),#ffffff52 var(--volume-progress))}.video-volume::-webkit-slider-thumb{width:18px;height:18px;margin-top:-6px;appearance:none;border:2px solid #fff;border-radius:50%;background:#111827;box-shadow:0 2px 8px #0008;transition:transform .12s}.video-volume::-moz-range-thumb{width:18px;height:18px;border:2px solid #fff;border-radius:50%;background:#111827;box-shadow:0 2px 8px #0008}.video-volume:active::-webkit-slider-thumb,.video-volume:focus-visible::-webkit-slider-thumb{transform:scale(1.15)}.video-volume:focus-visible{outline:2px solid #93c5fd;outline-offset:3px}.video-volume-control.muted .video-volume::-webkit-slider-runnable-track{background:#ffffff42}.video-volume-control.muted .video-volume::-moz-range-track{background:#ffffff42}.video-volume-control output{position:absolute;left:50%;bottom:38px;min-width:44px;padding:5px 7px;border-radius:7px;background:#111827e8;color:#fff;font-size:10px;text-align:center;opacity:0;transform:translate(-50%,5px);transition:.14s;pointer-events:none}.video-volume-control:hover output,.video-volume-control:focus-within output,.video-volume-control.active output{opacity:1;transform:translate(-50%,0)}
-.video-time{margin-left:5px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap;text-shadow:0 1px 2px #000}.video-control-spacer{min-width:12px;flex:1}.video-subtitles{position:relative;display:flex;align-items:center;flex:0 0 auto;margin-left:5px}.video-subtitles>span{display:grid;place-items:center;width:38px;height:31px;border:2px solid currentColor;border-radius:6px;font-size:10px;font-weight:850;letter-spacing:.04em}.video-subtitles select{position:absolute;right:0;bottom:40px;width:min(300px,70vw);padding:11px;border:1px solid #ffffff30;border-radius:9px;background:#171717ec;color:#fff;font-size:12px;opacity:0;pointer-events:none;transform:translateY(6px);transition:.15s}.video-subtitles:hover select,.video-subtitles select:focus{opacity:1;pointer-events:auto;transform:none}.video-subtitles.disabled{opacity:.45}
-.video-loading{position:absolute;z-index:7;inset:0;display:grid;place-content:center;justify-items:center;padding:24px;background:#0009;color:#fff;text-align:center;pointer-events:none}.video-loading.compact{inset:auto auto 92px 50%;display:flex;align-items:center;padding:9px 13px;border:1px solid #ffffff2b;border-radius:999px;background:#111827d9;transform:translateX(-50%);gap:9px;white-space:nowrap}.video-loading span,.video-buffering span{width:42px;height:42px;border:3px solid #ffffff30;border-top-color:#fff;border-radius:50%;animation:video-spin .8s linear infinite}.video-loading.compact span,.video-buffering span{width:18px;height:18px;border-width:2px}.video-loading strong{margin-top:14px;font-size:15px}.video-loading.compact strong{margin:0;font-size:11px}.video-loading small{max-width:420px;margin-top:7px;color:#c8d2df;font-size:11px;line-height:1.6}.video-buffering{position:absolute;z-index:7;top:50%;left:50%;display:flex;align-items:center;padding:9px 13px;border-radius:999px;background:#111827c9;color:#fff;transform:translate(-50%,-50%);gap:9px;pointer-events:none}.video-buffering strong{font-size:11px}
-.video-error{position:absolute;z-index:10;left:50%;bottom:86px;max-width:calc(100% - 30px);margin:0;padding:9px 12px;border:1px solid #fecaca;border-radius:10px;background:#fff1f2ed;color:#be123c;font-size:11px;transform:translateX(-50%)}.video-error button{margin-left:8px;border:0;background:transparent;color:#9f1239;font-weight:800}
-.video-action-menu{position:relative;flex:0 0 auto}.video-action-menu summary{list-style:none}.video-action-menu summary::-webkit-details-marker{display:none}.video-action-menu>div{position:absolute;right:0;bottom:45px;display:grid;width:130px;overflow:hidden;border:1px solid #ffffff24;border-radius:11px;background:#171717f2;box-shadow:0 12px 32px #0007}.video-action-menu>div button{padding:10px 14px;border:0;background:transparent;color:#fff;text-align:left}.video-action-menu>div button:hover{background:#ffffff14}
-@keyframes video-spin{to{transform:rotate(360deg)}}
-@media(max-width:850px){.video-player-shell{width:100%;height:100%;min-height:0;border-radius:10px}.video-top-shade{padding:max(10px,env(safe-area-inset-top,0px)) 12px 48px}.video-title-group{gap:4px}.video-back{width:39px;height:39px}.video-back svg{width:24px;height:24px}.video-top-shade strong{font-size:13px}.video-top-shade>span{display:none}.video-controls{padding:46px 8px max(7px,env(safe-area-inset-bottom,0px))}.video-control-row{min-height:43px;gap:1px}.video-icon-button{width:39px;height:39px}.video-icon-button svg{width:23px;height:23px}.video-volume-control{flex-basis:clamp(76px,22vw,108px);width:clamp(76px,22vw,108px);min-width:70px;height:39px;padding:0 7px}.video-volume{height:38px}.video-volume::-webkit-slider-runnable-track{height:7px}.video-volume::-moz-range-track{height:7px}.video-volume::-webkit-slider-thumb{width:20px;height:20px;margin-top:-6.5px}.video-volume::-moz-range-thumb{width:20px;height:20px}.video-time{margin-left:2px;font-size:10px}.video-control-spacer{min-width:5px}.video-subtitles{margin-left:5px}.video-center-play{width:64px;height:47px}.video-subtitles select{inset:0;width:100%;height:100%;padding:0;opacity:0;pointer-events:auto;transform:none}.video-loading.compact{bottom:67px}.video-error{bottom:66px}}
-@media(max-width:520px){.video-time{display:none}.video-control-spacer{flex:1}.video-volume-control{flex-basis:clamp(72px,24vw,98px);min-width:68px}.video-action-menu .video-icon-button,.video-control-row>.video-icon-button{width:38px}.video-loading.compact{max-width:calc(100% - 20px)}}
-
-/* Revaro cinema chrome: interaction states derive from the same muted gray-blue accent. */
-.video-control-row{min-height:48px;gap:4px}.video-icon-button{width:42px;height:42px;color:var(--player-text)}.video-icon-button:hover,.video-icon-button:focus-visible{background:#dce7ef17;color:var(--player-accent-strong);box-shadow:0 0 0 2px #91adc53d;outline:none}.video-icon-button svg{width:24px;height:24px;stroke-width:1.8}.video-mute.low{color:var(--player-accent-strong)}.video-mute.muted{color:var(--player-muted)}
-.video-volume-control:hover,.video-volume-control:focus-within,.video-volume-control.active{background:#dce7ef12}.video-volume::-webkit-slider-runnable-track{background:linear-gradient(to right,var(--player-accent-strong) var(--volume-progress),var(--player-track) var(--volume-progress))}.video-volume::-moz-range-track{background:linear-gradient(to right,var(--player-accent-strong) var(--volume-progress),var(--player-track) var(--volume-progress))}.video-volume::-webkit-slider-thumb,.video-volume::-moz-range-thumb{border-color:var(--player-text);background:#16212a}.video-volume:focus-visible{outline:2px solid var(--player-accent);outline-offset:3px}.video-volume-control output{border:1px solid var(--player-border);background:var(--player-overlay);color:var(--player-text)}
-.video-subtitles>span{border-width:1.5px;color:var(--player-text)}.video-subtitles:focus-within>span,.video-subtitles:hover>span{color:var(--player-accent-strong)}.video-subtitles select,.video-action-menu>div{border-color:var(--player-border);background:#101820f2;color:var(--player-text)}.video-action-menu>div button{color:var(--player-text)}.video-action-menu>div button:hover{background:#91adc51a;color:var(--player-accent-strong)}
-.video-loading{background:#070b0fa8;color:var(--player-text);backdrop-filter:blur(3px)}.video-loading.compact,.video-buffering{border:1px solid var(--player-border);background:var(--player-overlay);color:var(--player-text);backdrop-filter:blur(8px)}.video-loading span,.video-buffering span{border-color:#ffffff24;border-top-color:var(--player-accent)}.video-loading small{color:var(--player-muted);font-weight:500}.video-loading strong,.video-buffering strong{font-weight:650}.video-error{border-color:#dca3a34d;background:#281719e8;color:#f1b7bb}.video-error button{color:#ffd1d4}
-@media(max-width:850px){.video-top-shade{padding:max(10px,env(safe-area-inset-top,0px)) max(12px,env(safe-area-inset-right,0px)) 56px max(12px,env(safe-area-inset-left,0px))}.video-controls{padding:58px max(8px,env(safe-area-inset-right,0px)) max(7px,env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px))}.video-center-play{width:62px;height:62px}.video-center-play svg{width:27px;height:27px}.video-control-row{gap:1px}.video-icon-button{width:39px;height:39px}.video-icon-button svg{width:22px;height:22px}}
-@media(max-width:430px){.video-top-shade strong{font-size:12px}.video-back{width:36px;height:36px}.video-volume-control{flex-basis:clamp(64px,20vw,82px);min-width:60px}.video-subtitles{margin-left:2px}}
-@media(max-width:520px){.video-subtitle-overlay{right:calc(var(--subtitle-image-inset) + 3%);left:calc(var(--subtitle-image-inset) + 3%);bottom:calc(var(--subtitle-image-bottom) + 24px)}.video-subtitle-overlay.raised{bottom:calc(var(--subtitle-image-bottom) + 84px)}.video-subtitle-overlay span{font-size:clamp(17px,5vw,24px)}.video-subtitle-overlay span.video-subtitle-secondary-line{font-size:clamp(14px,4vw,20px)}}
-</style>
+<style src="../styles/video-player.css"></style>

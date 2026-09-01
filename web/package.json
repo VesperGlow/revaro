@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "test": "vitest run --pool=vmThreads --maxWorkers=1",
+    "test": "vitest run src --pool=vmThreads --maxWorkers=1",
     "typecheck": "vue-tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@svta/cml-cmcd": "2.5.0",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.55.0",
     "@vitejs/plugin-vue": "6.0.8",
     "eslint": "^10.8.1",
     "eslint-plugin-vue": "^10.10.0",
