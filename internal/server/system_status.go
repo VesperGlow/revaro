@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type systemComponent struct {
@@ -47,6 +49,39 @@ type systemStatusResponse struct {
 		Enabled   bool   `json:"enabled"`
 		Available bool   `json:"available"`
 	} `json:"bt"`
+	LocalDisk struct {
+		Status         string `json:"status"`
+		TotalBytes     int64  `json:"total_bytes"`
+		FreeBytes      int64  `json:"free_bytes"`
+		AvailableBytes int64  `json:"available_bytes"`
+		UsedPercent    int    `json:"used_percent"`
+	} `json:"local_disk"`
+}
+
+func localFilesystemUsage(paths ...string) (total, free, available int64, err error) {
+	bestUsed := -1.0
+	for _, path := range paths {
+		var stat unix.Statfs_t
+		if statErr := unix.Statfs(path, &stat); statErr != nil {
+			err = statErr
+			continue
+		}
+		t := int64(uint64(stat.Blocks) * uint64(stat.Bsize))
+		f := int64(uint64(stat.Bfree) * uint64(stat.Bsize))
+		a := int64(uint64(stat.Bavail) * uint64(stat.Bsize))
+		if t <= 0 {
+			continue
+		}
+		used := float64(t-a) / float64(t)
+		if used > bestUsed {
+			total, free, available, bestUsed = t, f, a, used
+		}
+		err = nil
+	}
+	if bestUsed < 0 && err == nil {
+		err = fmt.Errorf("local filesystem stats unavailable")
+	}
+	return
 }
 
 func (s *Server) collectSystemStatus(parent context.Context) systemStatusResponse {
@@ -105,6 +140,23 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 	out.BT.Status = "ok"
 	if out.BT.Enabled && !out.BT.Available {
 		degrade(&out.BT.Status)
+	}
+
+	out.LocalDisk.Status = "ok"
+	total, free, available, err := localFilesystemUsage(s.cfg.DataDir, s.cfg.WorkDir)
+	if err != nil {
+		degrade(&out.LocalDisk.Status)
+	} else {
+		out.LocalDisk.TotalBytes, out.LocalDisk.FreeBytes, out.LocalDisk.AvailableBytes = total, free, available
+		out.LocalDisk.UsedPercent = int(float64(total-available)/float64(total)*100 + .5)
+		degradedLimit := max(int64(5<<30), total/10)
+		criticalLimit := max(int64(1<<30), total/50)
+		if available < criticalLimit {
+			out.LocalDisk.Status = "critical"
+			out.Status = "degraded"
+		} else if available < degradedLimit {
+			degrade(&out.LocalDisk.Status)
+		}
 	}
 	return out
 }
