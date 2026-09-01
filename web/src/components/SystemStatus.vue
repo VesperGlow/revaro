@@ -38,7 +38,6 @@ defineExpose({openPanel,closePanel})
         <article><span :class="status.database.status"></span><div><b>数据库</b><small>{{ formatSize(status.database.bytes) }}</small></div></article>
         <article><span :class="status.storage.status"></span><div><b>S3 / 数据平面</b><small>{{ status.storage.status==='ok'?'可用':'异常' }}</small></div></article>
         <article><span :class="status.cache.status"></span><div><b>缓存</b><small>内存 {{ formatSize(status.cache.memory_bytes) }} · 磁盘 {{ formatSize(status.cache.disk_bytes) }}</small></div></article>
-        <article><span :class="status.local_disk.status"></span><div><b>本地磁盘</b><small>可用 {{ formatSize(status.local_disk.available_bytes) }} · 已用 {{ status.local_disk.used_percent }}%</small></div></article>
         <article><span :class="status.tasks.status"></span><div><b>任务</b><small>运行 {{ status.tasks.running }} · 排队 {{ status.tasks.queued }} · 等待 {{ status.tasks.waiting }} · 失败 {{ status.tasks.failed }}</small></div></article>
         <article><span :class="status.object_cleanup.status"></span><div><b>清理队列</b><small>{{ status.object_cleanup.pending }} 个对象待清理</small></div></article>
         <article><span :class="status.media_sessions.status"></span><div><b>媒体会话</b><small>音频 HLS {{ status.media_sessions.audio_hls }} · 视频 HLS {{ status.media_sessions.video_hls }} · fMP4 {{ status.media_sessions.fmp4 }}</small></div></article>
