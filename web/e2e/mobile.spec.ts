@@ -23,5 +23,7 @@ test('手机顶栏状态球和头像工具菜单交互',async({page})=>{
   await page.keyboard.press('Escape')
   await page.locator('[aria-label="打开账户与工具菜单"]').click()
   await menu.getByRole('button',{name:/账户设置/}).click()
-  await expect(page.getByRole('dialog')).toBeVisible()
+  await expect(menu).toBeHidden()
+  await expect(page.locator('.account-modal')).toBeVisible()
+  await expect(page.locator('.account-modal').getByRole('heading',{name:'账户设置'})).toBeVisible()
 })
