@@ -16,6 +16,7 @@ test('创建目录、真实上传、移动、删除、回收站和恢复',async(
   await page.getByRole('toolbar',{name:'所选项目操作'}).getByRole('button',{name:'移动'}).click()
   await page.locator('.directory-trigger').click()
   await page.getByRole('region',{name:'选择目标目录'}).getByRole('button',{name:'e2e-target'}).click()
+  await page.locator('.directory-trigger').click()
   await page.locator('.move-copy-dialog').getByRole('button',{name:'移动'}).click()
   await expect(uploaded).toBeHidden()
 
