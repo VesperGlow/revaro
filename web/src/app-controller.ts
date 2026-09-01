@@ -22,7 +22,11 @@ import { isArchive, isAudio, isBook, isEditable, isMedia, isVideo, thumbSRC } fr
 import { formatSize } from './format'
 import type { ShareResponse, StorageStats, UploadTask } from './types'
 
+const MediaPreview=defineAsyncComponent(()=>import('./components/MediaPreview.vue'))
+const ReaderView=defineAsyncComponent(()=>import('./Reader.vue'))
+
 export default defineComponent({
+  components:{AppDialog,AppTopbar,DocumentEditor,FileBrowserHeader,FileGrid,LoginPage,MediaPreview,MoveCopyDialog,ReaderView,SelectionToolbar,ShareDialog},
   setup(){
     
     const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -59,9 +63,6 @@ export default defineComponent({
     const avatarInput = ref<HTMLInputElement|null>(null)
     const audioCoverInput = ref<HTMLInputElement|null>(null)
     let toastTimer = 0
-    const MediaPreview=defineAsyncComponent(()=>import('./components/MediaPreview.vue'))
-    const ReaderView=defineAsyncComponent(()=>import('./Reader.vue'))
-    
     const editorDirty = computed(() => editor.content !== editor.original || editor.name !== editor.originalName)
     const editorBytes = computed(() => new Blob([editor.content]).size)
     const editorIsMarkdown = computed(() => /\.(md|markdown)$/i.test(editor.name))
