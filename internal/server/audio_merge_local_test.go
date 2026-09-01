@@ -339,7 +339,7 @@ func TestLocalAudioMergeCancelDuringUpload(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("upload chunk=%d: %s", rr.Code, rr.Body.String())
 	}
-	cancel := a.request("DELETE", "/api/audio-merges/"+created.ID, nil, true)
+	cancel := a.request("POST", "/api/tasks/"+created.ID+"/cancel", nil, true)
 	if cancel.Code != http.StatusNoContent {
 		t.Fatalf("cancel=%d: %s", cancel.Code, cancel.Body.String())
 	}
@@ -511,7 +511,7 @@ func TestLocalMergeConcurrencyLimit(t *testing.T) {
 		}
 	}
 	for _, job := range created {
-		if rr := a.request("DELETE", "/api/audio-merges/"+job.ID, nil, true); rr.Code != http.StatusNoContent {
+		if rr := a.request("POST", "/api/tasks/"+job.ID+"/cancel", nil, true); rr.Code != http.StatusNoContent {
 			t.Fatalf("cleanup cancel=%d", rr.Code)
 		}
 	}
@@ -581,8 +581,13 @@ func TestLocalMergeUploadProgressAndSlotRelease(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("chunk=%d: %s", rr.Code, rr.Body.String())
 	}
-	state := a.request("GET", "/api/audio-merges/"+created.ID, nil, true)
-	snapshot := decode[audioMergeSnapshot](t, state)
+	a.srv.audioMergeMu.RLock()
+	runtime := a.srv.audioMergeJobs[created.ID]
+	a.srv.audioMergeMu.RUnlock()
+	if runtime == nil {
+		t.Fatal("local merge runtime missing")
+	}
+	snapshot := runtime.snapshot()
 	if snapshot.Status != "uploading" || snapshot.Progress < localMergeUploadProgressStart || snapshot.Progress > localMergeUploadProgressEnd {
 		t.Fatalf("upload progress snapshot=%+v", snapshot)
 	}

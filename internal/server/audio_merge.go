@@ -14,14 +14,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/go-chi/chi/v5"
 )
 
 const maxAudioMergeInputs = 256
@@ -624,63 +622,6 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, job.snapshot())
-}
-
-func (s *Server) listAudioMerges(w http.ResponseWriter, _ *http.Request) {
-	s.audioMergeMu.RLock()
-	jobs := make([]*audioMergeJob, 0, len(s.audioMergeJobs))
-	for _, job := range s.audioMergeJobs {
-		jobs = append(jobs, job)
-	}
-	s.audioMergeMu.RUnlock()
-	snapshots := make([]audioMergeSnapshot, 0, len(jobs))
-	for _, job := range jobs {
-		snapshots = append(snapshots, job.snapshot())
-	}
-	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].CreatedAt > snapshots[j].CreatedAt })
-	writeJSON(w, http.StatusOK, map[string]any{"items": snapshots})
-}
-
-func (s *Server) getAudioMerge(w http.ResponseWriter, r *http.Request) {
-	s.audioMergeMu.RLock()
-	job := s.audioMergeJobs[chi.URLParam(r, "id")]
-	s.audioMergeMu.RUnlock()
-	if job == nil {
-		problem(w, http.StatusNotFound, "audio merge job not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, job.snapshot())
-}
-
-func (s *Server) cancelAudioMerge(w http.ResponseWriter, r *http.Request) {
-	s.audioMergeMu.RLock()
-	job := s.audioMergeJobs[chi.URLParam(r, "id")]
-	s.audioMergeMu.RUnlock()
-	if job == nil {
-		problem(w, http.StatusNotFound, "audio merge job not found")
-		return
-	}
-	snapshot := job.snapshot()
-	if snapshot.Status == "done" || snapshot.Status == "failed" || snapshot.Status == "cancelled" {
-		s.audioMergeMu.Lock()
-		delete(s.audioMergeJobs, job.ID)
-		s.audioMergeMu.Unlock()
-		job.cleanupStaging(s.log)
-		job.releaseUploadSlot(s)
-	} else if snapshot.Status == "uploading" {
-		// Local-directory upload in progress: drop the staging directory,
-		// the reserved output placeholder and the upload slot immediately.
-		s.audioMergeMu.Lock()
-		delete(s.audioMergeJobs, job.ID)
-		s.audioMergeMu.Unlock()
-		job.cleanupStaging(s.log)
-		job.releaseUploadSlot(s)
-		_, _ = s.db.ExecContext(r.Context(), `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
-	} else {
-		job.update("cancelling", snapshot.Progress, "正在取消合并")
-		job.cancel()
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) runAudioMerge(ctx context.Context, job *audioMergeJob, inputs []File, subtitles []*File, profile audioOutputProfile, cover []byte) {

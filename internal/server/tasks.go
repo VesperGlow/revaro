@@ -178,11 +178,20 @@ func (s *Server) cancelTaskRuntime(ctx context.Context, task Task) {
 		job := s.archiveJobs[task.SourceID]
 		s.archiveMu.RUnlock()
 		if job != nil {
+			snapshot := job.snapshot()
 			if extractor, ok := s.objects.Archive(); ok {
 				_ = extractor.CancelArchive(ctx, job.ID)
 			}
 			if job.cancel != nil {
 				job.cancel()
+			}
+			if snapshot.Status == "waiting_password" {
+				job.mu.Lock()
+				job.Status, job.Message, job.Error = "cancelled", "已取消", ""
+				job.passwordDeadline = time.Time{}
+				job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+				job.mu.Unlock()
+				s.cleanupArchiveJobStaging(job)
 			}
 		}
 	case "audio_merge":

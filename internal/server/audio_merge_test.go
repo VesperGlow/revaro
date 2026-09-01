@@ -102,11 +102,13 @@ func waitAudioMerge(t *testing.T, a *testApp, job audioMergeSnapshot) audioMerge
 	deadline := time.Now().Add(15 * time.Second)
 	for !strings.Contains(" done failed cancelled ", " "+job.Status+" ") && time.Now().Before(deadline) {
 		time.Sleep(40 * time.Millisecond)
-		rr := a.request("GET", "/api/audio-merges/"+job.ID, nil, true)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("poll audio merge=%d: %s", rr.Code, rr.Body.String())
+		a.srv.audioMergeMu.RLock()
+		runtime := a.srv.audioMergeJobs[job.ID]
+		a.srv.audioMergeMu.RUnlock()
+		if runtime == nil {
+			t.Fatalf("audio merge runtime %s disappeared", job.ID)
 		}
-		job = decode[audioMergeSnapshot](t, rr)
+		job = runtime.snapshot()
 	}
 	return job
 }
@@ -506,38 +508,6 @@ func TestAudioCoverFileMustBeInOutputDirectory(t *testing.T) {
 	}
 	if _, err := a.srv.audioCoverFromFile(context.Background(), RootID, cover.ID); err == nil {
 		t.Fatal("cover outside the output directory was accepted")
-	}
-}
-
-func TestAudioMergeListsMultipleBackgroundJobs(t *testing.T) {
-	a := newTestApp(t)
-	if capacity := cap(a.srv.audioMergeSlots); capacity != 2 {
-		t.Fatalf("audio merge concurrency=%d want=2", capacity)
-	}
-	older := &audioMergeJob{ID: ids.New(), Status: "done", Progress: 100, OutputName: "older.flac", OutputFormat: "flac", ParentID: RootID, InputCount: 2, CreatedAt: "2026-08-23T01:00:00Z", UpdatedAt: "2026-08-23T01:01:00Z"}
-	newer := &audioMergeJob{ID: ids.New(), Status: "queued", Progress: 1, OutputName: "newer.m4a", OutputFormat: "alac", ParentID: RootID, InputCount: 7, CreatedAt: "2026-08-23T02:00:00Z", UpdatedAt: "2026-08-23T02:00:00Z"}
-	a.srv.audioMergeMu.Lock()
-	a.srv.audioMergeJobs[older.ID] = older
-	a.srv.audioMergeJobs[newer.ID] = newer
-	a.srv.audioMergeMu.Unlock()
-	rr := a.request("GET", "/api/audio-merges", nil, true)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("list audio merges=%d: %s", rr.Code, rr.Body.String())
-	}
-	listed := decode[struct {
-		Items []audioMergeSnapshot `json:"items"`
-	}](t, rr)
-	if len(listed.Items) != 2 || listed.Items[0].ID != newer.ID || listed.Items[1].ID != older.ID || listed.Items[0].ParentID != RootID {
-		t.Fatalf("audio merge list=%+v", listed.Items)
-	}
-	if removed := a.request("DELETE", "/api/audio-merges/"+older.ID, nil, true); removed.Code != http.StatusNoContent {
-		t.Fatalf("remove finished audio merge=%d", removed.Code)
-	}
-	a.srv.audioMergeMu.RLock()
-	_, ok := a.srv.audioMergeJobs[older.ID]
-	a.srv.audioMergeMu.RUnlock()
-	if ok {
-		t.Fatal("finished audio merge remained in task history")
 	}
 }
 

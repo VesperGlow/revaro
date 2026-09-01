@@ -877,23 +877,6 @@ func (m *downloadManager) importRequests(job downloadJob) []storage.TorrentImpor
 	return requests
 }
 
-func (m *downloadManager) list(ctx context.Context) ([]downloadJob, error) {
-	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,ingest_state,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []downloadJob{}
-	for rows.Next() {
-		var job downloadJob
-		if err := rows.Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.IngestState, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, job)
-	}
-	return items, rows.Err()
-}
-
 func (m *downloadManager) get(ctx context.Context, jobID string, withFiles bool) (downloadJob, error) {
 	var job downloadJob
 	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,source_type,COALESCE(info_hash,''),name,status,ingest_state,selected_size,completed_size,download_speed,imported_size,import_speed,current_file,peers,error,created_at,updated_at FROM download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.SourceType, &job.InfoHash, &job.Name, &job.Status, &job.IngestState, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.ImportedSize, &job.ImportSpeed, &job.CurrentFile, &job.Peers, &job.Error, &job.CreatedAt, &job.UpdatedAt)
@@ -1016,18 +999,6 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, job)
 }
-func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
-	if s.downloads == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []downloadJob{}})
-		return
-	}
-	items, err := s.downloads.listAll(r.Context())
-	if err != nil {
-		problem(w, 500, "无法读取离线下载任务")
-		return
-	}
-	writeJSON(w, 200, map[string]any{"items": items})
-}
 func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	if s.downloads == nil {
 		problem(w, 503, "内置离线下载不可用")
@@ -1111,20 +1082,6 @@ func (s *Server) resumeDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.downloads.resumeAny(r.Context(), jobID); err != nil {
 		problem(w, 409, err.Error())
-		return
-	}
-	w.WriteHeader(204)
-}
-func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
-	if s.downloads == nil {
-		problem(w, 503, "内置离线下载不可用")
-		return
-	}
-	if err := s.downloads.removeAny(r.Context(), chi.URLParam(r, "id")); errors.Is(err, sql.ErrNoRows) {
-		problem(w, 404, "离线下载任务不存在")
-		return
-	} else if err != nil {
-		problem(w, 500, "无法删除离线下载任务")
 		return
 	}
 	w.WriteHeader(204)

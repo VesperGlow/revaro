@@ -1160,6 +1160,16 @@ func TestSingleObjectUploadLifecycle(t *testing.T) {
 	}
 }
 
+func TestLegacyTaskQueryEndpointsAreRemoved(t *testing.T) {
+	a := newTestApp(t)
+	for _, path := range []string{"/api/archive-jobs", "/api/archive-jobs/legacy", "/api/audio-merges", "/api/audio-merges/legacy", "/api/downloads"} {
+		rr := a.request(http.MethodGet, path, nil, true)
+		if rr.Code != http.StatusNotFound && rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("legacy query endpoint %s returned %d: %s", path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 func TestMultipartUploadLifecycle(t *testing.T) {
 	a := newTestApp(t)
 	size := multipartUploadThreshold

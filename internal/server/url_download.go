@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
@@ -364,37 +363,6 @@ func (m *downloadManager) getURL(ctx context.Context, jobID string) (downloadJob
 	job.SourceType = "url"
 	err := m.server.db.QueryRowContext(ctx, `SELECT id,parent_id,name,status,selected_size,completed_size,download_speed,error,created_at,updated_at FROM url_download_jobs WHERE id=?`, jobID).Scan(&job.ID, &job.ParentID, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.Error, &job.CreatedAt, &job.UpdatedAt)
 	return job, err
-}
-
-func (m *downloadManager) listURL(ctx context.Context) ([]downloadJob, error) {
-	rows, err := m.server.db.QueryContext(ctx, `SELECT id,parent_id,name,status,selected_size,completed_size,download_speed,error,created_at,updated_at FROM url_download_jobs ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []downloadJob{}
-	for rows.Next() {
-		job := downloadJob{SourceType: "url"}
-		if err := rows.Scan(&job.ID, &job.ParentID, &job.Name, &job.Status, &job.SelectedSize, &job.CompletedSize, &job.DownloadSpeed, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, job)
-	}
-	return items, rows.Err()
-}
-
-func (m *downloadManager) listAll(ctx context.Context) ([]downloadJob, error) {
-	torrents, err := m.list(ctx)
-	if err != nil {
-		return nil, err
-	}
-	urls, err := m.listURL(ctx)
-	if err != nil {
-		return nil, err
-	}
-	items := append(torrents, urls...)
-	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt > items[j].CreatedAt })
-	return items, nil
 }
 
 func (m *downloadManager) getAny(ctx context.Context, jobID string, withFiles bool) (downloadJob, error) {
