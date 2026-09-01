@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -46,8 +49,8 @@ type systemStatusResponse struct {
 	} `json:"bt"`
 }
 
-func (s *Server) systemStatus(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+func (s *Server) collectSystemStatus(parent context.Context) systemStatusResponse {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	out := systemStatusResponse{Status: "ok"}
 	degrade := func(component *string) { *component = "degraded"; out.Status = "degraded" }
@@ -103,5 +106,103 @@ func (s *Server) systemStatus(w http.ResponseWriter, r *http.Request) {
 	if out.BT.Enabled && !out.BT.Available {
 		degrade(&out.BT.Status)
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
+}
+
+func (s *Server) refreshSystemStatus() {
+	out := s.collectSystemStatus(context.Background())
+	s.statusMu.Lock()
+	s.statusSnapshot = out
+	for ch := range s.statusSubscribers {
+		select {
+		case ch <- out:
+		default:
+		}
+	}
+	s.statusMu.Unlock()
+}
+
+func (s *Server) startSystemStatusSnapshots() {
+	s.refreshSystemStatus()
+	s.runBackground(func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.statusStop:
+				return
+			case <-ticker.C:
+				s.refreshSystemStatus()
+			}
+		}
+	})
+}
+
+func (s *Server) currentSystemStatus() systemStatusResponse {
+	s.statusMu.RLock()
+	defer s.statusMu.RUnlock()
+	return s.statusSnapshot
+}
+
+func (s *Server) systemStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.currentSystemStatus())
+}
+
+func (s *Server) subscribeSystemStatus() (<-chan systemStatusResponse, func()) {
+	ch := make(chan systemStatusResponse, 1)
+	s.statusMu.Lock()
+	s.statusSubscribers[ch] = struct{}{}
+	current := s.statusSnapshot
+	s.statusMu.Unlock()
+	ch <- current
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			s.statusMu.Lock()
+			if _, ok := s.statusSubscribers[ch]; ok {
+				delete(s.statusSubscribers, ch)
+				close(ch)
+			}
+			s.statusMu.Unlock()
+		})
+	}
+}
+
+func (s *Server) systemStatusStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		problem(w, http.StatusInternalServerError, "streaming is unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	updates, unsubscribe := s.subscribeSystemStatus()
+	defer unsubscribe()
+	keepalive := time.NewTicker(20 * time.Second)
+	defer keepalive.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case status, open := <-updates:
+			if !open {
+				return
+			}
+			raw, err := json.Marshal(status)
+			if err != nil {
+				return
+			}
+			if _, err = fmt.Fprintf(w, "event: status\ndata: %s\n\n", raw); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-keepalive.C:
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }

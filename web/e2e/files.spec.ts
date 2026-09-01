@@ -37,6 +37,8 @@ test('桌面任务中心可展开和关闭',async({page})=>{
   await login(page)
   await page.getByTitle('任务中心').click()
   await expect(page.locator('.task-panel')).toBeVisible()
+  await expect(page.locator('.task-panel').getByRole('button',{name:/新建下载/})).toBeVisible()
+  await expect(page.locator('.task-panel')).toHaveCSS('overflow','hidden')
   await page.keyboard.press('Escape')
   await expect(page.locator('.task-panel')).toBeHidden()
 })

@@ -76,6 +76,10 @@ type Server struct {
 	lifecycleMu        sync.Mutex
 	lifecycleClosing   bool
 	lifecycleWG        sync.WaitGroup
+	statusMu           sync.RWMutex
+	statusSnapshot     systemStatusResponse
+	statusSubscribers  map[chan systemStatusResponse]struct{}
+	statusStop         chan struct{}
 }
 
 type File struct {
@@ -123,6 +127,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioThumbSlots: make(chan struct{}, 1),
 		archiveSlots:    make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
+		statusSubscribers: make(map[chan systemStatusResponse]struct{}), statusStop: make(chan struct{}),
 	}
 	s.objects = newObjectManager(store)
 	s.objects.server = s
@@ -189,6 +194,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		s.cleanup.Register("orphan-objects", cfg.GCInterval, 10*time.Minute, true, func(ctx context.Context) error { s.CollectGarbage(ctx); return nil })
 	}
 	s.cleanup.Start()
+	s.startSystemStatusSnapshots()
 	return s
 }
 
@@ -218,8 +224,15 @@ func (s *Server) runBackground(work func()) bool {
 // dependencies, and then removes transient staging resources.
 func (s *Server) Close() {
 	s.lifecycleMu.Lock()
+	if s.lifecycleClosing {
+		s.lifecycleMu.Unlock()
+		return
+	}
 	s.lifecycleClosing = true
 	s.lifecycleMu.Unlock()
+	if s.statusStop != nil {
+		close(s.statusStop)
+	}
 	if s.cleanup != nil {
 		s.cleanup.Close()
 	}
@@ -313,6 +326,7 @@ func (s *Server) Handler() http.Handler {
 			r.Patch("/profile/username", s.changeUsername)
 			r.Get("/storage/stats", s.storageStats)
 			r.Get("/system/status", s.systemStatus)
+			r.Get("/system/status/stream", s.systemStatusStream)
 			r.Get("/events", s.jobEvents)
 			r.Get("/tasks", s.listTasks)
 			r.Get("/tasks/{id}", s.getTask)

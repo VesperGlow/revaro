@@ -56,7 +56,9 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 const taskSelect = `SELECT tasks.id,tasks.type,tasks.status,tasks.phase,tasks.progress,tasks.speed,tasks.eta_seconds,tasks.retry_count,tasks.max_retries,tasks.error,tasks.source_type,tasks.source_id,tasks.cancel_requested,tasks.created_at,tasks.started_at,tasks.finished_at,tasks.updated_at,COALESCE((SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id WHERE task_files.task_id=tasks.id AND task_files.role='output' LIMIT 1),(SELECT download_jobs.name FROM download_jobs WHERE download_jobs.id=tasks.source_id),(SELECT url_download_jobs.name FROM url_download_jobs WHERE url_download_jobs.id=tasks.source_id),(SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id WHERE task_files.task_id=tasks.id AND task_files.role='input' LIMIT 1),tasks.type) FROM tasks`
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.QueryContext(r.Context(), taskSelect+` ORDER BY tasks.created_at DESC LIMIT 500`)
+	// Terminal successes are notification-like UI records. Keep durable rows for
+	// history/recovery, but stop returning stale completed/cancelled items.
+	rows, err := s.db.QueryContext(r.Context(), taskSelect+` WHERE tasks.status NOT IN ('completed','cancelled') OR julianday(tasks.finished_at) >= julianday('now','-30 minutes') ORDER BY tasks.created_at DESC LIMIT 500`)
 	if err != nil {
 		problem(w, 500, "could not list tasks")
 		return
