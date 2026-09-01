@@ -68,6 +68,9 @@ function closeFromOutside(event:PointerEvent){const target=event.target;if(cente
 function closeFromEscape(event:KeyboardEvent){if(event.key==='Escape'){if(modalOpen.value)closeModal();else if(center.value?.open){center.value.open=false;center.value.querySelector<HTMLElement>('summary')?.focus()}}}
 function resetForm(){mode.value='magnet';magnet.value='';directURL.value='';torrentFile.value=null;detail.value=null;streamingIndex.value=null;selected.value=new Set();selectionJobId.value='';error.value='';busy.value=false;destinationId.value=props.parentId;destinationName.value=props.parentId===ROOT?'我的文件':'当前文件夹'}
 function openCreate(){resetForm();modalOpen.value=true;if(center.value)center.value.open=false}
+function openById(id:string){modalOpen.value=true;detail.value=null;error.value='';busy.value=true;selectionJobId.value='';void loadDetail(id).finally(()=>busy.value=false)}
+async function retryById(id:string){try{const job=await api<DownloadJob>(`/api/downloads/${id}`);await openRetry(job)}catch(e){error.value=(e as Error).message}}
+defineExpose({openCreate,openById,retryById})
 function closeModal(){if(busy.value)return;streamingIndex.value=null;modalOpen.value=false;window.clearTimeout(metadataTimer)}
 function pickTorrent(event:Event){torrentFile.value=(event.target as HTMLInputElement).files?.[0]||null;error.value=''}
 function fileBase64(file:File){return new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error('无法读取 .torrent 文件'));reader.onload=()=>{const bytes=new Uint8Array(reader.result as ArrayBuffer);let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));resolve(btoa(binary))};reader.readAsArrayBuffer(file)})}

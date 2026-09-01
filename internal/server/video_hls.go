@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -168,6 +167,7 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 	s.videoHLSMu.Lock()
 	s.videoHLSSessions[session.ID] = session
 	s.videoHLSMu.Unlock()
+	s.startRuntimeTask(r.Context(), session.ID, "video_hls", "video_hls", f.ID)
 	s.pruneVideoHLSSessions(session.ID)
 	if !s.runBackground(func() { s.runVideoHLS(ctx, f, session) }) {
 		s.removeVideoHLSSession(session.ID)
@@ -262,13 +262,18 @@ func videoHLSPlaylistState(path string) (int, float64) {
 
 func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSession) {
 	defer func() { <-s.videoHLSSlots }()
-	engine, ok := s.storage.(storage.MediaEngine)
-	if !ok {
-		session.finish(errors.New("Rust media engine is unavailable"))
+	var taskErr error
+	defer func() { s.finishRuntimeTask(session.ID, "video_hls", taskErr) }()
+	release, err := s.tasks.Heavy(ctx)
+	if err != nil {
+		taskErr = err
+		session.finish(err)
 		return
 	}
-	probe, err := engine.ProbeMedia(ctx, f.objectKey)
+	defer release()
+	probe, err := s.media.Probe(ctx, f.objectKey)
 	if err != nil {
+		taskErr = err
 		if !errors.Is(err, context.Canceled) {
 			s.log.Warn("video HLS transcoder stopped", "file", f.ID, "session", session.ID, "error", err)
 		}
@@ -277,7 +282,8 @@ func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSessi
 	}
 	duration, videoCodec, audioCodec := float64(probe.DurationMS)/1000, probe.VideoCodec, probe.AudioCodec
 	if session.Start >= duration {
-		session.finish(errors.New("HLS start time is beyond the video duration"))
+		taskErr = errors.New("HLS start time is beyond the video duration")
+		session.finish(taskErr)
 		return
 	}
 	transcoding := videoCodec != "h264" || (audioCodec != "" && audioCodec != "aac")
@@ -285,25 +291,25 @@ func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSessi
 	s.log.Info("video playback selected", "file", f.ID, "video_codec", videoCodec, "audio_codec", audioCodec,
 		"selected_mode", "hls-transcode", "video_transcoding", transcoding, "audio_transcoding", audioCodec != "" && audioCodec != "aac",
 		"fallback_reason", session.fallbackReason)
-	started, err := engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, false)
+	started, err := s.media.HLS(ctx, f.objectKey, session.Dir, session.Start, false)
 	if err == nil {
-		err = waitForDataPlaneHLSJob(ctx, engine, started.JobID)
+		err = waitForDataPlaneHLSJob(ctx, s.media, started.JobID)
 	}
+	taskErr = err
 	session.finish(err)
 }
 
-func waitForDataPlaneHLSJob(ctx context.Context, engine storage.MediaEngine, jobID string) error {
-	jobs, ok := engine.(storage.MediaHLSJobEngine)
-	if !ok || jobID == "" { // compatible with in-process test engines and older data planes
+func waitForDataPlaneHLSJob(ctx context.Context, pipeline *MediaPipeline, jobID string) error {
+	if pipeline.jobs == nil || jobID == "" { // compatible with in-process test engines and older data planes
 		return nil
 	}
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		status, err := jobs.HLSJobStatus(ctx, jobID)
+		status, err := pipeline.HLSStatus(ctx, jobID)
 		if err != nil {
 			if ctx.Err() != nil {
-				cancelDataPlaneHLSJob(jobs, jobID)
+				_ = pipeline.CancelHLS(context.Background(), jobID)
 				return ctx.Err()
 			}
 			return err
@@ -316,17 +322,13 @@ func waitForDataPlaneHLSJob(ctx context.Context, engine storage.MediaEngine, job
 		}
 		select {
 		case <-ctx.Done():
-			cancelDataPlaneHLSJob(jobs, jobID)
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = pipeline.CancelHLS(cancelCtx, jobID)
+			cancel()
 			return ctx.Err()
 		case <-ticker.C:
 		}
 	}
-}
-
-func cancelDataPlaneHLSJob(jobs storage.MediaHLSJobEngine, jobID string) {
-	cancelCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_ = jobs.CancelHLSJob(cancelCtx, jobID)
 }
 
 func (s *Server) videoHLSAsset(w http.ResponseWriter, r *http.Request) {
@@ -422,26 +424,17 @@ func (s *Server) pruneVideoHLSSessions(keepID string) {
 }
 
 func (s *Server) cleanupVideoHLSSessions() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.audioHLSCtx.Done():
-			return
-		case now := <-ticker.C:
-			var expired []string
-			s.videoHLSMu.RLock()
-			for id, session := range s.videoHLSSessions {
-				lastAccess, _, _, _, _, _, _ := session.snapshot()
-				if now.Sub(lastAccess) > videoHLSIdleTTL {
-					expired = append(expired, id)
-				}
-			}
-			s.videoHLSMu.RUnlock()
-			for _, id := range expired {
-				s.removeVideoHLSSession(id)
-			}
-			s.pruneMediaCache()
+	now := time.Now()
+	var expired []string
+	s.videoHLSMu.RLock()
+	for id, session := range s.videoHLSSessions {
+		lastAccess, _, _, _, _, _, _ := session.snapshot()
+		if now.Sub(lastAccess) > videoHLSIdleTTL {
+			expired = append(expired, id)
 		}
+	}
+	s.videoHLSMu.RUnlock()
+	for _, id := range expired {
+		s.removeVideoHLSSession(id)
 	}
 }

@@ -10,6 +10,8 @@ export interface UploadTask {
   uploadId?:string
   requests:XMLHttpRequest[]
 }
+export type TaskStatus='queued'|'running'|'waiting_input'|'retrying'|'completed'|'failed'|'cancelled'
+export interface BackgroundTask { id:string;type:string;status:TaskStatus;phase:string;progress:number;speed:number;eta_seconds?:number;retry_count:number;max_retries:number;error?:string;source_type?:string;source_id?:string;cancel_requested:boolean;name:string;created_at:string;started_at?:string;finished_at?:string;updated_at:string }
 
 export interface ShareResponse { active:boolean; url?:string; created_at?:string }
 export interface ProfileResponse { username:string; has_avatar:boolean }

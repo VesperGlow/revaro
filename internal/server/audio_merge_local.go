@@ -415,13 +415,22 @@ func (s *Server) createLocalAudioMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	mergeCtx, cancel := context.WithTimeout(s.audioHLSCtx, audioMergeTimeout)
 	job := &audioMergeJob{
-		changed: s.jobs.Changed,
-		ID:      ids.New(), Status: "uploading", Progress: localMergeUploadProgressStart, Message: "正在等待上传本地素材",
+		ID: ids.New(), Status: "uploading", Progress: localMergeUploadProgressStart, Message: "正在等待上传本地素材",
 		OutputName: in.Name, OutputFormat: "alac", OutputFileID: outputID, ParentID: in.ParentID,
 		InputCount: int(audioCount), Source: "local", CreatedAt: now, UpdatedAt: now, cancel: cancel, mergeCtx: mergeCtx,
 		localUpload: true, stagingDir: staging, uploadSlotHeld: true,
 		files: files, audioOrder: audioOrder, subtitleFor: subtitleFor, coverIndex: coverIndex,
 	}
+	if err := s.createPersistentTask(r.Context(), job.ID, "audio_merge", "uploading", "audio_merge", job.ID, map[string]any{"local": true, "staging_dir": staging, "output_file_id": outputID, "parent_id": in.ParentID, "output_name": in.Name}); err != nil {
+		cancel()
+		_ = os.RemoveAll(staging)
+		_, _ = s.db.ExecContext(r.Context(), `DELETE FROM files WHERE id=?`, outputID)
+		fail(500, "could not persist local merge task")
+		return
+	}
+	job.changed = func() { s.persistAudioTask(job) }
+	_, _ = s.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO task_files(task_id,file_id,role) VALUES(?,?,'output')`, job.ID, outputID)
+	s.persistAudioTask(job)
 	s.audioMergeMu.Lock()
 	s.audioMergeJobs[job.ID] = job
 	s.audioMergeMu.Unlock()
@@ -654,6 +663,11 @@ func (s *Server) runLocalAudioMerge(job *audioMergeJob) {
 }
 
 func (s *Server) executeLocalAudioMerge(ctx context.Context, job *audioMergeJob) error {
+	release, err := s.tasks.Heavy(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	select {
 	case s.audioMergeSlots <- struct{}{}:
 		defer func() { <-s.audioMergeSlots }()

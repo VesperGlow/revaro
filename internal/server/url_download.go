@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -209,6 +211,11 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 		}
 		m.urlMu.Unlock()
 	}()
+	release, resourceErr := m.server.tasks.IO(runtime.ctx)
+	if resourceErr != nil {
+		return
+	}
+	defer release()
 	select {
 	case m.urlSlots <- struct{}{}:
 		defer func() { <-m.urlSlots }()
@@ -276,7 +283,8 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 		m.server.jobs.Changed()
 		lastBytes, lastUpdate = total, now
 	}
-	reader := &urlProgressReader{reader: response.Body, limit: m.server.cfg.BTMaxTotalSize, onProgress: progress}
+	hasher := sha256.New()
+	reader := &urlProgressReader{reader: io.TeeReader(response.Body, hasher), limit: m.server.cfg.BTMaxTotalSize, onProgress: progress}
 	mimeType := responseDownloadMIME(response, name)
 	key, stored, storeErr := m.server.storeBlob(runtime.ctx, reader, response.ContentLength, mimeType)
 	if storeErr != nil {
@@ -290,7 +298,17 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 		return
 	}
 	progress(stored.Size)
-	if err := m.commitURLDownload(runtime.ctx, jobID, name, mimeType, key, stored.Size, stored.ETag); err != nil {
+	streamHash := hex.EncodeToString(hasher.Sum(nil))
+	storedHash, verifyErr := m.server.hashObject(runtime.ctx, key, stored.Size)
+	if verifyErr != nil || storedHash != streamHash {
+		m.server.discardBlob(key)
+		if verifyErr == nil {
+			verifyErr = errors.New("直链文件最终哈希校验失败")
+		}
+		m.failURLDownload(jobID, verifyErr)
+		return
+	}
+	if err := m.commitURLDownload(runtime.ctx, jobID, name, mimeType, key, stored.Size, stored.ETag, storedHash); err != nil {
 		m.server.discardBlob(key)
 		if runtime.ctx.Err() == nil {
 			m.failURLDownload(jobID, err)
@@ -300,7 +318,7 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 	m.server.log.Info("direct download imported", "job", jobID, "name", name, "size", stored.Size)
 }
 
-func (m *downloadManager) commitURLDownload(ctx context.Context, jobID, name, mimeType, objectKey string, size int64, etag string) error {
+func (m *downloadManager) commitURLDownload(ctx context.Context, jobID, name, mimeType, objectKey string, size int64, etag, contentHash string) error {
 	tx, err := m.server.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -319,7 +337,7 @@ func (m *downloadManager) commitURLDownload(ctx context.Context, jobID, name, mi
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	fileID := ids.New()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, fileID, parentID, name, objectKey, size, mimeType, etag, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,content_hash,hash_algorithm,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,?,?,'ready',?,?)`, fileID, parentID, name, objectKey, size, mimeType, etag, contentHash, contentHashAlgorithm, now, now); err != nil {
 		if isConflict(err) {
 			return errors.New("目标目录中已经有同名文件")
 		}
@@ -463,16 +481,8 @@ func (m *downloadManager) removeAny(ctx context.Context, jobID string) error {
 	return m.remove(ctx, jobID)
 }
 
-func (m *downloadManager) cleanupURLLoop() {
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-ticker.C:
-			cutoff := time.Now().UTC().Add(-m.server.cfg.BTStaleAfter).Format(time.RFC3339Nano)
-			_, _ = m.server.db.ExecContext(m.ctx, `DELETE FROM url_download_jobs WHERE status IN ('failed','cancelled') AND updated_at<?`, cutoff)
-		}
-	}
+func (m *downloadManager) cleanupURLPass(ctx context.Context) error {
+	cutoff := time.Now().UTC().Add(-m.server.cfg.BTStaleAfter).Format(time.RFC3339Nano)
+	_, err := m.server.db.ExecContext(ctx, `DELETE FROM url_download_jobs WHERE status IN ('failed','cancelled') AND updated_at<?`, cutoff)
+	return err
 }

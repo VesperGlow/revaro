@@ -168,15 +168,15 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := s.thumbKey(f)
-	if data, err := s.storage.GetObject(r.Context(), key, maxThumbBytes); err == nil {
+	if data, err := s.objects.Get(r.Context(), key, maxThumbBytes); err == nil {
 		serveThumb(w, r, data)
 		return
 	}
 	// Read the pre-namespace v2 key once for backwards compatibility. Copying
 	// it into the typed namespace lets subsequent GC treat it as disposable.
 	if !videoExts[strings.ToLower(filepath.Ext(f.Name))] {
-		if data, err := s.storage.GetObject(r.Context(), thumbnailKey(f.objectKey), maxThumbBytes); err == nil {
-			_ = s.storage.PutImmutable(r.Context(), key, "image/jpeg", data)
+		if data, err := s.objects.Get(r.Context(), thumbnailKey(f.objectKey), maxThumbBytes); err == nil {
+			_ = s.objects.PutImmutable(r.Context(), key, "image/jpeg", data)
 			serveThumb(w, r, data)
 			return
 		}
@@ -195,7 +195,7 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "no thumbnail available")
 		return
 	}
-	_ = s.storage.PutImmutable(r.Context(), key, "image/jpeg", data)
+	_ = s.objects.PutImmutable(r.Context(), key, "image/jpeg", data)
 	serveThumb(w, r, data)
 }
 
@@ -213,7 +213,7 @@ func (s *Server) audioThumbnail(w http.ResponseWriter, r *http.Request, f File, 
 		}
 		defer func() { <-s.audioThumbSlots }()
 		// Another request may have filled the cache while this call waited.
-		if data, err := s.storage.GetObject(ctx, key, maxThumbBytes); err == nil {
+		if data, err := s.objects.Get(ctx, key, maxThumbBytes); err == nil {
 			return data, nil
 		}
 		data, err := s.generateAudioCover(ctx, f)
@@ -227,7 +227,7 @@ func (s *Server) audioThumbnail(w http.ResponseWriter, r *http.Request, f File, 
 		if len(data) > maxThumbBytes || len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 			return nil, errors.New("audio cover generator returned an invalid JPEG")
 		}
-		if err := s.storage.PutImmutable(ctx, key, "image/jpeg", data); err != nil {
+		if err := s.objects.PutImmutable(ctx, key, "image/jpeg", data); err != nil {
 			return nil, err
 		}
 		return data, nil
@@ -268,7 +268,7 @@ func (s *Server) generateThumb(ctx context.Context, f File) ([]byte, bool) {
 			return nil, false
 		}
 		defer func() { <-imageThumbSlots }()
-		raw, err := s.storage.GetObject(ctx, f.objectKey, maxThumbSource)
+		raw, err := s.objects.Get(ctx, f.objectKey, maxThumbSource)
 		if err != nil || len(raw) == 0 {
 			return nil, false
 		}
@@ -298,13 +298,12 @@ func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) 
 	if f.Size <= 0 {
 		return nil, false
 	}
-	engine, ok := s.storage.(storage.MediaEngine)
-	if !ok {
+	if s.media.engine == nil {
 		return nil, false
 	}
 	genCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	data, err := engine.MediaThumbnail(genCtx, f.objectKey, thumbMaxDim)
+	data, err := s.media.Thumbnail(genCtx, f.objectKey, thumbMaxDim)
 	if err != nil || len(data) > maxThumbBytes {
 		return nil, false
 	}
@@ -321,14 +320,14 @@ func (s *Server) scheduleVideoThumbnail(f File) {
 	cacheKey := s.thumbKey(f)
 	s.thumbnails.schedule(cacheKey, func(ctx context.Context) {
 		// A request may have raced another producer (for example an import hook).
-		if _, err := s.storage.GetObject(ctx, cacheKey, maxThumbBytes); err == nil {
+		if _, err := s.objects.Get(ctx, cacheKey, maxThumbBytes); err == nil {
 			return
 		}
 		data, ok := s.generateVideoThumb(ctx, f)
 		if !ok {
 			return
 		}
-		if err := s.storage.PutImmutable(ctx, cacheKey, "image/jpeg", data); err != nil && !errors.Is(err, context.Canceled) {
+		if err := s.objects.PutImmutable(ctx, cacheKey, "image/jpeg", data); err != nil && !errors.Is(err, context.Canceled) {
 			s.log.Warn("video thumbnail storage failed", "file", f.ID, "error", err)
 		}
 	})

@@ -1128,6 +1128,10 @@ func TestSingleObjectUploadLifecycle(t *testing.T) {
 	if created.Mode != "single" || created.URL == "" || created.PartCount != 0 {
 		t.Fatalf("created upload=%+v", created)
 	}
+	tasksRR := a.request("GET", "/api/tasks", nil, true)
+	if tasksRR.Code != http.StatusOK || !strings.Contains(tasksRR.Body.String(), "hello.txt") || !strings.Contains(tasksRR.Body.String(), `"type":"upload"`) {
+		t.Fatalf("unified task=%d: %s", tasksRR.Code, tasksRR.Body.String())
+	}
 	var key string
 	if err := a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, created.FileID).Scan(&key); err != nil {
 		t.Fatal(err)
@@ -1142,6 +1146,13 @@ func TestSingleObjectUploadLifecycle(t *testing.T) {
 	doneRR := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []any{}}, true)
 	if doneRR.Code != http.StatusOK {
 		t.Fatalf("complete=%d: %s", doneRR.Code, doneRR.Body.String())
+	}
+	var contentHash, algorithm string
+	if err := a.db.QueryRow(`SELECT content_hash,hash_algorithm FROM files WHERE id=?`, created.FileID).Scan(&contentHash, &algorithm); err != nil || algorithm != "sha256" || len(contentHash) != 64 {
+		t.Fatalf("integrity metadata hash=%q algorithm=%q err=%v", contentHash, algorithm, err)
+	}
+	if repeated := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []any{}}, true); repeated.Code != http.StatusOK {
+		t.Fatalf("idempotent complete=%d: %s", repeated.Code, repeated.Body.String())
 	}
 	download := a.request("GET", "/api/files/"+created.FileID+"/download", nil, true)
 	if download.Code != http.StatusOK || download.Body.String() != string(content) {
@@ -1166,7 +1177,15 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	var key string
 	_ = a.db.QueryRow(`SELECT object_key FROM files WHERE id=?`, created.FileID).Scan(&key)
 	a.store.raw[key] = make([]byte, size)
-	done := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []map[string]any{{"part_number": 1, "etag": "part-etag"}}}, true)
+	ack := a.request("PUT", "/api/uploads/"+created.UploadID+"/parts/1", map[string]any{"etag": "part-etag", "size": size}, true)
+	if ack.Code != http.StatusNoContent {
+		t.Fatalf("part ack=%d: %s", ack.Code, ack.Body.String())
+	}
+	resumed := a.request("GET", "/api/uploads/"+created.UploadID, nil, true)
+	if resumed.Code != http.StatusOK || !strings.Contains(resumed.Body.String(), "part-etag") {
+		t.Fatalf("resume=%d: %s", resumed.Code, resumed.Body.String())
+	}
+	done := a.request("POST", "/api/uploads/"+created.UploadID+"/complete", map[string]any{"parts": []map[string]any{}}, true)
 	if done.Code != http.StatusOK {
 		t.Fatalf("multipart complete=%d: %s", done.Code, done.Body.String())
 	}

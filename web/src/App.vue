@@ -16,12 +16,14 @@ import { useJobEvents } from './composables/useJobEvents'
 import { isArchive, isAudio, isBook, isEditable, isImage, isMedia, isVideo, thumbSRC } from './fileTypes'
 import { formatSize } from './format'
 import { classifyLocalMergeFile, localNaturalLess, localSubtitlePriority, localMergeTopLevelName, selectLocalCover } from './localMerge'
-import type { ArchiveJob, AudioMergeFormat, AudioMergeResponse, DownloadJob, LocalMergeCreateResponse, LocalMergePick, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
+import type { AudioMergeFormat, AudioMergeResponse, BackgroundTask, LocalMergeCreateResponse, LocalMergePick, ProfileResponse, ShareResponse, StorageStats, TOTPRecoveryResponse, TOTPSetupResponse, TOTPStatusResponse, UploadTask } from './types'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_CONCURRENCY = 3
 const MULTIPART_CONCURRENCY = 4
 const PART_URL_BATCH = 100
+const UPLOAD_RESUME_KEY = 'revaro.uploads.v1'
+const UPLOAD_RETRIES = 5
 
 const user = ref<string|null>(null)
 const hasAvatar = ref(false)
@@ -72,9 +74,7 @@ const localMerge = reactive({
 // 进度通过服务端任务快照在音频合并任务中心展示。只有显式取消才会中止。
 interface LocalUploadSession { id:string; picks:LocalMergePick[]; cancelled:boolean }
 const localUploads = new Map<string,LocalUploadSession>()
-const audioMergeJobs = ref<AudioMergeResponse[]>([])
-const downloadJobs = ref<DownloadJob[]>([])
-const archiveJobs = ref<ArchiveJob[]>([])
+const backgroundTasks=ref<BackgroundTask[]>([])
 const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
 const fileInput = ref<HTMLInputElement|null>(null)
 const folderInput = ref<HTMLInputElement|null>(null)
@@ -157,7 +157,7 @@ async function submitLogin() {
   }
   finally{login.busy=false}
 }
-async function logout(){jobEvents.stop();await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);audioMergeJobs.value=[];downloadJobs.value=[];archiveJobs.value=[]}
+async function logout(){jobEvents.stop();await api('/api/auth/logout',{method:'POST'});user.value=null;hasAvatar.value=false;items.value=[];tasks.splice(0);backgroundTasks.value=[]}
 function showAccount(){account.username=user.value||'';account.currentPassword='';account.password='';account.confirmPassword='';account.error='';accountPanel.value=null;usernameEditing.value=false;usernameSaving.value=false;usernameError.value='';avatar.error='';resetTwoFactor();openModal('account');loadTwoFactorStatus()}
 async function startUsernameEdit(){
   if(usernameSaving.value)return
@@ -505,37 +505,10 @@ async function startAudioMerge(){
   audioMerge.name=name;audioMerge.busy=true
   try{
     const data=await api<AudioMergeResponse>('/api/audio-merges',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name,format:audioMerge.format,file_ids:audioMerge.order.map(item=>item.id),cover_jpeg:audioMerge.coverData,cover_file_id:audioMerge.coverFileId})})
-    audioMergeJobs.value=[data,...audioMergeJobs.value.filter(job=>job.id!==data.id)];clearSelection();closeModal();notify(`「${data.output_name}」已加入后台队列`,'success')
+    clearSelection();closeModal();void refreshBackgroundTasks();notify(`「${data.output_name}」已加入后台队列`,'success')
   }catch(e){audioMerge.error=(e as Error).message}
   finally{audioMerge.busy=false}
 }
-function audioMergeTerminal(status:AudioMergeResponse['status']){return status==='done'||status==='failed'||status==='cancelled'}
-async function refreshAudioMergeJobs(){
-  try{
-    const previous=new Map(audioMergeJobs.value.map(job=>[job.id,job.status]))
-    const data=await api<{items:AudioMergeResponse[]}>('/api/audio-merges')
-    audioMergeJobs.value=data.items
-    for(const job of data.items){
-      const before=previous.get(job.id)
-      if(before&&!audioMergeTerminal(before)&&audioMergeTerminal(job.status)){
-        if(job.status==='done')notify(`「${job.output_name}」合并完成`,'success')
-        else if(job.status==='failed')notify(job.error||`「${job.output_name}」合并失败`)
-      }
-    }
-  }catch{/* SSE 重连后会再次同步 */}
-}
-async function cancelAudioMerge(job:AudioMergeResponse){
-  if(audioMergeTerminal(job.status))return
-  const session=localUploads.get(job.id)
-  if(session)session.cancelled=true
-  try{await api(`/api/audio-merges/${job.id}`,{method:'DELETE'});job.status='cancelling';job.message='正在取消合并'}catch(e){notify((e as Error).message)}
-}
-async function clearAudioMerges(){
-  const finished=audioMergeJobs.value.filter(job=>audioMergeTerminal(job.status))
-  await Promise.all(finished.map(job=>api(`/api/audio-merges/${job.id}`,{method:'DELETE'}).catch(()=>undefined)))
-  audioMergeJobs.value=audioMergeJobs.value.filter(job=>!audioMergeTerminal(job.status))
-}
-
 // ── 从本地目录合并：WAV + VTT + 封面 → 无损 ALAC M4A ────────────────────────
 const LOCAL_MERGE_CONCURRENCY = 3
 const LOCAL_MERGE_CHUNK_RETRIES = 3
@@ -661,7 +634,7 @@ async function startLocalMerge(){
   try{
     const created=await api<LocalMergeCreateResponse>('/api/audio-merges/local',{method:'POST',body:JSON.stringify(body)})
     // 任务立即进入全局任务中心；关闭弹窗不影响后续上传与合并。
-    audioMergeJobs.value=[created,...audioMergeJobs.value.filter(job=>job.id!==created.id)]
+    void refreshBackgroundTasks()
     const session:LocalUploadSession={id:created.id,picks,cancelled:false}
     localUploads.set(created.id,session)
     resetLocalMergeState()
@@ -695,12 +668,12 @@ async function uploadLocalMergeChunks(created:LocalMergeCreateResponse,session:L
     await Promise.all(workers)
     if(session.cancelled){await cancelLocalMergeRemote(created.id);return}
     const snapshot=await api<AudioMergeResponse>(`/api/audio-merges/local/${created.id}/complete`,{method:'POST'})
-    audioMergeJobs.value=[snapshot,...audioMergeJobs.value.filter(job=>job.id!==snapshot.id)]
+    void refreshBackgroundTasks()
     notify(`「${snapshot.output_name}」素材上传完成，开始后台合并`,'success')
   }catch(e){
     if(session.cancelled){await cancelLocalMergeRemote(created.id);return}
     await cancelLocalMergeRemote(created.id)
-    audioMergeJobs.value=audioMergeJobs.value.filter(job=>job.id!==created.id)
+    void refreshBackgroundTasks()
     notify(`「${created.output_name}」素材上传失败：${(e as Error).message}`)
   }finally{
     localUploads.delete(created.id)
@@ -725,77 +698,31 @@ async function putLocalChunkWithRetry(jobId:string,fileIndex:number,chunk:number
   throw lastError||new Error('分块上传失败')
 }
 async function cancelLocalMergeRemote(jobId:string){
-  try{await api(`/api/audio-merges/${jobId}`,{method:'DELETE'})}catch{/* 服务端清理失败时稍后由过期清理兜底 */}
+  try{await api(`/api/tasks/${jobId}/cancel`,{method:'POST'})}catch{/* 服务端清理失败时稍后由过期清理兜底 */}
 }
 function closeAudioMergeModal(){closeModal()}
 function localFileByName(name:string){return localMerge.picks.find(pick=>pick.name===name)}
 const localCoverCandidates=computed(()=>localMerge.picks.filter(pick=>pick.kind==='cover'))
-
-function downloadTerminal(status:DownloadJob['status']){return status==='done'||status==='failed'||status==='cancelled'}
-async function refreshDownloadJobs(){
-  try{
-    const previous=new Map(downloadJobs.value.map(job=>[job.id,job.status]))
-    const data=await api<{items:DownloadJob[]}>('/api/downloads')
-    downloadJobs.value=data.items.filter(job=>job.status!=='done')
-    let refreshFolder=false
-    for(const job of data.items){
-      const before=previous.get(job.id)
-      if(before&&before!=='done'&&job.status==='done'){
-        notify(`「${job.name}」已下载到网盘`,'success')
-        if(job.parent_id===currentId.value)refreshFolder=true
-      }else if(before&&!downloadTerminal(before)&&job.status==='failed')notify(job.error||`「${job.name}」下载失败`)
-      if(job.status==='done')void api(`/api/downloads/${job.id}`,{method:'DELETE'},30*60*1000).catch(()=>{})
-    }
-    if(refreshFolder)void openFolder(currentId.value)
-  }catch{/* SSE 重连后会再次同步 */}
-}
-function downloadsChanged(){void refreshDownloadJobs()}
 
 async function extractArchive(item:DriveFile){
   if(!isArchive(item))return
   const confirmed=await confirmDialog({title:'在线解压',message:`将“${item.name}”解压到当前目录中的新文件夹。大压缩包会在后台继续处理。`,confirmLabel:'开始解压'})
   if(!confirmed)return
   try{
-    const job=await api<ArchiveJob>(`/api/files/${item.id}/extract`,{method:'POST'})
-    archiveJobs.value=[job,...archiveJobs.value.filter(existing=>existing.id!==job.id)]
+    await api(`/api/files/${item.id}/extract`,{method:'POST'})
+    void refreshBackgroundTasks()
     clearSelection();notify(`「${item.name}」已加入解压队列`,'success')
   }catch(e){notify((e as Error).message)}
 }
-function archiveTerminal(status:ArchiveJob['status']){return status==='done'||status==='failed'}
-async function refreshArchiveJobs(){
-  try{
-    const previous=new Map(archiveJobs.value.map(job=>[job.id,job.status]))
-    const data=await api<{items:ArchiveJob[]}>('/api/archive-jobs')
-    archiveJobs.value=data.items
-    let refreshFolder=false
-    for(const job of data.items){
-      const before=previous.get(job.id)
-      if(before&&!archiveTerminal(before)&&job.status==='done'){
-        notify(`「${job.output_name||job.name}」解压完成`,'success')
-        if(job.parent_id===currentId.value)refreshFolder=true
-      }else if(before&&!archiveTerminal(before)&&job.status==='failed')notify(job.error||`「${job.name}」解压失败`)
-      else if(before&&before!=='waiting_password'&&job.status==='waiting_password')notify(job.error||`「${job.name}」需要解压密码`)
-    }
-    if(refreshFolder)void openFolder(currentId.value)
-  }catch{/* SSE 重连后会再次同步 */}
-}
-async function submitArchivePassword(job:ArchiveJob,password:string){
-  try{
-    const updated=await api<ArchiveJob>(`/api/archive-jobs/${job.id}/password`,{method:'POST',body:JSON.stringify({password})})
-    archiveJobs.value=archiveJobs.value.map(existing=>existing.id===updated.id?updated:existing)
-    notify(`正在验证「${job.name}」的解压密码`,'success')
-  }catch(e){notify((e as Error).message)}
-}
-async function clearArchiveJobs(){
-  const finished=archiveJobs.value.filter(job=>archiveTerminal(job.status))
-  await Promise.all(finished.map(job=>api(`/api/archive-jobs/${job.id}`,{method:'DELETE'}).catch(()=>undefined)))
-  archiveJobs.value=archiveJobs.value.filter(job=>!archiveTerminal(job.status))
-}
-
 function chooseFiles(){fileInput.value?.click()}
 function chooseFolder(){folderInput.value?.click()}
+interface SavedUpload { uploadId:string; parentId:string; name:string; size:number; lastModified:number }
+function savedUploads():SavedUpload[]{try{return JSON.parse(localStorage.getItem(UPLOAD_RESUME_KEY)||'[]') as SavedUpload[]}catch{return []}}
+function saveUpload(task:UploadTask){if(!task.uploadId)return;const all=savedUploads().filter(x=>x.uploadId!==task.uploadId);all.push({uploadId:task.uploadId,parentId:task.parentId,name:task.file.name,size:task.file.size,lastModified:task.file.lastModified});localStorage.setItem(UPLOAD_RESUME_KEY,JSON.stringify(all))}
+function forgetUpload(id?:string){if(id)localStorage.setItem(UPLOAD_RESUME_KEY,JSON.stringify(savedUploads().filter(x=>x.uploadId!==id)))}
 function queueFiles(files:File[],parentId:string,relativePaths?:Map<File,string>){
-  for(const file of files)tasks.push({id:crypto.randomUUID(),file,parentId,relativePath:relativePaths?.get(file),progress:0,status:'queued',error:'',cancelled:false,requests:[]})
+  const saved=savedUploads()
+  for(const file of files){const resume=saved.find(x=>x.parentId===parentId&&x.name===file.name&&x.size===file.size&&x.lastModified===file.lastModified);tasks.push({id:crypto.randomUUID(),file,parentId,relativePath:relativePaths?.get(file),progress:0,status:'queued',error:'',cancelled:false,uploadId:resume?.uploadId,requests:[]})}
 }
 function acceptFiles(list:FileList|File[]){queueFiles(Array.from(list),currentId.value);pumpQueue()}
 async function ensureUploadDirectory(parentId:string,name:string){
@@ -846,32 +773,40 @@ async function acceptFolder(list:FileList){
 }
 function onDrop(event:DragEvent){dragActive.value=false;if(!trashMode.value&&event.dataTransfer?.files.length)acceptFiles(event.dataTransfer.files)}
 function pumpQueue(){while(activeUploads<FILE_CONCURRENCY){const task=tasks.find(t=>t.status==='queued');if(!task)return;activeUploads++;runUpload(task).finally(()=>{activeUploads--;pumpQueue()})}}
-interface CreatedUpload { upload_id:string; mode:'single'|'multipart'; url?:string; part_size:number; part_count:number }
+interface CreatedUpload { upload_id:string; mode:'single'|'multipart'; url?:string; part_size:number; part_count:number; status?:string; parts?:CompletedPart[] }
 interface CompletedPart { part_number:number; etag:string }
 
 async function runUpload(task:UploadTask){
   task.status='uploading';task.error='';task.cancelled=false;task.progress=0
   try{
-    const created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})
+    let created:CreatedUpload
+    if(task.uploadId){
+      try{created=await api<CreatedUpload>(`/api/uploads/${task.uploadId}`)}catch{forgetUpload(task.uploadId);task.uploadId=undefined;created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})}
+    }else created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})
     task.uploadId=created.upload_id
+    saveUpload(task)
     if(task.cancelled){await abortRemote(task);return}
     let parts:CompletedPart[]=[]
-    if(created.mode==='single'){
+    if(created.status==='completed'){
+      await api(`/api/uploads/${created.upload_id}/complete`,{method:'POST',body:JSON.stringify({parts:[]})})
+    }else if(created.mode==='single'){
       if(!created.url)throw new Error('服务端没有返回上传地址')
-      await xhrPut(created.url,task.file,task,loaded=>{task.progress=Math.floor(percentage(loaded,task.file.size)*.98)},task.file.type||'application/octet-stream')
+      await retrying(()=>xhrPut(created.url!,task.file,task,loaded=>{task.progress=Math.floor(percentage(loaded,task.file.size)*.98)},task.file.type||'application/octet-stream'),task)
     }else{
       parts=await uploadMultipart(task,created)
     }
     if(task.cancelled){await abortRemote(task);return}
-    await api(`/api/uploads/${created.upload_id}/complete`,{method:'POST',body:JSON.stringify({parts})},120000)
-    task.progress=100;task.status='done';scheduleUploadRefresh();scheduleAutoClear()
+    if(created.status!=='completed')await retrying(()=>api(`/api/uploads/${created.upload_id}/complete`,{method:'POST',body:JSON.stringify({parts})},120000),task)
+    forgetUpload(task.uploadId);task.progress=100;task.status='done';scheduleUploadRefresh();scheduleAutoClear()
   }catch(e){if(task.cancelled){task.status='cancelled';scheduleAutoClear()}else{task.status='failed';task.error=(e as Error).message}}
 }
 
 async function uploadMultipart(task:UploadTask,created:CreatedUpload):Promise<CompletedPart[]>{
-  const numbers=Array.from({length:created.part_count},(_,index)=>index+1)
+  const existing=new Map((created.parts||[]).map(part=>[part.part_number,part]))
+  const numbers=Array.from({length:created.part_count},(_,index)=>index+1).filter(number=>!existing.has(number))
   const sent=new Array(numbers.length).fill(0) as number[]
-  const completed=new Array<CompletedPart>(numbers.length)
+  const completed=new Array<CompletedPart>(created.part_count)
+  for(const part of existing.values())completed[part.part_number-1]=part
   for(let from=0;from<numbers.length;from+=PART_URL_BATCH){
     if(task.cancelled)throw new Error('上传已取消')
     const page=numbers.slice(from,from+PART_URL_BATCH)
@@ -886,14 +821,24 @@ async function uploadMultipart(task:UploadTask,created:CreatedUpload):Promise<Co
         const idx=part.part_number-1
         const start=idx*created.part_size
         const blob=task.file.slice(start,Math.min(task.file.size,start+created.part_size))
-        const etag=await xhrPut(part.url,blob,task,loaded=>{sent[idx]=loaded;task.progress=Math.floor(percentage(sent.reduce((a,x)=>a+x,0),task.file.size)*.98)})
+        const etag=await retrying(()=>xhrPut(part.url,blob,task,loaded=>{sent[idx]=loaded;task.progress=Math.floor(percentage(sent.reduce((a,x)=>a+x,0),task.file.size)*.98)}),task)
         if(!etag)throw new Error('对象存储没有暴露 ETag，请检查 Bucket CORS 的 ExposeHeaders')
         completed[idx]={part_number:part.part_number,etag}
+        await retrying(()=>api(`/api/uploads/${created.upload_id}/parts/${part.part_number}`,{method:'PUT',body:JSON.stringify({etag,size:blob.size})}),task)
       }
     }
     await Promise.all(Array.from({length:Math.min(MULTIPART_CONCURRENCY,data.parts.length)},worker))
   }
   return completed
+}
+
+async function retrying<T>(operation:()=>Promise<T>,task:UploadTask):Promise<T>{
+  let last:unknown
+  for(let attempt=0;attempt<UPLOAD_RETRIES;attempt++){
+    if(task.cancelled)throw new Error('上传已取消')
+    try{return await operation()}catch(error){last=error;if(attempt+1<UPLOAD_RETRIES)await new Promise(resolve=>window.setTimeout(resolve,Math.min(8000,500*2**attempt)+Math.random()*250))}
+  }
+  throw last
 }
 
 function xhrPut(url:string,body:Blob,task:UploadTask,onProgress:(n:number)=>void,contentType?:string):Promise<string>{
@@ -915,10 +860,9 @@ function xhrPut(url:string,body:Blob,task:UploadTask,onProgress:(n:number)=>void
   })
 }
 function percentage(done:number,total:number){return total===0?100:Math.min(99,Math.round(done/total*100))}
-async function cancelUpload(task:UploadTask){task.cancelled=true;task.requests.forEach(x=>x.abort());await abortRemote(task);task.status='cancelled'}
+async function cancelUpload(task:UploadTask){task.cancelled=true;task.requests.forEach(x=>x.abort());await abortRemote(task);forgetUpload(task.uploadId);task.status='cancelled'}
 async function abortRemote(task:UploadTask){if(task.uploadId){try{await api(`/api/uploads/${task.uploadId}`,{method:'DELETE'})}catch{/* stale cleanup retries later */}}}
 async function retry(task:UploadTask){await abortRemote(task);task.status='queued';task.error='';task.uploadId=undefined;task.requests=[];task.cancelled=false;pumpQueue()}
-function clearFinished(){for(let i=tasks.length-1;i>=0;i--)if(['done','cancelled'].includes(tasks[i].status))tasks.splice(i,1)}
 // 完成记录保留在上传进度中，等用户主动清除。
 function scheduleAutoClear(){}
 function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
@@ -928,8 +872,27 @@ async function refreshJobsFromEvent(){
   if(!user.value)return
   if(jobRefreshRunning){jobRefreshPending=true;return}
   jobRefreshRunning=true
-  try{await Promise.all([refreshAudioMergeJobs(),refreshDownloadJobs(),refreshArchiveJobs()])}
+  try{await refreshBackgroundTasks()}
   finally{jobRefreshRunning=false;if(jobRefreshPending){jobRefreshPending=false;void refreshJobsFromEvent()}}
+}
+async function refreshBackgroundTasks(){
+  try{
+    const before=new Map(backgroundTasks.value.map(task=>[task.id,task.status]))
+    const data=await api<{items:BackgroundTask[]}>('/api/tasks')
+    backgroundTasks.value=data.items
+    let refresh=false
+    for(const task of data.items){const old=before.get(task.id);if(old&&!['completed','failed','cancelled'].includes(old)&&['completed','failed','cancelled'].includes(task.status)){if(task.status==='completed'){notify(`「${task.name}」任务完成`,'success');if(['archive_extract','audio_merge','bt','url_download'].includes(task.type))refresh=true}else if(task.status==='failed')notify(task.error||`「${task.name}」任务失败`)}}
+    if(refresh)void openFolder(currentId.value)
+  }catch{/* SSE 重连后会再次同步 */}
+}
+async function cancelBackgroundTask(task:BackgroundTask){
+  if(task.source_type==='upload'){const local=tasks.find(item=>item.uploadId===task.source_id);if(local){await cancelUpload(local);return}}
+  if(task.source_type==='audio_merge'){const session=localUploads.get(task.source_id||task.id);if(session)session.cancelled=true}
+  try{await api(`/api/tasks/${task.id}/cancel`,{method:'POST'});await refreshBackgroundTasks()}catch(e){notify((e as Error).message)}
+}
+async function retryBackgroundTask(task:BackgroundTask){
+  if(task.source_type==='upload'){const local=tasks.find(item=>item.uploadId===task.source_id);if(local){await retry(local);return}}
+  try{await api(`/api/tasks/${task.id}/retry`,{method:'POST'});await refreshBackgroundTasks()}catch(e){notify((e as Error).message)}
 }
 const jobEvents=useJobEvents(()=>void refreshJobsFromEvent())
 onMounted(()=>{window.addEventListener('popstate',handlePopState);checkSession().then(()=>{if(user.value){jobEvents.connect();void refreshJobsFromEvent()}})})
@@ -954,7 +917,7 @@ onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);windo
   </main>
 
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
-    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :uploads="tasks" :audio-merges="audioMergeJobs" :downloads="downloadJobs" :archive-jobs="archiveJobs" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @clear-uploads="clearFinished" @cancel-upload="cancelUpload" @retry-upload="retry" @cancel-audio-merge="cancelAudioMerge" @clear-audio-merges="clearAudioMerges" @clear-archive-jobs="clearArchiveJobs" @archive-password="submitArchivePassword" @downloads-changed="downloadsChanged" />
+    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :tasks="backgroundTasks" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @cancel-task="cancelBackgroundTask" @retry-task="retryBackgroundTask" @tasks-changed="refreshBackgroundTasks" />
     <section class="content" @click="clearSelectionFromBlank">
       <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :can-go-up="currentId!==ROOT&&!!current?.parent_id" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :trash-mode="trashMode" @open-folder="openFolder" @up="goUp" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @local-audio-merge="showLocalAudioMerge" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="e=>{const el=e.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}">

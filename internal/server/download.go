@@ -84,7 +84,7 @@ type downloadFile struct {
 }
 
 func newDownloadManager(s *Server) (*downloadManager, error) {
-	engine, ok := s.storage.(storage.TorrentEngine)
+	engine, ok := s.objects.Torrent()
 	if !ok {
 		return nil, errors.New("Rust torrent engine is unavailable")
 	}
@@ -96,8 +96,8 @@ func newDownloadManager(s *Server) (*downloadManager, error) {
 	}
 	m.runBackground(m.restore)
 	m.runBackground(m.restoreURLDownloads)
-	m.runBackground(m.cleanupLoop)
-	m.runBackground(m.cleanupURLLoop)
+	s.cleanup.Register("bt-staging", time.Hour, 10*time.Minute, false, m.cleanupPass)
+	s.cleanup.Register("url-download-jobs", time.Hour, time.Minute, false, m.cleanupURLPass)
 	return m, nil
 }
 
@@ -534,6 +534,12 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 	runtime.importing = true
 	runtime.mu.Unlock()
 	defer func() { runtime.mu.Lock(); runtime.importing = false; runtime.mu.Unlock() }()
+	release, resourceErr := m.server.tasks.IO(runtime.ctx)
+	if resourceErr != nil {
+		m.fail(runtime.jobID, resourceErr)
+		return
+	}
+	defer release()
 	job, err := m.get(runtime.ctx, runtime.jobID, true)
 	if err != nil {
 		m.fail(runtime.jobID, err)
@@ -641,7 +647,7 @@ func (m *downloadManager) cleanupTorrentImport(files []storage.TorrentImportFile
 		}
 		if file.WebPrefix != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			objects, err := m.server.storage.ListPrefix(ctx, file.WebPrefix+"/")
+			objects, err := m.server.objects.ListPrefix(ctx, file.WebPrefix+"/")
 			cancel()
 			if err == nil {
 				for _, object := range objects {
@@ -656,7 +662,7 @@ func (m *downloadManager) cleanupTorrentImport(files []storage.TorrentImportFile
 			batch = keys[:1000]
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := m.server.storage.DeleteObjects(ctx, batch)
+		err := m.server.objects.DeleteMany(ctx, batch, "torrent import rollback")
 		cancel()
 		if err != nil {
 			m.server.log.Warn("failed torrent import object cleanup failed", "objects", len(batch), "error", err)
@@ -957,34 +963,26 @@ func (m *downloadManager) unsupported(jobID string, fileIndex int, message strin
 	m.server.log.Warn("built-in torrent media unsupported; staging retained", "job", jobID, "file_index", fileIndex, "error", message)
 }
 
-func (m *downloadManager) cleanupLoop() {
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-ticker.C:
-			cutoff := time.Now().UTC().Add(-m.server.cfg.BTStaleAfter).Format(time.RFC3339Nano)
-			rows, err := m.server.db.Query(`SELECT id FROM download_jobs WHERE status IN ('failed','cancelled') AND updated_at<?`, cutoff)
-			if err != nil {
-				continue
-			}
-			var ids []string
-			for rows.Next() {
-				var id string
-				if rows.Scan(&id) == nil {
-					ids = append(ids, id)
-				}
-			}
-			rows.Close()
-			for _, id := range ids {
-				cleanupCtx, cancel := context.WithTimeout(m.ctx, time.Minute)
-				_ = m.remove(cleanupCtx, id)
-				cancel()
-			}
+func (m *downloadManager) cleanupPass(ctx context.Context) error {
+	cutoff := time.Now().UTC().Add(-m.server.cfg.BTStaleAfter).Format(time.RFC3339Nano)
+	rows, err := m.server.db.QueryContext(ctx, `SELECT id FROM download_jobs WHERE status IN ('failed','cancelled') AND updated_at<?`, cutoff)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
 		}
 	}
+	for _, id := range ids {
+		if err := m.remove(ctx, id); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {

@@ -28,6 +28,24 @@ func directoryBytes(path string) int64 {
 	return total
 }
 
+func (s *Server) mediaCacheStats() (int64, int) {
+	var bytes int64
+	entries := 0
+	s.audioHLSMu.RLock()
+	for _, session := range s.audioHLSSessions {
+		bytes += directoryBytes(session.Dir)
+		entries++
+	}
+	s.audioHLSMu.RUnlock()
+	s.videoHLSMu.RLock()
+	for _, session := range s.videoHLSSessions {
+		bytes += directoryBytes(session.Dir)
+		entries++
+	}
+	s.videoHLSMu.RUnlock()
+	return bytes, entries
+}
+
 // pruneMediaCache applies one byte cap across completed audio and video HLS
 // fallback sessions. Active FFmpeg workspaces are bounded separately by slot
 // counts and the three-minute output duration, so they are never torn down

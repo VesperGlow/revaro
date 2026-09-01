@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -240,7 +239,7 @@ func (s *Server) fmp4File(w http.ResponseWriter, r *http.Request) (File, bool) {
 		problem(w, http.StatusNotFound, "ready video file not found")
 		return File{}, false
 	}
-	if _, ok := s.storage.(storage.MediaEngine); !ok {
+	if s.media.engine == nil {
 		problem(w, http.StatusServiceUnavailable, "media engine is unavailable")
 		return File{}, false
 	}
@@ -395,6 +394,14 @@ func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "fMP4 stream session not found")
 		return
 	}
+	taskID := s.startRuntimeTask(r.Context(), session.ID, "video_fmp4", "video_fmp4", session.FileID)
+	var taskErr error
+	defer func() {
+		if taskErr == nil && r.Context().Err() != nil {
+			taskErr = r.Context().Err()
+		}
+		s.finishRuntimeTask(taskID, "video_fmp4", taskErr)
+	}()
 	streamCtx, streamCancel := context.WithCancel(r.Context())
 	defer streamCancel()
 	stopSessionHook := context.AfterFunc(session.ctx, streamCancel)
@@ -414,9 +421,15 @@ func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusTooManyRequests, "another fMP4 stream is already active")
 		return
 	}
-	engine := s.storage.(storage.MediaEngine)
-	stdout, err := engine.StreamFMP4(streamCtx, session.File.objectKey, session.RequestedStart, session.AudioCodec != "", session.AudioTranscoding)
+	release, resourceErr := s.tasks.Heavy(streamCtx)
+	if resourceErr != nil {
+		taskErr = resourceErr
+		return
+	}
+	defer release()
+	stdout, err := s.media.StreamFMP4(streamCtx, session.File.objectKey, session.RequestedStart, session.AudioCodec != "", session.AudioTranscoding)
 	if err != nil {
+		taskErr = err
 		problem(w, http.StatusBadGateway, "could not start fMP4 stream")
 		return
 	}
@@ -424,6 +437,7 @@ func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
 	buffer := make([]byte, 128<<10)
 	firstN, firstErr := stdout.Read(buffer)
 	if firstN == 0 {
+		taskErr = firstErr
 		if streamCtx.Err() == nil {
 			s.log.Warn("fMP4 stdout ended before headers", "file", session.FileID, "session", session.ID,
 				"error", firstErr)
@@ -449,11 +463,17 @@ func (s *Server) streamVideoFMP4(w http.ResponseWriter, r *http.Request) {
 		streamCancel()
 	}
 	if streamCtx.Err() != nil || writeErr != nil {
+		if writeErr != nil {
+			taskErr = writeErr
+		} else {
+			taskErr = streamCtx.Err()
+		}
 		s.log.Info("fMP4 stdout stream cancelled", "file", session.FileID, "session", session.ID,
 			"requested_start", session.RequestedStart, "bytes", bytesSent, "request_error", writeErr)
 		return
 	}
 	if firstErr != nil && !errors.Is(firstErr, io.EOF) {
+		taskErr = firstErr
 		s.log.Warn("fMP4 stdout stream failed", "file", session.FileID, "session", session.ID,
 			"requested_start", session.RequestedStart, "bytes", bytesSent,
 			"error", firstErr)
@@ -518,24 +538,16 @@ func (s *Server) pruneVideoFMP4Sessions(keepID string) {
 }
 
 func (s *Server) cleanupVideoFMP4Sessions() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.audioHLSCtx.Done():
-			return
-		case now := <-ticker.C:
-			var expired []string
-			s.videoFMP4Mu.RLock()
-			for id, session := range s.videoFMP4Sessions {
-				if now.Sub(session.snapshot()) > videoFMP4IdleTTL {
-					expired = append(expired, id)
-				}
-			}
-			s.videoFMP4Mu.RUnlock()
-			for _, id := range expired {
-				s.removeVideoFMP4Session(id)
-			}
+	now := time.Now()
+	var expired []string
+	s.videoFMP4Mu.RLock()
+	for id, session := range s.videoFMP4Sessions {
+		if now.Sub(session.snapshot()) > videoFMP4IdleTTL {
+			expired = append(expired, id)
 		}
+	}
+	s.videoFMP4Mu.RUnlock()
+	for _, id := range expired {
+		s.removeVideoFMP4Session(id)
 	}
 }

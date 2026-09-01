@@ -17,6 +17,7 @@ type ObjectInfo struct {
 	Size int64  `json:"size"`
 	ETag string `json:"etag"`
 }
+
 type CompletedPart struct {
 	PartNumber int32  `json:"part_number"`
 	ETag       string `json:"etag"`

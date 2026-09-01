@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +21,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -156,7 +157,6 @@ func (j *audioMergeJob) releaseUploadSlot(s *Server) {
 
 func (j *audioMergeJob) update(status string, progress int, message string) {
 	j.mu.Lock()
-	defer j.mu.Unlock()
 	if status != "" {
 		j.Status = status
 	}
@@ -167,22 +167,25 @@ func (j *audioMergeJob) update(status string, progress int, message string) {
 		j.Message = message
 	}
 	j.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if j.changed != nil {
-		defer j.changed()
+	changed := j.changed
+	j.mu.Unlock()
+	if changed != nil {
+		changed()
 	}
 }
 
 func (j *audioMergeJob) finish(status, message, jobError string) {
 	j.mu.Lock()
-	defer j.mu.Unlock()
 	j.Status, j.Message, j.Error = status, message, jobError
-	if j.changed != nil {
-		defer j.changed()
-	}
 	if status == "done" {
 		j.Progress = 100
 	}
 	j.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	changed := j.changed
+	j.mu.Unlock()
+	if changed != nil {
+		changed()
+	}
 }
 
 func isAudioSource(f File) bool {
@@ -589,11 +592,25 @@ func (s *Server) createAudioMerge(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(s.audioHLSCtx, audioMergeTimeout)
 	job := &audioMergeJob{
-		changed: s.jobs.Changed,
-		ID:      ids.New(), Status: "queued", Progress: 1, Message: "等待合并任务开始",
+		ID: ids.New(), Status: "queued", Progress: 1, Message: "等待合并任务开始",
 		OutputName: in.Name, OutputFormat: profile.Format, OutputFileID: outputID, ParentID: in.ParentID, InputCount: len(inputs),
 		Source: "revaro", CreatedAt: now, UpdatedAt: now, cancel: cancel,
 	}
+	inputIDs := make([]string, len(inputs))
+	for i := range inputs {
+		inputIDs[i] = inputs[i].ID
+	}
+	if err := s.createPersistentTask(r.Context(), job.ID, "audio_merge", "queued", "audio_merge", job.ID, map[string]any{"input_ids": inputIDs, "output_file_id": outputID, "parent_id": in.ParentID, "output_name": in.Name, "format": profile.Format, "cover": cover}); err != nil {
+		cancel()
+		_, _ = s.db.ExecContext(r.Context(), `DELETE FROM files WHERE id=?`, outputID)
+		problem(w, 500, "could not persist audio merge task")
+		return
+	}
+	job.changed = func() { s.persistAudioTask(job) }
+	for _, input := range inputs {
+		_, _ = s.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO task_files(task_id,file_id,role) VALUES(?,?,'input')`, job.ID, input.ID)
+	}
+	_, _ = s.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO task_files(task_id,file_id,role) VALUES(?,?,'output')`, job.ID, outputID)
 	s.audioMergeMu.Lock()
 	s.audioMergeJobs[job.ID] = job
 	s.audioMergeMu.Unlock()
@@ -720,6 +737,11 @@ func (s *Server) scheduleAudioMergeRemoval(job *audioMergeJob, after time.Durati
 }
 
 func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inputs []File, subtitleSources []*File, profile audioOutputProfile, cover []byte) error {
+	release, err := s.tasks.Heavy(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	select {
 	case s.audioMergeSlots <- struct{}{}:
 		defer func() { <-s.audioMergeSlots }()
@@ -787,17 +809,13 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 // cover embedding, subtitle time-shifting, ALAC/FLAC/AAC encoding and finally
 // storing the master artifact as a normal blobs/<UUID> object.
 func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, profile audioOutputProfile, workDir string, inputs []File, paths []string, subtitleSources []*File, openSubtitle func(context.Context, File) (io.ReadCloser, error), cover []byte) error {
-	engine, ok := s.storage.(storage.MediaEngine)
-	if !ok {
-		return errors.New("Rust media engine is unavailable")
-	}
 	outputPath := filepath.Join(workDir, "merged"+profile.Extension)
 	job.update("merging", 40, "Rust media engine 正在按顺序合并音频")
 	inputNames := make([]string, len(inputs))
 	for index := range inputs {
 		inputNames[index] = inputs[index].Name
 	}
-	merged, err := engine.MergeAudio(ctx, paths, inputNames, outputPath, profile.Format, job.OutputName)
+	merged, err := s.media.MergeAudio(ctx, paths, inputNames, outputPath, profile.Format, job.OutputName)
 	if err != nil {
 		return err
 	}
@@ -835,7 +853,7 @@ func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, prof
 	}
 	if coverPath != "" || subtitlePath != "" {
 		job.update("merging", 82, "正在嵌入封面与字幕")
-		if err := engine.DecorateAudio(ctx, outputPath, coverPath, subtitlePath); err != nil {
+		if err := s.media.DecorateAudio(ctx, outputPath, coverPath, subtitlePath); err != nil {
 			return err
 		}
 	}
@@ -848,16 +866,22 @@ func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, prof
 // with chapters and subtitle metadata.
 func (s *Server) finalizeAudioMerge(ctx context.Context, job *audioMergeJob, outputPath string, profile audioOutputProfile, cover []byte, inputs []File, durations []time.Duration, storedSubtitles []storedAudioSubtitle) error {
 	job.update("saving", 88, "正在写入 Revaro 对象存储")
-	key, masterSize, masterETag, err := s.storeAudioArtifact(ctx, outputPath, profile.MimeType, 88, 99, "正在保存合并音频", job)
+	key, masterSize, masterETag, contentHash, err := s.storeAudioArtifact(ctx, outputPath, profile.MimeType, 88, 99, "正在保存合并音频", job)
 	if err != nil {
 		return fmt.Errorf("store merged audio: %w", err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			s.discardBlobs([]string{key, audioThumbnailKey(key)})
+		}
+	}()
 	if len(cover) > 0 {
 		thumb, err := resizeToJPEG(cover, thumbMaxDim)
 		if err != nil {
 			return fmt.Errorf("prepare audio cover thumbnail: %w", err)
 		}
-		if err := s.storage.PutImmutable(ctx, audioThumbnailKey(key), "image/jpeg", thumb); err != nil {
+		if err := s.objects.PutImmutable(ctx, audioThumbnailKey(key), "image/jpeg", thumb); err != nil {
 			return fmt.Errorf("store audio cover thumbnail: %w", err)
 		}
 	}
@@ -875,7 +899,7 @@ func (s *Server) finalizeAudioMerge(ctx context.Context, job *audioMergeJob, out
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE files SET object_key=?,size=?,mime_type=?,etag=?,status='ready',updated_at=? WHERE id=? AND status='pending'`, key, masterSize, profile.MimeType, masterETag, now, job.OutputFileID)
+	result, err := tx.ExecContext(ctx, `UPDATE files SET object_key=?,size=?,mime_type=?,etag=?,content_hash=?,hash_algorithm=?,status='ready',updated_at=? WHERE id=? AND status='pending'`, key, masterSize, profile.MimeType, masterETag, contentHash, contentHashAlgorithm, now, job.OutputFileID)
 	if err != nil {
 		return fmt.Errorf("commit merged audio file: %w", err)
 	}
@@ -887,36 +911,50 @@ func (s *Server) finalizeAudioMerge(ctx context.Context, job *audioMergeJob, out
 	if err != nil {
 		return fmt.Errorf("commit audio chapters and stream: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
-func (s *Server) storeAudioArtifact(ctx context.Context, path, mimeType string, progressStart, progressEnd int, message string, job *audioMergeJob) (string, int64, string, error) {
+func (s *Server) storeAudioArtifact(ctx context.Context, path, mimeType string, progressStart, progressEnd int, message string, job *audioMergeJob) (string, int64, string, string, error) {
 	input, err := os.Open(path)
 	if err != nil {
-		return "", 0, "", err
+		return "", 0, "", "", err
 	}
 	defer input.Close()
 	info, err := input.Stat()
 	if err != nil {
-		return "", 0, "", err
+		return "", 0, "", "", err
 	}
 	if info.Size() <= 0 {
-		return "", 0, "", errors.New("audio encoder produced an empty file")
+		return "", 0, "", "", errors.New("audio encoder produced an empty file")
 	}
 	var storedBytes int64
-	reader := &mergeProgressReader{ctx: ctx, r: input, onRead: func(n int64) {
+	hasher := sha256.New()
+	reader := &mergeProgressReader{ctx: ctx, r: io.TeeReader(input, hasher), onRead: func(n int64) {
 		storedBytes += n
 		job.update("saving", progressStart+int(storedBytes*int64(progressEnd-progressStart)/info.Size()), message)
 	}}
 	key, stored, err := s.storeBlob(ctx, reader, info.Size(), mimeType)
 	if err != nil {
-		return "", 0, "", err
+		return "", 0, "", "", err
 	}
-	return key, stored.Size, stored.ETag, nil
+	streamHash := hex.EncodeToString(hasher.Sum(nil))
+	objectHash, err := s.hashObject(ctx, key, stored.Size)
+	if err != nil || objectHash != streamHash {
+		s.discardBlob(key)
+		if err == nil {
+			err = errors.New("stored audio hash mismatch")
+		}
+		return "", 0, "", "", err
+	}
+	return key, stored.Size, stored.ETag, objectHash, nil
 }
 
 func (s *Server) openMergeSource(ctx context.Context, f File) (io.ReadCloser, error) {
-	return s.storage.OpenRaw(ctx, f.objectKey)
+	return s.objects.Open(ctx, f.objectKey)
 }
 
 type mergeProgressReader struct {

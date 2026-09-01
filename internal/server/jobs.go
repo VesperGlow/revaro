@@ -12,7 +12,6 @@ import (
 const (
 	JobQueued    = "queued"
 	JobRunning   = "running"
-	JobWaiting   = "waiting"
 	JobCompleted = "completed"
 	JobFailed    = "failed"
 	JobCancelled = "cancelled"

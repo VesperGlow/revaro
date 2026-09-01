@@ -71,9 +71,6 @@ type Server struct {
 	videoFMP4Slots     chan struct{}
 	videoFMP4Mu        sync.RWMutex
 	videoFMP4Sessions  map[string]*videoFMP4Session
-	videoSubtitleMu    sync.Mutex
-	videoSubtitleCache map[string]*videoSubtitleCacheEntry
-	videoSubtitleBytes int64
 	mediaAnalysis      *mediaAnalysisScheduler
 	thumbnails         *thumbnailScheduler
 	audioThumbSlots    chan struct{}
@@ -86,6 +83,11 @@ type Server struct {
 	archiveJobs        map[string]*archiveJob
 	downloads          *downloadManager
 	jobs               *JobManager
+	tasks              *TaskManager
+	objects            *ObjectManager
+	cache              *CacheManager
+	cleanup            *CleanupManager
+	media              *MediaPipeline
 	lifecycleMu        sync.Mutex
 	lifecycleClosing   bool
 	lifecycleWG        sync.WaitGroup
@@ -99,6 +101,8 @@ type File struct {
 	Size            int64   `json:"size"`
 	MimeType        string  `json:"mime_type,omitempty"`
 	ETag            string  `json:"etag,omitempty"`
+	ContentHash     string  `json:"content_hash,omitempty"`
+	HashAlgorithm   string  `json:"hash_algorithm,omitempty"`
 	Status          string  `json:"status"`
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
@@ -117,6 +121,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		s3Origin = u.Scheme + "://" + u.Host
 	}
 	hlsCtx, hlsCancel := context.WithCancel(context.Background())
+	resources := newResourceGovernor()
 	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
 		jobs:    NewJobManager(),
@@ -128,27 +133,27 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioHLSSlots:      make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
 		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
 		videoFMP4Slots: make(chan struct{}, 2), videoFMP4Sessions: make(map[string]*videoFMP4Session),
-		videoSubtitleCache: make(map[string]*videoSubtitleCacheEntry),
-		mediaAnalysis:      newMediaAnalysisScheduler(2),
-		thumbnails:         newThumbnailScheduler(1),
-		audioThumbSlots:    make(chan struct{}, 1),
-		archiveSlots:       make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
+		mediaAnalysis:   newMediaAnalysisScheduler(2),
+		thumbnails:      newThumbnailScheduler(1),
+		audioThumbSlots: make(chan struct{}, 1),
+		archiveSlots:    make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 	}
+	s.objects = newObjectManager(store)
+	s.objects.server = s
+	s.cache = newCacheManager(filepath.Join(cfg.WorkDir, "cache"), maxVideoSubtitleCacheBytes, cfg.MediaCacheCapacity)
+	s.cache.RegisterStats("hls", s.mediaCacheStats)
+	s.cache.RegisterPruner("hls", s.pruneMediaCache)
+	s.tasks = newTaskManager(db, s.jobs, resources)
+	s.media = newMediaPipeline(store, resources)
+	s.cleanup = newCleanupManager(logger, resources)
 	s.probeMediaSource = func(ctx context.Context, file File) (storage.MediaProbe, error) {
-		engine, ok := s.storage.(storage.MediaEngine)
-		if !ok {
-			return storage.MediaProbe{}, errors.New("Rust media engine is unavailable")
-		}
-		return engine.ProbeMedia(ctx, file.objectKey)
+		return s.media.Probe(ctx, file.objectKey)
 	}
 	s.generateAudioCover = func(ctx context.Context, file File) ([]byte, error) {
-		engine, ok := s.storage.(storage.MediaEngine)
-		if !ok {
-			return nil, errors.New("Rust media engine is unavailable")
-		}
-		return engine.MediaAudioCover(ctx, file.objectKey, thumbMaxDim)
+		return s.media.AudioCover(ctx, file.objectKey, thumbMaxDim)
 	}
+	s.RecoverTasks(context.Background())
 	if cfg.BTEnabled {
 		manager, err := newDownloadManager(s)
 		if err != nil {
@@ -157,10 +162,9 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 			s.downloads = manager
 		}
 	}
-	// Audio merges run in memory and cannot survive a process restart. Their
-	// pending output row has no uploads record (browser uploads always do), so
-	// remove only those abandoned placeholders before serving the file list.
-	if result, err := db.Exec(`DELETE FROM files WHERE kind='file' AND status='pending' AND mime_type IN ('audio/mp4','audio/flac') AND object_key IS NULL AND NOT EXISTS (SELECT 1 FROM uploads WHERE uploads.file_id=files.id)`); err != nil {
+	// Remove only legacy pending audio placeholders that are not owned by a
+	// durable task. Restorable merges retain their output row through task_files.
+	if result, err := db.Exec(`DELETE FROM files WHERE kind='file' AND status='pending' AND mime_type IN ('audio/mp4','audio/flac') AND object_key IS NULL AND NOT EXISTS (SELECT 1 FROM uploads WHERE uploads.file_id=files.id) AND NOT EXISTS (SELECT 1 FROM task_files WHERE task_files.file_id=files.id)`); err != nil {
 		logger.Error("interrupted audio merge cleanup failed", "error", err)
 	} else if removed, _ := result.RowsAffected(); removed > 0 {
 		logger.Info("interrupted audio merges cleaned", "files", removed)
@@ -168,7 +172,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	// Only Revaro-owned, recognizable workspaces are eligible for startup
 	// cleanup. Unknown APP_WORK_DIR contents are never touched.
 	_ = os.MkdirAll(cfg.WorkDir, 0o700)
-	for _, pattern := range []string{"revaro-local-merge-*", "revaro-audio-merge-*", "revaro-audio-hls-*", "revaro-video-hls-*", "revaro-extract-*"} {
+	for _, pattern := range []string{"revaro-audio-merge-*", "revaro-audio-hls-*", "revaro-video-hls-*", "revaro-extract-*"} {
 		stale, err := filepath.Glob(filepath.Join(cfg.WorkDir, pattern))
 		if err != nil {
 			logger.Warn("stale workspace scan failed", "pattern", pattern, "error", err)
@@ -180,11 +184,31 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 			}
 		}
 	}
-	s.runBackground(s.cleanupAudioHLSSessions)
-	s.runBackground(s.cleanupVideoHLSSessions)
-	s.runBackground(s.cleanupVideoFMP4Sessions)
-	s.runBackground(s.cleanupArchiveJobs)
+	s.cleanupUnreferencedLocalMergeDirs()
+	s.restorePersistentTasks()
+	s.cleanup.Register("audio-hls", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupAudioHLSSessions(); return nil })
+	s.cleanup.Register("video-hls", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupVideoHLSSessions(); return nil })
+	s.cleanup.Register("video-fmp4", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupVideoFMP4Sessions(); return nil })
+	s.cleanup.Register("archive-password", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupArchiveJobs(); return nil })
+	s.cleanup.Register("cache", 5*time.Minute, time.Minute, false, func(context.Context) error { s.cache.Prune(); return nil })
+	s.cleanup.Register("uploads", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupExpiredUploads(ctx); return nil })
+	s.cleanup.Register("object-cleanup", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupObjects(ctx); return nil })
+	s.cleanup.Register("local-merges", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupExpiredLocalMerges(ctx); return nil })
+	s.cleanup.Register("trash", 15*time.Minute, 10*time.Minute, true, func(ctx context.Context) error {
+		if s.CleanupExpiredTrash(ctx) > 0 {
+			s.CollectGarbage(ctx)
+		}
+		return nil
+	})
+	if cfg.GCInterval > 0 {
+		s.cleanup.Register("orphan-objects", cfg.GCInterval, 10*time.Minute, true, func(ctx context.Context) error { s.CollectGarbage(ctx); return nil })
+	}
+	s.cleanup.Start()
 	return s
+}
+
+func (s *Server) RegisterCleanup(name string, interval, timeout time.Duration, runNow bool, run func(context.Context) error) {
+	s.cleanup.Register(name, interval, timeout, runNow, run)
 }
 
 // runBackground makes the Server the owner of every goroutine that may touch
@@ -211,6 +235,12 @@ func (s *Server) Close() {
 	s.lifecycleMu.Lock()
 	s.lifecycleClosing = true
 	s.lifecycleMu.Unlock()
+	if s.cleanup != nil {
+		s.cleanup.Close()
+	}
+	if s.cache != nil {
+		s.cache.Close()
+	}
 	if s.audioHLSCancel != nil {
 		s.audioHLSCancel()
 	}
@@ -298,6 +328,12 @@ func (s *Server) Handler() http.Handler {
 			r.Patch("/profile/username", s.changeUsername)
 			r.Get("/storage/stats", s.storageStats)
 			r.Get("/events", s.jobEvents)
+			r.Get("/tasks", s.listTasks)
+			r.Get("/tasks/{id}", s.getTask)
+			r.Post("/tasks/{id}/cancel", s.cancelTask)
+			r.Post("/tasks/{id}/retry", s.retryTask)
+			r.Post("/tasks/{id}/input", s.taskInput)
+			r.Delete("/tasks/{id}", s.deleteTask)
 			r.Get("/files/{id}", s.getFile)
 			r.Get("/files/{id}/children", s.children)
 			r.Get("/files/{id}/download", s.download)
@@ -347,7 +383,9 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/trash/{id}/restore", s.restoreTrash)
 			r.Delete("/trash/{id}", s.purgeTrash)
 			r.Post("/uploads", s.createUpload)
+			r.Get("/uploads/{id}", s.getUpload)
 			r.Post("/uploads/{id}/parts", s.uploadParts)
+			r.Put("/uploads/{id}/parts/{part}", s.recordUploadPart)
 			r.Post("/uploads/{id}/complete", s.completeUpload)
 			r.Delete("/uploads/{id}", s.abortUpload)
 			r.Post("/audio-merges", s.createAudioMerge)
@@ -378,7 +416,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
-	if err := s.storage.Ping(ctx); err != nil {
+	if err := s.objects.Ping(ctx); err != nil {
 		problem(w, http.StatusServiceUnavailable, "object storage unavailable")
 		return
 	}
@@ -685,7 +723,7 @@ func (s *Server) getAvatar(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	data, err := s.storage.GetObject(r.Context(), avatarObjectKey, maxAvatarBytes)
+	data, err := s.objects.Get(r.Context(), avatarObjectKey, maxAvatarBytes)
 	if err != nil {
 		s.log.Error("avatar read failed", "error", err)
 		problem(w, http.StatusBadGateway, "could not read avatar")
@@ -726,7 +764,7 @@ func (s *Server) updateAvatar(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnsupportedMediaType, "avatar must be JPEG, PNG, GIF, or WebP")
 		return
 	}
-	if _, err := s.storage.PutObject(r.Context(), avatarObjectKey, contentType, data); err != nil {
+	if _, err := s.objects.Put(r.Context(), avatarObjectKey, contentType, data); err != nil {
 		s.log.Error("avatar write failed", "error", err)
 		problem(w, http.StatusBadGateway, "could not save avatar")
 		return
@@ -741,7 +779,7 @@ func (s *Server) updateAvatar(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteAvatar(w http.ResponseWriter, r *http.Request) {
-	if err := s.storage.DeleteObject(r.Context(), avatarObjectKey); err != nil {
+	if err := s.objects.Delete(r.Context(), avatarObjectKey, "avatar deletion"); err != nil {
 		s.log.Error("avatar delete failed", "error", err)
 		problem(w, http.StatusBadGateway, "could not delete avatar")
 		return
@@ -854,13 +892,15 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 
 func scanFile(row interface{ Scan(...any) error }) (File, error) {
 	var f File
-	var parent, mime, etag, deleted, restoreParent sql.NullString
-	err := row.Scan(&f.ID, &parent, &f.Name, &f.Kind, &f.objectKey, &f.Size, &mime, &etag, &f.Status, &f.CreatedAt, &f.UpdatedAt, &deleted, &restoreParent)
+	var parent, mime, etag, contentHash, hashAlgorithm, deleted, restoreParent sql.NullString
+	err := row.Scan(&f.ID, &parent, &f.Name, &f.Kind, &f.objectKey, &f.Size, &mime, &etag, &contentHash, &hashAlgorithm, &f.Status, &f.CreatedAt, &f.UpdatedAt, &deleted, &restoreParent)
 	if parent.Valid {
 		f.ParentID = &parent.String
 	}
 	f.MimeType = mime.String
 	f.ETag = etag.String
+	f.ContentHash = contentHash.String
+	f.HashAlgorithm = hashAlgorithm.String
 	f.DeletedAt = deleted.String
 	if restoreParent.Valid {
 		f.RestoreParentID = &restoreParent.String
@@ -868,7 +908,7 @@ func scanFile(row interface{ Scan(...any) error }) (File, error) {
 	return f, err
 }
 
-const fileColumns = `id,parent_id,name,kind,COALESCE(object_key,''),size,mime_type,etag,status,created_at,updated_at,deleted_at,restore_parent_id`
+const fileColumns = `id,parent_id,name,kind,COALESCE(object_key,''),size,mime_type,etag,content_hash,hash_algorithm,status,created_at,updated_at,deleted_at,restore_parent_id`
 
 func (s *Server) file(ctx context.Context, id string) (File, error) {
 	return scanFile(s.db.QueryRowContext(ctx, `SELECT `+fileColumns+` FROM files WHERE id=? AND deleted_at IS NULL`, id))
@@ -898,8 +938,8 @@ func (s *Server) getFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"file": f, "breadcrumbs": crumbs})
 }
 func (s *Server) breadcrumbs(ctx context.Context, id string) ([]File, error) {
-	const qualified = `f.id,f.parent_id,f.name,f.kind,COALESCE(f.object_key,''),f.size,f.mime_type,f.etag,f.status,f.created_at,f.updated_at,f.deleted_at,f.restore_parent_id`
-	rows, err := s.db.QueryContext(ctx, `WITH RECURSIVE p(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at,deleted_at,restore_parent_id,depth) AS (SELECT `+fileColumns+`,0 FROM files WHERE id=? AND deleted_at IS NULL UNION ALL SELECT `+qualified+`,p.depth+1 FROM files f JOIN p ON f.id=p.parent_id WHERE f.deleted_at IS NULL) SELECT `+fileColumns+` FROM p ORDER BY depth DESC`, id)
+	const qualified = `f.id,f.parent_id,f.name,f.kind,COALESCE(f.object_key,''),f.size,f.mime_type,f.etag,f.content_hash,f.hash_algorithm,f.status,f.created_at,f.updated_at,f.deleted_at,f.restore_parent_id`
+	rows, err := s.db.QueryContext(ctx, `WITH RECURSIVE p(id,parent_id,name,kind,object_key,size,mime_type,etag,content_hash,hash_algorithm,status,created_at,updated_at,deleted_at,restore_parent_id,depth) AS (SELECT `+fileColumns+`,0 FROM files WHERE id=? AND deleted_at IS NULL UNION ALL SELECT `+qualified+`,p.depth+1 FROM files f JOIN p ON f.id=p.parent_id WHERE f.deleted_at IS NULL) SELECT `+fileColumns+` FROM p ORDER BY depth DESC`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1550,7 +1590,7 @@ func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File
 		inline = false
 	}
 	if s.cfg.ProxyTransfers {
-		rc, err := s.storage.Open(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
+		rc, err := s.objects.OpenSeek(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
 		if err != nil {
 			problem(w, http.StatusBadGateway, "object storage read failed")
 			return
@@ -1565,7 +1605,7 @@ func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File
 		http.ServeContent(w, r, f.Name, time.Time{}, rc)
 		return
 	}
-	u, err := s.storage.PresignGetObject(r.Context(), f.objectKey, f.Name, mimeType, inline, s.cfg.PresignExpires)
+	u, err := s.objects.PresignGet(r.Context(), f.objectKey, f.Name, mimeType, inline, s.cfg.PresignExpires)
 	if err != nil {
 		problem(w, http.StatusBadGateway, "could not create download URL")
 		return
@@ -1573,12 +1613,12 @@ func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File
 	http.Redirect(w, r, u, http.StatusFound)
 }
 func (s *Server) readContent(ctx context.Context, f File) ([]byte, error) {
-	return s.storage.GetObject(ctx, f.objectKey, maxDocumentBytes)
+	return s.objects.Get(ctx, f.objectKey, maxDocumentBytes)
 }
 
 func (s *Server) storeBlob(ctx context.Context, body io.Reader, size int64, mimeType string) (string, storage.ObjectInfo, error) {
 	key := storage.BlobKey(ids.New())
-	info, err := s.storage.StoreBlob(ctx, key, mimeType, body, size)
+	info, err := s.objects.Stream(ctx, key, mimeType, body, size)
 	if err != nil {
 		return "", storage.ObjectInfo{}, err
 	}
@@ -1613,13 +1653,47 @@ func (s *Server) discardBlobs(keys []string) {
 			if len(batch) > 1000 {
 				batch = filtered[:1000]
 			}
-			if err := s.storage.DeleteObjects(ctx, batch); err != nil {
+			if err := s.objects.DeleteMany(ctx, batch, "metadata commit rollback"); err != nil {
 				s.log.Warn("uncommitted blob cleanup failed", "objects", len(batch), "error", err)
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				for _, key := range batch {
+					_, _ = s.db.ExecContext(context.Background(), `INSERT INTO object_cleanup(object_key,reason,created_at,updated_at) VALUES(?,'metadata commit rollback',?,?) ON CONFLICT(object_key) DO UPDATE SET retry_count=retry_count+1,updated_at=excluded.updated_at`, key, now, now)
+				}
 				return
 			}
 			filtered = filtered[len(batch):]
 		}
 	})
+}
+
+func (s *Server) CleanupObjects(ctx context.Context) {
+	rows, err := s.db.QueryContext(ctx, `SELECT object_key FROM object_cleanup ORDER BY updated_at LIMIT 1000`)
+	if err != nil {
+		return
+	}
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if rows.Scan(&key) == nil {
+			keys = append(keys, key)
+		}
+	}
+	rows.Close()
+	for _, key := range keys {
+		if err := s.objects.Delete(ctx, key, "deferred object cleanup"); err == nil || storage.IsNotFound(err) {
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM object_cleanup WHERE object_key=?`, key)
+		} else {
+			_, _ = s.db.ExecContext(ctx, `UPDATE object_cleanup SET retry_count=retry_count+1,updated_at=? WHERE object_key=?`, time.Now().UTC().Format(time.RFC3339Nano), key)
+		}
+	}
+}
+
+func (s *Server) queueObjectCleanup(ctx context.Context, key, reason string) {
+	if key == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO object_cleanup(object_key,reason,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(object_key) DO UPDATE SET reason=excluded.reason,retry_count=retry_count+1,updated_at=excluded.updated_at`, key, reason, now, now)
 }
 
 func responseMime(f File) string {
@@ -1855,10 +1929,10 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		partSize = multipartPartSize(in.Size)
 		partCount, err = storage.ValidMultipartPartCount(in.Size, partSize)
 		if err == nil {
-			s3UploadID, err = s.storage.CreateMultipart(r.Context(), objectKey, in.MimeType)
+			s3UploadID, err = s.objects.CreateMultipart(r.Context(), objectKey, in.MimeType)
 		}
 	} else {
-		uploadURL, err = s.storage.PresignPutObject(r.Context(), objectKey, in.MimeType, s.cfg.PresignExpires)
+		uploadURL, err = s.objects.PresignPut(r.Context(), objectKey, in.MimeType, s.cfg.PresignExpires)
 	}
 	if err != nil {
 		s.log.Error("blob upload initialization failed", "file", in.Name, "mode", mode, "error", err)
@@ -1880,7 +1954,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		tx.Rollback()
 		if s3UploadID != "" {
 			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = s.storage.AbortMultipart(abortCtx, objectKey, s3UploadID)
+			_ = s.objects.AbortMultipart(abortCtx, objectKey, s3UploadID)
 			cancel()
 		}
 		if isConflict(err) {
@@ -1893,13 +1967,16 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 	if err = tx.Commit(); err != nil {
 		if s3UploadID != "" {
 			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = s.storage.AbortMultipart(abortCtx, objectKey, s3UploadID)
+			_ = s.objects.AbortMultipart(abortCtx, objectKey, s3UploadID)
 			cancel()
 		}
 		problem(w, 500, "could not create upload")
 		return
 	}
 	s.log.Info("blob upload created", "file", in.Name, "size", in.Size, "mode", mode, "object_key", objectKey, "part_size", partSize, "parts", partCount)
+	if taskID, taskErr := s.ensureTask(r.Context(), "upload", "upload", uploadID, "uploading"); taskErr == nil {
+		_, _ = s.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO task_files(task_id,file_id,role) VALUES(?,?,'input')`, taskID, fileID)
+	}
 	writeJSON(w, 201, map[string]any{
 		"upload_id": uploadID,
 		"file_id":   fileID,
@@ -1931,6 +2008,80 @@ func (s *Server) upload(ctx context.Context, id string) (uploadRecord, error) {
 	return u, err
 }
 
+func (s *Server) getUpload(w http.ResponseWriter, r *http.Request) {
+	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		problem(w, http.StatusNotFound, "upload not found")
+		return
+	}
+	rows, err := s.db.QueryContext(r.Context(), `SELECT part_number,size,etag,COALESCE(content_hash,'') FROM upload_parts WHERE upload_id=? ORDER BY part_number`, u.ID)
+	if err != nil {
+		problem(w, 500, "could not read upload parts")
+		return
+	}
+	defer rows.Close()
+	parts := []map[string]any{}
+	for rows.Next() {
+		var number int32
+		var size int64
+		var etag, hash string
+		if rows.Scan(&number, &size, &etag, &hash) != nil {
+			problem(w, 500, "could not read upload parts")
+			return
+		}
+		parts = append(parts, map[string]any{"part_number": number, "size": size, "etag": etag, "content_hash": hash})
+	}
+	partCount, _ := storage.ValidMultipartPartCount(u.ExpectedSize, u.PartSize)
+	var uploadURL string
+	if u.Mode == "single" && u.Status == "pending" {
+		uploadURL, err = s.objects.PresignPut(r.Context(), u.ObjectKey, u.MimeType, s.cfg.PresignExpires)
+		if err != nil {
+			problem(w, 502, "object storage could not resume the upload")
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"upload_id": u.ID, "file_id": u.FileID, "mode": u.Mode, "url": uploadURL, "part_size": u.PartSize, "part_count": partCount, "expected_size": u.ExpectedSize, "mime_type": u.MimeType, "status": u.Status, "expires_at": u.ExpiresAt, "parts": parts})
+}
+
+func (s *Server) recordUploadPart(w http.ResponseWriter, r *http.Request) {
+	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || u.Status != "pending" || u.Mode != "multipart" || u.expired(time.Now().UTC()) {
+		problem(w, 404, "pending upload not found")
+		return
+	}
+	number64, err := strconv.ParseInt(chi.URLParam(r, "part"), 10, 32)
+	count, _ := storage.ValidMultipartPartCount(u.ExpectedSize, u.PartSize)
+	if err != nil || number64 < 1 || number64 > int64(count) {
+		problem(w, 400, "invalid multipart part number")
+		return
+	}
+	var in struct {
+		ETag        string `json:"etag"`
+		Size        int64  `json:"size"`
+		ContentHash string `json:"content_hash"`
+	}
+	if decodeJSON(w, r, &in) != nil {
+		return
+	}
+	in.ETag = strings.TrimSpace(in.ETag)
+	expected := u.PartSize
+	if int(number64) == count {
+		expected = u.ExpectedSize - int64(count-1)*u.PartSize
+	}
+	if in.ETag == "" || in.Size != expected || len(in.ContentHash) > 128 {
+		problem(w, 400, "invalid uploaded part acknowledgement")
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.ExecContext(r.Context(), `INSERT INTO upload_parts(upload_id,part_number,size,etag,content_hash,completed_at) VALUES(?,?,?,?,NULLIF(?,''),?) ON CONFLICT(upload_id,part_number) DO UPDATE SET size=excluded.size,etag=excluded.etag,content_hash=excluded.content_hash,completed_at=excluded.completed_at`, u.ID, number64, in.Size, in.ETag, in.ContentHash, now)
+	if err != nil {
+		problem(w, 500, "could not record uploaded part")
+		return
+	}
+	s.jobs.Changed()
+	w.WriteHeader(204)
+}
+
 func (s *Server) uploadParts(w http.ResponseWriter, r *http.Request) {
 	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
 	if err != nil || u.Status != "pending" || u.Mode != "multipart" || u.expired(time.Now().UTC()) {
@@ -1956,7 +2107,7 @@ func (s *Server) uploadParts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[partNumber] = true
-		url, signErr := s.storage.PresignUploadPart(r.Context(), u.ObjectKey, u.S3UploadID, partNumber, s.cfg.PresignExpires)
+		url, signErr := s.objects.PresignPart(r.Context(), u.ObjectKey, u.S3UploadID, partNumber, s.cfg.PresignExpires)
 		if signErr != nil {
 			s.log.Error("multipart part signing failed", "upload", u.ID, "part", partNumber, "error", signErr)
 			problem(w, 502, "object storage could not prepare upload parts")
@@ -1969,7 +2120,7 @@ func (s *Server) uploadParts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || u.Status != "pending" || u.expired(time.Now().UTC()) {
+	if err != nil || (u.Status != "pending" && u.Status != "completed") || (u.Status == "pending" && u.expired(time.Now().UTC())) {
 		problem(w, 404, "pending upload not found")
 		return
 	}
@@ -1979,9 +2130,39 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 	if decodeJSONLimit(w, r, &body, 2<<20) != nil {
 		return
 	}
+	if u.Status == "completed" {
+		info, headErr := s.objects.Stat(r.Context(), u.ObjectKey)
+		if headErr != nil || info.Size != u.ExpectedSize {
+			problem(w, 409, "completed upload object is unavailable")
+			return
+		}
+		f, fileErr := s.file(r.Context(), u.FileID)
+		if fileErr != nil {
+			problem(w, 500, "completed upload metadata is unavailable")
+			return
+		}
+		writeJSON(w, 200, f)
+		return
+	}
 	var info storage.ObjectInfo
 	if u.Mode == "multipart" {
 		partCount, _ := storage.ValidMultipartPartCount(u.ExpectedSize, u.PartSize)
+		if len(body.Parts) == 0 {
+			rows, qerr := s.db.QueryContext(r.Context(), `SELECT part_number,etag FROM upload_parts WHERE upload_id=? ORDER BY part_number`, u.ID)
+			if qerr != nil {
+				problem(w, 500, "could not read uploaded parts")
+				return
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var p storage.CompletedPart
+				if rows.Scan(&p.PartNumber, &p.ETag) != nil {
+					problem(w, 500, "could not read uploaded parts")
+					return
+				}
+				body.Parts = append(body.Parts, p)
+			}
+		}
 		if len(body.Parts) != partCount {
 			problem(w, 400, "multipart completion list is incomplete")
 			return
@@ -1993,13 +2174,13 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		info, err = s.storage.CompleteMultipart(r.Context(), u.ObjectKey, u.S3UploadID, body.Parts)
+		info, err = s.objects.CompleteMultipart(r.Context(), u.ObjectKey, u.S3UploadID, body.Parts)
 	} else {
 		if len(body.Parts) != 0 {
 			problem(w, 400, "single upload must not include multipart parts")
 			return
 		}
-		info, err = s.storage.HeadObject(r.Context(), u.ObjectKey)
+		info, err = s.objects.Stat(r.Context(), u.ObjectKey)
 	}
 	if err != nil {
 		s.log.Error("blob upload completion failed", "upload", u.ID, "mode", u.Mode, "error", err)
@@ -2007,14 +2188,31 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.Size != u.ExpectedSize {
-		_ = s.storage.DeleteObject(r.Context(), u.ObjectKey)
+		_ = s.objects.Delete(r.Context(), u.ObjectKey, "upload size mismatch")
 		problem(w, 400, "uploaded object size does not match the declared size")
 		return
 	}
-	if err := s.finalizeUpload(r.Context(), u, info.ETag); err != nil {
+	s.updateTask(r.Context(), "upload", u.ID, "running", "verifying", 99, "")
+	releaseIO, resourceErr := s.tasks.IO(r.Context())
+	if resourceErr != nil {
+		s.updateTask(r.Context(), "upload", u.ID, "retrying", "verifying", 99, resourceErr.Error())
+		problem(w, 499, "upload verification was cancelled")
+		return
+	}
+	_, contentHash, hashErr := s.objects.Verify(r.Context(), u.ObjectKey, u.ExpectedSize, "")
+	releaseIO()
+	if hashErr != nil {
+		s.updateTask(r.Context(), "upload", u.ID, "failed", "verifying", 99, hashErr.Error())
+		problem(w, 502, "uploaded object integrity check failed")
+		return
+	}
+	if err := s.finalizeUpload(r.Context(), u, info.ETag, contentHash); err != nil {
+		s.log.Error("upload metadata commit failed", "upload", u.ID, "error", err)
+		s.updateTask(r.Context(), "upload", u.ID, "retrying", "committing", 99, publicError(err, "文件已上传，正在等待元数据重试"))
 		problem(w, 500, "object stored but metadata finalization failed")
 		return
 	}
+	s.updateTask(r.Context(), "upload", u.ID, "completed", "completed", 100, "")
 	f, _ := s.file(r.Context(), u.FileID)
 	s.log.Info("blob upload completed", "file", f.Name, "mode", u.Mode, "size", info.Size, "object_key", u.ObjectKey)
 	s.scheduleMediaAnalysis(f)
@@ -2022,13 +2220,13 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, f)
 }
 
-func (s *Server) finalizeUpload(ctx context.Context, u uploadRecord, etag string) error {
+func (s *Server) finalizeUpload(ctx context.Context, u uploadRecord, etag, contentHash string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE files SET status='ready',size=?,etag=?,updated_at=? WHERE id=? AND status='pending' AND object_key=?`, u.ExpectedSize, etag, time.Now().UTC().Format(time.RFC3339Nano), u.FileID, u.ObjectKey)
+		_, err = tx.ExecContext(ctx, `UPDATE files SET status='ready',size=?,etag=?,content_hash=?,hash_algorithm=?,updated_at=? WHERE id=? AND status='pending' AND object_key=?`, u.ExpectedSize, etag, contentHash, contentHashAlgorithm, time.Now().UTC().Format(time.RFC3339Nano), u.FileID, u.ObjectKey)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE uploads SET status='completed' WHERE id=? AND status='pending'`, u.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE uploads SET status='completed',content_hash=?,completed_at=? WHERE id=? AND status='pending'`, contentHash, time.Now().UTC().Format(time.RFC3339Nano), u.ID)
 	}
 	if err != nil {
 		if tx != nil {
@@ -2050,6 +2248,7 @@ func (s *Server) abortUpload(w http.ResponseWriter, r *http.Request) {
 	if err := s.cleanupPendingUploadObject(r.Context(), u); err != nil {
 		s.log.Warn("blob upload object cleanup failed", "upload", u.ID, "object_key", u.ObjectKey, "error", err)
 	}
+	s.updateTask(r.Context(), "upload", u.ID, "cancelled", "cancelled", 0, "")
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `UPDATE uploads SET status='aborted' WHERE id=?`, u.ID)
@@ -2076,16 +2275,17 @@ func (s *Server) abortUpload(w http.ResponseWriter, r *http.Request) {
 // did not. Deleting the key after abort is safe when no object was committed.
 func (s *Server) cleanupPendingUploadObject(ctx context.Context, u uploadRecord) error {
 	if u.Mode == "multipart" && u.S3UploadID != "" {
-		if err := s.storage.AbortMultipart(ctx, u.ObjectKey, u.S3UploadID); err != nil {
+		if err := s.objects.AbortMultipart(ctx, u.ObjectKey, u.S3UploadID); err != nil {
 			s.log.Debug("multipart abort skipped", "upload", u.ID, "error", err)
 		}
 	}
-	return s.storage.DeleteObject(ctx, u.ObjectKey)
+	return s.objects.Delete(ctx, u.ObjectKey, "aborted upload")
 }
 
 func (s *Server) failUpload(ctx context.Context, uploadID, fileID string) {
 	_, _ = s.db.ExecContext(ctx, `UPDATE uploads SET status='failed' WHERE id=?`, uploadID)
 	_, _ = s.db.ExecContext(ctx, `UPDATE files SET status='failed',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), fileID)
+	s.updateTask(ctx, "upload", uploadID, "failed", "uploading", 0, "upload failed")
 }
 
 func (s *Server) CleanupExpiredUploads(ctx context.Context) {
@@ -2127,6 +2327,7 @@ func (s *Server) CleanupExpiredUploads(ctx context.Context) {
 		}
 		if err == nil {
 			s.log.Info("stale upload cleaned", "upload", id)
+			s.updateTask(ctx, "upload", id, "cancelled", "expired", 0, "upload session expired")
 		}
 	}
 }
@@ -2241,7 +2442,7 @@ func (s *Server) CollectGarbage(ctx context.Context) {
 
 func (s *Server) collectUnreferencedPrefix(ctx context.Context, prefix string, cutoff time.Time, referenced map[string]bool) int {
 	deleted := 0
-	err := s.storage.WalkPrefix(ctx, prefix, func(objects []storage.ObjectRef) error {
+	err := s.objects.WalkPrefix(ctx, prefix, func(objects []storage.ObjectRef) error {
 		keys := make([]string, 0, len(objects))
 		for _, object := range objects {
 			if !referenced[object.Key] && object.LastModified.Before(cutoff) {
@@ -2250,7 +2451,7 @@ func (s *Server) collectUnreferencedPrefix(ctx context.Context, prefix string, c
 		}
 		for len(keys) > 0 {
 			n := min(len(keys), 1000)
-			if err := s.storage.DeleteObjects(ctx, keys[:n]); err != nil {
+			if err := s.objects.DeleteMany(ctx, keys[:n], "orphan garbage collection"); err != nil {
 				return err
 			}
 			deleted += n

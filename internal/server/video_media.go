@@ -19,7 +19,6 @@ import (
 const maxVideoSubtitleBytes = 16 << 20
 const maxConvertedSubtitleBytes = 32 << 20
 const videoSubtitleCacheTTL = 2 * time.Hour
-const maxVideoSubtitleCacheEntries = 32
 const maxVideoSubtitleCacheBytes = int64(64 << 20)
 
 var videoSubtitleExts = map[string]bool{
@@ -50,22 +49,9 @@ type embeddedVideoSubtitle struct {
 	Forced   bool
 }
 
-type videoSubtitleCacheEntry struct {
-	ready       chan struct{}
-	data        []byte
-	err         error
-	completedAt time.Time
-}
-
 func (s *Server) clearVideoSubtitleCache(fileID string) {
-	s.videoSubtitleMu.Lock()
-	defer s.videoSubtitleMu.Unlock()
-	for key, entry := range s.videoSubtitleCache {
-		if strings.Contains(key, ":"+fileID+":") && !entry.completedAt.IsZero() {
-			s.videoSubtitleBytes -= int64(len(entry.data))
-			delete(s.videoSubtitleCache, key)
-		}
-	}
+	s.cache.Invalidate("embedded-v2:" + fileID + ":")
+	s.cache.Invalidate("external-v2:" + fileID + ":")
 }
 
 // cachedVideoSubtitle keeps conversion work independent from the lifetime of
@@ -73,77 +59,11 @@ func (s *Server) clearVideoSubtitleCache(fileID string) {
 // the video element and cancel that request; the FFmpeg conversion should still
 // finish once and be reused when the selected track is attached again.
 func (s *Server) cachedVideoSubtitle(ctx context.Context, key string, convert func(context.Context) ([]byte, error)) ([]byte, error) {
-	now := time.Now()
-	s.videoSubtitleMu.Lock()
-	entry := s.videoSubtitleCache[key]
-	if entry == nil {
-		for cacheKey, cached := range s.videoSubtitleCache {
-			if !cached.completedAt.IsZero() && now.Sub(cached.completedAt) > videoSubtitleCacheTTL {
-				s.videoSubtitleBytes -= int64(len(cached.data))
-				delete(s.videoSubtitleCache, cacheKey)
-			}
-		}
-		if len(s.videoSubtitleCache) >= maxVideoSubtitleCacheEntries {
-			var oldestKey string
-			var oldestTime time.Time
-			for cacheKey, cached := range s.videoSubtitleCache {
-				if cached.completedAt.IsZero() || (!oldestTime.IsZero() && !cached.completedAt.Before(oldestTime)) {
-					continue
-				}
-				oldestKey, oldestTime = cacheKey, cached.completedAt
-			}
-			if oldestKey != "" {
-				s.videoSubtitleBytes -= int64(len(s.videoSubtitleCache[oldestKey].data))
-				delete(s.videoSubtitleCache, oldestKey)
-			}
-		}
-		entry = &videoSubtitleCacheEntry{ready: make(chan struct{})}
-		s.videoSubtitleCache[key] = entry
-		started := s.runBackground(func() {
-			workCtx, cancel := context.WithTimeout(s.audioHLSCtx, 10*time.Minute)
-			defer cancel()
-			data, err := convert(workCtx)
-			s.videoSubtitleMu.Lock()
-			entry.data, entry.err, entry.completedAt = data, err, time.Now()
-			if err != nil {
-				s.log.Warn("video subtitle background conversion failed", "subtitle", key, "error", err)
-				// Failed conversions may be caused by a transient S3/FFmpeg issue.
-				// Wake current waiters, but allow the next request to retry.
-				delete(s.videoSubtitleCache, key)
-			} else {
-				s.videoSubtitleBytes += int64(len(data))
-				for s.videoSubtitleBytes > maxVideoSubtitleCacheBytes {
-					var oldestKey string
-					var oldestTime time.Time
-					for cacheKey, cached := range s.videoSubtitleCache {
-						if cacheKey == key || cached.completedAt.IsZero() || (!oldestTime.IsZero() && !cached.completedAt.Before(oldestTime)) {
-							continue
-						}
-						oldestKey, oldestTime = cacheKey, cached.completedAt
-					}
-					if oldestKey == "" {
-						break
-					}
-					s.videoSubtitleBytes -= int64(len(s.videoSubtitleCache[oldestKey].data))
-					delete(s.videoSubtitleCache, oldestKey)
-				}
-			}
-			close(entry.ready)
-			s.videoSubtitleMu.Unlock()
-		})
-		if !started {
-			entry.err, entry.completedAt = context.Canceled, time.Now()
-			delete(s.videoSubtitleCache, key)
-			close(entry.ready)
-		}
+	data, err := s.cache.GetOrCreate(ctx, key, videoSubtitleCacheTTL, convert)
+	if err != nil {
+		s.log.Warn("video subtitle background conversion failed", "subtitle", key, "error", err)
 	}
-	s.videoSubtitleMu.Unlock()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-entry.ready:
-		return entry.data, entry.err
-	}
+	return data, err
 }
 
 func isVideoSource(f File) bool {
@@ -159,7 +79,7 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 	var playbackKey, playbackETag string
 	var playbackSize int64
 	if s.db.QueryRowContext(r.Context(), `SELECT object_key,size,etag FROM web_media_playback WHERE file_id=?`, video.ID).Scan(&playbackKey, &playbackSize, &playbackETag) == nil {
-		playbackURL, err := s.storage.PresignGetObject(r.Context(), playbackKey, "playback.mp4", "video/mp4", true, 12*time.Hour)
+		playbackURL, err := s.objects.PresignGet(r.Context(), playbackKey, "playback.mp4", "video/mp4", true, 12*time.Hour)
 		if err != nil {
 			problem(w, http.StatusBadGateway, "could not sign optimized video")
 			return
@@ -184,7 +104,7 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 			if label == "" {
 				label = fmt.Sprintf("内嵌字幕 %d", index+1)
 			}
-			url, signErr := s.storage.PresignGetObject(r.Context(), key, fmt.Sprintf("subtitle-%d.vtt", index), "text/vtt; charset=utf-8", true, 12*time.Hour)
+			url, signErr := s.objects.PresignGet(r.Context(), key, fmt.Sprintf("subtitle-%d.vtt", index), "text/vtt; charset=utf-8", true, 12*time.Hour)
 			if signErr != nil {
 				rows.Close()
 				problem(w, 502, "could not sign optimized subtitles")
@@ -302,7 +222,7 @@ func (s *Server) findVideoSubtitles(ctx context.Context, video File) ([]File, er
 			FROM files AS child JOIN subtitle_dirs ON child.parent_id=subtitle_dirs.id
 			WHERE child.kind='directory' AND child.status='ready' AND child.deleted_at IS NULL AND subtitle_dirs.depth<2
 		)
-		SELECT files.id,files.parent_id,files.name,files.kind,COALESCE(files.object_key,''),files.size,files.mime_type,files.etag,files.status,files.created_at,files.updated_at,files.deleted_at,files.restore_parent_id
+		SELECT files.id,files.parent_id,files.name,files.kind,COALESCE(files.object_key,''),files.size,files.mime_type,files.etag,files.content_hash,files.hash_algorithm,files.status,files.created_at,files.updated_at,files.deleted_at,files.restore_parent_id
 		FROM files JOIN subtitle_dirs ON files.parent_id=subtitle_dirs.id
 		WHERE files.kind='file' AND files.status='ready' AND files.deleted_at IS NULL`, *video.ParentID)
 	if err != nil {
@@ -559,22 +479,32 @@ func writeVideoSubtitle(w http.ResponseWriter, vtt []byte) {
 }
 
 func (s *Server) embeddedSubtitleAsWebVTT(ctx context.Context, video File, streamIndex int) ([]byte, error) {
-	engine, ok := s.storage.(storage.MediaEngine)
-	if !ok {
-		return nil, errors.New("Rust media engine is unavailable")
+	taskID := s.startRuntimeTask(ctx, "", "subtitle", "subtitle", video.ID)
+	release, err := s.tasks.Heavy(ctx)
+	if err != nil {
+		s.finishRuntimeTask(taskID, "subtitle", err)
+		return nil, err
 	}
-	return engine.SubtitleWebVTT(ctx, video.objectKey, "", &streamIndex)
+	defer release()
+	out, err := s.media.Subtitle(ctx, video.objectKey, "", &streamIndex)
+	s.finishRuntimeTask(taskID, "subtitle", err)
+	return out, err
 }
 
 func (s *Server) readFileWithLimit(ctx context.Context, f File, limit int64) ([]byte, error) {
-	return s.storage.GetObject(ctx, f.objectKey, limit)
+	return s.objects.Get(ctx, f.objectKey, limit)
 }
 
 func (s *Server) subtitleAsWebVTT(ctx context.Context, subtitle File) ([]byte, error) {
-	engine, ok := s.storage.(storage.MediaEngine)
-	if !ok {
-		return nil, errors.New("Rust media engine is unavailable")
-	}
 	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(subtitle.Name)), ".")
-	return engine.SubtitleWebVTT(ctx, subtitle.objectKey, format, nil)
+	taskID := s.startRuntimeTask(ctx, "", "subtitle", "subtitle", subtitle.ID)
+	release, err := s.tasks.Heavy(ctx)
+	if err != nil {
+		s.finishRuntimeTask(taskID, "subtitle", err)
+		return nil, err
+	}
+	defer release()
+	out, err := s.media.Subtitle(ctx, subtitle.objectKey, format, nil)
+	s.finishRuntimeTask(taskID, "subtitle", err)
+	return out, err
 }

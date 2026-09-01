@@ -205,5 +205,5 @@ func (s *Server) saveBookProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) openBookSource(ctx context.Context, f File) (io.ReadSeekCloser, error) {
-	return s.storage.Open(storage.WithDynamicReadAhead(ctx), f.objectKey)
+	return s.objects.OpenSeek(storage.WithDynamicReadAhead(ctx), f.objectKey)
 }

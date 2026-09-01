@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -169,7 +172,7 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "ready archive file not found")
 		return
 	}
-	if _, ok := s.storage.(storage.ArchiveExtractor); !ok {
+	if _, ok := s.objects.Archive(); !ok {
 		problem(w, http.StatusServiceUnavailable, "online extraction is unavailable")
 		return
 	}
@@ -178,7 +181,13 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		parentID = *f.ParentID
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	job := &archiveJob{ID: ids.New(), FileID: f.ID, ParentID: parentID, Name: f.Name, Status: "queued", Progress: 0, Message: "等待解压", CreatedAt: now, UpdatedAt: now, changed: s.jobs.Changed}
+	job := &archiveJob{ID: ids.New(), FileID: f.ID, ParentID: parentID, Name: f.Name, Status: "queued", Progress: 0, Message: "等待解压", CreatedAt: now, UpdatedAt: now}
+	if err := s.createPersistentTask(r.Context(), job.ID, "archive_extract", "queued", "archive", job.ID, map[string]any{"file_id": f.ID, "parent_id": parentID}); err != nil {
+		problem(w, 500, "could not persist archive task")
+		return
+	}
+	job.changed = func() { s.persistArchiveTask(job) }
+	_, _ = s.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO task_files(task_id,file_id,role) VALUES(?,?,'input')`, job.ID, f.ID)
 	s.archiveMu.Lock()
 	s.archiveJobs[job.ID] = job
 	s.archiveMu.Unlock()
@@ -347,6 +356,19 @@ func (s *Server) failArchiveJob(job *archiveJob, err error) {
 	if err == nil {
 		err = errors.New("unknown archive error")
 	}
+	if errors.Is(err, context.Canceled) {
+		job.mu.Lock()
+		job.Status = "cancelled"
+		job.Message = "解压已取消"
+		job.Error = ""
+		job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		job.mu.Unlock()
+		if job.changed != nil {
+			job.changed()
+		}
+		s.cleanupArchiveJobStaging(job)
+		return
+	}
 	job.fail(archiveFailureMessage(err))
 	s.log.Warn("archive job failed", "file", job.FileID, "job", job.ID, "status", snapshot.Status, "error", err)
 	s.cleanupArchiveJobStaging(job)
@@ -358,6 +380,7 @@ type extractedObject struct {
 	size     int64
 	key      string
 	etag     string
+	hash     string
 	mimeType string
 }
 
@@ -371,6 +394,12 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		job.needsPassword(message)
 		s.log.Info("archive job waiting for password", "file", job.FileID, "job", job.ID)
 	}
+	release, resourceErr := s.tasks.Heavy(ctx)
+	if resourceErr != nil {
+		fail(resourceErr)
+		return
+	}
+	defer release()
 	select {
 	case s.archiveSlots <- struct{}{}:
 		defer func() { <-s.archiveSlots }()
@@ -378,7 +407,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		fail(ctx.Err())
 		return
 	}
-	extractor, ok := s.storage.(storage.ArchiveExtractor)
+	extractor, ok := s.objects.Archive()
 	if !ok {
 		fail(errors.New("Rust archive engine is unavailable"))
 		return
@@ -451,7 +480,7 @@ func (s *Server) cancelArchiveExtract(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusConflict, "archive job is already finished")
 		return
 	}
-	extractor, ok := s.storage.(storage.ArchiveExtractor)
+	extractor, ok := s.objects.Archive()
 	if ok {
 		if err := extractor.CancelArchive(r.Context(), job.ID); err != nil {
 			s.log.Warn("archive cancel request failed", "file", job.FileID, "job", job.ID, "error", err)
@@ -549,7 +578,8 @@ func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID st
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		key, stored, storeErr := s.storeBlob(ctx, file, info.Size(), mimeType)
+		hasher := sha256.New()
+		key, stored, storeErr := s.storeBlob(ctx, io.TeeReader(file, hasher), info.Size(), mimeType)
 		_ = file.Close()
 		if storeErr != nil {
 			return fmt.Errorf("upload extracted file %q to S3: %w", filepath.Base(path), storeErr)
@@ -558,8 +588,17 @@ func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID st
 			s.discardBlob(key)
 			return fmt.Errorf("upload extracted file %q: stored size %d does not match local size %d", filepath.Base(path), stored.Size, info.Size())
 		}
+		streamHash := hex.EncodeToString(hasher.Sum(nil))
+		objectHash, hashErr := s.hashObject(ctx, key, stored.Size)
+		if hashErr != nil || objectHash != streamHash {
+			s.discardBlob(key)
+			if hashErr == nil {
+				hashErr = errors.New("stored extracted file hash mismatch")
+			}
+			return fmt.Errorf("verify extracted file %q: %w", filepath.Base(path), hashErr)
+		}
 		rel, _ := filepath.Rel(outputDir, path)
-		objects = append(objects, extractedObject{rel: filepath.ToSlash(rel), path: path, size: info.Size(), key: key, etag: stored.ETag, mimeType: mimeType})
+		objects = append(objects, extractedObject{rel: filepath.ToSlash(rel), path: path, size: info.Size(), key: key, etag: stored.ETag, hash: objectHash, mimeType: mimeType})
 		job.update("importing", 35+int(float64(len(objects))/float64(max(1, len(paths)))*58), "正在写入网盘")
 	}
 	rootID, rootName, err := s.commitExtractedArchive(ctx, parentID, archiveBaseName(f.Name), outputDir, paths, objects)
@@ -572,31 +611,26 @@ func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID st
 	job.passwordDeadline = time.Time{}
 	job.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.mu.Unlock()
+	if job.changed != nil {
+		job.changed()
+	}
 	s.cleanupArchiveJobStaging(job)
 	s.log.Info("archive job completed", "file", job.FileID, "job", job.ID, "output", rootID, "name", rootName)
 	return nil
 }
 
 func (s *Server) cleanupArchiveJobs() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.audioHLSCtx.Done():
-			return
-		case now := <-ticker.C:
-			s.archiveMu.RLock()
-			jobs := make([]*archiveJob, 0, len(s.archiveJobs))
-			for _, job := range s.archiveJobs {
-				jobs = append(jobs, job)
-			}
-			s.archiveMu.RUnlock()
-			for _, job := range jobs {
-				if job.expirePasswordWait(now) {
-					s.log.Warn("archive password wait expired", "file", job.FileID, "job", job.ID, "timeout", archivePasswordWaitTTL)
-					s.cleanupArchiveJobStaging(job)
-				}
-			}
+	now := time.Now()
+	s.archiveMu.RLock()
+	jobs := make([]*archiveJob, 0, len(s.archiveJobs))
+	for _, job := range s.archiveJobs {
+		jobs = append(jobs, job)
+	}
+	s.archiveMu.RUnlock()
+	for _, job := range jobs {
+		if job.expirePasswordWait(now) {
+			s.log.Warn("archive password wait expired", "file", job.FileID, "job", job.ID, "timeout", archivePasswordWaitTTL)
+			s.cleanupArchiveJobStaging(job)
 		}
 	}
 }
@@ -663,7 +697,7 @@ func (s *Server) commitExtractedArchive(ctx context.Context, parentID, preferred
 	}
 	for _, object := range objects {
 		parentRel := filepath.ToSlash(filepath.Dir(object.rel))
-		if _, err = tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,'ready',?,?)`, ids.New(), directories[parentRel], filepath.Base(object.rel), object.key, object.size, object.mimeType, object.etag, now, now); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,content_hash,hash_algorithm,status,created_at,updated_at) VALUES(?,?,?,'file',?,?,?,?,?,?,'ready',?,?)`, ids.New(), directories[parentRel], filepath.Base(object.rel), object.key, object.size, object.mimeType, object.etag, object.hash, contentHashAlgorithm, now, now); err != nil {
 			return "", "", err
 		}
 	}

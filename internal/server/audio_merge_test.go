@@ -516,8 +516,10 @@ func TestAudioMergeListsMultipleBackgroundJobs(t *testing.T) {
 	}
 	older := &audioMergeJob{ID: ids.New(), Status: "done", Progress: 100, OutputName: "older.flac", OutputFormat: "flac", ParentID: RootID, InputCount: 2, CreatedAt: "2026-08-23T01:00:00Z", UpdatedAt: "2026-08-23T01:01:00Z"}
 	newer := &audioMergeJob{ID: ids.New(), Status: "queued", Progress: 1, OutputName: "newer.m4a", OutputFormat: "alac", ParentID: RootID, InputCount: 7, CreatedAt: "2026-08-23T02:00:00Z", UpdatedAt: "2026-08-23T02:00:00Z"}
+	a.srv.audioMergeMu.Lock()
 	a.srv.audioMergeJobs[older.ID] = older
 	a.srv.audioMergeJobs[newer.ID] = newer
+	a.srv.audioMergeMu.Unlock()
 	rr := a.request("GET", "/api/audio-merges", nil, true)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list audio merges=%d: %s", rr.Code, rr.Body.String())
@@ -531,7 +533,10 @@ func TestAudioMergeListsMultipleBackgroundJobs(t *testing.T) {
 	if removed := a.request("DELETE", "/api/audio-merges/"+older.ID, nil, true); removed.Code != http.StatusNoContent {
 		t.Fatalf("remove finished audio merge=%d", removed.Code)
 	}
-	if _, ok := a.srv.audioMergeJobs[older.ID]; ok {
+	a.srv.audioMergeMu.RLock()
+	_, ok := a.srv.audioMergeJobs[older.ID]
+	a.srv.audioMergeMu.RUnlock()
+	if ok {
 		t.Fatal("finished audio merge remained in task history")
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -132,6 +131,7 @@ func (s *Server) startAudioHLS(w http.ResponseWriter, r *http.Request) {
 	s.audioHLSMu.Lock()
 	s.audioHLSSessions[session.ID] = session
 	s.audioHLSMu.Unlock()
+	s.startRuntimeTask(r.Context(), session.ID, "audio_hls", "audio_hls", f.ID)
 	if !s.runBackground(func() { s.runAudioHLS(ctx, f, session) }) {
 		s.removeAudioHLSSession(session.ID)
 		problem(w, http.StatusServiceUnavailable, "service is shutting down")
@@ -181,23 +181,28 @@ func waitForAudioHLS(requestCtx context.Context, session *audioHLSSession) error
 
 func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSession) {
 	defer func() { <-s.audioHLSSlots }()
-	engine, ok := s.storage.(storage.MediaEngine)
-	if !ok {
-		session.finish(errors.New("Rust media engine is unavailable"))
+	var taskErr error
+	defer func() { s.finishRuntimeTask(session.ID, "audio_hls", taskErr) }()
+	release, err := s.tasks.Heavy(ctx)
+	if err != nil {
+		taskErr = err
+		session.finish(err)
 		return
 	}
-	started, err := engine.GenerateHLS(ctx, f.objectKey, session.Dir, session.Start, true)
+	defer release()
+	started, err := s.media.HLS(ctx, f.objectKey, session.Dir, session.Start, true)
 	if err == nil {
-		err = waitForDataPlaneHLSJob(ctx, engine, started.JobID)
+		err = waitForDataPlaneHLSJob(ctx, s.media, started.JobID)
 	}
 	if err != nil {
 		s.log.Warn("audio HLS transcoder stopped", "file", f.ID, "session", session.ID, "error", err)
 	}
+	taskErr = err
 	session.finish(err)
 }
 
 func (s *Server) startMediaHLSSource(ctx context.Context, f File) (string, func(), error) {
-	u, err := s.storage.PresignGetObject(ctx, f.objectKey, f.Name, responseMime(f), true, s.cfg.PresignExpires)
+	u, err := s.objects.PresignGet(ctx, f.objectKey, f.Name, responseMime(f), true, s.cfg.PresignExpires)
 	if err != nil {
 		return "", nil, err
 	}
@@ -257,25 +262,17 @@ func (s *Server) removeAudioHLSSession(id string) *audioHLSSession {
 }
 
 func (s *Server) cleanupAudioHLSSessions() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.audioHLSCtx.Done():
-			return
-		case now := <-ticker.C:
-			var expired []string
-			s.audioHLSMu.RLock()
-			for id, session := range s.audioHLSSessions {
-				lastAccess, _, _ := session.snapshot()
-				if now.Sub(lastAccess) > audioHLSIdleTTL {
-					expired = append(expired, id)
-				}
-			}
-			s.audioHLSMu.RUnlock()
-			for _, id := range expired {
-				s.removeAudioHLSSession(id)
-			}
+	now := time.Now()
+	var expired []string
+	s.audioHLSMu.RLock()
+	for id, session := range s.audioHLSSessions {
+		lastAccess, _, _ := session.snapshot()
+		if now.Sub(lastAccess) > audioHLSIdleTTL {
+			expired = append(expired, id)
 		}
+	}
+	s.audioHLSMu.RUnlock()
+	for _, id := range expired {
+		s.removeAudioHLSSession(id)
 	}
 }
