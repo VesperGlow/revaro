@@ -39,9 +39,16 @@ services:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
       - minio
-    entrypoint: ["/bin/sh", "-c"]
-    command: >-
-      until mc alias set local http://minio:9000 minioadmin revaro-e2e-minio-secret; do sleep 1; done &&
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+          until mc alias set local http://minio:9000 minioadmin revaro-e2e-minio-secret; do
+            sleep 1
+      done
+      mc mb --ignore-existing local/revaro-e2e
+      mc anonymous set none local/revaro-e2e
+      mc cors set local/revaro-e2e /cors.json
       mc mb --ignore-existing local/revaro-e2e &&
       mc anonymous set none local/revaro-e2e &&
       mc cors set local/revaro-e2e /cors.json
