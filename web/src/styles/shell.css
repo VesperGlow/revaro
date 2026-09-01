@@ -259,7 +259,7 @@ button {
   align-items: center;
   justify-content: space-between;
   padding: 0 30px;
-  z-index: 3;
+  z-index: 20;
 }
 .top-actions {
   display: flex;
@@ -1289,4 +1289,3 @@ button {
   object-fit: cover !important;
   box-shadow: none !important;
 }
-

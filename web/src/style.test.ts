@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 const styleModules=['shell','browser','uploads','dialogs','media','responsive','extras']
 const css=styleModules.map(name=>readFileSync(new URL(`./styles/${name}.css`,import.meta.url),'utf8')).join('\n')
 const videoPlayer=readFileSync(new URL('./styles/video-player.css',import.meta.url),'utf8')
+const taskCenter=readFileSync(new URL('./components/TaskCenter.vue',import.meta.url),'utf8')
 
 describe('audio subtitle header layout',()=>{
   it('keeps the cue count clear of the floating close button',()=>{
@@ -29,5 +30,16 @@ describe('media control visual composition',()=>{
   it('keeps subtitles clear of visible desktop controls while preserving mobile spacing',()=>{
     expect(videoPlayer).toContain('.video-subtitle-overlay.raised{bottom:calc(var(--subtitle-image-bottom) + clamp(100px,14%,150px))}')
     expect(videoPlayer).toContain('.video-subtitle-overlay.raised{bottom:calc(var(--subtitle-image-bottom) + 84px)}')
+  })
+})
+
+describe('task center flyout',()=>{
+  it('keeps its surface opaque and completion actions touchable',()=>{
+    expect(css).toContain('z-index: 20')
+    expect(taskCenter).toContain('.task-panel{z-index:25;isolation:isolate;background:#fff}')
+    expect(taskCenter).toContain('min-height:38px')
+    expect(taskCenter).toContain('min-height:40px')
+    expect(taskCenter).toContain('清除完成')
+    expect(taskCenter).toContain('ChevronDown')
   })
 })
