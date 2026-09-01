@@ -15,6 +15,7 @@ services:
       COOKIE_SECURE: "false"
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: revaro-e2e-password
+
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://127.0.0.1:19000
       S3_REGION: us-east-1
@@ -22,9 +23,12 @@ services:
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: revaro-e2e-minio-secret
       S3_PATH_STYLE: "true"
+
       BT_ENABLED: "true"
+
     volumes:
       - revaro-e2e-data:/data
+
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data
@@ -35,6 +39,7 @@ services:
       MINIO_ROOT_PASSWORD: revaro-e2e-minio-secret
     volumes:
       - minio-e2e-data:/data
+
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
@@ -43,17 +48,32 @@ services:
       - /bin/sh
       - -c
       - |
+          set -eu
+
           until mc alias set local http://minio:9000 minioadmin revaro-e2e-minio-secret; do
             sleep 1
           done
+
           mc mb --ignore-existing local/revaro-e2e
           mc anonymous set none local/revaro-e2e
-          mc cors set local/revaro-e2e /cors.json
-          mc mb --ignore-existing local/revaro-e2e &&
-          mc anonymous set none local/revaro-e2e &&
-          mc cors set local/revaro-e2e /cors.json
-    volumes:
-      - ./deploy/minio-cors.json:/cors.json:ro
+
+          cat > /tmp/cors.xml <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+            <CORSRule>
+              <AllowedOrigin>http://127.0.0.1:18080</AllowedOrigin>
+              <AllowedMethod>GET</AllowedMethod>
+              <AllowedMethod>HEAD</AllowedMethod>
+              <AllowedMethod>PUT</AllowedMethod>
+              <AllowedHeader>*</AllowedHeader>
+              <ExposeHeader>ETag</ExposeHeader>
+              <MaxAgeSeconds>3600</MaxAgeSeconds>
+            </CORSRule>
+          </CORSConfiguration>
+          EOF
+
+          mc cors set local/revaro-e2e /tmp/cors.xml
+
 volumes:
   revaro-e2e-data:
   minio-e2e-data:
