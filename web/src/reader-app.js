@@ -255,6 +255,7 @@ export const ReaderApp = (function () {
       touchLRU(bookId);
       active = state;
       evictLRU();
+      await initializeSections(state);
       activate(state);
       renderToc();
       els.loading.classList.add('hidden');
@@ -322,31 +323,22 @@ export const ReaderApp = (function () {
       state.restoreRatio = null;
     }
     goToPage(state, state.currentPage);
-    watchImages(state.segments);
   }
 
-  // 图片是异步加载的：measure() 测列数时未加载的图没有内在尺寸，
-  // 列数可能偏少；图片加载完成后内容会溢出段底（残影）。监听所有
-  // 未完成图片，加载完毕防抖重排一次。
-  let imageRelayoutTimer = 0;
-  function watchImages(segments) {
-    const imgs = Array.from(segments.querySelectorAll('img'));
-    let pending = 0;
-    const scheduleRelayout = () => {
-      window.clearTimeout(imageRelayoutTimer);
-      imageRelayoutTimer = window.setTimeout(() => { if (active) relayoutActive(); }, 200);
-    };
-    for (const img of imgs) {
-      if (img.complete && img.naturalWidth > 0) continue;
-      pending++;
-      const done = () => {
-        pending--;
-        if (pending <= 0) scheduleRelayout();
-      };
+  // EPUB 图片的固有尺寸必须在第一次分页前稳定。只在 section 初始化时
+  // 等待网络 load/error；翻页路径不等待图片，也不再在阅读中重跑 measure()。
+  async function initializeSections(state) {
+    if (state.sectionsReady) return;
+    if (els.page.firstElementChild !== state.segments) els.page.replaceChildren(state.segments);
+    const pending = Array.from(state.segments.querySelectorAll('img')).filter(img => !img.complete);
+    for (const img of pending) img.loading = 'eager';
+    await Promise.all(pending.map(img => new Promise(resolve => {
+      const done = () => resolve();
       img.addEventListener('load', done, { once: true });
       img.addEventListener('error', done, { once: true });
-    }
-    if (pending > 0) scheduleRelayout(); // 兜底：个别事件丢失也重排一次
+      if (img.complete) done();
+    })));
+    state.sectionsReady = true;
   }
 
   function measure(state) {
@@ -400,11 +392,13 @@ export const ReaderApp = (function () {
 
   function goToPage(state, index, animate = false) {
     const page = Math.min(Math.max(0, index), Math.max(0, state.pageCount - 1));
+    const previousPage = state.currentPage;
     state.currentPage = page;
     const slot = state.pages[page];
     const x = -slot.col * state.pageStep;
     if (slot.node !== state.currentSeg) {
-      // 跨章：wrapper 纵向定位 + 目标段瞬时归位
+      // 跨 spine section 也保留翻页动效。图片页经常独占一个 section，
+      // 旧的瞬时切换分支正是它看起来突然跳页的原因。
       if (currentAnim) { currentAnim.cancel(); currentAnim = null; }
       state.currentSeg = slot.node;
       state.currentCol = slot.col;
@@ -416,12 +410,22 @@ export const ReaderApp = (function () {
         state.currentTop = slot.node._top;
         state.segments.style.top = `-${slot.node._top}px`;
       }
+      if (animate && page !== previousPage) animateSectionTurn(state, page > previousPage ? 1 : -1);
     } else {
       state.currentCol = slot.col;
       state.currentX = x;
       setTransform(state, x, animate);
     }
     updateTocActive();
+  }
+
+  function animateSectionTurn(state, direction) {
+    if (currentAnim) { currentAnim.cancel(); currentAnim = null; }
+    currentAnim = state.segments.animate(
+      [{ transform: `translateX(${direction * state.pageStep}px)` }, { transform: 'translateX(0)' }],
+      { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' }
+    );
+    currentAnim.onfinish = () => { currentAnim = null; };
   }
 
   // 所有 transform 写入的唯一出口。动画用 WAAPI 从 JS 记录的当前位置直接
