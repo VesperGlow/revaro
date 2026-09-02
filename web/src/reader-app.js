@@ -342,6 +342,7 @@ export const ReaderApp = (function () {
   }
 
   function measure(state) {
+    cancelCurrentAnimation();
     const width = els.viewport.clientWidth;
     const height = els.viewport.clientHeight;
     let sidePad = Math.round(Math.min(Math.max(width * 0.055, 16), 44));
@@ -382,7 +383,6 @@ export const ReaderApp = (function () {
       for (let col = 0; col < node._cols; col++) state.pages.push({ node, col });
       top += height;
     }
-    if (currentAnim) { currentAnim.cancel(); currentAnim = null; }
     lastX = 0;
     state.currentSeg = null;
     state.currentTop = null;
@@ -399,7 +399,8 @@ export const ReaderApp = (function () {
     if (slot.node !== state.currentSeg) {
       // 跨 spine section 也保留翻页动效。图片页经常独占一个 section，
       // 旧的瞬时切换分支正是它看起来突然跳页的原因。
-      if (currentAnim) { currentAnim.cancel(); currentAnim = null; }
+      const outgoingNode = state.currentSeg;
+      cancelCurrentAnimation();
       state.currentSeg = slot.node;
       state.currentCol = slot.col;
       state.currentX = x;
@@ -410,7 +411,7 @@ export const ReaderApp = (function () {
         state.currentTop = slot.node._top;
         state.segments.style.top = `-${slot.node._top}px`;
       }
-      if (animate && page !== previousPage) animateSectionTurn(state, page > previousPage ? 1 : -1);
+      if (animate && page !== previousPage && outgoingNode) animateSectionTurn(state, outgoingNode, page > previousPage ? 1 : -1);
     } else {
       state.currentCol = slot.col;
       state.currentX = x;
@@ -419,13 +420,34 @@ export const ReaderApp = (function () {
     updateTocActive();
   }
 
-  function animateSectionTurn(state, direction) {
-    if (currentAnim) { currentAnim.cancel(); currentAnim = null; }
+  function animateSectionTurn(state, outgoingNode, direction) {
+    cancelCurrentAnimation();
+    const placeholder = document.createElement('div');
+    placeholder.style.width = `${state.pageWidth}px`;
+    placeholder.style.height = `${state.pageHeight}px`;
+    outgoingNode.replaceWith(placeholder);
+    const outgoingLayer = document.createElement('div');
+    Object.assign(outgoingLayer.style, { position:'absolute', inset:'0', zIndex:'2', overflow:'hidden', background:'inherit', pointerEvents:'none' });
+    outgoingLayer.appendChild(outgoingNode);
+    els.page.appendChild(outgoingLayer);
+    const outgoingAnim = outgoingLayer.animate(
+      [{ transform: 'translateX(0)' }, { transform: `translateX(${-direction * state.pageStep}px)` }],
+      { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' }
+    );
     currentAnim = state.segments.animate(
       [{ transform: `translateX(${direction * state.pageStep}px)` }, { transform: 'translateX(0)' }],
       { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' }
     );
-    currentAnim.onfinish = () => { currentAnim = null; };
+    currentAnimCleanup = () => {
+      outgoingAnim.cancel();
+      if (placeholder.isConnected) placeholder.replaceWith(outgoingNode);
+      outgoingLayer.remove();
+    };
+    currentAnim.onfinish = () => {
+      currentAnim = null;
+      currentAnimCleanup?.();
+      currentAnimCleanup = null;
+    };
   }
 
   // 所有 transform 写入的唯一出口。动画用 WAAPI 从 JS 记录的当前位置直接
@@ -433,10 +455,17 @@ export const ReaderApp = (function () {
   // 立即开始，不被排版阻塞。
   let lastX = 0;
   let currentAnim = null;
+  let currentAnimCleanup = null;
+  function cancelCurrentAnimation() {
+    if (currentAnim) currentAnim.cancel();
+    currentAnim = null;
+    if (currentAnimCleanup) currentAnimCleanup();
+    currentAnimCleanup = null;
+  }
   function setTransform(state, x, animate) {
     const node = state.currentSeg;
     if (!node) return;
-    if (currentAnim) { currentAnim.cancel(); currentAnim = null; }
+    cancelCurrentAnimation();
     node.style.transition = 'none';
     node.style.transform = `translateX(${x}px)`;
     if (animate && x !== lastX) {
