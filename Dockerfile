@@ -88,7 +88,7 @@ FROM debian:bookworm-slim
 # 运行依赖最小化：TLS 证书 / 时区 + libstdc++/libgcc（静态内链 x265 需要）
 # + 精简 FFmpeg；不安装 Debian 完整 ffmpeg 及其依赖树。
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata libstdc++6 libgcc-s1 \
+    ca-certificates tzdata libstdc++6 libgcc-s1 libxml2 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \
