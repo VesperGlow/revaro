@@ -351,11 +351,12 @@ export const ReaderApp = (function () {
     state.pageHeight = height;
     state.pageStep = width;
     state.pages = [];
-    let top = 0;
     for (const node of state.segments.children) {
       // 关键：把容器宽度钉成整数、box-sizing 内联强制，保证栏距严格 = 整数屏宽，
       // 否则浏览器用小数宽拉伸单栏，会让 translateX 逐页漂移、文字接不上。
       node.style.boxSizing = 'border-box';
+      node.style.position = 'absolute';
+      node.style.inset = '0 auto auto 0';
       node.style.width = `${width}px`;
       node.style.height = `${height}px`;
       // 手机阅读时按实际可视高度收紧页边距。工具栏是悬浮叠层，
@@ -376,16 +377,16 @@ export const ReaderApp = (function () {
       node.style.columnGap = `${2 * sidePad}px`;
       node.style.columnFill = 'auto';
       node.style.transition = 'none';
-      node.style.transform = 'none'; // 空闲段不提升合成层
+      node.style.transform = 'none';
+      node.style.visibility = 'visible';
+      node.style.background = 'var(--paper, #f7f3eb)';
       node._cols = Math.max(1, Math.round(node.scrollWidth / width));
-      node._top = top;
       node._startPage = state.pages.length;
       for (let col = 0; col < node._cols; col++) state.pages.push({ node, col });
-      top += height;
+      node.style.visibility = 'hidden';
     }
     lastX = 0;
     state.currentSeg = null;
-    state.currentTop = null;
     state.pageCount = Math.max(1, state.pages.length);
     mapTocPages(state);
   }
@@ -400,54 +401,78 @@ export const ReaderApp = (function () {
       // 跨 spine section 也保留翻页动效。图片页经常独占一个 section，
       // 旧的瞬时切换分支正是它看起来突然跳页的原因。
       const outgoingNode = state.currentSeg;
+      const outgoingX = state.currentX;
       cancelCurrentAnimation();
       state.currentSeg = slot.node;
       state.currentCol = slot.col;
       state.currentX = x;
       slot.node.style.transition = 'none';
       slot.node.style.transform = `translateX(${x}px)`;
+      slot.node.style.visibility = 'visible';
+      slot.node.style.zIndex = '1';
       lastX = x;
-      if (state.currentTop !== slot.node._top) {
-        state.currentTop = slot.node._top;
-        state.segments.style.top = `-${slot.node._top}px`;
+      if (animate && page !== previousPage && outgoingNode) animateSectionTurn(state, outgoingNode, outgoingX, page > previousPage ? 1 : -1);
+      else {
+        if (outgoingNode) outgoingNode.style.visibility = 'hidden';
+        prepareAdjacentSections(state);
       }
-      if (animate && page !== previousPage && outgoingNode) animateSectionTurn(state, outgoingNode, page > previousPage ? 1 : -1);
     } else {
       state.currentCol = slot.col;
       state.currentX = x;
       setTransform(state, x, animate);
+      prepareAdjacentSections(state);
     }
     updateTocActive();
   }
 
-  function animateSectionTurn(state, outgoingNode, direction) {
+  function animateSectionTurn(state, outgoingNode, outgoingX, direction) {
     cancelCurrentAnimation();
-    const placeholder = document.createElement('div');
-    placeholder.style.width = `${state.pageWidth}px`;
-    placeholder.style.height = `${state.pageHeight}px`;
-    outgoingNode.replaceWith(placeholder);
-    const outgoingLayer = document.createElement('div');
-    Object.assign(outgoingLayer.style, { position:'absolute', inset:'0', zIndex:'2', overflow:'hidden', background:'inherit', pointerEvents:'none' });
-    outgoingLayer.appendChild(outgoingNode);
-    els.page.appendChild(outgoingLayer);
-    const outgoingAnim = outgoingLayer.animate(
-      [{ transform: 'translateX(0)' }, { transform: `translateX(${-direction * state.pageStep}px)` }],
+    const incomingNode = state.currentSeg;
+    outgoingNode.style.visibility = 'visible';
+    outgoingNode.style.zIndex = '2';
+    const outgoingAnim = outgoingNode.animate(
+      [{ transform: `translateX(${outgoingX}px)` }, { transform: `translateX(${outgoingX - direction * state.pageStep}px)` }],
       { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' }
     );
-    currentAnim = state.segments.animate(
-      [{ transform: `translateX(${direction * state.pageStep}px)` }, { transform: 'translateX(0)' }],
+    currentAnim = incomingNode.animate(
+      [{ transform: `translateX(${state.currentX + direction * state.pageStep}px)` }, { transform: `translateX(${state.currentX}px)` }],
       { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' }
     );
     currentAnimCleanup = () => {
       outgoingAnim.cancel();
-      if (placeholder.isConnected) placeholder.replaceWith(outgoingNode);
-      outgoingLayer.remove();
+      outgoingNode.style.visibility = 'hidden';
+      outgoingNode.style.zIndex = '';
+      incomingNode.style.zIndex = '1';
     };
     currentAnim.onfinish = () => {
       currentAnim = null;
       currentAnimCleanup?.();
       currentAnimCleanup = null;
+      prepareAdjacentSections(state);
     };
+  }
+
+  // 当前页稳定后，把相邻 spine 的目标列放到屏外并保持可见，浏览器可提前
+  // 完成栅格化；下一次点击的热路径只需启动两个 compositor 动画。
+  function prepareAdjacentSections(state) {
+    const adjacent = new Set();
+    for (const direction of [-1, 1]) {
+      const slot = state.pages[state.currentPage + direction];
+      if (!slot || slot.node === state.currentSeg) continue;
+      adjacent.add(slot.node);
+      const x = -slot.col * state.pageStep + direction * state.pageStep;
+      slot.node.style.transition = 'none';
+      slot.node.style.transform = `translateX(${x}px)`;
+      slot.node.style.visibility = 'visible';
+      slot.node.style.zIndex = '0';
+      slot.node.style.willChange = 'transform';
+    }
+    for (const node of state.segments.children) {
+      if (node === state.currentSeg || adjacent.has(node)) continue;
+      node.style.visibility = 'hidden';
+      node.style.zIndex = '';
+      node.style.willChange = 'auto';
+    }
   }
 
   // 所有 transform 写入的唯一出口。动画用 WAAPI 从 JS 记录的当前位置直接
@@ -467,6 +492,7 @@ export const ReaderApp = (function () {
     if (!node) return;
     cancelCurrentAnimation();
     node.style.transition = 'none';
+    node.style.visibility = 'visible';
     node.style.transform = `translateX(${x}px)`;
     if (animate && x !== lastX) {
       currentAnim = node.animate(
