@@ -5,7 +5,7 @@
 // 字号/横竖屏/行距变化只在客户端重新排版；进度始终是 readingAnchor。
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { DriveFile } from './api'
-import type { BookProgress, FlowManifest, ReadingAnchor, ReaderPrefs } from './reader/types'
+import type { BookProgress, FlowManifest, FlowTocEntry, ReadingAnchor, ReaderPrefs } from './reader/types'
 import { fetchBookInfo, fetchChunk, fetchFlow, fetchProgress, saveProgress } from './reader/api'
 import { chunkForBlock, locateChar, spineForBlock, tocActiveIndex, totalBlocks } from './reader/flow'
 import { PageCache, InFlight } from './reader/cache'
@@ -258,6 +258,46 @@ function colForAnchor(anchor: ReadingAnchor | null): number {
     if (r) return colFromRect(r)
   }
   return 0
+}
+
+// decodeFrag 对 EPUB URL fragment 做安全 percent decode（兼容非 ASCII /
+// 空格 / 转义字符）；畸形序列解码失败时返回原值。
+function decodeFrag(fragment: string): string {
+  try {
+    return decodeURIComponent(fragment)
+  } catch {
+    return fragment
+  }
+}
+
+// fragMatchEl 按属性值比较元素自身 id / data-frag-ids 是否命中目标
+// fragment。不把 fragment 拼进 CSS selector（特殊字符会让 selector 失效），
+// 只遍历候选元素后按属性值比较。
+function fragMatchEl(el: HTMLElement, want: string[]): HTMLElement | null {
+  const id = el.getAttribute('id')
+  if (id && want.includes(id)) return el
+  const fragIds = el.getAttribute('data-frag-ids')
+  if (fragIds) {
+    for (const part of fragIds.split(/\s+/)) {
+      if (part && want.includes(part)) return el
+    }
+  }
+  return null
+}
+
+// fragmentTargetEl 在块内查找 fragment 对应的真实元素：优先元素自身 id，
+// 其次 data-frag-ids（清洗器把被丢弃锚点的 id 顺延记到后续块上）。
+// 比较同时用原始与 percent-decode 后的 fragment，兼容二次转义的目录。
+function fragmentTargetEl(blockEl: HTMLElement, fragment: string): HTMLElement | null {
+  const want = [fragment]
+  const decoded = decodeFrag(fragment)
+  if (decoded !== fragment) want.push(decoded)
+  const self = fragMatchEl(blockEl, want)
+  if (self) return self
+  for (const el of blockEl.querySelectorAll<HTMLElement>('[id],[data-frag-ids]')) {
+    if (fragMatchEl(el, want)) return el
+  }
+  return null
 }
 
 // blockAtPoint 返回点 (x,y) 处的顶层内容块（沿 DOM 向上找 data-block）。
@@ -557,6 +597,35 @@ async function jumpToBlock(block: number) {
   await seekToAnchor({ spine: spineForBlock(m, b), block: b, path: [], offset: -1 })
 }
 
+// jumpToTocEntry 目录跳转：先按 entry.block 定位并加载目标 chunk（复用
+// 现有 chunk window 机制），等 chunk 挂载并完成 CSS columns 排版后，在
+// 块内按 fragment 找到真实目标元素，用其起始 rect（getClientRects()[0]，
+// 跨多栏元素的联合范围会指向末栏）算出所在栏并跳过去；fragment 缺失、
+// 被 EPUB 清洗丢弃或块内未命中时回退块起点（jumpToBlock 旧行为）。
+async function jumpToTocEntry(entry: FlowTocEntry) {
+  const m = manifest.value
+  if (!m || stage.value !== 'reading') return
+  if (!entry.fragment) {
+    await jumpToBlock(entry.block)
+    return
+  }
+  const total = totalBlockCount()
+  const b = clamp(entry.block, 0, Math.max(0, total - 1))
+  const ci = chunkForBlock(m, b)
+  await ensureWindowFor(ci < 0 ? 0 : ci)
+  measureCols()
+  const blockEl = blockElFor(b)
+  const target = blockEl ? fragmentTargetEl(blockEl, entry.fragment) : null
+  const rect = target ? firstRectOf(target) ?? target.getBoundingClientRect() : null
+  if (!rect || (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.top === 0)) {
+    // 目标不存在或没有布局盒：回退块起点
+    await jumpToBlock(b)
+    return
+  }
+  await goToCol(colFromRect(rect), false)
+  queueProgressSave()
+}
+
 // seekFraction 按全局文本比例跳页（进度条拖动）。
 async function seekFraction(fraction: number) {
   const m = manifest.value
@@ -636,7 +705,7 @@ function closeToc() {
 function jumpToc(entryIndex: number) {
   const entry = toc.value[entryIndex]
   closeToc()
-  if (entry) void jumpToBlock(entry.block)
+  if (entry) void jumpToTocEntry(entry)
 }
 
 function onKey(event: KeyboardEvent) {

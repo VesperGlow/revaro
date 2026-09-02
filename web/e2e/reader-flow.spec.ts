@@ -13,15 +13,21 @@ const TOTAL_BLOCKS = BLOCKS_PER_CHUNK * CHUNK_COUNT
 
 interface FlowFixture {
   progress?: { anchor?: unknown } | null
+  // 覆盖默认目录（可带 fragment，模拟服务端 TOCTarget.Fragment）
+  toc?: { label: string; depth: number; spine: number; block: number; fragment?: string }[]
+  // 覆盖默认 chunk HTML 生成器
+  chunkHTML?: (chunk: number) => string
+}
+
+function blockHTML(chunk: number, b: number): string {
+  const block = chunk * BLOCKS_PER_CHUNK + b
+  return `<p data-block="${block}">c${chunk}b${b} 这是第 ${block} 段正文，用于填充阅读流并驱动客户端分页，句子足够长以便换行排版。</p>`
 }
 
 function chunkHTML(chunk: number): string {
   const parts: string[] = []
   for (let b = 0; b < BLOCKS_PER_CHUNK; b++) {
-    const block = chunk * BLOCKS_PER_CHUNK + b
-    parts.push(
-      `<p data-block="${block}">c${chunk}b${b} 这是第 ${block} 段正文，用于填充阅读流并驱动客户端分页，句子足够长以便换行排版。</p>`,
-    )
+    parts.push(blockHTML(chunk, b))
   }
   return parts.join('\n')
 }
@@ -44,7 +50,7 @@ async function mockAPI(page: Page, fixture: FlowFixture = {}) {
       block_count: BLOCKS_PER_CHUNK,
       chars: BLOCKS_PER_CHUNK * 40,
     })),
-    toc: [
+    toc: fixture.toc ?? [
       { label: '开头', depth: 0, spine: 0, block: 0 },
       { label: '中段', depth: 0, spine: 0, block: 5 * BLOCKS_PER_CHUNK + 3 },
       { label: '结尾', depth: 0, spine: 0, block: TOTAL_BLOCKS - 1 },
@@ -97,7 +103,7 @@ async function mockAPI(page: Page, fixture: FlowFixture = {}) {
     if (chunkMatch && method === 'GET') {
       const index = Number(chunkMatch[1])
       flowRequests[index] = (flowRequests[index] ?? 0) + 1
-      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: chunkHTML(index) })
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: (fixture.chunkHTML ?? chunkHTML)(index) })
     }
     return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
   })
@@ -204,4 +210,139 @@ test('后退翻页回到开头不崩溃，进度仍为开头锚点', async ({ pa
   await expect(page.locator('#flow .rf-chunk').first()).toBeVisible()
   await expect(page.locator('#page-label')).toContainText('%')
   await expect(page.locator('#reader-view')).toBeVisible()
+})
+
+// ---- 目录 fragment 精确跳转 ----
+
+// 填充文本：约 2300 字 ≈ 桌面视口 3 栏，保证相邻目标不在同一栏。
+const FRAG_GAP = '两个目录目标之间的填充文字，用来把内容撑开到不同的分栏，确保间隔足够远。'.repeat(60)
+
+// giantBlockHTML 生成一个跨多栏的顶层块，块内多个 id 元素（可加前置填充，
+// 使第一个目标不在块起点，用于区分「精确命中」与「回退块起点」）。
+function giantBlockHTML(block: number, ids: string[], leadGap = ''): string {
+  const inner = ids.map(id => `<span id="${id}">【${id}】</span>`).join(FRAG_GAP)
+  return `<div data-block="${block}" data-source-path="OEBPS/frag.xhtml">${leadGap}${inner}${FRAG_GAP}</div>`
+}
+
+const FRAG_BLOCK = BLOCKS_PER_CHUNK // chunk 1 的第一个块
+
+function fragmentChunkHTML(chunk: number): string {
+  if (chunk !== 1) return chunkHTML(chunk)
+  const parts = [giantBlockHTML(FRAG_BLOCK, ['目标一', '目标二', '目标三', '章节 二'])]
+  for (let b = 1; b < BLOCKS_PER_CHUNK; b++) parts.push(blockHTML(chunk, b))
+  return parts.join('\n')
+}
+
+function farFragmentChunkHTML(chunk: number): string {
+  if (chunk !== 8) return chunkHTML(chunk)
+  const farBlock = 8 * BLOCKS_PER_CHUNK + 3
+  const parts: string[] = []
+  for (let b = 0; b < 3; b++) parts.push(blockHTML(chunk, b))
+  parts.push(giantBlockHTML(farBlock, ['远目标'], FRAG_GAP))
+  for (let b = 4; b < BLOCKS_PER_CHUNK; b++) parts.push(blockHTML(chunk, b))
+  return parts.join('\n')
+}
+
+const FRAG_TOC = [
+  { label: '目标一', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '目标一' },
+  { label: '目标二', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '目标二' },
+  // 双重转义场景：服务端只解一次码，客户端需补一次安全 decode
+  { label: '编码目标', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '%E7%9B%AE%E6%A0%87%E4%B8%89' },
+  // 非 ASCII + 空格：按属性值直接命中（不能进 selector）
+  { label: '空格目标', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '章节 二' },
+  { label: '丢失目标', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: 'not-there' },
+  { label: '无片段', depth: 0, spine: 0, block: FRAG_BLOCK },
+]
+
+const FAR_TOC = [{ label: '远目标', depth: 0, spine: 0, block: 8 * BLOCKS_PER_CHUNK + 3, fragment: '远目标' }]
+
+// currentColumn 读取当前翻到的 CSS column 序号（transform / 栏距）。
+async function currentColumn(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const flow = document.getElementById('flow') as HTMLElement
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(flow).transform)
+    return Math.round(-matrix.m41 / flow.clientWidth)
+  })
+}
+
+// expectFragmentVisible 断言 id 元素的起始 rect 已落在当前可见栏内。
+async function expectFragmentVisible(page: Page, id: string) {
+  const box = await page.locator('#viewport').boundingBox()
+  if (!box) throw new Error('viewport 不可见')
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ id, minX, maxX }) => {
+            const el = document.getElementById(id)
+            if (!el) return false
+            const rect = el.getClientRects()[0]
+            return !!rect && rect.left >= minX && rect.left < maxX
+          },
+          { id, minX: box.x, maxX: box.x + box.width },
+        ),
+      { timeout: 8000 },
+    )
+    .toBe(true)
+}
+
+test('目录 fragment 精确跳转：同块两个目录项落到不同栏，编码/空格片段可定位，丢失回退块起点', async ({ page }) => {
+  await openReader(page, { toc: FRAG_TOC, chunkHTML: fragmentChunkHTML })
+
+  const openTocAndClick = async (label: string) => {
+    await page.locator('#toc-button').click()
+    await page.locator('.toc-item', { hasText: label }).click()
+  }
+
+  await openTocAndClick('目标一')
+  await expectFragmentVisible(page, '目标一')
+  const colA = await currentColumn(page)
+
+  await openTocAndClick('目标二')
+  await expectFragmentVisible(page, '目标二')
+  const colB = await currentColumn(page)
+  expect(colB).toBeGreaterThan(colA + 1)
+
+  // percent-encoded fragment：客户端安全解码后命中 id=目标三
+  await openTocAndClick('编码目标')
+  await expectFragmentVisible(page, '目标三')
+
+  // 非 ASCII + 空格 fragment：属性值直接比较命中
+  await openTocAndClick('空格目标')
+  await expectFragmentVisible(page, '章节 二')
+
+  // fragment 未命中 → 回退块起点（= 块内第一个目标所在栏）
+  await openTocAndClick('丢失目标')
+  await expectFragmentVisible(page, '目标一')
+  const colMissing = await currentColumn(page)
+
+  // 无 fragment 的条目保持旧行为：同样落在块起点
+  await openTocAndClick('无片段')
+  await expectFragmentVisible(page, '目标一')
+  const colNoFrag = await currentColumn(page)
+
+  expect(colMissing).toBe(colNoFrag)
+  expect(colNoFrag).toBe(colA)
+})
+
+test('目录 fragment 在未加载 chunk：先加载目标 chunk 再精确定位', async ({ page }) => {
+  await openReader(page, { toc: FAR_TOC, chunkHTML: farFragmentChunkHTML })
+  // 初始窗口只拉 chunk 0..3，不含目标 chunk 8
+  expect(flowRequests[8] ?? 0).toBe(0)
+
+  await page.locator('#toc-button').click()
+  await page.locator('.toc-item', { hasText: '远目标' }).click()
+
+  // 目标 chunk 被加载，且远目标元素精确落到当前栏（不是块起点——
+  // 目标前有约一栏的前置填充，回退块起点时它不会出现在当前栏）
+  await expect.poll(() => flowRequests[8] ?? 0, { timeout: 8000 }).toBe(1)
+  await expectFragmentVisible(page, '远目标')
+
+  // 进度锚点写入目标块邻域（顶部锚点取自目标栏顶部的文本位置）
+  await expect
+    .poll(() => (page as Page & { __savedProgress?: { anchor?: { block?: number } } }).__savedProgress ?? null, { timeout: 8000 })
+    .toBeTruthy()
+  const savedBlock = (page as Page & { __savedProgress: { anchor: { block?: number } } }).__savedProgress.anchor?.block ?? -1
+  expect(savedBlock).toBeGreaterThanOrEqual(8 * BLOCKS_PER_CHUNK)
+  expect(savedBlock).toBeLessThan(9 * BLOCKS_PER_CHUNK)
 })

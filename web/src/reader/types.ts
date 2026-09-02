@@ -29,6 +29,9 @@ export interface FlowTocEntry {
   depth: number
   spine: number
   block: number
+  // EPUB 目录原始 fragment（服务端已 percent-decode 一次）：块内精确定位用。
+  // 缺失或块内找不到时回退块起点；TXT 目标没有该字段。
+  fragment?: string
 }
 
 export interface FlowManifest {

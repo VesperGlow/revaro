@@ -16,7 +16,8 @@ import (
 // 常量与体量预算（纯启发式，与视口/字号无关；chunk 只负责「适量」）。
 const (
 	// FlowFormatVersion 参与缓存键与 manifest.version：生成语义变化时必须递增。
-	FlowFormatVersion = 1
+	// v2：TOCTarget 保留 EPUB 目录 fragment（块内精确跳转），旧缓存需失效重建。
+	FlowFormatVersion = 2
 
 	// chunkCharsTarget 是单个 chunk 的文本目标量（UTF-16 码元）。
 	// 约合移动端 8~12 页 / 桌面 5~8 页，窗口化加载时够用且不过重。
@@ -57,12 +58,14 @@ type spineBuild struct {
 	startGlobal int // 本章第一块的全书编号
 }
 
-// tocEntry 是带目标块的目录条目。
+// tocEntry 是带目标块的目录条目。fragment 保留 EPUB 目录原始片段
+// （仅用于块内精确定位，不影响 Block/chunk 索引体系）。
 type tocEntry struct {
-	label string
-	depth int
-	spine int
-	block int
+	label    string
+	depth    int
+	spine    int
+	block    int
+	fragment string
 }
 
 // Build 由解析好的 Book 生成连续 reading flow。纯函数、确定性：
@@ -105,12 +108,12 @@ func buildEPUB(book *reader.Book) (*Built, error) {
 		spines = append(spines, sb)
 	}
 
-	// 目录条目 → (spine, 章内块号)
+	// 目录条目 → (spine, 章内块号)；fragment 原样保留给客户端做块内定位
 	entries := make([]tocEntry, 0, len(book.TOC))
 	for _, entry := range book.TOC {
 		spine := chapterIndexForPath(book, entry.Path, spines)
 		block := fragmentBlock(spines, spine, entry.Fragment)
-		entries = append(entries, tocEntry{label: entry.Label, depth: entry.Depth, spine: spine, block: block})
+		entries = append(entries, tocEntry{label: entry.Label, depth: entry.Depth, spine: spine, block: block, fragment: entry.Fragment})
 	}
 	return assemble(spines, entries, "epub")
 }
@@ -450,7 +453,7 @@ func assemble(spines []spineBuild, entries []tocEntry, format string) (*Built, e
 			continue
 		}
 		// 章内块号 → 全书块号：章起点 + 块号
-		toc = append(toc, TOCTarget{Label: e.label, Depth: e.depth, Spine: e.spine, Block: spineBlockStart[e.spine] + e.block})
+		toc = append(toc, TOCTarget{Label: e.label, Depth: e.depth, Spine: e.spine, Block: spineBlockStart[e.spine] + e.block, Fragment: e.fragment})
 	}
 	manifest.TOC = toc
 	built := &Built{Manifest: manifest, Chunks: make([]Chunk, 0, len(manifest.Chunks))}

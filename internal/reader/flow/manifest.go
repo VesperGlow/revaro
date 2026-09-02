@@ -38,12 +38,16 @@ type ChunkMeta struct {
 }
 
 // TOCTarget 是目录条目指向的内容块。Block 可直接用于客户端定位，
-// Spine 供高亮/分组参考。
+// Spine 供高亮/分组参考；Fragment 保留 EPUB 目录的原始片段
+// （解析层已 percent-decode），客户端在 Block 所在块内用它做
+// fragment 级精确定位（块内多个目录目标可落到不同栏），
+// 定位不到时回退块起点。
 type TOCTarget struct {
-	Label string `json:"label"`
-	Depth int    `json:"depth"`
-	Spine int    `json:"spine"`
-	Block int    `json:"block"`
+	Label    string `json:"label"`
+	Depth    int    `json:"depth"`
+	Spine    int    `json:"spine"`
+	Block    int    `json:"block"`
+	Fragment string `json:"fragment,omitempty"`
 }
 
 // SpineForBlock 返回块 b 所属的章（全书块编号 → spine 序号）。

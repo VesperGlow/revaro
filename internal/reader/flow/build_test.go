@@ -160,6 +160,69 @@ func TestBuildEPUBDeterministicAndInvariants(t *testing.T) {
 	}
 }
 
+// TestBuildEPUBTOCFragmentsInSameBlock 验证同一顶层块内的多个目录
+// fragment：manifest 的 Block 相同（chunk 定位体系不变），Fragment
+// 各自保留，且块 HTML 保留真实 id 供客户端块内精确跳转。
+func TestBuildEPUBTOCFragmentsInSameBlock(t *testing.T) {
+	ch1 := `<h1 id="sec1" data-source-path="OEBPS/ch1.xhtml">第一章</h1>` +
+		`<p data-source-path="OEBPS/ch1.xhtml">第一章正文。</p>`
+	filler := strings.Repeat("同一块内的填充文本，用于隔开两个目录目标。", 30)
+	ch2 := `<div data-source-path="OEBPS/ch2.xhtml">` +
+		`<span id="frag-a">甲处</span>` + filler +
+		`<span id="frag-b">乙处</span>` + filler + `</div>`
+	book := &reader.Book{
+		Format:   "epub",
+		Title:    "片段书",
+		Chapters: []reader.Chapter{{HTML: ch1}, {HTML: ch2}},
+		TOC: []reader.TocEntry{
+			{Label: "第一章", Path: "OEBPS/ch1.xhtml", Fragment: "sec1", Depth: 0},
+			{Label: "甲处", Path: "OEBPS/ch2.xhtml", Fragment: "frag-a", Depth: 1},
+			{Label: "乙处", Path: "OEBPS/ch2.xhtml", Fragment: "frag-b", Depth: 1},
+		},
+	}
+	built, err := Build(book, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := built.Manifest
+	if len(m.TOC) != 3 {
+		t.Fatalf("toc=%+v", m.TOC)
+	}
+	a, b := m.TOC[1], m.TOC[2]
+	if a.Fragment != "frag-a" || b.Fragment != "frag-b" {
+		t.Fatalf("fragments not preserved: %+v / %+v", a, b)
+	}
+	if a.Block != b.Block {
+		t.Fatalf("same-block fragments should share one block: %d vs %d", a.Block, b.Block)
+	}
+	if a.Spine != 1 || m.TOC[0].Fragment != "sec1" {
+		t.Fatalf("toc mapping broken: %+v", m.TOC)
+	}
+	// Block 仍可定位 chunk，且该块 HTML 保留两个 id（客户端块内查找依据）
+	ci := m.ChunkForBlock(a.Block)
+	if ci < 0 {
+		t.Fatalf("block %d not in any chunk", a.Block)
+	}
+	html := built.Chunks[ci].HTML
+	if !strings.Contains(html, `id="frag-a"`) || !strings.Contains(html, `id="frag-b"`) {
+		t.Fatalf("chunk html lost fragment ids: %s", html)
+	}
+	// data-block 编号仍落在该块上（客户端按块找元素再按 fragment 细分）
+	if !strings.Contains(html, fmt.Sprintf(`data-block="%d"`, a.Block)) {
+		t.Fatalf("block %d missing data-block in chunk %d", a.Block, ci)
+	}
+	// fragment 解析失败（清洗丢弃）时 Block 回退块 0，Fragment 原样保留
+	book.TOC = append(book.TOC, reader.TocEntry{Label: "丢失", Path: "OEBPS/ch2.xhtml", Fragment: "no-such-id", Depth: 1})
+	again, err := Build(book, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost := again.Manifest.TOC[3]
+	if lost.Fragment != "no-such-id" || lost.Block != again.Manifest.Spines[1].BlockStart {
+		t.Fatalf("missing fragment fallback wrong: %+v (spine start %d)", lost, again.Manifest.Spines[1].BlockStart)
+	}
+}
+
 func parseChunk(htmlStr string, t *testing.T) []*html.Node {
 	t.Helper()
 	ctx := &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body}
@@ -239,6 +302,11 @@ func TestBuildTXTContinuityAndTOC(t *testing.T) {
 		if e.Block != sp.BlockStart {
 			t.Fatalf("txt toc %q spine=%d block=%d want blockStart=%d", e.Label, e.Spine, e.Block, sp.BlockStart)
 		}
+	}
+	// TXT 目录目标没有 fragment 语义：JSON 不应出现该字段（omitempty）
+	raw, _ := json.Marshal(m.TOC[0])
+	if strings.Contains(string(raw), "fragment") {
+		t.Fatalf("txt toc should not carry fragment: %s", raw)
 	}
 	// 全部块号连续
 	prev := -1
