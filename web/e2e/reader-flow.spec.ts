@@ -122,9 +122,9 @@ async function clickNext(page: Page, times: number, gapMs = 340) {
 
 test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且绝不重复请求', async ({ page }) => {
   await openReader(page)
-  // 打开：中心 chunk 0 → 窗口 [0, 4]（共 5 个 chunk）
+  // 打开：中心 chunk 0 → 窗口 [0, 3]（共 4 个 chunk，身后 2 + 前方 3 上限 6）
   const initial = { ...flowRequests }
-  expect(Object.keys(initial).sort((a, b) => Number(a) - Number(b))).toEqual(['0', '1', '2', '3', '4'])
+  expect(Object.keys(initial).sort((a, b) => Number(a) - Number(b))).toEqual(['0', '1', '2', '3'])
   for (const n of Object.values(initial)) expect(n).toBe(1)
 
   // 连点翻页（动画 260ms，逐个等待）：chunk 只增不减、绝不重复；
@@ -135,10 +135,10 @@ test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且�
   for (const n of Object.values(after)) expect(n).toBe(1)
   expect(Object.keys(after).length).toBeGreaterThanOrEqual(before)
   expect(Object.keys(after).length).toBeLessThanOrEqual(CHUNK_COUNT)
-  // 窗口 DOM 有界（滑动窗口上限 8 个 chunk）
+  // 窗口 DOM 有界（增量滑动窗口上限 6 个 chunk）
   await expect
     .poll(() => page.locator('#flow .rf-chunk').count(), { timeout: 5000 })
-    .toBeLessThanOrEqual(8)
+    .toBeLessThanOrEqual(6)
   // 进度条/标签仍有效
   await expect(page.locator('#page-label')).toContainText('%')
 })

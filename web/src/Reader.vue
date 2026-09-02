@@ -36,7 +36,10 @@ const percentNow = ref(0)
 const FONT_STACK = '"Noto Serif SC", "Songti SC", Georgia, "Times New Roman", "STSong", SimSun, serif'
 
 // ---- 引擎内部状态（非响应式） ----
-const MAX_WINDOW = 8 // 窗口内最多加载的 chunk 数
+// 实际 DOM 窗口保持小巧（BEHIND+AHEAD+1 = 6 个 chunk），PageCache 容量较大：
+// 窗口滑动只增量 append/remove chunk，翻页热路径绝不等待网络。
+const BEHIND_MARGIN = 2 // 当前 chunk 之后（阅读方向反向）保留的 chunk 数
+const AHEAD_MARGIN = 3 // 阅读方向前预取的 chunk 数
 let metrics = { width: 0, height: 0, side: 0, top: 0, bottom: 0, pitch: 0, colHeight: 0 }
 let c0 = 0 // 已加载窗口首 chunk
 let c1 = -1 // 已加载窗口末 chunk
@@ -44,6 +47,7 @@ let cols = 1 // 当前已排版（已加载窗口内）的栏数
 let currentCol = 0
 let lastX = 0
 let topAnchor: ReadingAnchor | null = null // 当前页顶部的 readingAnchor
+let promoting = false // will-change:transform 是否开启（仅拖动/动画期间）
 const chunkHTML = new PageCache(24)
 const chunkFlight = new InFlight()
 let turnBusy = false
@@ -135,21 +139,35 @@ function setX(x: number) {
   lastX = rx
 }
 
+// setPromote 只在拖动/翻页动画期间开启合成层提升，结束后释放：
+// 常驻 will-change 会让大图旁的整层文字持续离屏合成，移动端出现发糊。
+function setPromote(on: boolean) {
+  const flow = flowEl.value
+  if (!flow) return
+  if (on === promoting) return
+  promoting = on
+  flow.style.willChange = on ? 'transform' : 'auto'
+}
+
 function animateX(from: number, to: number): Promise<void> {
   const flow = flowEl.value
   if (!flow) return Promise.resolve()
   currentAnim?.cancel()
+  setPromote(true)
   setX(from)
   return new Promise(resolve => {
     currentAnim = flow.animate(
       [{ transform: `translateX(${Math.round(from)}px)` }, { transform: `translateX(${Math.round(to)}px)` }],
       { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' },
     )
-    currentAnim.onfinish = () => {
+    const done = () => {
       currentAnim = null
       setX(to)
+      setPromote(false)
       resolve()
     }
+    currentAnim.onfinish = done
+    currentAnim.oncancel = done
   })
 }
 
@@ -326,7 +344,7 @@ function anchorAtTopOfCurrentCol(): ReadingAnchor | null {
   return pt ? makeAnchorFromBlockEl(pt, [], -1) : null
 }
 
-// ---- 窗口管理 ----
+// ---- 窗口管理（增量 DOM 更新） ----
 
 async function chunkText(index: number): Promise<string> {
   const hit = chunkHTML.get(index)
@@ -343,53 +361,80 @@ function chunkElement(index: number): HTMLElement | null {
   return flow ? (flow.querySelector(`.rf-chunk[data-chunk="${index}"]`) as HTMLElement | null) : null
 }
 
-// renderWindow 全量重建窗口 DOM（window = [newC0, newC1]，chunk HTML 走缓存）。
-async function renderWindow(newC0: number, newC1: number): Promise<void> {
+// ensureWindow 把窗口变为 [newC0, newC1]：只 append 新 chunk、remove 已不在
+// 窗口内的旧 chunk，保留的 chunk 子树原样不动（避免清空重建触发整棵多栏
+// CSS columns reflow）。chunk HTML 走内存缓存，重入窗口不重新请求。
+async function ensureWindow(newC0: number, newC1: number): Promise<void> {
   const flow = flowEl.value
   const m = manifest.value
   if (!flow || !m) return
   const last = Math.max(0, m.chunks.length - 1)
   newC0 = clamp(newC0, 0, last)
   newC1 = clamp(newC1, newC0, last)
-  flow.textContent = ''
+  if (c1 >= 0 && newC0 === c0 && newC1 === c1) return
+  const existing = new Map<number, HTMLElement>()
+  for (const child of Array.from(flow.children) as HTMLElement[]) {
+    const idx = Number((child as HTMLElement).dataset.chunk)
+    if (Number.isInteger(idx)) existing.set(idx, child as HTMLElement)
+  }
+  if (existing.size) {
+    const minCur = Math.min(...existing.keys())
+    const maxCur = Math.max(...existing.keys())
+    // 移除窗口外（只发生在头部/尾部，逐节点 remove）
+    for (let i = minCur; i < newC0; i++) existing.get(i)?.remove()
+    for (let i = newC1 + 1; i <= maxCur; i++) existing.get(i)?.remove()
+  }
+  // 补齐缺失 chunk：插到下一个已存在的 chunk 前，保持阅读顺序
   for (let i = newC0; i <= newC1; i++) {
+    if (existing.has(i)) continue
     const html = await chunkText(i)
+    if (flowEl.value !== flow) return // 窗口/组件已变化
     const section = document.createElement('div')
     section.className = 'rf-chunk'
     section.dataset.chunk = String(i)
     section.innerHTML = html
-    flow.appendChild(section)
+    let ref: HTMLElement | null = null
+    for (let j = i + 1; j <= newC1; j++) {
+      const next = flow.querySelector<HTMLElement>(`.rf-chunk[data-chunk="${j}"]`)
+      if (next) {
+        ref = next
+        break
+      }
+    }
+    flow.insertBefore(section, ref)
+    existing.set(i, section)
   }
   c0 = newC0
   c1 = newC1
 }
 
-// windowAround 让窗口覆盖 centerChunk 附近（[center-2, center+4]，上限 MAX_WINDOW）。
-async function windowAround(centerChunk: number): Promise<void> {
+// desiredRangeFor 以当前阅读 chunk（cb）为中心计算窗口：
+// 身后保留 BEHIND_MARGIN 个 chunk、身前预取 AHEAD_MARGIN 个。
+function desiredRangeFor(cb: number): [number, number] {
   const m = manifest.value
-  if (!m || m.chunks.length === 0) return
+  if (!m) return [0, 0]
   const n = m.chunks.length
-  const clamped = clamp(centerChunk, 0, n - 1)
-  let targetC0 = clamp(clamped - 2, 0, n - 1)
-  let targetC1 = clamp(clamped + 4, targetC0, n - 1)
-  if (targetC1 - targetC0 + 1 > MAX_WINDOW) targetC0 = targetC1 - MAX_WINDOW + 1
-  if (targetC0 === c0 && targetC1 === c1 && c1 >= 0) return
-  await renderWindow(targetC0, targetC1)
+  const lo = clamp(cb - BEHIND_MARGIN, 0, Math.max(0, n - 1))
+  const hi = clamp(cb + AHEAD_MARGIN, lo, n - 1)
+  return [lo, hi]
 }
 
-// alignToAnchor 不带动画地回到 topAnchor 所在栏（内容/窗口变化后位置不丢）。
+// ensureWindowFor 让窗口覆盖 cb 附近（与当前窗口一致则不动）。
+async function ensureWindowFor(cb: number): Promise<boolean> {
+  const [lo, hi] = desiredRangeFor(cb)
+  if (c1 >= 0 && lo === c0 && hi === c1) return false
+  await ensureWindow(lo, hi)
+  return true
+}
+
+// alignToAnchor 不带动画地回到 topAnchor 所在栏（窗口滑动后位置不丢）。
 async function alignToAnchor(): Promise<void> {
   if (!manifest.value || stage.value !== 'reading') return
   const anchor = topAnchor ?? anchorAtTopOfCurrentCol()
   const col = anchor ? colForAnchor(anchor) : currentCol
   currentCol = clamp(col, 0, Math.max(0, cols - 1))
   setX(-currentCol * metrics.pitch)
-  if (anchor) {
-    topAnchor = anchor
-    captureTop()
-  } else {
-    captureTop()
-  }
+  captureTop()
 }
 
 // captureTop 记录当前页顶部 anchor 并刷新 UI。
@@ -423,26 +468,6 @@ function percentOfAnchor(anchor: ReadingAnchor): number {
   return (chars / m.total_chars) * 100
 }
 
-// extendForward 确保 c1+1 已入窗口（沿窗口向右扩，必要时丢弃身后 chunk）。
-async function extendForward(): Promise<boolean> {
-  const m = manifest.value
-  if (!m || c1 < 0 || c1 >= m.chunks.length - 1) return false
-  await windowAround(c1 + 1)
-  measureCols()
-  await alignToAnchor()
-  return true
-}
-
-// extendBackward 确保 c0-1 已入窗口（向左扩）。
-async function extendBackward(): Promise<boolean> {
-  const m = manifest.value
-  if (!m || c0 <= 0) return false
-  await windowAround(c0 - 1)
-  measureCols()
-  await alignToAnchor()
-  return true
-}
-
 // ---- 翻页 ----
 
 async function goToCol(col: number, animate: boolean): Promise<void> {
@@ -458,6 +483,16 @@ async function goToCol(col: number, animate: boolean): Promise<void> {
   scheduleWindowSync()
 }
 
+// rebaseForCenter 把窗口中心平移到 centerChunk（增量增删），测量后按顶部
+// anchor 对齐；返回是否真的发生了 DOM 变化。
+async function rebaseForCenter(centerChunk: number): Promise<boolean> {
+  const changed = await ensureWindowFor(centerChunk)
+  if (!changed) return false
+  measureCols()
+  await alignToAnchor()
+  return true
+}
+
 async function turn(dir: -1 | 1) {
   const m = manifest.value
   if (!m || stage.value !== 'reading') return
@@ -469,10 +504,13 @@ async function turn(dir: -1 | 1) {
   try {
     let target = currentCol + dir
     if (target < 0 || target >= cols) {
+      // 窗口物理边缘：把窗口向该方向平移（增量 append/remove）
       if (dir < 0) {
-        if (c0 <= 0 || !(await extendBackward())) return
+        if (c0 <= 0) return
+        await rebaseForCenter(Math.max(0, c0 - 1))
       } else {
-        if (c1 >= lastChunkIndex() || !(await extendForward())) return
+        if (c1 >= lastChunkIndex()) return
+        await rebaseForCenter(Math.min(m.chunks.length - 1, c1 + 1))
       }
       target = currentCol + dir
       if (target < 0 || target >= cols) return
@@ -496,7 +534,7 @@ function next() {
   void turn(1)
 }
 
-// seekToAnchor 跳到任意 anchor（跨 chunk：自动重建窗口）。
+// seekToAnchor 跳到任意 anchor（跨 chunk：自动平移窗口）。
 async function seekToAnchor(anchor: ReadingAnchor) {
   const m = manifest.value
   if (!m || stage.value !== 'reading') return
@@ -504,7 +542,7 @@ async function seekToAnchor(anchor: ReadingAnchor) {
   const block = clamp(anchor.block, 0, Math.max(0, total - 1))
   const fixed: ReadingAnchor = { spine: anchor.spine, block, path: anchor.path, offset: anchor.offset }
   const ci = chunkForBlock(m, block)
-  await windowAround(ci < 0 ? 0 : ci)
+  await ensureWindowFor(ci < 0 ? 0 : ci)
   measureCols()
   await goToCol(colForAnchor(fixed), false)
   queueProgressSave()
@@ -525,7 +563,7 @@ async function seekFraction(fraction: number) {
   if (!m || !m.total_chars || stage.value !== 'reading') return
   const target = Math.round(clamp(fraction, 0, 1) * m.total_chars)
   const { chunk, offset } = locateChar(m, target)
-  await windowAround(chunk)
+  await ensureWindowFor(chunk)
   measureCols()
   const el = chunkElement(chunk)
   let block = m.chunks[chunk]?.block_start ?? 0
@@ -568,12 +606,12 @@ async function windowSync() {
   if (closing || !m || stage.value !== 'reading' || c1 < 0) return
   const cb = topAnchor ? chunkForBlock(m, topAnchor.block) : -1
   if (cb < 0) return
-  if (cb >= c1 - 1 && c1 < m.chunks.length - 1) {
-    await extendForward()
-  }
-  // 后退到窗口最前时预取前一个 chunk（含重排对齐）
-  else if (cb <= c0 && c0 > 0 && currentCol <= 1) {
-    await extendBackward()
+  // 以当前阅读 chunk 为中心保持前后余量：只 append 新 chunk / remove 最旧
+  // chunk，不做整窗口清空重建；无变化则完全不动（热路径零开销）。
+  const changed = await ensureWindowFor(cb)
+  if (changed) {
+    measureCols()
+    await alignToAnchor()
   }
 }
 
@@ -729,7 +767,7 @@ async function open() {
     }
     const ci = chunkForBlock(flow, anchor.block)
     loadingText.value = '正在排版…'
-    await renderWindow(Math.max(0, ci - 1), Math.min(flow.chunks.length - 1, ci + 4))
+    await ensureWindowFor(ci < 0 ? 0 : ci)
     if (myGen !== gen) return
     measureCols()
     stage.value = 'reading'
@@ -805,7 +843,11 @@ function bindSwipe(el: HTMLElement | null) {
       if (!tracking) return
       if (event.touches.length !== 1) {
         tracking = false
-        if (dragging) setX(-currentCol * metrics.pitch)
+        if (dragging) {
+          dragging = false
+          setX(-currentCol * metrics.pitch)
+          setPromote(false)
+        }
         return
       }
       const dx = event.touches[0].clientX - startX
@@ -817,6 +859,7 @@ function bindSwipe(el: HTMLElement | null) {
           return
         }
         dragging = true
+        setPromote(true) // 跟手拖动期间临时提升合成层
         suppressZoneClickUntil = Date.now() + 600
       }
       const atEdge = (currentCol === 0 && dx > 0) || (currentCol >= cols - 1 && dx < 0)
@@ -836,7 +879,8 @@ function bindSwipe(el: HTMLElement | null) {
         if (Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.5) return
         suppressZoneClickUntil = Date.now() + 500
       }
-      release(dx)
+      dragging = false
+      release(dx) // 松手后由 goToCol(animate) 收尾：动画结束即释放 will-change
     },
     { passive: true },
   )
@@ -845,7 +889,11 @@ function bindSwipe(el: HTMLElement | null) {
     () => {
       if (!tracking) return
       tracking = false
-      if (dragging) setX(-currentCol * metrics.pitch)
+      if (dragging) {
+        dragging = false
+        setX(-currentCol * metrics.pitch)
+        setPromote(false)
+      }
     },
     { passive: true },
   )

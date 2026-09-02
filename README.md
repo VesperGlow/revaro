@@ -253,9 +253,10 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 
 - **服务端解析与连续 reading flow**：EPUB 解包、OPF/spine、目录（EPUB3 nav + NCX 回退）、封面抽取全部在 Go 服务端完成；正文按白名单重建 HTML（脚本、事件处理器、`javascript:` 等危险内容按构造不会出现），图片在服务端读出**固有尺寸并写入 width/height**（分页不跳版），内嵌图片改写为带内容版本参数的 `/api/files/{id}/book/assets/{n}?v=…` 分发（不可变，可长期缓存）。解析对解压总量设硬上限（256 MiB），恶意的高压缩比 EPUB（zip bomb）会被拒绝而不是耗尽内存。TXT 自动识别 UTF-8/GBK 编码，并按“第…章”式标题生成目录。整本书再被拼成一条**连续、标准化、可缓存的 reading flow**，按自然 DOM 边界切成适量 chunk 存对象存储（`flows/` 前缀，随内容哈希与版本固定）；chunk 不是页面，不与任何视口/字号绑定。
 - **解析缓存**：解析结果按稳定的 object key/ETag 缓存，最近 3 本 keep-alive；文件内容更新会换 key，不会复用陈旧解析。flow 产物同样以内容为键（`FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY` 控制回收），重开书不重新生成。
-- **客户端原生分页**：**无 Chromium、无服务端排版**。客户端只把当前位置附近的少量 chunk 装进一个连续多栏 DOM（图片与文字处于同一排版上下文，跨 spine 内容无缝接排），由浏览器原生 CSS columns 完成最终分页；翻页只做合成层 transform（热路径零网络、零重排）。桌面点击左右热区、键盘方向键/PageUp/PageDown/空格翻页，移动端左右滑动跟手翻页（快速轻扫或拖过 1/4 屏判定）；前后方向按滑动窗口预取，窗口有界、DOM 不膨胀。
+- **客户端原生分页（移动端友好）**：**无 Chromium、无服务端排版**。客户端只把当前位置附近的少量 chunk 装进一个连续多栏 DOM（图片与文字处于同一排版上下文，跨 spine 内容无缝接排），由浏览器原生 CSS columns 完成最终分页；翻页只做合成层 transform（热路径零网络、零重排）。窗口滑动是**增量 DOM 更新**（只 append 新 chunk、remove 最旧 chunk，保留 chunk 原样不动），窗口常驻约 6 个 chunk、PageCache 较大；`will-change: transform` 只在拖动/翻页动画期间开启并在结束后释放，避免大图旁文字在 Android Chrome 被常驻合成而发糊。桌面点击左右热区、键盘方向键/PageUp/PageDown/空格翻页，移动端左右滑动跟手翻页（快速轻扫或拖过 1/4 屏判定）。
 - **进度与即时重排**：阅读进度 = readingAnchor（连续 flow 上的块 + 块内文本位置，不依赖页码），防抖保存并随页面关闭/失焦落盘；改字号/行距/旋转/横竖屏只在客户端重新分页，服务端零参与、不重新生成内容；明暗主题只换 CSS 变量，永不重排。
 - 上限：EPUB 128 MiB、TXT 16 MiB；更大的文件请下载后离线阅读。
+- **镜像体积**：发布镜像不安装 Debian 完整 ffmpeg。构建阶段用 multi-stage 自编译**精简 FFmpeg 5.1**（libav* .59，与 Rust 数据平面 soname/ABI 一致；仅 x264/x265 两个外部编码器、静态内链，其余组件全部走 FFmpeg 内建实现），运行层只带 `ffmpeg`/`ffprobe` 与少量 `.so`。Rust 数据平面在构建与测试时直接链接这套精简 libav，镜像因此不再携带 Mesa/libLLVM/libmfx/flite/codec2 等无关依赖树（数百 MB）。
 
 ## 文档编辑器点击 `.md`、`.markdown`、`.txt`、`.yaml`、`.yml`、`.json`、`.toml`、`.ini`、`.conf`、`.log` 或 `.csv` 文件即可打开编辑器；当前目录也可以直接新建文档。Markdown 支持编辑、分栏和安全过滤后的预览，`Ctrl/⌘ + S` 可保存。
 

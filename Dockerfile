@@ -19,11 +19,64 @@ COPY . .
 COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/revaro ./cmd/server
 
+# ---- 精简 FFmpeg 5.1（libav* .59，与 bookworm 数据平面 soname/ABI 一致）----
+# Revaro 只在本进程内用 libav（ffmpeg-next）做 probe/thumbnail/fmp4/HLS/音频
+# 合并，并用 ffmpeg CLI 做 MKV 外挂字幕 remux。外部库只保留 x264（H.264 编码）
+# 与 x265（HEVC 测试片源），两者静态内链；其余全部用 FFmpeg 内建 codec/format/
+# filter/protocol。因此运行层不再安装 Debian 完整 ffmpeg 及其依赖树
+# （Mesa/libLLVM/libmfx/flite/codec2/libx265… 数百 MB），只带这些 .so 与两个
+# 命令行工具。
+FROM debian:bookworm-slim AS ffmpeg
+ARG FFMPEG_VERSION=5.1.10
+ARG FFMPEG_SHA256=392306d6fc45dab0e9e0ea55381e071842e83a2fb31d320aeda40477a7766293
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential curl ca-certificates xz-utils nasm cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL -o ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz \
+    && echo "${FFMPEG_SHA256}  ffmpeg.tar.xz" | sha256sum -c - \
+    && curl -fsSL -o x264.tar.gz https://code.videolan.org/videolan/x264/-/archive/master/x264-master.tar.gz \
+    && curl -fsSL -o x265.tar.gz https://github.com/videolan/x265/archive/refs/heads/master.tar.gz \
+    && mkdir -p x264 x265 ffmpeg \
+    && tar -xf x264.tar.gz -C x264 --strip-components=1 \
+    && tar -xf x265.tar.gz -C x265 --strip-components=1 \
+    && tar -xf ffmpeg.tar.xz -C ffmpeg --strip-components=1
+# x264（静态，PIC：供链接进 libavcodec.so）
+WORKDIR /src/x264
+RUN ./configure --prefix=/opt/revaro/x264 --disable-cli --enable-static --enable-pic --disable-opencl \
+    && make -j"$(nproc)" && make install
+# x265（静态，8bit）
+WORKDIR /src/x265/source
+RUN cmake -S . -B build \
+      -DCMAKE_INSTALL_PREFIX=/opt/revaro/x265 -DCMAKE_BUILD_TYPE=Release \
+      -DENABLE_SHARED=OFF -DENABLE_CLI=OFF \
+    && cmake --build build -j"$(nproc)" && cmake --install build
+# FFmpeg：共享库 + ffmpeg/ffprobe；其余组件全走内建实现
+WORKDIR /src/ffmpeg
+ENV PKG_CONFIG_PATH=/opt/revaro/x264/lib/pkgconfig:/opt/revaro/x265/lib/pkgconfig
+RUN ./configure \
+      --prefix=/opt/revaro/ffmpeg \
+      --disable-autodetect \
+      --disable-doc --disable-debug --disable-ffplay --disable-network --disable-postproc \
+      --enable-gpl --enable-libx264 --enable-libx265 \
+      --enable-avdevice --enable-shared --enable-pthreads \
+      --extra-cflags="-I/opt/revaro/x264/include -I/opt/revaro/x265/include" \
+      --extra-ldflags="-L/opt/revaro/x264/lib -L/opt/revaro/x265/lib" \
+      --extra-libs="-lstdc++ -lm -lpthread -ldl" \
+    && make -j"$(nproc)" && make install \
+    && rm -rf /src
+
+# ---- Rust 数据平面（编译与测试都针对上面的精简 libav，与运行层一致）----
 FROM rust:1.98-bookworm AS dataplane-base
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    clang cmake pkg-config ffmpeg zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
-    libssl-dev libxml2-dev libacl1-dev libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswresample-dev libswscale-dev \
+    clang cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
+    libssl-dev libxml2-dev libacl1-dev \
     && rm -rf /var/lib/apt/lists/*
+# 用 /opt 的 ffmpeg 前缀替换 Debian 完整 libav*-dev / ffmpeg 包
+COPY --from=ffmpeg /opt/revaro/ffmpeg /opt/revaro/ffmpeg
+ENV PATH=/opt/revaro/ffmpeg/bin:$PATH \
+    PKG_CONFIG_PATH=/opt/revaro/ffmpeg/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/revaro/ffmpeg/lib
 WORKDIR /src/data-plane
 COPY data-plane/Cargo.toml data-plane/Cargo.lock ./
 COPY data-plane/src ./src
@@ -32,16 +85,22 @@ FROM dataplane-base AS dataplane
 RUN cargo build --locked --release && cp target/release/revaro-data-plane /out-revaro-data-plane
 
 FROM debian:bookworm-slim
-# 阅读器无服务端渲染引擎：EPUB/TXT 解析、清洗、reading flow 生成全在
-# 进程内完成，分页在浏览器端 CSS columns 进行，镜像无需 Chromium/字体包。
+# 运行依赖最小化：TLS 证书 / 时区 + libstdc++/libgcc（静态内链 x265 需要）
+# + 精简 FFmpeg；不安装 Debian 完整 ffmpeg 及其依赖树。
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates tzdata ffmpeg libavcodec59 libavformat59 libavutil57 libavfilter8 libswresample4 libswscale6 \
+    ca-certificates tzdata libstdc++6 libgcc-s1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \
     && mkdir -p /data/.cache /data/work && chown -R revaro:revaro /data
 COPY --from=backend /out/revaro /usr/local/bin/revaro
 COPY --from=dataplane /out-revaro-data-plane /usr/local/bin/revaro-data-plane
+# 精简 FFmpeg：ffmpeg/ffprobe + 共享库（ldconfig 让 revaro-data-plane 找到 .so）
+COPY --from=ffmpeg /opt/revaro/ffmpeg/bin/ffmpeg /opt/revaro/ffmpeg/bin/ffprobe /usr/local/bin/
+COPY --from=ffmpeg /opt/revaro/ffmpeg/lib/libav*.so* /usr/local/lib/
+COPY --from=ffmpeg /opt/revaro/ffmpeg/lib/libsw*.so* /usr/local/lib/
+RUN strip --strip-unneeded /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/lib/libav*.so* /usr/local/lib/libsw*.so* 2>/dev/null || true \
+    && ldconfig
 ENV HOME=/data \
     XDG_CACHE_HOME=/data/.cache \
     APP_WORK_DIR=/data/work

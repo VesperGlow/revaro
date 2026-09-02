@@ -104,3 +104,20 @@ HTTP 面：
   一到几行的精度）；
 - 旧格式进度只对 spine 0 精确迁移（spine > 0 时块号换算会偏到全书起点附近），
   由于旧格式仅存在于开发期，未做进一步兼容。
+
+## 6. 移动端性能与镜像体积优化（随架构保留）
+
+- **will-change 生命周期**：`.rf-flow` 不常驻 `will-change: transform`，只在
+  跟手拖动/翻页 WAAPI 动画期间由 JS 临时开启、动画结束即释放——避免 Android
+  Chrome 在大图旁把整层文字常驻合成导致轻微发糊与掉帧。
+- **增量窗口**：阅读窗口滑动不再清空重建最多 8 个 chunk，改为增量 DOM 更新：
+  只 append 新 chunk、remove 已出窗口的最旧 chunk，保留 chunk 的子树不动
+  （避免大规模 CSS columns reflow）。窗口常驻约 6 个 chunk
+  （身后 2 + 前方 3），PageCache 容量 24 保持不变——翻页热路径仍零网络。
+- **精简镜像**：发布镜像不再安装 Debian 完整 ffmpeg（其依赖树含 Mesa/libLLVM/
+  libmfx/flite/codec2 等数百 MB）。Dockerfile 新增 multi-stage `ffmpeg`：自编译
+  FFmpeg 5.1.10（libavcodec.so.59 等，与 Rust 数据平面的 soname/ABI 一致），
+  唯一外部编码器 x264/x265 静态内链，其余 codec/format/filter/protocol 全用
+  FFmpeg 内建实现；运行层只 COPY `ffmpeg`/`ffprobe` 与少量 `.so`。
+  Rust 数据平面（`dataplane-base` 阶段）直接对这套前缀 libav 编译与跑媒体测试，
+  保证“测试即运行层”。
