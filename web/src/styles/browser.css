@@ -1150,7 +1150,7 @@ body.reader-open {
   inset: 0;
   z-index: 30;
   overflow: hidden;
-  background: #f7f3eb;
+  background: var(--paper);
 }
 #reader-view.dark {
   --bg: #191b1b;
@@ -1158,7 +1158,7 @@ body.reader-open {
   --ink: #dedbd3;
   --muted: #92958f;
   --line: #343838;
-  background: #191b1b;
+  background: var(--paper);
   color: #dedbd3;
 }
 #reader-view .hidden {
@@ -1222,7 +1222,7 @@ body.reader-open {
   height: 100dvh;
   position: relative;
   overflow: hidden;
-  background: #f7f3eb;
+  background: var(--paper);
 }
 .reader-loading {
   position: absolute;
@@ -1231,5 +1231,5 @@ body.reader-open {
   place-items: center;
   color: var(--muted);
   z-index: 7;
-  background: #f7f3eb;
+  background: var(--paper);
 }

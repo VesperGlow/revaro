@@ -349,7 +349,7 @@ export const ReaderApp = (function () {
     if (width - 2 * sidePad > MAX_COLUMN) sidePad = Math.round((width - MAX_COLUMN) / 2);
     state.pageWidth = width;
     state.pageHeight = height;
-    state.pageStep = width;
+    state.pageStep = Math.round(width);
     state.pages = [];
     for (const node of state.segments.children) {
       // 关键：把容器宽度钉成整数、box-sizing 内联强制，保证栏距严格 = 整数屏宽，
@@ -396,7 +396,7 @@ export const ReaderApp = (function () {
     const previousPage = state.currentPage;
     state.currentPage = page;
     const slot = state.pages[page];
-    const x = -slot.col * state.pageStep;
+    const x = Math.round(-slot.col * state.pageStep);
     if (slot.node !== state.currentSeg) {
       // 跨 spine section 也保留翻页动效。图片页经常独占一个 section，
       // 旧的瞬时切换分支正是它看起来突然跳页的原因。
@@ -413,14 +413,12 @@ export const ReaderApp = (function () {
       lastX = x;
       if (animate && page !== previousPage && outgoingNode) animateSectionTurn(state, outgoingNode, outgoingX, page > previousPage ? 1 : -1);
       else {
-        if (outgoingNode) outgoingNode.style.visibility = 'hidden';
-        prepareAdjacentSections(state);
+        releaseInactiveSections(state, outgoingNode);
       }
     } else {
       state.currentCol = slot.col;
       state.currentX = x;
       setTransform(state, x, animate);
-      prepareAdjacentSections(state);
     }
     updateTocActive();
   }
@@ -428,50 +426,44 @@ export const ReaderApp = (function () {
   function animateSectionTurn(state, outgoingNode, outgoingX, direction) {
     cancelCurrentAnimation();
     const incomingNode = state.currentSeg;
+    const outgoingEnd = Math.round(outgoingX - direction * state.pageStep);
+    const incomingStart = Math.round(state.currentX + direction * state.pageStep);
     outgoingNode.style.visibility = 'visible';
     outgoingNode.style.zIndex = '2';
+    outgoingNode.style.willChange = 'transform';
+    incomingNode.style.willChange = 'transform';
     const outgoingAnim = outgoingNode.animate(
-      [{ transform: `translateX(${outgoingX}px)` }, { transform: `translateX(${outgoingX - direction * state.pageStep}px)` }],
+      [{ transform: `translate3d(${Math.round(outgoingX)}px,0,0)` }, { transform: `translate3d(${outgoingEnd}px,0,0)` }],
       { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' }
     );
     currentAnim = incomingNode.animate(
-      [{ transform: `translateX(${state.currentX + direction * state.pageStep}px)` }, { transform: `translateX(${state.currentX}px)` }],
+      [{ transform: `translate3d(${incomingStart}px,0,0)` }, { transform: `translate3d(${Math.round(state.currentX)}px,0,0)` }],
       { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' }
     );
     currentAnimCleanup = () => {
       outgoingAnim.cancel();
       outgoingNode.style.visibility = 'hidden';
       outgoingNode.style.zIndex = '';
+      outgoingNode.style.transform = 'none';
+      outgoingNode.style.willChange = 'auto';
       incomingNode.style.zIndex = '1';
+      incomingNode.style.willChange = 'auto';
     };
     currentAnim.onfinish = () => {
       currentAnim = null;
       currentAnimCleanup?.();
       currentAnimCleanup = null;
-      prepareAdjacentSections(state);
+      releaseInactiveSections(state);
     };
   }
 
-  // 当前页稳定后，把相邻 spine 的目标列放到屏外并保持可见，浏览器可提前
-  // 完成栅格化；下一次点击的热路径只需启动两个 compositor 动画。
-  function prepareAdjacentSections(state) {
-    const adjacent = new Set();
-    for (const direction of [-1, 1]) {
-      const slot = state.pages[state.currentPage + direction];
-      if (!slot || slot.node === state.currentSeg) continue;
-      adjacent.add(slot.node);
-      const x = -slot.col * state.pageStep + direction * state.pageStep;
-      slot.node.style.transition = 'none';
-      slot.node.style.transform = `translateX(${x}px)`;
-      slot.node.style.visibility = 'visible';
-      slot.node.style.zIndex = '0';
-      slot.node.style.willChange = 'transform';
-    }
+  function releaseInactiveSections(state, outgoingNode = null) {
     for (const node of state.segments.children) {
-      if (node === state.currentSeg || adjacent.has(node)) continue;
+      if (node === state.currentSeg) continue;
       node.style.visibility = 'hidden';
       node.style.zIndex = '';
       node.style.willChange = 'auto';
+      if (node === outgoingNode || node.style.transform !== 'none') node.style.transform = 'none';
     }
   }
 

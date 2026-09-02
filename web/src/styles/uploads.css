@@ -2,7 +2,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: #f7f3eb;
+  background: var(--paper, #fffdf8);
 }
 .page-zone {
   position: absolute;
@@ -346,7 +346,7 @@
 #reader-view.dark .reader-viewport,
 #reader-view.dark .reader-page,
 #reader-view.dark .reader-loading {
-  background: #191b1b;
+  background: var(--paper);
 }
 #reader-view.dark .toc-drawer {
   background: #232626;
@@ -373,6 +373,8 @@ body.reader-open .storage-bar i {
   left: 0;
   top: 0;
   width: 100%;
+  height: 100%;
+  background: var(--paper, #fffdf8);
 }
 
 /* 视频/电子书缩略图 */
