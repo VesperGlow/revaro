@@ -159,27 +159,39 @@ func (m *mockStorage) PresignUploadPart(_ context.Context, key, uploadID string,
 	return "https://s3.example/multipart/" + uploadID + "/" + fmt.Sprint(partNumber), nil
 }
 func (m *mockStorage) CompleteMultipart(_ context.Context, key, uploadID string, _ []storage.CompletedPart) (storage.ObjectInfo, error) {
-	if m.multipart[uploadID] != key {
+m.mu.Lock()
+	defer m.mu.Unlock()
+		if m.multipart[uploadID] != key {
 		return storage.ObjectInfo{}, notFoundError()
 	}
 	delete(m.multipart, uploadID)
-	return m.HeadObject(context.Background(), key)
-}
-func (m *mockStorage) AbortMultipart(_ context.Context, key, uploadID string) error {
-	if m.multipart[uploadID] == key {
-		delete(m.multipart, uploadID)
-	}
-	return nil
-}
-func (m *mockStorage) HeadObject(_ context.Context, key string) (storage.ObjectInfo, error) {
 	data, ok := m.raw[key]
 	if !ok {
 		return storage.ObjectInfo{}, notFoundError()
 	}
 	return storage.ObjectInfo{Size: int64(len(data)), ETag: "etag"}, nil
 }
+func (m *mockStorage) AbortMultipart(_ context.Context, key, uploadID string) error {
+m.mu.Lock()
+	defer m.mu.Unlock()
+		if m.multipart[uploadID] == key {
+		delete(m.multipart, uploadID)
+	}
+	return nil
+}
+func (m *mockStorage) HeadObject(_ context.Context, key string) (storage.ObjectInfo, error) {
+m.mu.RLock()
+	defer m.mu.RUnlock()
+		data, ok := m.raw[key]
+	if !ok {
+		return storage.ObjectInfo{}, notFoundError()
+	}
+	return storage.ObjectInfo{Size: int64(len(data)), ETag: "etag"}, nil
+}
 func (m *mockStorage) StoreBlob(_ context.Context, key, mimeType string, r io.Reader, size int64) (storage.ObjectInfo, error) {
-	data, err := io.ReadAll(r)
+m.mu.Lock()
+	defer m.mu.Unlock()
+		data, err := io.ReadAll(r)
 	if err != nil {
 		return storage.ObjectInfo{}, err
 	}
@@ -198,7 +210,9 @@ func (m *mockStorage) PresignBlockPut(_ context.Context, id string, _ time.Durat
 	return "https://s3.example/put/" + id, nil
 }
 func (m *mockStorage) PutBlock(_ context.Context, id string, data []byte) error {
-	if sha256hex(data) != id {
+m.mu.Lock()
+	defer m.mu.Unlock()
+		if sha256hex(data) != id {
 		return errors.New("block hash mismatch")
 	}
 	if _, ok := m.blocks[id]; !ok {
@@ -221,7 +235,9 @@ func (m *mockStorage) GetBlock(_ context.Context, id string) ([]byte, error) {
 	return append([]byte(nil), data...), nil
 }
 func (m *mockStorage) ListBlocks(context.Context) ([]storage.ObjectRef, error) {
-	var out []storage.ObjectRef
+m.mu.RLock()
+	defer m.mu.RUnlock()
+		var out []storage.ObjectRef
 	for id, data := range m.blocks {
 		key := "blocks/" + id
 		out = append(out, storage.ObjectRef{Key: key, Size: int64(len(data)), LastModified: m.modified[key]})
@@ -229,7 +245,9 @@ func (m *mockStorage) ListBlocks(context.Context) ([]storage.ObjectRef, error) {
 	return out, nil
 }
 func (m *mockStorage) PutManifest(_ context.Context, mm testManifest) (string, error) {
-	if m.putManifestErr != nil {
+m.mu.Lock()
+	defer m.mu.Unlock()
+		if m.putManifestErr != nil {
 		return "", m.putManifestErr
 	}
 	key := mm.Key()
@@ -237,7 +255,9 @@ func (m *mockStorage) PutManifest(_ context.Context, mm testManifest) (string, e
 	return key, nil
 }
 func (m *mockStorage) GetManifest(_ context.Context, key string) (testManifest, error) {
-	if m.getManifestErr != nil {
+m.mu.RLock()
+	defer m.mu.RUnlock()
+		if m.getManifestErr != nil {
 		return testManifest{}, m.getManifestErr
 	}
 	mm, ok := m.manifests[key]
@@ -247,7 +267,9 @@ func (m *mockStorage) GetManifest(_ context.Context, key string) (testManifest, 
 	return mm, nil
 }
 func (m *mockStorage) ListManifests(context.Context) ([]storage.ObjectRef, error) {
-	if m.omitManifestList {
+m.mu.RLock()
+	defer m.mu.RUnlock()
+		if m.omitManifestList {
 		return []storage.ObjectRef{}, nil
 	}
 	var out []storage.ObjectRef
@@ -257,7 +279,9 @@ func (m *mockStorage) ListManifests(context.Context) ([]storage.ObjectRef, error
 	return out, nil
 }
 func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, testManifest, error) {
-	data, err := io.ReadAll(r)
+m.mu.Lock()
+	defer m.mu.Unlock()
+		data, err := io.ReadAll(r)
 	if err != nil {
 		return "", testManifest{}, err
 	}
@@ -274,11 +298,14 @@ func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, testManifes
 		mm.Blocks = append(mm.Blocks, testBlock{ID: id, Size: int64(len(chunk))})
 		mm.Size += int64(len(chunk))
 	}
-	key, err := m.PutManifest(context.Background(), mm)
-	return key, mm, err
+	key := mm.Key()
+	m.manifests[key] = mm
+	return key, mm, nil
 }
 func (m *mockStorage) Open(_ context.Context, key string) (storage.ReadSeekCloserAt, error) {
-	mm, ok := m.manifests[key]
+m.mu.RLock()
+	defer m.mu.RUnlock()
+		mm, ok := m.manifests[key]
 	if !ok {
 		if data, rawOK := m.raw[key]; rawOK {
 			return nopReadSeekCloser{Reader: bytes.NewReader(data)}, nil
@@ -317,7 +344,9 @@ func (m *mockStorage) ReadFile(ctx context.Context, key string, limit int64) ([]
 	return data, nil
 }
 func (m *mockStorage) PutObject(_ context.Context, key, mimeType string, data []byte) (storage.ObjectInfo, error) {
-	m.raw[key] = append([]byte(nil), data...)
+m.mu.Lock()
+	defer m.mu.Unlock()
+		m.raw[key] = append([]byte(nil), data...)
 	m.rawMime[key] = mimeType
 	return storage.ObjectInfo{Size: int64(len(data)), ETag: `"etag"`}, nil
 }
@@ -332,7 +361,9 @@ func (m *mockStorage) PutImmutable(_ context.Context, key, mimeType string, data
 	return nil
 }
 func (m *mockStorage) OpenRaw(_ context.Context, key string) (io.ReadCloser, error) {
-	data, ok := m.raw[key]
+m.mu.RLock()
+	defer m.mu.RUnlock()
+		data, ok := m.raw[key]
 	if !ok {
 		return nil, notFoundError()
 	}
@@ -354,7 +385,9 @@ func (m *mockStorage) GetObject(ctx context.Context, key string, limit int64) ([
 	return data, nil
 }
 func (m *mockStorage) DeleteObject(_ context.Context, key string) error {
-	delete(m.raw, key)
+m.mu.Lock()
+	defer m.mu.Unlock()
+		delete(m.raw, key)
 	delete(m.rawMime, key)
 	delete(m.manifests, key)
 	delete(m.modified, key)
@@ -371,7 +404,9 @@ func (m *mockStorage) PresignGetObject(_ context.Context, key, _, _ string, _ bo
 	return "https://s3.example/get", nil
 }
 func (m *mockStorage) ListPrefix(_ context.Context, prefix string) ([]storage.ObjectRef, error) {
-	var out []storage.ObjectRef
+m.mu.RLock()
+	defer m.mu.RUnlock()
+		var out []storage.ObjectRef
 	for key, data := range m.raw {
 		if strings.HasPrefix(key, prefix) {
 			out = append(out, storage.ObjectRef{Key: key, Size: int64(len(data)), LastModified: m.modified[key]})
