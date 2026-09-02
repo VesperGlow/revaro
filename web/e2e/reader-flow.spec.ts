@@ -256,6 +256,25 @@ const FRAG_TOC = [
 
 const FAR_TOC = [{ label: '远目标', depth: 0, spine: 0, block: 8 * BLOCKS_PER_CHUNK + 3, fragment: '远目标' }]
 
+// sectionChunkHTML 模仿真实 EPUB 章节：h1 章首（父级目录目标，无 fragment）
+// + h4#sigil + 段落。h1 强制从新栏开始并保留 margin-top —— 栏顶采样点落在
+// margin 死区（无任何可命中 data-block 元素），captureTop 在该栏返回 null，
+// 用于确定性复现「父级目录跳转后回弹」。
+function sectionChunkHTML(chunk: number): string {
+  const parts: string[] = []
+  for (let b = 0; b < BLOCKS_PER_CHUNK; b++) {
+    const block = chunk * BLOCKS_PER_CHUNK + b
+    if (b === 0) {
+      parts.push(`<h1 data-block="${block}" style="break-before: column">文档${chunk} 边际海岸的度假之夜之类的很长很长的章节标题文字</h1>`)
+    } else if (b === 1) {
+      parts.push(`<h4 data-block="${block}" id="sigil_toc_id_${chunk}">${chunk}</h4>`)
+    } else {
+      parts.push(`<p data-block="${block}">c${chunk}b${b} 这是第 ${block} 段正文，用于填充阅读流并驱动客户端分页，句子足够长以便换行排版。</p>`)
+    }
+  }
+  return parts.join('\n')
+}
+
 // currentColumn 读取当前翻到的 CSS column 序号（transform / 栏距）。
 async function currentColumn(page: Page): Promise<number> {
   return page.evaluate(() => {
@@ -323,6 +342,65 @@ test('目录 fragment 精确跳转：同块两个目录项落到不同栏，编�
 
   expect(colMissing).toBe(colNoFrag)
   expect(colNoFrag).toBe(colA)
+})
+
+// expectBlockVisible 断言指定 data-block 的起始 rect 落在当前可见栏内。
+async function expectBlockVisible(page: Page, block: number) {
+  const box = await page.locator('#viewport').boundingBox()
+  if (!box) throw new Error('viewport 不可见')
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ block, minX, maxX }) => {
+            const el = document.querySelector(`[data-block="${block}"]`)
+            if (!el) return false
+            const rect = el.getClientRects()[0]
+            return !!rect && rect.left >= minX && rect.left < maxX
+          },
+          { block, minX: box.x, maxX: box.x + box.width },
+        ),
+      { timeout: 8000 },
+    )
+    .toBe(true)
+}
+
+test('父级目录（无 fragment）跳转不回弹：延迟 windowSync 后仍停留在目标章节', async ({ page }) => {
+  // 每个 chunk 一节，模仿真实 EPUB：h1 章首（父级目录目标，无 fragment）+
+  // h4#sigil + 段落。h1 强制从新栏开始并保留 margin-top —— 栏顶采样点落在
+  // margin 死区，captureTop 的屏幕读取在该栏返回 null（回弹的确定性条件：
+  // topAnchor 保留跳转前旧值 → windowSync 按旧值重建窗口并拉回旧页）。
+  const parentToc = Array.from({ length: CHUNK_COUNT }, (_, k) => ({
+    label: `文档${k}`,
+    depth: 0,
+    spine: 0,
+    block: k * BLOCKS_PER_CHUNK,
+  }))
+  await openReader(page, { toc: parentToc, chunkHTML: sectionChunkHTML })
+  const target = 6 * BLOCKS_PER_CHUNK // 文档6：chunk 6 章首；跳转前窗口为 [0..3]
+
+  await page.locator('#toc-button').click()
+  await page.locator('.toc-item', { hasText: '文档6' }).click()
+
+  // 跳转落地：目标章节起点进入当前栏
+  await expectBlockVisible(page, target)
+  // 延迟 windowSync（goToCol 调度的 200ms 防抖）+ 进度保存之后，
+  // 位置必须保持在目标章节，不得恢复到跳转前的位置。
+  await page.waitForTimeout(1500)
+  await expectBlockVisible(page, target)
+  const chunks = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('#flow .rf-chunk')).map(c => Number((c as HTMLElement).dataset.chunk)),
+  )
+  expect(chunks).toContain(6)
+  expect(chunks).not.toContain(0)
+
+  // 进度锚点提交在目标章节（导航目标兜底生效），而不是回写跳转前位置
+  await expect
+    .poll(() => (page as Page & { __savedProgress?: { anchor?: { block?: number } } }).__savedProgress ?? null, { timeout: 8000 })
+    .toBeTruthy()
+  const savedBlock = (page as Page & { __savedProgress: { anchor: { block?: number } } }).__savedProgress.anchor?.block ?? -1
+  expect(savedBlock).toBeGreaterThanOrEqual(6 * BLOCKS_PER_CHUNK)
+  expect(savedBlock).toBeLessThan(7 * BLOCKS_PER_CHUNK)
 })
 
 test('目录 fragment 在未加载 chunk：先加载目标 chunk 再精确定位', async ({ page }) => {

@@ -52,6 +52,7 @@ const chunkHTML = new PageCache(24)
 const chunkFlight = new InFlight()
 let turnBusy = false
 let pendingTurns = 0
+let navDepth = 0 // 程序化 TOC 导航在途计数：windowSync 期间不得按旧 topAnchor 抢先重排
 let currentAnim: Animation | null = null
 let suppressZoneClickUntil = 0
 let gen = 0 // 打开代数：卸载后旧异步任务自动失效
@@ -477,16 +478,32 @@ async function alignToAnchor(): Promise<void> {
   captureTop()
 }
 
-// captureTop 记录当前页顶部 anchor 并刷新 UI。
-function captureTop() {
-  const captured = captureTopAnchor() ?? anchorAtTopOfCurrentCol()
-  if (captured) topAnchor = captured
+// refreshTocUi 按当前 topAnchor 刷新目录高亮与进度显示。
+function refreshTocUi() {
   const m = manifest.value
   if (!m) return
   const block = topAnchor ? topAnchor.block : -1
   tocActive.value = tocActiveIndex(m, block)
   percentNow.value = topAnchor ? percentOfAnchor(topAnchor) : 0
   pageLabel.value = pageLabelText()
+}
+
+// captureTop 记录当前页顶部 anchor 并刷新 UI。
+function captureTop() {
+  const captured = captureTopAnchor() ?? anchorAtTopOfCurrentCol()
+  if (captured) topAnchor = captured
+  refreshTocUi()
+}
+
+// commitNavAnchor 程序化导航落地后提交导航目标为兜底锚点。goToCol 里的
+// captureTop 从屏幕重读位置；失败（栏顶 margin 死区、遮挡等）时 topAnchor
+// 仍是跳转前的旧值——不提交目标的话，后续 windowSync 会按旧 anchor 重建
+// 窗口并把页面拉回跳转前位置。captureTop 成功时 topAnchor 已是新对象。
+function commitNavAnchor(target: ReadingAnchor, prev: ReadingAnchor | null) {
+  if (topAnchor === prev) {
+    topAnchor = target
+    refreshTocUi()
+  }
 }
 
 // percentOfAnchor 计算 anchor 前的文本占全书比例（块级精度）。
@@ -582,9 +599,11 @@ async function seekToAnchor(anchor: ReadingAnchor) {
   const block = clamp(anchor.block, 0, Math.max(0, total - 1))
   const fixed: ReadingAnchor = { spine: anchor.spine, block, path: anchor.path, offset: anchor.offset }
   const ci = chunkForBlock(m, block)
+  const prev = topAnchor
   await ensureWindowFor(ci < 0 ? 0 : ci)
   measureCols()
   await goToCol(colForAnchor(fixed), false)
+  commitNavAnchor(fixed, prev)
   queueProgressSave()
 }
 
@@ -602,28 +621,43 @@ async function jumpToBlock(block: number) {
 // 块内按 fragment 找到真实目标元素，用其起始 rect（getClientRects()[0]，
 // 跨多栏元素的联合范围会指向末栏）算出所在栏并跳过去；fragment 缺失、
 // 被 EPUB 清洗丢弃或块内未命中时回退块起点（jumpToBlock 旧行为）。
+// 导航正确性不依赖目录抽屉关闭动画：开始时先失效遗留的 pending
+// windowSync，并以 navDepth 屏蔽在途 windowSync 抢先按旧 topAnchor
+// 重排窗口（否则跳转会先成功、随后被拉回跳转前位置）；落地后由
+// goToCol 重新调度 sync。
 async function jumpToTocEntry(entry: FlowTocEntry) {
   const m = manifest.value
   if (!m || stage.value !== 'reading') return
-  if (!entry.fragment) {
-    await jumpToBlock(entry.block)
-    return
+  if (syncTimer) {
+    clearTimeout(syncTimer)
+    syncTimer = null
   }
-  const total = totalBlockCount()
-  const b = clamp(entry.block, 0, Math.max(0, total - 1))
-  const ci = chunkForBlock(m, b)
-  await ensureWindowFor(ci < 0 ? 0 : ci)
-  measureCols()
-  const blockEl = blockElFor(b)
-  const target = blockEl ? fragmentTargetEl(blockEl, entry.fragment) : null
-  const rect = target ? firstRectOf(target) ?? target.getBoundingClientRect() : null
-  if (!rect || (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.top === 0)) {
-    // 目标不存在或没有布局盒：回退块起点
-    await jumpToBlock(b)
-    return
+  navDepth++
+  try {
+    if (!entry.fragment) {
+      await jumpToBlock(entry.block)
+      return
+    }
+    const total = totalBlockCount()
+    const b = clamp(entry.block, 0, Math.max(0, total - 1))
+    const ci = chunkForBlock(m, b)
+    const prev = topAnchor
+    await ensureWindowFor(ci < 0 ? 0 : ci)
+    measureCols()
+    const blockEl = blockElFor(b)
+    const target = blockEl ? fragmentTargetEl(blockEl, entry.fragment) : null
+    const rect = target ? firstRectOf(target) ?? target.getBoundingClientRect() : null
+    if (!rect || (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.top === 0)) {
+      // 目标不存在或没有布局盒：回退块起点（seekToAnchor 内同样提交锚点）
+      await jumpToBlock(b)
+      return
+    }
+    await goToCol(colFromRect(rect), false)
+    commitNavAnchor({ spine: spineForBlock(m, b), block: b, path: [], offset: -1 }, prev)
+    queueProgressSave()
+  } finally {
+    navDepth--
   }
-  await goToCol(colFromRect(rect), false)
-  queueProgressSave()
 }
 
 // seekFraction 按全局文本比例跳页（进度条拖动）。
@@ -673,11 +707,15 @@ async function windowSync() {
   syncTimer = null
   const m = manifest.value
   if (closing || !m || stage.value !== 'reading' || c1 < 0) return
+  // 程序化 TOC 导航在途：跳转落地时会按导航目标提交 anchor 并重新调度
+  // sync，这里不得按（可能仍是跳转前的）topAnchor 抢先重建窗口/对齐。
+  if (navDepth > 0) return
   const cb = topAnchor ? chunkForBlock(m, topAnchor.block) : -1
   if (cb < 0) return
   // 以当前阅读 chunk 为中心保持前后余量：只 append 新 chunk / remove 最旧
   // chunk，不做整窗口清空重建；无变化则完全不动（热路径零开销）。
   const changed = await ensureWindowFor(cb)
+  if (navDepth > 0) return
   if (changed) {
     measureCols()
     await alignToAnchor()
