@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VesperGlow/revaro/internal/reader/layout"
 	"github.com/VesperGlow/revaro/internal/storage"
 )
 
@@ -109,27 +110,20 @@ func TestBookEndpointsTXT(t *testing.T) {
 	if meta.Format != "txt" || meta.Cover || len(meta.TOC) != 2 || meta.TOC[0].Label != "第一章 开始" {
 		t.Fatalf("meta=%+v", meta)
 	}
-	body := a.request("GET", "/api/files/"+f.ID+"/book/content", nil, true)
-	if body.Code != http.StatusOK {
-		t.Fatalf("content=%d: %s", body.Code, body.Body.String())
-	}
-	model := decode[struct {
-		Kind string `json:"kind"`
-		Text string `json:"text"`
-	}](t, body)
-	if model.Kind != "txt" || model.Text != string(content) {
-		t.Fatalf("model=%+v", model)
-	}
-	put := a.request("PUT", "/api/files/"+f.ID+"/book/progress", map[string]any{"page": 3, "total_pages": 10}, true)
+	// 阅读进度 = readingAnchor + profile（页码不再持久化）
+	put := a.request("PUT", "/api/files/"+f.ID+"/book/progress", map[string]any{
+		"anchor":  map[string]any{"spine": 0, "path": []int{0}, "offset": 3},
+		"profile": "v1-" + strings.Repeat("a", 64),
+	}, true)
 	if put.Code != http.StatusNoContent {
 		t.Fatalf("save progress=%d: %s", put.Code, put.Body.String())
 	}
 	got := a.request("GET", "/api/files/"+f.ID+"/book/progress", nil, true)
 	progress := decode[struct {
-		Page       int64  `json:"page"`
-		TotalPages *int64 `json:"total_pages"`
+		Anchor  *layout.Anchor `json:"anchor"`
+		Profile string         `json:"profile"`
 	}](t, got)
-	if progress.Page != 3 || progress.TotalPages == nil || *progress.TotalPages != 10 {
+	if progress.Anchor == nil || progress.Anchor.Offset != 3 || progress.Profile == "" {
 		t.Fatalf("progress=%+v", progress)
 	}
 	pdf := a.readyFile(t, "doc.pdf", []byte("x"))
@@ -154,19 +148,8 @@ func TestBookEndpointsEPUB(t *testing.T) {
 	if meta.Format != "epub" || meta.Title != "测试书" || !meta.Cover {
 		t.Fatalf("meta=%+v", meta)
 	}
-	body := a.request("GET", "/api/files/"+f.ID+"/book/content", nil, true)
-	if body.Code != http.StatusOK {
-		t.Fatalf("content=%d: %s", body.Code, body.Body.String())
-	}
-	model := decode[struct {
-		Kind     string `json:"kind"`
-		Chapters []struct {
-			HTML string `json:"html"`
-		} `json:"chapters"`
-	}](t, body)
-	if model.Kind != "epub" || len(model.Chapters) != 1 || !strings.Contains(model.Chapters[0].HTML, "你好世界") || strings.Contains(model.Chapters[0].HTML, "<script") {
-		t.Fatalf("chapters=%+v", model.Chapters)
-	}
+	// 清洗管线（script 剥离、图片改写）由 internal/reader 测试覆盖；
+	// 此处只验证资产与封面分发仍正常。
 	asset := a.request("GET", "/api/files/"+f.ID+"/book/assets/0", nil, true)
 	if asset.Code != http.StatusOK || asset.Header().Get("Content-Type") != "image/png" || asset.Body.Len() != 33 {
 		t.Fatalf("asset=%d type=%q bytes=%d", asset.Code, asset.Header().Get("Content-Type"), asset.Body.Len())

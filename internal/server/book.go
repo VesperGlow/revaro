@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/reader"
+	"github.com/VesperGlow/revaro/internal/reader/layout"
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -81,23 +82,6 @@ func (s *Server) bookInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) bookContent(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.readerFile(w, r)
-	if !ok {
-		return
-	}
-	book, err := s.loadBook(r.Context(), f)
-	if err != nil {
-		problem(w, http.StatusUnprocessableEntity, "无法解析这本书："+err.Error())
-		return
-	}
-	if book.Format == "epub" {
-		writeJSON(w, http.StatusOK, map[string]any{"kind": "epub", "chapters": book.Chapters, "toc": book.TOC})
-	} else {
-		writeJSON(w, http.StatusOK, map[string]any{"kind": "txt", "text": book.Text, "toc": book.TOC})
-	}
-}
-
 func (s *Server) bookAsset(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.readerFile(w, r)
 	if !ok {
@@ -148,9 +132,11 @@ func (s *Server) bookCover(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(book.Cover)
 }
 
+// bookProgress 是阅读进度：位置用 readingAnchor（跨 layout 稳定），
+// 附带产生它的 layout profile。页码只是 UI 显示值，不再持久化。
 type bookProgress struct {
-	Page       int64  `json:"page"`
-	TotalPages *int64 `json:"total_pages"`
+	Anchor  *layout.Anchor `json:"anchor,omitempty"`
+	Profile string         `json:"profile,omitempty"`
 }
 
 func progressKey(fileID string) string { return "book_progress/" + fileID }
@@ -163,7 +149,7 @@ func (s *Server) bookProgress(w http.ResponseWriter, r *http.Request) {
 	var raw string
 	err := s.db.QueryRowContext(r.Context(), `SELECT value FROM settings WHERE key=?`, progressKey(f.ID)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		writeJSON(w, http.StatusOK, map[string]any{"page": 0, "total_pages": nil})
+		writeJSON(w, http.StatusOK, bookProgress{})
 		return
 	}
 	if err != nil {
@@ -172,8 +158,11 @@ func (s *Server) bookProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	var p bookProgress
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"page": 0, "total_pages": nil})
+		writeJSON(w, http.StatusOK, bookProgress{})
 		return
+	}
+	if p.Anchor != nil && !p.Anchor.Valid() {
+		p.Anchor = nil // 防御：损坏/过期的锚点不返回
 	}
 	writeJSON(w, http.StatusOK, p)
 }
@@ -187,8 +176,12 @@ func (s *Server) saveBookProgress(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(w, r, &in) != nil {
 		return
 	}
-	if in.Page < 0 || in.Page > 1<<20 || (in.TotalPages != nil && (*in.TotalPages < 0 || *in.TotalPages > 1<<20)) {
-		problem(w, http.StatusBadRequest, "progress values are invalid")
+	if in.Anchor != nil && !in.Anchor.Valid() {
+		problem(w, http.StatusBadRequest, "progress anchor is invalid")
+		return
+	}
+	if !validProfileID(in.Profile) {
+		problem(w, http.StatusBadRequest, "progress profile is invalid")
 		return
 	}
 	raw, err := json.Marshal(in)

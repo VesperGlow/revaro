@@ -1,0 +1,141 @@
+/* Revaro 共享阅读样式表：服务端分页（Chromium）与客户端页面渲染共用，
+   保证同一内容在两端排版一致。规则移植自旧客户端 .book-content 样式，
+   作用域改为 .revaro-content。数值参数（viewport、字号、行距、边距）
+   全部由 inline style / CSS 变量锁定，本文件只承载结构规则。 */
+
+:root {
+  --revaro-font-family: "Revaro Serif", Georgia, "Noto Serif SC", serif;
+  --revaro-font-size: 19px;
+  --revaro-line-height: 1.7;
+  --revaro-ink: #29251f;
+  --revaro-paper: #f7f3eb;
+  --revaro-muted: #827a6f;
+}
+
+/* ---- 正文内容规则（分页阶段与页面展示阶段共用） ---- */
+
+.revaro-content {
+  box-sizing: border-box;
+  /* flow-root：建立 BFC，阻止首/末子元素外边距穿透父级——
+     否则页面内容盒会被 margin 顶出锁定容器，产生纵向溢出；
+     分页段与页面展示共用此规则，两端行为一致。 */
+  display: flow-root;
+  orphans: 1;
+  widows: 1;
+  font-family: var(--revaro-font-family);
+  font-size: var(--revaro-font-size);
+  line-height: var(--revaro-line-height);
+  color: var(--revaro-ink);
+  overflow-wrap: anywhere;
+}
+
+.revaro-content.txt {
+  white-space: pre-wrap;
+}
+
+.revaro-content .toc-anchor {
+  display: inline;
+}
+
+.revaro-content h1,
+.revaro-content h2,
+.revaro-content h3,
+.revaro-content h4 {
+  line-height: 1.35;
+  margin: 0.4em 0 0.7em;
+  break-inside: avoid;
+}
+
+.revaro-content p {
+  margin: 0;
+  text-indent: 2em;
+}
+
+.revaro-content blockquote,
+.revaro-content pre,
+.revaro-content figure,
+.revaro-content table,
+.revaro-content li {
+  margin: 0.2em 0 0.3em;
+}
+
+/* 图片/插画：高度上限 = 栏高（--revaro-col-height 由分页器/页面容器
+   以像素注入）。与旧客户端一致：height:auto 让 width/height 属性只提供
+   宽高比；独立成块避免 inline 行盒跨栏。 */
+.revaro-content img,
+.revaro-content svg,
+.revaro-content video {
+  max-width: 100%;
+  max-height: var(--revaro-col-height, none);
+  height: auto;
+  object-fit: contain;
+  break-inside: avoid;
+  display: block;
+  margin: 0 auto;
+}
+
+.revaro-content figure img,
+.revaro-content figure svg,
+.revaro-content figure video {
+  max-height: calc(var(--revaro-col-height, none) - 2em);
+}
+
+.revaro-content figure {
+  max-height: var(--revaro-col-height, none);
+  margin: 0 auto;
+  text-align: center;
+}
+
+.revaro-content figcaption {
+  font-size: 0.85em;
+  color: var(--revaro-muted);
+  margin: 0.4em 0 0;
+}
+
+.revaro-content figure,
+.revaro-content table,
+.revaro-content pre {
+  break-inside: avoid;
+}
+
+.revaro-content table {
+  max-width: 100%;
+  border-collapse: collapse;
+}
+
+.revaro-content pre {
+  white-space: pre-wrap;
+}
+
+.revaro-content ruby rt {
+  font-size: 0.55em;
+}
+
+/* ---- 页面展示（客户端三页窗口） ---- */
+
+.revaro-page {
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: var(--revaro-paper);
+}
+
+.revaro-page > .revaro-content {
+  width: 100%;
+  height: 100%;
+}
+
+/* ---- 服务端分页阶段（整本 spine 多栏排版） ---- */
+
+#revaro-book {
+  position: relative;
+}
+
+#revaro-book > .spine {
+  position: relative;
+  box-sizing: border-box;
+  column-fill: auto;
+  orphans: 1;
+  widows: 1;
+  overflow: hidden;
+}

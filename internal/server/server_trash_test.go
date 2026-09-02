@@ -97,7 +97,7 @@ func TestTrashFilesRemainReadableUntilPurged(t *testing.T) {
 	if rr := a.request("GET", "/api/files/"+audio.ID+"/download", nil, true); rr.Code != http.StatusOK {
 		t.Fatalf("trashed download=%d: %s", rr.Code, rr.Body.String())
 	}
-	if rr := a.request("GET", "/api/files/"+book.ID+"/book/content", nil, true); rr.Code != http.StatusOK {
+	if rr := a.request("GET", "/api/files/"+book.ID+"/book", nil, true); rr.Code != http.StatusOK {
 		t.Fatalf("trashed book=%d: %s", rr.Code, rr.Body.String())
 	}
 	if rr := a.request("GET", "/api/files/"+document.ID+"/content", nil, true); rr.Code != http.StatusOK {

@@ -11,3 +11,5 @@ internal/webui/dist/
 coverage.out
 data-plane/target/
 .DS_Store
+web/test-results/
+web/playwright-report/
