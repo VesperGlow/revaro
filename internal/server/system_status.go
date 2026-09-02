@@ -119,11 +119,13 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 		degrade(&out.BT.Status)
 	}
 
+	// 阅读器布局引擎缺失是合法部署（无 Chromium 镜像/路径未配置），
+	// 只影响阅读分页，不把整个系统标为降级；reader.status 仅供面板展示。
 	out.Reader.Status = "ok"
 	engine := layout.DetectEngine()
 	out.Reader.Engine = engine.Version
 	if !engine.Available {
-		degrade(&out.Reader.Status)
+		out.Reader.Status = "degraded"
 	}
 	if s.layoutSched != nil {
 		stats := s.layoutSched.Stats()
