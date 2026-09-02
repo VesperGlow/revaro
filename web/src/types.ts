@@ -25,6 +25,7 @@ export interface SystemStatus {
   object_cleanup:{status:string;pending:number}
   media_sessions:{status:string;audio_hls:number;video_hls:number;fmp4:number}
   bt:{status:string;enabled:boolean;available:boolean}
+  backup:{status:string;enabled:boolean}
 }
 export interface TOTPStatusResponse { enabled:boolean; recovery_codes:number }
 export interface TOTPSetupResponse { secret:string; uri:string; qr_data_url:string }

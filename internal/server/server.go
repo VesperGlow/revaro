@@ -81,6 +81,7 @@ type Server struct {
 	statusSnapshot     systemStatusResponse
 	statusSubscribers  map[chan systemStatusResponse]struct{}
 	statusStop         chan struct{}
+	backupCancel       context.CancelFunc
 }
 
 type File struct {
@@ -163,7 +164,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	// Only Revaro-owned, recognizable workspaces are eligible for startup
 	// cleanup. Unknown APP_WORK_DIR contents are never touched.
 	_ = os.MkdirAll(cfg.WorkDir, 0o700)
-	for _, pattern := range []string{"revaro-audio-merge-*", "revaro-audio-hls-*", "revaro-video-hls-*", "revaro-extract-*"} {
+	for _, pattern := range []string{"revaro-audio-merge-*", "revaro-audio-hls-*", "revaro-video-hls-*", "revaro-extract-*", backupStagingPattern} {
 		stale, err := filepath.Glob(filepath.Join(cfg.WorkDir, pattern))
 		if err != nil {
 			logger.Warn("stale workspace scan failed", "pattern", pattern, "error", err)
@@ -196,6 +197,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	}
 	s.cleanup.Start()
 	s.startSystemStatusSnapshots()
+	s.startDatabaseBackups()
 	return s
 }
 
@@ -233,6 +235,9 @@ func (s *Server) Close() {
 	s.lifecycleMu.Unlock()
 	if s.statusStop != nil {
 		close(s.statusStop)
+	}
+	if s.backupCancel != nil {
+		s.backupCancel()
 	}
 	if s.cleanup != nil {
 		s.cleanup.Close()

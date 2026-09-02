@@ -39,6 +39,9 @@ type Config struct {
 	BTMaxTotalSize     int64
 	BTMetadataWait     time.Duration
 	BTStaleAfter       time.Duration
+	BackupEnabled      bool
+	BackupInterval     time.Duration
+	BackupRetention    int
 	DataPlaneAddr      string
 	DataPlaneBinary    string
 	FlowCacheTTL       time.Duration
@@ -116,6 +119,17 @@ func Load() (Config, error) {
 	if c.BTStaleAfter, err = durationEnv("BT_STALE_AFTER", 48*time.Hour); err != nil {
 		return c, err
 	}
+	if c.BackupEnabled, err = boolEnv("BACKUP_ENABLED", true); err != nil {
+		return c, err
+	}
+	if c.BackupInterval, err = durationEnv("BACKUP_INTERVAL", 24*time.Hour); err != nil {
+		return c, err
+	}
+	backupRetention, err := int64Env("BACKUP_RETENTION", 14)
+	if err != nil {
+		return c, err
+	}
+	c.BackupRetention = int(backupRetention)
 	if c.MediaCacheCapacity, err = int64Env("MEDIA_CACHE_CAPACITY", 2*1024*1024*1024); err != nil {
 		return c, err
 	}
@@ -157,6 +171,12 @@ func Load() (Config, error) {
 	}
 	if c.BTMetadataWait <= 0 || c.BTStaleAfter <= 0 {
 		return c, errors.New("BT_METADATA_TIMEOUT and BT_STALE_AFTER must be positive")
+	}
+	if c.BackupInterval < time.Minute {
+		return c, errors.New("BACKUP_INTERVAL must be at least one minute")
+	}
+	if c.BackupRetention < 1 || c.BackupRetention > 1000 {
+		return c, errors.New("BACKUP_RETENTION must be between 1 and 1000")
 	}
 	base, err := url.Parse(c.BaseURL)
 	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") {

@@ -25,4 +25,7 @@ func TestSystemStatusRequiresAuthenticationAndReportsComponents(t *testing.T) {
 	if status.Tasks.Running != 0 || status.ObjectCleanup.Pending != 0 {
 		t.Fatalf("unexpected counters: %+v", status)
 	}
+	if status.Backup.Status != "ok" {
+		t.Fatalf("unexpected backup status: %+v", status.Backup)
+	}
 }

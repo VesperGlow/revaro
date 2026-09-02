@@ -109,6 +109,9 @@ set -a; . ./.env; set +a
 | `BT_MAX_TOTAL_SIZE` | `1099511627776` | 单个种子允许的最大总大小（默认 1 TiB） |
 | `BT_METADATA_TIMEOUT` | `30m` | 磁力链接等待元数据的最长时间 |
 | `BT_STALE_AFTER` | `48h` | 失败任务及其临时分片的保留时间 |
+| `BACKUP_ENABLED` | `true` | 自动把 SQLite 一致性快照备份到 S3 的 `revaro-backups/database/`；`false` 只关闭备份，不影响主服务 |
+| `BACKUP_INTERVAL` | `24h` | 两次自动备份的最小间隔（≥1m）；停机跨过多个周期后，启动时只补做一次最新备份 |
+| `BACKUP_RETENTION` | `14` | S3 中保留的最近备份数量，成功上传新备份后自动清理更旧的备份 |
 
 ### S3 公网直连要求
 

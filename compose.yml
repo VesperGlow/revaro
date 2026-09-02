@@ -40,6 +40,10 @@ services:
       BT_METADATA_TIMEOUT: "${BT_METADATA_TIMEOUT:-30m}"
       BT_STALE_AFTER: "${BT_STALE_AFTER:-48h}"
 
+      BACKUP_ENABLED: "${BACKUP_ENABLED:-true}"
+      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-24h}"
+      BACKUP_RETENTION: "${BACKUP_RETENTION:-14}"
+
     volumes:
       - revaro-data:/data
     read_only: true

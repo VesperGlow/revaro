@@ -120,6 +120,7 @@ type mockStorage struct {
 	multipart        map[string]string
 	rawURL           string
 	deleteBatchSizes []int
+	storeBlobErr     error
 }
 
 func newMockStorage(blockSize int64) *mockStorage {
@@ -191,6 +192,9 @@ func (m *mockStorage) HeadObject(_ context.Context, key string) (storage.ObjectI
 func (m *mockStorage) StoreBlob(_ context.Context, key, mimeType string, r io.Reader, size int64) (storage.ObjectInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.storeBlobErr != nil {
+		return storage.ObjectInfo{}, m.storeBlobErr
+	}
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return storage.ObjectInfo{}, err

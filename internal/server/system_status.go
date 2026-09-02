@@ -47,6 +47,10 @@ type systemStatusResponse struct {
 		Enabled   bool   `json:"enabled"`
 		Available bool   `json:"available"`
 	} `json:"bt"`
+	Backup struct {
+		Status  string `json:"status"`
+		Enabled bool   `json:"enabled"`
+	} `json:"backup"`
 }
 
 func (s *Server) collectSystemStatus(parent context.Context) systemStatusResponse {
@@ -106,6 +110,11 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 	if out.BT.Enabled && !out.BT.Available {
 		degrade(&out.BT.Status)
 	}
+
+	// 备份状态只反映配置开关：备份执行失败不会拖垮主服务，也不会在这里
+	// 报错，下次调度会自动重试。
+	out.Backup.Enabled = s.cfg.BackupEnabled
+	out.Backup.Status = "ok"
 	return out
 }
 

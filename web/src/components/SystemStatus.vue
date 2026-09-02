@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Cloud, Database, HardDrive, ListTodo, Magnet, Radio, Trash2 } from 'lucide-vue-next'
+import { Cloud, Database, DatabaseBackup, HardDrive, ListTodo, Magnet, Radio, Trash2 } from 'lucide-vue-next'
 import { formatSize } from '../format'
 import type { SystemStatus } from '../types'
 import ServiceCard from './ServiceCard.vue'
@@ -50,6 +50,7 @@ defineExpose({openPanel,closePanel})
         <ServiceCard title="清理队列" :detail="`${status.object_cleanup.pending} 个对象待清理`" :badge="stateLabel(status.object_cleanup.status)" :tone="tone(status.object_cleanup.status)"><template #icon><Trash2 /></template></ServiceCard>
         <ServiceCard title="媒体会话" :detail="`音频 HLS ${status.media_sessions.audio_hls} · 视频 HLS ${status.media_sessions.video_hls} · fMP4 ${status.media_sessions.fmp4}`" :badge="stateLabel(status.media_sessions.status)" :tone="tone(status.media_sessions.status)"><template #icon><Radio /></template></ServiceCard>
         <ServiceCard title="BT" :detail="status.bt.enabled?'下载服务已启用':'下载服务未启用'" :badge="status.bt.enabled?(status.bt.available?'可用':'不可用'):'未启用'" :tone="status.bt.enabled?tone(status.bt.status):'neutral'"><template #icon><Magnet /></template></ServiceCard>
+        <ServiceCard title="备份" :detail="status.backup.enabled?'自动备份已启用':'自动备份未启用'" :badge="status.backup.enabled?(status.backup.status==='ok'?'可用':'异常'):'未启用'" :tone="status.backup.enabled?tone(status.backup.status):'neutral'"><template #icon><DatabaseBackup /></template></ServiceCard>
       </div>
     </section>
   </details>

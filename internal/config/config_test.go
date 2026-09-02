@@ -22,6 +22,9 @@ func TestLoadDefaults(t *testing.T) {
 	if c.DataDir != "/data" || c.WorkDir != "/work" || c.MediaCacheCapacity != 2<<30 || c.PresignExpires != 15*time.Minute {
 		t.Fatalf("defaults: %+v", c)
 	}
+	if !c.BackupEnabled || c.BackupInterval != 24*time.Hour || c.BackupRetention != 14 {
+		t.Fatalf("backup defaults: %+v", c)
+	}
 }
 func TestLegacyStorageEnvironmentIsIgnored(t *testing.T) {
 	validEnv(t)
@@ -44,6 +47,42 @@ func TestLoadRejectsInvalidActiveSettings(t *testing.T) {
 	t.Setenv("MEDIA_CACHE_CAPACITY", "-1")
 	if _, err := Load(); err == nil {
 		t.Fatal("invalid media cache accepted")
+	}
+}
+
+func TestLoadRejectsInvalidBackupSettings(t *testing.T) {
+	for name, value := range map[string]string{
+		"BACKUP_INTERVAL":  "30s",
+		"BACKUP_RETENTION": "0",
+		"BACKUP_ENABLED":   "maybe",
+	} {
+		validEnv(t)
+		t.Setenv(name, value)
+		if _, err := Load(); err == nil {
+			t.Fatalf("invalid %s=%s accepted", name, value)
+		}
+	}
+}
+
+func TestLoadBackupOverrides(t *testing.T) {
+	validEnv(t)
+	t.Setenv("BACKUP_INTERVAL", "2h")
+	t.Setenv("BACKUP_RETENTION", "7")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.BackupEnabled || c.BackupInterval != 2*time.Hour || c.BackupRetention != 7 {
+		t.Fatalf("backup overrides: %+v", c)
+	}
+	validEnv(t)
+	t.Setenv("BACKUP_ENABLED", "false")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BackupEnabled {
+		t.Fatal("BACKUP_ENABLED=false was ignored")
 	}
 }
 
