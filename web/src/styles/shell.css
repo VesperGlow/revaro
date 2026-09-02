@@ -367,24 +367,6 @@ button {
   color: #94a3b8;
   font-size: 12px;
 }
-.breadcrumbs {
-  display: flex;
-  flex-wrap: wrap;
-}
-.breadcrumbs button {
-  border: 0;
-  background: transparent;
-  color: #64748b;
-  font-size: 12px;
-  padding: 0;
-}
-.breadcrumbs span {
-  margin: 0 8px;
-  color: #cbd5e1;
-}
-.breadcrumbs button:last-child span {
-  display: none;
-}
 .actions {
   display: flex;
   gap: 10px;

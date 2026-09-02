@@ -127,18 +127,6 @@ body {
 .title-row h1 {
   flex: 1;
 }
-.breadcrumbs {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-}
-.breadcrumbs button {
-  min-width: 0;
-  max-width: min(240px, 45vw);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 @media (max-width: 850px) {
   .login-panel {
@@ -282,23 +270,8 @@ button:disabled {
   border-radius: 50%;
   background: var(--line-strong);
 }
-.breadcrumbs button {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 550;
-}
-.breadcrumbs button:hover {
-  color: var(--ink);
-}
 .title-row {
   gap: 10px;
-}
-.up-button {
-  color: var(--muted);
-}
-.up-button:hover {
-  background: var(--surface-hover);
-  color: var(--ink);
 }
 .actions {
   gap: 8px;
@@ -438,9 +411,6 @@ button:disabled {
   .content {
     padding-right: max(12px, env(safe-area-inset-right, 0px));
     padding-left: max(12px, env(safe-area-inset-left, 0px));
-  }
-  .breadcrumbs {
-    flex-wrap: nowrap;
   }
   .title-row {
     align-items: center;
@@ -623,8 +593,6 @@ button:disabled {
   background: #f2f6f9f1;
   color: var(--accent-hover);
 }
-.breadcrumbs button:hover,
-.up-button:hover,
 .toc-item.active,
 .merge-order-actions button:hover:not(:disabled),
 .merge-source-tabs button.active,
@@ -944,4 +912,3 @@ button:disabled {
 .audio-subtitle-lines button { opacity: .48; }
 .audio-subtitle-lines button.mid { opacity: .62; }
 .audio-subtitle-lines button.near { opacity: .78; }
-

@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ArrowUp, ChevronDown, FilePlus2, FolderPlus, FolderUp, Music2, Upload } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ChevronDown, ChevronRight, FilePlus2, FolderPlus, FolderUp, Music2, Upload } from 'lucide-vue-next'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
 
 const props=defineProps<{
   breadcrumbs:DriveFile[]
   current:DriveFile|null
-  canGoUp:boolean
   itemCount:number
   totalBytes:number
   fileCount:number
@@ -16,7 +15,6 @@ const props=defineProps<{
 
 const emit=defineEmits<{
   openFolder:[id:string]
-  up:[]
   newDocument:[]
   createFolder:[]
   uploadFiles:[]
@@ -28,7 +26,12 @@ const emit=defineEmits<{
 
 const createMenu=ref<HTMLDetailsElement|null>(null)
 const uploadMenu=ref<HTMLDetailsElement|null>(null)
-const parentBreadcrumbs=computed(()=>props.breadcrumbs.slice(0,-1))
+const breadcrumbNav=ref<HTMLElement|null>(null)
+const pathItems=computed(()=>props.breadcrumbs.length?props.breadcrumbs:(props.current?[props.current]:[]))
+
+function revealCurrentPath(){nextTick(()=>breadcrumbNav.value?.scrollTo({left:breadcrumbNav.value.scrollWidth,behavior:'smooth'}))}
+watch(()=>props.current?.id,revealCurrentPath)
+onMounted(revealCurrentPath)
 
 function runCreate(action:'document'|'folder'){
   createMenu.value?.removeAttribute('open')
@@ -57,15 +60,15 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
 <template>
   <div class="content-head">
     <div class="folder-heading">
-      <nav v-if="!trashMode&&parentBreadcrumbs.length" class="breadcrumbs" aria-label="路径">
-        <button v-for="crumb in parentBreadcrumbs" :key="crumb.id" :title="crumb.name || '我的文件'" @click="$emit('openFolder',crumb.id)">
-          {{ crumb.name || '我的文件' }}<span>/</span>
-        </button>
+      <nav v-if="!trashMode&&pathItems.length" ref="breadcrumbNav" class="breadcrumbs" aria-label="当前路径">
+        <template v-for="(crumb,index) in pathItems" :key="crumb.id">
+          <ChevronRight v-if="index" class="breadcrumb-separator" aria-hidden="true" />
+          <button type="button" :class="{current:index===pathItems.length-1}" :title="crumb.name || '我的文件'" :aria-current="index===pathItems.length-1?'page':undefined" @click="$emit('openFolder',crumb.id)">
+            {{ crumb.name || '我的文件' }}
+          </button>
+        </template>
       </nav>
       <div class="title-row">
-        <button v-if="!trashMode&&canGoUp" class="up-button" title="返回上一级" aria-label="返回上一级" @click="$emit('up')">
-          <ArrowUp aria-hidden="true" />
-        </button>
         <h1 :title="trashMode?'回收站':current?.name || '我的文件'">{{ trashMode?'回收站':current?.name || '我的文件' }}</h1>
       </div>
       <p class="folder-meta">
@@ -102,4 +105,5 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
 
 <style scoped>
 .trash-empty-action{min-height:40px;padding:0 16px;border:1px solid #fecaca;border-radius:10px;background:#fff5f5;color:#dc2626;font-weight:750}.trash-empty-action:hover:not(:disabled){background:#fee2e2}.trash-empty-action:disabled{opacity:.45}
+.breadcrumbs{display:flex;align-items:center;max-width:min(760px,70vw);margin:-4px 0 7px;padding:3px 0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;white-space:nowrap;-webkit-overflow-scrolling:touch}.breadcrumbs::-webkit-scrollbar{display:none}.breadcrumbs button{display:inline-flex;min-width:max-content;min-height:36px;align-items:center;padding:0 10px;border:0;border-radius:9px;background:transparent;color:#53657b;font-size:14px;font-weight:650;line-height:1;transition:background-color .15s ease,color .15s ease,box-shadow .15s ease}.breadcrumbs button:hover{background:#eef5ff;color:#1d64bd}.breadcrumbs button:active{background:#dfeeff;color:#174f96}.breadcrumbs button:focus-visible{outline:0;box-shadow:0 0 0 3px #bfdbfe}.breadcrumbs button.current{background:#edf5ff;color:#1764bd;font-weight:750}.breadcrumb-separator{width:15px;height:15px;flex:0 0 auto;color:#a9b7c8;stroke-width:1.8}@media(max-width:850px){.breadcrumbs{width:calc(100vw - 28px);max-width:100%;margin-bottom:6px;padding:2px 0 4px;mask-image:linear-gradient(to right,transparent 0,#000 10px,#000 calc(100% - 16px),transparent 100%)}.breadcrumbs button{min-height:40px;padding:0 11px;font-size:14px}.breadcrumbs button:first-of-type{margin-left:4px}.breadcrumbs button:last-of-type{margin-right:12px}.breadcrumb-separator{width:14px;height:14px}}
 </style>

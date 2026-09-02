@@ -469,13 +469,6 @@
 .content-head p {
   font-size: 13px;
 }
-.breadcrumbs button {
-  font-size: 13px;
-  transition: 0.15s;
-}
-.breadcrumbs button:hover {
-  color: #2563eb;
-}
 .actions button {
   font-size: 13px;
 }
@@ -637,19 +630,6 @@
   .content-head h1 {
     font-size: 27px;
   }
-  .breadcrumbs {
-    flex-wrap: nowrap;
-    max-width: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
-    padding-bottom: 2px;
-  }
-  .breadcrumbs::-webkit-scrollbar {
-    display: none;
-  }
-  .breadcrumbs button {
-    white-space: nowrap;
-  }
   .actions button {
     padding: 0 13px;
     min-height: 42px;
@@ -733,7 +713,7 @@
   }
 }
 
-/* ===== Fixes: preview interactions, mobile image sizing, up button ===== */
+/* ===== Fixes: preview interactions and mobile image sizing ===== */
 .title-row {
   display: flex;
   align-items: center;
@@ -742,35 +722,6 @@
 }
 .title-row h1 {
   margin: 0;
-}
-.up-button {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  border: 1px solid #dbe3ee;
-  border-radius: 11px;
-  background: #fff;
-  color: #405169;
-  box-shadow: 0 2px 8px #0f172a0a;
-  transition: 0.15s;
-}
-.up-button:hover {
-  border-color: #cfe0ff;
-  background: #eaf1fb;
-  color: #2563eb;
-  transform: translateY(-1px);
-}
-.up-button svg {
-  width: 20px;
-  height: 20px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 .preview-modal img {
   min-height: 0;
@@ -797,10 +748,6 @@
   }
   .title-row {
     margin: 6px 0 4px;
-  }
-  .up-button {
-    width: 42px;
-    height: 42px;
   }
 }
 
@@ -1286,4 +1233,3 @@ body.reader-open {
   z-index: 7;
   background: #f7f3eb;
 }
-

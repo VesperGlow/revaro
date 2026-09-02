@@ -645,9 +645,6 @@ button img,
   .folder-heading {
     width: 100%;
   }
-  .breadcrumbs {
-    margin-bottom: 7px;
-  }
   .title-row {
     width: 100%;
     margin: 0 0 7px;
@@ -716,14 +713,6 @@ button img,
 }
 
 /* ===== Square Koofr-style tiles: plain files stay labelled, previews reveal labels on hover ===== */
-.breadcrumbs button {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.45;
-}
-.breadcrumbs span {
-  margin: 0 10px;
-}
 .folder-meta {
   font-size: 13px !important;
 }
@@ -1228,4 +1217,3 @@ button img,
   background: #f1f6ff;
   box-shadow: 0 0 0 2px #3972d21a;
 }
-
