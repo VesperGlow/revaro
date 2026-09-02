@@ -254,9 +254,11 @@ profile（按需生成）；不把整本书再塞进客户端 DOM；不长期维
 - 开发期旧 reader 保留的过渡开关与 mock 均已清理。
 
 ### 剩余事项（Phase 4 加固，不影响已交付功能）
-- Docker 镜像装 Chromium 与 `-lite` 变体（`REVARO_CHROME_BIN` 已支持探测）；
-- `layouts/` 产物随书删除钩子与老化回收（GC 不扫该前缀，安全但会累积）；
-- 渐进生成（当前 anchor 周边窗口先就绪）与更远预取。
+- ~~Docker 镜像装 Chromium~~：发布镜像已内置 Chromium（`REVARO_CHROME_BIN`
+  预设 `/usr/bin/chromium`，podman 构建验证可执行、`--version` 正常、非 root
+  下 headless 可启动）；
+- `layouts/` 产物随书删除钩子（目前依赖 GC 的孤儿清理，间隔 1h）；
+- 可选 `-lite` 无 Chromium 变体（资源受限部署）。
 
 ### Phase 4 完成 ✅ — 渐进式分页、实例复用、缓存 GC、方向预取与统计
 - **渐进式分页（不整本同步生成）**：`POST /layouts` 带 `start_anchor` 时按

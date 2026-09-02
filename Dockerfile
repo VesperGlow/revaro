@@ -32,8 +32,12 @@ FROM dataplane-base AS dataplane
 RUN cargo build --locked --release && cp target/release/revaro-data-plane /out-revaro-data-plane
 
 FROM debian:bookworm-slim
+# chromium：服务端固定分页的排版引擎（headless，--no-sandbox 由分页器注入；
+# 非 root + cap_drop:ALL 容器内无用户命名空间，见 internal/reader/layout）。
+# fonts-noto-cjk：webfont 子集之外的 CJK 字符回退，与服务端分页观感一致。
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates tzdata ffmpeg libavcodec59 libavformat59 libavutil57 libavfilter8 libswresample4 libswscale6 \
+    chromium fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \
@@ -42,7 +46,8 @@ COPY --from=backend /out/revaro /usr/local/bin/revaro
 COPY --from=dataplane /out-revaro-data-plane /usr/local/bin/revaro-data-plane
 ENV HOME=/data \
     XDG_CACHE_HOME=/data/.cache \
-    APP_WORK_DIR=/data/work
+    APP_WORK_DIR=/data/work \
+    REVARO_CHROME_BIN=/usr/bin/chromium
 USER revaro
 VOLUME ["/data"]
 EXPOSE 8080 51413/tcp 51413/udp

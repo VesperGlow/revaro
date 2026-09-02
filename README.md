@@ -260,7 +260,7 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 - **资源受控**：Chromium 进程内单实例复用（tab 级串行队列，最新请求在章边界中止旧任务）；layout 缓存按 `LAYOUT_CACHE_TTL`（默认 720h）与 `LAYOUT_CACHE_CAPACITY`（默认 1 GiB）自动回收，删除书籍时其产物随之清理；`/api/system/status` 的 `reader` 段暴露引擎版本、队列长度、累计页数/字节与 Chromium 内存占用。
 - **客户端三页窗口**：只维护上一页/当前页/下一页三个页面节点，按阅读方向智能预取（前行向后看 3 页、后退镜像），点击翻页只做合成层 transform（零网络、零重排）；桌面点击左右热区、键盘方向键/PageUp/PageDown/空格翻页，移动端左右滑动跟手翻页（快速轻扫或拖过 1/4 屏判定）。
 - **进度与无缝重排**：阅读进度 = readingAnchor + profile（跨 layout 稳定，不依赖页码），防抖保存并随页面关闭/失焦落盘；改字号/行距/旋转时旧 layout 继续可读，服务端后台生成新 profile，完成后按 readingAnchor 无缝切换；明暗主题只换 CSS 变量，永不重排。
-- 上限：EPUB 128 MiB、TXT 16 MiB；更大的文件请下载后离线阅读。分页需要容器内置 Chromium（`REVARO_CHROME_BIN` 可指定路径）；`LAYOUT_CACHE_TTL` 与 `LAYOUT_CACHE_CAPACITY` 控制 layout 产物缓存回收。
+- 上限：EPUB 128 MiB、TXT 16 MiB；更大的文件请下载后离线阅读。发布镜像已内置 Chromium（预设 `REVARO_CHROME_BIN=/usr/bin/chromium`，可覆盖为自带的浏览器）；`LAYOUT_CACHE_TTL` 与 `LAYOUT_CACHE_CAPACITY` 控制 layout 产物缓存回收。
 
 ## 文档编辑器点击 `.md`、`.markdown`、`.txt`、`.yaml`、`.yml`、`.json`、`.toml`、`.ini`、`.conf`、`.log` 或 `.csv` 文件即可打开编辑器；当前目录也可以直接新建文档。Markdown 支持编辑、分栏和安全过滤后的预览，`Ctrl/⌘ + S` 可保存。
 
