@@ -52,25 +52,37 @@ jobs:
           govulncheck ./...
       - name: Build binary
         run: CGO_ENABLED=0 go build -trimpath ./cmd/server
+      - uses: docker/setup-buildx-action@v4.1.0
       - name: Test Rust data plane
         # Build the shared production base, then test in a disposable container
         # so CI does not commit a multi-gigabyte Cargo target directory as an
-        # image layer.
+        # image layer. buildx 层缓存（与 e2e / publish 共享同一 GHA scope）命中时
+        # 跳过 FFmpeg 源码编译与第三方依赖编译，容器内只需重编 revaro crate。
         run: |
-          docker build --target dataplane-base --tag revaro-dataplane-ci .
+          docker buildx build \
+            --load --target dataplane-src --tag revaro-dataplane-ci \
+            --cache-from type=gha,scope=revaro-image \
+            --cache-to type=gha,scope=revaro-image,mode=max .
           docker run --rm revaro-dataplane-ci sh -c '
-            rustup component add rustfmt clippy &&
             cargo fmt --check &&
             cargo clippy --locked --all-targets -- -D warnings &&
             cargo test --locked
           '
+      - name: Restore cargo-audit
+        # cargo install 需要数分钟从源码编译；固定版本 + 缓存安装目录，
+        # 命中时直接复用二进制。
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo-audit
+          key: cargo-audit-0.22.2
       - name: Audit Rust dependencies
         working-directory: data-plane
         # cargo-audit exits non-zero for vulnerabilities. Its default warning
         # policy reports informational/unmaintained/unsound advisories without
         # treating them as vulnerabilities; do not add `--deny warnings` here.
         run: |
-          cargo install cargo-audit --locked
+          export PATH="$HOME/.cargo-audit/bin:$PATH"
+          command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked --version 0.22.2 --root "$HOME/.cargo-audit"
           cargo audit --file Cargo.lock
 
   e2e:
@@ -82,13 +94,27 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Restore Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('web/package-lock.json') }}
       - name: Install web and Chromium dependencies
         working-directory: web
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      - uses: docker/setup-buildx-action@v4.1.0
+      - name: Build Revaro image with shared layer cache
+        # 与 publish 共享同一 GHA 层缓存 scope：本 job 构建过的层
+        # publish 直接命中，同一提交不再整镜像重复构建。
+        run: |
+          docker buildx build \
+            --load --tag revaro-e2e:local \
+            --cache-from type=gha,scope=revaro-image \
+            --cache-to type=gha,scope=revaro-image,mode=max .
       - name: Build and start the real Revaro stack
-        run: docker compose -f compose.e2e.yml up -d --build
+        run: docker compose -f compose.e2e.yml up -d --no-build
       - name: Wait for readiness
         run: |
           for attempt in {1..90}; do
@@ -156,7 +182,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # e2e job 已为同一提交构建并写入该 scope：publish 命中后只需
+          # 恢复 + 推送，不再重复 Go / 前端 / data-plane / FFmpeg 构建。
+          cache-from: type=gha,scope=revaro-image
+          cache-to: type=gha,scope=revaro-image,mode=max
       - name: Record image digest
         run: echo "Published ghcr.io/vesperglow/revaro@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

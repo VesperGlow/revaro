@@ -15,7 +15,10 @@ FROM golang:1.26-alpine AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+# 仅复制 Go 源码：README / docs / workflow / data-plane 等与 Go 构建无关的
+# 改动不再使本层失效；前端产物由 web 阶段在下一步提供
+COPY cmd ./cmd
+COPY internal ./internal
 COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/revaro ./cmd/server
 
@@ -72,6 +75,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     clang cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
     libssl-dev libxml2-dev libacl1-dev \
     && rm -rf /var/lib/apt/lists/*
+# rustfmt / clippy 组件预装进基础层：CI 检查阶段不再每次临时下载组件
+RUN rustup component add rustfmt clippy
 # 用 /opt 的 ffmpeg 前缀替换 Debian 完整 libav*-dev / ffmpeg 包
 COPY --from=ffmpeg /opt/revaro/ffmpeg /opt/revaro/ffmpeg
 ENV PATH=/opt/revaro/ffmpeg/bin:$PATH \
@@ -79,10 +84,26 @@ ENV PATH=/opt/revaro/ffmpeg/bin:$PATH \
     LD_LIBRARY_PATH=/opt/revaro/ffmpeg/lib
 WORKDIR /src/data-plane
 COPY data-plane/Cargo.toml data-plane/Cargo.lock ./
+# 依赖桩编译层：用空 main 先把全部第三方依赖编译进 target/（release +
+# debug/测试 profile 含 dev-deps），随后删除 crate 自身的产物与指纹——
+# 下游只能依据真实源码重编 revaro crate，从结构上排除 cargo 依据 mtime
+# 把桩二进制误判为"已最新"的可能。Cargo.lock 与工具链不变时该层长期
+# 命中；同一 RUN 内清理 registry 解包内容，使该层只保留编译产物。
+FROM dataplane-base AS dataplane-src
+RUN mkdir src \
+    && echo 'fn main() {}' > src/main.rs \
+    && CARGO_INCREMENTAL=0 cargo build --locked --release \
+    && CARGO_INCREMENTAL=0 cargo test --locked --no-run \
+    && rm -rf src \
+        target/release/revaro-data-plane target/debug/revaro-data-plane \
+        target/release/.fingerprint/revaro-data-plane-* target/debug/.fingerprint/revaro-data-plane-* \
+        target/release/deps/revaro_data_plane-* target/debug/deps/revaro_data_plane-* \
+        "$CARGO_HOME/registry/src"
 COPY data-plane/src ./src
 
-FROM dataplane-base AS dataplane
-RUN cargo build --locked --release && cp target/release/revaro-data-plane /out-revaro-data-plane
+FROM dataplane-src AS dataplane
+RUN CARGO_INCREMENTAL=0 cargo build --locked --release \
+    && cp target/release/revaro-data-plane /out-revaro-data-plane
 
 FROM debian:bookworm-slim
 # 运行依赖最小化：TLS 证书 / 时区 + libstdc++/libgcc（静态内链 x265 需要）

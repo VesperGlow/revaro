@@ -15,3 +15,16 @@ web/.npm-cache/
 # 构建产物（web 阶段由 vite 生成，backend 阶段从 web 阶段复制）
 internal/webui/dist/
 data-plane/target/
+
+# 仓库文档、CI 与 Compose 配置：不进入任何构建阶段，
+# 这些文件改动不应使镜像层缓存失效
+.github/
+docs/
+README.md
+compose.yml
+compose.e2e.yml
+
+# 本地 e2e / 测试产物
+web/e2e/
+web/test-results/
+web/playwright-report/
