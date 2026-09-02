@@ -12,7 +12,7 @@ describe('app controller', () => {
       'LoginPage',
       'MediaPreview',
       'MoveCopyDialog',
-      'ReaderView',
+      'Reader',
       'SelectionToolbar',
       'ShareDialog',
     ])

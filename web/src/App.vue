@@ -192,7 +192,7 @@
       <ShareDialog v-else-if="modal==='share'" :file="selected" :active="share.active" :url="share.url" :created-at="share.createdAt" :busy="share.busy" :error="share.error" :copied="share.copied" @close="closeModal" @copy="copyShare" @revoke="revokeShare" @create="createShare" />
       <MediaPreview v-else-if="modal==='preview'&&selected" :selected="selected" :items="items" @close="closeModal" @change="selected=$event" @download="download" @move="showMove" @copy="showCopy" />
     </div>
-    <ReaderView v-if="modal==='reader'&&readerFile" :file="readerFile" @close="closeModal" />
+    <Reader v-if="modal==='reader'&&readerFile" :file="readerFile" @close="closeModal" />
     <AppDialog v-if="dialog.open" :title="dialog.title" :message="dialog.message" :confirm-label="dialog.confirmLabel" :cancel-label="dialog.cancelLabel" :tone="dialog.tone" :input="dialog.input" :value="dialog.value" :placeholder="dialog.placeholder" @update:value="dialog.value=$event" @confirm="finishDialog(true)" @cancel="finishDialog(false)" />
     <div v-if="toast.text" class="toast" :class="toast.kind">{{ toast.text }}</div>
   </div>

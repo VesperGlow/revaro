@@ -1,3 +1,0 @@
-export async function readerAPI(url,options={}){const response=await fetch(url,options);if(response.status===401){location.href='/';throw new Error('请先登录')}if(!response.ok)throw new Error((await response.json().catch(()=>null))?.error?.message||'打开失败');return response}
-export async function fetchBookInfo(bookId){const data=await(await readerAPI(`/api/files/${bookId}`)).json(),file=data&&data.file;if(!file)return null;return{id:file.id,title:file.name,kind:/\.epub$/i.test(file.name)?'epub':'txt'}}
-export async function fetchBookContent(bookId){return await(await readerAPI(`/api/files/${bookId}/book/content`)).json()}

@@ -830,29 +830,6 @@
   overflow: hidden;
   touch-action: none;
 }
-.reader-page {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-}
-.reader-zones {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  z-index: 5;
-}
-.reader-zone.prev {
-  width: 30%;
-  height: 100%;
-}
-.reader-zone.center {
-  width: 40%;
-  height: 100%;
-}
-.reader-zone.next {
-  width: 30%;
-  height: 100%;
-}
 .reader-loading {
   position: absolute;
   inset: 0;
@@ -887,10 +864,6 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-}
-.reader-page-label {
-  font-size: 11px;
-  text-align: center;
 }
 .reader-seek input[type="range"],
 .font-popover input[type="range"] {
@@ -1131,9 +1104,6 @@ body.reader-open {
   left: 0;
   right: 0;
   bottom: 0;
-}
-.reader-zones {
-  z-index: 6;
 }
 
 /* ===== 阅读器（原版 reader 移植）：完整样式接管 ===== */
