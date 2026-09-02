@@ -5,7 +5,7 @@ import { defineConfig } from '@playwright/test'
 // 重排无缝切换与进度恢复。
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /reader-v2.*\.spec\.ts/,
+  testMatch: /reader-flow.*\.spec\.ts/,
   timeout: 90_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

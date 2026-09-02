@@ -1,178 +1,484 @@
 <script setup lang="ts">
-// 服务端固定分页阅读器（v2）：客户端严格保持三页窗口（上一页/当前页/下一页），
-// 不做任何客户端分页。翻页热路径零网络、零重排：前后页提前预取进缓存，
-// 点击只做合成层 transform。字号/行距/旋转等布局变化走「旧 layout 继续读，
-// 新 profile 后台生成，完成后按 readingAnchor 无缝切换」。
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+// 连续 reading flow 阅读器：服务端只产出「标准化阅读流 chunk」，客户端把
+// 当前位置附近的少量 chunk 装进一个连续多栏 DOM（图片与文字同一排版上下文），
+// 用浏览器原生 CSS columns 分页，翻页只做合成层 transform。
+// 字号/横竖屏/行距变化只在客户端重新排版；进度始终是 readingAnchor。
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { DriveFile } from './api'
-import type { BookProgress, LayoutManifest, LayoutProfile, ReaderPrefs } from './reader/types'
-import { fetchPageByURL, fetchProgress, saveProgress, submitProfile, waitForReadable, LayoutSuperseded } from './reader/api'
-import { pageForAnchor, anchorForPage, clampPage, tocActiveIndex } from './reader/manifest'
+import type { BookProgress, FlowManifest, ReadingAnchor, ReaderPrefs } from './reader/types'
+import { fetchBookInfo, fetchChunk, fetchFlow, fetchProgress, saveProgress } from './reader/api'
+import { chunkForBlock, locateChar, spineForBlock, tocActiveIndex, totalBlocks } from './reader/flow'
 import { PageCache, InFlight } from './reader/cache'
-import { buildProfile, loadPrefs, savePrefs, FONT_MIN, FONT_MAX, LINE_HEIGHTS } from './reader/prefs'
+import { clamp, computeMargins, FONT_MAX, FONT_MIN, LINE_HEIGHTS, loadPrefs, savePrefs } from './reader/prefs'
 
 const props = defineProps<{ file: DriveFile }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const kind = computed(() => (/\.epub$/i.test(props.file.name) ? 'epub' : 'txt'))
 const prefs = reactive<ReaderPrefs>(loadPrefs())
+const isDark = computed(() => prefs.theme === 'dark')
 
 const viewportEl = ref<HTMLElement | null>(null)
-const trackEl = ref<HTMLElement | null>(null)
-const slotEls = ref<(HTMLElement | null)[]>([])
-const slotRefs = [1, 2, 3].map(i => (el: unknown) => {
-  slotEls.value[i - 1] = (el as HTMLElement) || null
-})
+const flowEl = ref<HTMLElement | null>(null)
 
 const stage = ref<'loading' | 'reading' | 'error'>('loading')
 const loadingText = ref('正在打开书页…')
 const errorText = ref('')
-const manifest = shallowRef<LayoutManifest | null>(null)
-const current = ref(0)
-const profileID = ref('')
 const title = ref(props.file.name)
+const manifest = ref<FlowManifest | null>(null)
 const tocOpen = ref(false)
 const fontOpen = ref(false)
 const toolsVisible = ref(true)
 const tocActive = ref(-1)
-const relayout = reactive({ pending: false, pages: 0, spinesDone: 0, spinesTotal: 0 })
+const percentNow = ref(0)
 
-const pageCount = computed(() => manifest.value?.page_count ?? 1)
-const pageLabel = computed(() => {
-  if (!manifest.value) return '— / — · 0%'
-  const pct = pageCount.value <= 1 ? 100 : Math.round((current.value / (pageCount.value - 1)) * 100)
-  return `${current.value + 1} / ${pageCount.value} · ${pct}%`
-})
-const toc = computed(() => manifest.value?.toc ?? [])
+// ---- 排版参数 ----
+const FONT_STACK = '"Noto Serif SC", "Songti SC", Georgia, "Times New Roman", "STSong", SimSun, serif'
 
-// ---- 三页窗口（非响应式的槽位簿记；DOM 由 syncSlots 统一写入） ----
-const cache = new PageCache(12)
-const inFlight = new InFlight()
-let rolePages: number[] = [] // [左, 中, 右] 三槽当前的绝对页码
-let domPages: number[] = [] // 三槽当前已渲染的页码
+// ---- 引擎内部状态（非响应式） ----
+const MAX_WINDOW = 8 // 窗口内最多加载的 chunk 数
+let metrics = { width: 0, height: 0, side: 0, top: 0, bottom: 0, pitch: 0, colHeight: 0 }
+let c0 = 0 // 已加载窗口首 chunk
+let c1 = -1 // 已加载窗口末 chunk
+let cols = 1 // 当前已排版（已加载窗口内）的栏数
+let currentCol = 0
+let lastX = 0
+let topAnchor: ReadingAnchor | null = null // 当前页顶部的 readingAnchor
+const chunkHTML = new PageCache(24)
+const chunkFlight = new InFlight()
 let turnBusy = false
-let pendingTurns = 0 // 动画期间的连点累加排队：结束后续翻
+let pendingTurns = 0
 let currentAnim: Animation | null = null
 let suppressZoneClickUntil = 0
-let lastDir: -1 | 1 = 1 // 最近一次翻页方向：预取按阅读方向不对称分配
-let currentAnchor: { spine: number; path: number[]; offset: number } | null = null
-let manifestTimer: ReturnType<typeof setTimeout> | null = null
-let manifestGen = 0 // 当前布局的代数（重排/关闭后旧轮询自动失效）
-let relayoutVersion = 0
+let gen = 0 // 打开代数：卸载后旧异步任务自动失效
 let progressTimer: ReturnType<typeof setTimeout> | null = null
-let relayoutTimer: ReturnType<typeof setTimeout> | null = null
+let syncTimer: ReturnType<typeof setTimeout> | null = null
+let fontTimer: ReturnType<typeof setTimeout> | null = null
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
 let lastViewport = { w: 0, h: 0 }
+let closing = false
 
-function pageW(): number {
-  return manifest.value?.profile.viewport_w ?? 0
+function pageLabelText(): string {
+  return `${percentNow.value.toFixed(percentNow.value % 1 ? 1 : 0)}%`
 }
 
-function setTrackX(x: number) {
-  const el = trackEl.value
-  if (!el) return
-  el.style.transition = 'none'
-  el.style.transform = `translateX(${x}px)`
+const pageLabel = ref('0%')
+const toc = computed(() => manifest.value?.toc ?? [])
+
+// ---- 基础工具 ----
+
+function totalBlockCount(): number {
+  const m = manifest.value
+  return m ? totalBlocks(m) : 0
 }
 
-function animateTrack(from: number, to: number): Promise<void> {
+function lastChunkIndex(): number {
+  const m = manifest.value
+  return m && m.chunks.length ? m.chunks.length - 1 : -1
+}
+
+function viewportSize(): { w: number; h: number } {
+  const el = viewportEl.value
+  const w = el?.clientWidth || window.innerWidth
+  const h = el?.clientHeight || window.innerHeight
+  return { w, h }
+}
+
+// applyMetrics 按视口与偏好设置多栏排版参数并更新几何数据。
+function applyMetrics() {
+  const flow = flowEl.value
+  if (!flow) return
+  const { w, h } = viewportSize()
+  lastViewport = { w, h }
+  const margins = computeMargins(w, h)
+  metrics = {
+    width: w,
+    height: h,
+    side: margins.side,
+    top: margins.top,
+    bottom: margins.bottom,
+    pitch: w,
+    colHeight: h - margins.top - margins.bottom,
+  }
+  const s = flow.style
+  s.width = `${w}px`
+  s.height = `${h}px`
+  s.boxSizing = 'border-box'
+  s.padding = `${margins.top}px ${margins.side}px ${margins.bottom}px`
+  s.columnWidth = `${Math.max(1, w - 2 * margins.side)}px`
+  s.columnGap = `${2 * margins.side}px`
+  s.columnFill = 'auto'
+  flow.classList.toggle('txt', manifest.value?.format === 'txt')
+  flow.style.setProperty('--revaro-font-family', FONT_STACK)
+  flow.style.setProperty('--revaro-font-size', `${prefs.fontSize}px`)
+  flow.style.setProperty('--revaro-line-height', String(prefs.lineHeight))
+  flow.style.setProperty('--revaro-col-height', `${metrics.colHeight}px`)
+  flow.style.transform = 'translateX(0px)'
+}
+
+// measureCols 统计已加载窗口的栏数（每栏 = 一屏宽）。
+function measureCols(): number {
+  const flow = flowEl.value
+  if (!flow || metrics.pitch <= 0) return 1
+  // 多栏内容总宽 = scrollWidth；栏距恒等于 2×侧边距 → 栏距 + 栏宽 = 屏宽
+  const total = Math.max(metrics.pitch, flow.scrollWidth)
+  cols = Math.max(1, Math.round(total / metrics.pitch))
+  return cols
+}
+
+function setX(x: number) {
+  const flow = flowEl.value
+  if (!flow) return
+  flow.style.transition = 'none'
+  const rx = Math.round(x)
+  flow.style.transform = `translateX(${rx}px)`
+  lastX = rx
+}
+
+function animateX(from: number, to: number): Promise<void> {
+  const flow = flowEl.value
+  if (!flow) return Promise.resolve()
   currentAnim?.cancel()
+  setX(from)
   return new Promise(resolve => {
-    const el = trackEl.value
-    if (!el) {
-      resolve()
-      return
-    }
-    setTrackX(from)
-    currentAnim = el.animate(
-      [{ transform: `translateX(${from}px)` }, { transform: `translateX(${to}px)` }],
+    currentAnim = flow.animate(
+      [{ transform: `translateX(${Math.round(from)}px)` }, { transform: `translateX(${Math.round(to)}px)` }],
       { duration: 260, easing: 'cubic-bezier(.22,.72,.26,1)' },
     )
     currentAnim.onfinish = () => {
       currentAnim = null
+      setX(to)
       resolve()
     }
   })
 }
 
-// pageURLFor 返回某全局页码的页面 URL；页码超出当前快照（渐进式分页
-// 尚未生成）返回 null。
-function pageURLFor(p: number): string | null {
-  const m = manifest.value
-  if (!m || p < 0 || p >= m.pages.length) return null
-  return m.pages[p].url ?? null
+// ---- DOM 定位 ----
+
+function blockElFor(block: number): HTMLElement | null {
+  const flow = flowEl.value
+  if (!flow) return null
+  return flow.querySelector<HTMLElement>(`[data-block="${block}"]`)
 }
 
-// syncSlots 让三槽内容与 rolePages 一致；只写内容变化/屏外槽，不触发布局。
-function syncSlots() {
-  if (!manifest.value) return
-  rolePages = [current.value - 1, current.value, current.value + 1]
-  for (let i = 0; i < 3; i++) {
-    const el = slotEls.value[i]
-    if (!el) continue
-    el.style.transform = `translateX(${(i - 1) * pageW()}px)`
-    const p = rolePages[i]
-    if (p === domPages[i]) continue
-    domPages[i] = p
-    const url = pageURLFor(p)
-    el.innerHTML = url ? cache.get(url) ?? '' : ''
+function childIndexOf(parent: Node, child: Node): number {
+  for (let i = 0; i < parent.childNodes.length; i++) if (parent.childNodes[i] === child) return i
+  return -1
+}
+
+// anchorRange 把 readingAnchor 还原为 DOM Range（需 anchor.block 已加载）。
+function anchorRange(anchor: ReadingAnchor): Range | null {
+  const el = blockElFor(anchor.block)
+  if (!el) return null
+  let node: Node | null = el
+  for (const idx of anchor.path) {
+    node = node?.childNodes[idx] ?? null
+    if (!node) return null
   }
+  if (!node) return null
+  const doc = el.ownerDocument
+  const range = doc.createRange()
+  if (node.nodeType === Node.TEXT_NODE) {
+    const len = (node as Text).data.length
+    range.setStart(node, clamp(anchor.offset < 0 ? 0 : anchor.offset, 0, len))
+    range.collapse(true)
+    return range
+  }
+  if (anchor.offset === -1 && node === el) {
+    // 块起点（元素边界）：直接用块首行
+    return null
+  }
+  // 元素边界（块内某元素之前）
+  const parent: Node | null = node.parentNode
+  if (!parent) return null
+  const idx = Math.max(0, childIndexOf(parent, node))
+  range.setStart(parent, idx)
+  range.collapse(true)
+  return range
 }
 
-function ensurePage(p: number): Promise<string> {
-  const url = pageURLFor(p)
-  if (!url) return Promise.resolve('') // 快照外：渐进式分页尚未生成该页
-  const hit = cache.get(url)
-  if (hit !== undefined) return Promise.resolve(hit)
-  return inFlight.run(url, async () => {
-    const html = await fetchPageByURL(url)
-    cache.set(url, html)
+function colFromRect(rect: DOMRect | undefined): number {
+  const flow = flowEl.value
+  if (!flow || !rect) return 0
+  const flowRect = flow.getBoundingClientRect()
+  const rel = rect.left - flowRect.left
+  if (metrics.pitch <= 0) return 0
+  return clamp(Math.floor((rel - metrics.side + 1) / metrics.pitch), 0, Math.max(0, cols - 1))
+}
+
+function firstRectOf(el: HTMLElement): DOMRect | null {
+  const rects = el.getClientRects()
+  if (rects.length) return rects[0] as DOMRect
+  return null
+}
+
+function firstRectOfRange(range: Range): DOMRect | null {
+  const rects = range.getClientRects()
+  if (rects.length) return rects[0] as DOMRect
+  return null
+}
+
+// colForAnchor 返回 anchor 所在的栏（只考虑已加载窗口）。
+function colForAnchor(anchor: ReadingAnchor | null): number {
+  if (!anchor) return 0
+  if (anchor.path.length === 0 && anchor.offset === -1) {
+    const el = blockElFor(anchor.block)
+    if (el) {
+      const r = firstRectOf(el) ?? el.getBoundingClientRect()
+      return colFromRect(r)
+    }
+    return 0
+  }
+  const range = anchorRange(anchor)
+  if (range) {
+    const r = firstRectOfRange(range)
+    if (r) return colFromRect(r)
+  }
+  const el = blockElFor(anchor.block)
+  if (el) {
+    const r = firstRectOf(el)
+    if (r) return colFromRect(r)
+  }
+  return 0
+}
+
+// blockAtPoint 返回点 (x,y) 处的顶层内容块（沿 DOM 向上找 data-block）。
+function blockAtPoint(x: number, y: number): HTMLElement | null {
+  const nodes = document.elementsFromPoint(x, y)
+  for (const node of nodes) {
+    const el = node as HTMLElement
+    let cur: HTMLElement | null = el
+    while (cur) {
+      if (cur.hasAttribute?.('data-block')) return cur
+      cur = cur.parentElement
+    }
+  }
+  return null
+}
+
+function makeAnchorFromBlockEl(blockEl: HTMLElement, path: number[], offset: number): ReadingAnchor | null {
+  const m = manifest.value
+  if (!m) return null
+  const block = Number(blockEl.dataset.block)
+  if (!Number.isInteger(block)) return null
+  return { spine: spineForBlock(m, block), block, path, offset }
+}
+
+// contentOrigin 返回当前页（第 currentCol 栏）内容区左上角的视口坐标。
+function contentOrigin(): { x: number; y: number } {
+  const vp = viewportEl.value?.getBoundingClientRect()
+  if (!vp) return { x: window.innerWidth / 2, y: metrics.top + 2 }
+  return { x: vp.left + metrics.side + 2, y: vp.top + metrics.top + 2 }
+}
+
+// captureTopAnchor 读取当前屏顶部的文本位置作为 readingAnchor。
+function captureTopAnchor(): ReadingAnchor | null {
+  const flow = flowEl.value
+  const m = manifest.value
+  if (!flow || !m) return null
+  const { x, y } = contentOrigin()
+  let range: Range | null = null
+  try {
+    if (document.caretRangeFromPoint) range = document.caretRangeFromPoint(x, y)
+  } catch {
+    range = null
+  }
+  const container = range?.startContainer
+  if (container && container.nodeType === Node.TEXT_NODE) {
+    const start = range!.startOffset
+    const path: number[] = []
+    let node: Node | null = container
+    let blockEl: HTMLElement | null = null
+    while (node) {
+      if ((node as HTMLElement).hasAttribute?.('data-block')) {
+        blockEl = node as HTMLElement
+        break
+      }
+      const parent: Node | null = node.parentNode
+      if (!parent) break
+      path.unshift(childIndexOf(parent, node))
+      node = parent
+    }
+    if (blockEl) {
+      const anchor = makeAnchorFromBlockEl(blockEl, path, start)
+      if (anchor) {
+        const rect = firstRectOfRange(range!)
+        // caret 若落在别的栏（如整页图顶部），退化到块起点锚点
+        if (!rect || colFromRect(rect) !== currentCol) {
+          const pt = blockAtPoint(x, y)
+          if (pt) return makeAnchorFromBlockEl(pt, [], -1)
+        }
+        return anchor
+      }
+    }
+  }
+  const pt = blockAtPoint(x, y)
+  if (pt) return makeAnchorFromBlockEl(pt, [], -1)
+  return null
+}
+
+// anchorAtTopOfCurrentCol 兜底：取当前页顶部可见块。
+function anchorAtTopOfCurrentCol(): ReadingAnchor | null {
+  const m = manifest.value
+  if (!m) return null
+  const { x, y } = contentOrigin()
+  const pt = blockAtPoint(x, y)
+  return pt ? makeAnchorFromBlockEl(pt, [], -1) : null
+}
+
+// ---- 窗口管理 ----
+
+async function chunkText(index: number): Promise<string> {
+  const hit = chunkHTML.get(index)
+  if (hit !== undefined) return hit
+  return chunkFlight.run(index, async () => {
+    const html = await fetchChunk(props.file.id, index)
+    chunkHTML.set(index, html)
     return html
   })
 }
 
-// 按阅读方向智能预取：前行时 [p+1, p+2, p+3, p-1]，后退时镜像。
-// 只碰当前快照内已生成的页；快照增长后由 manifest 轮询补触发。
-function prefetchAround(p: number, dir: -1 | 1 = 1) {
-  const order = dir >= 0 ? [1, 2, 3, -1] : [-1, -2, -3, 1]
-  for (const delta of order) {
-    const q = p + delta
-    if (q < 0 || q >= pageCount.value) continue
-    const url = pageURLFor(q)
-    if (!url || cache.has(url)) continue
-    void ensurePage(q).then(() => syncSlots())
+function chunkElement(index: number): HTMLElement | null {
+  const flow = flowEl.value
+  return flow ? (flow.querySelector(`.rf-chunk[data-chunk="${index}"]`) as HTMLElement | null) : null
+}
+
+// renderWindow 全量重建窗口 DOM（window = [newC0, newC1]，chunk HTML 走缓存）。
+async function renderWindow(newC0: number, newC1: number): Promise<void> {
+  const flow = flowEl.value
+  const m = manifest.value
+  if (!flow || !m) return
+  const last = Math.max(0, m.chunks.length - 1)
+  newC0 = clamp(newC0, 0, last)
+  newC1 = clamp(newC1, newC0, last)
+  flow.textContent = ''
+  for (let i = newC0; i <= newC1; i++) {
+    const html = await chunkText(i)
+    const section = document.createElement('div')
+    section.className = 'rf-chunk'
+    section.dataset.chunk = String(i)
+    section.innerHTML = html
+    flow.appendChild(section)
+  }
+  c0 = newC0
+  c1 = newC1
+}
+
+// windowAround 让窗口覆盖 centerChunk 附近（[center-2, center+4]，上限 MAX_WINDOW）。
+async function windowAround(centerChunk: number): Promise<void> {
+  const m = manifest.value
+  if (!m || m.chunks.length === 0) return
+  const n = m.chunks.length
+  const clamped = clamp(centerChunk, 0, n - 1)
+  let targetC0 = clamp(clamped - 2, 0, n - 1)
+  let targetC1 = clamp(clamped + 4, targetC0, n - 1)
+  if (targetC1 - targetC0 + 1 > MAX_WINDOW) targetC0 = targetC1 - MAX_WINDOW + 1
+  if (targetC0 === c0 && targetC1 === c1 && c1 >= 0) return
+  await renderWindow(targetC0, targetC1)
+}
+
+// alignToAnchor 不带动画地回到 topAnchor 所在栏（内容/窗口变化后位置不丢）。
+async function alignToAnchor(): Promise<void> {
+  if (!manifest.value || stage.value !== 'reading') return
+  const anchor = topAnchor ?? anchorAtTopOfCurrentCol()
+  const col = anchor ? colForAnchor(anchor) : currentCol
+  currentCol = clamp(col, 0, Math.max(0, cols - 1))
+  setX(-currentCol * metrics.pitch)
+  if (anchor) {
+    topAnchor = anchor
+    captureTop()
+  } else {
+    captureTop()
   }
 }
 
-async function turn(dir: -1 | 1, fromX = 0) {
+// captureTop 记录当前页顶部 anchor 并刷新 UI。
+function captureTop() {
+  const captured = captureTopAnchor() ?? anchorAtTopOfCurrentCol()
+  if (captured) topAnchor = captured
+  const m = manifest.value
+  if (!m) return
+  const block = topAnchor ? topAnchor.block : -1
+  tocActive.value = tocActiveIndex(m, block)
+  percentNow.value = topAnchor ? percentOfAnchor(topAnchor) : 0
+  pageLabel.value = pageLabelText()
+}
+
+// percentOfAnchor 计算 anchor 前的文本占全书比例（块级精度）。
+function percentOfAnchor(anchor: ReadingAnchor): number {
+  const m = manifest.value
+  if (!m || m.total_chars <= 0) return 0
+  const ci = chunkForBlock(m, anchor.block)
+  if (ci < 0) return 0
+  let chars = 0
+  for (let i = 0; i < ci; i++) chars += m.chunks[i].chars
+  const el = chunkElement(ci)
+  if (el) {
+    for (const child of Array.from(el.children) as HTMLElement[]) {
+      const b = Number(child.dataset.block)
+      if (b >= anchor.block) break
+      chars += child.textContent?.length ?? 0
+    }
+  }
+  return (chars / m.total_chars) * 100
+}
+
+// extendForward 确保 c1+1 已入窗口（沿窗口向右扩，必要时丢弃身后 chunk）。
+async function extendForward(): Promise<boolean> {
+  const m = manifest.value
+  if (!m || c1 < 0 || c1 >= m.chunks.length - 1) return false
+  await windowAround(c1 + 1)
+  measureCols()
+  await alignToAnchor()
+  return true
+}
+
+// extendBackward 确保 c0-1 已入窗口（向左扩）。
+async function extendBackward(): Promise<boolean> {
+  const m = manifest.value
+  if (!m || c0 <= 0) return false
+  await windowAround(c0 - 1)
+  measureCols()
+  await alignToAnchor()
+  return true
+}
+
+// ---- 翻页 ----
+
+async function goToCol(col: number, animate: boolean): Promise<void> {
   if (!manifest.value || stage.value !== 'reading') return
-  lastDir = dir
+  currentCol = clamp(col, 0, Math.max(0, cols - 1))
+  const to = -currentCol * metrics.pitch
+  if (animate) {
+    await animateX(lastX, to)
+  } else {
+    setX(to)
+  }
+  captureTop()
+  scheduleWindowSync()
+}
+
+async function turn(dir: -1 | 1) {
+  const m = manifest.value
+  if (!m || stage.value !== 'reading') return
   if (turnBusy) {
-    pendingTurns += dir // 动画中连点：累加排队，动画结束后逐个续翻
+    pendingTurns += dir
     return
   }
-  const target = current.value + dir
-  if (target < 0 || target >= pageCount.value) return
   turnBusy = true
   try {
-    await ensurePage(target)
-    // 远侧槽（动画结束后轮换为新远侧）此刻在屏外，立即填入 target+dir 页
-    const far = dir === 1 ? 0 : 2
-    const farPage = target + dir
-    if (farPage >= 0 && farPage < pageCount.value) {
-      const html = await ensurePage(farPage)
-      if (domPages[far] !== farPage) {
-        domPages[far] = farPage
-        const el = slotEls.value[far]
-        if (el) el.innerHTML = html
+    let target = currentCol + dir
+    if (target < 0 || target >= cols) {
+      if (dir < 0) {
+        if (c0 <= 0 || !(await extendBackward())) return
+      } else {
+        if (c1 >= lastChunkIndex() || !(await extendForward())) return
       }
+      target = currentCol + dir
+      if (target < 0 || target >= cols) return
     }
-    await animateTrack(fromX, -dir * pageW())
-    current.value = target
-    syncSlots()
-    setTrackX(0)
-    prefetchAround(target, dir)
-    afterPageChange()
+    await goToCol(target, true)
+    queueProgressSave()
   } finally {
     turnBusy = false
     if (pendingTurns !== 0) {
@@ -183,265 +489,96 @@ async function turn(dir: -1 | 1, fromX = 0) {
   }
 }
 
-async function seek(page: number) {
-  if (!manifest.value || stage.value !== 'reading') return
-  const target = clampPage(manifest.value, page)
-  // 不做 target===current 的提前返回：滑块 input 会先更新 current 作预览，
-  // 同页重渲染是幂等的（缓存命中 + 槽位内容不变），提前返回反而会漏掉
-  // 「input 预览过但未渲染」的路径。
-  turnBusy = true
-  currentAnim?.cancel()
-  try {
-    await ensurePage(target) // 跳页允许一次网络等待；连续翻页不经过这里
-    current.value = target
-    syncSlots()
-    setTrackX(0)
-    prefetchAround(target, lastDir)
-    afterPageChange()
-  } finally {
-    turnBusy = false
-  }
+function previous() {
+  void turn(-1)
+}
+function next() {
+  void turn(1)
 }
 
-function afterPageChange(save = true) {
+// seekToAnchor 跳到任意 anchor（跨 chunk：自动重建窗口）。
+async function seekToAnchor(anchor: ReadingAnchor) {
   const m = manifest.value
-  if (m) {
-    currentAnchor = anchorForPage(m, current.value)
-    tocActive.value = tocActiveIndex(m, current.value)
-  }
-  if (save) queueProgressSave()
-  // 渐进式分页：当前快照尚未完整时，周期性拉取新快照补全后续页
-  if (m && !m.complete && !manifestTimer) scheduleManifestPoll()
+  if (!m || stage.value !== 'reading') return
+  const total = totalBlockCount()
+  const block = clamp(anchor.block, 0, Math.max(0, total - 1))
+  const fixed: ReadingAnchor = { spine: anchor.spine, block, path: anchor.path, offset: anchor.offset }
+  const ci = chunkForBlock(m, block)
+  await windowAround(ci < 0 ? 0 : ci)
+  measureCols()
+  await goToCol(colForAnchor(fixed), false)
+  queueProgressSave()
 }
 
-// ---- 进度（readingAnchor + profile，防抖保存） ----
-function queueProgressSave() {
-  if (progressTimer) clearTimeout(progressTimer)
-  progressTimer = setTimeout(() => {
-    progressTimer = null
-    void saveNow()
-  }, 1200)
-}
-
-async function saveNow() {
+// jumpToBlock 跳到某顶层内容块（目录/进度条）。
+async function jumpToBlock(block: number) {
   const m = manifest.value
-  if (!m) return
-  const progress: BookProgress = {
-    anchor: anchorForPage(m, current.value),
-    profile: profileID.value,
-  }
-  try {
-    await saveProgress(props.file.id, progress)
-  } catch (error) {
-    console.error('保存阅读进度失败', error)
-  }
+  if (!m || stage.value !== 'reading') return
+  const total = totalBlockCount()
+  const b = clamp(block, 0, Math.max(0, total - 1))
+  await seekToAnchor({ spine: spineForBlock(m, b), block: b, path: [], offset: -1 })
 }
 
-function flushProgress() {
-  if (progressTimer) {
-    clearTimeout(progressTimer)
-    progressTimer = null
-  }
-  void saveNow()
-}
-
-// ---- 打开书籍 ----
-async function open() {
-  stage.value = 'loading'
-  loadingText.value = '正在读取书籍…'
-  const gen = ++manifestGen
-  try {
-    const progress = await fetchProgress(props.file.id).catch((): BookProgress => ({}))
-    const profile = profileFromViewport()
-    loadingText.value = '正在排版…'
-    const status = await submitProfile(props.file.id, profile, progress.anchor ?? null)
-    profileID.value = status.profile_id
-    const startAnchor = progress.anchor ?? null
-    // 渐进式：目标章完成即可读，不等全书生成完
-    const m = await waitForReadable(props.file.id, status.profile_id, startAnchor, {
-      onProgress: s => {
-        const parts: string[] = ['正在排版…']
-        if (s.spines_done != null && s.spines_total) parts.push(`${s.spines_done}/${s.spines_total} 章`)
-        if (s.pages) parts.push(`${s.pages} 页`)
-        loadingText.value = parts.join(' ')
-      },
-      pageForAnchor: (manifest, anchor) => pageForAnchor(manifest, anchor),
-    })
-    if (gen !== manifestGen) return // 组件已卸载或布局已重开
-    manifest.value = m
-    applyTrackSize()
-    const start = resolveStartPage(m, progress)
-    await ensurePage(start)
-    current.value = start
-    currentAnchor = anchorForPage(m, start)
-    syncSlots()
-    setTrackX(0)
-    prefetchAround(start, 1)
-    stage.value = 'reading'
-    afterPageChange(false)
-  } catch (error) {
-    if (gen !== manifestGen) return
-    stage.value = 'error'
-    errorText.value = (error as Error).message || '打开失败'
-  }
-}
-
-// scheduleManifestPoll 渐进式分页的快照轮询：当前快照不完整时周期性
-// 拉取新快照（页码随前缀和增长而漂移），按当前 anchor 重映射页面。
-function scheduleManifestPoll() {
-  if (manifestTimer) return
-  manifestTimer = setTimeout(() => void pollManifest(), 800)
-}
-
-async function pollManifest() {
-  manifestTimer = null
+// seekFraction 按全局文本比例跳页（进度条拖动）。
+async function seekFraction(fraction: number) {
   const m = manifest.value
-  const gen = manifestGen
-  if (!m || m.complete || stage.value !== 'reading') return
-  try {
-    const next = await fetchManifestSnapshot()
-    if (gen !== manifestGen || !manifest.value) return
-    handleManifestUpdate(next)
-  } catch {
-    /* 快照尚未发布：稍后再试 */
+  if (!m || !m.total_chars || stage.value !== 'reading') return
+  const target = Math.round(clamp(fraction, 0, 1) * m.total_chars)
+  const { chunk, offset } = locateChar(m, target)
+  await windowAround(chunk)
+  measureCols()
+  const el = chunkElement(chunk)
+  let block = m.chunks[chunk]?.block_start ?? 0
+  if (el) {
+    block = blockContainingOffset(el, offset, block)
   }
-  if (gen === manifestGen && manifest.value && !manifest.value.complete) scheduleManifestPoll()
+  await jumpToBlock(block)
 }
 
-async function fetchManifestSnapshot(): Promise<LayoutManifest> {
-  const { fetchManifest } = await import('./reader/api')
-  return fetchManifest(props.file.id, profileID.value)
+function onSeekInput(event: Event) {
+  const value = Number((event.target as HTMLInputElement).value)
+  if (!Number.isFinite(value)) return
+  void seekFraction(value / 1000)
 }
 
-function handleManifestUpdate(next: LayoutManifest) {
+// blockContainingOffset 在 chunk DOM 内按文本长度找到包含该字符偏移的块。
+function blockContainingOffset(chunkEl: HTMLElement, offset: number, firstBlock: number): number {
+  let acc = 0
+  let current = firstBlock
+  for (const child of Array.from(chunkEl.children) as HTMLElement[]) {
+    const b = Number(child.dataset.block)
+    if (Number.isInteger(b)) current = b
+    const len = child.textContent?.length ?? 0
+    if (acc + len >= offset) return current
+    acc += len
+  }
+  return current
+}
+
+// ---- 窗口保持（每页变化后的余量预取） ----
+
+function scheduleWindowSync() {
+  if (syncTimer) clearTimeout(syncTimer)
+  syncTimer = setTimeout(() => void windowSync(), 200)
+}
+
+async function windowSync() {
+  syncTimer = null
   const m = manifest.value
-  if (!m) return
-  const anchor = currentAnchor ?? anchorForPage(m, current.value)
-  manifest.value = next
-  const target = anchor ? clampPage(next, pageForAnchor(next, anchor)) : current.value
-  current.value = target
-  currentAnchor = anchor
-  // URL 键缓存跨快照命中：页面对象不变，只是全局页码重映射
-  syncSlots()
-  prefetchAround(target, lastDir)
-  tocActive.value = tocActiveIndex(next, target)
-  if (next.complete) {
-    if (manifestTimer) {
-      clearTimeout(manifestTimer)
-      manifestTimer = null
-    }
-    if (relayout.pending) relayout.pending = false
+  if (closing || !m || stage.value !== 'reading' || c1 < 0) return
+  const cb = topAnchor ? chunkForBlock(m, topAnchor.block) : -1
+  if (cb < 0) return
+  if (cb >= c1 - 1 && c1 < m.chunks.length - 1) {
+    await extendForward()
+  }
+  // 后退到窗口最前时预取前一个 chunk（含重排对齐）
+  else if (cb <= c0 && c0 > 0 && currentCol <= 1) {
+    await extendBackward()
   }
 }
 
-function profileFromViewport(): LayoutProfile {
-  const el = viewportEl.value
-  const w = el?.clientWidth || window.innerWidth
-  const h = el?.clientHeight || window.innerHeight
-  lastViewport = { w, h }
-  return buildProfile(w, h, prefs)
-}
+// ---- 交互 ----
 
-function applyTrackSize() {
-  const m = manifest.value
-  if (!m || !trackEl.value) return
-  trackEl.value.style.width = `${m.profile.viewport_w}px`
-  trackEl.value.style.height = `${m.profile.viewport_h}px`
-}
-
-function resolveStartPage(m: LayoutManifest, progress: BookProgress): number {
-  // 恢复只靠 readingAnchor（跨 layout 稳定）；无锚点时从第一页开始
-  if (progress.anchor) return clampPage(m, pageForAnchor(m, progress.anchor))
-  return 0
-}
-
-// ---- 布局切换：旧 layout 继续读，新 profile 后台生成，完成后 anchor 无缝切换 ----
-function scheduleRelayout() {
-  if (!manifest.value || stage.value !== 'reading') return
-  if (relayoutTimer) clearTimeout(relayoutTimer)
-  relayoutTimer = setTimeout(() => void relayoutNow(), 600)
-}
-
-async function relayoutNow() {
-  if (!manifest.value) return
-  const version = ++relayoutVersion
-  const anchor = currentAnchor ?? anchorForPage(manifest.value, current.value)
-  relayout.pending = true
-  try {
-    const status = await submitProfile(props.file.id, profileFromViewport(), anchor)
-    if (version !== relayoutVersion) return
-    // 渐进式：新 profile 也是目标章先可读，就绪后按 anchor 无缝切换
-    const m = await waitForReadable(props.file.id, status.profile_id, anchor, {
-      aborted: () => version !== relayoutVersion,
-      pageForAnchor: (manifest, a) => pageForAnchor(manifest, a),
-      onProgress: s => {
-        if (version === relayoutVersion) {
-          relayout.pages = s.pages ?? 0
-          relayout.spinesDone = s.spines_done ?? 0
-          relayout.spinesTotal = s.spines_total ?? 0
-        }
-      },
-    })
-    if (version !== relayoutVersion) return
-    manifest.value = m
-    profileID.value = status.profile_id
-    applyTrackSize()
-    // 页缓存按 profile 隔离：切换 layout 时旧页面内容全部作废，强制重取
-    cache.clear()
-    domPages = [-2, -2, -2]
-    const target = anchor ? clampPage(m, pageForAnchor(m, anchor)) : 0
-    await ensurePage(target)
-    current.value = target
-    currentAnchor = anchor
-    syncSlots()
-    setTrackX(0)
-    prefetchAround(target, lastDir)
-    afterPageChange()
-    // 新 profile 若只是部分生成，继续后台轮询直到 complete
-    if (!m.complete) scheduleManifestPoll()
-  } catch (error) {
-    if (version === relayoutVersion && !(error instanceof LayoutSuperseded)) {
-      console.error('重排失败，继续使用旧排版', error)
-    }
-  } finally {
-    if (version === relayoutVersion) {
-      // 已切到新 profile 且仍未生成完 → 指示器保持到 complete；
-      // 失败/被取代（manifest 仍是旧 profile）→ 收起指示器，继续用旧排版。
-      const m = manifest.value
-      relayout.pending = Boolean(m && m.profile_id === profileID.value && !m.complete)
-    }
-  }
-}
-
-function onFontInput() {
-  prefs.fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(prefs.fontSize)))
-  savePrefs(prefs)
-  scheduleRelayout()
-}
-
-function adjustFont(delta: number) {
-  prefs.fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, prefs.fontSize + delta))
-  savePrefs(prefs)
-  scheduleRelayout()
-}
-
-function setLineHeight(value: number) {
-  prefs.lineHeight = value
-  savePrefs(prefs)
-  scheduleRelayout()
-}
-
-function onResize() {
-  if (!manifest.value) return
-  const el = viewportEl.value
-  const w = el?.clientWidth ?? 0
-  const h = el?.clientHeight ?? 0
-  if (w === lastViewport.w && h === lastViewport.h) return
-  if (resizeTimer) clearTimeout(resizeTimer)
-  resizeTimer = setTimeout(() => scheduleRelayout(), 300)
-}
-
-// ---- 交互：热区/键盘/滑动 ----
 function toggleTools() {
   toolsVisible.value = !toolsVisible.value
   if (!toolsVisible.value) fontOpen.value = false
@@ -455,40 +592,173 @@ function toggleTheme() {
 function openToc() {
   tocOpen.value = true
 }
-
 function closeToc() {
   tocOpen.value = false
+}
+function jumpToc(entryIndex: number) {
+  const entry = toc.value[entryIndex]
+  closeToc()
+  if (entry) void jumpToBlock(entry.block)
 }
 
 function onKey(event: KeyboardEvent) {
   if (stage.value !== 'reading') return
   if (['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', ' '].includes(event.key)) event.preventDefault()
-  if (['ArrowLeft', 'PageUp'].includes(event.key)) void turn(-1)
-  if (['ArrowRight', 'PageDown', ' '].includes(event.key)) void turn(1)
+  if (['ArrowLeft', 'PageUp'].includes(event.key)) previous()
+  if (['ArrowRight', 'PageDown', ' '].includes(event.key)) next()
   if (event.key === 'Escape' && tocOpen.value) closeToc()
 }
 
-function onSliderInput(event: Event) {
-  const value = Number((event.target as HTMLInputElement).value)
-  if (!manifest.value || !Number.isFinite(value)) return
-  current.value = clampPage(manifest.value, value)
-  // 滑过已缓存的页（预取窗口内）直接预览；未缓存的等 change 事件 seek 拉取
-  const url = pageURLFor(current.value)
-  if (url && cache.has(url)) {
-    syncSlots()
-    setTrackX(0)
-    tocActive.value = tocActiveIndex(manifest.value, current.value)
+function zoneGuard(action: () => void) {
+  return () => {
+    if (Date.now() < suppressZoneClickUntil) return
+    action()
   }
 }
 
-function onSliderChange() {
-  void seek(current.value)
+// ---- 排版变化（纯客户端重排，不请求服务端） ----
+
+async function relayout() {
+  const m = manifest.value
+  if (!m || stage.value !== 'reading') return
+  const keep = topAnchor ?? captureTopAnchor() ?? anchorAtTopOfCurrentCol()
+  applyMetrics()
+  measureCols()
+  if (keep) {
+    topAnchor = keep
+    await goToCol(colForAnchor(keep), false)
+  } else {
+    setX(0)
+    currentCol = 0
+    captureTop()
+  }
 }
 
-function onFontSliderInput(event: Event) {
-  prefs.fontSize = Number((event.target as HTMLInputElement).value)
-  onFontInput()
+function scheduleFontRelayout() {
+  if (fontTimer) clearTimeout(fontTimer)
+  fontTimer = setTimeout(() => {
+    fontTimer = null
+    void relayout()
+  }, 120)
 }
+
+function onFontInput() {
+  prefs.fontSize = clamp(Math.round(prefs.fontSize), FONT_MIN, FONT_MAX)
+  savePrefs(prefs)
+  scheduleFontRelayout()
+}
+function adjustFont(delta: number) {
+  prefs.fontSize = clamp(prefs.fontSize + delta, FONT_MIN, FONT_MAX)
+  savePrefs(prefs)
+  scheduleFontRelayout()
+}
+function setLineHeight(value: number) {
+  prefs.lineHeight = value
+  savePrefs(prefs)
+  scheduleFontRelayout()
+}
+
+function onResize() {
+  const m = manifest.value
+  if (!m) return
+  const { w, h } = viewportSize()
+  if (w === lastViewport.w && h === lastViewport.h) return
+  if (resizeTimer) clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => void relayout(), 250)
+}
+
+// ---- 进度 ----
+
+function queueProgressSave() {
+  if (progressTimer) clearTimeout(progressTimer)
+  progressTimer = setTimeout(() => {
+    progressTimer = null
+    void saveNow()
+  }, 1200)
+}
+
+async function saveNow() {
+  if (closing || !manifest.value) return
+  const anchor = topAnchor ?? anchorAtTopOfCurrentCol()
+  if (!anchor) return
+  try {
+    await saveProgress(props.file.id, { anchor })
+  } catch (error) {
+    console.error('保存阅读进度失败', error)
+  }
+}
+
+function flushProgress() {
+  if (progressTimer) {
+    clearTimeout(progressTimer)
+    progressTimer = null
+  }
+  if (!manifest.value) return
+  const anchor = topAnchor ?? anchorAtTopOfCurrentCol()
+  if (anchor) {
+    void saveProgress(props.file.id, { anchor }).catch(() => {})
+  }
+}
+
+// ---- 打开书籍 ----
+
+async function open() {
+  const id = props.file.id
+  stage.value = 'loading'
+  loadingText.value = '正在读取书籍…'
+  const myGen = ++gen
+  closing = false
+  try {
+    const info = await fetchBookInfo(id).catch(() => null)
+    if (info?.title) title.value = info.title
+    const progress = await fetchProgress(id).catch((): BookProgress => ({}))
+    const flow = await fetchFlow(id)
+    if (myGen !== gen) return
+    manifest.value = flow
+    applyMetrics()
+
+    const total = totalBlockCount()
+    let anchor: ReadingAnchor | null = null
+    const saved = progress.anchor
+    if (saved && Number.isInteger(saved.block) && saved.block >= 0 && saved.block < Math.max(1, total)) {
+      anchor = { spine: saved.spine, block: saved.block, path: saved.path ?? [], offset: saved.offset ?? -1 }
+    }
+    if (!anchor) {
+      const first = flow.spines[0]?.block_start ?? 0
+      anchor = { spine: 0, block: first, path: [], offset: -1 }
+    }
+    const ci = chunkForBlock(flow, anchor.block)
+    loadingText.value = '正在排版…'
+    await renderWindow(Math.max(0, ci - 1), Math.min(flow.chunks.length - 1, ci + 4))
+    if (myGen !== gen) return
+    measureCols()
+    stage.value = 'reading'
+    currentCol = clamp(colForAnchor(anchor), 0, Math.max(0, cols - 1))
+    setX(-currentCol * metrics.pitch)
+    topAnchor = anchor
+    captureTop()
+    prefetchSurrounding(anchor.block)
+    queueProgressSave()
+  } catch (error) {
+    if (myGen !== gen) return
+    stage.value = 'error'
+    errorText.value = (error as Error).message || '打开失败'
+  }
+}
+
+function prefetchSurrounding(block: number) {
+  const m = manifest.value
+  if (!m) return
+  const ci = chunkForBlock(m, block)
+  if (ci < 0) return
+  for (let d = 1; d <= 2; d++) {
+    for (const j of [ci + d, ci - d]) {
+      if (j >= 0 && j < m.chunks.length) void chunkText(j)
+    }
+  }
+}
+
+// ---- 滑动 ----
 
 function bindSwipe(el: HTMLElement | null) {
   if (!el) return
@@ -500,24 +770,26 @@ function bindSwipe(el: HTMLElement | null) {
 
   const release = (dx: number) => {
     const flick = Date.now() - startTime < 300 && Math.abs(dx) > 30
-    const shouldTurn = flick || Math.abs(dx) > pageW() * 0.25
-    if (shouldTurn) {
-      if (turnBusy) {
-        void animateTrack(dx, 0)
-        return
-      }
-      const target = current.value + (dx < 0 ? 1 : -1)
-      if (target >= 0 && target < pageCount.value) void turn(dx < 0 ? 1 : -1, dx)
-      else void animateTrack(dx, 0)
-    } else {
-      void animateTrack(dx, 0)
+    const shouldTurn = flick || Math.abs(dx) > metrics.pitch * 0.25
+    if (!shouldTurn) {
+      void goToCol(currentCol, true)
+      return
     }
+    if (turnBusy) {
+      void goToCol(currentCol, true)
+      return
+    }
+    const target = currentCol + (dx < 0 ? 1 : -1)
+    const mayReach = target >= 0 && target < cols
+    const mayExtend = dx < 0 ? target >= cols && c1 < lastChunkIndex() : target < 0 && c0 > 0
+    if (mayReach || mayExtend) void turn(dx < 0 ? 1 : -1)
+    else void goToCol(currentCol, true)
   }
 
   el.addEventListener(
     'touchstart',
     event => {
-      tracking = event.touches.length === 1 && stage.value === 'reading' && !turnBusy
+      tracking = event.touches.length === 1 && stage.value === 'reading'
       dragging = false
       if (tracking) {
         startX = event.touches[0].clientX
@@ -533,7 +805,7 @@ function bindSwipe(el: HTMLElement | null) {
       if (!tracking) return
       if (event.touches.length !== 1) {
         tracking = false
-        if (dragging) setTrackX(0)
+        if (dragging) setX(-currentCol * metrics.pitch)
         return
       }
       const dx = event.touches[0].clientX - startX
@@ -547,8 +819,8 @@ function bindSwipe(el: HTMLElement | null) {
         dragging = true
         suppressZoneClickUntil = Date.now() + 600
       }
-      const atEdge = (current.value === 0 && dx > 0) || (current.value >= pageCount.value - 1 && dx < 0)
-      setTrackX(atEdge ? dx / 3 : dx)
+      const atEdge = (currentCol === 0 && dx > 0) || (currentCol >= cols - 1 && dx < 0)
+      setX(-currentCol * metrics.pitch + (atEdge ? dx / 3 : dx))
     },
     { passive: true },
   )
@@ -573,35 +845,19 @@ function bindSwipe(el: HTMLElement | null) {
     () => {
       if (!tracking) return
       tracking = false
-      if (dragging) setTrackX(0)
+      if (dragging) setX(-currentCol * metrics.pitch)
     },
     { passive: true },
   )
 }
 
-function zoneGuard(action: () => void) {
-  return () => {
-    if (Date.now() < suppressZoneClickUntil) return
-    action()
-  }
-}
-
 // ---- 生命周期 ----
-function ensureReaderCSS() {
-  if (document.getElementById('revaro-reader-css')) return
-  const link = document.createElement('link')
-  link.id = 'revaro-reader-css'
-  link.rel = 'stylesheet'
-  link.href = '/api/reader.css'
-  document.head.appendChild(link)
-}
 
 function onVisibilityChange() {
   if (document.visibilityState === 'hidden') flushProgress()
 }
 
 onMounted(() => {
-  ensureReaderCSS()
   document.title = `${props.file.name} · revaro`
   window.addEventListener('keydown', onKey)
   window.addEventListener('resize', onResize)
@@ -615,11 +871,12 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  manifestGen++ // 让所有在途轮询/生成等待失效
-  if (manifestTimer) {
-    clearTimeout(manifestTimer)
-    manifestTimer = null
+  closing = true
+  gen++
+  for (const timer of [syncTimer, fontTimer, resizeTimer, progressTimer]) {
+    if (timer) clearTimeout(timer)
   }
+  currentAnim?.cancel()
   flushProgress()
   window.removeEventListener('keydown', onKey)
   window.removeEventListener('resize', onResize)
@@ -633,7 +890,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section id="reader-view" class="reader-shell" :class="{ dark: prefs.theme === 'dark', 'tools-hidden': !toolsVisible }">
+  <section id="reader-view" class="reader-shell" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
     <header class="reader-bar">
       <button id="reader-back" class="reader-icon-btn" aria-label="返回" @click="emit('close')">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
@@ -641,25 +898,18 @@ onBeforeUnmount(() => {
       <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong><small id="reader-kind">{{ kind.toUpperCase() }}</small></div>
       <button class="reader-icon-btn" id="toc-button" aria-label="打开目录" :aria-expanded="tocOpen" @click="openToc">☰</button>
     </header>
-    <main id="viewport" ref="viewportEl" class="reader-viewport v2-viewport">
+    <main id="viewport" ref="viewportEl" class="reader-viewport rf-viewport">
+      <div class="rf-pager">
+        <div id="flow" ref="flowEl" class="rf-flow revaro-content"></div>
+      </div>
       <div id="loading" class="reader-loading" v-if="stage === 'loading'">{{ loadingText }}</div>
       <div class="reader-loading" v-else-if="stage === 'error'">
         {{ errorText }}
         <button class="font-step" style="margin-top: 12px" @click="emit('close')">关闭</button>
       </div>
-      <div class="v2-window">
-        <div class="v2-track" ref="trackEl">
-          <div class="v2-slot" v-for="i in 3" :key="i" :ref="slotRefs[i - 1]"></div>
-        </div>
-      </div>
-      <div class="v2-status" v-if="relayout.pending">
-        正在生成新排版…
-        <template v-if="relayout.spinesTotal">{{ relayout.spinesDone }}/{{ relayout.spinesTotal }} 章</template>
-        <template v-if="relayout.pages"> · {{ relayout.pages }} 页</template>
-      </div>
-      <button id="prev-zone" class="page-zone prev-zone" aria-label="上一页" @click="zoneGuard(() => turn(-1))()"></button>
+      <button id="prev-zone" class="page-zone prev-zone" aria-label="上一页" @click="zoneGuard(previous)()"></button>
       <button id="center-zone" class="page-zone center-zone" aria-label="显示或隐藏工具栏" @click="zoneGuard(toggleTools)()"></button>
-      <button id="next-zone" class="page-zone next-zone" aria-label="下一页" @click="zoneGuard(() => turn(1))()"></button>
+      <button id="next-zone" class="page-zone next-zone" aria-label="下一页" @click="zoneGuard(next)()"></button>
     </main>
     <div id="toc-scrim" class="toc-scrim" :class="{ hidden: !tocOpen }" @click="closeToc"></div>
     <aside id="toc-drawer" class="toc-drawer" aria-label="书籍目录" :aria-hidden="!tocOpen" :class="{ open: tocOpen }">
@@ -672,7 +922,7 @@ onBeforeUnmount(() => {
           class="toc-item"
           :class="{ active: tocActive === index }"
           :style="{ '--toc-indent': `${Math.min(4, entry.depth || 0) * 16}px` }"
-          @click="closeToc(); seek(entry.page)"
+          @click="jumpToc(index)"
         >
           {{ entry.label }}
         </button>
@@ -681,7 +931,7 @@ onBeforeUnmount(() => {
     <div id="font-popover" class="font-popover" :class="{ hidden: !fontOpen }">
       <span>字号</span>
       <button id="font-smaller" class="font-step" aria-label="减小字号" @click="adjustFont(-1)">A−</button>
-      <input id="font-slider" type="range" :min="FONT_MIN" :max="FONT_MAX" step="1" :value="prefs.fontSize" aria-label="阅读字号" @input="onFontSliderInput">
+      <input id="font-slider" type="range" :min="FONT_MIN" :max="FONT_MAX" step="1" :value="prefs.fontSize" aria-label="阅读字号" @input="onFontInput">
       <button id="font-larger" class="font-step" aria-label="增大字号" @click="adjustFont(1)">A+</button>
       <span class="v2-lineheight">
         <span>行距</span>
@@ -697,7 +947,7 @@ onBeforeUnmount(() => {
     <footer class="reader-footer">
       <div class="reader-seek">
         <span id="page-label">{{ pageLabel }}</span>
-        <input id="page-slider" type="range" min="0" :max="Math.max(0, pageCount - 1)" step="1" :value="current" aria-label="页面进度" @input="onSliderInput" @change="onSliderChange">
+        <input id="page-slider" type="range" min="0" max="1000" step="1" :value="Math.round(clamp(percentNow, 0, 100) * 10)" aria-label="阅读进度" @input="onSeekInput">
       </div>
       <div class="reader-actions">
         <button id="toc-button-2" class="reader-action-btn" @click="openToc"><b>☰</b><span>目录</span></button>

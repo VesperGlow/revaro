@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VesperGlow/revaro/internal/reader/layout"
+	"github.com/VesperGlow/revaro/internal/reader/flow"
 	"github.com/VesperGlow/revaro/internal/storage"
 )
 
@@ -110,20 +110,18 @@ func TestBookEndpointsTXT(t *testing.T) {
 	if meta.Format != "txt" || meta.Cover || len(meta.TOC) != 2 || meta.TOC[0].Label != "第一章 开始" {
 		t.Fatalf("meta=%+v", meta)
 	}
-	// 阅读进度 = readingAnchor + profile（页码不再持久化）
+	// 阅读进度 = readingAnchor（旧格式 path[0] 自动迁移为 block）
 	put := a.request("PUT", "/api/files/"+f.ID+"/book/progress", map[string]any{
-		"anchor":  map[string]any{"spine": 0, "path": []int{0}, "offset": 3},
-		"profile": "v1-" + strings.Repeat("a", 64),
+		"anchor": map[string]any{"spine": 0, "path": []int{0}, "offset": 3},
 	}, true)
 	if put.Code != http.StatusNoContent {
 		t.Fatalf("save progress=%d: %s", put.Code, put.Body.String())
 	}
 	got := a.request("GET", "/api/files/"+f.ID+"/book/progress", nil, true)
 	progress := decode[struct {
-		Anchor  *layout.Anchor `json:"anchor"`
-		Profile string         `json:"profile"`
+		Anchor *flow.Anchor `json:"anchor"`
 	}](t, got)
-	if progress.Anchor == nil || progress.Anchor.Offset != 3 || progress.Profile == "" {
+	if progress.Anchor == nil || progress.Anchor.Offset != 3 || progress.Anchor.Block != 0 {
 		t.Fatalf("progress=%+v", progress)
 	}
 	pdf := a.readyFile(t, "doc.pdf", []byte("x"))

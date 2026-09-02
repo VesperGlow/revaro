@@ -201,12 +201,9 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 | `GET` | `/api/files/{id}/book` | 阅读器元数据：格式、标题、封面与目录 |
 | `GET` | `/api/files/{id}/book/assets/{n}` | EPUB 内嵌图片 |
 | `GET` | `/api/files/{id}/book/cover` | EPUB 内嵌封面 |
-| `GET` / `PUT` | `/api/files/{id}/book/progress` | 阅读进度（readingAnchor + layout profile） |
-| `POST` | `/api/files/{id}/book/layouts` | 按设备排版参数提交分页生成（幂等） |
-| `GET` | `/api/files/{id}/book/layouts/{profile}` | 分页生成状态 |
-| `GET` | `/api/files/{id}/book/layouts/{profile}/manifest` | 页清单（每页 start/end readingAnchor、目录落点） |
-| `GET` | `/api/files/{id}/book/layouts/{profile}/pages/{n}` | 固定 Page HTML |
-| `GET` | `/api/reader.css`、`/api/reader/fonts/*` | 共享样式与 WebFont（服务端分页与客户端同源） |
+| `GET` / `PUT` | `/api/files/{id}/book/progress` | 阅读进度（readingAnchor） |
+| `GET` | `/api/files/{id}/book/flow` | 连续 reading flow manifest（spine/chunk/TOC，随内容缓存） |
+| `GET` | `/api/files/{id}/book/flow/chunks/{n}` | reading flow 第 n 个 chunk 的 HTML 片段（不可变缓存） |
 | `GET` | `/api/files/{id}/thumbnail` | 持久化缩略图（图片/EPUB 封面服务端生成、视频由 Rust/libav 抽帧，不可变缓存） |
 | `POST` | `/api/documents` | 在指定目录新建 UTF-8 文本文档 |
 | `GET` / `POST` / `DELETE` | `/api/files/{id}/share` | 查询、创建/重置或停止公开分享 |
@@ -254,13 +251,11 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 
 点击 `.epub` 文件（或超过 1 MiB 的 `.txt` 文件）即可在网盘里直接阅读；阅读器复用本服务的认证、文件树与 S3 blob：
 
-- **服务端解析**：EPUB 解包、OPF/spine、目录（EPUB3 nav + NCX 回退）、封面与系列元数据抽取全部在 Go 服务端完成；正文按白名单重建 HTML（脚本、事件处理器、`javascript:` 等危险内容按构造不会出现），内嵌图片改写为带内容版本参数的 `/api/files/{id}/book/assets/{n}?v=…` 分发（不可变，可长期缓存）。解析对解压总量设硬上限（256 MiB），恶意的高压缩比 EPUB（zip bomb）会被拒绝而不是耗尽内存。TXT 自动识别 UTF-8/GBK 编码，并按“第…章”式标题生成目录。
-- **解析缓存**：解析结果按稳定的 object key/ETag 缓存，最近 3 本 keep-alive；文件内容更新会换 key，不会复用陈旧解析。
-- **服务端固定分页（渐进式）**：按设备阅读配置（viewport、字号、行距、边距）生成 layout profile，headless Chromium 用与客户端同源的多栏 CSS 真实排版，`Range.cloneContents()` 把 spine 切成固定 Page HTML（每页锁定全部排版参数，不生成图片）。**首开不整本生成**：带 readingAnchor 提交时先分页当前位置所在章（目标章完成即可读），剩余章节按螺旋顺序后台渐进生成，每完成一章发布一份 manifest 快照；页码只用于显示，阅读位置始终是 readingAnchor，快照增长不会漂移阅读进度。产物存对象存储，`(spine, col)` 寻址永久稳定；共享样式与 WebFont（Noto Serif SC 子集）服务端分页与客户端渲染同源，保证两端逐像素一致。
-- **资源受控**：Chromium 进程内单实例复用（tab 级串行队列，最新请求在章边界中止旧任务）；layout 缓存按 `LAYOUT_CACHE_TTL`（默认 720h）与 `LAYOUT_CACHE_CAPACITY`（默认 1 GiB）自动回收，删除书籍时其产物随之清理；`/api/system/status` 的 `reader` 段暴露引擎版本、队列长度、累计页数/字节与 Chromium 内存占用。
-- **客户端三页窗口**：只维护上一页/当前页/下一页三个页面节点，按阅读方向智能预取（前行向后看 3 页、后退镜像），点击翻页只做合成层 transform（零网络、零重排）；桌面点击左右热区、键盘方向键/PageUp/PageDown/空格翻页，移动端左右滑动跟手翻页（快速轻扫或拖过 1/4 屏判定）。
-- **进度与无缝重排**：阅读进度 = readingAnchor + profile（跨 layout 稳定，不依赖页码），防抖保存并随页面关闭/失焦落盘；改字号/行距/旋转时旧 layout 继续可读，服务端后台生成新 profile，完成后按 readingAnchor 无缝切换；明暗主题只换 CSS 变量，永不重排。
-- 上限：EPUB 128 MiB、TXT 16 MiB；更大的文件请下载后离线阅读。发布镜像已内置 Chromium（预设 `REVARO_CHROME_BIN=/usr/bin/chromium`，可覆盖为自带的浏览器）；`LAYOUT_CACHE_TTL` 与 `LAYOUT_CACHE_CAPACITY` 控制 layout 产物缓存回收。
+- **服务端解析与连续 reading flow**：EPUB 解包、OPF/spine、目录（EPUB3 nav + NCX 回退）、封面抽取全部在 Go 服务端完成；正文按白名单重建 HTML（脚本、事件处理器、`javascript:` 等危险内容按构造不会出现），图片在服务端读出**固有尺寸并写入 width/height**（分页不跳版），内嵌图片改写为带内容版本参数的 `/api/files/{id}/book/assets/{n}?v=…` 分发（不可变，可长期缓存）。解析对解压总量设硬上限（256 MiB），恶意的高压缩比 EPUB（zip bomb）会被拒绝而不是耗尽内存。TXT 自动识别 UTF-8/GBK 编码，并按“第…章”式标题生成目录。整本书再被拼成一条**连续、标准化、可缓存的 reading flow**，按自然 DOM 边界切成适量 chunk 存对象存储（`flows/` 前缀，随内容哈希与版本固定）；chunk 不是页面，不与任何视口/字号绑定。
+- **解析缓存**：解析结果按稳定的 object key/ETag 缓存，最近 3 本 keep-alive；文件内容更新会换 key，不会复用陈旧解析。flow 产物同样以内容为键（`FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY` 控制回收），重开书不重新生成。
+- **客户端原生分页**：**无 Chromium、无服务端排版**。客户端只把当前位置附近的少量 chunk 装进一个连续多栏 DOM（图片与文字处于同一排版上下文，跨 spine 内容无缝接排），由浏览器原生 CSS columns 完成最终分页；翻页只做合成层 transform（热路径零网络、零重排）。桌面点击左右热区、键盘方向键/PageUp/PageDown/空格翻页，移动端左右滑动跟手翻页（快速轻扫或拖过 1/4 屏判定）；前后方向按滑动窗口预取，窗口有界、DOM 不膨胀。
+- **进度与即时重排**：阅读进度 = readingAnchor（连续 flow 上的块 + 块内文本位置，不依赖页码），防抖保存并随页面关闭/失焦落盘；改字号/行距/旋转/横竖屏只在客户端重新分页，服务端零参与、不重新生成内容；明暗主题只换 CSS 变量，永不重排。
+- 上限：EPUB 128 MiB、TXT 16 MiB；更大的文件请下载后离线阅读。
 
 ## 文档编辑器点击 `.md`、`.markdown`、`.txt`、`.yaml`、`.yml`、`.json`、`.toml`、`.ini`、`.conf`、`.log` 或 `.csv` 文件即可打开编辑器；当前目录也可以直接新建文档。Markdown 支持编辑、分栏和安全过滤后的预览，`Ctrl/⌘ + S` 可保存。
 

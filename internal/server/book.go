@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/reader"
-	"github.com/VesperGlow/revaro/internal/reader/layout"
+	"github.com/VesperGlow/revaro/internal/reader/flow"
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -132,11 +132,10 @@ func (s *Server) bookCover(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(book.Cover)
 }
 
-// bookProgress 是阅读进度：位置用 readingAnchor（跨 layout 稳定），
-// 附带产生它的 layout profile。页码只是 UI 显示值，不再持久化。
+// bookProgress 是阅读进度：位置用 readingAnchor（在连续 reading flow 上
+// 跨字号/横竖屏/客户端分页稳定）。页码只是客户端临时显示值，不持久化。
 type bookProgress struct {
-	Anchor  *layout.Anchor `json:"anchor,omitempty"`
-	Profile string         `json:"profile,omitempty"`
+	Anchor *flow.Anchor `json:"anchor,omitempty"`
 }
 
 func progressKey(fileID string) string { return "book_progress/" + fileID }
@@ -178,10 +177,6 @@ func (s *Server) saveBookProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Anchor != nil && !in.Anchor.Valid() {
 		problem(w, http.StatusBadRequest, "progress anchor is invalid")
-		return
-	}
-	if !validProfileID(in.Profile) {
-		problem(w, http.StatusBadRequest, "progress profile is invalid")
 		return
 	}
 	raw, err := json.Marshal(in)

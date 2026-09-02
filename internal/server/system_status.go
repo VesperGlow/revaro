@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/VesperGlow/revaro/internal/reader/layout"
 )
 
 type systemComponent struct {
@@ -49,16 +47,6 @@ type systemStatusResponse struct {
 		Enabled   bool   `json:"enabled"`
 		Available bool   `json:"available"`
 	} `json:"bt"`
-	Reader struct {
-		Status         string  `json:"status"`
-		Engine         string  `json:"engine,omitempty"`
-		BrowserRSS     int64   `json:"browser_rss_bytes,omitempty"`
-		QueueLength    int     `json:"queue_length"`
-		RunningJobs    int     `json:"running_jobs"`
-		GeneratedPages int64   `json:"generated_pages"`
-		GeneratedBytes int64   `json:"generated_bytes"`
-		LastJobSeconds float64 `json:"last_job_seconds,omitempty"`
-	} `json:"reader"`
 }
 
 func (s *Server) collectSystemStatus(parent context.Context) systemStatusResponse {
@@ -118,32 +106,6 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 	if out.BT.Enabled && !out.BT.Available {
 		degrade(&out.BT.Status)
 	}
-
-	// 阅读器布局引擎缺失是合法部署（无 Chromium 镜像/路径未配置），
-	// 只影响阅读分页，不把整个系统标为降级；reader.status 仅供面板展示。
-	out.Reader.Status = "ok"
-	engine := layout.DetectEngine()
-	out.Reader.Engine = engine.Version
-	if !engine.Available {
-		out.Reader.Status = "degraded"
-	}
-	if s.layoutSched != nil {
-		stats := s.layoutSched.Stats()
-		out.Reader.BrowserRSS = stats.BrowserRSS
-		out.Reader.QueueLength = stats.QueueLength
-		out.Reader.LastJobSeconds = stats.LastSeconds
-	} else {
-		out.Reader.QueueLength = 0
-	}
-	s.layoutMu.RLock()
-	for _, job := range s.layoutJobs {
-		if job.Status == "queued" || job.Status == "running" {
-			out.Reader.RunningJobs++
-		}
-	}
-	s.layoutMu.RUnlock()
-	out.Reader.GeneratedPages = s.layoutPages.Load()
-	out.Reader.GeneratedBytes = s.layoutBytes.Load()
 	return out
 }
 

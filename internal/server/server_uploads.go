@@ -583,9 +583,9 @@ func (s *Server) CollectGarbage(ctx context.Context) {
 	}
 	deletedBlobs := s.collectUnreferencedPrefix(ctx, "blobs/", cutoff, referenced)
 	deletedThumbnails := s.collectUnreferencedPrefix(ctx, "thumbs/", cutoff, referencedThumbnails)
-	deletedLayouts := s.collectLayoutCache(ctx, referenced)
-	if deletedBlobs+deletedThumbnails+deletedLayouts > 0 {
-		s.log.Info("garbage collection finished", "blobs", deletedBlobs, "thumbnails", deletedThumbnails, "layouts", deletedLayouts)
+	deletedFlows := s.collectFlowCache(ctx, referenced)
+	if deletedBlobs+deletedThumbnails+deletedFlows > 0 {
+		s.log.Info("garbage collection finished", "blobs", deletedBlobs, "thumbnails", deletedThumbnails, "flows", deletedFlows)
 	}
 }
 

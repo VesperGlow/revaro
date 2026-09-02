@@ -13,38 +13,37 @@ import (
 )
 
 type Config struct {
-	Addr                string
-	DataDir             string
-	WorkDir             string
-	BaseURL             string
-	CookieSecure        bool
-	AdminUsername       string
-	AdminPassword       string
-	S3Endpoint          string
-	S3PublicEndpoint    string
-	S3Region            string
-	S3Bucket            string
-	S3AccessKey         string
-	S3SecretKey         string
-	S3PathStyle         bool
-	ProxyTransfers      bool
-	PresignExpires      time.Duration
-	MediaCacheCapacity  int64
-	UploadExpires       time.Duration
-	TrashRetention      time.Duration
-	GCInterval          time.Duration
-	BTEnabled           bool
-	BTListenPort        int
-	BTMaxFiles          int
-	BTMaxTotalSize      int64
-	BTMetadataWait      time.Duration
-	BTStaleAfter        time.Duration
-	DataPlaneAddr       string
-	DataPlaneBinary     string
-	ChromeBinary        string
-	LayoutCacheTTL      time.Duration
-	LayoutCacheCapacity int64
-	TrustedProxies      []netip.Prefix
+	Addr               string
+	DataDir            string
+	WorkDir            string
+	BaseURL            string
+	CookieSecure       bool
+	AdminUsername      string
+	AdminPassword      string
+	S3Endpoint         string
+	S3PublicEndpoint   string
+	S3Region           string
+	S3Bucket           string
+	S3AccessKey        string
+	S3SecretKey        string
+	S3PathStyle        bool
+	ProxyTransfers     bool
+	PresignExpires     time.Duration
+	MediaCacheCapacity int64
+	UploadExpires      time.Duration
+	TrashRetention     time.Duration
+	GCInterval         time.Duration
+	BTEnabled          bool
+	BTListenPort       int
+	BTMaxFiles         int
+	BTMaxTotalSize     int64
+	BTMetadataWait     time.Duration
+	BTStaleAfter       time.Duration
+	DataPlaneAddr      string
+	DataPlaneBinary    string
+	FlowCacheTTL       time.Duration
+	FlowCacheCapacity  int64
+	TrustedProxies     []netip.Prefix
 }
 
 func Load() (Config, error) {
@@ -62,7 +61,6 @@ func Load() (Config, error) {
 		S3SecretKey:      os.Getenv("S3_SECRET_KEY"),
 		DataPlaneAddr:    env("DATA_PLANE_ADDR", "127.0.0.1:7081"),
 		DataPlaneBinary:  env("DATA_PLANE_BINARY", "revaro-data-plane"),
-		ChromeBinary:     strings.TrimSpace(os.Getenv("REVARO_CHROME_BIN")),
 	}
 	c.WorkDir = env("APP_WORK_DIR", "/work")
 	if raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); raw != "" {
@@ -121,10 +119,10 @@ func Load() (Config, error) {
 	if c.MediaCacheCapacity, err = int64Env("MEDIA_CACHE_CAPACITY", 2*1024*1024*1024); err != nil {
 		return c, err
 	}
-	if c.LayoutCacheTTL, err = durationEnv("LAYOUT_CACHE_TTL", 720*time.Hour); err != nil {
+	if c.FlowCacheTTL, err = durationEnv("FLOW_CACHE_TTL", 720*time.Hour); err != nil {
 		return c, err
 	}
-	if c.LayoutCacheCapacity, err = int64Env("LAYOUT_CACHE_CAPACITY", 1<<30); err != nil {
+	if c.FlowCacheCapacity, err = int64Env("FLOW_CACHE_CAPACITY", 1<<30); err != nil {
 		return c, err
 	}
 	if c.WorkDir == "" {
@@ -133,11 +131,11 @@ func Load() (Config, error) {
 	if c.MediaCacheCapacity < 0 || c.MediaCacheCapacity > 1<<40 {
 		return c, errors.New("MEDIA_CACHE_CAPACITY must be between 0 and 1 TiB")
 	}
-	if c.LayoutCacheTTL < 0 {
-		return c, errors.New("LAYOUT_CACHE_TTL must not be negative")
+	if c.FlowCacheTTL < 0 {
+		return c, errors.New("FLOW_CACHE_TTL must not be negative")
 	}
-	if c.LayoutCacheCapacity < 0 || c.LayoutCacheCapacity > 1<<40 {
-		return c, errors.New("LAYOUT_CACHE_CAPACITY must be between 0 and 1 TiB")
+	if c.FlowCacheCapacity < 0 || c.FlowCacheCapacity > 1<<40 {
+		return c, errors.New("FLOW_CACHE_CAPACITY must be between 0 and 1 TiB")
 	}
 	if c.UploadExpires <= 0 {
 		return c, errors.New("UPLOAD_EXPIRES must be positive")

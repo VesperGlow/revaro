@@ -10,12 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/auth"
 	"github.com/VesperGlow/revaro/internal/config"
-	"github.com/VesperGlow/revaro/internal/reader/layout"
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/VesperGlow/revaro/internal/webui"
 	"github.com/go-chi/chi/v5"
@@ -68,16 +66,7 @@ type Server struct {
 	archiveSlots       chan struct{}
 	archiveMu          sync.RWMutex
 	archiveJobs        map[string]*archiveJob
-	layoutSlots        chan struct{}
-	layoutMu           sync.RWMutex
-	layoutJobs         map[string]*readerLayoutJob
-	layoutIndex        map[string][]layoutProfileInfo
-	layoutCtx          context.Context
-	layoutCancel       context.CancelFunc
-	layoutSched        *layout.Scheduler
-	layoutGen          atomic.Int64
-	layoutPages        atomic.Int64
-	layoutBytes        atomic.Int64
+	flowBuilds         singleflight.Group
 	downloads          *downloadManager
 	jobs               *JobManager
 	tasks              *TaskManager
@@ -122,7 +111,6 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		s3Origin = u.Scheme + "://" + u.Host
 	}
 	hlsCtx, hlsCancel := context.WithCancel(context.Background())
-	layoutCtx, layoutCancel := context.WithCancel(context.Background())
 	resources := newResourceGovernor()
 	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
@@ -139,9 +127,6 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		thumbnails:      newThumbnailScheduler(1),
 		audioThumbSlots: make(chan struct{}, 1),
 		archiveSlots:    make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
-		layoutSlots: make(chan struct{}, 1), layoutJobs: make(map[string]*readerLayoutJob),
-		layoutIndex: make(map[string][]layoutProfileInfo),
-		layoutCtx:   layoutCtx, layoutCancel: layoutCancel,
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 		statusSubscribers: make(map[chan systemStatusResponse]struct{}), statusStop: make(chan struct{}),
 	}
@@ -257,12 +242,6 @@ func (s *Server) Close() {
 	}
 	if s.audioHLSCancel != nil {
 		s.audioHLSCancel()
-	}
-	if s.layoutCancel != nil {
-		s.layoutCancel()
-	}
-	if s.layoutSched != nil {
-		s.layoutSched.Close()
 	}
 	if s.jobs != nil {
 		s.jobs.Close()
@@ -384,14 +363,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/book/cover", s.bookCover)
 			r.Get("/files/{id}/book/progress", s.bookProgress)
 			r.Put("/files/{id}/book/progress", s.saveBookProgress)
-			r.Get("/files/{id}/book/layouts/capabilities", s.readerLayoutCapabilities)
-			r.Get("/files/{id}/book/layouts", s.listReaderLayouts)
-			r.Post("/files/{id}/book/layouts", s.createReaderLayout)
-			r.Get("/files/{id}/book/layouts/{profile}", s.readerLayoutStatus)
-			r.Get("/files/{id}/book/layouts/{profile}/manifest", s.readerLayoutManifest)
-			r.Get("/files/{id}/book/layouts/{profile}/spines/{spine}/pages/{col}", s.readerLayoutPage)
-			r.Get("/reader.css", s.readerCSS)
-			r.Get("/reader/fonts/revaro-serif.woff2", s.readerFont)
+			r.Get("/files/{id}/book/flow", s.bookFlow)
+			r.Get("/files/{id}/book/flow/chunks/{index}", s.bookFlowChunk)
 			r.Get("/files/{id}/thumbnail", s.thumbnail)
 			r.Get("/files/{id}/share", s.getShare)
 			r.Post("/files/{id}/share", s.createShare)

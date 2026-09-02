@@ -1,0 +1,170 @@
+/* 连续 reading flow 阅读器样式。
+   分页由浏览器原生 CSS columns 完成：正文装进一个连续的 .rf-flow 多栏
+   容器（chunk 只是内容分组，不是页面）；翻页 = 对 .rf-flow 做合成层
+   translateX。内容规则沿用原共享样式表（.revaro-content），随前端打包。 */
+
+/* ---- 正文内容规则（作用域 .revaro-content） ---- */
+
+:root {
+  --revaro-font-family: "Noto Serif SC", "Songti SC", Georgia, "Times New Roman", serif;
+  --revaro-font-size: 19px;
+  --revaro-line-height: 1.7;
+  --revaro-ink: #29251f;
+  --revaro-paper: #f7f3eb;
+  --revaro-muted: #827a6f;
+}
+
+.revaro-content {
+  box-sizing: border-box;
+  /* flow-root：建立 BFC，阻止首/末子元素外边距穿透锁定容器 */
+  display: flow-root;
+  orphans: 1;
+  widows: 1;
+  font-family: var(--revaro-font-family);
+  font-size: var(--revaro-font-size);
+  line-height: var(--revaro-line-height);
+  color: var(--revaro-ink);
+  overflow-wrap: anywhere;
+}
+
+.revaro-content.txt {
+  white-space: pre-wrap;
+}
+
+.revaro-content .toc-anchor {
+  display: inline;
+}
+
+.revaro-content h1,
+.revaro-content h2,
+.revaro-content h3,
+.revaro-content h4 {
+  line-height: 1.35;
+  margin: 0.4em 0 0.7em;
+  break-inside: avoid;
+}
+
+.revaro-content p {
+  margin: 0;
+  text-indent: 2em;
+}
+
+.revaro-content blockquote,
+.revaro-content pre,
+.revaro-content figure,
+.revaro-content table,
+.revaro-content li {
+  margin: 0.2em 0 0.3em;
+}
+
+/* 图片/插画：高度上限 = 栏高（--revaro-col-height 由 JS 以像素注入）。
+   服务端已按图片固有尺寸写入 width/height 属性，加载前后不产生位移。 */
+.revaro-content img,
+.revaro-content svg,
+.revaro-content video {
+  max-width: 100%;
+  max-height: var(--revaro-col-height, none);
+  height: auto;
+  object-fit: contain;
+  break-inside: avoid;
+  display: block;
+  margin: 0 auto;
+}
+
+.revaro-content figure img,
+.revaro-content figure svg,
+.revaro-content figure video {
+  max-height: calc(var(--revaro-col-height, none) - 2em);
+}
+
+.revaro-content figure {
+  max-height: var(--revaro-col-height, none);
+  margin: 0 auto;
+  text-align: center;
+}
+
+.revaro-content figcaption {
+  font-size: 0.85em;
+  color: var(--revaro-muted);
+  margin: 0.4em 0 0;
+}
+
+.revaro-content figure,
+.revaro-content table,
+.revaro-content pre {
+  break-inside: avoid;
+}
+
+.revaro-content table {
+  max-width: 100%;
+  border-collapse: collapse;
+}
+
+.revaro-content pre {
+  white-space: pre-wrap;
+}
+
+.revaro-content ruby rt {
+  font-size: 0.55em;
+}
+
+/* TXT 文本块：无段首缩进、块间无空隙（连续 pre-wrap 观感） */
+.revaro-content.txt .txt-blk {
+  margin: 0;
+  padding: 0;
+}
+
+/* ---- 阅读器布局 ---- */
+
+.rf-viewport {
+  position: relative;
+  overflow: hidden;
+  touch-action: pan-y;
+}
+
+.rf-pager {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* 分页载体：多栏连续流。宽/高/边距/栏宽/栏距/字号等排版参数由 JS
+   按视口与偏好内联设置（栏距恒等于 2×侧边距，栏距 + 栏宽 = 屏宽，
+   因此每翻一页恰好平移一屏宽，栏内容始终居中于屏）。 */
+.rf-flow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  /* 多栏溢出向右延伸，本容器不裁剪（由 .rf-pager 裁） */
+  overflow: visible;
+}
+
+.rf-chunk {
+  margin: 0;
+  padding: 0;
+}
+
+/* 明暗主题只换 CSS 变量（ink/paper），不重排 */
+#reader-view.dark {
+  --revaro-ink: #dedbd3;
+  --revaro-paper: #1e1b17;
+  --revaro-muted: #9a938a;
+}
+
+.v2-lineheight {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.v2-lineheight .font-step.v2-active {
+  color: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rf-flow {
+    transition: none !important;
+  }
+}
