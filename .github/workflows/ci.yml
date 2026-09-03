@@ -58,6 +58,8 @@ jobs:
         # so CI does not commit a multi-gigabyte Cargo target directory as an
         # image layer. buildx 层缓存（与 e2e / publish 共享同一 GHA scope）命中时
         # 跳过 FFmpeg 源码编译与第三方依赖编译，容器内只需重编 revaro crate。
+        # 本 job 是该 scope 唯一的并发写入方（e2e 只读，见下），避免两个
+        # job 同时写同一 scope 互相驱逐导致整链重建甚至偶发失败。
         run: |
           docker buildx build \
             --load --target dataplane-src --tag revaro-dataplane-ci \
@@ -106,13 +108,13 @@ jobs:
           npx playwright install --with-deps chromium
       - uses: docker/setup-buildx-action@v4.1.0
       - name: Build Revaro image with shared layer cache
-        # 与 publish 共享同一 GHA 层缓存 scope：本 job 构建过的层
-        # publish 直接命中，同一提交不再整镜像重复构建。
+        # 只读共享 GHA 层缓存（写入方是 test job，二者并发运行）：
+        # 避免两个 job 同时向同一 scope 写入、互相驱逐缓存层导致整链
+        # 重建甚至偶发失败；镜像层由 test job 落盘，publish 直接命中。
         run: |
           docker buildx build \
             --load --tag revaro-e2e:local \
-            --cache-from type=gha,scope=revaro-image \
-            --cache-to type=gha,scope=revaro-image,mode=max .
+            --cache-from type=gha,scope=revaro-image .
       - name: Build and start the real Revaro stack
         run: docker compose -f compose.e2e.yml up -d --no-build
       - name: Wait for readiness
