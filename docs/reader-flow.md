@@ -69,43 +69,125 @@ HTTP 面：
 字符记成 readingAnchor 并防抖保存；恢复/目录跳转按 anchor → 块 → 所在栏
 定位。字号/旋转等变化在客户端重排后按同一 anchor 回到新布局中对应栏。
 
-## 4. 客户端分页与窗口
+## 4. 目录导航（Stable NavAnchor，v4）
+
+TOC 每条目录在服务端构建期解析为导航 locator，两套语义分离：
+
+- **文本目标**（绝大多数条目）：manifest 保存实际文本节点的稳定 DOM path
+  （`text_path`，相对块元素的 childNodes 下标链）+ 首个可见字符的 UTF-16
+  偏移（`text_offset`）。客户端加载目标 chunk 后解析真实 Text node，用
+  collapsed caret Range 的 rect 计算栏。不再向 DOM 注入空 inline 标记——
+  空 inline 在 column/page break 处可能停留在上一栏，而真实文本已进入下一
+  栏，会导致目录稳定跳到目标前一页。
+- **媒体目标**（img/svg/video）：清洗期把 `data-rv-anchor="<id>"` 绑到媒体
+  元素上，客户端按真实元素 rect 定栏。
+- **回退链**：文本 locator 解析失败（节点缺失/偏移越界/无布局盒）→ 媒体
+  NavAnchor → `source_fragment` 块内精确定位（visualStart）→ 块起点。
+
+## 5. 稳定分页边界（窗口虚拟化的前提）
+
+chunk 按体量切分、不是 page boundary。如果 CSS columns 以「任意已加载
+chunk」为排版原点，窗口增删会改变后续所有 page break（相位漂移）：目录落
+点偏移、继续阅读时排版跳动。因此：
+
+- **服务端**在每个 spine 起始块（全书首块除外）注入 `data-spine-start`，
+  客户端 CSS 对其施加 `break-before: column`——spine 起点强制成为
+  column/page boundary（TXT 章节等价处理）。
+- **客户端**窗口恒为 `[当前 spine 起始块所在 chunk, 当前 chunk + AHEAD]`：
+  spine 内阅读时排版前缀（spine 起始 chunk → 当前 chunk）永远保留，只有
+  进入下一 spine 后才释放上一 spine 的 chunk；向后翻越 spine 边界时允许
+  原始扩张一个 chunk（强制分栏保证当前 spine 的 page boundary 不变，绝对
+  栏号由 topAnchor 重对齐吸收）。
+- 窗口增删后当前 readingAnchor 的视觉页与后续 page boundary 不变；随机
+  TOC seek、连续翻页、窗口滑动、横竖屏、字号变化均有回归测试
+  （`web/e2e/reader-flow.spec.ts`）。
+- 后续如需更激进的虚拟化（不保留整个 spine 前缀），必须基于已测量并缓存
+  的真实 page boundary，而不是字符 chunk 边界。
+
+## 6. 客户端分页与窗口
 
 - 容器：`.rf-flow.revaro-content` 是一棵连续多栏容器（绝对定位、宽=屏宽、
   高=阅读区高、`column-width`/`column-gap`/`column-fill:auto`、字号/行距/
   图片上限等以 CSS 变量注入）。栏距恒等于 2×侧边距 → 栏宽 + 栏距 = 屏宽，
   因此每“页”恰好平移一屏宽（纯 transform）。
 - 窗口：已加载 chunk 是 `[c0, c1]` 的连续区间；`measureCols()` 用
-  `scrollWidth / 屏宽` 得到栏数。前进到窗口边缘时先预取下一 chunk（后台，
-  不在翻页热路径），窗口过宽时从身后丢弃（重排后按顶行 anchor 对位，视觉
-  不跳）。
+  `scrollWidth / 屏宽` 得到栏数。窗口滑动只增量 append/remove chunk；
+  `windowSync` 与翻页互斥（`syncing`/`turnBusy` 排队重放），重起源期间
+  不得按陈旧 `cols`/`currentCol` 计算落点。
 - 交互：左右热区、方向键/PageUp/PageDown/空格、移动端跟手滑动（快速轻扫或
   拖过 1/4 屏判定）；工具栏、目录抽屉、进度条（按全文 UTF-16 比例的 0–1000
   滑块）、字号 14–32 / 行距 / 明暗主题沿用旧骨架样式。
 
-## 5. 实施状态
+## 7. 缓存架构（统一 Global CacheManager）
 
-- Go：`internal/reader/flow`（Anchor/Manifest/构建+chunk 纯函数）、对象键；
-  `internal/server/reader_flow.go`（manifest/chunk 端点、单飞构建、GC）；
-  删除 `internal/reader/layout`（chromedp 分页器）、`reader_layout.go`、
-  `reader_layout_test.go`；config 移除 `REVARO_CHROME_BIN`/LAYOUT_*，新增
-  `FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY`；Docker 镜像不再装 Chromium。
-- Web：`web/src/reader/{types,api,flow,cache,prefs}` 重写；`Reader.vue` 为
-  窗口化 chunk + CSS columns 阅读器；样式随前端打包（不再请求 `/api/reader.css`）。
-- 测试：Go（flow 构建不变量、TXT 连续性、目录映射、服务端端点契约、旧端点
-  移除、GC）；Web vitest（纯 helper）；Playwright route-mock e2e（窗口预取、
-  热路径零网络、字号重排零请求、anchor 进度恢复）。
+服务端（`internal/cache`）：
+
+- 所有缓存的生命周期、容量、LRU、singleflight、统计与失效策略统一由
+  `cache.Manager` 管理；不同 cache class 允许不同 tier/策略。
+- 读取路径统一为 **memory L1 → local-disk L2 → 回源**（singleflight 去重，
+  成功回填两级）。
+- 全局容量为 byte-LRU，class 可声明 `priority`（大者晚淘汰）与
+  `soft quota`（超出者优先收缩），避免大型 video range/HLS 工作区把
+  reader 缓存全部挤掉。
+- class 一览：
+  | class | 内容 | tier | 策略 |
+  |---|---|---|---|
+  | `reader/flow` | flow manifest/chunks | memory+disk | 内容寻址 immutable，无 TTL |
+  | `reader/source` | 书源 blob | disk | 内容寻址 immutable，无 TTL |
+  | `reader/books` | 解析后 Book | memory | 对象 LRU（external 注册） |
+  | `media/subtitle` | 字幕转换产物 | memory+disk | TTL（真正临时产物） |
+  | `media/hls` | 音视频 HLS 会话工作区 | disk | 会话自管（external 注册） |
+- **ensureFlow 幂等**：flow 产物内容随书内容与 flow 版本固定（内容寻址），
+  manifest 命中（统一缓存副本或对象存储 HEAD）即直接复用；只在缺失时单飞
+  构建，manifest 最后原子提交。第二次打开同一本书不重新 Build flow、不重新
+  写对象。chunk 对象被容量回收而 manifest 幸存时，chunk 请求触发一次自愈
+  重建。
+- 指标：hit/miss/load/eviction/bytes 按 class 暴露在 `/api/system/status`
+  的 `cache.classes`。
+- 缩略图与图片资产本身持久化在 S3（`thumbs/`、`blobs/`，immutable 长缓存
+  头）；音视频 Range 由 S3/数据平面直接承担，不经本地缓存层。
+
+客户端（`web/src/reader/clientCache.ts`）：
+
+- 内存 `PageCache` 仍是 L1；新增 **持久 `ClientCacheManager`（IndexedDB）**
+  作为 L2，缓存 reader manifest 与 chunks。
+- 键空间与统一缓存对齐：manifest `m:<fileId>`，chunk
+  `c:<bookKey>:v<version>:<index>`（`book_key` 为服务端注入的书内容指纹，
+  同 id 重传后旧缓存按前缀清除）。
+- 打开书籍：L2 manifest 命中 → 本地立即排版显示；网络 manifest（no-cache）
+  随后台校验，排版语义一致则零 chunk 重取，不一致（flow 版本升级/换书）才
+  丢弃本地重建。
+- 全局字节预算内 LRU 淘汰，暴露 hits/misses/puts/evictions/bytes 指标。
+  图片/缩略图/媒体 range 依赖 HTTP immutable 缓存与 S3 直链。
+
+## 8. 实施状态
+
+- Go：`internal/reader/flow`（Anchor/Manifest/构建+chunk 纯函数、文本
+  locator、spine 起始边界注入、对象键）、`internal/cache`（统一缓存管理
+  器）；`internal/server/reader_flow.go`（manifest/chunk 端点、幂等构建、
+  缓存读取、GC）、`internal/server/cache.go`（class 装配）；config 保留
+  `FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY`（flow 对象 GC）与
+  `MEDIA_CACHE_CAPACITY`（全局磁盘上限）。
+- Web：`web/src/reader/{types,api,flow,cache,clientCache,prefs}`；
+  `Reader.vue` 为稳定窗口 + CSS columns 阅读器（文本 locator 跳转、
+  L2 快开）。
+- 测试：Go（flow 构建不变量、locator 往返、spine 边界注入、TXT 连续性、
+  服务端端点契约、幂等构建/自愈、缓存管理器单测）；Web vitest（纯 helper、
+  ClientCacheManager）；Playwright route-mock e2e（窗口预取、热路径零网络、
+  目录 locator、相位稳定、横竖屏/字号、L2 重开零请求）。
 
 已知取舍：
 
 - 客户端分页的列号/页数是“已加载窗口”内的显示量，跨书进度用文本百分比表示，
   不承诺与任何服务端页码一致；
-- 恢复定位以“anchor 所在栏”为粒度（重排后 anchor 可能位于该栏中部，属于
-  一到几行的精度）；
+- 恢复/重排定位以“anchor 所在栏”为粒度（栏界随布局变化，重排后可见栏顶
+  内容块可前后移动数块，anchor 内容本身仍在当前栏内）；
+- 长 spine（单文件巨著）的排版前缀会随阅读位置线性增长，这是第一阶段的
+  明确取舍（见第 5 节）；
 - 旧格式进度只对 spine 0 精确迁移（spine > 0 时块号换算会偏到全书起点附近），
   由于旧格式仅存在于开发期，未做进一步兼容。
 
-## 6. 移动端性能与镜像体积优化（随架构保留）
+## 9. 移动端性能与镜像体积优化（随架构保留）
 
 - **will-change 生命周期**：`.rf-flow` 不常驻 `will-change: transform`，只在
   跟手拖动/翻页 WAAPI 动画期间由 JS 临时开启、动画结束即释放——避免 Android

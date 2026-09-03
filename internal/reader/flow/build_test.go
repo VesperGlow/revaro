@@ -198,17 +198,28 @@ func TestBuildEPUBTOCFragmentsInSameBlock(t *testing.T) {
 	if a.Spine != 1 || m.TOC[0].SourceFragment != "sec1" {
 		t.Fatalf("toc mapping broken: %+v", m.TOC)
 	}
-	// NavAnchor 按目录序分配，原始 source path 保留
-	if a.NavAnchor != "rvn-1" || b.NavAnchor != "rvn-2" || m.TOC[0].NavAnchor != "rvn-0" {
-		t.Fatalf("nav anchors not assigned by toc order: %+v", m.TOC)
+	// NavAnchor id 按目录序分配（文本目标不再进入 DOM，仅媒体目标注入
+	// data-rv-anchor），原始 source path 保留
+	if a.NavAnchor != "" || b.NavAnchor != "" || m.TOC[0].NavAnchor != "" {
+		t.Fatalf("text targets must not bind DOM markers: %+v / %+v / %+v", a, b, m.TOC[0])
 	}
 	if a.SourcePath != "OEBPS/ch2.xhtml" || m.TOC[0].SourcePath != "OEBPS/ch1.xhtml" {
-		t.Fatalf("source path not preserved: %+v", m.TOC)
+		t.Fatalf("source path not preserved: %+v", m.TOC[0])
+	}
+	// 文本目标携带实际文本节点的 DOM path + UTF-16 偏移
+	if len(a.TextPath) == 0 || a.TextOffset != 0 || len(b.TextPath) == 0 {
+		t.Fatalf("text locator missing: %+v / %+v", a, b)
 	}
 	// Block 仍可定位 chunk，且 manifest.Chunk 与块所在 chunk 一致
 	ci := m.ChunkForBlock(a.Block)
 	if ci < 0 {
 		t.Fatalf("block %d not in any chunk", a.Block)
+	}
+	if got := resolveChunkText(t, built.Chunks[ci].HTML, a.Block, a.TextPath); got != "甲处" {
+		t.Fatalf("text path resolves to %q, want 甲处", got)
+	}
+	if got := resolveChunkText(t, built.Chunks[ci].HTML, b.Block, b.TextPath); got != "乙处" {
+		t.Fatalf("text path resolves to %q, want 乙处", got)
 	}
 	if a.Chunk != ci || b.Chunk != ci || m.TOC[0].Chunk != m.ChunkForBlock(m.TOC[0].Block) {
 		t.Fatalf("toc chunk field wrong: %+v", m.TOC)
@@ -217,18 +228,16 @@ func TestBuildEPUBTOCFragmentsInSameBlock(t *testing.T) {
 	if !strings.Contains(html, `id="frag-a"`) || !strings.Contains(html, `id="frag-b"`) {
 		t.Fatalf("chunk html lost fragment ids: %s", html)
 	}
-	// 文本目标的 NavAnchor 绑定为目标文本节点前的空内联标记（位于承载
-	// 文本的元素内）
-	if !strings.Contains(html, `<span id="frag-a"><span class="toc-anchor" data-rv-anchor="rvn-1"></span>甲处</span>`) ||
-		!strings.Contains(html, `<span id="frag-b"><span class="toc-anchor" data-rv-anchor="rvn-2"></span>乙处</span>`) {
-		t.Fatalf("text nav anchor not bound before target text: %s", html)
+	// 文本目标不再注入空 inline 标记
+	if strings.Contains(html, "toc-anchor") || strings.Contains(html, "data-rv-anchor") {
+		t.Fatalf("text target must not inject inline markers: %s", html)
 	}
 	// data-block 编号仍落在该块上（阅读进度体系不变）
 	if !strings.Contains(html, fmt.Sprintf(`data-block="%d"`, a.Block)) {
 		t.Fatalf("block %d missing data-block in chunk %d", a.Block, ci)
 	}
-	// fragment 解析失败（清洗丢弃）时 Block 回退 spine 首块，NavAnchor
-	// 绑定其首个真实可见内容，SourceFragment 原样保留
+	// fragment 解析失败（清洗丢弃）时 Block 回退 spine 首块，locator 解析
+	// 其首个真实可见内容，SourceFragment 原样保留
 	book.TOC = append(book.TOC, reader.TocEntry{Label: "丢失", Path: "OEBPS/ch2.xhtml", Fragment: "no-such-id", Depth: 1})
 	again, err := Build(book, "")
 	if err != nil {
@@ -238,12 +247,11 @@ func TestBuildEPUBTOCFragmentsInSameBlock(t *testing.T) {
 	if lost.SourceFragment != "no-such-id" || lost.Block != again.Manifest.Spines[1].BlockStart {
 		t.Fatalf("missing fragment fallback wrong: %+v (spine start %d)", lost, again.Manifest.Spines[1].BlockStart)
 	}
-	if lost.NavAnchor != "rvn-3" {
-		t.Fatalf("lost fragment nav anchor: %+v", lost)
+	if len(lost.TextPath) == 0 {
+		t.Fatalf("lost fragment should resolve first visible text: %+v", lost)
 	}
-	lostHTML := again.Chunks[lost.Chunk].HTML
-	if !strings.Contains(lostHTML, `data-rv-anchor="rvn-3"`) {
-		t.Fatalf("lost fragment nav anchor not bound to spine first content: %s", lostHTML)
+	if got := resolveChunkText(t, again.Chunks[lost.Chunk].HTML, lost.Block, lost.TextPath); got != "甲处" {
+		t.Fatalf("lost fragment text locator resolves %q, want 甲处", got)
 	}
 }
 
@@ -275,10 +283,74 @@ func navAnchorAttr(t *testing.T, chunkHTML, want string) string {
 	return ""
 }
 
-// TestBuildEPUBNavAnchorBinding 验证 Stable NavAnchor 绑定规则：
-//   - 图片/SVG 目标 → data-rv-anchor 直接落在媒体元素上；
-//   - 文本目标 → 首个有效文本位置前的内联标记（零文本，正文不变）；
-//   - 目标无可见内容（空 inline 锚点）→ 沿文档序向后绑到块内下一可见内容；
+// resolveChunkText 把 chunk HTML 重新解析（等价浏览器 innerHTML），按块
+// data-block + text path 走到目标节点，返回其文本。验证 text locator 的
+// DOM path 跨「服务端解析树 → 序列化 → 客户端再解析」往返一致。
+func resolveChunkText(t *testing.T, chunkHTML string, block int, path []int) string {
+	t.Helper()
+	for _, n := range parseChunk(chunkHTML, t) {
+		blk, ok := findDataBlock(n, block)
+		if !ok {
+			continue
+		}
+		cur := blk
+		for _, idx := range path {
+			i := 0
+			var next *html.Node
+			for c := cur.FirstChild; c != nil; c = c.NextSibling {
+				if i == idx {
+					next = c
+					break
+				}
+				i++
+			}
+			if next == nil {
+				t.Fatalf("path %v dead-ends in block %d", path, block)
+			}
+			cur = next
+		}
+		if cur.Type != html.TextNode {
+			t.Fatalf("path %v lands on %v node, want text", path, cur.Type)
+		}
+		return cur.Data
+	}
+	t.Fatalf("block %d not found in chunk", block)
+	return ""
+}
+
+// findDataBlock 在子树内查找 data-block 属性等于 want 的元素。
+func findDataBlock(root *html.Node, want int) (*html.Node, bool) {
+	var walk func(n *html.Node) *html.Node
+	walk = func(n *html.Node) *html.Node {
+		if n.Type == html.ElementNode {
+			for _, a := range n.Attr {
+				if a.Key == "data-block" {
+					var got int
+					fmt.Sscanf(a.Val, "%d", &got)
+					if got == want {
+						return n
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if hit := walk(c); hit != nil {
+				return hit
+			}
+		}
+		return nil
+	}
+	if hit := walk(root); hit != nil {
+		return hit, true
+	}
+	return nil, false
+}
+
+// TestBuildEPUBNavAnchorBinding 验证导航 locator 解析规则：
+//   - 图片/SVG 目标 → data-rv-anchor 直接落在媒体元素上（NavAnchor 输出）；
+//   - 文本目标 → 不注入任何 DOM 标记，manifest 保存实际文本节点的
+//     DOM path + UTF-16 偏移（跨序列化往返可解析到同一文本）；
+//   - 目标无可见内容（空 inline 锚点）→ 沿文档序向后解析块内下一可见文本；
 //   - 无 fragment → 目标 spine 首个真实可见内容；
 //   - 同一目标去重共享 id；manifest 携带 chunk / source_path / source_fragment。
 func TestBuildEPUBNavAnchorBinding(t *testing.T) {
@@ -315,31 +387,37 @@ func TestBuildEPUBNavAnchorBinding(t *testing.T) {
 		}
 		return built.Chunks[ci].HTML
 	}
-	// 图片目标：绑定直接落在媒体元素上
+	// 图片目标：绑定直接落在媒体元素上（唯一进 DOM 的标记）
 	if m.TOC[0].NavAnchor != "rvn-0" || navAnchorAttr(t, chunkOf(m.TOC[0].Block), "rvn-0") != "img" {
 		t.Fatalf("media target should bind on img: %+v", m.TOC[0])
 	}
-	// 无 fragment：绑定 spine 首个真实可见内容（章首文字前的标记）
-	if m.TOC[1].NavAnchor != "rvn-1" || navAnchorAttr(t, chunkOf(m.TOC[1].Block), "rvn-1") != "span" {
-		t.Fatalf("no-fragment target should bind spine first text: %+v", m.TOC[1])
+	// 无 fragment：解析 spine 首个真实可见文本
+	if m.TOC[1].NavAnchor != "" || len(m.TOC[1].TextPath) == 0 {
+		t.Fatalf("no-fragment target should carry text locator: %+v", m.TOC[1])
 	}
 	if m.TOC[1].Block != m.Spines[1].BlockStart {
 		t.Fatalf("no-fragment block should be spine start: %+v", m.TOC[1])
 	}
-	// 文本目标：标记在标题文本前
-	if m.TOC[2].NavAnchor != "rvn-2" || navAnchorAttr(t, chunkOf(m.TOC[2].Block), "rvn-2") != "span" {
-		t.Fatalf("text target should bind before title text: %+v", m.TOC[2])
+	if got := resolveChunkText(t, chunkOf(m.TOC[1].Block), m.TOC[1].Block, m.TOC[1].TextPath); got != "章首文字。" {
+		t.Fatalf("no-fragment text locator resolves %q", got)
 	}
-	if !strings.Contains(chunkOf(m.TOC[2].Block), `<span class="toc-anchor" data-rv-anchor="rvn-2"></span>第三章 标题`) {
-		t.Fatal("text marker not immediately before title text")
+	// 文本目标：locator 落在标题文本节点
+	if m.TOC[2].NavAnchor != "" || len(m.TOC[2].TextPath) == 0 || m.TOC[2].TextOffset != 0 {
+		t.Fatalf("text target should carry text locator: %+v", m.TOC[2])
+	}
+	if got := resolveChunkText(t, chunkOf(m.TOC[2].Block), m.TOC[2].Block, m.TOC[2].TextPath); got != "第三章 标题" {
+		t.Fatalf("text locator resolves %q, want title text", got)
 	}
 	// 同一目标去重共享 id
 	if m.TOC[3].NavAnchor != "rvn-0" {
 		t.Fatalf("duplicate target should share nav anchor: %+v", m.TOC[3])
 	}
-	// 空 inline 锚点：沿文档序向后绑到下一可见文本
-	if m.TOC[4].NavAnchor != "rvn-3" || !strings.Contains(chunkOf(m.TOC[4].Block), `data-rv-anchor="rvn-3"></span>锚点后正文`) {
-		t.Fatalf("empty inline target should bind forward: %+v", m.TOC[4])
+	// 空 inline 锚点：沿文档序向后解析到下一可见文本
+	if m.TOC[4].NavAnchor != "" || len(m.TOC[4].TextPath) == 0 {
+		t.Fatalf("empty inline target should resolve forward: %+v", m.TOC[4])
+	}
+	if got := resolveChunkText(t, chunkOf(m.TOC[4].Block), m.TOC[4].Block, m.TOC[4].TextPath); got != "锚点后正文。" {
+		t.Fatalf("empty inline locator resolves %q", got)
 	}
 	// chunk 字段与块所在 chunk 一致；source 字段保留
 	for _, e := range m.TOC {
@@ -359,8 +437,12 @@ func TestBuildEPUBNavAnchorBinding(t *testing.T) {
 		if again.Manifest.TOC[i].NavAnchor != m.TOC[i].NavAnchor || again.Manifest.TOC[i].Chunk != m.TOC[i].Chunk {
 			t.Fatalf("nav anchor not deterministic: %+v vs %+v", m.TOC[i], again.Manifest.TOC[i])
 		}
+		if anchorsEqual(again.Manifest.TOC[i].TextPath, m.TOC[i].TextPath) == false || again.Manifest.TOC[i].TextOffset != m.TOC[i].TextOffset {
+			t.Fatalf("text locator not deterministic: %+v vs %+v", m.TOC[i], again.Manifest.TOC[i])
+		}
 	}
-	// 标记零文本：total_chars 与无目录构建一致
+	// 文本目标零 DOM 改动：total_chars 与无目录构建一致；唯一可能进 DOM
+	// 的标记是媒体目标上的 data-rv-anchor（无 toc-anchor 内联标记）
 	bookNoTOC := *book
 	bookNoTOC.TOC = nil
 	clean, err := Build(&bookNoTOC, "")
@@ -368,8 +450,25 @@ func TestBuildEPUBNavAnchorBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if clean.Manifest.TotalChars != m.TotalChars {
-		t.Fatalf("markers changed total_chars: %d vs %d", m.TotalChars, clean.Manifest.TotalChars)
+		t.Fatalf("locators changed total_chars: %d vs %d", m.TotalChars, clean.Manifest.TotalChars)
 	}
+	for i := range built.Chunks {
+		if strings.Contains(built.Chunks[i].HTML, "toc-anchor") {
+			t.Fatalf("chunk %d still carries inline marker", i)
+		}
+	}
+}
+
+func anchorsEqual(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestBuildChunksNavAnchorSplit 验证 chunk 在 NavAnchor 附近的安全边界
@@ -402,13 +501,13 @@ func TestBuildChunksNavAnchorSplit(t *testing.T) {
 	target := m.TOC[0].Block
 	ci := m.ChunkForBlock(target)
 	if m.Chunks[ci].BlockStart != target {
-		t.Fatalf("nav anchor block should start its chunk: target=%d chunk=%+v", target, m.Chunks[ci])
+		t.Fatalf("nav target block should start its chunk: target=%d chunk=%+v", target, m.Chunks[ci])
 	}
-	if m.TOC[0].Chunk != ci || m.TOC[0].NavAnchor != "rvn-0" {
+	if m.TOC[0].Chunk != ci || m.TOC[0].NavAnchor != "" || len(m.TOC[0].TextPath) == 0 {
 		t.Fatalf("toc nav fields wrong: %+v", m.TOC[0])
 	}
-	if got := navAnchorAttr(t, built.Chunks[ci].HTML, "rvn-0"); got != "span" {
-		t.Fatalf("target text not bound by marker: %q", got)
+	if got := resolveChunkText(t, built.Chunks[ci].HTML, target, m.TOC[0].TextPath); got != "目标标题" {
+		t.Fatalf("target text locator resolves %q", got)
 	}
 }
 
@@ -444,6 +543,138 @@ func nodeText(n *html.Node) string {
 	}
 	walk(n)
 	return b.String()
+}
+
+// TestBuildEPUBNestedInlineTextLocator 验证文本 locator 在嵌套 inline 结构
+// 中指向真实文本节点：path 逐层穿过 strong/span，偏移跳过前导空白；且
+// 「服务端解析树 → 序列化 → 客户端再解析」往返后仍解析到同一文本。
+func TestBuildEPUBNestedInlineTextLocator(t *testing.T) {
+	ch1 := `<p data-source-path="OEBPS/a.xhtml">前言<strong>粗体<span id="deep">目标文本</span></strong>尾文</p>`
+	ch2 := `<h2 id="ws" data-source-path="OEBPS/b.xhtml"> 标题带前导空白</h2>`
+	book := &reader.Book{
+		Format:   "epub",
+		Title:    "嵌套书",
+		Chapters: []reader.Chapter{{HTML: ch1}, {HTML: ch2}},
+		TOC: []reader.TocEntry{
+			{Label: "深层", Path: "OEBPS/a.xhtml", Fragment: "deep", Depth: 0},
+			{Label: "空白", Path: "OEBPS/b.xhtml", Fragment: "ws", Depth: 0},
+		},
+	}
+	built, err := Build(book, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := built.Manifest
+	deep, ws := m.TOC[0], m.TOC[1]
+	if !anchorsEqual(deep.TextPath, []int{1, 1, 0}) || deep.TextOffset != 0 {
+		t.Fatalf("deep locator path/offset wrong: %+v", deep)
+	}
+	if got := resolveChunkText(t, built.Chunks[deep.Chunk].HTML, deep.Block, deep.TextPath); got != "目标文本" {
+		t.Fatalf("deep locator resolves %q", got)
+	}
+	if ws.TextOffset != 1 {
+		t.Fatalf("leading whitespace offset = %d, want 1", ws.TextOffset)
+	}
+	if got := resolveChunkText(t, built.Chunks[ws.Chunk].HTML, ws.Block, ws.TextPath); got != " 标题带前导空白" {
+		t.Fatalf("ws locator resolves %q", got)
+	}
+}
+
+// TestBuildSpineStartBoundary 验证每个 spine 起始块（全书首块除外）注入
+// data-spine-start（客户端以其为稳定分页边界，施加 break-before:column）。
+func TestBuildSpineStartBoundary(t *testing.T) {
+	sp := func(id string) string {
+		return fmt.Sprintf(`<h1 id="%s" data-source-path="OEBPS/%s.xhtml">%s 标题</h1>`, id, id, id) +
+			`<p data-source-path="OEBPS/s.xhtml">` + strings.Repeat("章内正文内容，用来形成多个内容块。", 30) + `</p>`
+	}
+	book := &reader.Book{
+		Format:   "epub",
+		Title:    "边界书",
+		Chapters: []reader.Chapter{{HTML: sp("c1")}, {HTML: sp("c2")}, {HTML: sp("c3")}},
+		TOC: []reader.TocEntry{
+			{Label: "c1", Path: "OEBPS/c1.xhtml", Depth: 0},
+			{Label: "c2", Path: "OEBPS/c2.xhtml", Depth: 0},
+			{Label: "c3", Path: "OEBPS/c3.xhtml", Depth: 0},
+		},
+	}
+	built, err := Build(book, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := built.Manifest
+	if len(m.Spines) != 3 {
+		t.Fatalf("spines=%+v", m.Spines)
+	}
+	hasAttr := func(block int, attr string) bool {
+		html := built.Chunks[m.ChunkForBlock(block)].HTML
+		return strings.Contains(html, fmt.Sprintf(`data-block="%d" %s`, block, attr))
+	}
+	if hasAttr(0, "data-spine-start") {
+		t.Fatal("book start must not carry data-spine-start")
+	}
+	if !hasAttr(m.Spines[1].BlockStart, "data-spine-start") || !hasAttr(m.Spines[2].BlockStart, "data-spine-start") {
+		t.Fatal("spine start blocks (except book start) must carry data-spine-start")
+	}
+	// 非 spine 起始块不得携带
+	if hasAttr(m.Spines[1].BlockStart+1, "data-spine-start") {
+		t.Fatal("non-start block carries data-spine-start")
+	}
+
+	// TXT 章节等价：每章起始块（首章除外）同样注入
+	text := "第一章 开头\n" + strings.Repeat("第一章正文行。\n", 30) +
+		"\n第二章 继续\n" + strings.Repeat("第二章正文行。\n", 30)
+	tbook, err := reader.Parse("book.txt", strings.NewReader(text), int64(len(text)), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tbuilt, err := Build(tbook, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := tbuilt.Manifest
+	if len(tm.Spines) < 2 {
+		t.Fatalf("txt spines=%+v", tm.Spines)
+	}
+	txtHasAttr := func(block int, attr string) bool {
+		html := tbuilt.Chunks[tm.ChunkForBlock(block)].HTML
+		return strings.Contains(html, fmt.Sprintf(`data-block="%d" %s`, block, attr))
+	}
+	if txtHasAttr(0, "data-spine-start") || !txtHasAttr(tm.Spines[1].BlockStart, "data-spine-start") {
+		t.Fatalf("txt spine-start injection wrong: spine[1].start=%d", tm.Spines[1].BlockStart)
+	}
+}
+
+// TestBuildVoidBlockSerialization void 元素块（img）的序列化必须携带完整
+// 的 '/>'：此前 injectDataBlock 漏掉结尾 '>'，浏览器解析 chunk HTML 时会把
+// 后续块全部吞进属性（真实书目中目录跳转目标整块丢失）。
+func TestBuildVoidBlockSerialization(t *testing.T) {
+	book := &reader.Book{
+		Format: "epub",
+		Title:  "图册",
+		Chapters: []reader.Chapter{
+			{HTML: `<p data-source-path="OEBPS/i.xhtml">第一段</p>` +
+				`<p data-source-path="OEBPS/i.xhtml"><img src="/a/0" width="10" height="20" alt="x"></p>` +
+				`<p data-source-path="OEBPS/i.xhtml">图后文字</p>`},
+		},
+	}
+	built, err := Build(book, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := built.Chunks[0].HTML
+	if !strings.Contains(html, `/>`) {
+		t.Fatalf("void block not self-closed: %s", html)
+	}
+	// 重新解析（等价浏览器 innerHTML）：三个顶层块都在，data-block 连续
+	nodes := parseChunk(html, t)
+	if len(nodes) != 3 {
+		t.Fatalf("chunk top-level elements = %d, want 3 (swallowed by malformed tag)", len(nodes))
+	}
+	for want := 0; want < 3; want++ {
+		if _, ok := findDataBlock(nodes[want], want); !ok {
+			t.Fatalf("top-level element %d lost its data-block: %s", want, html)
+		}
+	}
 }
 
 func TestBuildTXTContinuityAndTOC(t *testing.T) {

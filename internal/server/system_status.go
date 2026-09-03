@@ -14,16 +14,29 @@ type systemComponent struct {
 	Bytes  int64  `json:"bytes,omitempty"`
 }
 
+type systemClassStat struct {
+	Hits         int64 `json:"hits"`
+	Misses       int64 `json:"misses"`
+	Loads        int64 `json:"loads"`
+	LoadErrors   int64 `json:"load_errors"`
+	Evictions    int64 `json:"evictions"`
+	MemoryBytes  int64 `json:"memory_bytes,omitempty"`
+	MemoryEntry  int   `json:"memory_entries,omitempty"`
+	DiskBytes    int64 `json:"disk_bytes,omitempty"`
+	DiskEntries  int   `json:"disk_entries,omitempty"`
+}
+
 type systemStatusResponse struct {
 	Status   string          `json:"status"`
 	Database systemComponent `json:"database"`
 	Storage  systemComponent `json:"storage"`
 	Cache    struct {
-		Status        string `json:"status"`
-		MemoryBytes   int64  `json:"memory_bytes"`
-		DiskBytes     int64  `json:"disk_bytes"`
-		MemoryEntries int    `json:"memory_entries"`
-		DiskEntries   int    `json:"disk_entries"`
+		Status        string                      `json:"status"`
+		MemoryBytes   int64                       `json:"memory_bytes"`
+		DiskBytes     int64                       `json:"disk_bytes"`
+		MemoryEntries int                         `json:"memory_entries"`
+		DiskEntries   int                         `json:"disk_entries"`
+		Classes       map[string]systemClassStat  `json:"classes,omitempty"`
 	} `json:"cache"`
 	Tasks struct {
 		Status  string `json:"status"`
@@ -81,6 +94,15 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 		stats := s.cache.Stats()
 		out.Cache.MemoryBytes, out.Cache.DiskBytes = stats.MemoryBytes, stats.DiskBytes
 		out.Cache.MemoryEntries, out.Cache.DiskEntries = stats.MemoryEntries, stats.DiskEntries
+		classes := make(map[string]systemClassStat, len(stats.Classes))
+		for name, cs := range stats.Classes {
+			classes[name] = systemClassStat{
+				Hits: cs.Hits, Misses: cs.Misses, Loads: cs.Loads, LoadErrors: cs.LoadErrors, Evictions: cs.Evictions,
+				MemoryBytes: cs.MemoryBytes, MemoryEntry: cs.MemoryEntries,
+				DiskBytes: cs.DiskBytes, DiskEntries: cs.DiskEntries,
+			}
+		}
+		out.Cache.Classes = classes
 	}
 
 	out.Tasks.Status = "ok"

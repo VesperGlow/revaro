@@ -19,7 +19,6 @@ import (
 const maxVideoSubtitleBytes = 16 << 20
 const maxConvertedSubtitleBytes = 32 << 20
 const videoSubtitleCacheTTL = 2 * time.Hour
-const maxVideoSubtitleCacheBytes = int64(64 << 20)
 
 var videoSubtitleExts = map[string]bool{
 	".vtt": true,
@@ -58,8 +57,10 @@ func (s *Server) clearVideoSubtitleCache(fileID string) {
 // the browser's <track> request. HLS media attachment can legitimately replace
 // the video element and cancel that request; the FFmpeg conversion should still
 // finish once and be reused when the selected track is attached again.
+// 字幕转换是真正临时的产物：media/subtitle class 带 TTL，由统一缓存管理器
+// 提供内存 L1 + 磁盘 L2 + singleflight。
 func (s *Server) cachedVideoSubtitle(ctx context.Context, key string, convert func(context.Context) ([]byte, error)) ([]byte, error) {
-	data, err := s.cache.GetOrCreate(ctx, key, videoSubtitleCacheTTL, convert)
+	data, err := s.cache.Load(ctx, cacheClassMediaSubtitle, key, videoSubtitleCacheTTL, convert)
 	if err != nil {
 		s.log.Warn("video subtitle background conversion failed", "subtitle", key, "error", err)
 	}

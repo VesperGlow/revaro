@@ -29,16 +29,22 @@ export interface FlowTocEntry {
   depth: number
   spine: number
   block: number
-  // 服务端 Stable NavAnchor：清洗期已把 data-rv-anchor="<nav_anchor>" 绑定
-  // 到实际可见目标节点（文本目标 = 首个有效文本位置前的内联标记；图片/SVG
-  // 目标 = 媒体元素自身；无 fragment = 目标 spine 首个真实可见内容）。
-  // 字段名与 Go JSON tag 一致。缺失（TXT 或极端回退）时回退块起点。
+  // 服务端 Stable NavAnchor：仅媒体目标（img/svg/video）输出，chunk HTML
+  // 中存在 data-rv-anchor="<nav_anchor>" 的媒体元素，客户端按真实元素
+  // rect 定栏。文本目标不再注入 DOM 标记。缺失时回退 text locator /
+  // source_fragment / 块起点。
   nav_anchor?: string
-  // NavAnchor 绑定节点所在 chunk：目录跳转只需加载该 chunk（服务端已把
-  // 绑定块尽量切到 chunk 头部）。缺失时按 block 反查。
+  // 文本目标的导航 locator（服务端从清洗后 DOM 解析）：实际文本节点相对
+  // 块元素的 childNodes 下标链 + 首个可见字符的 UTF-16 偏移。客户端加载
+  // 目标 chunk 后解析真实 Text node，用 collapsed caret Range 的 rect
+  // 计算栏（空 inline 标记在 column break 处会停在上一栏，已废弃）。
+  text_path?: number[]
+  text_offset?: number
+  // 导航目标所在 chunk：目录跳转只需加载该 chunk（服务端已把目标块尽量
+  // 切到 chunk 头部）。缺失时按 block 反查。
   chunk?: number
-  // 原始 EPUB 目录 href（调试与回退）：绑定节点缺失时用 source_fragment
-  // 做块内精确定位回退（服务端已 percent-decode 一次）。
+  // 原始 EPUB 目录 href（调试与回退）：locator 解析失败时用
+  // source_fragment 做块内精确定位回退（服务端已 percent-decode 一次）。
   source_path?: string
   source_fragment?: string
 }
@@ -47,6 +53,9 @@ export interface FlowManifest {
   version: number
   format: 'epub' | 'txt'
   total_chars: number
+  // 书 blob 内容指纹（服务端注入）：客户端持久缓存用它隔离 chunk 键，
+  // 同一文件 id 被替换为不同内容后指纹改变，旧缓存自然失效。
+  book_key?: string
   spines: FlowSpineMeta[]
   chunks: FlowChunkMeta[]
   toc: FlowTocEntry[]

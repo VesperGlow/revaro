@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FlowManifest, ReadingAnchor } from './types'
-import { compareAnchor, spineForBlock, chunkForBlock, chunkPrefix, locateChar, tocActiveIndex, totalBlocks, migrateAnchor } from './flow'
+import { compareAnchor, spineForBlock, chunkForBlock, chunkPrefix, locateChar, spineOriginChunk, stableWindowRange, tocActiveIndex, totalBlocks, migrateAnchor } from './flow'
 
 function anchor(spine: number, block: number, path: number[], offset: number): ReadingAnchor {
   return { spine, block, path, offset }
@@ -88,5 +88,38 @@ describe('flow manifest lookups', () => {
     expect(legacy).toEqual({ spine: 1, block: 12, path: [0], offset: 7 })
     const first = migrateAnchor(manifest, { spine: 2, path: [], offset: -1 })
     expect(first.block).toBe(15)
+  })
+})
+
+describe('稳定分页边界（窗口虚拟化不允许从任意 chunk 起始）', () => {
+  // chunk 可能跨 spine：上面的 manifest 里 chunk 1 覆盖块 7..14，
+  // 而 spine 1 从块 10 开始 → spine 1 的稳定边界 chunk 是 1。
+  it('spineOriginChunk 返回包含 spine 起始块的 chunk', () => {
+    expect(spineOriginChunk(manifest, 0)).toBe(0)
+    expect(spineOriginChunk(manifest, 9)).toBe(0)
+    expect(spineOriginChunk(manifest, 10)).toBe(1) // spine 1 起始块在 chunk 1 内
+    expect(spineOriginChunk(manifest, 14)).toBe(1)
+    expect(spineOriginChunk(manifest, 15)).toBe(2)
+  })
+
+  it('stableWindowRange 保留 spine 排版前缀并预取 ahead', () => {
+    // 阅读位置在 spine 1 中部（块 12 → chunk 1）：窗口 = [边界 1, 1+2 收敛到书尾]
+    expect(stableWindowRange(manifest, 12, 2)).toEqual([1, 2])
+    // 越过书尾收敛
+    expect(stableWindowRange(manifest, 16, 5)).toEqual([2, 2])
+    // spine 0：窗口起点始终是 chunk 0
+    expect(stableWindowRange(manifest, 5, 2)).toEqual([0, 2])
+    // 未知块回退到窗口 [0, ahead]
+    expect(stableWindowRange(manifest, 99, 2)).toEqual([0, 2])
+  })
+
+  it('同一 spine 内推进阅读位置时窗口起点不回退（相位稳定前提）', () => {
+    let prevLo = -1
+    for (const block of [10, 11, 12, 13, 14]) {
+      const [lo] = stableWindowRange(manifest, block, 3)
+      expect(lo).toBe(1)
+      expect(lo).toBeGreaterThanOrEqual(prevLo)
+      prevLo = lo
+    }
   })
 })

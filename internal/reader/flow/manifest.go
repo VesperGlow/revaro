@@ -12,9 +12,12 @@ type Manifest struct {
 	Version    int         `json:"version"`     // flow 生成器格式版本
 	Format     string      `json:"format"`      // "epub" | "txt"
 	TotalChars int64       `json:"total_chars"` // 全文 UTF-16 码元数（文本进度基准）
-	Spines     []SpineMeta `json:"spines"`
-	Chunks     []ChunkMeta `json:"chunks"`
-	TOC        []TOCTarget `json:"toc"`
+	// BookKey 是书 blob 键的短内容指纹（服务端注入）：同一文件 id 被替换
+	// 为不同内容后指纹改变，客户端持久缓存用它隔离 chunk 键。
+	BookKey string      `json:"book_key,omitempty"`
+	Spines  []SpineMeta `json:"spines"`
+	Chunks  []ChunkMeta `json:"chunks"`
+	TOC     []TOCTarget `json:"toc"`
 	// GeneratedAt 仅用于调试。
 	GeneratedAt string `json:"generated_at,omitempty"`
 }
@@ -40,23 +43,33 @@ type ChunkMeta struct {
 
 // TOCTarget 是目录条目的导航目标（Stable NavAnchor 体系）：
 //   - Spine/Block 供目录高亮、进度换算与回退定位；
-//   - NavAnchor 是清洗期绑定到实际可见目标节点的稳定 synthetic id，
-//     chunk HTML 中存在 data-rv-anchor="<id>" 的绑定节点（文本目标 =
-//     首个有效文本位置前的内联标记；图片/SVG 目标 = 媒体元素自身；
-//     无 fragment = 目标 spine 首个真实可见内容）。客户端目录跳转只
-//     加载 Chunk，按 data-rv-anchor 找节点并按其实际布局定栏；
-//   - SourcePath/SourceFragment 保留 EPUB 目录原始 href（调试与回退）。
+//   - 文本目标（绝大多数条目）：TextPath/TextOffset 是实际文本节点的稳定
+//     DOM path（相对块元素的 childNodes 下标链）与首个可见字符的 UTF-16
+//     偏移。不再向 DOM 注入空 inline 标记——空 inline 在 column/page
+//     break 处可能停留在上一栏，而真实文本已进入下一栏，会导致目录稳定
+//     跳到目标前一页。客户端加载 Chunk 后解析真实 Text node，用 collapsed
+//     caret Range 的 rect 计算栏；
+//   - 媒体目标（img/svg/video）：NavAnchor 是清洗期绑定到媒体元素上的
+//     稳定 synthetic id，客户端按真实元素 rect 定栏；
+//   - 两者都解析失败时全部留空：客户端回退 SourceFragment 块内定位，
+//     再回退块起点。
 type TOCTarget struct {
 	Label     string `json:"label"`
 	Depth     int    `json:"depth"`
 	Spine     int    `json:"spine"`
 	Block     int    `json:"block"`
+	// NavAnchor 仅媒体目标输出：chunk HTML 中存在 data-rv-anchor="<id>"
+	// 的媒体元素。
 	NavAnchor string `json:"nav_anchor,omitempty"`
-	// Chunk 是 NavAnchor 绑定节点所在的 chunk；客户端目录跳转只需加载
-	// 它。始终输出（chunk 0 也是合法值）。
+	// TextPath/TextOffset 仅文本目标输出：实际文本节点的稳定 DOM path +
+	// 首个可见字符的 UTF-16 偏移（offset 为 0 时省略）。
+	TextPath   []int `json:"text_path,omitempty"`
+	TextOffset int   `json:"text_offset,omitempty"`
+	// Chunk 是导航目标所在 chunk；客户端目录跳转只需加载它。始终输出
+	//（chunk 0 也是合法值）。
 	Chunk int `json:"chunk"`
 	// SourcePath/SourceFragment 保留原始目录 href 的路径与 fragment
-	// （解析层已 percent-decode 一次），用于调试与客户端回退。
+	//（解析层已 percent-decode 一次），用于调试与客户端回退。
 	SourcePath     string `json:"source_path,omitempty"`
 	SourceFragment string `json:"source_fragment,omitempty"`
 }

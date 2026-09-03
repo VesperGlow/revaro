@@ -31,10 +31,6 @@
   white-space: pre-wrap;
 }
 
-.revaro-content .toc-anchor {
-  display: inline;
-}
-
 .revaro-content h1,
 .revaro-content h2,
 .revaro-content h3,
@@ -144,6 +140,14 @@
 .rf-chunk {
   margin: 0;
   padding: 0;
+}
+
+/* 稳定分页边界：服务端在每个 spine 起始块（全书首块除外）注入
+   data-spine-start，这里强制其从新栏开始。窗口虚拟化只允许以 spine
+   起始块所在 chunk 为排版原点——强制分栏保证窗口增删（增删的都只在
+   当前 spine 边界之外）不改变当前 spine 内的任何 page boundary。 */
+.rf-flow [data-spine-start] {
+  break-before: column;
 }
 
 /* 明暗主题只换 CSS 变量（ink/paper），不重排 */

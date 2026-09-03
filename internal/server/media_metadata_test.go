@@ -52,7 +52,7 @@ func TestLegacyMediaMetadataIsReprobedAndEmbeddedSubtitlesBecomePlayable(t *test
 	}
 
 	cacheKey := "embedded-v2:" + file.ID + ":" + file.ETag + ":" + file.UpdatedAt + ":3"
-	app.srv.cache.Put(cacheKey, []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nlegacy ASS\n"), videoSubtitleCacheTTL)
+	app.srv.cache.Put(cacheClassMediaSubtitle, cacheKey, []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nlegacy ASS\n"), videoSubtitleCacheTTL)
 	track := app.request(http.MethodGet, payload.Subtitles[1].URL, nil, true)
 	if track.Code != http.StatusOK || !strings.Contains(track.Body.String(), "legacy ASS") {
 		t.Fatalf("re-probed subtitle is not playable: %d %q", track.Code, track.Body.String())

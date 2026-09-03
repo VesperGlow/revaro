@@ -21,14 +21,48 @@ import (
 //     （不可变、长缓存；块带 data-block 全局编号）
 //
 // flow 由解析缓存里的 Book 生成（纯函数、确定性），产物写对象存储
-// flows/{bookObjectKey}/f{version}/，作为内容级缓存（单飞构建 + 幂等覆盖；
-// GC 按孤儿/TTL/容量回收，删除书后产物随 GC 清理）。
+// flows/{bookObjectKey}/f{version}/，作为内容级缓存（幂等：manifest 命中
+// 不重建；缺失才单飞构建 + 幂等覆盖；manifest 最后原子提交）。读取路径经
+// 统一缓存管理器 reader/flow class：memory L1 + local-disk L2，再回源 S3
+//（内容寻址 immutable，无 TTL）；GC 按孤儿/容量回收，删除书后产物随 GC
+// 清理。
 
 const maxFlowObject = 8 << 20
 
-// ensureFlow 保证 flow 产物已生成（对象存储命中则直接返回；否则单飞构建并
-// 覆盖写入。manifest 最后写：读者永远看不到缺 chunk 的 manifest）。
+// flowCacheKey 返回 flow 产物在统一缓存里的逻辑键：直接采用对象存储键
+//（自带 bookObjectKey 与 f{version} 目录，版本/内容变化时键自然失效）。
+func flowCacheKey(objectKey string) string {
+	return "manifest/" + objectKey + "/" + flow.VersionDir()
+}
+
+func flowChunkCacheKey(objectKey string, index int) string {
+	return "chunk/" + objectKey + "/" + flow.VersionDir() + "/" + strconv.Itoa(index)
+}
+
+// ensureFlow 保证 flow 产物已生成。产物内容随书内容与 flow 版本固定：
+// manifest 已存在（含统一缓存 L1/L2 副本）时直接复用，不再解析原书、
+// 不再写对象；只在 manifest 缺失（首次打开、版本升级或 GC 回收后）时
+// 单飞构建。manifest 最后写：读者永远看不到缺 chunk 的 manifest。
 func (s *Server) ensureFlow(ctx context.Context, f File) error {
+	if s.cache.Has(cacheClassReaderFlow, flowCacheKey(f.objectKey)) {
+		return nil
+	}
+	if _, err := s.objects.Stat(ctx, flow.ManifestObjectKey(f.objectKey)); err == nil {
+		return nil
+	}
+	_, err, _ := s.flowBuilds.Do(f.objectKey, func() (any, error) {
+		// 双检：并发请求可能已完成构建
+		if _, err := s.objects.Stat(ctx, flow.ManifestObjectKey(f.objectKey)); err == nil {
+			return nil, nil
+		}
+		return nil, s.storeFlow(ctx, f)
+	})
+	return err
+}
+
+// rebuildFlow 强制重建 flow 产物：用于 manifest 存在但 chunk 对象已被
+// 容量回收的恢复路径。
+func (s *Server) rebuildFlow(ctx context.Context, f File) error {
 	_, err, _ := s.flowBuilds.Do(f.objectKey, func() (any, error) {
 		return nil, s.storeFlow(ctx, f)
 	})
@@ -44,6 +78,8 @@ func (s *Server) storeFlow(ctx context.Context, f File) error {
 	if err != nil {
 		return err
 	}
+	// book_key 是书 blob 的内容指纹：客户端持久缓存用它隔离 chunk 键。
+	built.Manifest.BookKey = flow.BookFingerprint(f.objectKey)
 	for _, ch := range built.Chunks {
 		if _, err := s.objects.Put(ctx, flow.ChunkObjectKey(f.objectKey, ch.Meta.Index), "text/html; charset=utf-8", []byte(ch.HTML)); err != nil {
 			return fmt.Errorf("写入 chunk %d 失败：%w", ch.Meta.Index, err)
@@ -59,8 +95,32 @@ func (s *Server) storeFlow(ctx context.Context, f File) error {
 	return nil
 }
 
+// flowManifestData 读取 manifest 内容：统一缓存 L1/L2 命中免回源 S3。
+func (s *Server) flowManifestData(ctx context.Context, f File) ([]byte, error) {
+	return s.cache.Load(ctx, cacheClassReaderFlow, flowCacheKey(f.objectKey), 0, func(ctx context.Context) ([]byte, error) {
+		return s.objects.Get(ctx, flow.ManifestObjectKey(f.objectKey), maxFlowObject)
+	})
+}
+
+// flowChunkData 读取一个 chunk：统一缓存 L1/L2 → S3。manifest 存在但
+// chunk 对象已被容量回收时，强制重建一次再读（自愈）。
+func (s *Server) flowChunkData(ctx context.Context, f File, index int) ([]byte, error) {
+	load := func(ctx context.Context) ([]byte, error) {
+		return s.objects.Get(ctx, flow.ChunkObjectKey(f.objectKey, index), maxFlowObject)
+	}
+	data, err := s.cache.Load(ctx, cacheClassReaderFlow, flowChunkCacheKey(f.objectKey, index), 0, load)
+	if err == nil || !storage.IsNotFound(err) {
+		return data, err
+	}
+	if err := s.rebuildFlow(ctx, f); err != nil {
+		return nil, err
+	}
+	return s.cache.Load(ctx, cacheClassReaderFlow, flowChunkCacheKey(f.objectKey, index), 0, load)
+}
+
 // bookFlow 返回 flow manifest。manifest 体积小且语义由服务端 flow 版本决定，
-// 用 no-cache（浏览器每次打开都重新取，保证与当前二进制一致）。
+// 用 no-cache（浏览器每次打开都重新取，保证与当前二进制一致；服务端侧则
+// 经统一缓存，immutable 内容寻址）。
 func (s *Server) bookFlow(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.readerFile(w, r)
 	if !ok {
@@ -70,7 +130,7 @@ func (s *Server) bookFlow(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "无法生成阅读流："+err.Error())
 		return
 	}
-	data, err := s.objects.Get(r.Context(), flow.ManifestObjectKey(f.objectKey), maxFlowObject)
+	data, err := s.flowManifestData(r.Context(), f)
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "could not read flow manifest")
 		return
@@ -97,7 +157,7 @@ func (s *Server) bookFlowChunk(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "无法生成阅读流："+err.Error())
 		return
 	}
-	data, err := s.objects.Get(r.Context(), flow.ChunkObjectKey(f.objectKey, index), 8<<20)
+	data, err := s.flowChunkData(r.Context(), f, index)
 	if err != nil {
 		problem(w, http.StatusNotFound, "chunk not found")
 		return

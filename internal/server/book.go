@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -46,8 +47,10 @@ func (s *Server) readerFile(w http.ResponseWriter, r *http.Request) (File, bool)
 	return f, true
 }
 
+// loadBook 返回解析后的 Book：内存 LRU（reader/books class）命中直接
+// 返回；否则经 L2 缓存的书源 blob 解析（冷启动免回源 S3 下载）。
 func (s *Server) loadBook(ctx context.Context, f File) (*reader.Book, error) {
-	if b := reader.DefaultCache.Get(f.objectKey); b != nil {
+	if b := s.books.Get(f.objectKey); b != nil {
 		return b, nil
 	}
 	rc, err := s.openBookSource(ctx, f)
@@ -59,7 +62,7 @@ func (s *Server) loadBook(ctx context.Context, f File) (*reader.Book, error) {
 	if err != nil {
 		return nil, err
 	}
-	reader.DefaultCache.Put(f.objectKey, book)
+	s.books.Put(f.objectKey, book)
 	return book, nil
 }
 
@@ -192,6 +195,19 @@ func (s *Server) saveBookProgress(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// openBookSource 打开书源 blob。小体积书源走 reader/source L2（内容寻址
+// immutable）：重复打开与重启后不再回源 S3；大体积直连对象存储流式读取。
 func (s *Server) openBookSource(ctx context.Context, f File) (io.ReadSeekCloser, error) {
+	if f.Size <= maxCachedBookSource {
+		if data, err := s.cache.Load(ctx, cacheClassReaderSource, f.objectKey, 0, func(ctx context.Context) ([]byte, error) {
+			return s.objects.Get(ctx, f.objectKey, maxCachedBookSource)
+		}); err == nil {
+			return struct {
+				*io.SectionReader
+				io.Closer
+			}{io.NewSectionReader(bytes.NewReader(data), 0, int64(len(data))), io.NopCloser(nil)}, nil
+		}
+		// L2 读失败（磁盘满等）降级直连，不阻断阅读
+	}
 	return s.objects.OpenSeek(storage.WithDynamicReadAhead(ctx), f.objectKey)
 }

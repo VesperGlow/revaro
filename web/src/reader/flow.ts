@@ -73,6 +73,30 @@ export function totalBlocks(m: FlowManifest): number {
   return n
 }
 
+// spineOriginChunk 返回 block 所属 spine 的稳定分页边界 chunk（spine 起始
+// 块所在 chunk）。chunk 按体量切分、可能跨 spine，因此边界是「包含 spine
+// 起始块的 chunk」；chunk 内容固定 ⇒ 排版原点固定。
+export function spineOriginChunk(m: FlowManifest, block: number): number {
+  const spine = spineForBlock(m, block)
+  const start = m.spines[spine]?.block_start ?? 0
+  const origin = chunkForBlock(m, start)
+  return origin < 0 ? 0 : origin
+}
+
+// stableWindowRange 计算以 block（阅读位置所在块）为中心的稳定加载窗口：
+// 窗口起点必须是 spine 稳定分页边界 chunk（保留排版前缀），终点是当前
+// chunk + ahead 预取。CSS columns 以窗口首 chunk 为排版原点——不允许从
+// 任意 chunk 起始，否则窗口增删会改变 page boundary（相位漂移）。
+export function stableWindowRange(m: FlowManifest, block: number, ahead: number): [number, number] {
+  const n = m.chunks.length
+  if (n === 0) return [0, 0]
+  const cb = chunkForBlock(m, block)
+  if (cb < 0) return [0, Math.min(ahead, n - 1)]
+  const lo = spineOriginChunk(m, block)
+  const hi = Math.max(lo, Math.min(cb + ahead, n - 1))
+  return [lo, hi]
+}
+
 // anchorFromLegacy 把无 block 字段的旧锚点（path[0] = 章内块号）转成新格式。
 // manifest 用于把章内块号换算为全书块号。
 export function migrateAnchor(m: FlowManifest, legacy: { spine: number; path: number[]; offset: number }): ReadingAnchor {

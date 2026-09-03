@@ -6,7 +6,7 @@ import (
 	stdhtml "html"
 	"strconv"
 	"strings"
-
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/VesperGlow/revaro/internal/reader"
@@ -21,7 +21,14 @@ const (
 	// v3：TOC 升级为服务端 Stable NavAnchor——清洗期把 data-rv-anchor 绑定到
 	//     实际可见目标节点，manifest 携带 {chunk, nav_anchor, source_path,
 	//     source_fragment}，客户端目录跳转按绑定节点定栏；旧缓存需失效重建。
-	FlowFormatVersion = 3
+	// v4：文本目标不再注入空 inline 标记（toc-anchor），改为在 manifest 中
+	//     保存实际文本节点的稳定 DOM path + UTF-16 偏移（text_path/
+	//     text_offset），客户端解析真实 Text node 用 collapsed caret rect
+	//     定栏；NavAnchor 只保留给媒体目标（真实元素 rect）。同时每个
+	//     spine 起始块（全书首块除外）注入 data-spine-start，客户端 CSS
+	//     对其施加 break-before:column，使 spine 起点成为稳定分页边界；
+	//     旧缓存需失效重建。
+	FlowFormatVersion = 4
 
 	// chunkCharsTarget 是单个 chunk 的文本目标量（UTF-16 码元）。
 	// 约合移动端 8~12 页 / 桌面 5~8 页，窗口化加载时够用且不过重。
@@ -51,11 +58,12 @@ type Built struct {
 // blockBuild 是单个顶层内容块的构建中间态。
 type blockBuild struct {
 	global     int        // 全书 data-block 编号
-	node       *html.Node // EPUB：清洗后块的解析树（NavAnchor 在序列化前注入）
+	node       *html.Node // EPUB：清洗后块的解析树（导航 locator 在序列化前解析）
 	html       string     // 序列化片段（含 data-block 之前的原始块 HTML）
 	chars      int64      // 文本 UTF-16 长度
 	ids        []string   // 块内 id 与 data-frag-ids（目录 fragment 定位）
-	navAnchors []string   // 绑定在本块内的 NavAnchor id（chunk 切分参考）
+	navAnchors []string   // 绑定在本块内的导航目标 id（chunk 切分参考）
+	spineStart bool       // spine 起始块：注入 data-spine-start（稳定分页边界）
 }
 
 // spineBuild 是一章的内容块。
@@ -64,9 +72,11 @@ type spineBuild struct {
 	startGlobal int // 本章第一块的全书编号
 }
 
-// tocEntry 是带导航目标的目录条目。fragment 保留 EPUB 目录原始片段
-// （SourceFragment，调试与回退）；navAnchor 是绑定到实际可见目标节点的
-// Stable NavAnchor id；sourcePath 保留原始 href 路径。
+// tocEntry 是带导航目标的目录条目。文本目标记录实际文本节点的稳定 DOM
+// path（相对块元素的 childNodes 下标链）+ 首个可见字符的 UTF-16 偏移
+//（textPath/textOffset）；媒体目标绑定 Stable NavAnchor id（真实元素
+// rect）。fragment 保留 EPUB 目录原始片段（SourceFragment，调试与回退）；
+// sourcePath 保留原始 href 路径。
 type tocEntry struct {
 	label      string
 	depth      int
@@ -75,6 +85,8 @@ type tocEntry struct {
 	fragment   string
 	sourcePath string
 	navAnchor  string
+	textPath   []int
+	textOffset int
 }
 
 // chapterTree 是一章清洗后 HTML 的解析树：顶层内容块节点 + 每块可定位
@@ -244,87 +256,150 @@ func docNextIn(root, n *html.Node) *html.Node {
 	return nil
 }
 
-// bindNavAnchor 把 data-rv-anchor="<id>" 绑定到 block 内 start 起的首个
-// 实际可见内容：媒体元素（img/svg/video）直接加属性；首个非空白文本前
-// 插入内联标记 span.toc-anchor（零文本，不改变正文内容与块语义）。
-// 目标子树没有可见内容（空 inline 锚点等）时沿文档序向后找块内首个可见
-// 内容；整块都没有（hr 等）时绑在 start 元素自身。返回是否绑定成功。
-func bindNavAnchor(block, start *html.Node, id string) bool {
+// navTarget 是目录目标在清洗后块树内的绑定结果：
+//   - 媒体目标：media 为 img/svg/video 元素，序列化时注入 data-rv-anchor，
+//     客户端按真实元素 rect 定栏；
+//   - 文本目标：text 为实际承载可见文本的 Text node，offset 是首个可见
+//     字符在该节点内的 UTF-16 码元偏移。不向 DOM 注入任何标记——空
+//     inline 元素在 column/page break 处可能停留在上一栏，而真实文本已
+//     进入下一栏；manifest 保存 text 节点的稳定 DOM path + offset，客户端
+//     加载 chunk 后解析真实 Text node，用 collapsed caret Range 的 rect
+//     计算栏。
+type navTarget struct {
+	media  *html.Node
+	text   *html.Node
+	offset int
+}
+
+// resolveNavTarget 在 block 内自 start 起沿文档序寻找首个实际可见内容：
+// 媒体元素直接命中；首个非空白文本节点（视觉空白如 NBSP/U+3000 跳过）
+// 连同其可见字符偏移命中。目标子树没有可见内容（空 inline 锚点、纯空白
+// 块等）时返回 false，客户端回退块起点。
+func resolveNavTarget(block, start *html.Node) (navTarget, bool) {
 	if block == nil || start == nil {
-		return false
+		return navTarget{}, false
 	}
 	for n := start; n != nil; n = docNextIn(block, n) {
 		if n.Type == html.ElementNode && isMediaEl(n) {
-			n.Attr = append(n.Attr, html.Attribute{Key: "data-rv-anchor", Val: id})
-			return true
+			return navTarget{media: n}, true
 		}
-		if n.Type == html.TextNode && strings.TrimSpace(n.Data) != "" {
-			if n.Parent == nil {
-				return false
+		if n.Type == html.TextNode {
+			if offset, ok := firstVisibleOffset(n.Data); ok {
+				return navTarget{text: n, offset: offset}, true
 			}
-			marker := &html.Node{
-				Type:     html.ElementNode,
-				Data:     "span",
-				DataAtom: atom.Span,
-				Attr: []html.Attribute{
-					{Key: "class", Val: "toc-anchor"},
-					{Key: "data-rv-anchor", Val: id},
-				},
-			}
-			n.Parent.InsertBefore(marker, n)
-			return true
 		}
 	}
-	if start.Type == html.ElementNode {
-		start.Attr = append(start.Attr, html.Attribute{Key: "data-rv-anchor", Val: id})
-		return true
-	}
-	return false
+	return navTarget{}, false
 }
 
-// resolveTOC 把目录条目解析为 (spine, 块) 并绑定 Stable NavAnchor：对每个
-// href/path+fragment 先在清洗后 DOM 中定位真实目标元素，再把
-// data-rv-anchor 绑到实际可见目标节点上；无 fragment 条目绑定目标 spine
-// 首个真实可见内容（fragment 解析失败/被清洗丢弃时同样落到目标块首
-// 可见内容，原始 fragment 保留为 SourceFragment 供回退）。id 按目录序
-// 分配（rvn-<首现目录序号>），同一目标去重共享，保证确定性。
+// firstVisibleOffset 返回 s 内首个非空白字符的 UTF-16 码元偏移；全是
+// 空白时返回 false。与客户端 visualStart 的 /\S/ 语义对齐（跳过 Unicode
+// 空白，不跳过正文里的任何可见字符）。
+func firstVisibleOffset(s string) (int, bool) {
+	units := 0
+	for _, r := range s {
+		if !unicode.IsSpace(r) {
+			return units, true
+		}
+		units += int(utf16UnitsOfRune(r))
+	}
+	return 0, false
+}
+
+// childIndexOf 返回 child 在 parent 的 childNodes 下标；非直接子节点返回 -1。
+func childIndexOf(parent, child *html.Node) int {
+	i := 0
+	for c := parent.FirstChild; c != nil; c = c.NextSibling {
+		if c == child {
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
+// pathToNode 计算从 block 元素出发的 childNodes 下标链（与客户端
+// readingAnchor 的 path 语义一致：含文本节点，空路径 = 块元素自身）。
+// node 不在 block 子树内时返回 nil。
+func pathToNode(block, node *html.Node) []int {
+	if block == nil || node == nil {
+		return nil
+	}
+	var path []int
+	for cur := node; cur != nil && cur != block; cur = cur.Parent {
+		if cur.Parent == nil {
+			return nil
+		}
+		path = append([]int{childIndexOf(cur.Parent, cur)}, path...)
+	}
+	if node == block {
+		return []int{}
+	}
+	return path
+}
+
+// resolveTOC 把目录条目解析为 (spine, 块) 并解析导航 locator：对每个
+// href/path+fragment 先在清洗后 DOM 中定位真实目标元素，再解析其首个
+// 实际可见内容——文本目标记录实际文本节点的稳定 DOM path + UTF-16 偏移
+//（不注入任何 DOM 标记）；媒体目标把 data-rv-anchor 绑到媒体元素上。
+// 无 fragment 条目解析目标 spine 首个真实可见内容（fragment 解析失败/
+// 被清洗丢弃时同样落到目标块首可见内容，原始 fragment 保留为
+// SourceFragment 供回退）。locator 解析失败（无可绑定节点）时全部留空，
+// 客户端回退块起点。id 按目录序分配（rvn-<首现目录序号>），同一目标
+// 去重共享，保证确定性；navAnchors 同时作为 chunk 切分的参考（目标块
+// 尽量成为 chunk 首块）。
 func resolveTOC(book *reader.Book, trees []*chapterTree, spines []spineBuild) []tocEntry {
+	type binding struct {
+		id     string
+		target navTarget
+		path   []int
+	}
 	entries := make([]tocEntry, 0, len(book.TOC))
-	navIDs := map[string]string{} // (spine, fragment) → navAnchor id
+	navIDs := map[string]binding{} // (spine, fragment) → 绑定结果
 	navSeq := 0
 	for _, entry := range book.TOC {
 		spine := chapterIndexForPath(book, entry.Path, trees)
 		blockIdx := fragmentBlock(spines, spine, entry.Fragment)
-		id := ""
+		var bound binding
 		if spine >= 0 && spine < len(trees) && trees[spine] != nil && blockIdx < len(spines[spine].blocks) {
 			key := strconv.Itoa(spine) + "\x00" + entry.Fragment
 			if existing, ok := navIDs[key]; ok {
-				id = existing
+				bound = existing
 			} else {
 				b := &spines[spine].blocks[blockIdx]
 				start := findFragmentEl(b.node, entry.Fragment)
 				if start == nil {
 					start = b.node
 				}
-				id = fmt.Sprintf("rvn-%d", navSeq)
-				if bindNavAnchor(b.node, start, id) {
+				id := fmt.Sprintf("rvn-%d", navSeq)
+				if target, ok := resolveNavTarget(b.node, start); ok {
 					navSeq++
+					if target.media != nil {
+						target.media.Attr = append(target.media.Attr, html.Attribute{Key: "data-rv-anchor", Val: id})
+						bound = binding{id: id, target: target}
+					} else {
+						bound = binding{id: id, target: target, path: pathToNode(b.node, target.text)}
+					}
 					b.navAnchors = append(b.navAnchors, id)
-				} else {
-					id = "" // 无可绑定节点（空章等）：客户端回退块起点
 				}
-				navIDs[key] = id
+				navIDs[key] = bound
 			}
 		}
-		entries = append(entries, tocEntry{
+		e := tocEntry{
 			label:      entry.Label,
 			depth:      entry.Depth,
 			spine:      spine,
 			block:      blockIdx,
 			fragment:   entry.Fragment,
 			sourcePath: entry.Path,
-			navAnchor:  id,
-		})
+		}
+		if bound.target.media != nil {
+			e.navAnchor = bound.id
+		} else if bound.target.text != nil {
+			e.textPath = bound.path
+			e.textOffset = bound.target.offset
+		}
+		entries = append(entries, e)
 	}
 	return entries
 }
@@ -570,7 +645,10 @@ func txtBlocks(text string) []string {
 // ---- 装配（spines → chunk） ----
 
 func assemble(spines []spineBuild, entries []tocEntry, format string) (*Built, error) {
-	// 补写 data-block 编号到块 HTML
+	// 补写 data-block 编号到块 HTML。spine 起始块（全书首块除外）同时注入
+	// data-spine-start：客户端 CSS 对其施加 break-before:column，使每章
+	// 起点成为稳定分栏边界——窗口虚拟化只允许以该边界（spine 起始块所在
+	// chunk）为排版原点，当前 spine 的 page boundary 与窗口增删无关。
 	manifest := &Manifest{
 		Version: FlowFormatVersion,
 		Format:  format,
@@ -582,8 +660,11 @@ func assemble(spines []spineBuild, entries []tocEntry, format string) (*Built, e
 		spineBlockStart[si] = spines[si].startGlobal
 		manifest.Spines = append(manifest.Spines, SpineMeta{BlockStart: spines[si].startGlobal, BlockCount: len(spines[si].blocks)})
 		for bi := range spines[si].blocks {
-			b := &spines[si].blocks[bi]
-			allBlocks = append(allBlocks, *b)
+			b := spines[si].blocks[bi]
+			if si > 0 && bi == 0 {
+				b.spineStart = true
+			}
+			allBlocks = append(allBlocks, b)
 		}
 	}
 	// 全局编号由 startGlobal 链保证与 allBlocks 顺序一致（EPUB 直接连续，
@@ -591,7 +672,7 @@ func assemble(spines []spineBuild, entries []tocEntry, format string) (*Built, e
 	var sb strings.Builder
 	for i := range allBlocks {
 		sb.Reset()
-		if err := injectDataBlock(allBlocks[i].html, i, &sb); err != nil {
+		if err := injectDataBlock(allBlocks[i].html, i, allBlocks[i].spineStart, &sb); err != nil {
 			return nil, err
 		}
 		allBlocks[i].html = sb.String()
@@ -613,6 +694,8 @@ func assemble(spines []spineBuild, entries []tocEntry, format string) (*Built, e
 			Spine:          e.spine,
 			Block:          block,
 			NavAnchor:      e.navAnchor,
+			TextPath:       e.textPath,
+			TextOffset:     e.textOffset,
 			Chunk:          chunkIndexForBlock(chunks, block),
 			SourcePath:     e.sourcePath,
 			SourceFragment: e.fragment,
@@ -630,9 +713,10 @@ func assemble(spines []spineBuild, entries []tocEntry, format string) (*Built, e
 	return built, nil
 }
 
-// injectDataBlock 把 "data-block=\"N\"" 写进块 HTML 的开始标签。
-// 块 HTML 由顶层元素序列化而来，第一个 '<tag' 即开始标签。
-func injectDataBlock(blockHTML string, index int, out *strings.Builder) error {
+// injectDataBlock 把 "data-block=\"N\""（spine 起始块加
+// "data-spine-start"）写进块 HTML 的开始标签。块 HTML 由顶层元素序列化
+// 而来，第一个 '<tag' 即开始标签。
+func injectDataBlock(blockHTML string, index int, spineStart bool, out *strings.Builder) error {
 	idx := strings.IndexByte(blockHTML, '>')
 	if idx < 0 {
 		return fmt.Errorf("非法块片段")
@@ -644,14 +728,22 @@ func injectDataBlock(blockHTML string, index int, out *strings.Builder) error {
 	}
 	out.WriteString(tag)
 	if len(tag) > 0 && tag[len(tag)-1] == '/' {
-		// 自闭合标签（理论上不会出现，防御）：把 data-block 插到 '/' 之前
+		// 自闭合标签（void 元素序列化形如 <img .../>）：把属性插到 '/' 之前
+		// 并补回完整的 '/>'——漏掉 '>' 会让浏览器把后续块全部吞进属性里。
 		out.Reset()
 		out.WriteString(tag[:len(tag)-1])
-		out.WriteString(fmt.Sprintf(` data-block="%d"/`, index))
+		out.WriteString(fmt.Sprintf(` data-block="%d"`, index))
+		if spineStart {
+			out.WriteString(` data-spine-start`)
+		}
+		out.WriteString("/>")
 		out.WriteString(blockHTML[idx+1:])
 		return nil
 	}
 	out.WriteString(fmt.Sprintf(` data-block="%d"`, index))
+	if spineStart {
+		out.WriteString(` data-spine-start`)
+	}
 	out.WriteString(blockHTML[idx:])
 	return nil
 }

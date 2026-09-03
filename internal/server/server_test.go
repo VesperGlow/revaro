@@ -120,6 +120,7 @@ type mockStorage struct {
 	multipart        map[string]string
 	rawURL           string
 	deleteBatchSizes []int
+	putKeys          []string // PutObject/PutImmutable 调用记录（顺序）
 	storeBlobErr     error
 }
 
@@ -350,6 +351,7 @@ func (m *mockStorage) ReadFile(ctx context.Context, key string, limit int64) ([]
 func (m *mockStorage) PutObject(_ context.Context, key, mimeType string, data []byte) (storage.ObjectInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.putKeys = append(m.putKeys, key)
 	m.raw[key] = append([]byte(nil), data...)
 	m.rawMime[key] = mimeType
 	return storage.ObjectInfo{Size: int64(len(data)), ETag: `"etag"`}, nil
@@ -357,6 +359,7 @@ func (m *mockStorage) PutObject(_ context.Context, key, mimeType string, data []
 func (m *mockStorage) PutImmutable(_ context.Context, key, mimeType string, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.putKeys = append(m.putKeys, key)
 	if _, ok := m.raw[key]; ok {
 		return nil // 内容寻址对象已存在：视为成功
 	}

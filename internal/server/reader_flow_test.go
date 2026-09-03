@@ -2,16 +2,31 @@ package server
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"unicode/utf16"
 
+	"github.com/VesperGlow/revaro/internal/reader"
 	"github.com/VesperGlow/revaro/internal/reader/flow"
 )
 
 // reading flow 服务端契约：manifest/chunk 端点、缓存幂等、进度 anchor、
 // 旧 Chromium 分页端点已删除。
+
+// storeFlowPuts 返回写入对象存储的 flows/ 前缀对象键（构建即写入）。
+func (a *testApp) storeFlowPuts() []string {
+	a.store.mu.RLock()
+	defer a.store.mu.RUnlock()
+	var out []string
+	for _, key := range a.store.putKeys {
+		if strings.HasPrefix(key, "flows/") {
+			out = append(out, key)
+		}
+	}
+	return out
+}
 
 func TestReaderFlowManifestAndChunksEPUB(t *testing.T) {
 	a := newTestApp(t)
@@ -64,6 +79,91 @@ func TestReaderFlowManifestAndChunksEPUB(t *testing.T) {
 	cr2 := a.request("GET", "/api/files/"+f.ID+"/book/flow/chunks/0", nil, true)
 	if cr2.Body.String() != body {
 		t.Fatal("chunk not stable across requests")
+	}
+}
+
+// flow 产物是内容寻址 immutable 缓存：manifest 命中（含统一缓存 L1/L2
+// 副本或对象存储 HEAD 命中）即直接复用，第二次打开同一本书不重新
+// Build flow、不重新写对象。
+func TestReaderFlowSecondOpenDoesNotRebuild(t *testing.T) {
+	a := newTestApp(t)
+	f := a.readyFile(t, "book.epub", buildEPUB(t))
+	if rr := a.request("GET", "/api/files/"+f.ID+"/book/flow", nil, true); rr.Code != http.StatusOK {
+		t.Fatalf("flow=%d", rr.Code)
+	}
+	if cr := a.request("GET", "/api/files/"+f.ID+"/book/flow/chunks/0", nil, true); cr.Code != http.StatusOK {
+		t.Fatalf("chunk0=%d", cr.Code)
+	}
+	putsAfterFirst := a.storeFlowPuts()
+
+	// 进程内二次打开：解析缓存与统一缓存均在 → 零构建、零对象写入
+	a.srv.books = reader.NewCache(1, 1) // 逐出解析 Book，确保不是靠 Book 缓存蒙混
+	if rr := a.request("GET", "/api/files/"+f.ID+"/book/flow", nil, true); rr.Code != http.StatusOK || rr.Body.String() == "" {
+		t.Fatalf("second flow=%d", rr.Code)
+	}
+	if cr := a.request("GET", "/api/files/"+f.ID+"/book/flow/chunks/0", nil, true); cr.Code != http.StatusOK || cr.Body.String() == "" {
+		t.Fatalf("second chunk0=%d", cr.Code)
+	}
+	if got := a.storeFlowPuts(); len(got) != len(putsAfterFirst) {
+		t.Fatalf("second open rebuilt flow: puts %d → %d", len(putsAfterFirst), len(got))
+	}
+
+	// 「重启」语义：清空统一缓存（L1/L2），manifest 对象仍在对象存储 →
+	// HEAD 命中同样不重建
+	if err := a.srv.cache.Delete(cacheClassReaderFlow, flowCacheKey(f.objectKey)); err != nil {
+		t.Fatal(err)
+	}
+	if rr := a.request("GET", "/api/files/"+f.ID+"/book/flow", nil, true); rr.Code != http.StatusOK {
+		t.Fatalf("restart flow=%d", rr.Code)
+	}
+	if got := a.storeFlowPuts(); len(got) != len(putsAfterFirst) {
+		t.Fatalf("restart rebuilt flow: puts %d → %d", len(putsAfterFirst), len(got))
+	}
+}
+
+// manifest 存在但 chunk 对象被容量回收时，chunk 请求触发一次自愈重建。
+func TestReaderFlowSelfHealsMissingChunk(t *testing.T) {
+	a := newTestApp(t)
+	f := a.readyFile(t, "book.epub", buildEPUB(t))
+	if rr := a.request("GET", "/api/files/"+f.ID+"/book/flow", nil, true); rr.Code != http.StatusOK {
+		t.Fatalf("flow=%d", rr.Code)
+	}
+	a.store.mu.Lock()
+	delete(a.store.raw, flow.ChunkObjectKey(f.objectKey, 0))
+	a.store.mu.Unlock()
+	if err := a.srv.cache.Delete(cacheClassReaderFlow, flowChunkCacheKey(f.objectKey, 0)); err != nil {
+		t.Fatal(err)
+	}
+	cr := a.request("GET", "/api/files/"+f.ID+"/book/flow/chunks/0", nil, true)
+	if cr.Code != http.StatusOK || !strings.Contains(cr.Body.String(), `data-block="0"`) {
+		t.Fatalf("chunk0 after self-heal=%d: %.200s", cr.Code, cr.Body.String())
+	}
+}
+
+// 书源 blob 走 reader/source L2：内容寻址 immutable，二次解析不再回源。
+func TestReaderBookSourceL2(t *testing.T) {
+	a := newTestApp(t)
+	f := a.readyFile(t, "book.epub", buildEPUB(t))
+	rc, err := a.srv.openBookSource(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil || len(data) == 0 {
+		t.Fatalf("first read: len=%d err=%v", len(data), err)
+	}
+	if !a.srv.cache.Has(cacheClassReaderSource, f.objectKey) {
+		t.Fatal("book source not cached in L2")
+	}
+	rc2, err := a.srv.openBookSource(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data2, err := io.ReadAll(rc2)
+	rc2.Close()
+	if err != nil || string(data) != string(data2) {
+		t.Fatalf("second read mismatch: %d vs %d (err=%v)", len(data), len(data2), err)
 	}
 }
 

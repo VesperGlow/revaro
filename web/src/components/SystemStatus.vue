@@ -16,6 +16,14 @@ let retryDelay=1000
 let stopped=false
 function tone(value:string):StatusTone{return value==='critical'?'danger':value==='degraded'?'warning':'success'}
 function stateLabel(value:string){return value==='critical'?'异常':value==='degraded'?'需注意':'正常'}
+// cacheHitLabel 汇总各 cache class 的命中统计（服务端统一缓存指标）。
+function cacheHitLabel(status:SystemStatus):string{
+  const classes=status.cache.classes??{}
+  let hits=0,misses=0
+  for(const c of Object.values(classes)){hits+=c.hits;misses+=c.misses}
+  const total=hits+misses
+  return total>0?`命中 ${Math.round(hits/total*100)}%（${total} 次读取）`:'暂无读取'
+}
 function connect(){
   if(stopped||source)return
   source=new EventSource('/api/system/status/stream')
@@ -45,7 +53,7 @@ defineExpose({openPanel,closePanel})
       <div v-else class="status-grid">
         <ServiceCard title="数据库" :detail="`数据占用 ${formatSize(status.database.bytes)}`" :badge="stateLabel(status.database.status)" :tone="tone(status.database.status)"><template #icon><Database /></template></ServiceCard>
         <ServiceCard title="S3 / 数据平面" detail="对象存储连接状态" :badge="status.storage.status==='ok'?'可用':'异常'" :tone="tone(status.storage.status)"><template #icon><Cloud /></template></ServiceCard>
-        <ServiceCard title="缓存" :detail="`内存 ${formatSize(status.cache.memory_bytes)} · 磁盘 ${formatSize(status.cache.disk_bytes)}`" :badge="stateLabel(status.cache.status)" :tone="tone(status.cache.status)"><template #icon><HardDrive /></template></ServiceCard>
+        <ServiceCard title="缓存" :detail="`内存 ${formatSize(status.cache.memory_bytes)} · 磁盘 ${formatSize(status.cache.disk_bytes)} · ${cacheHitLabel(status)}`" :badge="stateLabel(status.cache.status)" :tone="tone(status.cache.status)"><template #icon><HardDrive /></template></ServiceCard>
         <ServiceCard title="任务" :detail="`排队 ${status.tasks.queued} · 等待 ${status.tasks.waiting} · 失败 ${status.tasks.failed}`" :badge="`${status.tasks.running} 运行中`" :tone="tone(status.tasks.status)"><template #icon><ListTodo /></template></ServiceCard>
         <ServiceCard title="清理队列" :detail="`${status.object_cleanup.pending} 个对象待清理`" :badge="stateLabel(status.object_cleanup.status)" :tone="tone(status.object_cleanup.status)"><template #icon><Trash2 /></template></ServiceCard>
         <ServiceCard title="媒体会话" :detail="`音频 HLS ${status.media_sessions.audio_hls} · 视频 HLS ${status.media_sessions.video_hls} · fMP4 ${status.media_sessions.fmp4}`" :badge="stateLabel(status.media_sessions.status)" :tone="tone(status.media_sessions.status)"><template #icon><Radio /></template></ServiceCard>

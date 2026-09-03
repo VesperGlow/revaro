@@ -16,11 +16,15 @@ export interface BackgroundTask { id:string;type:string;status:TaskStatus;phase:
 export interface ShareResponse { active:boolean; url?:string; created_at?:string }
 export interface ProfileResponse { username:string; has_avatar:boolean }
 export interface StorageStats { total_bytes:number; file_count:number }
+export interface SystemStatusCacheClass {
+  hits:number; misses:number; loads:number; load_errors:number; evictions:number
+  memory_bytes?:number; memory_entries?:number; disk_bytes?:number; disk_entries?:number
+}
 export interface SystemStatus {
   status:'ok'|'degraded'
   database:{status:string;bytes:number}
   storage:{status:string}
-  cache:{status:string;memory_bytes:number;disk_bytes:number;memory_entries:number;disk_entries:number}
+  cache:{status:string;memory_bytes:number;disk_bytes:number;memory_entries:number;disk_entries:number;classes?:Record<string,SystemStatusCacheClass>}
   tasks:{status:string;running:number;queued:number;waiting:number;failed:number}
   object_cleanup:{status:string;pending:number}
   media_sessions:{status:string;audio_hls:number;video_hls:number;fmp4:number}

@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/auth"
+	"github.com/VesperGlow/revaro/internal/cache"
 	"github.com/VesperGlow/revaro/internal/config"
+	"github.com/VesperGlow/revaro/internal/reader"
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/VesperGlow/revaro/internal/webui"
 	"github.com/go-chi/chi/v5"
@@ -71,7 +73,8 @@ type Server struct {
 	jobs               *JobManager
 	tasks              *TaskManager
 	objects            *ObjectManager
-	cache              *CacheManager
+	cache              *cache.Manager
+	books              *reader.Cache // 解析 Book 内存 LRU（注册进全局缓存管理器）
 	cleanup            *CleanupManager
 	media              *MediaPipeline
 	lifecycleMu        sync.Mutex
@@ -133,9 +136,9 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	}
 	s.objects = newObjectManager(store)
 	s.objects.server = s
-	s.cache = newCacheManager(filepath.Join(cfg.WorkDir, "cache"), maxVideoSubtitleCacheBytes, cfg.MediaCacheCapacity)
-	s.cache.RegisterStats("hls", s.mediaCacheStats)
-	s.cache.RegisterPruner("hls", s.pruneMediaCache)
+	s.books = reader.NewCache(bookCacheEntries, bookCacheBytes)
+	s.cache = newGlobalCache(filepath.Join(cfg.WorkDir, "cache"), cfg.MediaCacheCapacity, s.books)
+	s.cache.RegisterExternal(cacheClassMediaHLS, s.mediaCacheStats, s.pruneMediaCache)
 	s.tasks = newTaskManager(db, s.jobs, resources)
 	s.media = newMediaPipeline(store, resources)
 	s.cleanup = newCleanupManager(logger, resources)

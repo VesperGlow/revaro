@@ -7,8 +7,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { DriveFile } from './api'
 import type { BookProgress, FlowManifest, FlowTocEntry, ReadingAnchor, ReaderPrefs } from './reader/types'
 import { fetchBookInfo, fetchChunk, fetchFlow, fetchProgress, saveProgress } from './reader/api'
-import { chunkForBlock, locateChar, spineForBlock, tocActiveIndex, totalBlocks } from './reader/flow'
+import { chunkForBlock, locateChar, spineForBlock, stableWindowRange, tocActiveIndex, totalBlocks } from './reader/flow'
 import { PageCache, InFlight } from './reader/cache'
+import { ClientCacheManager } from './reader/clientCache'
 import { clamp, computeMargins, FONT_MAX, FONT_MIN, LINE_HEIGHTS, loadPrefs, savePrefs } from './reader/prefs'
 
 const props = defineProps<{ file: DriveFile }>()
@@ -36,9 +37,11 @@ const percentNow = ref(0)
 const FONT_STACK = '"Noto Serif SC", "Songti SC", Georgia, "Times New Roman", "STSong", SimSun, serif'
 
 // ---- 引擎内部状态（非响应式） ----
-// 实际 DOM 窗口保持小巧（BEHIND+AHEAD+1 = 6 个 chunk），PageCache 容量较大：
-// 窗口滑动只增量 append/remove chunk，翻页热路径绝不等待网络。
-const BEHIND_MARGIN = 2 // 当前 chunk 之后（阅读方向反向）保留的 chunk 数
+// 实际 DOM 窗口 = [当前 spine 稳定分页边界 chunk, 当前 chunk + AHEAD]：
+// spine 起点是稳定分页边界（data-spine-start 强制 break-before:column），
+// 阅读 spine 内必须保留其排版前缀，否则 CSS columns 以任意 chunk 为原点，
+// 窗口增删会改变 page boundary（相位漂移）。PageCache（L1）+ 持久
+// ClientCacheManager（L2）让窗口滑动与重开零网络。
 const AHEAD_MARGIN = 3 // 阅读方向前预取的 chunk 数
 let metrics = { width: 0, height: 0, side: 0, top: 0, bottom: 0, pitch: 0, colHeight: 0 }
 let c0 = 0 // 已加载窗口首 chunk
@@ -50,8 +53,10 @@ let topAnchor: ReadingAnchor | null = null // 当前页顶部的 readingAnchor
 let promoting = false // will-change:transform 是否开启（仅拖动/动画期间）
 const chunkHTML = new PageCache(24)
 const chunkFlight = new InFlight()
+const persistentCache = new ClientCacheManager()
 let turnBusy = false
 let pendingTurns = 0
+let syncing = false // windowSync（窗口重起源）在途：turn 不得按陈旧 cols/currentCol 排版
 let navDepth = 0 // 程序化 TOC 导航在途计数：windowSync 期间不得按旧 topAnchor 抢先重排
 let currentAnim: Animation | null = null
 let suppressZoneClickUntil = 0
@@ -434,12 +439,25 @@ function anchorAtTopOfCurrentCol(): ReadingAnchor | null {
 
 // ---- 窗口管理（增量 DOM 更新） ----
 
+// chunkText 的三级读取路径：内存 L1 → 持久 L2 → 网络（成功回填两级）。
+// chunk 内容随（书内容指纹 × flow 版本 × chunk 序号）固定，L2 键安全。
 async function chunkText(index: number): Promise<string> {
   const hit = chunkHTML.get(index)
   if (hit !== undefined) return hit
   return chunkFlight.run(index, async () => {
+    const m = manifest.value
+    const bookKey = m?.book_key ?? ''
+    const version = m?.version ?? 0
+    if (bookKey) {
+      const cached = await persistentCache.getChunk(bookKey, version, index)
+      if (cached !== null) {
+        chunkHTML.set(index, cached)
+        return cached
+      }
+    }
     const html = await fetchChunk(props.file.id, index)
     chunkHTML.set(index, html)
+    if (bookKey) void persistentCache.putChunk(bookKey, version, index, html)
     return html
   })
 }
@@ -451,7 +469,7 @@ function chunkElement(index: number): HTMLElement | null {
 
 // ensureWindow 把窗口变为 [newC0, newC1]：只 append 新 chunk、remove 已不在
 // 窗口内的旧 chunk，保留的 chunk 子树原样不动（避免清空重建触发整棵多栏
-// CSS columns reflow）。chunk HTML 走内存缓存，重入窗口不重新请求。
+// CSS columns reflow）。chunk HTML 走两级缓存，重入窗口不重新请求。
 async function ensureWindow(newC0: number, newC1: number): Promise<void> {
   const flow = flowEl.value
   const m = manifest.value
@@ -496,20 +514,13 @@ async function ensureWindow(newC0: number, newC1: number): Promise<void> {
   c1 = newC1
 }
 
-// desiredRangeFor 以当前阅读 chunk（cb）为中心计算窗口：
-// 身后保留 BEHIND_MARGIN 个 chunk、身前预取 AHEAD_MARGIN 个。
-function desiredRangeFor(cb: number): [number, number] {
+// ensureWindowForBlock 把窗口收敛到 block 所属 spine 的稳定分页窗口：
+// [spine 起始块所在 chunk, block 所在 chunk + AHEAD]。spine 排版前缀永远
+// 保留，只有进入下一 spine 后才允许释放上一 spine 的 chunk。
+async function ensureWindowForBlock(block: number): Promise<boolean> {
   const m = manifest.value
-  if (!m) return [0, 0]
-  const n = m.chunks.length
-  const lo = clamp(cb - BEHIND_MARGIN, 0, Math.max(0, n - 1))
-  const hi = clamp(cb + AHEAD_MARGIN, lo, n - 1)
-  return [lo, hi]
-}
-
-// ensureWindowFor 让窗口覆盖 cb 附近（与当前窗口一致则不动）。
-async function ensureWindowFor(cb: number): Promise<boolean> {
-  const [lo, hi] = desiredRangeFor(cb)
+  if (!m) return false
+  const [lo, hi] = stableWindowRange(m, block, AHEAD_MARGIN)
   if (c1 >= 0 && lo === c0 && hi === c1) return false
   await ensureWindow(lo, hi)
   return true
@@ -587,11 +598,19 @@ async function goToCol(col: number, animate: boolean): Promise<void> {
   scheduleWindowSync()
 }
 
-// rebaseForCenter 把窗口中心平移到 centerChunk（增量增删），测量后按顶部
-// anchor 对齐；返回是否真的发生了 DOM 变化。
-async function rebaseForCenter(centerChunk: number): Promise<boolean> {
-  const changed = await ensureWindowFor(centerChunk)
-  if (!changed) return false
+// rebaseForCenter 把窗口物理平移一个 chunk（增量增删）并按顶部 anchor
+// 对齐。只在翻页触到窗口物理边缘时使用：这是「原始」窗口扩张——向后越界
+// 时允许越过当前 spine 的稳定边界（把上一 spine 的尾部 chunk 拉回来），
+// data-spine-start 的强制分栏保证当前 spine 内的 page boundary 不因此
+// 改变（绝对栏号变化由 alignToAnchor 重算吸收）。
+async function rebaseForCenter(lo: number, hi: number): Promise<boolean> {
+  const m = manifest.value
+  if (!m) return false
+  const last = Math.max(0, m.chunks.length - 1)
+  const newLo = clamp(lo, 0, last)
+  const newHi = clamp(hi, newLo, last)
+  if (c1 >= 0 && newLo === c0 && newHi === c1) return false
+  await ensureWindow(newLo, newHi)
   measureCols()
   await alignToAnchor()
   return true
@@ -600,7 +619,9 @@ async function rebaseForCenter(centerChunk: number): Promise<boolean> {
 async function turn(dir: -1 | 1) {
   const m = manifest.value
   if (!m || stage.value !== 'reading') return
-  if (turnBusy) {
+  if (turnBusy || syncing) {
+    // 翻页动画或窗口重起源在途：排队重放。重起源期间窗口 DOM/栏数正在
+    // 变化，此刻按 cols/currentCol 计算落点会读到陈旧值（跳页）。
     pendingTurns += dir
     return
   }
@@ -608,13 +629,13 @@ async function turn(dir: -1 | 1) {
   try {
     let target = currentCol + dir
     if (target < 0 || target >= cols) {
-      // 窗口物理边缘：把窗口向该方向平移（增量 append/remove）
+      // 窗口物理边缘：向该方向原始扩张一个 chunk（增量 append/remove）
       if (dir < 0) {
         if (c0 <= 0) return
-        await rebaseForCenter(Math.max(0, c0 - 1))
+        await rebaseForCenter(c0 - 1, c1)
       } else {
         if (c1 >= lastChunkIndex()) return
-        await rebaseForCenter(Math.min(m.chunks.length - 1, c1 + 1))
+        await rebaseForCenter(c0, c1 + 1)
       }
       target = currentCol + dir
       if (target < 0 || target >= cols) return
@@ -638,16 +659,16 @@ function next() {
   void turn(1)
 }
 
-// seekToAnchor 跳到任意 anchor（跨 chunk：自动平移窗口）。
+// seekToAnchor 跳到任意 anchor（跨 chunk：窗口收敛到目标 spine 的稳定
+// 分页窗口）。
 async function seekToAnchor(anchor: ReadingAnchor) {
   const m = manifest.value
   if (!m || stage.value !== 'reading') return
   const total = totalBlockCount()
   const block = clamp(anchor.block, 0, Math.max(0, total - 1))
   const fixed: ReadingAnchor = { spine: anchor.spine, block, path: anchor.path, offset: anchor.offset }
-  const ci = chunkForBlock(m, block)
   const prev = topAnchor
-  await ensureWindowFor(ci < 0 ? 0 : ci)
+  await ensureWindowForBlock(block)
   measureCols()
   await goToCol(colForAnchor(fixed), false)
   commitNavAnchor(fixed, prev)
@@ -684,15 +705,16 @@ function anchorElRect(el: HTMLElement): DOMRect | null {
 }
 
 // jumpToTocEntry 目录跳转（Stable NavAnchor，两套定位语义分离）：
-//   1. 主路径——服务端在清洗期已把 data-rv-anchor 绑定到实际可见目标
-//      节点（文本 → 首个有效文本位置前的内联标记；图片/SVG → 媒体元素；
-//      无 fragment → spine 首个真实可见内容），manifest 携带 navAnchor
-//      与所在 chunk。客户端只加载目标 chunk，按绑定节点实际布局定栏并
-//      跳过去，随后从绑定节点生成精确 readingAnchor 提交（阅读进度语义
-//      不变，不与导航定位混用）。
-//   2. 回退——绑定节点缺失（旧缓存/极端裁剪）时用 sourceFragment 在
-//      块内做 fragment 精确定位（visualStart 找首个可见内容）。
-//   3. 兜底——块起点（jumpToBlock，seekToAnchor 内同样提交锚点）。
+//   1. 主路径（文本目标）——manifest 携带实际文本节点的稳定 DOM path +
+//      UTF-16 偏移（text_path/text_offset）。客户端加载目标 chunk 后解析
+//      真实 Text node，用 collapsed caret Range 的 rect 计算栏。空 inline
+//      标记在 column/page break 处可能停留在上一栏而真实文本已进入下一栏，
+//      因此文本定位一律以真实文本节点为准。
+//   2. 主路径（媒体目标）——data-rv-anchor 绑定在 img/svg/video 元素上，
+//      按真实元素 rect 定栏，并从绑定节点生成精确 readingAnchor 提交。
+//   3. 回退——locator 解析失败（节点缺失/偏移越界/无布局盒）时用
+//      sourceFragment 在块内做 fragment 精确定位（visualStart 找首个可见内容）。
+//   4. 兜底——块起点（jumpToBlock，seekToAnchor 内同样提交锚点）。
 // 导航正确性不依赖目录抽屉关闭动画：开始时先失效遗留的 pending
 // windowSync，并以 navDepth 屏蔽在途 windowSync 抢先按旧 topAnchor
 // 重排窗口（否则跳转会先成功、随后被拉回跳转前位置）；落地后由
@@ -710,9 +732,24 @@ async function jumpToTocEntry(entry: FlowTocEntry) {
     const b = clamp(entry.block, 0, Math.max(0, total - 1))
     const ci = entry.chunk ?? chunkForBlock(m, b)
     const prev = topAnchor
-    await ensureWindowFor(ci < 0 ? 0 : ci)
+    await ensureWindowForBlock(b)
     measureCols()
-    // 1) 服务端 NavAnchor：按绑定节点的实际布局定栏，零运行时猜测
+    // 1) 文本目标：真实 Text node 的 collapsed caret rect 定栏
+    const textHit = resolveTextLocator(entry)
+    if (textHit) {
+      const { blockEl, node, offset, anchor } = textHit
+      const range = blockEl.ownerDocument.createRange()
+      range.setStart(node, offset)
+      range.collapse(true)
+      const rect = firstRectOfRange(range)
+      if (rect && rectHasBox(rect)) {
+        await goToCol(colFromRect(rect), false)
+        commitNavAnchor(anchor, prev)
+        queueProgressSave()
+        return
+      }
+    }
+    // 2) 媒体目标：服务端 NavAnchor 绑定元素的真实 rect
     const hit = navAnchorEl(entry.nav_anchor ?? '')
     if (hit) {
       const blockEl = hit.closest<HTMLElement>('[data-block]')
@@ -725,7 +762,7 @@ async function jumpToTocEntry(entry: FlowTocEntry) {
         return
       }
     }
-    // 2) 回退：source_fragment 块内精确定位
+    // 3) 回退：source_fragment 块内精确定位
     if (entry.source_fragment) {
       const blockEl = blockElFor(b)
       const target = blockEl ? fragmentTargetEl(blockEl, entry.source_fragment) : null
@@ -738,10 +775,34 @@ async function jumpToTocEntry(entry: FlowTocEntry) {
         return
       }
     }
-    // 3) 兜底：块起点
+    // 4) 兜底：块起点
     await jumpToBlock(b)
   } finally {
     navDepth--
+  }
+}
+
+// resolveTextLocator 把 manifest 的 text_path/text_offset 解析为已加载 DOM
+// 内的真实文本位置。路径不可达、节点不是文本、偏移越界时返回 null（调用
+// 方按回退链处理）。偏移按 UTF-16 码元语义与服务端对齐。
+function resolveTextLocator(entry: FlowTocEntry): { blockEl: HTMLElement; node: Text; offset: number; anchor: ReadingAnchor } | null {
+  const m = manifest.value
+  if (!m || !entry.text_path) return null
+  const block = entry.block
+  const blockEl = blockElFor(block)
+  if (!blockEl) return null
+  let node: Node | null = blockEl
+  for (const idx of entry.text_path) {
+    node = node?.childNodes[idx] ?? null
+    if (!node) return null
+  }
+  if (!node || node.nodeType !== Node.TEXT_NODE) return null
+  const offset = clamp(entry.text_offset ?? 0, 0, (node as Text).data.length)
+  return {
+    blockEl,
+    node: node as Text,
+    offset,
+    anchor: { spine: spineForBlock(m, block), block, path: entry.text_path, offset },
   }
 }
 
@@ -751,12 +812,13 @@ async function seekFraction(fraction: number) {
   if (!m || !m.total_chars || stage.value !== 'reading') return
   const target = Math.round(clamp(fraction, 0, 1) * m.total_chars)
   const { chunk, offset } = locateChar(m, target)
-  await ensureWindowFor(chunk)
+  const startBlock = m.chunks[chunk]?.block_start ?? 0
+  await ensureWindowForBlock(startBlock)
   measureCols()
   const el = chunkElement(chunk)
-  let block = m.chunks[chunk]?.block_start ?? 0
+  let block = startBlock
   if (el) {
-    block = blockContainingOffset(el, offset, block)
+    block = blockContainingOffset(el, offset, startBlock)
   }
   await jumpToBlock(block)
 }
@@ -795,15 +857,28 @@ async function windowSync() {
   // 程序化 TOC 导航在途：跳转落地时会按导航目标提交 anchor 并重新调度
   // sync，这里不得按（可能仍是跳转前的）topAnchor 抢先重建窗口/对齐。
   if (navDepth > 0) return
-  const cb = topAnchor ? chunkForBlock(m, topAnchor.block) : -1
-  if (cb < 0) return
-  // 以当前阅读 chunk 为中心保持前后余量：只 append 新 chunk / remove 最旧
-  // chunk，不做整窗口清空重建；无变化则完全不动（热路径零开销）。
-  const changed = await ensureWindowFor(cb)
-  if (navDepth > 0) return
-  if (changed) {
-    measureCols()
-    await alignToAnchor()
+  // 翻页在途：跳过本轮（该翻页落地时会重新调度 sync），避免并发重建。
+  if (turnBusy || syncing) return
+  if (!topAnchor) return
+  syncing = true
+  try {
+    // 收敛到当前 spine 的稳定分页窗口：只 append 新 chunk / remove 出窗的
+    // 旧 spine chunk，不做整窗口清空重建；无变化则完全不动（热路径零开销）。
+    const changed = await ensureWindowForBlock(topAnchor.block)
+    if (navDepth > 0 || closing) return
+    if (changed) {
+      measureCols()
+      await alignToAnchor()
+    }
+  } finally {
+    syncing = false
+    // 重起源期间排队的翻页输入在此重放（turn 内部也会排队，两边共同
+    // 消费 pendingTurns，直至清空）。
+    if (!closing && stage.value === 'reading' && pendingTurns !== 0) {
+      const next = pendingTurns > 0 ? 1 : -1
+      pendingTurns -= next
+      void turn(next)
+    }
   }
 }
 
@@ -932,6 +1007,71 @@ function flushProgress() {
 
 // ---- 打开书籍 ----
 
+// setupView 用指定 manifest 排版并定位到 anchor（open 的主体；L2 快开与
+// 网络校验两条路径共用）。
+let renderedManifest: FlowManifest | null = null // 当前视图所用 manifest 原始引用
+
+async function setupView(myGen: number, flow: FlowManifest, saved: BookProgress['anchor']): Promise<ReadingAnchor | null> {
+  renderedManifest = flow
+  manifest.value = flow
+  applyMetrics()
+
+  const total = totalBlockCount()
+  let anchor: ReadingAnchor | null = null
+  if (saved && Number.isInteger(saved.block) && saved.block >= 0 && saved.block < Math.max(1, total)) {
+    anchor = { spine: saved.spine, block: saved.block, path: saved.path ?? [], offset: saved.offset ?? -1 }
+  }
+  if (!anchor) {
+    const first = flow.spines[0]?.block_start ?? 0
+    anchor = { spine: 0, block: first, path: [], offset: -1 }
+  }
+  loadingText.value = '正在排版…'
+  await ensureWindowForBlock(anchor.block)
+  if (myGen !== gen) return null
+  measureCols()
+  stage.value = 'reading'
+  currentCol = clamp(colForAnchor(anchor), 0, Math.max(0, cols - 1))
+  setX(-currentCol * metrics.pitch)
+  topAnchor = anchor
+  captureTop()
+  prefetchSurrounding(anchor.block)
+  queueProgressSave()
+  return anchor
+}
+
+// resetFlow 丢弃当前 flow 的全部客户端状态（L1、窗口 DOM、位置）：L2
+// manifest 与服务端 flow 不一致需要在新排版语义上重建时使用。持久 L2 的
+// chunk 由 putManifest 按版本/指纹清除。
+function resetFlow() {
+  renderedManifest = null
+  chunkHTML.clear()
+  chunkFlight.clear()
+  flowEl.value?.replaceChildren()
+  c0 = 0
+  c1 = -1
+  cols = 1
+  currentCol = 0
+  lastX = 0
+  topAnchor = null
+}
+
+// sameLayout 判断两个 manifest 的排版语义是否一致（flow 生成是确定性纯
+// 函数：版本与 chunk/spine/toc 元数据一致 ⇒ 全部 chunk 逐字节一致）。
+function sameLayout(a: FlowManifest, b: FlowManifest): boolean {
+  return (
+    a.version === b.version &&
+    a.format === b.format &&
+    a.total_chars === b.total_chars &&
+    a.book_key === b.book_key &&
+    a.chunks.length === b.chunks.length &&
+    a.toc.length === b.toc.length &&
+    a.chunks.every((c, i) => c.block_start === b.chunks[i].block_start && c.block_count === b.chunks[i].block_count && c.chars === b.chunks[i].chars) &&
+    a.spines.length === b.spines.length &&
+    a.spines.every((s, i) => s.block_start === b.spines[i].block_start && s.block_count === b.spines[i].block_count) &&
+    a.toc.every((t, i) => t.block === b.toc[i].block && t.nav_anchor === b.toc[i].nav_anchor && t.source_fragment === b.toc[i].source_fragment)
+  )
+}
+
 async function open() {
   const id = props.file.id
   stage.value = 'loading'
@@ -942,33 +1082,35 @@ async function open() {
     const info = await fetchBookInfo(id).catch(() => null)
     if (info?.title) title.value = info.title
     const progress = await fetchProgress(id).catch((): BookProgress => ({}))
+
+    // L2 manifest 命中 → 本地立即排版显示，不等网络 manifest
+    const cached = await persistentCache.getManifest(id).catch(() => null)
+    let renderedFromCache = false
+    if (cached && myGen === gen) {
+      try {
+        renderedFromCache = (await setupView(myGen, cached, progress.anchor)) !== null
+      } catch {
+        if (myGen !== gen) return
+        stage.value = 'loading' // L2 数据不可用：回落到网络路径
+      }
+    }
+
+    // 网络 manifest（no-cache）：主路径 + L2 校验。与 L2 排版语义一致时
+    // 保持现状（零 chunk 重取）；不一致（服务端 flow 更新/换书）才重建。
     const flow = await fetchFlow(id)
     if (myGen !== gen) return
-    manifest.value = flow
-    applyMetrics()
-
-    const total = totalBlockCount()
-    let anchor: ReadingAnchor | null = null
-    const saved = progress.anchor
-    if (saved && Number.isInteger(saved.block) && saved.block >= 0 && saved.block < Math.max(1, total)) {
-      anchor = { spine: saved.spine, block: saved.block, path: saved.path ?? [], offset: saved.offset ?? -1 }
+    void persistentCache.putManifest(id, flow).catch(() => {})
+    if (cached && renderedFromCache && renderedManifest === cached) {
+      if (sameLayout(cached, flow)) return
+      // L2 与服务端 flow 不一致：丢弃本地排版，按当前阅读位置在新 flow 上重建
+      const resume = topAnchor
+      loadingText.value = '正在排版…'
+      resetFlow()
+      await setupView(myGen, flow, resume ?? progress.anchor ?? undefined)
+      return
     }
-    if (!anchor) {
-      const first = flow.spines[0]?.block_start ?? 0
-      anchor = { spine: 0, block: first, path: [], offset: -1 }
-    }
-    const ci = chunkForBlock(flow, anchor.block)
-    loadingText.value = '正在排版…'
-    await ensureWindowFor(ci < 0 ? 0 : ci)
-    if (myGen !== gen) return
-    measureCols()
-    stage.value = 'reading'
-    currentCol = clamp(colForAnchor(anchor), 0, Math.max(0, cols - 1))
-    setX(-currentCol * metrics.pitch)
-    topAnchor = anchor
-    captureTop()
-    prefetchSurrounding(anchor.block)
-    queueProgressSave()
+    if (cached && !renderedFromCache) resetFlow() // 失败的 L2 排版残留
+    if (!(await setupView(myGen, flow, progress.anchor))) return
   } catch (error) {
     if (myGen !== gen) return
     stage.value = 'error'
