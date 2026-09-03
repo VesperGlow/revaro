@@ -185,35 +185,23 @@ function childIndexOf(parent: Node, child: Node): number {
   return -1
 }
 
-// anchorRange 把 readingAnchor 还原为 DOM Range（需 anchor.block 已加载）。
-function anchorRange(anchor: ReadingAnchor): Range | null {
-  const el = blockElFor(anchor.block)
-  if (!el) return null
-  let node: Node | null = el
-  for (const idx of anchor.path) {
-    node = node?.childNodes[idx] ?? null
-    if (!node) return null
+// anchorFromNode 把块内真实 DOM 位置（visualStart 命中的文本/元素）转成
+// 精确 readingAnchor：文本 → path + 文本偏移；元素 → path + 元素边界(-1)；
+// 无命中 → 块起点。目录跳转必须提交该锚点而不是块起点，否则 windowSync/
+// relayout 会按块首栏重新对齐，把页面拉回目标前的内容。
+function anchorFromNode(blockEl: HTMLElement, node: Node | null, offset: number): ReadingAnchor | null {
+  const base = makeAnchorFromBlockEl(blockEl, [], -1)
+  if (!base || !node) return base
+  const path: number[] = []
+  let cur: Node | null = node
+  while (cur && cur !== blockEl) {
+    const parent: Node | null = cur.parentNode
+    if (!parent) return base
+    path.unshift(childIndexOf(parent, cur))
+    cur = parent
   }
-  if (!node) return null
-  const doc = el.ownerDocument
-  const range = doc.createRange()
-  if (node.nodeType === Node.TEXT_NODE) {
-    const len = (node as Text).data.length
-    range.setStart(node, clamp(anchor.offset < 0 ? 0 : anchor.offset, 0, len))
-    range.collapse(true)
-    return range
-  }
-  if (anchor.offset === -1 && node === el) {
-    // 块起点（元素边界）：直接用块首行
-    return null
-  }
-  // 元素边界（块内某元素之前）
-  const parent: Node | null = node.parentNode
-  if (!parent) return null
-  const idx = Math.max(0, childIndexOf(parent, node))
-  range.setStart(parent, idx)
-  range.collapse(true)
-  return range
+  if (cur !== blockEl) return base
+  return { ...base, path, offset: node.nodeType === Node.TEXT_NODE ? Math.max(0, offset) : -1 }
 }
 
 function colFromRect(rect: DOMRect | undefined): number {
@@ -237,28 +225,87 @@ function firstRectOfRange(range: Range): DOMRect | null {
   return null
 }
 
-// colForAnchor 返回 anchor 所在的栏（只考虑已加载窗口）。
+// rectHasBox 判断 rect 是否存在实际布局盒（全零 = 无盒子，如隐藏子树、
+// 未加载或无尺寸的媒体），这样的候选不能用来算栏。
+function rectHasBox(rect: DOMRect | null): boolean {
+  return !!rect && (rect.width > 0 || rect.height > 0)
+}
+
+// visualStart 在元素内定位「首个实际可见内容」：取第一个非空文本（视觉
+// 空白如 NBSP/U+3000 也跳过）与第一个实际可见媒体/表格后代中文档序在先
+// 者，都没有才回退到元素自身盒。CSS columns 下块级容器的首 fragment 可能
+// 留在上一栏（break-inside:avoid 的整页图被整体推入下一栏），因此定位
+// 不能用容器自身 getClientRects()[0]，必须用实际内容的 rect。返回 rect
+// 与命中节点（node+offset 用于还原精确 readingAnchor）；连自身都没有
+// 布局盒时返回 null。
+function visualStart(el: HTMLElement): { rect: DOMRect; node: Node | null; offset: number } | null {
+  const doc = el.ownerDocument
+  let text: { rect: DOMRect; node: Text; offset: number } | null = null
+  const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const at = (n as Text).data.search(/\S/)
+    if (at < 0) continue
+    const range = doc.createRange()
+    range.setStart(n, at)
+    range.collapse(true)
+    const rect = firstRectOfRange(range) ?? range.getBoundingClientRect()
+    if (!rectHasBox(rect)) continue
+    text = { rect, node: n as Text, offset: at }
+    break
+  }
+  let media: { rect: DOMRect; node: Node; offset: number } | null = null
+  for (const d of el.querySelectorAll<HTMLElement>('img,svg,video,canvas,iframe,embed,object,table')) {
+    const rect = d.getBoundingClientRect()
+    if (!rectHasBox(rect)) continue
+    media = { rect, node: d, offset: -1 }
+    break
+  }
+  if (text && media) {
+    // 图在前、文字在后（整页图+图注）时视觉起点是图；文字在前取文本。
+    // 文本在媒体子树内（表格）时 compareDocumentPosition 不含 FOLLOWING，
+    // 同样取媒体自身。
+    return text.node.compareDocumentPosition(media.node) & Node.DOCUMENT_POSITION_FOLLOWING ? text : media
+  }
+  const hit = text ?? media
+  if (hit) return hit
+  const self = firstRectOf(el) ?? el.getBoundingClientRect()
+  if (!rectHasBox(self) && self.left === 0 && self.top === 0) return null
+  return { rect: self, node: null, offset: -1 }
+}
+
+function visualStartRect(el: HTMLElement): DOMRect | null {
+  return visualStart(el)?.rect ?? null
+}
+
+// anchorNode 把 anchor 解析回已加载 DOM 中的位置（块元素 + 目标节点）。
+function anchorNode(anchor: ReadingAnchor): { blockEl: HTMLElement; node: Node } | null {
+  const blockEl = blockElFor(anchor.block)
+  if (!blockEl) return null
+  let node: Node | null = blockEl
+  for (const idx of anchor.path) {
+    node = node?.childNodes[idx] ?? null
+    if (!node) return null
+  }
+  return { blockEl, node }
+}
+
+// colForAnchor 返回 anchor 所在的栏（只考虑已加载窗口）。文本锚点用 caret
+// Range；元素锚点（含块起点）用 visualStartRect——块容器首 fragment 可能
+// 留在上一栏（整页图 break-inside:avoid 被推入下一栏），直接量容器会偏一页。
 function colForAnchor(anchor: ReadingAnchor | null): number {
   if (!anchor) return 0
-  if (anchor.path.length === 0 && anchor.offset === -1) {
-    const el = blockElFor(anchor.block)
-    if (el) {
-      const r = firstRectOf(el) ?? el.getBoundingClientRect()
-      return colFromRect(r)
-    }
-    return 0
-  }
-  const range = anchorRange(anchor)
-  if (range) {
+  const t = anchorNode(anchor)
+  if (!t) return 0
+  if (t.node.nodeType === Node.TEXT_NODE) {
+    const len = (t.node as Text).data.length
+    const range = t.blockEl.ownerDocument.createRange()
+    range.setStart(t.node, clamp(anchor.offset < 0 ? 0 : anchor.offset, 0, len))
+    range.collapse(true)
     const r = firstRectOfRange(range)
     if (r) return colFromRect(r)
   }
-  const el = blockElFor(anchor.block)
-  if (el) {
-    const r = firstRectOf(el)
-    if (r) return colFromRect(r)
-  }
-  return 0
+  const el = t.node.nodeType === Node.ELEMENT_NODE ? (t.node as HTMLElement) : t.blockEl
+  return colFromRect(visualStartRect(el) ?? firstRectOf(el) ?? el.getBoundingClientRect())
 }
 
 // decodeFrag 对 EPUB URL fragment 做安全 percent decode（兼容非 ASCII /
@@ -618,9 +665,14 @@ async function jumpToBlock(block: number) {
 
 // jumpToTocEntry 目录跳转：先按 entry.block 定位并加载目标 chunk（复用
 // 现有 chunk window 机制），等 chunk 挂载并完成 CSS columns 排版后，在
-// 块内按 fragment 找到真实目标元素，用其起始 rect（getClientRects()[0]，
-// 跨多栏元素的联合范围会指向末栏）算出所在栏并跳过去；fragment 缺失、
-// 被 EPUB 清洗丢弃或块内未命中时回退块起点（jumpToBlock 旧行为）。
+// 目标元素内用 visualStart 找「首个实际可见内容」（fragment 命中的元素，
+// 无 fragment 时为块自身——spine 首 block 同样处理），按其 rect 算出所在
+// 栏并跳过去；不能直接量 fragment/块外层容器：CSS columns 下容器首
+// fragment 可留在上一栏（break-inside:avoid 的整页图被推入下一栏）。
+// 落地后从命中位置生成精确 readingAnchor（文本 → path+offset，媒体 →
+// 元素边界）并提交，不提交块起点，否则 windowSync/relayout 按块首栏
+// 对齐会再次偏移。fragment 缺失、被 EPUB 清洗丢弃、块内未命中或没有
+// 布局盒时回退块起点（jumpToBlock 旧行为）。
 // 导航正确性不依赖目录抽屉关闭动画：开始时先失效遗留的 pending
 // windowSync，并以 navDepth 屏蔽在途 windowSync 抢先按旧 topAnchor
 // 重排窗口（否则跳转会先成功、随后被拉回跳转前位置）；落地后由
@@ -634,10 +686,6 @@ async function jumpToTocEntry(entry: FlowTocEntry) {
   }
   navDepth++
   try {
-    if (!entry.fragment) {
-      await jumpToBlock(entry.block)
-      return
-    }
     const total = totalBlockCount()
     const b = clamp(entry.block, 0, Math.max(0, total - 1))
     const ci = chunkForBlock(m, b)
@@ -645,15 +693,16 @@ async function jumpToTocEntry(entry: FlowTocEntry) {
     await ensureWindowFor(ci < 0 ? 0 : ci)
     measureCols()
     const blockEl = blockElFor(b)
-    const target = blockEl ? fragmentTargetEl(blockEl, entry.fragment) : null
-    const rect = target ? firstRectOf(target) ?? target.getBoundingClientRect() : null
-    if (!rect || (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.top === 0)) {
+    const target = blockEl ? (entry.fragment ? fragmentTargetEl(blockEl, entry.fragment) : blockEl) : null
+    const vs = target ? visualStart(target) : null
+    if (!blockEl || !vs) {
       // 目标不存在或没有布局盒：回退块起点（seekToAnchor 内同样提交锚点）
       await jumpToBlock(b)
       return
     }
-    await goToCol(colFromRect(rect), false)
-    commitNavAnchor({ spine: spineForBlock(m, b), block: b, path: [], offset: -1 }, prev)
+    const anchor = anchorFromNode(blockEl, vs.node, vs.offset)
+    await goToCol(colFromRect(vs.rect), false)
+    if (anchor) commitNavAnchor(anchor, prev)
     queueProgressSave()
   } finally {
     navDepth--

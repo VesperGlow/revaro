@@ -420,7 +420,92 @@ test('目录 fragment 在未加载 chunk：先加载目标 chunk 再精确定位
   await expect
     .poll(() => (page as Page & { __savedProgress?: { anchor?: { block?: number } } }).__savedProgress ?? null, { timeout: 8000 })
     .toBeTruthy()
-  const savedBlock = (page as Page & { __savedProgress: { anchor: { block?: number } } }).__savedProgress.anchor?.block ?? -1
+  const savedBlock = (page as Page & { __savedProgress: { anchor?: { block?: number } } }).__savedProgress.anchor?.block ?? -1
   expect(savedBlock).toBeGreaterThanOrEqual(8 * BLOCKS_PER_CHUNK)
   expect(savedBlock).toBeLessThan(9 * BLOCKS_PER_CHUNK)
+})
+
+// ---- 整页图章节标题：容器首 fragment 在上一栏 ----
+
+// 1×1 像素图，靠 width/height 属性撑出整页布局盒（真实 EPUB 清洗后
+// 服务端会写入固有尺寸属性，加载前后盒子不变）。
+const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='
+
+// imagePageChunkHTML 复刻真实 EPUB 的目标形态（p-005.xhtml#id-a002）：
+// 连续整页插画（break-inside:avoid）后跟 <p id="id-a002">，块内只有一行
+// 空白内容 + 一张整页标题图。栏高 636px（1280×720 视口），逐栏推挤：
+//   栏0 填充600 → 栏1 插画一620（剩16）→ 栏2 插画二（楠）500（剩136，
+//   目标块的空白行 ≈32px 挤得下）→ 标题图636 放不下，整体推入栏3。
+// 目标块容器首 fragment（空白行）留在栏2（“楠”页），图片在栏3——按容器
+// getClientRects()[0] 算栏会跳到前一张“楠”插画页（旧逻辑缺陷）；前导
+// 空白行用 NBSP（\s 空白、引擎不塌缩、必然成行），两种引擎确定性复现。
+function imagePageChunkHTML(chunk: number): string {
+  if (chunk !== 1) return chunkHTML(chunk)
+  const base = chunk * BLOCKS_PER_CHUNK
+  const parts = [
+    `<div data-block="${base}" style="height:600px">前置填充块，用来把后续整页图推入各自的栏。</div>`,
+    `<p data-block="${base + 1}"><img src="${PIXEL}" width="720" height="620" alt="插画一"></p>`,
+    `<p data-block="${base + 2}" id="id-nan"><img id="nan-img" src="${PIXEL}" width="720" height="500" alt="插画二（楠）"></p>`,
+    `<p data-block="${base + 3}" id="id-a002">&nbsp;
+    <img id="title-img" src="${PIXEL}" width="720" height="636" alt="章节标题图"></p>`,
+  ]
+  for (let b = 4; b < BLOCKS_PER_CHUNK; b++) parts.push(blockHTML(chunk, b))
+  return parts.join('\n')
+}
+
+const IMAGE_TOC = [
+  { label: '烛林', depth: 0, spine: 0, block: 1 * BLOCKS_PER_CHUNK + 3, fragment: 'id-a002' },
+  { label: '无片段条目', depth: 0, spine: 0, block: 1 * BLOCKS_PER_CHUNK + 3 },
+]
+
+// elInViewport 判断元素主盒是否与当前可见视口横向相交（整页图是原子盒，
+// 不会跨栏，getBoundingClientRect 即其唯一布局盒）。
+async function elInViewport(page: Page, selector: string): Promise<boolean> {
+  const box = await page.locator('#viewport').boundingBox()
+  if (!box) throw new Error('viewport 不可见')
+  return page.evaluate(
+    ({ selector, minX, maxX }) => {
+      const el = document.querySelector(selector)
+      if (!el) return false
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.right > minX && rect.left < maxX
+    },
+    { selector, minX: box.x, maxX: box.x + box.width },
+  )
+}
+
+test('整页图章节标题跳转：容器首 fragment 在上一栏时仍按实际图片定位', async ({ page }) => {
+  await openReader(page, { toc: IMAGE_TOC, chunkHTML: imagePageChunkHTML })
+
+  // fragment 精确跳转：必须落在章节标题图，而不是前一张“楠”插画
+  await page.locator('#toc-button').click()
+  await page.locator('.toc-item', { hasText: '烛林' }).click()
+  await expect.poll(() => elInViewport(page, '#title-img'), { timeout: 8000 }).toBe(true)
+  expect(await elInViewport(page, '#nan-img')).toBe(false)
+
+  // 落地后的 windowSync（200ms 防抖）与进度保存不得把页面拉回上一栏
+  await page.waitForTimeout(1500)
+  expect(await elInViewport(page, '#title-img')).toBe(true)
+
+  // 字号重排（relayout 按 topAnchor 重对齐）后仍停在标题图页
+  await page.locator('#font-button').click()
+  await page.locator('#font-larger').click()
+  await page.waitForTimeout(700)
+  expect(await elInViewport(page, '#title-img')).toBe(true)
+  await page.locator('#font-smaller').click()
+  await page.waitForTimeout(700)
+  expect(await elInViewport(page, '#title-img')).toBe(true)
+
+  // 进度锚点提交在标题图块（captureTop 兜底 / 导航目标一致）
+  const savedBlock = (page as Page & { __savedProgress?: { anchor?: { block?: number } } }).__savedProgress?.anchor?.block ?? -1
+  expect(savedBlock).toBe(1 * BLOCKS_PER_CHUNK + 3)
+})
+
+test('无 fragment 目录对整页图 spine 首块同样按首个可见内容定位', async ({ page }) => {
+  await openReader(page, { toc: IMAGE_TOC, chunkHTML: imagePageChunkHTML })
+
+  await page.locator('#toc-button').click()
+  await page.locator('.toc-item', { hasText: '无片段条目' }).click()
+  await expect.poll(() => elInViewport(page, '#title-img'), { timeout: 8000 }).toBe(true)
+  expect(await elInViewport(page, '#nan-img')).toBe(false)
 })
