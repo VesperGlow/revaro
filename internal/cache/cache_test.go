@@ -71,19 +71,26 @@ func TestDiskOnlyClassNeverUsesMemory(t *testing.T) {
 
 func TestTTLExpiry(t *testing.T) {
 	m := newTestManager(t, 1<<20, 1<<20)
-	if _, err := m.Load(context.Background(), "media/subtitle", "s1", 10*time.Millisecond, func(context.Context) ([]byte, error) {
+	// 新鲜条目：长 TTL，避免 CI 慢机上短 TTL 在断言前过期的抖动
+	if _, err := m.Load(context.Background(), "media/subtitle", "fresh", time.Minute, func(context.Context) ([]byte, error) {
 		return []byte("vtt"), nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := m.Get("media/subtitle", "s1"); !ok {
+	if _, ok := m.Get("media/subtitle", "fresh"); !ok {
 		t.Fatal("fresh entry should hit")
 	}
-	time.Sleep(20 * time.Millisecond)
-	if _, ok := m.Get("media/subtitle", "s1"); ok {
+	// 过期：短 TTL + 足量等待
+	if _, err := m.Load(context.Background(), "media/subtitle", "stale", 60*time.Millisecond, func(context.Context) ([]byte, error) {
+		return []byte("vtt"), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	if _, ok := m.Get("media/subtitle", "stale"); ok {
 		t.Fatal("expired memory entry was served")
 	}
-	if m.Has("media/subtitle", "s1") {
+	if m.Has("media/subtitle", "stale") {
 		t.Fatal("expired disk entry reported present")
 	}
 }
@@ -169,6 +176,7 @@ func TestLoadSingleFlightDeduplicatesAndPropagatesErrors(t *testing.T) {
 	m := newTestManager(t, 1<<20, 1<<20)
 	var calls atomic.Int32
 	release := make(chan struct{})
+	var resultsMu sync.Mutex
 	var results []string
 	var wg sync.WaitGroup
 	for range 3 {
@@ -180,7 +188,9 @@ func TestLoadSingleFlightDeduplicatesAndPropagatesErrors(t *testing.T) {
 				<-release
 				return []byte("one"), nil
 			})
+			resultsMu.Lock()
 			results = append(results, string(data)+"/"+strconv.FormatBool(err == nil))
+			resultsMu.Unlock()
 		}()
 	}
 	time.Sleep(20 * time.Millisecond)

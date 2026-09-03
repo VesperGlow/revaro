@@ -33,6 +33,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,11 +50,17 @@ type Class struct {
 	Disk   bool
 }
 
-// ClassStats 是单个 class 的累计指标与当前占用。
+// ClassStats 是单个 class 的累计指标与当前占用（快照值）。
 type ClassStats struct {
 	Hits, Misses, Loads, LoadErrors, Evictions int64
 	MemoryBytes, DiskBytes                     int64
 	MemoryEntries, DiskEntries                 int
+}
+
+// classCounters 是 class 的原子累计指标：Get/Load 的计数发生在不持有
+// m.mu 的调用路径上，必须用原子操作避免并发计数竞争。
+type classCounters struct {
+	hits, misses, loads, loadErrors, evictions atomic.Int64
 }
 
 // Stats 是全局缓存指标快照。
@@ -94,7 +101,7 @@ type Manager struct {
 	memory     map[string]*entry // 限定键 class\x00key → entry
 	lru        *list.List
 	flights    map[string]*flight
-	stats      map[string]*ClassStats
+	stats      map[string]*classCounters
 	diskDir    string
 	diskBytes  int64
 	memoryLimit int64
@@ -118,7 +125,7 @@ func New(diskDir string, memoryLimit, diskLimit int64) *Manager {
 		memory:      map[string]*entry{},
 		lru:         list.New(),
 		flights:     map[string]*flight{},
-		stats:       map[string]*ClassStats{},
+		stats:       map[string]*classCounters{},
 		diskDir:     diskDir,
 		memoryLimit: memoryLimit,
 		diskLimit:   diskLimit,
@@ -136,7 +143,7 @@ func (m *Manager) RegisterClass(c Class) {
 	defer m.mu.Unlock()
 	m.classes[c.Name] = c
 	if _, ok := m.stats[c.Name]; !ok {
-		m.stats[c.Name] = &ClassStats{}
+		m.stats[c.Name] = &classCounters{}
 	}
 }
 
@@ -148,11 +155,13 @@ func (m *Manager) classOf(name string) Class {
 	return c
 }
 
-func (m *Manager) classStats(name string) *ClassStats {
+// classStats 返回 class 的原子计数器。stats map 只在 RegisterClass（启动
+// 期、任何使用之前）写入，此后只读；未注册的 class 与 classOf 同为编程
+// 错误。
+func (m *Manager) classStats(name string) *classCounters {
 	s, ok := m.stats[name]
 	if !ok {
-		s = &ClassStats{}
-		m.stats[name] = s
+		panic("cache: unregistered class " + name)
 	}
 	return s
 }
@@ -184,10 +193,10 @@ func (m *Manager) Get(class, key string) ([]byte, bool) {
 	data, ok := m.getMemory(m.classOf(class), key)
 	m.mu.Unlock()
 	if ok {
-		m.classStats(class).Hits++
+		m.classStats(class).hits.Add(1)
 		return data, true
 	}
-	m.classStats(class).Misses++
+	m.classStats(class).misses.Add(1)
 	return nil, false
 }
 
@@ -241,19 +250,19 @@ func (m *Manager) Load(ctx context.Context, class, key string, ttl time.Duration
 	data, ok := m.getMemory(c, key)
 	m.mu.Unlock()
 	if ok {
-		m.classStats(class).Hits++
+		m.classStats(class).hits.Add(1)
 		return data, nil
 	}
 	if c.Disk {
 		if data, expires, ok := m.getDisk(class, key); ok {
-			m.classStats(class).Hits++
+			m.classStats(class).hits.Add(1)
 			if c.Memory {
 				m.putMemory(c, key, data, expires)
 			}
 			return data, nil
 		}
 	}
-	m.classStats(class).Misses++
+	m.classStats(class).misses.Add(1)
 	qk := qualKey(class, key)
 	m.mu.Lock()
 	if m.closed {
@@ -270,9 +279,9 @@ func (m *Manager) Load(ctx context.Context, class, key string, ttl time.Duration
 			workCtx, cancel := context.WithTimeout(m.ctx, 10*time.Minute)
 			defer cancel()
 			data, err := load(workCtx)
-			m.classStats(class).Loads++
+			m.classStats(class).loads.Add(1)
 			if err != nil {
-				m.classStats(class).LoadErrors++
+				m.classStats(class).loadErrors.Add(1)
 			} else {
 				m.Put(class, key, data, ttl)
 			}
@@ -464,7 +473,7 @@ func (m *Manager) Stats() Stats {
 	}
 	for name, s := range m.stats {
 		cs := out.Classes[name]
-		cs.Hits, cs.Misses, cs.Loads, cs.LoadErrors, cs.Evictions = s.Hits, s.Misses, s.Loads, s.LoadErrors, s.Evictions
+		cs.Hits, cs.Misses, cs.Loads, cs.LoadErrors, cs.Evictions = s.hits.Load(), s.misses.Load(), s.loads.Load(), s.loadErrors.Load(), s.evictions.Load()
 		out.Classes[name] = cs
 	}
 	m.mu.Unlock()
@@ -532,7 +541,7 @@ func (m *Manager) enforceMemoryLimit() {
 		}
 		usage -= victim.size
 		m.removeMemory(victim)
-		m.classStats(victim.class.Name).Evictions++
+		m.classStats(victim.class.Name).evictions.Add(1)
 	}
 	// class 软配额：超出者收敛回配额
 	perClass := map[string]int64{}
@@ -551,7 +560,7 @@ func (m *Manager) enforceMemoryLimit() {
 			}
 			used -= victim.size
 			m.removeMemory(victim)
-			m.classStats(name).Evictions++
+			m.classStats(name).evictions.Add(1)
 		}
 	}
 }
