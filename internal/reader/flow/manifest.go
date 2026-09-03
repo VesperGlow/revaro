@@ -6,7 +6,8 @@ package flow
 //     chunk 只按自然 DOM 边界与体量切分，与任何 viewport/字号无关；
 //   - Spines 记录每章（EPUB spine / TXT 章节）的块区间，用于
 //     旧进度迁移、目录分组与块→章换算；
-//   - TOC 每条目标是一个内容块（可直接定位），不再依赖页码。
+//   - TOC 每条目标解析为 Stable NavAnchor（绑定实际可见目标节点 +
+//     所在 chunk），Spine/Block 保留用于高亮、进度换算与回退。
 type Manifest struct {
 	Version    int         `json:"version"`     // flow 生成器格式版本
 	Format     string      `json:"format"`      // "epub" | "txt"
@@ -37,17 +38,27 @@ type ChunkMeta struct {
 	URL        string `json:"url,omitempty"`
 }
 
-// TOCTarget 是目录条目指向的内容块。Block 可直接用于客户端定位，
-// Spine 供高亮/分组参考；Fragment 保留 EPUB 目录的原始片段
-// （解析层已 percent-decode），客户端在 Block 所在块内用它做
-// fragment 级精确定位（块内多个目录目标可落到不同栏），
-// 定位不到时回退块起点。
+// TOCTarget 是目录条目的导航目标（Stable NavAnchor 体系）：
+//   - Spine/Block 供目录高亮、进度换算与回退定位；
+//   - NavAnchor 是清洗期绑定到实际可见目标节点的稳定 synthetic id，
+//     chunk HTML 中存在 data-rv-anchor="<id>" 的绑定节点（文本目标 =
+//     首个有效文本位置前的内联标记；图片/SVG 目标 = 媒体元素自身；
+//     无 fragment = 目标 spine 首个真实可见内容）。客户端目录跳转只
+//     加载 Chunk，按 data-rv-anchor 找节点并按其实际布局定栏；
+//   - SourcePath/SourceFragment 保留 EPUB 目录原始 href（调试与回退）。
 type TOCTarget struct {
-	Label    string `json:"label"`
-	Depth    int    `json:"depth"`
-	Spine    int    `json:"spine"`
-	Block    int    `json:"block"`
-	Fragment string `json:"fragment,omitempty"`
+	Label     string `json:"label"`
+	Depth     int    `json:"depth"`
+	Spine     int    `json:"spine"`
+	Block     int    `json:"block"`
+	NavAnchor string `json:"nav_anchor,omitempty"`
+	// Chunk 是 NavAnchor 绑定节点所在的 chunk；客户端目录跳转只需加载
+	// 它。始终输出（chunk 0 也是合法值）。
+	Chunk int `json:"chunk"`
+	// SourcePath/SourceFragment 保留原始目录 href 的路径与 fragment
+	// （解析层已 percent-decode 一次），用于调试与客户端回退。
+	SourcePath     string `json:"source_path,omitempty"`
+	SourceFragment string `json:"source_fragment,omitempty"`
 }
 
 // SpineForBlock 返回块 b 所属的章（全书块编号 → spine 序号）。

@@ -13,8 +13,19 @@ const TOTAL_BLOCKS = BLOCKS_PER_CHUNK * CHUNK_COUNT
 
 interface FlowFixture {
   progress?: { anchor?: unknown } | null
-  // 覆盖默认目录（可带 fragment，模拟服务端 TOCTarget.Fragment）
-  toc?: { label: string; depth: number; spine: number; block: number; fragment?: string }[]
+  // 覆盖默认目录（服务端 Stable NavAnchor 模型：nav_anchor 绑定 chunk
+  // HTML 中的 data-rv-anchor 节点，chunk 为绑定节点所在 chunk，
+  // source_fragment/source_path 保留原始 href 供回退）
+  toc?: {
+    label: string
+    depth: number
+    spine: number
+    block: number
+    chunk?: number
+    nav_anchor?: string
+    source_fragment?: string
+    source_path?: string
+  }[]
   // 覆盖默认 chunk HTML 生成器
   chunkHTML?: (chunk: number) => string
 }
@@ -218,9 +229,12 @@ test('后退翻页回到开头不崩溃，进度仍为开头锚点', async ({ pa
 const FRAG_GAP = '两个目录目标之间的填充文字，用来把内容撑开到不同的分栏，确保间隔足够远。'.repeat(60)
 
 // giantBlockHTML 生成一个跨多栏的顶层块，块内多个 id 元素（可加前置填充，
-// 使第一个目标不在块起点，用于区分「精确命中」与「回退块起点」）。
+// 使第一个目标不在块起点）；服务端会在每个目标的首个有效文本位置前绑定
+// NavAnchor 标记（rvn-<i>），这里直接模拟绑定结果。
 function giantBlockHTML(block: number, ids: string[], leadGap = ''): string {
-  const inner = ids.map(id => `<span id="${id}">【${id}】</span>`).join(FRAG_GAP)
+  const inner = ids
+    .map((id, i) => `<span class="toc-anchor" data-rv-anchor="rvn-${i}"></span><span id="${id}">【${id}】</span>`)
+    .join(FRAG_GAP)
   return `<div data-block="${block}" data-source-path="OEBPS/frag.xhtml">${leadGap}${inner}${FRAG_GAP}</div>`
 }
 
@@ -244,28 +258,32 @@ function farFragmentChunkHTML(chunk: number): string {
 }
 
 const FRAG_TOC = [
-  { label: '目标一', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '目标一' },
-  { label: '目标二', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '目标二' },
-  // 双重转义场景：服务端只解一次码，客户端需补一次安全 decode
-  { label: '编码目标', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '%E7%9B%AE%E6%A0%87%E4%B8%89' },
+  { label: '目标一', depth: 0, spine: 0, block: FRAG_BLOCK, chunk: 1, nav_anchor: 'rvn-0', source_fragment: '目标一', source_path: 'OEBPS/frag.xhtml' },
+  { label: '目标二', depth: 0, spine: 0, block: FRAG_BLOCK, chunk: 1, nav_anchor: 'rvn-1', source_fragment: '目标二' },
+  // 双重转义场景：服务端只解一次码，回退路径需补一次安全 decode
+  { label: '编码目标', depth: 0, spine: 0, block: FRAG_BLOCK, chunk: 1, nav_anchor: 'rvn-2', source_fragment: '%E7%9B%AE%E6%A0%87%E4%B8%89' },
   // 非 ASCII + 空格：按属性值直接命中（不能进 selector）
-  { label: '空格目标', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: '章节 二' },
-  { label: '丢失目标', depth: 0, spine: 0, block: FRAG_BLOCK, fragment: 'not-there' },
+  { label: '空格目标', depth: 0, spine: 0, block: FRAG_BLOCK, chunk: 1, nav_anchor: 'rvn-3', source_fragment: '章节 二' },
+  // NavAnchor 绑定节点不在 DOM（旧缓存/被裁剪）→ 回退 source_fragment，
+  // 仍找不到 → 回退块起点
+  { label: '丢失目标', depth: 0, spine: 0, block: FRAG_BLOCK, chunk: 1, nav_anchor: 'rvn-99', source_fragment: 'not-there' },
+  // 无 NavAnchor/无 source_fragment（TXT 或极端回退）→ 块起点
   { label: '无片段', depth: 0, spine: 0, block: FRAG_BLOCK },
 ]
 
-const FAR_TOC = [{ label: '远目标', depth: 0, spine: 0, block: 8 * BLOCKS_PER_CHUNK + 3, fragment: '远目标' }]
+const FAR_TOC = [{ label: '远目标', depth: 0, spine: 0, block: 8 * BLOCKS_PER_CHUNK + 3, chunk: 8, nav_anchor: 'rvn-0', source_fragment: '远目标' }]
 
-// sectionChunkHTML 模仿真实 EPUB 章节：h1 章首（父级目录目标，无 fragment）
-// + h4#sigil + 段落。h1 强制从新栏开始并保留 margin-top —— 栏顶采样点落在
-// margin 死区（无任何可命中 data-block 元素），captureTop 在该栏返回 null，
-// 用于确定性复现「父级目录跳转后回弹」。
+// sectionChunkHTML 模仿真实 EPUB 章节：h1 章首（父级目录目标，服务端把
+// NavAnchor 绑定到 h1 首行文本前的标记）+ h4#sigil + 段落。h1 强制从新
+// 栏开始并保留 margin-top，用于验证目录跳转后不回弹。
 function sectionChunkHTML(chunk: number): string {
   const parts: string[] = []
   for (let b = 0; b < BLOCKS_PER_CHUNK; b++) {
     const block = chunk * BLOCKS_PER_CHUNK + b
     if (b === 0) {
-      parts.push(`<h1 data-block="${block}" style="break-before: column">文档${chunk} 边际海岸的度假之夜之类的很长很长的章节标题文字</h1>`)
+      parts.push(
+        `<h1 data-block="${block}" style="break-before: column"><span class="toc-anchor" data-rv-anchor="rvn-doc${chunk}"></span>文档${chunk} 边际海岸的度假之夜之类的很长很长的章节标题文字</h1>`,
+      )
     } else if (b === 1) {
       parts.push(`<h4 data-block="${block}" id="sigil_toc_id_${chunk}">${chunk}</h4>`)
     } else {
@@ -366,15 +384,18 @@ async function expectBlockVisible(page: Page, block: number) {
 }
 
 test('父级目录（无 fragment）跳转不回弹：延迟 windowSync 后仍停留在目标章节', async ({ page }) => {
-  // 每个 chunk 一节，模仿真实 EPUB：h1 章首（父级目录目标，无 fragment）+
-  // h4#sigil + 段落。h1 强制从新栏开始并保留 margin-top —— 栏顶采样点落在
-  // margin 死区，captureTop 的屏幕读取在该栏返回 null（回弹的确定性条件：
-  // topAnchor 保留跳转前旧值 → windowSync 按旧值重建窗口并拉回旧页）。
+  // 每个 chunk 一节，模仿真实 EPUB：h1 章首（父级目录目标，服务端把
+  // NavAnchor 绑定到 h1 首行文本前的标记）+ h4#sigil + 段落。h1 强制从
+  // 新栏开始并保留 margin-top —— 栏顶采样点落在 margin 死区，captureTop
+  // 的屏幕读取在该栏可能返回 null（回弹的确定性条件：topAnchor 保留跳转
+  // 前旧值 → windowSync 按旧值重建窗口并拉回旧页）。
   const parentToc = Array.from({ length: CHUNK_COUNT }, (_, k) => ({
     label: `文档${k}`,
     depth: 0,
     spine: 0,
     block: k * BLOCKS_PER_CHUNK,
+    chunk: k,
+    nav_anchor: `rvn-doc${k}`,
   }))
   await openReader(page, { toc: parentToc, chunkHTML: sectionChunkHTML })
   const target = 6 * BLOCKS_PER_CHUNK // 文档6：chunk 6 章首；跳转前窗口为 [0..3]
@@ -436,8 +457,8 @@ const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAA
 // 空白内容 + 一张整页标题图。栏高 636px（1280×720 视口），逐栏推挤：
 //   栏0 填充600 → 栏1 插画一620（剩16）→ 栏2 插画二（楠）500（剩136，
 //   目标块的空白行 ≈32px 挤得下）→ 标题图636 放不下，整体推入栏3。
-// 目标块容器首 fragment（空白行）留在栏2（“楠”页），图片在栏3——按容器
-// getClientRects()[0] 算栏会跳到前一张“楠”插画页（旧逻辑缺陷）；前导
+// 服务端把 NavAnchor 直接绑在标题图媒体元素上（data-rv-anchor="rvn-9"），
+// 旧逻辑按容器 getClientRects()[0] 算栏会跳到前一张“楠”插画页；前导
 // 空白行用 NBSP（\s 空白、引擎不塌缩、必然成行），两种引擎确定性复现。
 function imagePageChunkHTML(chunk: number): string {
   if (chunk !== 1) return chunkHTML(chunk)
@@ -447,15 +468,33 @@ function imagePageChunkHTML(chunk: number): string {
     `<p data-block="${base + 1}"><img src="${PIXEL}" width="720" height="620" alt="插画一"></p>`,
     `<p data-block="${base + 2}" id="id-nan"><img id="nan-img" src="${PIXEL}" width="720" height="500" alt="插画二（楠）"></p>`,
     `<p data-block="${base + 3}" id="id-a002">&nbsp;
-    <img id="title-img" src="${PIXEL}" width="720" height="636" alt="章节标题图"></p>`,
+    <img id="title-img" data-rv-anchor="rvn-9" src="${PIXEL}" width="720" height="636" alt="章节标题图"></p>`,
   ]
   for (let b = 4; b < BLOCKS_PER_CHUNK; b++) parts.push(blockHTML(chunk, b))
   return parts.join('\n')
 }
 
+// chunk 0 首段绑定「无 fragment → spine 首个真实可见内容」的书首 NavAnchor
+function bookStartChunkHTML(chunk: number): string {
+  if (chunk !== 0) return imagePageChunkHTML(chunk)
+  return chunkHTML(chunk).replace(
+    '<p data-block="0">',
+    '<p data-block="0"><span class="toc-anchor" data-rv-anchor="rvn-10"></span>',
+  )
+}
+
 const IMAGE_TOC = [
-  { label: '烛林', depth: 0, spine: 0, block: 1 * BLOCKS_PER_CHUNK + 3, fragment: 'id-a002' },
-  { label: '无片段条目', depth: 0, spine: 0, block: 1 * BLOCKS_PER_CHUNK + 3 },
+  {
+    label: '烛林',
+    depth: 0,
+    spine: 0,
+    block: 1 * BLOCKS_PER_CHUNK + 3,
+    chunk: 1,
+    nav_anchor: 'rvn-9',
+    source_fragment: 'id-a002',
+    source_path: 'OEBPS/Text/p-005.xhtml',
+  },
+  { label: '书首', depth: 0, spine: 0, block: 0, chunk: 0, nav_anchor: 'rvn-10' },
 ]
 
 // elInViewport 判断元素主盒是否与当前可见视口横向相交（整页图是原子盒，
@@ -474,10 +513,11 @@ async function elInViewport(page: Page, selector: string): Promise<boolean> {
   )
 }
 
-test('整页图章节标题跳转：容器首 fragment 在上一栏时仍按实际图片定位', async ({ page }) => {
-  await openReader(page, { toc: IMAGE_TOC, chunkHTML: imagePageChunkHTML })
+test('整页图章节标题跳转：服务端 NavAnchor 绑在媒体元素上，容器首 fragment 在上一栏也能正确定位', async ({ page }) => {
+  await openReader(page, { toc: IMAGE_TOC, chunkHTML: bookStartChunkHTML })
 
-  // fragment 精确跳转：必须落在章节标题图，而不是前一张“楠”插画
+  // NavAnchor 精确跳转：必须落在章节标题图（绑定媒体元素所在栏），
+  // 而不是前一张“楠”插画
   await page.locator('#toc-button').click()
   await page.locator('.toc-item', { hasText: '烛林' }).click()
   await expect.poll(() => elInViewport(page, '#title-img'), { timeout: 8000 }).toBe(true)
@@ -501,11 +541,12 @@ test('整页图章节标题跳转：容器首 fragment 在上一栏时仍按实�
   expect(savedBlock).toBe(1 * BLOCKS_PER_CHUNK + 3)
 })
 
-test('无 fragment 目录对整页图 spine 首块同样按首个可见内容定位', async ({ page }) => {
-  await openReader(page, { toc: IMAGE_TOC, chunkHTML: imagePageChunkHTML })
+test('无 fragment 目录按服务端 NavAnchor 落到 spine 首个真实可见内容（书首）', async ({ page }) => {
+  await openReader(page, { toc: IMAGE_TOC, chunkHTML: bookStartChunkHTML })
 
   await page.locator('#toc-button').click()
-  await page.locator('.toc-item', { hasText: '无片段条目' }).click()
-  await expect.poll(() => elInViewport(page, '#title-img'), { timeout: 8000 }).toBe(true)
-  expect(await elInViewport(page, '#nan-img')).toBe(false)
+  await page.locator('.toc-item', { hasText: '书首' }).click()
+  // 绑定节点在 chunk 0 首段文本前 → 落回书首，而不是烛林标题图
+  await expectBlockVisible(page, 0)
+  expect(await elInViewport(page, '#title-img')).toBe(false)
 })

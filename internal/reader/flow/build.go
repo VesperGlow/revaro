@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	stdhtml "html"
+	"strconv"
 	"strings"
 
 	"unicode/utf8"
@@ -17,7 +18,10 @@ import (
 const (
 	// FlowFormatVersion 参与缓存键与 manifest.version：生成语义变化时必须递增。
 	// v2：TOCTarget 保留 EPUB 目录 fragment（块内精确跳转），旧缓存需失效重建。
-	FlowFormatVersion = 2
+	// v3：TOC 升级为服务端 Stable NavAnchor——清洗期把 data-rv-anchor 绑定到
+	//     实际可见目标节点，manifest 携带 {chunk, nav_anchor, source_path,
+	//     source_fragment}，客户端目录跳转按绑定节点定栏；旧缓存需失效重建。
+	FlowFormatVersion = 3
 
 	// chunkCharsTarget 是单个 chunk 的文本目标量（UTF-16 码元）。
 	// 约合移动端 8~12 页 / 桌面 5~8 页，窗口化加载时够用且不过重。
@@ -46,10 +50,12 @@ type Built struct {
 
 // blockBuild 是单个顶层内容块的构建中间态。
 type blockBuild struct {
-	global int      // 全书 data-block 编号
-	html   string   // 序列化片段（含 data-block）
-	chars  int64    // 文本 UTF-16 长度
-	ids    []string // 块内 id 与 data-frag-ids（目录片段定位）
+	global     int        // 全书 data-block 编号
+	node       *html.Node // EPUB：清洗后块的解析树（NavAnchor 在序列化前注入）
+	html       string     // 序列化片段（含 data-block 之前的原始块 HTML）
+	chars      int64      // 文本 UTF-16 长度
+	ids        []string   // 块内 id 与 data-frag-ids（目录 fragment 定位）
+	navAnchors []string   // 绑定在本块内的 NavAnchor id（chunk 切分参考）
 }
 
 // spineBuild 是一章的内容块。
@@ -58,14 +64,26 @@ type spineBuild struct {
 	startGlobal int // 本章第一块的全书编号
 }
 
-// tocEntry 是带目标块的目录条目。fragment 保留 EPUB 目录原始片段
-// （仅用于块内精确定位，不影响 Block/chunk 索引体系）。
+// tocEntry 是带导航目标的目录条目。fragment 保留 EPUB 目录原始片段
+// （SourceFragment，调试与回退）；navAnchor 是绑定到实际可见目标节点的
+// Stable NavAnchor id；sourcePath 保留原始 href 路径。
 type tocEntry struct {
-	label    string
-	depth    int
-	spine    int
-	block    int
-	fragment string
+	label      string
+	depth      int
+	spine      int
+	block      int
+	fragment   string
+	sourcePath string
+	navAnchor  string
+}
+
+// chapterTree 是一章清洗后 HTML 的解析树：顶层内容块节点 + 每块可定位
+// id + 章节源路径（目录 href 比对用）。序列化延后到 NavAnchor 绑定之后，
+// 保证 data-rv-anchor 进入最终 chunk HTML。
+type chapterTree struct {
+	nodes      []*html.Node
+	ids        [][]string
+	sourcePath string
 }
 
 // Build 由解析好的 Book 生成连续 reading flow。纯函数、确定性：
@@ -84,17 +102,30 @@ func Build(book *reader.Book, assetBase string) (*Built, error) {
 
 // ---- EPUB ----
 
+// buildEPUB 由解析好的 EPUB Book 生成连续 reading flow。纯函数、确定性：
+// 同一输入总是产生逐字节相同的 manifest 与 chunk（用于内容级缓存）。
+// 流程：解析各章清洗后 HTML → 目录条目解析真实内容目标并绑定 Stable
+// NavAnchor（data-rv-anchor 注入块树）→ 序列化 → 切 chunk → 装配。
 func buildEPUB(book *reader.Book) (*Built, error) {
 	if len(book.Chapters) > MaxSpines {
 		return nil, fmt.Errorf("EPUB 章节数过多")
 	}
 	spines := make([]spineBuild, 0, len(book.Chapters))
+	trees := make([]*chapterTree, len(book.Chapters))
 	global := 0
-	for _, ch := range book.Chapters {
-		blocks, err := chapterBlocks(ch.HTML)
+	for ci, ch := range book.Chapters {
+		var blocks []blockBuild
+		tree, err := parseChapter(ch.HTML)
 		if err != nil {
-			// 解析失败的书仍要可读：退化为一整块原文占位。
+			// 解析失败的书仍要可读：退化为一整块原文占位（无 NavAnchor）。
+			trees[ci] = nil
 			blocks = []blockBuild{{html: "<p>" + stdhtml.EscapeString(ch.HTML) + "</p>"}}
+		} else {
+			trees[ci] = tree
+			blocks = make([]blockBuild, 0, len(tree.nodes))
+			for bi, node := range tree.nodes {
+				blocks = append(blocks, blockBuild{node: node, chars: textChars16(node), ids: tree.ids[bi]})
+			}
 		}
 		sb := spineBuild{blocks: make([]blockBuild, 0, len(blocks)), startGlobal: global}
 		for _, b := range blocks {
@@ -108,43 +139,43 @@ func buildEPUB(book *reader.Book) (*Built, error) {
 		spines = append(spines, sb)
 	}
 
-	// 目录条目 → (spine, 章内块号)；fragment 原样保留给客户端做块内定位
-	entries := make([]tocEntry, 0, len(book.TOC))
-	for _, entry := range book.TOC {
-		spine := chapterIndexForPath(book, entry.Path, spines)
-		block := fragmentBlock(spines, spine, entry.Fragment)
-		entries = append(entries, tocEntry{label: entry.Label, depth: entry.Depth, spine: spine, block: block, fragment: entry.Fragment})
-	}
+	entries := resolveTOC(book, trees, spines)
+	materialize(spines)
 	return assemble(spines, entries, "epub")
 }
 
-// chapterBlocks 把一章清洗后的 HTML 切为顶层内容块；数据块必须携带
-// data-block 与块内 id 索引，供目录与锚点定位。
-func chapterBlocks(chapterHTML string) ([]blockBuild, error) {
+// parseChapter 把一章清洗后 HTML 解析为顶层内容块树。渲染在此先做一次
+// 以过滤空块；最终序列化在 NavAnchor 绑定之后（materialize），保证
+// data-rv-anchor 进入最终 chunk HTML。
+func parseChapter(chapterHTML string) (*chapterTree, error) {
 	ctx := &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body}
 	frag, err := html.ParseFragment(strings.NewReader(chapterHTML), ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []blockBuild
+	tree := &chapterTree{}
 	for _, node := range frag {
 		if node.Type != html.ElementNode {
 			continue
 		}
-		bb := blockBuild{}
-		bb.html, bb.chars, bb.ids = serializeBlock(node)
-		if bb.html == "" {
+		var buf bytes.Buffer
+		if err := html.Render(&buf, node); err != nil || buf.Len() == 0 {
 			continue
 		}
-		out = append(out, bb)
+		if tree.sourcePath == "" {
+			tree.sourcePath = attrOf(node, "data-source-path")
+		}
+		tree.nodes = append(tree.nodes, node)
+		tree.ids = append(tree.ids, collectIDs(node))
 	}
-	return out, nil
+	return tree, nil
 }
 
-// serializeBlock 给顶层块注入 data-block 占位（编号由调用方补写），
-// 序列化并收集块内文本长度与可定位 id。
-func serializeBlock(node *html.Node) (htmlStr string, chars int64, ids []string) {
-	collect := func(n *html.Node) {
+// collectIDs 收集节点子树内可定位 id（元素自身 id 与 data-frag-ids 清单）。
+func collectIDs(node *html.Node) []string {
+	var ids []string
+	var walk func(n *html.Node)
+	walk = func(n *html.Node) {
 		if n.Type != html.ElementNode {
 			return
 		}
@@ -156,20 +187,163 @@ func serializeBlock(node *html.Node) (htmlStr string, chars int64, ids []string)
 				ids = append(ids, strings.Fields(a.Val)...)
 			}
 		}
-	}
-	var walk func(n *html.Node)
-	walk = func(n *html.Node) {
-		collect(n)
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			walk(c)
 		}
 	}
 	walk(node)
-	var buf bytes.Buffer
-	if err := html.Render(&buf, node); err != nil {
-		return "", 0, nil
+	return ids
+}
+
+func attrOf(node *html.Node, key string) string {
+	for _, a := range node.Attr {
+		if a.Key == key {
+			return a.Val
+		}
 	}
-	return buf.String(), textChars16(node), ids
+	return ""
+}
+
+// findFragmentEl 在块树内按 id 查找 fragment 对应元素（含块自身），
+// 按文档序取首个命中。
+func findFragmentEl(block *html.Node, fragment string) *html.Node {
+	if fragment == "" || block == nil {
+		return nil
+	}
+	var walk func(n *html.Node) *html.Node
+	walk = func(n *html.Node) *html.Node {
+		if n.Type == html.ElementNode && attrOf(n, "id") == fragment {
+			return n
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if hit := walk(c); hit != nil {
+				return hit
+			}
+		}
+		return nil
+	}
+	return walk(block)
+}
+
+// isMediaEl 判断元素是否为整块可见媒体（清洗后单图 SVG 已拆为 img，
+// 多图 SVG 保留 svg 外壳）。
+func isMediaEl(n *html.Node) bool {
+	return n.Data == "img" || n.Data == "svg" || n.Data == "video"
+}
+
+// docNextIn 返回 root 子树内 n 的文档序后继；越过 root 时返回 nil。
+func docNextIn(root, n *html.Node) *html.Node {
+	if n.FirstChild != nil {
+		return n.FirstChild
+	}
+	for m := n; m != nil && m != root; m = m.Parent {
+		if m.NextSibling != nil {
+			return m.NextSibling
+		}
+	}
+	return nil
+}
+
+// bindNavAnchor 把 data-rv-anchor="<id>" 绑定到 block 内 start 起的首个
+// 实际可见内容：媒体元素（img/svg/video）直接加属性；首个非空白文本前
+// 插入内联标记 span.toc-anchor（零文本，不改变正文内容与块语义）。
+// 目标子树没有可见内容（空 inline 锚点等）时沿文档序向后找块内首个可见
+// 内容；整块都没有（hr 等）时绑在 start 元素自身。返回是否绑定成功。
+func bindNavAnchor(block, start *html.Node, id string) bool {
+	if block == nil || start == nil {
+		return false
+	}
+	for n := start; n != nil; n = docNextIn(block, n) {
+		if n.Type == html.ElementNode && isMediaEl(n) {
+			n.Attr = append(n.Attr, html.Attribute{Key: "data-rv-anchor", Val: id})
+			return true
+		}
+		if n.Type == html.TextNode && strings.TrimSpace(n.Data) != "" {
+			if n.Parent == nil {
+				return false
+			}
+			marker := &html.Node{
+				Type:     html.ElementNode,
+				Data:     "span",
+				DataAtom: atom.Span,
+				Attr: []html.Attribute{
+					{Key: "class", Val: "toc-anchor"},
+					{Key: "data-rv-anchor", Val: id},
+				},
+			}
+			n.Parent.InsertBefore(marker, n)
+			return true
+		}
+	}
+	if start.Type == html.ElementNode {
+		start.Attr = append(start.Attr, html.Attribute{Key: "data-rv-anchor", Val: id})
+		return true
+	}
+	return false
+}
+
+// resolveTOC 把目录条目解析为 (spine, 块) 并绑定 Stable NavAnchor：对每个
+// href/path+fragment 先在清洗后 DOM 中定位真实目标元素，再把
+// data-rv-anchor 绑到实际可见目标节点上；无 fragment 条目绑定目标 spine
+// 首个真实可见内容（fragment 解析失败/被清洗丢弃时同样落到目标块首
+// 可见内容，原始 fragment 保留为 SourceFragment 供回退）。id 按目录序
+// 分配（rvn-<首现目录序号>），同一目标去重共享，保证确定性。
+func resolveTOC(book *reader.Book, trees []*chapterTree, spines []spineBuild) []tocEntry {
+	entries := make([]tocEntry, 0, len(book.TOC))
+	navIDs := map[string]string{} // (spine, fragment) → navAnchor id
+	navSeq := 0
+	for _, entry := range book.TOC {
+		spine := chapterIndexForPath(book, entry.Path, trees)
+		blockIdx := fragmentBlock(spines, spine, entry.Fragment)
+		id := ""
+		if spine >= 0 && spine < len(trees) && trees[spine] != nil && blockIdx < len(spines[spine].blocks) {
+			key := strconv.Itoa(spine) + "\x00" + entry.Fragment
+			if existing, ok := navIDs[key]; ok {
+				id = existing
+			} else {
+				b := &spines[spine].blocks[blockIdx]
+				start := findFragmentEl(b.node, entry.Fragment)
+				if start == nil {
+					start = b.node
+				}
+				id = fmt.Sprintf("rvn-%d", navSeq)
+				if bindNavAnchor(b.node, start, id) {
+					navSeq++
+					b.navAnchors = append(b.navAnchors, id)
+				} else {
+					id = "" // 无可绑定节点（空章等）：客户端回退块起点
+				}
+				navIDs[key] = id
+			}
+		}
+		entries = append(entries, tocEntry{
+			label:      entry.Label,
+			depth:      entry.Depth,
+			spine:      spine,
+			block:      blockIdx,
+			fragment:   entry.Fragment,
+			sourcePath: entry.Path,
+			navAnchor:  id,
+		})
+	}
+	return entries
+}
+
+// materialize 在 NavAnchor 绑定完成后把 EPUB 块解析树序列化为块 HTML。
+func materialize(spines []spineBuild) {
+	for si := range spines {
+		for bi := range spines[si].blocks {
+			b := &spines[si].blocks[bi]
+			if b.node == nil || b.html != "" {
+				continue
+			}
+			var buf bytes.Buffer
+			if err := html.Render(&buf, b.node); err != nil {
+				continue
+			}
+			b.html = buf.String()
+		}
+	}
 }
 
 // textChars16 返回子树内全部文本的 UTF-16 码元数（≈ 浏览器 textContent.length）。
@@ -189,40 +363,19 @@ func textChars16(n *html.Node) int64 {
 }
 
 // chapterIndexForPath 把目录 Path 映射到章序号；找不到时回退第 0 章。
-func chapterIndexForPath(book *reader.Book, tocPath string, spines []spineBuild) int {
+// chapters 的源路径来自解析树首个块的 data-source-path（清洗器在每个
+// 顶层块注入该属性）。
+func chapterIndexForPath(book *reader.Book, tocPath string, trees []*chapterTree) int {
 	if tocPath == "" {
 		return 0
 	}
-	for i, ch := range book.Chapters {
-		if chapterSourcePath(ch.HTML) == normalizePath(tocPath) {
-			if i < len(spines) {
-				return i
-			}
-			return 0
+	normalized := normalizePath(tocPath)
+	for i := range book.Chapters {
+		if i < len(trees) && trees[i] != nil && trees[i].sourcePath == normalized {
+			return i
 		}
 	}
 	return 0
-}
-
-// chapterSourcePath 返回章节 HTML 首个块的 data-source-path（清洗器在每个
-// 顶层块注入该属性）。
-func chapterSourcePath(chapterHTML string) string {
-	ctx := &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body}
-	frag, err := html.ParseFragment(strings.NewReader(chapterHTML), ctx)
-	if err != nil {
-		return ""
-	}
-	for _, node := range frag {
-		if node.Type != html.ElementNode {
-			continue
-		}
-		for _, a := range node.Attr {
-			if a.Key == "data-source-path" && a.Val != "" {
-				return a.Val
-			}
-		}
-	}
-	return ""
 }
 
 // fragmentBlock 返回某章内 fragment 目标块在章内的序号；找不到回退 0。
@@ -453,7 +606,17 @@ func assemble(spines []spineBuild, entries []tocEntry, format string) (*Built, e
 			continue
 		}
 		// 章内块号 → 全书块号：章起点 + 块号
-		toc = append(toc, TOCTarget{Label: e.label, Depth: e.depth, Spine: e.spine, Block: spineBlockStart[e.spine] + e.block, Fragment: e.fragment})
+		block := spineBlockStart[e.spine] + e.block
+		toc = append(toc, TOCTarget{
+			Label:          e.label,
+			Depth:          e.depth,
+			Spine:          e.spine,
+			Block:          block,
+			NavAnchor:      e.navAnchor,
+			Chunk:          chunkIndexForBlock(chunks, block),
+			SourcePath:     e.sourcePath,
+			SourceFragment: e.fragment,
+		})
 	}
 	manifest.TOC = toc
 	built := &Built{Manifest: manifest, Chunks: make([]Chunk, 0, len(manifest.Chunks))}
@@ -493,7 +656,21 @@ func injectDataBlock(blockHTML string, index int, out *strings.Builder) error {
 	return nil
 }
 
-// buildChunks 依据块体量切 chunk（块为原子单位）。
+// chunkIndexForBlock 返回包含全书块 b 的 chunk 序号；找不到回退 0。
+func chunkIndexForBlock(chunks []ChunkMeta, b int) int {
+	for i := range chunks {
+		c := &chunks[i]
+		if b >= c.BlockStart && b < c.BlockStart+c.BlockCount {
+			return i
+		}
+	}
+	return 0
+}
+
+// buildChunks 依据块体量切 chunk（块为原子单位）。目录 NavAnchor 所在块
+// 尽量作为新 chunk 的首块（当前累计已过半时先收块），目录跳转只需加载
+// 目标 chunk 即可从其头部附近开始定位；切分只发生在块边界，不破坏
+// inline/段落语义。
 func buildChunks(blocks []blockBuild) ([]ChunkMeta, int64) {
 	var chunks []ChunkMeta
 	var total int64
@@ -516,6 +693,9 @@ func buildChunks(blocks []blockBuild) ([]ChunkMeta, int64) {
 		chars, bytes = 0, 0
 	}
 	for i, b := range blocks {
+		if len(b.navAnchors) > 0 && i > start && (chars >= chunkCharsTarget/2 || bytes >= chunkBytesTarget/2) {
+			flush(i)
+		}
 		chars += b.chars
 		bytes += int64(len(b.html))
 		if (chars >= chunkCharsTarget || bytes >= chunkBytesTarget) && i+1-start > 0 {

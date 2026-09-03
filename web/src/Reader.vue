@@ -663,16 +663,36 @@ async function jumpToBlock(block: number) {
   await seekToAnchor({ spine: spineForBlock(m, b), block: b, path: [], offset: -1 })
 }
 
-// jumpToTocEntry 目录跳转：先按 entry.block 定位并加载目标 chunk（复用
-// 现有 chunk window 机制），等 chunk 挂载并完成 CSS columns 排版后，在
-// 目标元素内用 visualStart 找「首个实际可见内容」（fragment 命中的元素，
-// 无 fragment 时为块自身——spine 首 block 同样处理），按其 rect 算出所在
-// 栏并跳过去；不能直接量 fragment/块外层容器：CSS columns 下容器首
-// fragment 可留在上一栏（break-inside:avoid 的整页图被推入下一栏）。
-// 落地后从命中位置生成精确 readingAnchor（文本 → path+offset，媒体 →
-// 元素边界）并提交，不提交块起点，否则 windowSync/relayout 按块首栏
-// 对齐会再次偏移。fragment 缺失、被 EPUB 清洗丢弃、块内未命中或没有
-// 布局盒时回退块起点（jumpToBlock 旧行为）。
+// navAnchorEl 在已加载窗口内按属性值精确匹配 data-rv-anchor 绑定节点
+// （服务端 synthetic id 字符集安全，但仍不拼进 CSS selector）。
+function navAnchorEl(anchorID: string): HTMLElement | null {
+  const flow = flowEl.value
+  if (!flow || !anchorID) return null
+  for (const el of flow.querySelectorAll<HTMLElement>('[data-rv-anchor]')) {
+    if (el.getAttribute('data-rv-anchor') === anchorID) return el
+  }
+  return null
+}
+
+// anchorElRect 返回 NavAnchor 绑定节点的实际布局 rect：内联标记取首个
+// 有效 line-box fragment（= 目标文本起始位置），媒体/块元素取自身盒。
+function anchorElRect(el: HTMLElement): DOMRect | null {
+  for (const r of el.getClientRects()) {
+    if (r.width > 0 || r.height > 0) return r as DOMRect
+  }
+  return el.getBoundingClientRect()
+}
+
+// jumpToTocEntry 目录跳转（Stable NavAnchor，两套定位语义分离）：
+//   1. 主路径——服务端在清洗期已把 data-rv-anchor 绑定到实际可见目标
+//      节点（文本 → 首个有效文本位置前的内联标记；图片/SVG → 媒体元素；
+//      无 fragment → spine 首个真实可见内容），manifest 携带 navAnchor
+//      与所在 chunk。客户端只加载目标 chunk，按绑定节点实际布局定栏并
+//      跳过去，随后从绑定节点生成精确 readingAnchor 提交（阅读进度语义
+//      不变，不与导航定位混用）。
+//   2. 回退——绑定节点缺失（旧缓存/极端裁剪）时用 sourceFragment 在
+//      块内做 fragment 精确定位（visualStart 找首个可见内容）。
+//   3. 兜底——块起点（jumpToBlock，seekToAnchor 内同样提交锚点）。
 // 导航正确性不依赖目录抽屉关闭动画：开始时先失效遗留的 pending
 // windowSync，并以 navDepth 屏蔽在途 windowSync 抢先按旧 topAnchor
 // 重排窗口（否则跳转会先成功、随后被拉回跳转前位置）；落地后由
@@ -688,22 +708,38 @@ async function jumpToTocEntry(entry: FlowTocEntry) {
   try {
     const total = totalBlockCount()
     const b = clamp(entry.block, 0, Math.max(0, total - 1))
-    const ci = chunkForBlock(m, b)
+    const ci = entry.chunk ?? chunkForBlock(m, b)
     const prev = topAnchor
     await ensureWindowFor(ci < 0 ? 0 : ci)
     measureCols()
-    const blockEl = blockElFor(b)
-    const target = blockEl ? (entry.fragment ? fragmentTargetEl(blockEl, entry.fragment) : blockEl) : null
-    const vs = target ? visualStart(target) : null
-    if (!blockEl || !vs) {
-      // 目标不存在或没有布局盒：回退块起点（seekToAnchor 内同样提交锚点）
-      await jumpToBlock(b)
-      return
+    // 1) 服务端 NavAnchor：按绑定节点的实际布局定栏，零运行时猜测
+    const hit = navAnchorEl(entry.nav_anchor ?? '')
+    if (hit) {
+      const blockEl = hit.closest<HTMLElement>('[data-block]')
+      const rect = anchorElRect(hit)
+      if (blockEl && rect) {
+        const anchor = anchorFromNode(blockEl, hit, -1)
+        await goToCol(colFromRect(rect), false)
+        if (anchor) commitNavAnchor(anchor, prev)
+        queueProgressSave()
+        return
+      }
     }
-    const anchor = anchorFromNode(blockEl, vs.node, vs.offset)
-    await goToCol(colFromRect(vs.rect), false)
-    if (anchor) commitNavAnchor(anchor, prev)
-    queueProgressSave()
+    // 2) 回退：source_fragment 块内精确定位
+    if (entry.source_fragment) {
+      const blockEl = blockElFor(b)
+      const target = blockEl ? fragmentTargetEl(blockEl, entry.source_fragment) : null
+      const vs = target ? visualStart(target) : null
+      if (blockEl && vs) {
+        const anchor = anchorFromNode(blockEl, vs.node, vs.offset)
+        await goToCol(colFromRect(vs.rect), false)
+        if (anchor) commitNavAnchor(anchor, prev)
+        queueProgressSave()
+        return
+      }
+    }
+    // 3) 兜底：块起点
+    await jumpToBlock(b)
   } finally {
     navDepth--
   }
