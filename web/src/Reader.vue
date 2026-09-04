@@ -382,6 +382,123 @@ function contentOrigin(): { x: number; y: number } {
   return { x: vp.left + metrics.side + 2, y: vp.top + metrics.top + 2 }
 }
 
+function contentBounds(): { left: number; right: number; top: number; bottom: number } {
+  const vp = viewportEl.value?.getBoundingClientRect()
+  if (!vp) {
+    return {
+      left: metrics.side,
+      right: metrics.width - metrics.side,
+      top: metrics.top,
+      bottom: metrics.height - metrics.bottom,
+    }
+  }
+  return {
+    left: vp.left + metrics.side,
+    right: vp.right - metrics.side,
+    top: vp.top + metrics.top,
+    bottom: vp.bottom - metrics.bottom,
+  }
+}
+
+function rectInCurrentCol(rect: DOMRect, bounds: { left: number; right: number; top: number; bottom: number }): boolean {
+  return (
+    rectHasBox(rect) &&
+    colFromRect(rect) === currentCol &&
+    rect.right > bounds.left &&
+    rect.left < bounds.right &&
+    rect.bottom > bounds.top &&
+    rect.top < bounds.bottom
+  )
+}
+
+function collapsedRectAt(node: Text, offset: number): DOMRect | null {
+  const range = node.ownerDocument.createRange()
+  range.setStart(node, clamp(offset, 0, node.data.length))
+  range.collapse(true)
+  return firstRectOfRange(range)
+}
+
+// anchorAtTextFragment 把一个跨栏文本节点映射回当前栏的首个字符。Range
+// 的 fragment rect 能告诉我们该文本节点确实出现在当前栏，但 rect 本身不
+// 带 offset；利用正常阅读流中 offset→column 的单调关系二分首个当前栏
+// caret，避免通过被翻页热区遮挡的 caretRangeFromPoint 取值。
+function anchorAtTextFragment(
+  blockEl: HTMLElement,
+  node: Text,
+  firstOffset: number,
+  bounds: { left: number; right: number; top: number; bottom: number },
+): ReadingAnchor | null {
+  let lo = clamp(firstOffset, 0, node.data.length)
+  let hi = node.data.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    const rect = collapsedRectAt(node, mid)
+    if (rect && colFromRect(rect) >= currentCol) hi = mid
+    else lo = mid + 1
+  }
+  const start = Math.max(firstOffset, lo - 2)
+  const end = Math.min(node.data.length, lo + 2)
+  for (let offset = start; offset <= end; offset++) {
+    const rect = collapsedRectAt(node, offset)
+    if (rect && rectInCurrentCol(rect, bounds)) return anchorFromNode(blockEl, node, offset)
+  }
+  return null
+}
+
+// anchorFromVisibleBlock 从一个已确认出现在当前栏的块中找当前栏最早的
+// 实际内容。段首缩进会让块的左上角/命中点处于空白区，所以这里同时考虑
+// 文本 Range 的 line fragment 与媒体元素；Range 命中后保留真实 DOM path 和
+// offset，跨栏块不会退回到块首栏。
+function anchorFromVisibleBlock(
+  blockEl: HTMLElement,
+  bounds: { left: number; right: number; top: number; bottom: number },
+): ReadingAnchor | null {
+  const visibleRects = Array.from(blockEl.getClientRects()).filter(rect => rectInCurrentCol(rect as DOMRect, bounds)) as DOMRect[]
+  if (!visibleRects.length) return null
+
+  const start = visualStart(blockEl)
+  if (start && rectInCurrentCol(start.rect, bounds)) {
+    const anchor = anchorFromNode(blockEl, start.node, start.offset)
+    if (anchor) return anchor
+  }
+
+  const candidates: Array<{ node: Node; anchor: ReadingAnchor }> = []
+  const doc = blockEl.ownerDocument
+  const walker = doc.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node as Text
+    const at = text.data.search(/\S/)
+    if (at < 0) continue
+    const range = doc.createRange()
+    range.setStart(text, at)
+    range.setEnd(text, text.data.length)
+    for (const rect of Array.from(range.getClientRects()) as DOMRect[]) {
+      if (!rectInCurrentCol(rect, bounds)) continue
+      const anchor = anchorAtTextFragment(blockEl, text, at, bounds)
+      if (anchor) candidates.push({ node: text, anchor })
+      if (candidates.length) break
+    }
+    if (candidates.length) break
+  }
+
+  for (const media of blockEl.querySelectorAll<HTMLElement>('img,svg,video,canvas,iframe,embed,object,table')) {
+    const rect = media.getBoundingClientRect()
+    if (rectInCurrentCol(rect, bounds)) candidates.push({ node: media, anchor: anchorFromNode(blockEl, media, -1)! })
+  }
+  if (candidates.length) {
+    let first = candidates[0]
+    for (const candidate of candidates.slice(1)) {
+      if (first.node.compareDocumentPosition(candidate.node) & Node.DOCUMENT_POSITION_FOLLOWING) break
+      first = candidate
+    }
+    return first.anchor
+  }
+
+  // 没有可还原的文本/媒体位置时，仍返回当前栏内块起点；这只覆盖没有
+  // 可寻址子节点的内容块，不会把一个能命中的跨栏文本降级为块首。
+  return makeAnchorFromBlockEl(blockEl, [], -1)
+}
+
 // captureTopAnchor 读取当前屏顶部的文本位置作为 readingAnchor。
 function captureTopAnchor(): ReadingAnchor | null {
   const flow = flowEl.value
@@ -417,24 +534,32 @@ function captureTopAnchor(): ReadingAnchor | null {
         // caret 若落在别的栏（如整页图顶部），退化到块起点锚点
         if (!rect || colFromRect(rect) !== currentCol) {
           const pt = blockAtPoint(x, y)
-          if (pt) return makeAnchorFromBlockEl(pt, [], -1)
+          if (pt) return anchorFromVisibleBlock(pt, contentBounds())
         }
         return anchor
       }
     }
   }
   const pt = blockAtPoint(x, y)
-  if (pt) return makeAnchorFromBlockEl(pt, [], -1)
-  return null
+  if (pt) return anchorFromVisibleBlock(pt, contentBounds())
+  return anchorAtTopOfCurrentCol()
 }
 
 // anchorAtTopOfCurrentCol 兜底：取当前页顶部可见块。
 function anchorAtTopOfCurrentCol(): ReadingAnchor | null {
   const m = manifest.value
-  if (!m) return null
+  const flow = flowEl.value
+  if (!m || !flow) return null
+  const bounds = contentBounds()
   const { x, y } = contentOrigin()
   const pt = blockAtPoint(x, y)
-  return pt ? makeAnchorFromBlockEl(pt, [], -1) : null
+  const direct = pt ? anchorFromVisibleBlock(pt, bounds) : null
+  if (direct) return direct
+  for (const blockEl of flow.querySelectorAll<HTMLElement>('[data-block]')) {
+    const anchor = anchorFromVisibleBlock(blockEl, bounds)
+    if (anchor) return anchor
+  }
+  return null
 }
 
 // ---- 窗口管理（增量 DOM 更新） ----
@@ -730,7 +855,6 @@ async function jumpToTocEntry(entry: FlowTocEntry) {
   try {
     const total = totalBlockCount()
     const b = clamp(entry.block, 0, Math.max(0, total - 1))
-    const ci = entry.chunk ?? chunkForBlock(m, b)
     const prev = topAnchor
     await ensureWindowForBlock(b)
     measureCols()
