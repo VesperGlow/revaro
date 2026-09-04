@@ -3,6 +3,8 @@ package cache
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -13,7 +15,9 @@ import (
 func newTestManager(t *testing.T, memoryLimit, diskLimit int64) *Manager {
 	t.Helper()
 	m := New(t.TempDir(), memoryLimit, diskLimit)
-	m.RegisterClass(Class{Name: "reader/flow", Priority: 50, SoftQuota: 64, Memory: true, Disk: true})
+	m.RegisterClass(Class{Name: "reader/flow-manifest", Priority: 90, SoftQuota: 64, Memory: true})
+	m.RegisterClass(Class{Name: "reader/flow-chunk", Priority: 70, SoftQuota: 128, Memory: true})
+	m.RegisterClass(Class{Name: "tiered", Priority: 50, SoftQuota: 64, Memory: true, Disk: true})
 	m.RegisterClass(Class{Name: "reader/source", Priority: 40, SoftQuota: 64, Memory: false, Disk: true})
 	m.RegisterClass(Class{Name: "media/subtitle", Priority: 10, Memory: true, Disk: true})
 	t.Cleanup(m.Close)
@@ -28,27 +32,27 @@ func TestLoadTierFallbackAndBackfill(t *testing.T) {
 		return []byte("payload"), nil
 	}
 	// 首次：回源并回填 L1
-	data, err := m.Load(context.Background(), "reader/flow", "a", 0, load)
+	data, err := m.Load(context.Background(), "tiered", "a", 0, load)
 	if err != nil || string(data) != "payload" || loads.Load() != 1 {
 		t.Fatalf("first load: %q %v loads=%d", data, err, loads.Load())
 	}
 	// 第二次：L1 命中，不回源
-	if data, err = m.Load(context.Background(), "reader/flow", "a", 0, load); err != nil || string(data) != "payload" || loads.Load() != 1 {
+	if data, err = m.Load(context.Background(), "tiered", "a", 0, load); err != nil || string(data) != "payload" || loads.Load() != 1 {
 		t.Fatalf("second load should hit L1: %q %v loads=%d", data, err, loads.Load())
 	}
 	// 清掉 L1 后：L2（磁盘）命中并回填，仍不回源
-	if err := m.Delete("reader/flow", "a"); err != nil {
+	if err := m.Delete("tiered", "a"); err != nil {
 		t.Fatal(err)
 	}
 	// Delete 同时删除了磁盘层；重新 Put 只写磁盘（模拟 L2 残留）
-	if err := m.putDisk(m.classOf("reader/flow"), "a", []byte("payload"), time.Time{}); err != nil {
+	if err := m.putDisk(m.classOf("tiered"), "a", []byte("payload"), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	data, err = m.Load(context.Background(), "reader/flow", "a", 0, load)
+	data, err = m.Load(context.Background(), "tiered", "a", 0, load)
 	if err != nil || string(data) != "payload" || loads.Load() != 1 {
 		t.Fatalf("L2 hit expected: %q %v loads=%d", data, err, loads.Load())
 	}
-	stats := m.Stats().Classes["reader/flow"]
+	stats := m.Stats().Classes["tiered"]
 	if stats.Hits < 2 || stats.Misses != 1 || stats.Loads != 1 {
 		t.Fatalf("stats wrong: %+v", stats)
 	}
@@ -170,6 +174,125 @@ func TestDiskPruneRespectsQuotaAndPriority(t *testing.T) {
 	if !m.Has("reader", "r1") {
 		t.Fatal("reader entry should survive global eviction")
 	}
+	stats := m.Stats()
+	if stats.DiskBytes != 6 || stats.DiskEntries != 1 || stats.Classes["reader"].DiskBytes != 6 {
+		t.Fatalf("disk counters after prune = %+v", stats)
+	}
+}
+
+func TestExternalStatsKeepMemoryAndDiskSeparate(t *testing.T) {
+	m := New(t.TempDir(), 1<<20, 1<<20)
+	m.RegisterClass(Class{Name: "managed", Priority: 10, Memory: true, Disk: true})
+	m.RegisterExternal("reader/books", func() ExternalStats {
+		return ExternalStats{MemoryBytes: 11, MemoryEntries: 2}
+	}, nil)
+	m.RegisterExternal("media/hls", func() ExternalStats {
+		return ExternalStats{DiskBytes: 13, DiskEntries: 1}
+	}, nil)
+	t.Cleanup(m.Close)
+	m.Put("managed", "one", []byte("123"), 0)
+
+	stats := m.Stats()
+	if stats.MemoryBytes != 14 || stats.MemoryEntries != 3 {
+		t.Fatalf("memory total = %d/%d", stats.MemoryBytes, stats.MemoryEntries)
+	}
+	if stats.DiskBytes != 16 || stats.DiskEntries != 2 {
+		t.Fatalf("disk total = %d/%d", stats.DiskBytes, stats.DiskEntries)
+	}
+	books := stats.Classes["reader/books"]
+	if books.MemoryBytes != 11 || books.MemoryEntries != 2 || books.DiskBytes != 0 || books.DiskEntries != 0 {
+		t.Fatalf("reader/books stats = %+v", books)
+	}
+	hls := stats.Classes["media/hls"]
+	if hls.DiskBytes != 13 || hls.DiskEntries != 1 || hls.MemoryBytes != 0 || hls.MemoryEntries != 0 {
+		t.Fatalf("media/hls stats = %+v", hls)
+	}
+}
+
+func TestStatsUsesIncrementalDiskCountersUntilPrune(t *testing.T) {
+	dir := t.TempDir()
+	m := New(dir, 0, 1<<20)
+	m.RegisterClass(Class{Name: "disk", Priority: 10, Disk: true})
+	t.Cleanup(m.Close)
+	m.Put("disk", "key", []byte("1234"), 0)
+	if stats := m.Stats().Classes["disk"]; stats.DiskBytes != 4 || stats.DiskEntries != 1 {
+		t.Fatalf("after put = %+v", stats)
+	}
+	m.Put("disk", "key", []byte("123456"), 0)
+	if stats := m.Stats().Classes["disk"]; stats.DiskBytes != 6 || stats.DiskEntries != 1 {
+		t.Fatalf("after replacement = %+v", stats)
+	}
+	if err := m.Delete("disk", "key"); err != nil {
+		t.Fatal(err)
+	}
+	if stats := m.Stats().Classes["disk"]; stats.DiskBytes != 0 || stats.DiskEntries != 0 {
+		t.Fatalf("after delete = %+v", stats)
+	}
+
+	// A valid cache file appearing outside Manager is intentionally invisible
+	// until the explicit reconciliation pass.
+	externalPath := filepath.Join(dir, "external.cache")
+	if err := os.WriteFile(externalPath, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(externalPath+".meta", []byte("disk\x00external\n0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if stats := m.Stats(); stats.DiskBytes != 0 || stats.DiskEntries != 0 {
+		t.Fatalf("Stats scanned an unindexed file = %+v", stats)
+	}
+	m.Prune()
+	stats := m.Stats().Classes["disk"]
+	if stats.DiskBytes != 6 || stats.DiskEntries != 1 || !m.Has("disk", "external") {
+		t.Fatalf("Prune did not reconcile external file: %+v", stats)
+	}
+}
+
+func TestDiskHitTouchesMemoryLRUWithoutChangingFileMtime(t *testing.T) {
+	dir := t.TempDir()
+	m := New(dir, 0, 10)
+	m.RegisterClass(Class{Name: "disk", Priority: 10, Disk: true})
+	t.Cleanup(m.Close)
+	m.Put("disk", "old", []byte("111111"), 0)
+	m.Put("disk", "new", []byte("222222"), 0)
+	oldPath := m.diskPath("disk", "old")
+	before, err := os.Stat(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := m.getDisk("disk", "old"); !ok {
+		t.Fatal("disk hit failed")
+	}
+	after, err := os.Stat(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Fatalf("disk hit changed mtime: before=%v after=%v", before.ModTime(), after.ModTime())
+	}
+
+	m.Prune()
+	if !m.Has("disk", "old") || m.Has("disk", "new") {
+		t.Fatal("disk LRU did not preserve the touched entry")
+	}
+}
+
+func TestExternalDiskUsageReservesGlobalBudget(t *testing.T) {
+	m := New(t.TempDir(), 0, 10)
+	m.RegisterClass(Class{Name: "managed", Priority: 50, Disk: true})
+	m.RegisterExternal("media/hls", func() ExternalStats {
+		return ExternalStats{DiskBytes: 8, DiskEntries: 1}
+	}, nil) // active/unreclaimable external usage
+	t.Cleanup(m.Close)
+	m.Put("managed", "key", []byte("123456"), 0)
+	m.Prune()
+	if m.Has("managed", "key") {
+		t.Fatal("managed cache did not yield budget to external disk usage")
+	}
+	stats := m.Stats()
+	if stats.DiskBytes != 8 || stats.DiskEntries != 1 {
+		t.Fatalf("global disk stats = %+v", stats)
+	}
 }
 
 func TestLoadSingleFlightDeduplicatesAndPropagatesErrors(t *testing.T) {
@@ -183,7 +306,7 @@ func TestLoadSingleFlightDeduplicatesAndPropagatesErrors(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			data, err := m.Load(context.Background(), "reader/flow", "same", 0, func(context.Context) ([]byte, error) {
+			data, err := m.Load(context.Background(), "reader/flow-manifest", "same", 0, func(context.Context) ([]byte, error) {
 				calls.Add(1)
 				<-release
 				return []byte("one"), nil
@@ -206,12 +329,12 @@ func TestLoadSingleFlightDeduplicatesAndPropagatesErrors(t *testing.T) {
 	}
 	// 失败不缓存：下一次重新加载
 	wantErr := errors.New("boom")
-	if _, err := m.Load(context.Background(), "reader/flow", "bad", 0, func(context.Context) ([]byte, error) {
+	if _, err := m.Load(context.Background(), "reader/flow-manifest", "bad", 0, func(context.Context) ([]byte, error) {
 		return nil, wantErr
 	}); !errors.Is(err, wantErr) {
 		t.Fatalf("load error = %v", err)
 	}
-	stats := m.Stats().Classes["reader/flow"]
+	stats := m.Stats().Classes["reader/flow-manifest"]
 	if stats.LoadErrors != 1 {
 		t.Fatalf("load errors = %d", stats.LoadErrors)
 	}
@@ -219,14 +342,14 @@ func TestLoadSingleFlightDeduplicatesAndPropagatesErrors(t *testing.T) {
 
 func TestInvalidateByPrefixAcrossClasses(t *testing.T) {
 	m := newTestManager(t, 1<<20, 1<<20)
-	m.Put("reader/flow", "manifest/blobs/x", []byte("m"), 0)
-	m.Put("reader/flow", "chunk/blobs/x/0", []byte("c"), 0)
+	m.Put("reader/flow-manifest", "manifest/blobs/x", []byte("m"), 0)
+	m.Put("reader/flow-chunk", "chunk/blobs/x/0", []byte("c"), 0)
 	m.Put("media/subtitle", "embedded-v2:file:1", []byte("s"), 0)
 	m.Invalidate("embedded-v2:file:")
 	if m.Has("media/subtitle", "embedded-v2:file:1") {
 		t.Fatal("prefix invalidation missed subtitle entry")
 	}
-	if !m.Has("reader/flow", "manifest/blobs/x") {
+	if !m.Has("reader/flow-manifest", "manifest/blobs/x") {
 		t.Fatal("unrelated class entry was invalidated")
 	}
 }

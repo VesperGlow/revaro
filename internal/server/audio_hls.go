@@ -131,6 +131,7 @@ func (s *Server) startAudioHLS(w http.ResponseWriter, r *http.Request) {
 	s.audioHLSMu.Lock()
 	s.audioHLSSessions[session.ID] = session
 	s.audioHLSMu.Unlock()
+	s.setMediaCacheSize("audio", session.ID, 0)
 	s.startRuntimeTask(r.Context(), session.ID, "audio_hls", "audio_hls", f.ID)
 	if !s.runBackground(func() { s.runAudioHLS(ctx, f, session) }) {
 		s.removeAudioHLSSession(session.ID)
@@ -180,6 +181,7 @@ func waitForAudioHLS(requestCtx context.Context, session *audioHLSSession) error
 }
 
 func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSession) {
+	defer func() { s.refreshMediaCacheEntry("audio", session.ID, session.Dir) }()
 	defer func() { <-s.audioHLSSlots }()
 	var taskErr error
 	defer func() { s.finishRuntimeTask(session.ID, "audio_hls", taskErr) }()
@@ -251,10 +253,13 @@ func (s *Server) audioHLSSession(id string) *audioHLSSession {
 }
 
 func (s *Server) removeAudioHLSSession(id string) *audioHLSSession {
+	s.mediaCacheMu.Lock()
 	s.audioHLSMu.Lock()
 	session := s.audioHLSSessions[id]
 	delete(s.audioHLSSessions, id)
 	s.audioHLSMu.Unlock()
+	delete(s.mediaCacheSizes, mediaCacheEntryKey("audio", id))
+	s.mediaCacheMu.Unlock()
 	if session != nil {
 		session.stop()
 	}

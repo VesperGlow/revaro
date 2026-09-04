@@ -4,7 +4,7 @@
 // 章节标题识别。解析结果按文件内容哈希（清单键）缓存，天然不可变。
 //
 // 解析 Book 的内存 LRU 由 Server 持有并注册进统一 Global CacheManager
-//（class reader/books）：保留自身「对象缓存」策略，但容量与统计纳入
+// （class reader/books）：保留自身「对象缓存」策略，但容量与统计纳入
 // 全局协调（见 internal/cache）。
 package reader
 
@@ -55,21 +55,7 @@ func (c *Cache) Put(key string, b *Book) {
 		c.entries[key] = c.order.PushBack(b)
 		c.bytes += b.bytes()
 	}
-	for c.order.Len() > c.maxBooks || c.bytes > c.maxBytes {
-		el := c.order.Front()
-		if el == nil {
-			break
-		}
-		book := el.Value.(*Book)
-		c.bytes -= book.bytes()
-		c.order.Remove(el)
-		for k, e := range c.entries {
-			if e == el {
-				delete(c.entries, k)
-				break
-			}
-		}
-	}
+	c.trimLocked(c.maxBytes)
 }
 
 // Stats 返回当前占用（字节、条目数），供统一缓存管理器汇总。
@@ -84,7 +70,25 @@ func (c *Cache) Stats() (int64, int) {
 func (c *Cache) Trim() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for c.order.Len() > c.maxBooks || c.bytes > c.maxBytes {
+	c.trimLocked(c.maxBytes)
+}
+
+// TrimTo 为 Global CacheManager 提供 memory budget 协调。它不会扩大
+// reader cache 自身配置的上限；负数表示本次不要求收敛。
+func (c *Cache) TrimTo(maxBytes int64) {
+	if maxBytes < 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if maxBytes > c.maxBytes {
+		maxBytes = c.maxBytes
+	}
+	c.trimLocked(maxBytes)
+}
+
+func (c *Cache) trimLocked(maxBytes int64) {
+	for c.order.Len() > c.maxBooks || c.bytes > maxBytes {
 		el := c.order.Front()
 		if el == nil {
 			break

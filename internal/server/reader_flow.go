@@ -16,21 +16,21 @@ import (
 
 // 连续 reading flow 的 HTTP 面：
 //   - GET /api/files/{id}/book/flow           → flow manifest（chunk 清单、
-//     spine 块区间、目录目标；内容随书内容与 flow 版本固定，manifest 不缓存）
+//     spine 块区间、目录目标；内容随书内容与 flow 版本固定，服务端 memory 缓存）
 //   - GET /api/files/{id}/book/flow/chunks/{n} → 第 n 个 chunk 的 HTML 片段
 //     （不可变、长缓存；块带 data-block 全局编号）
 //
 // flow 由解析缓存里的 Book 生成（纯函数、确定性），产物写对象存储
 // flows/{bookObjectKey}/f{version}/，作为内容级缓存（幂等：manifest 命中
 // 不重建；缺失才单飞构建 + 幂等覆盖；manifest 最后原子提交）。读取路径经
-// 统一缓存管理器 reader/flow class：memory L1 + local-disk L2，再回源 S3
-//（内容寻址 immutable，无 TTL）；GC 按孤儿/容量回收，删除书后产物随 GC
-// 清理。
+// 统一缓存管理器的 reader/flow-manifest 与 reader/flow-chunk memory-only
+// 工作缓存，再回源 S3（内容寻址 immutable，无 TTL）；GC 按孤儿/容量回收，
+// 删除书后产物随 GC 清理。
 
 const maxFlowObject = 8 << 20
 
 // flowCacheKey 返回 flow 产物在统一缓存里的逻辑键：直接采用对象存储键
-//（自带 bookObjectKey 与 f{version} 目录，版本/内容变化时键自然失效）。
+// （自带 bookObjectKey 与 f{version} 目录，版本/内容变化时键自然失效）。
 func flowCacheKey(objectKey string) string {
 	return "manifest/" + objectKey + "/" + flow.VersionDir()
 }
@@ -40,11 +40,11 @@ func flowChunkCacheKey(objectKey string, index int) string {
 }
 
 // ensureFlow 保证 flow 产物已生成。产物内容随书内容与 flow 版本固定：
-// manifest 已存在（含统一缓存 L1/L2 副本）时直接复用，不再解析原书、
+// manifest 已存在（含服务端 memory 副本）时直接复用，不再解析原书、
 // 不再写对象；只在 manifest 缺失（首次打开、版本升级或 GC 回收后）时
 // 单飞构建。manifest 最后写：读者永远看不到缺 chunk 的 manifest。
 func (s *Server) ensureFlow(ctx context.Context, f File) error {
-	if s.cache.Has(cacheClassReaderFlow, flowCacheKey(f.objectKey)) {
+	if s.cache.Has(cacheClassReaderFlowManifest, flowCacheKey(f.objectKey)) {
 		return nil
 	}
 	if _, err := s.objects.Stat(ctx, flow.ManifestObjectKey(f.objectKey)); err == nil {
@@ -95,27 +95,28 @@ func (s *Server) storeFlow(ctx context.Context, f File) error {
 	return nil
 }
 
-// flowManifestData 读取 manifest 内容：统一缓存 L1/L2 命中免回源 S3。
+// flowManifestData 读取 manifest 内容：memory 命中免回源 S3，miss 后直接
+// 读取已持久化的 S3 flow 对象。
 func (s *Server) flowManifestData(ctx context.Context, f File) ([]byte, error) {
-	return s.cache.Load(ctx, cacheClassReaderFlow, flowCacheKey(f.objectKey), 0, func(ctx context.Context) ([]byte, error) {
+	return s.cache.Load(ctx, cacheClassReaderFlowManifest, flowCacheKey(f.objectKey), 0, func(ctx context.Context) ([]byte, error) {
 		return s.objects.Get(ctx, flow.ManifestObjectKey(f.objectKey), maxFlowObject)
 	})
 }
 
-// flowChunkData 读取一个 chunk：统一缓存 L1/L2 → S3。manifest 存在但
-// chunk 对象已被容量回收时，强制重建一次再读（自愈）。
+// flowChunkData 读取一个 chunk：memory → S3。manifest 存在但 chunk 对象
+// 缺失时，强制重建一次再读（自愈）。
 func (s *Server) flowChunkData(ctx context.Context, f File, index int) ([]byte, error) {
 	load := func(ctx context.Context) ([]byte, error) {
 		return s.objects.Get(ctx, flow.ChunkObjectKey(f.objectKey, index), maxFlowObject)
 	}
-	data, err := s.cache.Load(ctx, cacheClassReaderFlow, flowChunkCacheKey(f.objectKey, index), 0, load)
+	data, err := s.cache.Load(ctx, cacheClassReaderFlowChunk, flowChunkCacheKey(f.objectKey, index), 0, load)
 	if err == nil || !storage.IsNotFound(err) {
 		return data, err
 	}
 	if err := s.rebuildFlow(ctx, f); err != nil {
 		return nil, err
 	}
-	return s.cache.Load(ctx, cacheClassReaderFlow, flowChunkCacheKey(f.objectKey, index), 0, load)
+	return s.cache.Load(ctx, cacheClassReaderFlowChunk, flowChunkCacheKey(f.objectKey, index), 0, load)
 }
 
 // bookFlow 返回 flow manifest。manifest 体积小且语义由服务端 flow 版本决定，

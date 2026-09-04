@@ -124,21 +124,23 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
 
 - 所有缓存的生命周期、容量、LRU、singleflight、统计与失效策略统一由
   `cache.Manager` 管理；不同 cache class 允许不同 tier/策略。
-- 读取路径统一为 **memory L1 → local-disk L2 → 回源**（singleflight 去重，
-  成功回填两级）。
+- managed cache 的读取路径为 **memory L1 → local-disk L2 → 回源**；flow
+  manifest/chunk 是 memory-only，miss 后直接回源 S3。所有回源仍由
+  singleflight 去重。
 - 全局容量为 byte-LRU，class 可声明 `priority`（大者晚淘汰）与
   `soft quota`（超出者优先收缩），避免大型 video range/HLS 工作区把
   reader 缓存全部挤掉。
 - class 一览：
   | class | 内容 | tier | 策略 |
   |---|---|---|---|
-  | `reader/flow` | flow manifest/chunks | memory+disk | 内容寻址 immutable，无 TTL |
+  | `reader/flow-manifest` | flow manifest | memory | 高 priority，小 soft quota |
+  | `reader/flow-chunk` | flow chunks | memory | byte-LRU，受控 soft quota |
   | `reader/source` | 书源 blob | disk | 内容寻址 immutable，无 TTL |
   | `reader/books` | 解析后 Book | memory | 对象 LRU（external 注册） |
   | `media/subtitle` | 字幕转换产物 | memory+disk | TTL（真正临时产物） |
   | `media/hls` | 音视频 HLS 会话工作区 | disk | 会话自管（external 注册） |
 - **ensureFlow 幂等**：flow 产物内容随书内容与 flow 版本固定（内容寻址），
-  manifest 命中（统一缓存副本或对象存储 HEAD）即直接复用；只在缺失时单飞
+  manifest 命中（memory 副本或对象存储 HEAD）即直接复用；只在缺失时单飞
   构建，manifest 最后原子提交。第二次打开同一本书不重新 Build flow、不重新
   写对象。chunk 对象被容量回收而 manifest 幸存时，chunk 请求触发一次自愈
   重建。

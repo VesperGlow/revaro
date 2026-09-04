@@ -99,7 +99,7 @@ set -a; . ./.env; set +a
 | `S3_PATH_STYLE` | `false` | MinIO 等存储通常设为 `true` |
 | `S3_PROXY_TRANSFERS` | UpCloud 为 `true`，其他为 `false` | 仅影响升级前的旧整对象；新 `blobs/` 始终直连公网 S3 |
 | `PRESIGN_EXPIRES` | `15m` | 上传、下载和预览 URL 有效期 |
-| `MEDIA_CACHE_CAPACITY` | `2147483648` | FFmpeg HLS fallback 的 SSD 临时缓存总上限；另有 20 分钟 TTL/LRU |
+| `MEDIA_CACHE_CAPACITY` | `2147483648` | 服务端工作缓存的全局磁盘预算（managed cache + FFmpeg HLS fallback workspace）；另有 20 分钟 TTL/LRU |
 | `UPLOAD_EXPIRES` | `24h` | 未完成上传的清理期限，也决定垃圾回收宽限期下限 |
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
 | `GC_INTERVAL` | `1h` | 周期孤儿对象回收间隔；`0` 表示禁用周期扫描（回收站到期删除仍会触发一次回收） |

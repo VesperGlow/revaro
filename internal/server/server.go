@@ -52,6 +52,8 @@ type Server struct {
 	audioHLSSessions   map[string]*audioHLSSession
 	audioHLSCtx        context.Context
 	audioHLSCancel     context.CancelFunc
+	mediaCacheMu       sync.Mutex
+	mediaCacheSizes    map[string]int64
 	videoHLSSlots      chan struct{}
 	videoHLSMu         sync.RWMutex
 	videoHLSSessions   map[string]*videoHLSSession
@@ -132,6 +134,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioThumbSlots: make(chan struct{}, 1),
 		archiveSlots:    make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
+		mediaCacheSizes:   make(map[string]int64),
 		statusSubscribers: make(map[chan systemStatusResponse]struct{}), statusStop: make(chan struct{}),
 	}
 	s.objects = newObjectManager(store)
@@ -183,6 +186,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	s.restorePersistentTasks()
 	s.cleanup.Register("audio-hls", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupAudioHLSSessions(); return nil })
 	s.cleanup.Register("video-hls", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupVideoHLSSessions(); return nil })
+	s.cleanup.Register("media-cache-size", time.Minute, time.Minute, false, func(context.Context) error { s.refreshMediaCacheUsage(); return nil })
 	s.cleanup.Register("video-fmp4", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupVideoFMP4Sessions(); return nil })
 	s.cleanup.Register("archive-password", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupArchiveJobs(); return nil })
 	s.cleanup.Register("cache", 5*time.Minute, time.Minute, false, func(context.Context) error { s.cache.Prune(); return nil })
@@ -272,6 +276,7 @@ func (s *Server) Close() {
 	s.audioHLSMu.Unlock()
 	for _, session := range sessions {
 		session.stop()
+		s.forgetMediaCacheSize("audio", session.ID)
 	}
 	s.videoHLSMu.Lock()
 	videoSessions := make([]*videoHLSSession, 0, len(s.videoHLSSessions))
@@ -282,6 +287,7 @@ func (s *Server) Close() {
 	s.videoHLSMu.Unlock()
 	for _, session := range videoSessions {
 		session.destroy()
+		s.forgetMediaCacheSize("video", session.ID)
 	}
 	s.videoFMP4Mu.Lock()
 	fmp4Sessions := make([]*videoFMP4Session, 0, len(s.videoFMP4Sessions))

@@ -17,6 +17,7 @@ export interface ShareResponse { active:boolean; url?:string; created_at?:string
 export interface ProfileResponse { username:string; has_avatar:boolean }
 export interface StorageStats { total_bytes:number; file_count:number }
 export interface SystemStatusCacheClass {
+  // External providers without hit/miss semantics leave these counters at 0.
   hits:number; misses:number; loads:number; load_errors:number; evictions:number
   memory_bytes?:number; memory_entries?:number; disk_bytes?:number; disk_entries?:number
 }

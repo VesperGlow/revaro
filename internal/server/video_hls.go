@@ -167,6 +167,7 @@ func (s *Server) startVideoHLS(w http.ResponseWriter, r *http.Request) {
 	s.videoHLSMu.Lock()
 	s.videoHLSSessions[session.ID] = session
 	s.videoHLSMu.Unlock()
+	s.setMediaCacheSize("video", session.ID, 0)
 	s.startRuntimeTask(r.Context(), session.ID, "video_hls", "video_hls", f.ID)
 	s.pruneVideoHLSSessions(session.ID)
 	if !s.runBackground(func() { s.runVideoHLS(ctx, f, session) }) {
@@ -261,6 +262,7 @@ func videoHLSPlaylistState(path string) (int, float64) {
 }
 
 func (s *Server) runVideoHLS(ctx context.Context, f File, session *videoHLSSession) {
+	defer func() { s.refreshMediaCacheEntry("video", session.ID, session.Dir) }()
 	defer func() { <-s.videoHLSSlots }()
 	var taskErr error
 	defer func() { s.finishRuntimeTask(session.ID, "video_hls", taskErr) }()
@@ -373,10 +375,13 @@ func (s *Server) videoHLSSession(id string) *videoHLSSession {
 }
 
 func (s *Server) removeVideoHLSSession(id string) *videoHLSSession {
+	s.mediaCacheMu.Lock()
 	s.videoHLSMu.Lock()
 	session := s.videoHLSSessions[id]
 	delete(s.videoHLSSessions, id)
 	s.videoHLSMu.Unlock()
+	delete(s.mediaCacheSizes, mediaCacheEntryKey("video", id))
+	s.mediaCacheMu.Unlock()
 	if session != nil {
 		session.destroy()
 	}

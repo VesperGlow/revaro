@@ -9,7 +9,8 @@ import (
 // singleflight、统计与失效策略统一由 internal/cache 管理；cache class 之间
 // 允许不同 tier/策略，但共享全局容量并按 priority/soft quota 协调淘汰：
 //
-//	reader/flow     flow manifest/chunk（内容寻址 immutable，memory+disk）
+//	reader/flow-manifest  flow manifest（memory-only，高 priority，小配额）
+//	reader/flow-chunk     flow chunk（memory-only，byte-LRU，受控配额）
 //	reader/source   书源 blob（内容寻址 immutable，disk-only，冷启动免回源）
 //	reader/books    解析后的 Book（external memory LRU，注册进全局统计）
 //	media/subtitle  字幕转换产物（带 TTL 的临时产物，memory+disk）
@@ -30,25 +31,35 @@ const (
 )
 
 const (
-	cacheClassReaderFlow    = "reader/flow"
-	cacheClassReaderSource  = "reader/source"
-	cacheClassReaderBooks   = "reader/books"
-	cacheClassMediaSubtitle = "media/subtitle"
-	cacheClassMediaHLS      = "media/hls"
+	cacheClassReaderFlowManifest = "reader/flow-manifest"
+	cacheClassReaderFlowChunk    = "reader/flow-chunk"
+	cacheClassReaderSource       = "reader/source"
+	cacheClassReaderBooks        = "reader/books"
+	cacheClassMediaSubtitle      = "media/subtitle"
+	cacheClassMediaHLS           = "media/hls"
+
+	readerFlowManifestQuota = 8 << 20
+	readerFlowChunkQuota    = 64 << 20
 )
 
-// newGlobalCache 装配统一缓存管理器：注册各 cache class 与 external
-// 提供者（解析书 LRU、HLS 会话工作区）。
+// newGlobalCache 装配统一缓存管理器：注册各 cache class 与解析书 external
+// provider。HLS workspace 由 Server 在拥有 session 状态后注册。
 func newGlobalCache(workDir string, diskLimit int64, books *reader.Cache) *cache.Manager {
 	m := cache.New(workDir, serverCacheMemoryBytes, diskLimit)
-	// flow 产物与书源 blob 由内容哈希寻址、immutable：不设 TTL，依赖
-	// 内容/版本键 + 容量 LRU。
-	m.RegisterClass(cache.Class{Name: cacheClassReaderFlow, Priority: 50, SoftQuota: 512 << 20, Memory: true, Disk: true})
+	// flow 产物与书源 blob 已持久化在 S3；服务端只保留 manifest/chunk 的
+	// memory 工作缓存，书源 blob 仍保留 disk-only 冷启动优化。
+	m.RegisterClass(cache.Class{Name: cacheClassReaderFlowManifest, Priority: 90, SoftQuota: readerFlowManifestQuota, Memory: true})
+	m.RegisterClass(cache.Class{Name: cacheClassReaderFlowChunk, Priority: 70, SoftQuota: readerFlowChunkQuota, Memory: true})
 	m.RegisterClass(cache.Class{Name: cacheClassReaderSource, Priority: 40, SoftQuota: 512 << 20, Memory: false, Disk: true})
 	m.RegisterClass(cache.Class{Name: cacheClassMediaSubtitle, Priority: 20, SoftQuota: 64 << 20, Memory: true, Disk: true})
-	// 解析 Book 与 HLS 会话工作区保留自身策略（对象 LRU / 会话生命周期），
-	// 但纳入全局统计与容量协调。
-	m.RegisterExternal(cacheClassReaderBooks, books.Stats, books.Trim)
-	m.RegisterExternal(cacheClassMediaHLS, nil, nil)
+	// 解析 Book 保留自身对象 LRU，但以 memory tier 纳入全局统计和预算。
+	m.RegisterExternal(cacheClassReaderBooks, func() cache.ExternalStats {
+		bytes, entries := books.Stats()
+		return cache.ExternalStats{MemoryBytes: bytes, MemoryEntries: entries}
+	}, func(budget cache.ExternalBudget) {
+		if budget.MemoryBytes >= 0 {
+			books.TrimTo(budget.MemoryBytes)
+		}
+	})
 	return m
 }

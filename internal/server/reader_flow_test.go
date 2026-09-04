@@ -80,11 +80,20 @@ func TestReaderFlowManifestAndChunksEPUB(t *testing.T) {
 	if cr2.Body.String() != body {
 		t.Fatal("chunk not stable across requests")
 	}
+	stats := a.srv.cache.Stats()
+	manifestStats := stats.Classes[cacheClassReaderFlowManifest]
+	chunkStats := stats.Classes[cacheClassReaderFlowChunk]
+	if manifestStats.MemoryEntries == 0 || manifestStats.DiskBytes != 0 || manifestStats.DiskEntries != 0 {
+		t.Fatalf("manifest cache tiers = %+v", manifestStats)
+	}
+	if chunkStats.MemoryEntries == 0 || chunkStats.DiskBytes != 0 || chunkStats.DiskEntries != 0 {
+		t.Fatalf("chunk cache tiers = %+v", chunkStats)
+	}
 }
 
-// flow 产物是内容寻址 immutable 缓存：manifest 命中（含统一缓存 L1/L2
-// 副本或对象存储 HEAD 命中）即直接复用，第二次打开同一本书不重新
-// Build flow、不重新写对象。
+// flow 产物是内容寻址 immutable 缓存：manifest 命中（服务端 memory 副本
+// 或对象存储 HEAD 命中）即直接复用，第二次打开同一本书不重新 Build
+// flow、不重新写对象。
 func TestReaderFlowSecondOpenDoesNotRebuild(t *testing.T) {
 	a := newTestApp(t)
 	f := a.readyFile(t, "book.epub", buildEPUB(t))
@@ -96,7 +105,7 @@ func TestReaderFlowSecondOpenDoesNotRebuild(t *testing.T) {
 	}
 	putsAfterFirst := a.storeFlowPuts()
 
-	// 进程内二次打开：解析缓存与统一缓存均在 → 零构建、零对象写入
+	// 进程内二次打开：解析缓存与 flow memory cache 均在 → 零构建、零对象写入
 	a.srv.books = reader.NewCache(1, 1) // 逐出解析 Book，确保不是靠 Book 缓存蒙混
 	if rr := a.request("GET", "/api/files/"+f.ID+"/book/flow", nil, true); rr.Code != http.StatusOK || rr.Body.String() == "" {
 		t.Fatalf("second flow=%d", rr.Code)
@@ -108,9 +117,9 @@ func TestReaderFlowSecondOpenDoesNotRebuild(t *testing.T) {
 		t.Fatalf("second open rebuilt flow: puts %d → %d", len(putsAfterFirst), len(got))
 	}
 
-	// 「重启」语义：清空统一缓存（L1/L2），manifest 对象仍在对象存储 →
-	// HEAD 命中同样不重建
-	if err := a.srv.cache.Delete(cacheClassReaderFlow, flowCacheKey(f.objectKey)); err != nil {
+	// 「重启」语义：清空服务端 manifest memory cache，manifest 对象仍在
+	// 对象存储 → HEAD 命中同样不重建
+	if err := a.srv.cache.Delete(cacheClassReaderFlowManifest, flowCacheKey(f.objectKey)); err != nil {
 		t.Fatal(err)
 	}
 	if rr := a.request("GET", "/api/files/"+f.ID+"/book/flow", nil, true); rr.Code != http.StatusOK {
@@ -131,7 +140,7 @@ func TestReaderFlowSelfHealsMissingChunk(t *testing.T) {
 	a.store.mu.Lock()
 	delete(a.store.raw, flow.ChunkObjectKey(f.objectKey, 0))
 	a.store.mu.Unlock()
-	if err := a.srv.cache.Delete(cacheClassReaderFlow, flowChunkCacheKey(f.objectKey, 0)); err != nil {
+	if err := a.srv.cache.Delete(cacheClassReaderFlowChunk, flowChunkCacheKey(f.objectKey, 0)); err != nil {
 		t.Fatal(err)
 	}
 	cr := a.request("GET", "/api/files/"+f.ID+"/book/flow/chunks/0", nil, true)
