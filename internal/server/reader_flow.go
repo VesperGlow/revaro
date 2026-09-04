@@ -74,7 +74,7 @@ func (s *Server) storeFlow(ctx context.Context, f File) error {
 	if err != nil {
 		return fmt.Errorf("解析书籍失败：%w", err)
 	}
-	built, err := flow.Build(book, fmt.Sprintf("/api/files/%s/book/assets", f.ID))
+	built, err := flow.Build(book)
 	if err != nil {
 		return err
 	}

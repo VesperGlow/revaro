@@ -57,7 +57,6 @@ type Built struct {
 
 // blockBuild 是单个顶层内容块的构建中间态。
 type blockBuild struct {
-	global     int        // 全书 data-block 编号
 	node       *html.Node // EPUB：清洗后块的解析树（导航 locator 在序列化前解析）
 	html       string     // 序列化片段（含 data-block 之前的原始块 HTML）
 	chars      int64      // 文本 UTF-16 长度
@@ -101,7 +100,7 @@ type chapterTree struct {
 // Build 由解析好的 Book 生成连续 reading flow。纯函数、确定性：
 // 同一输入总是产生逐字节相同的 manifest 与 chunk（用于内容级缓存）。
 // book 需要保持默认解析输出不变（chunk 以它为准）。
-func Build(book *reader.Book, assetBase string) (*Built, error) {
+func Build(book *reader.Book) (*Built, error) {
 	switch book.Format {
 	case "epub":
 		return buildEPUB(book)
@@ -141,7 +140,6 @@ func buildEPUB(book *reader.Book) (*Built, error) {
 		}
 		sb := spineBuild{blocks: make([]blockBuild, 0, len(blocks)), startGlobal: global}
 		for _, b := range blocks {
-			b.global = global
 			sb.blocks = append(sb.blocks, b)
 			global++
 		}

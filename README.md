@@ -99,7 +99,7 @@ set -a; . ./.env; set +a
 | `S3_PATH_STYLE` | `false` | MinIO 等存储通常设为 `true` |
 | `S3_PROXY_TRANSFERS` | UpCloud 为 `true`，其他为 `false` | 仅影响升级前的旧整对象；新 `blobs/` 始终直连公网 S3 |
 | `PRESIGN_EXPIRES` | `15m` | 上传、下载和预览 URL 有效期 |
-| `MEDIA_CACHE_CAPACITY` | `2147483648` | 服务端工作缓存的全局磁盘预算（managed cache + FFmpeg HLS fallback workspace）；另有 20 分钟 TTL/LRU |
+| `MEDIA_CACHE_CAPACITY` | `2147483648` | 服务端工作缓存的全局磁盘预算（managed cache + FFmpeg HLS fallback workspace）；已完成 HLS workspace 另有 20 分钟 idle TTL |
 | `UPLOAD_EXPIRES` | `24h` | 未完成上传的清理期限，也决定垃圾回收宽限期下限 |
 | `TRASH_RETENTION` | `720h` | 回收站保留期限（30 天）；到期后自动永久删除，`0` 表示禁用自动清理 |
 | `GC_INTERVAL` | `1h` | 周期孤儿对象回收间隔；`0` 表示禁用周期扫描（回收站到期删除仍会触发一次回收） |
@@ -112,6 +112,8 @@ set -a; . ./.env; set +a
 | `BACKUP_ENABLED` | `true` | 自动把 SQLite 一致性快照备份到 S3 的 `revaro-backups/database/`；`false` 只关闭备份，不影响主服务 |
 | `BACKUP_INTERVAL` | `24h` | 两次自动备份的最小间隔（≥1m）；停机跨过多个周期后，启动时只补做一次最新备份 |
 | `BACKUP_RETENTION` | `14` | S3 中保留的最近备份数量，成功上传新备份后自动清理更旧的备份 |
+| `FLOW_CACHE_TTL` | `720h` | S3 中孤立 reader flow 产物的保留时间；`0` 表示不按 TTL 淘汰 |
+| `FLOW_CACHE_CAPACITY` | `1073741824` | S3 中 reader flow 产物的容量预算；`0` 表示不按容量淘汰 |
 
 ### S3 公网直连要求
 
@@ -199,6 +201,8 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 | `DELETE` | `/api/trash/{id}` | 永久删除回收站项目 |
 | `DELETE` | `/api/trash` | 清空回收站 |
 | `GET` | `/api/files/{id}/download` | 302 到 Presigned 下载 URL |
+| `POST` | `/api/files/batch-download/prepare` | 用 logical file ID 创建短效、单次使用的批量下载 token |
+| `GET` | `/api/files/batch-download/{token}` | 流式返回所选文件的 ZIP；object key 不进入公共 API |
 | `GET` | `/api/files/{id}/preview` | 302 到图片预览 URL |
 | `GET` / `PUT` | `/api/files/{id}/content` | 读取或保存可编辑文本文件，含 ETag 冲突保护 |
 | `GET` | `/api/files/{id}/book` | 阅读器元数据：格式、标题、封面与目录 |
@@ -255,8 +259,8 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 点击 `.epub` 文件（或超过 1 MiB 的 `.txt` 文件）即可在网盘里直接阅读；阅读器复用本服务的认证、文件树与 S3 blob：
 
 - **服务端解析与连续 reading flow**：EPUB 解包、OPF/spine、目录（EPUB3 nav + NCX 回退）、封面抽取全部在 Go 服务端完成；正文按白名单重建 HTML（脚本、事件处理器、`javascript:` 等危险内容按构造不会出现），图片在服务端读出**固有尺寸并写入 width/height**（分页不跳版），内嵌图片改写为带内容版本参数的 `/api/files/{id}/book/assets/{n}?v=…` 分发（不可变，可长期缓存）。解析对解压总量设硬上限（256 MiB），恶意的高压缩比 EPUB（zip bomb）会被拒绝而不是耗尽内存。TXT 自动识别 UTF-8/GBK 编码，并按“第…章”式标题生成目录。整本书再被拼成一条**连续、标准化、可缓存的 reading flow**，按自然 DOM 边界切成适量 chunk 存对象存储（`flows/` 前缀，随内容哈希与版本固定）；chunk 不是页面，不与任何视口/字号绑定。
-- **解析缓存**：解析结果按稳定的 object key/ETag 缓存，最近 3 本 keep-alive；文件内容更新会换 key，不会复用陈旧解析。flow 产物同样以内容为键（`FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY` 控制回收），重开书不重新生成。
-- **客户端原生分页（移动端友好）**：**无 Chromium、无服务端排版**。客户端只把当前位置附近的少量 chunk 装进一个连续多栏 DOM（图片与文字处于同一排版上下文，跨 spine 内容无缝接排），由浏览器原生 CSS columns 完成最终分页；翻页只做合成层 transform（热路径零网络、零重排）。窗口滑动是**增量 DOM 更新**（只 append 新 chunk、remove 最旧 chunk，保留 chunk 原样不动），窗口常驻约 6 个 chunk、PageCache 较大；`will-change: transform` 只在拖动/翻页动画期间开启并在结束后释放，避免大图旁文字在 Android Chrome 被常驻合成而发糊。桌面点击左右热区、键盘方向键/PageUp/PageDown/空格翻页，移动端左右滑动跟手翻页（快速轻扫或拖过 1/4 屏判定）。
+- **解析缓存**：解析结果按稳定的 object key/ETag 缓存，最近 4 本 keep-alive；文件内容更新会换 key，不会复用陈旧解析。flow 产物同样以内容为键（`FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY` 控制回收），重开书不重新生成。
+- **客户端原生分页（移动端友好）**：**无 Chromium、无服务端排版**。客户端把当前 spine 的稳定排版前缀到当前位置、再加 3 个预取 chunk 装进一个连续多栏 DOM（图片与文字处于同一排版上下文，跨 spine 内容无缝接排），由浏览器原生 CSS columns 完成最终分页；翻页只做合成层 transform（热路径零网络、零重排）。窗口变化是**增量 DOM 更新**（只 append 新 chunk、remove 确认已离窗的 chunk，保留其余子树原样不动），PageCache 另保留最近 24 个 chunk；`will-change: transform` 只在拖动/翻页动画期间开启并在结束后释放，避免大图旁文字在 Android Chrome 被常驻合成而发糊。桌面点击左右热区、键盘方向键/PageUp/PageDown/空格翻页，移动端左右滑动跟手翻页（快速轻扫或拖过 1/4 屏判定）。
 - **进度与即时重排**：阅读进度 = readingAnchor（连续 flow 上的块 + 块内文本位置，不依赖页码），防抖保存并随页面关闭/失焦落盘；改字号/行距/旋转/横竖屏只在客户端重新分页，服务端零参与、不重新生成内容；明暗主题只换 CSS 变量，永不重排。
 - 上限：EPUB 128 MiB、TXT 16 MiB；更大的文件请下载后离线阅读。
 - **镜像体积**：发布镜像不安装 Debian 完整 ffmpeg。构建阶段用 multi-stage 自编译**精简 FFmpeg 5.1**（libav* .59，与 Rust 数据平面 soname/ABI 一致；仅 x264/x265 两个外部编码器、静态内链，其余组件全部走 FFmpeg 内建实现），运行层只带 `ffmpeg`/`ffprobe` 与少量 `.so`。Rust 数据平面在构建与测试时直接链接这套精简 libav，镜像因此不再携带 Mesa/libLLVM/libmfx/flite/codec2 等无关依赖树（数百 MB）。

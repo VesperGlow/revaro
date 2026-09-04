@@ -49,11 +49,11 @@ func sampleEPUBBook(t *testing.T) *reader.Book {
 
 func TestBuildEPUBDeterministicAndInvariants(t *testing.T) {
 	book := sampleEPUBBook(t)
-	b1, err := Build(book, "/api/assets")
+	b1, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b2, err := Build(book, "/api/assets")
+	b2, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestBuildEPUBTOCFragmentsInSameBlock(t *testing.T) {
 			{Label: "乙处", Path: "OEBPS/ch2.xhtml", Fragment: "frag-b", Depth: 1},
 		},
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestBuildEPUBTOCFragmentsInSameBlock(t *testing.T) {
 	// fragment 解析失败（清洗丢弃）时 Block 回退 spine 首块，locator 解析
 	// 其首个真实可见内容，SourceFragment 原样保留
 	book.TOC = append(book.TOC, reader.TocEntry{Label: "丢失", Path: "OEBPS/ch2.xhtml", Fragment: "no-such-id", Depth: 1})
-	again, err := Build(book, "")
+	again, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestBuildEPUBNavAnchorBinding(t *testing.T) {
 			{Label: "空锚", Path: "OEBPS/b.xhtml", Fragment: "empty-t", Depth: 0},
 		},
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestBuildEPUBNavAnchorBinding(t *testing.T) {
 		t.Fatalf("source fields wrong: %+v / %+v", m.TOC[0], m.TOC[1])
 	}
 	// id 分配确定：重建一致
-	again, err := Build(book, "")
+	again, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestBuildEPUBNavAnchorBinding(t *testing.T) {
 	// 的标记是媒体目标上的 data-rv-anchor（无 toc-anchor 内联标记）
 	bookNoTOC := *book
 	bookNoTOC.TOC = nil
-	clean, err := Build(&bookNoTOC, "")
+	clean, err := Build(&bookNoTOC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ func TestBuildChunksNavAnchorSplit(t *testing.T) {
 		Chapters: []reader.Chapter{{HTML: b.String()}},
 		TOC:      []reader.TocEntry{{Label: "目标", Path: "OEBPS/s.xhtml", Fragment: "target", Depth: 0}},
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ func TestBuildEPUBNestedInlineTextLocator(t *testing.T) {
 			{Label: "空白", Path: "OEBPS/b.xhtml", Fragment: "ws", Depth: 0},
 		},
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestBuildSpineStartBoundary(t *testing.T) {
 			{Label: "c3", Path: "OEBPS/c3.xhtml", Depth: 0},
 		},
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func TestBuildSpineStartBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tbuilt, err := Build(tbook, "")
+	tbuilt, err := Build(tbook)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +657,7 @@ func TestBuildVoidBlockSerialization(t *testing.T) {
 				`<p data-source-path="OEBPS/i.xhtml">图后文字</p>`},
 		},
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +695,7 @@ func TestBuildTXTContinuityAndTOC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +747,7 @@ func TestBuildEPUBImageBlockIsAddressable(t *testing.T) {
 		Chapters: []reader.Chapter{{HTML: `<p data-source-path="OEBPS/i.xhtml">第一段</p><p data-source-path="OEBPS/i.xhtml"><img src="/a/0" width="10" height="20" alt="x"></p><p data-source-path="OEBPS/i.xhtml">图后文字</p>`}},
 		TOC:      nil,
 	}
-	built, err := Build(book, "")
+	built, err := Build(book)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -145,7 +145,7 @@ func (s *Server) createDatabaseBackup(ctx context.Context) error {
 		return fmt.Errorf("stat database snapshot: %w", err)
 	}
 	key := databaseBackupObjectKey(time.Now())
-	if _, err := s.storage.StoreBlob(ctx, key, backupSnapshotMIME, file, info.Size()); err != nil {
+	if _, err := s.objects.Stream(ctx, key, backupSnapshotMIME, file, info.Size()); err != nil {
 		return fmt.Errorf("upload database backup %s: %w", key, err)
 	}
 	s.log.Info("database backup uploaded", "key", key, "bytes", info.Size())

@@ -34,8 +34,8 @@ HTML、渐进式分页任务）已全部删除；服务端不再知道任何设�
   行对齐的文本块，保留 pre-wrap 连续排版观感）。block 在全书统一编号
   （`data-block="N"`），chunk 边界只允许出现在 block 之间。
 - **chunk**：按文本量（约 7k UTF-16 码元）与 HTML 体积把连续 block 分组，
-  一个 chunk 不跨 block。客户端按“当前位置为中心”加载一个小的连续窗口
-  （前后留余量、上限 8 个 chunk），阅读方向向前时窗口滑动。
+  一个 chunk 不跨 block。客户端加载当前 spine 的稳定排版前缀到当前位置，
+  并向阅读方向额外预取 3 个 chunk；跨 spine 后才释放旧前缀。
 - **manifest**：flow 的产物清单：`version`（flow 格式版本）、`format`、
   `total_chars`、`spines`（每章块区间）、`chunks`（索引/块区间/文本量）、
   `toc`（每条目录 → 目标 block）。纯函数、确定性（同一本书永远生成相同产物）。
@@ -171,8 +171,9 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
   `FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY`（flow 对象 GC）与
   `MEDIA_CACHE_CAPACITY`（全局磁盘上限）。
 - Web：`web/src/reader/{types,api,flow,cache,clientCache,prefs}`；
-  `Reader.vue` 为稳定窗口 + CSS columns 阅读器（文本 locator 跳转、
-  L2 快开）。
+  `Reader.vue` 保留页面模板与 UI 编排，`useReaderFlow` 管理稳定窗口、分页、
+  L2 快开与生命周期，`useReaderPositioning` 管理 DOM locator/readingAnchor
+  和 CSS columns 位置换算。
 - 测试：Go（flow 构建不变量、locator 往返、spine 边界注入、TXT 连续性、
   服务端端点契约、幂等构建/自愈、缓存管理器单测）；Web vitest（纯 helper、
   ClientCacheManager）；Playwright route-mock e2e（窗口预取、热路径零网络、
