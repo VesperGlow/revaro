@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -41,7 +41,7 @@ jobs:
       - name: Audit production web dependencies
         working-directory: web
         run: npm audit --omit=dev --audit-level=moderate
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -56,7 +56,7 @@ jobs:
       - name: Restore cargo-audit
         # cargo install 需要数分钟从源码编译；固定版本 + 缓存安装目录，
         # 命中时直接复用二进制。
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo-audit
           key: cargo-audit-0.22.2
@@ -76,13 +76,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Restore Playwright browsers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ hashFiles('web/package-lock.json') }}
@@ -91,7 +91,7 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
-      - uses: docker/setup-buildx-action@v4.1.0
+      - uses: docker/setup-buildx-action@v4.3.0
       - name: Build checked amd64 image once
         # Dockerfile 的生产依赖链内已包含 Rust fmt/clippy/test。这是唯一
         # 完整编译和缓存写入路径；缓存服务偶发不可用不会让编译失败。
@@ -121,7 +121,7 @@ jobs:
         run: docker compose -f compose.e2e.yml logs --no-color > e2e-container.log
       - name: Upload E2E diagnostics
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-e2e-diagnostics
           if-no-files-found: ignore
@@ -143,9 +143,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4.1.0
+      - uses: docker/setup-buildx-action@v4.3.0
       - name: Log in to GHCR
-        uses: docker/login-action@v4.5.1
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
