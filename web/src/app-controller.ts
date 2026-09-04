@@ -3,7 +3,6 @@ import { marked } from 'marked'
 import { computed, defineAsyncComponent, defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from './api'
 import type { DriveFile } from './api'
-import { downloadSelectedBatch } from './download'
 import AppDialog from './components/AppDialog.vue'
 import AppTopbar from './components/AppTopbar.vue'
 import DocumentEditor from './components/DocumentEditor.vue'
@@ -258,11 +257,17 @@ export default defineComponent({
     function download(item:DriveFile){
       const link=document.createElement('a');link.href=`/api/files/${item.id}/download`;link.download=item.name;link.hidden=true;document.body.appendChild(link);link.click();link.remove()
     }
-    function downloadSelected(){
+    async function downloadSelected(){
       const files=[...selectedFiles.value]
       if(!files.length)return
       if(files.length===1){download(files[0]);return}
-      downloadSelectedBatch(files)
+      notify(`正在准备 ${files.length} 个文件…`,'success')
+      try{
+        const prepared=await api<{token:string}>('/api/files/batch-download/prepare',{method:'POST',body:JSON.stringify({ids:files.map(item=>item.id)})})
+        if(!prepared.token)throw new Error('批量下载准备失败')
+        const link=document.createElement('a');link.href=`/api/files/batch-download/${encodeURIComponent(prepared.token)}`;link.download='revaro-download.zip';link.hidden=true;document.body.appendChild(link);link.click();link.remove()
+        notify('已开始下载','success')
+      }catch(e){notify((e as Error).message)}
     }
     
     async function extractArchive(item:DriveFile){

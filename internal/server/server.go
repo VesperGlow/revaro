@@ -72,6 +72,8 @@ type Server struct {
 	archiveJobs        map[string]*archiveJob
 	flowBuilds         singleflight.Group
 	downloads          *downloadManager
+	batchTokensMu      sync.Mutex
+	batchTokens        map[string]batchDownloadToken
 	jobs               *JobManager
 	tasks              *TaskManager
 	objects            *ObjectManager
@@ -136,6 +138,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
 		mediaCacheSizes:   make(map[string]int64),
 		statusSubscribers: make(map[chan systemStatusResponse]struct{}), statusStop: make(chan struct{}),
+		batchTokens: make(map[string]batchDownloadToken),
 	}
 	s.objects = newObjectManager(store)
 	s.objects.server = s
@@ -261,6 +264,9 @@ func (s *Server) Close() {
 	if s.downloads != nil {
 		s.downloads.Close()
 	}
+	s.batchTokensMu.Lock()
+	s.batchTokens = nil
+	s.batchTokensMu.Unlock()
 	if s.mediaAnalysis != nil {
 		s.mediaAnalysis.close()
 	}
@@ -352,7 +358,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}", s.getFile)
 			r.Get("/files/{id}/children", s.children)
 			r.Get("/files/{id}/download", s.download)
-			r.Post("/files/batch-download", s.batchDownload)
+			r.Post("/files/batch-download/prepare", s.prepareBatchDownload)
+			r.Get("/files/batch-download/{token}", s.batchDownload)
 			r.Get("/files/{id}/preview", s.preview)
 			r.Get("/files/{id}/audio", s.audioMediaInfo)
 			r.Get("/files/{id}/audio/stream", s.audioMediaStream)

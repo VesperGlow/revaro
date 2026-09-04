@@ -7,13 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"path"
 	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
-const maxBatchDownloadFiles = 1000
+const (
+	maxBatchDownloadFiles  = 1000
+	batchDownloadTokenTTL  = 2 * time.Minute
+	maxBatchDownloadTokens = 256
+)
 
 type batchDownloadInput struct {
 	IDs []string `json:"ids"`
@@ -24,38 +30,22 @@ type batchDownloadEntry struct {
 	name string
 }
 
-func decodeBatchDownloadIDs(w http.ResponseWriter, r *http.Request) ([]string, bool) {
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil {
-		problem(w, http.StatusBadRequest, "invalid content type")
-		return nil, false
-	}
-	mediaType = strings.ToLower(mediaType)
-	if mediaType == "application/x-www-form-urlencoded" {
-		r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
-		if err := r.ParseForm(); err != nil {
-			problem(w, http.StatusBadRequest, "invalid form request")
-			return nil, false
-		}
-		if len(r.URL.Query()) != 0 {
-			problem(w, http.StatusBadRequest, "invalid form request")
-			return nil, false
-		}
-		for key := range r.PostForm {
-			if key != "ids" {
-				problem(w, http.StatusBadRequest, "invalid form request")
-				return nil, false
-			}
-		}
-		return append([]string(nil), r.PostForm["ids"]...), true
-	}
+type batchDownloadToken struct {
+	user      string
+	entries   []batchDownloadEntry
+	expiresAt time.Time
+}
 
-	// Keep the JSON API, including the existing unknown-field protection. An
-	// omitted Content-Type is accepted for compatibility with older clients.
-	if mediaType != "" && mediaType != "application/json" {
-		problem(w, http.StatusUnsupportedMediaType, "content type must be JSON or form encoded")
-		return nil, false
-	}
+type batchDownloadValidationError struct {
+	status  int
+	message string
+}
+
+func (e *batchDownloadValidationError) Error() string { return e.message }
+
+var errBatchDownloadTokenLimit = errors.New("batch download token store is full")
+
+func decodeBatchDownloadIDs(w http.ResponseWriter, r *http.Request) ([]string, bool) {
 	var in batchDownloadInput
 	if decodeJSON(w, r, &in) != nil {
 		return nil, false
@@ -63,21 +53,12 @@ func decodeBatchDownloadIDs(w http.ResponseWriter, r *http.Request) ([]string, b
 	return in.IDs, true
 }
 
-// batchDownload handles logical file IDs only. Object keys deliberately never
-// enter this request's public shape; they are resolved from the database after
-// authentication and validation.
-func (s *Server) batchDownload(w http.ResponseWriter, r *http.Request) {
-	ids, ok := decodeBatchDownloadIDs(w, r)
-	if !ok {
-		return
-	}
+func (s *Server) resolveBatchDownloadEntries(ctx context.Context, ids []string) ([]batchDownloadEntry, error) {
 	if len(ids) == 0 {
-		problem(w, http.StatusBadRequest, "at least one file id is required")
-		return
+		return nil, &batchDownloadValidationError{status: http.StatusBadRequest, message: "at least one file id is required"}
 	}
 	if len(ids) > maxBatchDownloadFiles {
-		problem(w, http.StatusBadRequest, fmt.Sprintf("a maximum of %d files can be downloaded at once", maxBatchDownloadFiles))
-		return
+		return nil, &batchDownloadValidationError{status: http.StatusBadRequest, message: fmt.Sprintf("a maximum of %d files can be downloaded at once", maxBatchDownloadFiles)}
 	}
 
 	entries := make([]batchDownloadEntry, 0, len(ids))
@@ -85,44 +66,143 @@ func (s *Server) batchDownload(w http.ResponseWriter, r *http.Request) {
 	usedNames := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		if !validBatchDownloadID(id) {
-			problem(w, http.StatusBadRequest, "invalid file id")
-			return
+			return nil, &batchDownloadValidationError{status: http.StatusBadRequest, message: "invalid file id"}
 		}
 		if _, exists := seenIDs[id]; exists {
-			problem(w, http.StatusBadRequest, "duplicate file id")
-			return
+			return nil, &batchDownloadValidationError{status: http.StatusBadRequest, message: "duplicate file id"}
 		}
 		seenIDs[id] = struct{}{}
 
-		file, err := s.readableFile(r.Context(), id)
+		file, err := s.readableFile(ctx, id)
 		if errors.Is(err, sql.ErrNoRows) {
-			problem(w, http.StatusNotFound, "file not found")
-			return
+			return nil, &batchDownloadValidationError{status: http.StatusNotFound, message: "file not found"}
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			s.log.Error("batch download metadata read failed", "error", err)
-			problem(w, http.StatusInternalServerError, "could not read file metadata")
-			return
+			return nil, &batchDownloadValidationError{status: http.StatusInternalServerError, message: "could not read file metadata"}
 		}
 		if file.Kind != "file" {
-			problem(w, http.StatusBadRequest, "directories cannot be downloaded in a batch")
-			return
+			return nil, &batchDownloadValidationError{status: http.StatusBadRequest, message: "directories cannot be downloaded in a batch"}
 		}
 		if file.Status != "ready" {
-			problem(w, http.StatusConflict, "file is not ready for download")
-			return
+			return nil, &batchDownloadValidationError{status: http.StatusConflict, message: "file is not ready for download"}
 		}
 		if file.objectKey == "" {
 			// A ready file without an object key is corrupt metadata. Keep this
 			// failure before response headers so it cannot create a partial ZIP.
 			s.log.Error("batch download file has no object key", "file_id", file.ID)
-			problem(w, http.StatusInternalServerError, "file content is unavailable")
-			return
+			return nil, &batchDownloadValidationError{status: http.StatusInternalServerError, message: "file content is unavailable"}
 		}
 
 		name := uniqueBatchZipName(safeBatchZipName(file.Name), usedNames)
 		usedNames[strings.ToLower(name)] = struct{}{}
 		entries = append(entries, batchDownloadEntry{file: file, name: name})
+	}
+	return entries, nil
+}
+
+func writeBatchDownloadError(w http.ResponseWriter, err error) {
+	var validationErr *batchDownloadValidationError
+	if errors.As(err, &validationErr) {
+		problem(w, validationErr.status, validationErr.message)
+		return
+	}
+	problem(w, http.StatusInternalServerError, "could not prepare batch download")
+}
+
+func (s *Server) prepareBatchDownload(w http.ResponseWriter, r *http.Request) {
+	ids, ok := decodeBatchDownloadIDs(w, r)
+	if !ok {
+		return
+	}
+	entries, err := s.resolveBatchDownloadEntries(r.Context(), ids)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		writeBatchDownloadError(w, err)
+		return
+	}
+
+	user, _ := r.Context().Value(userKey{}).(string)
+	token, err := s.issueBatchDownloadToken(user, entries)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errBatchDownloadTokenLimit) {
+			problem(w, http.StatusServiceUnavailable, "batch download preparation is busy; try again shortly")
+			return
+		}
+		s.log.Error("batch download token creation failed", "error", err)
+		problem(w, http.StatusInternalServerError, "could not prepare batch download")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+}
+
+func (s *Server) issueBatchDownloadToken(user string, entries []batchDownloadEntry) (string, error) {
+	now := time.Now()
+	s.batchTokensMu.Lock()
+	defer s.batchTokensMu.Unlock()
+	if s.batchTokens == nil {
+		s.batchTokens = make(map[string]batchDownloadToken)
+	}
+	for token, item := range s.batchTokens {
+		if !now.Before(item.expiresAt) {
+			delete(s.batchTokens, token)
+		}
+	}
+	if len(s.batchTokens) >= maxBatchDownloadTokens {
+		return "", errBatchDownloadTokenLimit
+	}
+	for {
+		token, err := newShareToken()
+		if err != nil {
+			return "", err
+		}
+		if _, exists := s.batchTokens[token]; exists {
+			continue
+		}
+		s.batchTokens[token] = batchDownloadToken{
+			user: user, entries: append([]batchDownloadEntry(nil), entries...), expiresAt: now.Add(batchDownloadTokenTTL),
+		}
+		return token, nil
+	}
+}
+
+func (s *Server) consumeBatchDownloadToken(user, token string) ([]batchDownloadEntry, bool) {
+	if len(token) < 32 || len(token) > 128 {
+		return nil, false
+	}
+	now := time.Now()
+	s.batchTokensMu.Lock()
+	defer s.batchTokensMu.Unlock()
+	for key, item := range s.batchTokens {
+		if !now.Before(item.expiresAt) {
+			delete(s.batchTokens, key)
+		}
+	}
+	item, ok := s.batchTokens[token]
+	if !ok || item.user != user {
+		return nil, false
+	}
+	delete(s.batchTokens, token)
+	return item.entries, true
+}
+
+// batchDownload consumes an authenticated, short-lived token exactly once.
+// The token contains only server-side metadata; clients can submit logical file
+// IDs during preparation but never object keys or storage paths.
+func (s *Server) batchDownload(w http.ResponseWriter, r *http.Request) {
+	user, _ := r.Context().Value(userKey{}).(string)
+	entries, ok := s.consumeBatchDownloadToken(user, chi.URLParam(r, "token"))
+	if !ok {
+		problem(w, http.StatusNotFound, "batch download token not found or expired")
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/zip")

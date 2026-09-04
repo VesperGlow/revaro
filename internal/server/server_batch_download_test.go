@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -20,9 +19,7 @@ func TestBatchDownloadCreatesZipWithAllFileContents(t *testing.T) {
 	first := a.readyFile(t, "first.txt", []byte("first content"))
 	second := a.readyFile(t, "second.txt", []byte("second content"))
 
-	rr := a.request("POST", "/api/files/batch-download", map[string]any{
-		"ids": []string{first.ID, second.ID},
-	}, true)
+	rr := batchDownload(t, a, []string{first.ID, second.ID})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("batch download=%d: %s", rr.Code, rr.Body.String())
 	}
@@ -39,29 +36,6 @@ func TestBatchDownloadCreatesZipWithAllFileContents(t *testing.T) {
 	}
 }
 
-func TestBatchDownloadAcceptsRepeatedFormIDs(t *testing.T) {
-	a := newTestApp(t)
-	first := a.readyFile(t, "first.txt", []byte("first content"))
-	second := a.readyFile(t, "second.txt", []byte("second content"))
-	values := url.Values{}
-	values.Add("ids", first.ID)
-	values.Add("ids", second.ID)
-	req := httptest.NewRequest(http.MethodPost, "/api/files/batch-download", strings.NewReader(values.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Origin", "http://example.test")
-	req.AddCookie(a.cookie)
-	rr := httptest.NewRecorder()
-	a.handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("form batch download=%d: %s", rr.Code, rr.Body.String())
-	}
-	entries := readBatchZip(t, rr.Body.Bytes())
-	if string(entries["first.txt"]) != "first content" || string(entries["second.txt"]) != "second content" {
-		t.Fatalf("zip entries=%v", entries)
-	}
-}
-
 func TestBatchDownloadMakesDuplicateNamesUnique(t *testing.T) {
 	a := newTestApp(t)
 	directoryRR := a.request("POST", "/api/directories", map[string]any{"parent_id": RootID, "name": "other"}, true)
@@ -72,9 +46,7 @@ func TestBatchDownloadMakesDuplicateNamesUnique(t *testing.T) {
 	first := a.readyFile(t, "file.txt", []byte("root"))
 	second := addBatchReadyFile(t, a, directory.ID, "file.txt", []byte("nested"))
 
-	rr := a.request("POST", "/api/files/batch-download", map[string]any{
-		"ids": []string{first.ID, second.ID},
-	}, true)
+	rr := batchDownload(t, a, []string{first.ID, second.ID})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("batch download=%d: %s", rr.Code, rr.Body.String())
 	}
@@ -88,7 +60,7 @@ func TestBatchDownloadCleansTraversalFromZipEntryNames(t *testing.T) {
 	a := newTestApp(t)
 	file := a.readyFile(t, "../evil.txt", []byte("safe name"))
 
-	rr := a.request("POST", "/api/files/batch-download", map[string]any{"ids": []string{file.ID}}, true)
+	rr := batchDownload(t, a, []string{file.ID})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("batch download=%d: %s", rr.Code, rr.Body.String())
 	}
@@ -129,7 +101,7 @@ func TestBatchDownloadRejectsInvalidSelections(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rr := a.request("POST", "/api/files/batch-download", map[string]any{"ids": tc.ids}, true)
+			rr := a.request("POST", "/api/files/batch-download/prepare", map[string]any{"ids": tc.ids}, true)
 			if rr.Code != tc.code {
 				t.Fatalf("status=%d want=%d body=%s", rr.Code, tc.code, rr.Body.String())
 			}
@@ -142,10 +114,53 @@ func TestBatchDownloadRejectsInvalidSelections(t *testing.T) {
 
 func TestBatchDownloadRequiresAuthentication(t *testing.T) {
 	a := newTestApp(t)
-	rr := a.request("POST", "/api/files/batch-download", map[string]any{"ids": []string{ids.New()}}, false)
+	rr := a.request("POST", "/api/files/batch-download/prepare", map[string]any{"ids": []string{ids.New()}}, false)
 	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated status=%d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("unauthenticated prepare status=%d: %s", rr.Code, rr.Body.String())
 	}
+	file := a.readyFile(t, "auth.txt", []byte("auth"))
+	token := prepareBatchDownload(t, a, []string{file.ID})
+	rr = a.request("GET", "/api/files/batch-download/"+token, nil, false)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated download status=%d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestBatchDownloadTokenIsOneTime(t *testing.T) {
+	a := newTestApp(t)
+	file := a.readyFile(t, "once.txt", []byte("once"))
+	token := prepareBatchDownload(t, a, []string{file.ID})
+	first := a.request("GET", "/api/files/batch-download/"+token, nil, true)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first batch download=%d: %s", first.Code, first.Body.String())
+	}
+	second := a.request("GET", "/api/files/batch-download/"+token, nil, true)
+	if second.Code != http.StatusNotFound {
+		t.Fatalf("reused batch download=%d: %s", second.Code, second.Body.String())
+	}
+}
+
+type batchDownloadPrepareResponse struct {
+	Token string `json:"token"`
+}
+
+func prepareBatchDownload(t *testing.T, a *testApp, ids []string) string {
+	t.Helper()
+	rr := a.request("POST", "/api/files/batch-download/prepare", map[string]any{"ids": ids}, true)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("batch download prepare=%d: %s", rr.Code, rr.Body.String())
+	}
+	response := decode[batchDownloadPrepareResponse](t, rr)
+	if response.Token == "" {
+		t.Fatal("batch download prepare returned an empty token")
+	}
+	return response.Token
+}
+
+func batchDownload(t *testing.T, a *testApp, ids []string) *httptest.ResponseRecorder {
+	t.Helper()
+	token := prepareBatchDownload(t, a, ids)
+	return a.request("GET", "/api/files/batch-download/"+token, nil, true)
 }
 
 func addBatchReadyFile(t *testing.T, a *testApp, parentID, name string, content []byte) File {

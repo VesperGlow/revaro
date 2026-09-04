@@ -33,6 +33,31 @@ test('创建目录、真实上传、移动、删除、回收站和恢复',async(
   await expect(page.getByText('回收站是空的')).toBeVisible()
 })
 
+test('多选文件通过一次 ZIP 下载且 CSP 保持禁止 frame',async({page})=>{
+  let contentSecurityPolicy=''
+  page.on('response',response=>{
+    if(response.request().resourceType()==='document'&&new URL(response.url()).pathname==='/') contentSecurityPolicy=response.headers()['content-security-policy']||''
+  })
+  await login(page)
+  expect(contentSecurityPolicy).toContain("frame-src 'none'")
+
+  await page.locator('input[type=file]').first().setInputFiles([
+    {name:'batch-one.txt',mimeType:'text/plain',buffer:Buffer.from('batch one\n')},
+    {name:'batch-two.txt',mimeType:'text/plain',buffer:Buffer.from('batch two\n')},
+  ])
+  await expect(page.locator('.file-card').filter({hasText:'batch-one.txt'})).toBeVisible({timeout:20_000})
+  await expect(page.locator('.file-card').filter({hasText:'batch-two.txt'})).toBeVisible({timeout:20_000})
+  await selectCard(page,'batch-one.txt')
+  await selectCard(page,'batch-two.txt')
+  await expect(page.locator('iframe')).toHaveCount(0)
+
+  const downloadPromise=page.waitForEvent('download')
+  await page.getByRole('toolbar',{name:'所选项目操作'}).getByRole('button',{name:'下载 (2)'}).click()
+  const download=await downloadPromise
+  expect(download.suggestedFilename()).toBe('revaro-download.zip')
+  await expect(page.locator('iframe')).toHaveCount(0)
+})
+
 test('桌面任务中心可展开和关闭',async({page})=>{
   await login(page)
   await page.getByTitle('任务中心').click()
