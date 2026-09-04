@@ -63,6 +63,8 @@ func TestDatabaseBackupObjectKeyRoundTrip(t *testing.T) {
 	for _, foreign := range []string{
 		"blobs/00000000-0000-0000-0000-000000000000",
 		"profile/avatar",
+		"revaro-db-20260902T103005Z.sqlite",
+		"revaro-backups/database/revaro-db-20260902T103005Z",
 		"revaro-backups/database/foreign-object",
 		"revaro-backups/database/revaro-db-notatime.sqlite",
 		"revaro-backups/database/revaro-db-2026-09-02T10:30:05Z.sqlite",

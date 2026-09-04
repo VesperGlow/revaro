@@ -38,7 +38,14 @@ func databaseBackupObjectKey(when time.Time) string {
 // Keys outside the backup namespace or with malformed timestamps are ignored
 // so foreign objects in the prefix can never break scheduling or retention.
 func parseDatabaseBackupKey(key string) (time.Time, bool) {
-	name := strings.TrimSuffix(strings.TrimPrefix(key, backupObjectPrefix+"/"), backupSnapshotFileSuffix)
+	name, ok := strings.CutPrefix(key, backupObjectPrefix+"/")
+	if !ok {
+		return time.Time{}, false
+	}
+	name, ok = strings.CutSuffix(name, backupSnapshotFileSuffix)
+	if !ok {
+		return time.Time{}, false
+	}
 	stamp, ok := strings.CutPrefix(name, backupSnapshotFilePrefix)
 	if !ok {
 		return time.Time{}, false
