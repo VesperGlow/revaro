@@ -44,6 +44,9 @@ services:
       BACKUP_INTERVAL: "${BACKUP_INTERVAL:-24h}"
       BACKUP_RETENTION: "${BACKUP_RETENTION:-14}"
 
+      FLOW_CACHE_TTL: "${FLOW_CACHE_TTL:-720h}"
+      FLOW_CACHE_CAPACITY: "${FLOW_CACHE_CAPACITY:-1073741824}"
+
     volumes:
       - revaro-data:/data
     read_only: true
