@@ -32,14 +32,24 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/revaro 
 FROM debian:bookworm-slim AS ffmpeg
 ARG FFMPEG_VERSION=5.1.10
 ARG FFMPEG_SHA256=392306d6fc45dab0e9e0ea55381e071842e83a2fb31d320aeda40477a7766293
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+ARG X264_COMMIT=0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee
+ARG X264_SHA256=d0967a1348c85dfde363bb52610403be898171493100561efa0dd05d5fd1ae50
+ARG X265_COMMIT=419182243fb2e2dfbe91dfc45a51778cf704f849
+ARG X265_SHA256=d82fccba4c302b9873ba09d021f9e71bfb85996d90ff4d6a8ba69bcf13dd90b9
+RUN apt-get -o Acquire::Retries=5 update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     build-essential curl ca-certificates xz-utils nasm cmake pkg-config \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN curl -fsSL -o ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz \
+RUN curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
+      -o ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz \
     && echo "${FFMPEG_SHA256}  ffmpeg.tar.xz" | sha256sum -c - \
-    && curl -fsSL -o x264.tar.gz https://code.videolan.org/videolan/x264/-/archive/master/x264-master.tar.gz \
-    && curl -fsSL -o x265.tar.gz https://github.com/videolan/x265/archive/refs/heads/master.tar.gz \
+    && curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
+      -o x264.tar.gz "https://code.videolan.org/videolan/x264/-/archive/${X264_COMMIT}/x264-${X264_COMMIT}.tar.gz" \
+    && echo "${X264_SHA256}  x264.tar.gz" | sha256sum -c - \
+    && curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
+      -o x265.tar.gz "https://github.com/videolan/x265/archive/${X265_COMMIT}.tar.gz" \
+    && echo "${X265_SHA256}  x265.tar.gz" | sha256sum -c - \
     && mkdir -p x264 x265 ffmpeg \
     && tar -xf x264.tar.gz -C x264 --strip-components=1 \
     && tar -xf x265.tar.gz -C x265 --strip-components=1 \
@@ -71,7 +81,8 @@ RUN ./configure \
 
 # ---- Rust 数据平面（编译与测试都针对上面的精简 libav，与运行层一致）----
 FROM rust:1.98-bookworm AS dataplane-base
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     clang cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
     libssl-dev libxml2-dev libacl1-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -81,7 +92,9 @@ RUN rustup component add rustfmt clippy
 COPY --from=ffmpeg /opt/revaro/ffmpeg /opt/revaro/ffmpeg
 ENV PATH=/opt/revaro/ffmpeg/bin:$PATH \
     PKG_CONFIG_PATH=/opt/revaro/ffmpeg/lib/pkgconfig \
-    LD_LIBRARY_PATH=/opt/revaro/ffmpeg/lib
+    LD_LIBRARY_PATH=/opt/revaro/ffmpeg/lib \
+    CARGO_NET_RETRY=10 \
+    CARGO_HTTP_TIMEOUT=120
 WORKDIR /src/data-plane
 COPY data-plane/Cargo.toml data-plane/Cargo.lock ./
 # 依赖桩编译层：用空 main 先把全部第三方依赖编译进 target/（release +
@@ -101,14 +114,22 @@ RUN mkdir src \
         "$CARGO_HOME/registry/src"
 COPY data-plane/src ./src
 
-FROM dataplane-src AS dataplane
+# 把 Rust 的格式、lint 和测试放进生产镜像依赖链。CI 只构建一次完整镜像：
+# 检查通过后才会生成 release 二进制，且源码未变化时整层直接命中缓存。
+FROM dataplane-src AS dataplane-checked
+RUN cargo fmt --check \
+    && CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets -- -D warnings \
+    && CARGO_INCREMENTAL=0 cargo test --locked
+
+FROM dataplane-checked AS dataplane
 RUN CARGO_INCREMENTAL=0 cargo build --locked --release \
     && cp target/release/revaro-data-plane /out-revaro-data-plane
 
 FROM debian:bookworm-slim
 # 运行依赖最小化：TLS 证书 / 时区 + libstdc++/libgcc（静态内链 x265 需要）
 # + 精简 FFmpeg；不安装 Debian 完整 ffmpeg 及其依赖树。
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     ca-certificates tzdata libstdc++6 libgcc-s1 libxml2 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
