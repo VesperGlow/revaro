@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Cloud, Database, DatabaseBackup, HardDrive, ListTodo, Magnet, Radio, Trash2 } from 'lucide-vue-next'
+import { Cloud, Database, DatabaseBackup, HardDrive, ListTodo, Magnet, Radio, Trash2 } from '@lucide/vue'
 import { formatSize } from '../format'
 import type { SystemStatus } from '../types'
 import ServiceCard from './ServiceCard.vue'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChevronDown, ChevronRight, Folder, FolderOpen, Home } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight, Folder, FolderOpen, Home } from '@lucide/vue'
 import { api } from '../api'
 import type { DriveFile } from '../api'
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Activity, ChevronDown, KeyRound, Pause, Play, Plus, RotateCcw, X as Square } from 'lucide-vue-next'
+import { Activity, ChevronDown, KeyRound, Pause, Play, Plus, RotateCcw, X as Square } from '@lucide/vue'
 import { api } from '../api'
 import { formatSize } from '../format'
 import type { BackgroundTask } from '../types'

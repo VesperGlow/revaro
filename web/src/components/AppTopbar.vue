@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Activity, Settings, Trash2 } from 'lucide-vue-next'
+import { Activity, Settings, Trash2 } from '@lucide/vue'
 import type { BackgroundTask } from '../types'
 import TaskCenter from './TaskCenter.vue'
 import SystemStatus from './SystemStatus.vue'

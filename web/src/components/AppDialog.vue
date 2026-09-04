@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
-import { CircleAlert, Trash2 } from 'lucide-vue-next'
+import { CircleAlert, Trash2 } from '@lucide/vue'
 
 const props=defineProps<{
   title:string

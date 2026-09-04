@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChevronDown, ChevronRight, FilePlus2, FolderPlus, FolderUp, Music2, Upload } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight, FilePlus2, FolderPlus, FolderUp, Music2, Upload } from '@lucide/vue'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
 
