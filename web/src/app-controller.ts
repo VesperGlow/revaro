@@ -3,6 +3,7 @@ import { marked } from 'marked'
 import { computed, defineAsyncComponent, defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from './api'
 import type { DriveFile } from './api'
+import { downloadSelectedBatch } from './download'
 import AppDialog from './components/AppDialog.vue'
 import AppTopbar from './components/AppTopbar.vue'
 import DocumentEditor from './components/DocumentEditor.vue'
@@ -259,7 +260,9 @@ export default defineComponent({
     }
     function downloadSelected(){
       const files=[...selectedFiles.value]
-      files.forEach((item,index)=>window.setTimeout(()=>download(item),index*180))
+      if(!files.length)return
+      if(files.length===1){download(files[0]);return}
+      downloadSelectedBatch(files)
     }
     
     async function extractArchive(item:DriveFile){

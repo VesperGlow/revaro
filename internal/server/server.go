@@ -352,6 +352,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}", s.getFile)
 			r.Get("/files/{id}/children", s.children)
 			r.Get("/files/{id}/download", s.download)
+			r.Post("/files/batch-download", s.batchDownload)
 			r.Get("/files/{id}/preview", s.preview)
 			r.Get("/files/{id}/audio", s.audioMediaInfo)
 			r.Get("/files/{id}/audio/stream", s.audioMediaStream)
