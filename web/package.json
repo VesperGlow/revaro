@@ -9,7 +9,8 @@
     "test": "vitest run src --pool=vmThreads --maxWorkers=1",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint .",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "benchmark:reader": "playwright test e2e/reader-flow.spec.ts --grep @benchmark"
   },
   "dependencies": {
     "@svta/cml-cmcd": "2.5.0",

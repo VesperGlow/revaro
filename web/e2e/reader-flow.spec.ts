@@ -12,7 +12,6 @@ const BOOK_ID = 'book-1'
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const BLOCKS_PER_CHUNK = 20
 const CHUNK_COUNT = 12
-const TOTAL_BLOCKS = BLOCKS_PER_CHUNK * CHUNK_COUNT
 const DB_NAME = 'revaro-reader-cache'
 
 interface TocFixture {
@@ -34,6 +33,7 @@ interface FlowFixture {
   bookKey?: string
   // 每 spine 覆盖的 chunk 数（默认 1：每 chunk 一个 spine；0 = 单一大 spine）
   chunksPerSpine?: number
+  chunkCount?: number
   toc?: TocFixture[]
   chunkHTML?: (chunk: number) => string
   clearCache?: boolean
@@ -59,19 +59,21 @@ async function mockAPI(page: Page, fixture: FlowFixture = {}) {
   flowRequests = {}
   nonChunkRequests = []
   const chunkPerSpine = fixture.chunksPerSpine ?? 1
-  const spineSize = chunkPerSpine > 0 ? chunkPerSpine * BLOCKS_PER_CHUNK : TOTAL_BLOCKS
+  const chunkCount = fixture.chunkCount ?? CHUNK_COUNT
+  const totalBlocks = chunkCount * BLOCKS_PER_CHUNK
+  const spineSize = chunkPerSpine > 0 ? chunkPerSpine * BLOCKS_PER_CHUNK : totalBlocks
   const spines =
     chunkPerSpine === 0
-      ? [{ block_start: 0, block_count: TOTAL_BLOCKS }]
-      : Array.from({ length: CHUNK_COUNT / chunkPerSpine }, (_, i) => ({ block_start: i * spineSize, block_count: spineSize }))
-  const totalChars = TOTAL_BLOCKS * 40
+      ? [{ block_start: 0, block_count: totalBlocks }]
+      : Array.from({ length: chunkCount / chunkPerSpine }, (_, i) => ({ block_start: i * spineSize, block_count: spineSize }))
+  const totalChars = totalBlocks * 40
   const manifest = {
     version: fixture.manifestVersion ?? 4,
     format: 'epub',
     book_key: fixture.bookKey ?? 'book-key-1',
     total_chars: totalChars,
     spines,
-    chunks: Array.from({ length: CHUNK_COUNT }, (_, i) => ({
+    chunks: Array.from({ length: chunkCount }, (_, i) => ({
       index: i,
       block_start: i * BLOCKS_PER_CHUNK,
       block_count: BLOCKS_PER_CHUNK,
@@ -80,7 +82,7 @@ async function mockAPI(page: Page, fixture: FlowFixture = {}) {
     toc: fixture.toc ?? [
       { label: '开头', depth: 0, spine: 0, block: 0, chunk: 0, text_path: [0], text_offset: 0 },
       { label: '中段', depth: 0, spine: 5, block: 5 * BLOCKS_PER_CHUNK + 3, chunk: 5, text_path: [0], text_offset: 0 },
-      { label: '结尾', depth: 0, spine: 11, block: TOTAL_BLOCKS - 1, chunk: 11, text_path: [0], text_offset: 0 },
+      { label: '结尾', depth: 0, spine: 11, block: totalBlocks - 1, chunk: 11, text_path: [0], text_offset: 0 },
     ],
   }
   await page.route('**/*', async (route: Route) => {
@@ -417,6 +419,50 @@ async function expectBlockVisible(page: Page, block: number) {
     )
     .toBe(true)
 }
+
+test('@benchmark 超长单一 spine 深度 TOC 跳转的稳定前缀成本', async ({ browser }, testInfo) => {
+  test.slow()
+  const results: Array<{ chunks: number; blocks: number; median_ms: number; samples_ms: number[] }> = []
+
+  for (const chunkCount of [12, 24, 48]) {
+    const lastChunk = chunkCount - 1
+    const lastBlock = chunkCount * BLOCKS_PER_CHUNK - 1
+    const samples: number[] = []
+    for (let trial = 0; trial < 3; trial++) {
+      const page = await browser.newPage()
+      await openReader(page, {
+        bookKey: `long-spine-benchmark-${chunkCount}-${trial}`,
+        chunksPerSpine: 0,
+        chunkCount,
+        clearCache: true,
+        toc: [{ label: '末端', depth: 0, spine: 0, block: lastBlock, chunk: lastChunk, text_path: [0], text_offset: 0 }],
+      })
+
+      const started = await page.evaluate(() => performance.now())
+      await page.locator('#toc-button').click()
+      await page.locator('.toc-item', { hasText: '末端' }).click()
+      await expectBlockVisible(page, lastBlock)
+      samples.push(Math.round(await page.evaluate(start => performance.now() - start, started)))
+
+      // 深度跳转必须保留当前 spine 的完整排版前缀，且延迟
+      // window sync 不得把已精确定位的目标拉回。
+      await expect(page.locator('#flow .rf-chunk')).toHaveCount(chunkCount)
+      await expect(page.locator('#flow [data-block]')).toHaveCount(lastBlock + 1)
+      for (const count of Object.values(flowRequests)) expect(count).toBe(1)
+      await page.waitForTimeout(500)
+      await expectBlockVisible(page, lastBlock)
+      await page.close()
+    }
+    const sorted = [...samples].sort((a, b) => a - b)
+    results.push({ chunks: chunkCount, blocks: lastBlock + 1, median_ms: sorted[1], samples_ms: samples })
+  }
+
+  await testInfo.attach('reader-long-spine-benchmark.json', {
+    body: JSON.stringify(results, null, 2),
+    contentType: 'application/json',
+  })
+  console.info(`reader-long-spine benchmark: ${JSON.stringify(results)}`)
+})
 
 // sectionChunkHTML 模仿真实 EPUB 章节：h1 章首（父级目录目标 = 文本
 // locator，且是 data-spine-start 稳定分页边界）+ h4#sigil + 段落。

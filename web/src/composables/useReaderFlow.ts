@@ -249,25 +249,52 @@ async function ensureWindow(newC0: number, newC1: number): Promise<void> {
     for (let i = minCur; i < newC0; i++) existing.get(i)?.remove()
     for (let i = newC1 + 1; i <= maxCur; i++) existing.get(i)?.remove()
   }
-  // 补齐缺失 chunk：插到下一个已存在的 chunk 前，保持阅读顺序
+  // 前缀较长时，串行读取再逐块插入会重复触发网络等待与
+  // CSS columns reflow。限制并发读取，再按原顺序分段批量插入；稳定
+  // spine 前缀、DOM 顺序和 L1 最终 LRU 顺序不变。
+  const missing: number[] = []
   for (let i = newC0; i <= newC1; i++) {
-    if (existing.has(i)) continue
-    const html = await chunkText(i)
-    if (flowEl.value !== flow) return // 窗口/组件已变化
-    const section = document.createElement('div')
-    section.className = 'rf-chunk'
-    section.dataset.chunk = String(i)
-    section.innerHTML = html
+    if (!existing.has(i)) missing.push(i)
+  }
+  const loaded = new Map<number, string>()
+  let nextMissing = 0
+  async function loadMissing(): Promise<void> {
+    while (nextMissing < missing.length) {
+      const index = missing[nextMissing++]
+      loaded.set(index, await chunkText(index))
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(6, missing.length) }, loadMissing))
+  if (flowEl.value !== flow) return // 窗口/组件已变化
+
+  // 并发完成顺序不确定；按 chunk 序重新 touch，保持原串行路径的
+  // PageCache 淘汰结果。
+  for (const index of missing) chunkHTML.set(index, loaded.get(index)!)
+
+  let cursor = 0
+  while (cursor < missing.length) {
+    const start = cursor
+    while (cursor + 1 < missing.length && missing[cursor + 1] === missing[cursor] + 1) cursor++
+    const end = cursor
+    const fragment = document.createDocumentFragment()
+    for (let i = start; i <= end; i++) {
+      const index = missing[i]
+      const section = document.createElement('div')
+      section.className = 'rf-chunk'
+      section.dataset.chunk = String(index)
+      section.innerHTML = loaded.get(index)!
+      fragment.appendChild(section)
+    }
     let ref: HTMLElement | null = null
-    for (let j = i + 1; j <= newC1; j++) {
-      const next = flow.querySelector<HTMLElement>(`.rf-chunk[data-chunk="${j}"]`)
+    for (let i = missing[end] + 1; i <= newC1; i++) {
+      const next = flow.querySelector<HTMLElement>(`.rf-chunk[data-chunk="${i}"]`)
       if (next) {
         ref = next
         break
       }
     }
-    flow.insertBefore(section, ref)
-    existing.set(i, section)
+    flow.insertBefore(fragment, ref)
+    cursor++
   }
   c0 = newC0
   c1 = newC1
