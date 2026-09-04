@@ -171,9 +171,10 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
   `FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY`（flow 对象 GC）与
   `MEDIA_CACHE_CAPACITY`（全局磁盘上限）。
 - Web：`web/src/reader/{types,api,flow,cache,clientCache,prefs}`；
-  `Reader.vue` 保留页面模板与 UI 编排，`useReaderFlow` 管理稳定窗口、分页、
-  L2 快开与生命周期，`useReaderPositioning` 管理 DOM locator/readingAnchor
-  和 CSS columns 位置换算。
+  `Reader.vue` 保留页面模板与 UI 编排，`useReaderFlow` 编排分页、导航、
+  L2 manifest 快开与生命周期，`useReaderWindow` 管理 chunk 的 L1/L2 读取与
+  稳定 spine DOM 窗口，`useReaderPositioning` 管理 DOM locator/readingAnchor 和
+  CSS columns 位置换算。
 - 测试：Go（flow 构建不变量、locator 往返、spine 边界注入、TXT 连续性、
   服务端端点契约、幂等构建/自愈、缓存管理器单测）；Web vitest（纯 helper、
   ClientCacheManager）；Playwright route-mock e2e（窗口预取、热路径零网络、

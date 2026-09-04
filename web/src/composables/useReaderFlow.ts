@@ -5,16 +5,16 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { DriveFile } from '../api'
 import type { BookProgress, FlowManifest, FlowTocEntry, ReadingAnchor, ReaderPrefs } from '../reader/types'
-import { fetchBookInfo, fetchChunk, fetchFlow, fetchProgress, saveProgress } from '../reader/api'
-import { chunkForBlock, locateChar, spineForBlock, stableWindowRange, tocActiveIndex, totalBlocks } from '../reader/flow'
-import { PageCache, InFlight } from '../reader/cache'
+import { fetchBookInfo, fetchFlow, fetchProgress, saveProgress } from '../reader/api'
+import { chunkForBlock, locateChar, spineForBlock, tocActiveIndex, totalBlocks } from '../reader/flow'
 import { ClientCacheManager } from '../reader/clientCache'
 import { clamp, computeMargins, FONT_MAX, FONT_MIN, LINE_HEIGHTS, loadPrefs, savePrefs } from '../reader/prefs'
 import { useReaderPositioning, type ReaderLayoutMetrics } from './useReaderPositioning'
+import { useReaderWindow } from './useReaderWindow'
 
-// useReaderFlow owns the tightly-coupled reader state machine: stable chunk
-// windows, CSS-column positioning, navigation locators, progress, and relayout.
-// Reader.vue intentionally keeps only page presentation and event wiring.
+// useReaderFlow orchestrates the reader state machine: pagination, navigation,
+// progress, relayout, and lifecycle. Window/cache and DOM positioning stay in
+// reader-specific composables; Reader.vue keeps presentation and event wiring.
 export function useReaderFlow(file: DriveFile) {
 
 const kind = computed(() => (/\.epub$/i.test(file.name) ? 'epub' : 'txt'))
@@ -44,18 +44,15 @@ const FONT_STACK = '"Noto Serif SC", "Songti SC", Georgia, "Times New Roman", "S
 // 阅读 spine 内必须保留其排版前缀，否则 CSS columns 以任意 chunk 为原点，
 // 窗口增删会改变 page boundary（相位漂移）。PageCache（L1）+ 持久
 // ClientCacheManager（L2）让窗口滑动与重开零网络。
-const AHEAD_MARGIN = 3 // 阅读方向前预取的 chunk 数
 let metrics: ReaderLayoutMetrics = { width: 0, height: 0, side: 0, top: 0, bottom: 0, pitch: 0, colHeight: 0 }
-let c0 = 0 // 已加载窗口首 chunk
-let c1 = -1 // 已加载窗口末 chunk
 let cols = 1 // 当前已排版（已加载窗口内）的栏数
 let currentCol = 0
 let lastX = 0
 let topAnchor: ReadingAnchor | null = null // 当前页顶部的 readingAnchor
 let promoting = false // will-change:transform 是否开启（仅拖动/动画期间）
-const chunkHTML = new PageCache(24)
-const chunkFlight = new InFlight()
 const persistentCache = new ClientCacheManager()
+const readerWindow = useReaderWindow(file.id, flowEl, manifest, persistentCache)
+const { chunkElement, ensureWindow, ensureWindowForBlock, lastChunkIndex, prefetchSurrounding } = readerWindow
 let turnBusy = false
 let pendingTurns = 0
 let syncing = false // windowSync（窗口重起源）在途：turn 不得按陈旧 cols/currentCol 排版
@@ -99,11 +96,6 @@ const toc = computed(() => manifest.value?.toc ?? [])
 function totalBlockCount(): number {
   const m = manifest.value
   return m ? totalBlocks(m) : 0
-}
-
-function lastChunkIndex(): number {
-  const m = manifest.value
-  return m && m.chunks.length ? m.chunks.length - 1 : -1
 }
 
 function viewportSize(): { w: number; h: number } {
@@ -196,122 +188,6 @@ function animateX(from: number, to: number): Promise<void> {
   })
 }
 
-// ---- 窗口管理（增量 DOM 更新） ----
-
-// chunkText 的三级读取路径：内存 L1 → 持久 L2 → 网络（成功回填两级）。
-// chunk 内容随（书内容指纹 × flow 版本 × chunk 序号）固定，L2 键安全。
-async function chunkText(index: number): Promise<string> {
-  const hit = chunkHTML.get(index)
-  if (hit !== undefined) return hit
-  return chunkFlight.run(index, async () => {
-    const m = manifest.value
-    const bookKey = m?.book_key ?? ''
-    const version = m?.version ?? 0
-    if (bookKey) {
-      const cached = await persistentCache.getChunk(bookKey, version, index)
-      if (cached !== null) {
-        chunkHTML.set(index, cached)
-        return cached
-      }
-    }
-    const html = await fetchChunk(file.id, index)
-    chunkHTML.set(index, html)
-    if (bookKey) void persistentCache.putChunk(bookKey, version, index, html)
-    return html
-  })
-}
-
-function chunkElement(index: number): HTMLElement | null {
-  const flow = flowEl.value
-  return flow ? (flow.querySelector(`.rf-chunk[data-chunk="${index}"]`) as HTMLElement | null) : null
-}
-
-// ensureWindow 把窗口变为 [newC0, newC1]：只 append 新 chunk、remove 已不在
-// 窗口内的旧 chunk，保留的 chunk 子树原样不动（避免清空重建触发整棵多栏
-// CSS columns reflow）。chunk HTML 走两级缓存，重入窗口不重新请求。
-async function ensureWindow(newC0: number, newC1: number): Promise<void> {
-  const flow = flowEl.value
-  const m = manifest.value
-  if (!flow || !m) return
-  const last = Math.max(0, m.chunks.length - 1)
-  newC0 = clamp(newC0, 0, last)
-  newC1 = clamp(newC1, newC0, last)
-  if (c1 >= 0 && newC0 === c0 && newC1 === c1) return
-  const existing = new Map<number, HTMLElement>()
-  for (const child of Array.from(flow.children) as HTMLElement[]) {
-    const idx = Number((child as HTMLElement).dataset.chunk)
-    if (Number.isInteger(idx)) existing.set(idx, child as HTMLElement)
-  }
-  if (existing.size) {
-    const minCur = Math.min(...existing.keys())
-    const maxCur = Math.max(...existing.keys())
-    // 移除窗口外（只发生在头部/尾部，逐节点 remove）
-    for (let i = minCur; i < newC0; i++) existing.get(i)?.remove()
-    for (let i = newC1 + 1; i <= maxCur; i++) existing.get(i)?.remove()
-  }
-  // 前缀较长时，串行读取再逐块插入会重复触发网络等待与
-  // CSS columns reflow。限制并发读取，再按原顺序分段批量插入；稳定
-  // spine 前缀、DOM 顺序和 L1 最终 LRU 顺序不变。
-  const missing: number[] = []
-  for (let i = newC0; i <= newC1; i++) {
-    if (!existing.has(i)) missing.push(i)
-  }
-  const loaded = new Map<number, string>()
-  let nextMissing = 0
-  async function loadMissing(): Promise<void> {
-    while (nextMissing < missing.length) {
-      const index = missing[nextMissing++]
-      loaded.set(index, await chunkText(index))
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(6, missing.length) }, loadMissing))
-  if (flowEl.value !== flow) return // 窗口/组件已变化
-
-  // 并发完成顺序不确定；按 chunk 序重新 touch，保持原串行路径的
-  // PageCache 淘汰结果。
-  for (const index of missing) chunkHTML.set(index, loaded.get(index)!)
-
-  let cursor = 0
-  while (cursor < missing.length) {
-    const start = cursor
-    while (cursor + 1 < missing.length && missing[cursor + 1] === missing[cursor] + 1) cursor++
-    const end = cursor
-    const fragment = document.createDocumentFragment()
-    for (let i = start; i <= end; i++) {
-      const index = missing[i]
-      const section = document.createElement('div')
-      section.className = 'rf-chunk'
-      section.dataset.chunk = String(index)
-      section.innerHTML = loaded.get(index)!
-      fragment.appendChild(section)
-    }
-    let ref: HTMLElement | null = null
-    for (let i = missing[end] + 1; i <= newC1; i++) {
-      const next = flow.querySelector<HTMLElement>(`.rf-chunk[data-chunk="${i}"]`)
-      if (next) {
-        ref = next
-        break
-      }
-    }
-    flow.insertBefore(fragment, ref)
-    cursor++
-  }
-  c0 = newC0
-  c1 = newC1
-}
-
-// ensureWindowForBlock 把窗口收敛到 block 所属 spine 的稳定分页窗口：
-// [spine 起始块所在 chunk, block 所在 chunk + AHEAD]。spine 排版前缀永远
-// 保留，只有进入下一 spine 后才允许释放上一 spine 的 chunk。
-async function ensureWindowForBlock(block: number): Promise<boolean> {
-  const m = manifest.value
-  if (!m) return false
-  const [lo, hi] = stableWindowRange(m, block, AHEAD_MARGIN)
-  if (c1 >= 0 && lo === c0 && hi === c1) return false
-  await ensureWindow(lo, hi)
-  return true
-}
-
 // alignToAnchor 不带动画地回到 topAnchor 所在栏（窗口滑动后位置不丢）。
 async function alignToAnchor(): Promise<void> {
   if (!manifest.value || stage.value !== 'reading') return
@@ -395,7 +271,7 @@ async function rebaseForCenter(lo: number, hi: number): Promise<boolean> {
   const last = Math.max(0, m.chunks.length - 1)
   const newLo = clamp(lo, 0, last)
   const newHi = clamp(hi, newLo, last)
-  if (c1 >= 0 && newLo === c0 && newHi === c1) return false
+  if (readerWindow.last >= 0 && newLo === readerWindow.first && newHi === readerWindow.last) return false
   await ensureWindow(newLo, newHi)
   measureCols()
   await alignToAnchor()
@@ -417,11 +293,11 @@ async function turn(dir: -1 | 1) {
     if (target < 0 || target >= cols) {
       // 窗口物理边缘：向该方向原始扩张一个 chunk（增量 append/remove）
       if (dir < 0) {
-        if (c0 <= 0) return
-        await rebaseForCenter(c0 - 1, c1)
+        if (readerWindow.first <= 0) return
+        await rebaseForCenter(readerWindow.first - 1, readerWindow.last)
       } else {
-        if (c1 >= lastChunkIndex()) return
-        await rebaseForCenter(c0, c1 + 1)
+        if (readerWindow.last >= lastChunkIndex()) return
+        await rebaseForCenter(readerWindow.first, readerWindow.last + 1)
       }
       target = currentCol + dir
       if (target < 0 || target >= cols) return
@@ -638,7 +514,7 @@ function scheduleWindowSync() {
 async function windowSync() {
   syncTimer = null
   const m = manifest.value
-  if (closing || !m || stage.value !== 'reading' || c1 < 0) return
+  if (closing || !m || stage.value !== 'reading' || readerWindow.last < 0) return
   // 程序化 TOC 导航在途：跳转落地时会按导航目标提交 anchor 并重新调度
   // sync，这里不得按（可能仍是跳转前的）topAnchor 抢先重建窗口/对齐。
   if (navDepth > 0) return
@@ -829,11 +705,7 @@ async function setupView(myGen: number, flow: FlowManifest, saved: BookProgress[
 // chunk 由 putManifest 按版本/指纹清除。
 function resetFlow() {
   renderedManifest = null
-  chunkHTML.clear()
-  chunkFlight.clear()
-  flowEl.value?.replaceChildren()
-  c0 = 0
-  c1 = -1
+  readerWindow.reset()
   cols = 1
   currentCol = 0
   lastX = 0
@@ -903,18 +775,6 @@ async function open() {
   }
 }
 
-function prefetchSurrounding(block: number) {
-  const m = manifest.value
-  if (!m) return
-  const ci = chunkForBlock(m, block)
-  if (ci < 0) return
-  for (let d = 1; d <= 2; d++) {
-    for (const j of [ci + d, ci - d]) {
-      if (j >= 0 && j < m.chunks.length) void chunkText(j)
-    }
-  }
-}
-
 // ---- 滑动 ----
 
 function bindSwipe(el: HTMLElement | null) {
@@ -938,7 +798,7 @@ function bindSwipe(el: HTMLElement | null) {
     }
     const target = currentCol + (dx < 0 ? 1 : -1)
     const mayReach = target >= 0 && target < cols
-    const mayExtend = dx < 0 ? target >= cols && c1 < lastChunkIndex() : target < 0 && c0 > 0
+    const mayExtend = dx < 0 ? target >= cols && readerWindow.last < lastChunkIndex() : target < 0 && readerWindow.first > 0
     if (mayReach || mayExtend) void turn(dx < 0 ? 1 : -1)
     else void goToCol(currentCol, true)
   }
