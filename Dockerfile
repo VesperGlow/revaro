@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM node:24-alpine AS web
+FROM node:26-alpine AS web
 WORKDIR /src
 COPY web/package.json web/package-lock.json ./web/
 RUN cd web && npm ci
@@ -11,7 +11,7 @@ COPY web/public ./web/public
 COPY internal/webui ./internal/webui
 RUN cd web && npm run build
 
-FROM golang:1.26-alpine AS backend
+FROM golang:1.27-alpine AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
