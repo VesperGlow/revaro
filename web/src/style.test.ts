@@ -55,6 +55,7 @@ describe('reader chrome layout',()=>{
     expect(reader).toContain('viewBox="0 0 18 14"')
     expect(css).toContain('grid-template-columns: 48px minmax(0, 1fr) 48px')
     expect(css).toContain('vector-effect: non-scaling-stroke')
+    expect(css).toContain('font-size: 15px')
     expect(css).toContain('env(safe-area-inset-top, 0px)')
   })
 
@@ -62,7 +63,9 @@ describe('reader chrome layout',()=>{
     expect(reader).not.toContain('FullBleedProgress')
     expect(reader).not.toContain('id="page-slider"')
     expect(css).toContain('grid-template-columns: repeat(3, 1fr)')
-    expect(css).toContain('min-height: 48px')
+    expect(css).toContain('font-size: 27px')
+    expect(css).toContain('font-size: 13px')
+    expect(css).toContain('min-height: 60px')
   })
 })
 

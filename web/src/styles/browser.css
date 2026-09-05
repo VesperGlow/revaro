@@ -776,11 +776,10 @@ body.reader-open {
   text-overflow: ellipsis;
 }
 .reader-icon-btn {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  width: 48px;
-  height: 48px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
   justify-self: center;
   border: 0;
   background: transparent;
@@ -792,9 +791,8 @@ body.reader-open {
   padding: 0;
 }
 .reader-back-icon {
-  width: 26px;
+  width: 23px;
   height: auto;
-  margin-left: 6px;
   overflow: visible;
   fill: none;
   stroke: currentColor;
@@ -843,7 +841,7 @@ body.reader-open {
 .reader-progress-ring b {
   position: relative;
   z-index: 1;
-  font-size: 9px;
+  font-size: 15px;
   font-weight: 600;
   line-height: 1;
 }
