@@ -52,7 +52,9 @@ describe('reader chrome layout',()=>{
     expect(reader).not.toContain('class="reader-bar-spacer"')
     expect(reader).toContain('Math.round(clamp(percentNow, 0, 100))')
     expect(reader).not.toContain('id="reader-kind"')
-    expect(css).toContain('grid-template-columns: 60px minmax(0, 1fr) 60px')
+    expect(reader).toContain('viewBox="0 0 18 14"')
+    expect(css).toContain('grid-template-columns: 48px minmax(0, 1fr) 48px')
+    expect(css).toContain('vector-effect: non-scaling-stroke')
     expect(css).toContain('env(safe-area-inset-top, 0px)')
   })
 

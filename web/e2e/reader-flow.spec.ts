@@ -193,10 +193,14 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     const title=document.querySelector('.reader-bar-title') as HTMLElement
     const titleText=document.getElementById('reader-title') as HTMLElement
     const back=document.getElementById('reader-back') as HTMLElement
+    const backIcon=back.querySelector('svg') as SVGElement
     const progress=document.querySelector('.reader-progress-ring') as HTMLElement
+    const progressRing=progress.querySelector('svg') as SVGElement
     const titleBox=title.getBoundingClientRect()
     const backBox=back.getBoundingClientRect()
+    const backIconBox=backIcon.getBoundingClientRect()
     const progressBox=progress.getBoundingClientRect()
+    const progressRingBox=progressRing.getBoundingClientRect()
     return {
       center:titleBox.left+titleBox.width/2,
       viewportCenter:viewport/2,
@@ -208,6 +212,8 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
       progressWidth:progressBox.width,
       backCenter:backBox.left+backBox.width/2,
       progressCenter:progressBox.left+progressBox.width/2,
+      backVisibleInset:backIconBox.left,
+      progressVisibleInset:viewport-progressRingBox.right,
       whiteSpace:getComputedStyle(titleText).whiteSpace,
       overflow:getComputedStyle(titleText).overflow,
       textOverflow:getComputedStyle(titleText).textOverflow,
@@ -215,8 +221,9 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(layout.center-layout.viewportCenter)).toBeLessThan(.5)
-  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0',progressWidth:40,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+  expect(layout).toMatchObject({backWidth:48,backHeight:48,backBackground:'rgba(0, 0, 0, 0)',progressText:'0',progressWidth:48,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
   expect(Math.abs(layout.backCenter-(layout.viewport-layout.progressCenter))).toBeLessThan(.5)
+  expect(Math.abs(layout.backVisibleInset-layout.progressVisibleInset)).toBeLessThan(2.5)
 
   await page.setViewportSize({width:390,height:844})
   await page.waitForTimeout(350)
@@ -248,7 +255,7 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(mobileLayout.titleCenter-mobileLayout.viewportCenter)).toBeLessThan(.5)
-  expect(mobileLayout).toMatchObject({progressText:'0',progressWidth:40,footerBottom:0,hasSeek:false})
+  expect(mobileLayout).toMatchObject({progressText:'0',progressWidth:48,footerBottom:0,hasSeek:false})
   expect(mobileLayout.controlsBottomClearance).toBeGreaterThanOrEqual(12)
   expect(Math.max(...mobileLayout.buttonWidths)-Math.min(...mobileLayout.buttonWidths)).toBeLessThan(.5)
   expect(Math.min(...mobileLayout.buttonHeights)).toBeGreaterThanOrEqual(44)
