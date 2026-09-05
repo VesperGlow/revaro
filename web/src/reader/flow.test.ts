@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FlowManifest, ReadingAnchor } from './types'
-import { compareAnchor, spineForBlock, chunkForBlock, chunkPrefix, locateChar, spineOriginChunk, stableWindowRange, tocActiveIndex, totalBlocks, migrateAnchor } from './flow'
+import { compareAnchor, spineForBlock, chunkForBlock, chunkPrefix, locateChar, spineOriginChunk, stableWindowRange, tocActiveIndex, totalBlocks } from './flow'
 
 function anchor(spine: number, block: number, path: number[], offset: number): ReadingAnchor {
   return { spine, block, path, offset }
@@ -83,12 +83,6 @@ describe('flow manifest lookups', () => {
     expect(tocActiveIndex(manifest, 15)).toBe(2)
   })
 
-  it('migrateAnchor：旧锚点 path[0] = 章内块号 → 全书块号', () => {
-    const legacy = migrateAnchor(manifest, { spine: 1, path: [2, 0], offset: 7 })
-    expect(legacy).toEqual({ spine: 1, block: 12, path: [0], offset: 7 })
-    const first = migrateAnchor(manifest, { spine: 2, path: [], offset: -1 })
-    expect(first.block).toBe(15)
-  })
 })
 
 describe('稳定分页边界（窗口虚拟化不允许从任意 chunk 起始）', () => {

@@ -230,7 +230,7 @@ export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4At
   let readySettled=false
   let waitingSince=0
   let lastBufferGrowth=Date.now()
-  let watchdogTimer=0
+  let watchdogTimer:ReturnType<typeof globalThis.setInterval>|null=null
   let watchdogFired=false
   let resolveReady:()=>void=()=>{}
   let rejectReady:(reason:Error)=>void=()=>{}
@@ -239,7 +239,7 @@ export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4At
 
   const log=(event:string,extra:Record<string,unknown>={})=>console.info('[revaro][mse]',event,{session:response.session_id,target,...extra})
   const cleanup=()=>{
-    if(watchdogTimer)globalThis.clearInterval(watchdogTimer)
+    if(watchdogTimer!==null){globalThis.clearInterval(watchdogTimer);watchdogTimer=null}
     element.removeEventListener('waiting',onWaiting);element.removeEventListener('stalled',onWaiting)
     element.removeEventListener('playing',onPlayable);element.removeEventListener('canplay',onPlayable);element.removeEventListener('timeupdate',onPlayable)
     try{if(sourceBuffer?.updating)sourceBuffer.abort()}catch{/* detached */}
@@ -280,7 +280,7 @@ export async function attachFMP4Stream(options:FMP4AttachOptions):Promise<FMP4At
       sourceBuffer.timestampOffset=Math.max(0,response.requested_start-response.start)
       sourceBuffer.addEventListener('error',()=>fail('MSE SourceBuffer 解码 fMP4 流失败'))
       try{mediaSource.duration=Math.max(.1,response.duration)}catch{/* duration may already be known */}
-      watchdogTimer=globalThis.setInterval(inspectWatchdog,1000) as unknown as number
+      watchdogTimer=globalThis.setInterval(inspectWatchdog,1000)
       log('stdout HTTP stream attached',{url:response.stream_url,mime_type:options.mimeType,timestamp_offset:sourceBuffer.timestampOffset})
       void pumpFMP4Stream(sourceBuffer,mediaSource,options,controller.signal,target,()=>disposed,()=>{
         if(!readySettled){readySettled=true;resolveReady()}
@@ -368,23 +368,25 @@ function snapshotTimeRanges(ranges:TimeRanges|undefined):MSEBufferedRange[]{
 }
 
 function appendSourceBuffer(sourceBuffer:SourceBuffer,data:Uint8Array,signal:AbortSignal):Promise<void>{
+  return runSourceBufferUpdate(sourceBuffer,signal,()=>sourceBuffer.appendBuffer(data.slice().buffer as ArrayBuffer),'MSE 无法追加 fMP4 流数据')
+}
+
+function removeSourceBufferRange(sourceBuffer:SourceBuffer,start:number,end:number,signal:AbortSignal):Promise<void>{
+  return runSourceBufferUpdate(sourceBuffer,signal,()=>sourceBuffer.remove(start,end),'MSE 缓存清理失败')
+}
+
+// A SourceBuffer append and eviction share the same one-shot event and abort
+// lifecycle. Keeping it here also guarantees neither operation starts after
+// its playback generation has already been cancelled.
+export function runSourceBufferUpdate(sourceBuffer:SourceBuffer,signal:AbortSignal,update:()=>void,failureMessage:string):Promise<void>{
   return new Promise((resolve,reject)=>{
     if(signal.aborted){reject(new DOMException('Aborted','AbortError'));return}
     const cleanup=()=>{sourceBuffer.removeEventListener('updateend',done);sourceBuffer.removeEventListener('error',failed);signal.removeEventListener('abort',aborted)}
     const done=()=>{cleanup();resolve()}
-    const failed=()=>{cleanup();reject(new Error('MSE 无法追加 fMP4 流数据'))}
+    const failed=()=>{cleanup();reject(new Error(failureMessage))}
     const aborted=()=>{cleanup();try{if(sourceBuffer.updating)sourceBuffer.abort()}catch{/* detached */}reject(new DOMException('Aborted','AbortError'))}
     sourceBuffer.addEventListener('updateend',done,{once:true});sourceBuffer.addEventListener('error',failed,{once:true});signal.addEventListener('abort',aborted,{once:true})
-    try{sourceBuffer.appendBuffer(data.slice().buffer as ArrayBuffer)}catch(caught){cleanup();reject(caught)}
-  })
-}
-
-function removeSourceBufferRange(sourceBuffer:SourceBuffer,start:number,end:number,signal:AbortSignal):Promise<void>{
-  return new Promise((resolve,reject)=>{
-    const cleanup=()=>{sourceBuffer.removeEventListener('updateend',done);sourceBuffer.removeEventListener('error',failed);signal.removeEventListener('abort',aborted)}
-    const done=()=>{cleanup();resolve()};const failed=()=>{cleanup();reject(new Error('MSE 缓存清理失败'))};const aborted=()=>{cleanup();try{if(sourceBuffer.updating)sourceBuffer.abort()}catch{/* detached */}reject(new DOMException('Aborted','AbortError'))}
-    sourceBuffer.addEventListener('updateend',done,{once:true});sourceBuffer.addEventListener('error',failed,{once:true});signal.addEventListener('abort',aborted,{once:true})
-    try{sourceBuffer.remove(start,end)}catch(caught){cleanup();reject(caught)}
+    try{update()}catch(caught){cleanup();reject(caught)}
   })
 }
 

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Activity, ChevronDown, KeyRound, Pause, Play, Plus, RotateCcw, X as Square } from '@lucide/vue'
 import { api } from '../api'
 import { formatSize } from '../format'
+import { isActiveTaskStatus } from '../taskStatus'
 import type { BackgroundTask } from '../types'
 import DownloadCreateDialog from './DownloadCreateDialog.vue'
 import StatusBadge from './StatusBadge.vue'
@@ -15,7 +16,7 @@ const passwordTask=ref<BackgroundTask|null>(null)
 const password=ref('')
 const error=ref('')
 const showAllCompleted=ref(false)
-const active=computed(()=>props.tasks.filter(t=>['running','queued','retrying','waiting_input'].includes(t.status)))
+const active=computed(()=>props.tasks.filter(t=>isActiveTaskStatus(t.status)))
 const completed=computed(()=>props.tasks.filter(t=>['completed','cancelled'].includes(t.status)))
 const failed=computed(()=>props.tasks.filter(t=>t.status==='failed'))
 const visibleCompleted=computed(()=>showAllCompleted.value?completed.value:completed.value.slice(0,4))

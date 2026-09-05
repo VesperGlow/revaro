@@ -5,7 +5,8 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { DriveFile } from '../api'
 import type { BookProgress, FlowManifest, FlowTocEntry, ReadingAnchor, ReaderPrefs } from '../reader/types'
-import { fetchBookInfo, fetchFlow, fetchProgress, saveProgress } from '../reader/api'
+import { fetchBookTitle, fetchFlow, fetchProgress, saveProgress } from '../reader/api'
+import { readerDisplayTitle } from '../fileTypes'
 import { chunkForBlock, locateChar, spineForBlock, tocActiveIndex, totalBlocks } from '../reader/flow'
 import { ClientCacheManager } from '../reader/clientCache'
 import { clamp, computeMargins, FONT_MAX, FONT_MIN, LINE_HEIGHTS, loadPrefs, savePrefs } from '../reader/prefs'
@@ -27,7 +28,7 @@ const flowEl = ref<HTMLElement | null>(null)
 const stage = ref<'loading' | 'reading' | 'error'>('loading')
 const loadingText = ref('正在打开书页…')
 const errorText = ref('')
-const title = ref(file.name)
+const title = ref(readerDisplayTitle(file.name))
 const manifest = ref<FlowManifest | null>(null)
 const tocOpen = ref(false)
 const fontOpen = ref(false)
@@ -736,8 +737,8 @@ async function open() {
   const myGen = ++gen
   closing = false
   try {
-    const info = await fetchBookInfo(id).catch(() => null)
-    if (info?.title) title.value = info.title
+    const fetchedTitle = await fetchBookTitle(id).catch(() => '')
+    if (fetchedTitle) title.value = readerDisplayTitle(fetchedTitle)
     const progress = await fetchProgress(id).catch((): BookProgress => ({}))
 
     // L2 manifest 命中 → 本地立即排版显示，不等网络 manifest

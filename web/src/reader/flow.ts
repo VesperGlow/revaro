@@ -96,12 +96,3 @@ export function stableWindowRange(m: FlowManifest, block: number, ahead: number)
   const hi = Math.max(lo, Math.min(cb + ahead, n - 1))
   return [lo, hi]
 }
-
-// anchorFromLegacy 把无 block 字段的旧锚点（path[0] = 章内块号）转成新格式。
-// manifest 用于把章内块号换算为全书块号。
-export function migrateAnchor(m: FlowManifest, legacy: { spine: number; path: number[]; offset: number }): ReadingAnchor {
-  const spine = Math.min(Math.max(0, legacy.spine), Math.max(0, m.spines.length - 1))
-  const base = m.spines[spine]?.block_start ?? 0
-  const [first = 0, ...rest] = legacy.path
-  return { spine, block: base + first, path: rest, offset: legacy.offset }
-}

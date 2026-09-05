@@ -4,6 +4,7 @@ import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL } from '../fileTypes'
+import { formatMediaTime as formatTime } from '../format'
 import type { AudioChapter, AudioHLSResponse, AudioMediaResponse, AudioSubtitle } from '../types'
 
 const props=defineProps<{item:DriveFile}>()
@@ -81,11 +82,6 @@ function persistProgress(remote=false){
   void api(`/api/files/${props.item.id}/media/progress`,{method:'PUT',body:JSON.stringify({position,duration:duration.value})}).catch(()=>{})
 }
 
-function formatTime(seconds:number){
-  if(!Number.isFinite(seconds)||seconds<0)return '0:00'
-  const value=Math.floor(seconds);const hours=Math.floor(value/3600);const minutes=Math.floor(value%3600/60);const secs=value%60
-  return hours?`${hours}:${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}`:`${minutes}:${String(secs).padStart(2,'0')}`
-}
 function revealCurrentChapter(){
   if(!actionMenu.value?.open)return
   void nextTick().then(()=>actionMenu.value?.querySelector<HTMLElement>(`[data-chapter-index="${currentChapterIndex.value}"]`)?.scrollIntoView({block:'nearest'}))

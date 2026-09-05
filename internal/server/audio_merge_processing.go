@@ -44,11 +44,7 @@ func (s *Server) executeAudioMerge(ctx context.Context, job *audioMergeJob, inpu
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		ext := strings.ToLower(filepath.Ext(input.Name))
-		if !audioSourceExts[ext] {
-			ext = ".audio"
-		}
-		path := filepath.Join(workDir, fmt.Sprintf("input-%04d%s", index, ext))
+		path := audioMergeInputPath(workDir, index, input.Name)
 		out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err
@@ -137,6 +133,14 @@ func (s *Server) encodeMergedAudio(ctx context.Context, job *audioMergeJob, prof
 	}
 	job.update("merging", 86, "音频母版编码完成")
 	return s.finalizeAudioMerge(ctx, job, outputPath, profile, cover, inputs, durations, storedSubtitles)
+}
+
+func audioMergeInputPath(workDir string, index int, name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	if !audioSourceExts[ext] {
+		ext = ".audio"
+	}
+	return filepath.Join(workDir, fmt.Sprintf("input-%04d%s", index, ext))
 }
 
 // finalizeAudioMerge uploads the encoded master to object storage as a normal

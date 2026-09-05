@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-// @ts-expect-error Vitest runs in Node; the browser build intentionally omits Node globals.
 import { readFileSync } from 'node:fs'
 
 const styleModules=['shell','browser','uploads','dialogs','media','responsive','extras']

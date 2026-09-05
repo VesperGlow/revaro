@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Activity, Settings, Trash2 } from '@lucide/vue'
+import { isActiveTaskStatus } from '../taskStatus'
 import type { BackgroundTask } from '../types'
 import TaskCenter from './TaskCenter.vue'
 import SystemStatus from './SystemStatus.vue'
@@ -26,7 +27,7 @@ const emit=defineEmits<{
 const mobile=ref(false)
 const mobileAccountMenu=ref<HTMLDetailsElement|null>(null)
 const mobileTaskCenter=ref<InstanceType<typeof TaskCenter>|null>(null)
-const activeTasks=computed(()=>props.tasks.filter(task=>['running','queued','retrying','waiting_input'].includes(task.status)))
+const activeTasks=computed(()=>props.tasks.filter(task=>isActiveTaskStatus(task.status)))
 const failedTasks=computed(()=>props.tasks.filter(task=>task.status==='failed'))
 let mediaQuery:MediaQueryList|null=null
 function updateMobile(){mobile.value=!!mediaQuery?.matches;if(!mobile.value&&mobileAccountMenu.value)mobileAccountMenu.value.open=false}

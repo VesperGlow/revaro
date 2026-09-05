@@ -11,3 +11,14 @@ export function formatDate(value:string){
     ?'—'
     :new Intl.DateTimeFormat('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(date)
 }
+
+export function formatMediaTime(seconds:number){
+  if(!Number.isFinite(seconds)||seconds<0)return '0:00'
+  const value=Math.floor(seconds)
+  const hours=Math.floor(value/3600)
+  const minutes=Math.floor(value%3600/60)
+  const secs=value%60
+  return hours
+    ?`${hours}:${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}`
+    :`${minutes}:${String(secs).padStart(2,'0')}`
+}

@@ -40,13 +40,19 @@ func TestCancelArchiveDoesNotRemoveActiveWorkerWorkspace(t *testing.T) {
 }
 
 func TestArchiveNamesAndPaths(t *testing.T) {
-	for _, name := range []string{"backup.zip", "movie.7z", "files.rar", "source.tar.gz", "source.tar.xz", "source.tzst"} {
+	for _, name := range []string{"backup.zip", "movie.7z", "files.rar", "source.tar.gz", "source.tar.xz", "source.tzst", "source.TBZ2"} {
 		if !isArchiveName(name) {
 			t.Fatalf("expected archive name %q", name)
 		}
 	}
-	if got := archiveBaseName("source.tar.gz"); got != "source" {
-		t.Fatalf("archiveBaseName=%q", got)
+	for _, tc := range []struct{ name, base string }{
+		{"source.tar.gz", "source"},
+		{"source.TBZ2", "source"},
+		{"source.zip", "source"},
+	} {
+		if got := archiveBaseName(tc.name); got != tc.base {
+			t.Fatalf("archiveBaseName(%q)=%q, want %q", tc.name, got, tc.base)
+		}
 	}
 	for _, path := range []string{"folder/file.txt", "字幕/第一集.vtt", "top.bin"} {
 		if err := validateArchivePath(path); err != nil {

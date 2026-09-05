@@ -33,6 +33,9 @@ const (
 var (
 	errArchivePasswordRequired = errors.New("archive password is required")
 	errArchiveWrongPassword    = errors.New("archive password is incorrect")
+	// Longest compound suffixes must come first because the same table also
+	// defines how an extracted archive's default output name is derived.
+	archiveSuffixes = []string{".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz2", ".tbz", ".txz", ".tzst", ".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz", ".zst"}
 )
 
 type archiveJob struct {
@@ -148,7 +151,7 @@ func (job *archiveJob) snapshot() archiveJob {
 
 func isArchiveName(name string) bool {
 	lower := strings.ToLower(name)
-	for _, suffix := range []string{".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz", ".tbz2", ".txz", ".tzst", ".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz", ".zst"} {
+	for _, suffix := range archiveSuffixes {
 		if strings.HasSuffix(lower, suffix) {
 			return true
 		}
@@ -158,7 +161,7 @@ func isArchiveName(name string) bool {
 
 func archiveBaseName(name string) string {
 	lower := strings.ToLower(name)
-	for _, suffix := range []string{".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz2", ".tbz", ".txz", ".tzst", ".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz", ".zst"} {
+	for _, suffix := range archiveSuffixes {
 		if strings.HasSuffix(lower, suffix) {
 			return name[:len(name)-len(suffix)]
 		}

@@ -48,6 +48,21 @@ func localMergeContent(name string, size int64) []byte {
 	return data
 }
 
+func TestLocalMergeChunkPathIsStableAcrossUploadAndAssembly(t *testing.T) {
+	if got := localMergeChunkPath("/staging/chunks", 12, 34); got != filepath.Join("/staging/chunks", "f12-c34.part") {
+		t.Fatalf("chunk path=%q", got)
+	}
+	if got := audioMergeInputPath("/staging", 2, "TRACK.FLAC"); got != filepath.Join("/staging", "input-0002.flac") {
+		t.Fatalf("audio path=%q", got)
+	}
+	if got := localMergeSubtitlePath("/staging", 2); got != filepath.Join("/staging", "subtitle-0002.vtt") {
+		t.Fatalf("subtitle path=%q", got)
+	}
+	if got := localMergeCoverPath("/staging"); got != filepath.Join("/staging", "cover.raw") {
+		t.Fatalf("cover path=%q", got)
+	}
+}
+
 func uploadLocalMerge(t *testing.T, a *testApp, created localMergeCreated, contents map[string][]byte) {
 	t.Helper()
 	for fileIndex, file := range created.Files {

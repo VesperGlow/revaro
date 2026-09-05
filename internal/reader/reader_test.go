@@ -122,6 +122,21 @@ func TestParseTXTTocAndOffsets(t *testing.T) {
 	}
 }
 
+func TestNormalizePathUsesOneEPUBCanonicalForm(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{"/OEBPS/./chapters/../text/ch1.xhtml", "OEBPS/text/ch1.xhtml"},
+		{"../../OEBPS//text/ch1.xhtml", "OEBPS/text/ch1.xhtml"},
+		{"./", ""},
+	} {
+		if got := NormalizePath(tc.input); got != tc.want {
+			t.Errorf("NormalizePath(%q)=%q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func utf16Len(s string) int64 {
 	total := 0
 	for _, r := range s {

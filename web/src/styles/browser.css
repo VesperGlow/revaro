@@ -751,359 +751,11 @@
   }
 }
 
-/* ===== 内置阅读器（EPUB/TXT 分栏分页） ===== */
 .modal-backdrop.reading {
+  overflow: hidden;
   padding: 0;
   background: #f7f3eb;
   backdrop-filter: none;
-}
-.reader-shell {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: #f7f3eb;
-  color: #29251f;
-}
-.reader-shell.dark {
-  background: #191b1b;
-  color: #dedbd3;
-}
-.reader-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 56px;
-  padding: 0 12px;
-  border-bottom: 1px solid rgba(41, 37, 31, 0.08);
-  background: rgba(247, 243, 235, 0.94);
-  z-index: 8;
-  flex: 0 0 auto;
-}
-.reader-bar-title {
-  flex: 1;
-  text-align: center;
-  min-width: 0;
-}
-.reader-bar-title strong {
-  font:
-    17px Georgia,
-    "Noto Serif SC",
-    serif;
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.reader-bar-title small {
-  font-size: 10px;
-  color: #8492a6;
-  letter-spacing: 0.12em;
-}
-.reader-icon-btn {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(41, 37, 31, 0.06);
-  color: inherit;
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-}
-.reader-icon-btn:active {
-  background: rgba(41, 37, 31, 0.14);
-}
-.reader-bar.tools-hidden,
-.reader-footer.tools-hidden {
-  display: none;
-}
-.reader-viewport {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  touch-action: none;
-}
-.reader-loading {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 14px;
-  background: #f7f3eb;
-  color: #8492a6;
-  z-index: 7;
-  font-size: 13px;
-}
-.reader-loading p {
-  margin: 0;
-}
-.dark .reader-loading {
-  background: #191b1b;
-  color: #92958f;
-}
-.reader-footer {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
-  border-top: 1px solid rgba(41, 37, 31, 0.08);
-  background: rgba(247, 243, 235, 0.96);
-  color: #8492a6;
-  z-index: 8;
-}
-.reader-seek {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.reader-seek input[type="range"],
-.font-popover input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 4px;
-  border-radius: 99px;
-  background: #d9d2c6;
-  outline: 0;
-  margin: 0;
-}
-.reader-seek input[type="range"]::-webkit-slider-thumb,
-.font-popover input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #2563eb;
-  border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
-  cursor: pointer;
-}
-.reader-seek input[type="range"]::-moz-range-thumb,
-.font-popover input[type="range"]::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: #2563eb;
-  cursor: pointer;
-}
-.reader-actions {
-  display: flex;
-  justify-content: space-around;
-}
-.reader-action-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  border: 0;
-  background: transparent;
-  color: #8492a6;
-  cursor: pointer;
-  padding: 4px 14px;
-  font-size: 11px;
-}
-.reader-action-btn b {
-  font-size: 18px;
-  font-weight: 400;
-  line-height: 1;
-}
-.reader-action-btn:active {
-  color: #2563eb;
-}
-.font-popover {
-  position: absolute;
-  left: 50%;
-  bottom: 112px;
-  transform: translateX(-50%);
-  z-index: 9;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border: 1px solid #e6eaf0;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 12px 35px rgba(35, 29, 22, 0.2);
-  color: #8492a6;
-  font-size: 12px;
-}
-.font-popover input[type="range"] {
-  width: 150px;
-}
-.font-step {
-  border: 1px solid #e6eaf0;
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  padding: 5px 9px;
-  font-size: 13px;
-}
-.dark .font-popover {
-  background: #232626;
-  border-color: #343838;
-}
-.dark .font-step {
-  color: #dedbd3;
-  border-color: #343838;
-}
-.dark .reader-bar,
-.dark .reader-footer {
-  background: #191b1b;
-  border-color: #343838;
-}
-.dark .reader-icon-btn {
-  background: rgba(255, 255, 255, 0.08);
-}
-.dark .reader-seek input[type="range"] {
-  background: #343838;
-}
-.dark .reader-action-btn {
-  color: #92958f;
-}
-.toc-scrim {
-  position: absolute;
-  inset: 0;
-  z-index: 18;
-  background: rgba(25, 22, 18, 0.28);
-}
-.toc-drawer {
-  position: absolute;
-  z-index: 19;
-  top: 0;
-  right: 0;
-  width: min(390px, 90vw);
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-  box-shadow: -18px 0 55px rgba(35, 29, 22, 0.2);
-  animation: toc-in 0.24s ease;
-}
-@keyframes toc-in {
-  from {
-    transform: translateX(105%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-.dark .toc-drawer {
-  background: #232626;
-}
-.toc-drawer > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 18px;
-  border-bottom: 1px solid #e6eaf0;
-}
-.toc-drawer > header strong {
-  font-size: 15px;
-}
-.toc-drawer > header button {
-  border: 0;
-  background: transparent;
-  font-size: 22px;
-  color: #8492a6;
-  cursor: pointer;
-  padding: 0 4px;
-}
-.toc-list {
-  flex: 1;
-  overflow: auto;
-  padding: 10px;
-}
-.toc-item {
-  width: 100%;
-  display: block;
-  border: 0;
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: transparent;
-  color: #64748b;
-  text-align: left;
-  line-height: 1.45;
-  cursor: pointer;
-  font-size: 13px;
-}
-.toc-item:hover {
-  background: #f1f5f9;
-  color: #25364a;
-}
-.toc-item.active {
-  background: #eaf1fb;
-  color: #2563eb;
-  font-weight: 700;
-}
-.dark .toc-item {
-  color: #92958f;
-}
-.dark .toc-item:hover {
-  background: #2b2e2e;
-  color: #dedbd3;
-}
-.dark .toc-item.active {
-  background: #2b3a52;
-  color: #93c5fd;
-}
-.toc-empty {
-  padding: 34px 18px;
-  color: #94a3b8;
-  font-size: 12px;
-  text-align: center;
-}
-@media (max-width: 850px) {
-  .reader-bar {
-    height: 52px;
-  }
-  .reader-bar-title strong {
-    font-size: 15px;
-  }
-  .reader-action-btn {
-    padding: 4px 10px;
-  }
-}
-
-/* ===== 阅读器布局修正：悬浮式工具栏（对齐原版 reader）=====
-   视口恒为整屏，顶栏/底栏只是悬浮叠层；工具开关不改变正文尺寸，
-   不触发整书重排，正文与阅读位置保持不动。 */
-body.reader-open {
-  overflow: hidden;
-}
-.modal-backdrop.reading {
-  overflow: hidden;
-}
-.reader-shell {
-  display: block;
-}
-.reader-bar {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-}
-.reader-viewport {
-  position: absolute;
-  inset: 0;
-  touch-action: pan-y;
-}
-.reader-footer {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
 }
 
 /* ===== 阅读器（原版 reader 移植）：完整样式接管 ===== */
@@ -1118,9 +770,11 @@ body.reader-open {
 #reader-view.reader-shell {
   position: fixed;
   inset: 0;
+  display: block;
   z-index: 30;
   overflow: hidden;
   background: var(--paper);
+  color: var(--ink);
 }
 #reader-view.dark {
   --bg: #191b1b;
@@ -1140,7 +794,7 @@ body.reader-open {
 .reader-bar {
   height: 58px;
   display: grid;
-  grid-template-columns: 48px 1fr 48px;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
   align-items: center;
   border-bottom: 1px solid var(--line);
   padding: 0 16px;
@@ -1173,11 +827,10 @@ body.reader-open {
 .reader-icon-btn {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border: 0;
-  border-radius: 50%;
-  background: rgba(41, 37, 31, 0.06);
+  background: transparent;
   color: var(--ink);
   font-size: 20px;
   line-height: 1;
@@ -1186,13 +839,19 @@ body.reader-open {
   padding: 0;
 }
 .reader-icon-btn:active {
-  background: rgba(41, 37, 31, 0.14);
+  opacity: 0.6;
+}
+.reader-bar-spacer {
+  width: 44px;
+  height: 44px;
+  visibility: hidden;
 }
 .reader-viewport {
   height: 100dvh;
   position: relative;
   overflow: hidden;
   background: var(--paper);
+  touch-action: pan-y;
 }
 .reader-loading {
   position: absolute;
@@ -1202,4 +861,6 @@ body.reader-open {
   color: var(--muted);
   z-index: 7;
   background: var(--paper);
+  gap: 14px;
+  font-size: 13px;
 }

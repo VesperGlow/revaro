@@ -17,6 +17,15 @@ type TaskManager struct {
 	resources *ResourceGovernor
 }
 
+// taskLifecycleUpdateSet is the single durable definition of the timestamps
+// affected by a status transition. Update and UpdateID differ only in how a
+// task is addressed; their transition semantics must stay identical.
+const taskLifecycleUpdateSet = ` SET status=?,phase=?,progress=?,error=?,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END,finished_at=CASE WHEN ? IN ('completed','failed','cancelled') THEN ? ELSE NULL END,heartbeat_at=CASE WHEN ?='running' THEN ? ELSE heartbeat_at END,updated_at=?`
+
+func taskLifecycleUpdateArgs(status, phase string, progress float64, taskErr, now string) []any {
+	return []any{status, phase, progress, taskErr, status, now, status, now, status, now, now}
+}
+
 func newTaskManager(db *sql.DB, events *JobManager, resources *ResourceGovernor) *TaskManager {
 	return &TaskManager{db: db, events: events, resources: resources}
 }
@@ -33,7 +42,8 @@ func (m *TaskManager) Ensure(ctx context.Context, taskType, sourceType, sourceID
 }
 func (m *TaskManager) Update(ctx context.Context, sourceType, sourceID, status, phase string, progress float64, taskErr string) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, _ = m.db.ExecContext(ctx, `UPDATE tasks SET status=?,phase=?,progress=?,error=?,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END,finished_at=CASE WHEN ? IN ('completed','failed','cancelled') THEN ? ELSE NULL END,heartbeat_at=CASE WHEN ?='running' THEN ? ELSE heartbeat_at END,updated_at=? WHERE source_type=? AND source_id=?`, status, phase, progress, taskErr, status, now, status, now, status, now, now, sourceType, sourceID)
+	args := append(taskLifecycleUpdateArgs(status, phase, progress, taskErr, now), sourceType, sourceID)
+	_, _ = m.db.ExecContext(ctx, `UPDATE tasks`+taskLifecycleUpdateSet+` WHERE source_type=? AND source_id=?`, args...)
 	m.events.Changed()
 }
 func (m *TaskManager) Create(ctx context.Context, id, taskType, phase, sourceType, sourceID string, payload any) error {
@@ -47,7 +57,8 @@ func (m *TaskManager) Create(ctx context.Context, id, taskType, phase, sourceTyp
 }
 func (m *TaskManager) UpdateID(ctx context.Context, id, status, phase string, progress float64, taskErr string) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, _ = m.db.ExecContext(ctx, `UPDATE tasks SET status=?,phase=?,progress=?,error=?,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END,finished_at=CASE WHEN ? IN ('completed','failed','cancelled') THEN ? ELSE NULL END,heartbeat_at=CASE WHEN ?='running' THEN ? ELSE heartbeat_at END,updated_at=? WHERE id=?`, status, phase, progress, taskErr, status, now, status, now, status, now, now, id)
+	args := append(taskLifecycleUpdateArgs(status, phase, progress, taskErr, now), id)
+	_, _ = m.db.ExecContext(ctx, `UPDATE tasks`+taskLifecycleUpdateSet+` WHERE id=?`, args...)
 	m.events.Changed()
 }
 func (m *TaskManager) Heavy(ctx context.Context) (func(), error) { return m.resources.Heavy(ctx) }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VideoFMP4Metadata, VideoFMP4Response } from './types'
-import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, containedVideoInsets, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, setExclusiveSubtitleTrack, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleLineClass, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
+import { attachFMP4Stream, authoritativeSeekTarget, bufferedRangesAddedSeconds, containedVideoInsets, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseFreshRecoveryLimit, mseRecoveryAction, mseStallWatchdogSeconds, mseStreamBufferGoalSeconds, mseWatchdogExpired, runSourceBufferUpdate, setExclusiveSubtitleTrack, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleLineClass, subtitleTrackKey, subtitleURLForPlayback } from './videoPlayer'
 
 const metadata=(videoCodec='hevc',audioCodec='aac'):VideoFMP4Metadata=>({
   duration:120,video_codec:videoCodec,audio_codec:audioCodec,
@@ -50,6 +50,22 @@ describe('MSE stdout stream policy',()=>{
     expect(bufferedRangesAddedSeconds([],[{start:226.8,end:227.3}])).toBeCloseTo(.5)
     expect(bufferedRangesAddedSeconds([{start:226.8,end:227.3}],[{start:226.8,end:227.3}])).toBe(0)
     expect(bufferedRangesAddedSeconds([{start:226.8,end:227.0}],[{start:226.8,end:227.5}])).toBeCloseTo(.5)
+  })
+  it('uses one abort lifecycle for append and eviction operations',async()=>{
+    class FakeSourceBuffer extends EventTarget {
+      updating=true
+      abort=vi.fn()
+    }
+    const sourceBuffer=new FakeSourceBuffer() as unknown as SourceBuffer
+    const cancelled=new AbortController();cancelled.abort()
+    const skipped=vi.fn()
+    await expect(runSourceBufferUpdate(sourceBuffer,cancelled.signal,skipped,'failed')).rejects.toMatchObject({name:'AbortError'})
+    expect(skipped).not.toHaveBeenCalled()
+
+    const active=new AbortController()
+    const pending=runSourceBufferUpdate(sourceBuffer,active.signal,()=>active.abort(),'failed')
+    await expect(pending).rejects.toMatchObject({name:'AbortError'})
+    expect((sourceBuffer as unknown as FakeSourceBuffer).abort).toHaveBeenCalledOnce()
   })
 })
 

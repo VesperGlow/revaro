@@ -11,3 +11,11 @@ export function isArchive(item:DriveFile){return item.kind==='file'&&item.status
 export function isEditable(item:DriveFile){return item.kind==='file'&&item.status==='ready'&&item.size<=1024*1024&&/\.(md|markdown|txt|ya?ml|json|toml|ini|conf|log|csv)$/i.test(item.name)}
 export function thumbSRC(item:DriveFile){return `/api/files/${item.id}/thumbnail?v=${encodeURIComponent(item.etag||'')}`}
 export function previewURL(item:DriveFile){return `/api/files/${item.id}/preview`}
+
+const readingFormatSuffix=/(?:\.(?:epub|txt|pdf|md|markdown|mobi|azw|azw3|fb2|djvu|cbz|cbr))+$/i
+
+// Only the reader's display title is normalized; file names and API data stay intact.
+export function readerDisplayTitle(name:string){
+  const title=name.replace(readingFormatSuffix,'')
+  return title||name
+}

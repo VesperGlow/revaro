@@ -7,7 +7,7 @@ import tseslint from 'typescript-eslint'
 import pluginVue from 'eslint-plugin-vue'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', '.npm-cache/**'] },
+  { ignores: ['dist/**', 'node_modules/**', '.npm-cache/**', 'playwright-report/**', 'test-results/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
@@ -28,8 +28,8 @@ export default tseslint.config(
       'vue/singleline-html-element-content-newline': 'off',
       'vue/html-closing-bracket-spacing': 'off',
       'vue/attributes-order': 'off',
-      '@typescript-eslint/no-explicit-any': 'off',
-      // 短路赋值（els.x && (els.x.onclick = fn)）是 reader.js 的惯用法
+      '@typescript-eslint/no-explicit-any': 'error',
+      // 保留项目内用于条件清理和可选调用的短路表达式。
       '@typescript-eslint/no-unused-expressions': ['error', { allowShortCircuit: true }],
       // 空 catch 用于忽略 localStorage 在隐私模式下的异常
       'no-empty': ['error', { allowEmptyCatch: true }],

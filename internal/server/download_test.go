@@ -176,6 +176,17 @@ func TestSafeTorrentPath(t *testing.T) {
 	}
 }
 
+func TestTorrentImportRequestKeepsAllVideoCleanupTargets(t *testing.T) {
+	video := torrentImportRequest("job-42", downloadFile{Index: 7, Path: "season/Episode.MKV", Size: 123})
+	if video.Key == "" || video.WebPrefix != "derived/media/job-42/7" || video.MIME == "" || video.Size != 123 {
+		t.Fatalf("video import request lost storage contract: %+v", video)
+	}
+	audio := torrentImportRequest("job-42", downloadFile{Index: 8, Path: "album/track.flac", Size: 456})
+	if audio.Key == "" || audio.WebPrefix != "" || audio.MIME == "" {
+		t.Fatalf("non-video import request has wrong storage contract: %+v", audio)
+	}
+}
+
 func TestFailedTorrentStagingIsRetainedUntilExplicitRemoval(t *testing.T) {
 	app := newTestApp(t)
 	engine := &retainedTorrentEngine{}

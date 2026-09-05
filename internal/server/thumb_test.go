@@ -2,10 +2,24 @@ package server
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestThumbnailNamespacesShareCanonicalKeyLayout(t *testing.T) {
+	const objectKey = "blobs/ab/content"
+	legacy := thumbnailKey(objectKey)
+	if legacy != derivedThumbnailKey(objectKey, "thumb-v2") {
+		t.Fatalf("legacy thumbnail key drifted: %q", legacy)
+	}
+	for _, key := range []string{legacy, imageThumbnailKey(objectKey), audioThumbnailKey(objectKey), videoThumbnailKey(objectKey)} {
+		if !strings.HasPrefix(key, "thumbs/") || !strings.HasSuffix(key, ".jpg") || len(key) != len("thumbs/")+2+1+62+len(".jpg") {
+			t.Fatalf("invalid thumbnail key layout: %q", key)
+		}
+	}
+}
 
 func TestThumbnailSchedulerDeduplicatesAndLimitsConcurrency(t *testing.T) {
 	queue := newThumbnailScheduler(1)

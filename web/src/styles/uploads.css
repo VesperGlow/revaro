@@ -218,6 +218,7 @@
   text-align: left;
   line-height: 1.45;
   cursor: pointer;
+  font-size: 13px;
 }
 .toc-item:hover {
   background: var(--bg);
@@ -232,6 +233,7 @@
   padding: 34px 22px;
   color: var(--muted);
   line-height: 1.7;
+  font-size: 12px;
   text-align: center;
 }
 #reader-view.dark .reader-bar,
@@ -239,7 +241,7 @@
   background: #191b1b;
 }
 #reader-view.dark .reader-icon-btn {
-  background: rgba(255, 255, 255, 0.08);
+  background: transparent;
   color: #dedbd3;
 }
 #reader-view.dark .reader-action-btn {

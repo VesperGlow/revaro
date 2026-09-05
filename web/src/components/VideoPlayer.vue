@@ -4,13 +4,14 @@ import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL, thumbSRC } from '../fileTypes'
+import { formatMediaTime as formatTime } from '../format'
 import type { VideoFMP4Metadata, VideoFMP4Response, VideoHLSResponse, VideoMediaResponse } from '../types'
 import { attachFMP4Stream, authoritativeSeekTarget, createUnifiedVideoPlayer, initialSubtitleIndex, mediaElementTimelineTime, mseCompatibility, mseRecoveryAction, shouldContinueMediaClock, shouldHideVideoCursor, shouldSyncMediaClock, subtitleLineClass, type UnifiedVideoPlayer } from '../videoPlayer'
 import { useVideoSubtitles } from '../composables/useVideoSubtitles'
 import { useVideoProgress } from '../composables/useVideoProgress'
 import VideoControls from './VideoControls.vue'
 import VideoStatusOverlay from './VideoStatusOverlay.vue'
-import { formatVideoTime as formatTime, releaseFMP4Session, releaseHLSSession } from '../videoSession'
+import { releaseFMP4Session, releaseHLSSession } from '../videoSession'
 
 const props=defineProps<{item:DriveFile}>()
 const emit=defineEmits<{close:[];download:[item:DriveFile];move:[item:DriveFile];copy:[item:DriveFile]}>()

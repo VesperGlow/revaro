@@ -108,9 +108,9 @@ func parseEPUB(rs io.ReadSeeker, size int64, assetBase, assetVersion string) (*B
 }
 
 func zipText(zr *zip.Reader, name string, b *budget) (string, error) {
-	norm := normalizePath(name)
+	norm := NormalizePath(name)
 	for _, f := range zr.File {
-		if normalizePath(f.Name) == norm {
+		if NormalizePath(f.Name) == norm {
 			rc, err := f.Open()
 			if err != nil {
 				return "", err
@@ -127,9 +127,9 @@ func zipText(zr *zip.Reader, name string, b *budget) (string, error) {
 }
 
 func zipBytes(zr *zip.Reader, name string, b *budget) ([]byte, error) {
-	norm := normalizePath(name)
+	norm := NormalizePath(name)
 	for _, f := range zr.File {
-		if normalizePath(f.Name) != norm {
+		if NormalizePath(f.Name) != norm {
 			continue
 		}
 		rc, err := f.Open()
@@ -168,7 +168,7 @@ func opfPathFromContainer(xmlText string) (string, error) {
 	if err := xml.Unmarshal([]byte(xmlText), &doc); err != nil || len(doc.Rootfiles) == 0 || doc.Rootfiles[0].FullPath == "" {
 		return "", fmt.Errorf("EPUB 缺少 container rootfile")
 	}
-	return normalizePath(doc.Rootfiles[0].FullPath), nil
+	return NormalizePath(doc.Rootfiles[0].FullPath), nil
 }
 
 func isHTMLMedia(mediaType string) bool {

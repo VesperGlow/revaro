@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -36,11 +35,7 @@ func (s *Server) executeLocalAudioMerge(ctx context.Context, job *audioMergeJob)
 			return err
 		}
 		file := job.files[fileIndex]
-		ext := strings.ToLower(filepath.Ext(file.Name))
-		if !audioSourceExts[ext] {
-			ext = ".audio"
-		}
-		path := filepath.Join(workDir, fmt.Sprintf("input-%04d%s", position, ext))
+		path := audioMergeInputPath(workDir, position, file.Name)
 		inputs = append(inputs, File{Name: file.Name, Size: file.Size, Kind: "file", Status: "ready"})
 		paths = append(paths, path)
 	}
@@ -57,7 +52,7 @@ func (s *Server) executeLocalAudioMerge(ctx context.Context, job *audioMergeJob)
 			continue
 		}
 		file := job.files[fileIndex]
-		source := File{Name: file.Name, Size: file.Size, Kind: "file", Status: "ready", objectKey: filepath.Join(workDir, fmt.Sprintf("subtitle-%04d.vtt", position))}
+		source := File{Name: file.Name, Size: file.Size, Kind: "file", Status: "ready", objectKey: localMergeSubtitlePath(workDir, position)}
 		subtitleSources[position] = &source
 	}
 	profile, _ := audioOutput("alac")
@@ -71,7 +66,7 @@ func (s *Server) localMergeCover(ctx context.Context, job *audioMergeJob, workDi
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(filepath.Join(workDir, "cover.raw"))
+	raw, err := os.ReadFile(localMergeCoverPath(workDir))
 	if err != nil {
 		return nil, fmt.Errorf("read local cover: %w", err)
 	}
@@ -96,11 +91,7 @@ func (s *Server) assembleLocalMerge(ctx context.Context, job *audioMergeJob, wor
 			return err
 		}
 		file := job.files[fileIndex]
-		ext := strings.ToLower(filepath.Ext(file.Name))
-		if !audioSourceExts[ext] {
-			ext = ".audio"
-		}
-		dest := filepath.Join(workDir, fmt.Sprintf("input-%04d%s", position, ext))
+		dest := audioMergeInputPath(workDir, position, file.Name)
 		n, err := concatLocalMergeChunks(chunksDir, fileIndex, file.Chunks, dest)
 		if err != nil {
 			return fmt.Errorf("assemble audio %s: %w", file.Name, err)
@@ -118,7 +109,7 @@ func (s *Server) assembleLocalMerge(ctx context.Context, job *audioMergeJob, wor
 			continue
 		}
 		file := job.files[fileIndex]
-		dest := filepath.Join(workDir, fmt.Sprintf("subtitle-%04d.vtt", position))
+		dest := localMergeSubtitlePath(workDir, position)
 		n, err := concatLocalMergeChunks(chunksDir, fileIndex, file.Chunks, dest)
 		if err != nil {
 			return fmt.Errorf("assemble subtitle %s: %w", file.Name, err)
@@ -129,7 +120,7 @@ func (s *Server) assembleLocalMerge(ctx context.Context, job *audioMergeJob, wor
 	}
 	if job.coverIndex >= 0 {
 		file := job.files[job.coverIndex]
-		dest := filepath.Join(workDir, "cover.raw")
+		dest := localMergeCoverPath(workDir)
 		n, err := concatLocalMergeChunks(chunksDir, job.coverIndex, file.Chunks, dest)
 		if err != nil {
 			return fmt.Errorf("assemble cover %s: %w", file.Name, err)
@@ -149,7 +140,7 @@ func concatLocalMergeChunks(chunksDir string, fileIndex, chunkCount int, dest st
 	var total int64
 	buf := make([]byte, 256<<10)
 	for chunk := 0; chunk < chunkCount; chunk++ {
-		src, openErr := os.Open(filepath.Join(chunksDir, fmt.Sprintf("f%d-c%d.part", fileIndex, chunk)))
+		src, openErr := os.Open(localMergeChunkPath(chunksDir, fileIndex, chunk))
 		if openErr != nil {
 			out.Close()
 			return total, openErr
@@ -167,6 +158,20 @@ func concatLocalMergeChunks(chunksDir string, fileIndex, chunkCount int, dest st
 		total += n
 	}
 	return total, out.Close()
+}
+
+// localMergeChunkPath is the shared on-disk contract between the HTTP chunk
+// producer and the assembly consumer.
+func localMergeChunkPath(chunksDir string, fileIndex, chunkIndex int) string {
+	return filepath.Join(chunksDir, fmt.Sprintf("f%d-c%d.part", fileIndex, chunkIndex))
+}
+
+func localMergeSubtitlePath(workDir string, position int) string {
+	return filepath.Join(workDir, fmt.Sprintf("subtitle-%04d.vtt", position))
+}
+
+func localMergeCoverPath(workDir string) string {
+	return filepath.Join(workDir, "cover.raw")
 }
 
 // CleanupExpiredLocalMerges abandons upload-phase local merge jobs whose

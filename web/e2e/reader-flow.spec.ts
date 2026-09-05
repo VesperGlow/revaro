@@ -37,6 +37,7 @@ interface FlowFixture {
   toc?: TocFixture[]
   chunkHTML?: (chunk: number) => string
   clearCache?: boolean
+  bookName?: string
 }
 
 function blockHTML(chunk: number, b: number, chunkPerSpine = 1): string {
@@ -67,6 +68,7 @@ async function mockAPI(page: Page, fixture: FlowFixture = {}) {
       ? [{ block_start: 0, block_count: totalBlocks }]
       : Array.from({ length: chunkCount / chunkPerSpine }, (_, i) => ({ block_start: i * spineSize, block_count: spineSize }))
   const totalChars = totalBlocks * 40
+  const bookName = fixture.bookName ?? 'book.epub'
   const manifest = {
     version: fixture.manifestVersion ?? 4,
     format: 'epub',
@@ -100,7 +102,7 @@ async function mockAPI(page: Page, fixture: FlowFixture = {}) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          items: [{ id: BOOK_ID, parent_id: ROOT, name: 'book.epub', kind: 'file', size: 1000, mime_type: 'application/epub+zip', status: 'ready', created_at: '', updated_at: '' }],
+          items: [{ id: BOOK_ID, parent_id: ROOT, name: bookName, kind: 'file', size: 1000, mime_type: 'application/epub+zip', status: 'ready', created_at: '', updated_at: '' }],
           total_bytes: 1000,
           file_count: 1,
         }),
@@ -111,10 +113,10 @@ async function mockAPI(page: Page, fixture: FlowFixture = {}) {
     }
     if (path === `/api/files/${BOOK_ID}/thumbnail`) return route.fulfill({ status: 404, body: '' })
     if (path === `/api/files/${BOOK_ID}`) {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ file: { id: BOOK_ID, parent_id: ROOT, name: 'book.epub', kind: 'file', size: 1000, mime_type: 'application/epub+zip', status: 'ready', created_at: '', updated_at: '' }, breadcrumbs: [] }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ file: { id: BOOK_ID, parent_id: ROOT, name: bookName, kind: 'file', size: 1000, mime_type: 'application/epub+zip', status: 'ready', created_at: '', updated_at: '' }, breadcrumbs: [] }) })
     }
     if (path === `/api/files/${BOOK_ID}/book`) {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ format: 'epub', title: '测试书', name: 'book.epub', cover: false, toc: [] }) })
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ format: 'epub', title: '测试书', name: bookName, cover: false, toc: [] }) })
     }
     if (path === `/api/files/${BOOK_ID}/book/progress`) {
       if (method === 'PUT') {
@@ -156,7 +158,7 @@ async function openReader(page: Page, fixture: FlowFixture = {}) {
   await mockAPI(page, fixture)
   await page.goto('/')
   if (fixture.clearCache) await clearClientCache(page)
-  await page.getByText('book.epub').first().click()
+  await page.getByText(fixture.bookName ?? 'book.epub').first().click()
   await expect(page.locator('#reader-view')).toBeVisible()
   await expect(page.locator('#loading')).toBeHidden({ timeout: 20_000 })
   await expect(page.locator('#flow .rf-chunk').first()).toBeVisible({ timeout: 20_000 })
@@ -169,6 +171,42 @@ async function clickNext(page: Page, times: number, gapMs = 340) {
     await page.waitForTimeout(gapMs)
   }
 }
+
+test('阅读器顶栏只有返回与居中标题，目录仅从底栏进入', async ({ page }) => {
+  const baseTitle='这是一本用于验证超长标题始终保持单行并且相对整个视口几何居中的电子书'.repeat(4)
+  const bookName=`${baseTitle}.txt.PDF.epub`
+  await openReader(page,{bookName})
+
+  await expect(page.locator('#reader-title')).toHaveText(baseTitle)
+  await expect(page).toHaveTitle(`${bookName} · revaro`)
+  await expect(page.locator('#toc-button')).toHaveCount(1)
+  await expect(page.locator('.reader-footer #toc-button')).toBeVisible()
+  await expect(page.locator('.reader-bar #toc-button')).toHaveCount(0)
+
+  const layout=await page.evaluate(()=>{
+    const viewport=document.documentElement.clientWidth
+    const title=document.querySelector('.reader-bar-title') as HTMLElement
+    const titleText=document.getElementById('reader-title') as HTMLElement
+    const back=document.getElementById('reader-back') as HTMLElement
+    const spacer=document.querySelector('.reader-bar-spacer') as HTMLElement
+    const titleBox=title.getBoundingClientRect()
+    const backBox=back.getBoundingClientRect()
+    return {
+      center:titleBox.left+titleBox.width/2,
+      viewportCenter:viewport/2,
+      backWidth:backBox.width,
+      backHeight:backBox.height,
+      backBackground:getComputedStyle(back).backgroundColor,
+      spacerVisibility:getComputedStyle(spacer).visibility,
+      whiteSpace:getComputedStyle(titleText).whiteSpace,
+      overflow:getComputedStyle(titleText).overflow,
+      textOverflow:getComputedStyle(titleText).textOverflow,
+      titleClipped:titleText.scrollWidth>titleText.clientWidth,
+    }
+  })
+  expect(Math.abs(layout.center-layout.viewportCenter)).toBeLessThan(.5)
+  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',spacerVisibility:'hidden',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+})
 
 test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且绝不重复请求', async ({ page }) => {
   await openReader(page)

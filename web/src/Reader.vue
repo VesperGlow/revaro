@@ -21,7 +21,7 @@ const {
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
       </button>
       <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong><small id="reader-kind">{{ kind.toUpperCase() }}</small></div>
-      <button class="reader-icon-btn" id="toc-button" aria-label="打开目录" :aria-expanded="tocOpen" @click="openToc">☰</button>
+      <span class="reader-bar-spacer" aria-hidden="true"></span>
     </header>
     <main id="viewport" ref="viewportEl" class="reader-viewport rf-viewport">
       <div class="rf-pager">
@@ -75,7 +75,7 @@ const {
         <input id="page-slider" type="range" min="0" max="1000" step="1" :value="Math.round(clamp(percentNow, 0, 100) * 10)" aria-label="阅读进度" @input="onSeekInput">
       </div>
       <div class="reader-actions">
-        <button id="toc-button-2" class="reader-action-btn" @click="openToc"><b>☰</b><span>目录</span></button>
+        <button id="toc-button" class="reader-action-btn" :aria-expanded="tocOpen" @click="openToc"><b>☰</b><span>目录</span></button>
         <button id="font-button" class="reader-action-btn" @click="fontOpen = !fontOpen"><b>A</b><span>排版</span></button>
         <button id="theme-button" class="reader-action-btn" @click="toggleTheme"><b>◐</b><span>明暗</span></button>
       </div>

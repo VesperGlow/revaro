@@ -81,7 +81,10 @@ func extractTxtToc(text string) []TocEntry {
 
 // ---- 工具函数 ----
 
-func normalizePath(p string) string {
+// NormalizePath canonicalizes EPUB-internal paths without allowing them to
+// escape the archive root. The flow builder uses the same canonical form when
+// matching TOC entries to parsed chapter source paths.
+func NormalizePath(p string) string {
 	trimmed := strings.TrimPrefix(p, "/")
 	parts := strings.Split(trimmed, "/")
 	out := make([]string, 0, len(parts))
@@ -107,20 +110,20 @@ func resolvePath(baseFile, relative string) string {
 	}
 	clean := decodePath(head)
 	if clean == "" {
-		return normalizePath(baseFile)
+		return NormalizePath(baseFile)
 	}
 	var parts []string
 	if strings.HasPrefix(clean, "/") {
 		parts = nil
 	} else {
-		base := normalizePath(baseFile)
+		base := NormalizePath(baseFile)
 		if base != "" {
 			segs := strings.Split(base, "/")
 			parts = append(parts, segs[:len(segs)-1]...)
 		}
 	}
 	parts = append(parts, strings.Split(clean, "/")...)
-	return normalizePath(strings.Join(parts, "/"))
+	return NormalizePath(strings.Join(parts, "/"))
 }
 
 func decodePath(p string) string {

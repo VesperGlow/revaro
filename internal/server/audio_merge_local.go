@@ -538,7 +538,7 @@ func (s *Server) uploadLocalMergeChunk(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	finalPath := filepath.Join(chunksDir, fmt.Sprintf("f%d-c%d.part", fileIndex, chunkIndex))
+	finalPath := localMergeChunkPath(chunksDir, fileIndex, chunkIndex)
 	job.mu.Lock()
 	if job.files[fileIndex].chunkDone[chunkIndex] {
 		// Idempotent retry: the chunk is already stored.

@@ -73,7 +73,7 @@ type spineBuild struct {
 
 // tocEntry 是带导航目标的目录条目。文本目标记录实际文本节点的稳定 DOM
 // path（相对块元素的 childNodes 下标链）+ 首个可见字符的 UTF-16 偏移
-//（textPath/textOffset）；媒体目标绑定 Stable NavAnchor id（真实元素
+// （textPath/textOffset）；媒体目标绑定 Stable NavAnchor id（真实元素
 // rect）。fragment 保留 EPUB 目录原始片段（SourceFragment，调试与回退）；
 // sourcePath 保留原始 href 路径。
 type tocEntry struct {
@@ -339,7 +339,7 @@ func pathToNode(block, node *html.Node) []int {
 // resolveTOC 把目录条目解析为 (spine, 块) 并解析导航 locator：对每个
 // href/path+fragment 先在清洗后 DOM 中定位真实目标元素，再解析其首个
 // 实际可见内容——文本目标记录实际文本节点的稳定 DOM path + UTF-16 偏移
-//（不注入任何 DOM 标记）；媒体目标把 data-rv-anchor 绑到媒体元素上。
+// （不注入任何 DOM 标记）；媒体目标把 data-rv-anchor 绑到媒体元素上。
 // 无 fragment 条目解析目标 spine 首个真实可见内容（fragment 解析失败/
 // 被清洗丢弃时同样落到目标块首可见内容，原始 fragment 保留为
 // SourceFragment 供回退）。locator 解析失败（无可绑定节点）时全部留空，
@@ -442,7 +442,7 @@ func chapterIndexForPath(book *reader.Book, tocPath string, trees []*chapterTree
 	if tocPath == "" {
 		return 0
 	}
-	normalized := normalizePath(tocPath)
+	normalized := reader.NormalizePath(tocPath)
 	for i := range book.Chapters {
 		if i < len(trees) && trees[i] != nil && trees[i].sourcePath == normalized {
 			return i
@@ -838,24 +838,4 @@ func utf16UnitsOfRune(r rune) int64 {
 func runeAt(s string, bytePos int) rune {
 	r, _ := utf8.DecodeRuneInString(s[bytePos:])
 	return r
-}
-
-// normalizePath 与解析器同一语义（防御，供目录 Path 比对）。
-func normalizePath(p string) string {
-	trimmed := strings.TrimPrefix(p, "/")
-	parts := strings.Split(trimmed, "/")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		switch part {
-		case "", ".":
-			continue
-		case "..":
-			if len(out) > 0 {
-				out = out[:len(out)-1]
-			}
-		default:
-			out = append(out, part)
-		}
-	}
-	return strings.Join(out, "/")
 }

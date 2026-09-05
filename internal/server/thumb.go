@@ -102,9 +102,7 @@ func (q *thumbnailScheduler) close() {
 // 复制/移动仍复用同一 key，因此缩略图缓存语义保持稳定。
 // GC 也使用这个纯函数从数据库引用重建可达缩略图集合。
 func thumbnailKey(objectKey string) string {
-	sum := sha256.Sum256([]byte(objectKey + "|thumb-v2"))
-	id := hex.EncodeToString(sum[:])
-	return "thumbs/" + id[:2] + "/" + id[2:] + ".jpg"
+	return derivedThumbnailKey(objectKey, "thumb-v2")
 }
 
 func imageThumbnailKey(objectKey string) string {

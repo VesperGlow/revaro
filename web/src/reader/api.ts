@@ -1,21 +1,9 @@
 import type { BookProgress, FlowManifest } from './types'
 import { api } from '../api'
 
-export interface BookInfo {
-  id: string
-  title: string
-  kind: 'epub' | 'txt'
-  hasCover: boolean
-}
-
-export async function fetchBookInfo(fileId: string): Promise<BookInfo | null> {
-  const data = await api<{ format?: string; title?: string; name?: string; cover?: boolean }>(`/api/files/${fileId}/book`)
-  return {
-    id: fileId,
-    title: data.name || data.title || '未命名书籍',
-    kind: data.format === 'txt' ? 'txt' : 'epub',
-    hasCover: Boolean(data.cover),
-  }
+export async function fetchBookTitle(fileId: string): Promise<string> {
+  const data = await api<{ title?: string; name?: string }>(`/api/files/${fileId}/book`)
+  return data.name || data.title || '未命名书籍'
 }
 
 // fetchFlow 拉取连续 reading flow 的 manifest（chunk/spine/TOC 元数据）。

@@ -52,17 +52,7 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		if !item.Selected {
 			continue
 		}
-		fileName := path.Base(item.Path)
-		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
-		key := storage.BlobKey(fmt.Sprintf("bt-%s-%d", job.ID, item.Index))
-		webPrefix := ""
-		if strings.HasPrefix(strings.ToLower(mimeType), "video/") || videoExts[strings.ToLower(filepath.Ext(fileName))] {
-			webPrefix = fmt.Sprintf("derived/media/%s/%d", job.ID, item.Index)
-		}
-		requests = append(requests, storage.TorrentImportFile{Index: item.Index, Key: key, MIME: mimeType, Size: item.Size, WebPrefix: webPrefix})
+		requests = append(requests, torrentImportRequest(job.ID, item))
 		paths[item.Index] = item
 	}
 	started := time.Now()
@@ -98,10 +88,7 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 			m.fail(runtime.jobID, errors.New("种子导入结果不一致"))
 			return
 		}
-		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(item.Path)))
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
+		mimeType := torrentImportMIME(item.Path)
 		stored = append(stored, importedDownloadFile{path: item.Path, objectKey: result.Key, size: result.Size, mimeType: mimeType, etag: result.ETag, index: result.Index, web: result.WebMedia})
 		imported += result.Size
 	}
@@ -358,20 +345,34 @@ func (m *downloadManager) importRequests(job downloadJob) []storage.TorrentImpor
 		if !item.Selected {
 			continue
 		}
-		fileName := path.Base(item.Path)
-		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
-		request := storage.TorrentImportFile{Index: item.Index, MIME: mimeType, Size: item.Size}
-		if strings.HasPrefix(strings.ToLower(mimeType), "video/") || videoExts[strings.ToLower(filepath.Ext(fileName))] {
-			request.WebPrefix = fmt.Sprintf("derived/media/%s/%d", job.ID, item.Index)
-		} else {
-			request.Key = storage.BlobKey(fmt.Sprintf("bt-%s-%d", job.ID, item.Index))
-		}
-		requests = append(requests, request)
+		requests = append(requests, torrentImportRequest(job.ID, item))
 	}
 	return requests
+}
+
+func torrentImportMIME(name string) string {
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path.Base(name))))
+	if mimeType == "" {
+		return "application/octet-stream"
+	}
+	return mimeType
+}
+
+// torrentImportRequest is shared by the live import and every rollback path.
+// Web media keeps the original blob as well as derived playback objects, so a
+// video request deliberately carries both cleanup targets.
+func torrentImportRequest(jobID string, item downloadFile) storage.TorrentImportFile {
+	mimeType := torrentImportMIME(item.Path)
+	request := storage.TorrentImportFile{
+		Index: item.Index,
+		Key:   storage.BlobKey(fmt.Sprintf("bt-%s-%d", jobID, item.Index)),
+		MIME:  mimeType,
+		Size:  item.Size,
+	}
+	if strings.HasPrefix(strings.ToLower(mimeType), "video/") || videoExts[strings.ToLower(filepath.Ext(path.Base(item.Path)))] {
+		request.WebPrefix = fmt.Sprintf("derived/media/%s/%d", jobID, item.Index)
+	}
+	return request
 }
 
 func (m *downloadManager) get(ctx context.Context, jobID string, withFiles bool) (downloadJob, error) {
