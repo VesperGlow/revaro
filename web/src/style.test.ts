@@ -49,7 +49,9 @@ describe('reader chrome layout',()=>{
     expect(reader).toContain('class="reader-progress-ring"')
     expect(reader).toContain('stroke-dashoffset')
     expect(reader).not.toContain('class="reader-bar-spacer"')
-    expect(css).toContain('grid-template-columns: 56px minmax(0, 1fr) 56px')
+    expect(reader).toContain('.toFixed(1)')
+    expect(reader).not.toContain('id="reader-kind"')
+    expect(css).toContain('grid-template-columns: 60px minmax(0, 1fr) 60px')
     expect(css).toContain('env(safe-area-inset-top, 0px)')
   })
 

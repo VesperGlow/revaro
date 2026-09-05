@@ -9,15 +9,14 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 
 const {
   FONT_MAX, FONT_MIN, LINE_HEIGHTS, adjustFont, clamp, closeToc, errorText,
-  flowEl, fontOpen, isDark, jumpToc, kind, loadingText, next, onFontInput,
+  flowEl, fontOpen, isDark, jumpToc, loadingText, next, onFontInput,
   openToc, pageLabel, percentNow, prefs, previous, setLineHeight,
   stage, title, toc, tocActive, tocOpen, toggleTheme, toggleTools, toolsVisible,
   viewportEl, zoneGuard,
 } = useReaderFlow(props.file)
 
 const readerProgressNumber = computed(() => {
-  const value = clamp(percentNow.value, 0, 100)
-  return value >= 99 ? 100 : Math.round(value)
+  return clamp(percentNow.value, 0, 100).toFixed(1)
 })
 </script>
 
@@ -25,18 +24,18 @@ const readerProgressNumber = computed(() => {
   <section id="reader-view" class="reader-shell" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
     <header class="reader-bar">
       <button id="reader-back" class="reader-icon-btn" aria-label="返回" @click="emit('close')">
-        <ArrowLeft :size="23" :stroke-width="1.8" aria-hidden="true" />
+        <ArrowLeft :size="24" :stroke-width="1.9" aria-hidden="true" />
       </button>
-      <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong><small id="reader-kind">{{ kind.toUpperCase() }}</small></div>
+      <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong></div>
       <span id="page-label" class="reader-progress-ring" role="img" :aria-label="`阅读进度 ${pageLabel}`">
-        <svg viewBox="0 0 36 36" aria-hidden="true">
-          <circle class="reader-progress-ring-track" cx="18" cy="18" r="15.5" pathLength="100" />
+        <svg viewBox="0 0 40 40" aria-hidden="true">
+          <circle class="reader-progress-ring-track" cx="20" cy="20" r="17.5" pathLength="100" />
           <circle
             class="reader-progress-ring-value"
             :class="{ empty: percentNow <= 0 }"
-            cx="18"
-            cy="18"
-            r="15.5"
+            cx="20"
+            cy="20"
+            r="17.5"
             pathLength="100"
             stroke-dasharray="100"
             :stroke-dashoffset="100 - clamp(percentNow, 0, 100)"
