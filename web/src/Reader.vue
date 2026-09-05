@@ -19,8 +19,8 @@ const {
   <section id="reader-view" class="reader-shell" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
     <header class="reader-bar">
       <button id="reader-back" class="reader-icon-btn" aria-label="返回" @click="emit('close')">
-        <svg class="reader-back-icon" viewBox="0 0 18 14" aria-hidden="true">
-          <path d="M18 7H1m6-7-7 7 7 7" />
+        <svg class="reader-back-icon" viewBox="0 0 12 20" aria-hidden="true">
+          <path d="m11 1-9 9 9 9" />
         </svg>
       </button>
       <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong></div>

@@ -778,25 +778,27 @@ body.reader-open {
 .reader-icon-btn {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   justify-self: center;
-  border: 0;
-  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--paper);
   color: var(--ink);
   font-size: 20px;
   line-height: 1;
   cursor: pointer;
   text-decoration: none;
   padding: 0;
+  box-shadow: 0 2px 8px rgba(35, 29, 22, 0.08);
 }
 .reader-back-icon {
-  width: 23px;
-  height: auto;
+  width: 20px;
+  height: 20px;
   overflow: visible;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2.1;
+  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -804,7 +806,8 @@ body.reader-open {
   vector-effect: non-scaling-stroke;
 }
 .reader-icon-btn:active {
-  opacity: 0.6;
+  background: var(--bg);
+  opacity: 0.75;
 }
 .reader-progress-ring {
   display: grid;
