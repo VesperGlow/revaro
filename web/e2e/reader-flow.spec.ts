@@ -215,10 +215,7 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(layout.center-layout.viewportCenter)).toBeLessThan(.5)
-  expect(layout.backWidth).toBe(40)
-  expect(layout.backHeight).toBe(40)
-  expect(layout.backBackground).not.toBe('rgba(0, 0, 0, 0)')
-  expect(layout).toMatchObject({progressText:'0',progressWidth:48,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0',progressWidth:48,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
   expect(Math.abs(layout.backCenter-(layout.viewport-layout.progressCenter))).toBeLessThan(.5)
 
   await page.setViewportSize({width:390,height:844})
