@@ -215,7 +215,7 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(layout.center-layout.viewportCenter)).toBeLessThan(.5)
-  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0.0',progressWidth:40,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0',progressWidth:40,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
   expect(Math.abs(layout.backCenter-(layout.viewport-layout.progressCenter))).toBeLessThan(.5)
 
   await page.setViewportSize({width:390,height:844})
@@ -248,7 +248,7 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(mobileLayout.titleCenter-mobileLayout.viewportCenter)).toBeLessThan(.5)
-  expect(mobileLayout).toMatchObject({progressText:'0.0',progressWidth:40,footerBottom:0,hasSeek:false})
+  expect(mobileLayout).toMatchObject({progressText:'0',progressWidth:40,footerBottom:0,hasSeek:false})
   expect(mobileLayout.controlsBottomClearance).toBeGreaterThanOrEqual(12)
   expect(Math.max(...mobileLayout.buttonWidths)-Math.min(...mobileLayout.buttonWidths)).toBeLessThan(.5)
   expect(Math.min(...mobileLayout.buttonHeights)).toBeGreaterThanOrEqual(44)
@@ -256,10 +256,10 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
 
   await page.locator('#toc-button').click()
   await page.locator('.toc-item',{hasText:'中点'}).click()
-  await expect(page.locator('#page-label')).toHaveText('50.0')
+  await expect(page.locator('#page-label')).toHaveText('50')
   await page.locator('#toc-button').click()
   await page.locator('.toc-item',{hasText:'结尾'}).click()
-  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}\.\d$/)
+  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}$/)
 })
 
 test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且绝不重复请求', async ({ page }) => {
@@ -281,7 +281,7 @@ test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且�
     .poll(() => page.locator('#flow .rf-chunk').count(), { timeout: 5000 })
     .toBeLessThanOrEqual(5)
   // 进度条/标签仍有效
-  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}\.\d$/)
+  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}$/)
 })
 
 test('字号/行距调整纯客户端重排：零 chunk 请求且阅读位置保持', async ({ page }) => {
@@ -299,7 +299,7 @@ test('字号/行距调整纯客户端重排：零 chunk 请求且阅读位置保
 
   expect(Object.keys(flowRequests).length).toBe(chunkBefore)
   expect(nonChunkRequests.length).toBe(flowBefore)
-  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}\.\d$/)
+  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}$/)
   // 字号变化后 topAnchor 重对齐：阅读进度（文本百分比）基本不变
   const percentAfter = await page.locator('#page-label').textContent()
   expect(Math.abs(parseFloat(percentAfter ?? '0') - parseFloat(percentBefore ?? '0'))).toBeLessThan(2)
@@ -349,7 +349,7 @@ test('后退翻页回到开头不崩溃，进度仍为开头锚点', async ({ pa
     await page.waitForTimeout(320)
   }
   await expect(page.locator('#flow .rf-chunk').first()).toBeVisible()
-  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}\.\d$/)
+  await expect(page.locator('#page-label')).toHaveText(/^\d{1,3}$/)
   await expect(page.locator('#reader-view')).toBeVisible()
 })
 

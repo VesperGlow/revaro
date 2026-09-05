@@ -45,11 +45,12 @@ describe('media control visual composition',()=>{
 
 describe('reader chrome layout',()=>{
   it('balances a live circular header progress against the standard back icon',()=>{
-    expect(reader).toContain("import { ArrowLeft } from '@lucide/vue'")
+    expect(reader).toContain('class="reader-back-icon"')
+    expect(reader).not.toContain("from '@lucide/vue'")
     expect(reader).toContain('class="reader-progress-ring"')
     expect(reader).toContain('stroke-dashoffset')
     expect(reader).not.toContain('class="reader-bar-spacer"')
-    expect(reader).toContain('.toFixed(1)')
+    expect(reader).toContain('Math.round(clamp(percentNow, 0, 100))')
     expect(reader).not.toContain('id="reader-kind"')
     expect(css).toContain('grid-template-columns: 60px minmax(0, 1fr) 60px')
     expect(css).toContain('env(safe-area-inset-top, 0px)')

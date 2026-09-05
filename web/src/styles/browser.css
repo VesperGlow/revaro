@@ -790,10 +790,15 @@ body.reader-open {
   text-decoration: none;
   padding: 0;
 }
-.reader-icon-btn svg {
-  width: 24px;
-  height: 24px;
-  stroke-width: 1.9;
+.reader-back-icon {
+  width: 25px;
+  height: 25px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .reader-icon-btn:active {
   opacity: 0.6;

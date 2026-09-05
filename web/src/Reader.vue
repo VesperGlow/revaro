@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { ArrowLeft } from '@lucide/vue'
-import { computed } from 'vue'
 import type { DriveFile } from './api'
 import { useReaderFlow } from './composables/useReaderFlow'
 
@@ -15,16 +13,15 @@ const {
   viewportEl, zoneGuard,
 } = useReaderFlow(props.file)
 
-const readerProgressNumber = computed(() => {
-  return clamp(percentNow.value, 0, 100).toFixed(1)
-})
 </script>
 
 <template>
   <section id="reader-view" class="reader-shell" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
     <header class="reader-bar">
       <button id="reader-back" class="reader-icon-btn" aria-label="返回" @click="emit('close')">
-        <ArrowLeft :size="24" :stroke-width="1.9" aria-hidden="true" />
+        <svg class="reader-back-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M19 12H5m7-7-7 7 7 7" />
+        </svg>
       </button>
       <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong></div>
       <span id="page-label" class="reader-progress-ring" role="img" :aria-label="`阅读进度 ${pageLabel}`">
@@ -41,7 +38,7 @@ const readerProgressNumber = computed(() => {
             :stroke-dashoffset="100 - clamp(percentNow, 0, 100)"
           />
         </svg>
-        <b>{{ readerProgressNumber }}</b>
+        <b>{{ Math.round(clamp(percentNow, 0, 100)) }}</b>
       </span>
     </header>
     <main id="viewport" ref="viewportEl" class="reader-viewport rf-viewport">
