@@ -6,6 +6,7 @@ import { api } from '../api'
 import { previewURL } from '../fileTypes'
 import { formatMediaTime as formatTime } from '../format'
 import type { AudioChapter, AudioHLSResponse, AudioMediaResponse, AudioSubtitle } from '../types'
+import FullBleedProgress from './FullBleedProgress.vue'
 
 const props=defineProps<{item:DriveFile}>()
 const audio=ref<HTMLAudioElement|null>(null)
@@ -58,6 +59,7 @@ const subtitleFocusIndex=computed(()=>{
 })
 const displayedTime=computed(()=>seekPreview.value??currentTime.value)
 const progress=computed(()=>duration.value?Math.min(100,displayedTime.value/duration.value*100):0)
+const chapterMarkers=computed(()=>chapters.value.slice(1).map(chapter=>({id:chapter.id,percent:duration.value?chapter.start/duration.value*100:0})))
 const positionKey=computed(()=>`revaro-audio-position:${props.item.id}`)
 
 function savedPosition(){
@@ -276,14 +278,23 @@ onBeforeUnmount(()=>{
         </section>
       </div>
       <section class="audio-playback">
-        <div class="audio-track-wrap">
-          <div class="audio-track-buffer" :style="{width:`${buffered}%`}"></div>
-          <div class="audio-track-played" :style="{width:`${progress}%`}"></div>
-          <i v-for="chapter in chapters.slice(1)" :key="chapter.id" :style="{left:`${duration?chapter.start/duration*100:0}%`}"></i>
-          <span class="audio-track-thumb" :style="{left:`${progress}%`}"></span>
-          <output v-if="seekHover.visible" class="audio-seek-tooltip" :style="{left:`${seekHover.percent}%`}">{{ formatTime(seekHover.time) }}</output>
-          <input :value="displayedTime" type="range" min="0" :max="duration||0" step="0.1" aria-label="播放进度" @input="previewSeek" @change="commitSeek" @pointermove="updateSeekHover" @pointerleave="hideSeekHover">
-        </div>
+        <FullBleedProgress
+          variant="audio"
+          :percent="progress"
+          :buffered-percent="buffered"
+          :markers="chapterMarkers"
+          :tooltip="seekHover.visible?{percent:seekHover.percent,text:formatTime(seekHover.time)}:undefined"
+          :value="displayedTime"
+          min="0"
+          :max="duration||0"
+          step="0.1"
+          :disabled="!duration"
+          aria-label="播放进度"
+          @input="previewSeek"
+          @change="commitSeek"
+          @pointermove="updateSeekHover"
+          @pointerleave="hideSeekHover"
+        />
         <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span></div>
         <div class="audio-player-options audio-transport-row">
           <label class="audio-rate"><span>倍速</span><select :value="rate" @change="setRate"><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select></label>

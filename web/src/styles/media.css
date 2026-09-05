@@ -551,13 +551,9 @@
   flex-direction: column;
   box-shadow: 0 -10px 30px #34405408;
 }
-.audio-preview .audio-playback .audio-track-wrap,
 .audio-preview .audio-playback .audio-time,
 .audio-preview .audio-playback .audio-player-options {
   width: min(1080px, 100%);
-}
-.audio-preview .audio-playback .audio-track-wrap {
-  margin-top: 0;
 }
 .audio-preview .audio-playback .audio-controls {
   gap: 21px;
@@ -1079,4 +1075,3 @@
     width: 62px;
   }
 }
-

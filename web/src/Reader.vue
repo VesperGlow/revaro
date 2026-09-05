@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DriveFile } from './api'
+import FullBleedProgress from './components/FullBleedProgress.vue'
 import { useReaderFlow } from './composables/useReaderFlow'
 
 const props = defineProps<{ file: DriveFile }>()
@@ -71,8 +72,17 @@ const {
     </div>
     <footer class="reader-footer">
       <div class="reader-seek">
+        <FullBleedProgress
+          id="page-slider"
+          :percent="clamp(percentNow, 0, 100)"
+          min="0"
+          max="1000"
+          step="1"
+          :value="Math.round(clamp(percentNow, 0, 100) * 10)"
+          aria-label="阅读进度"
+          @input="onSeekInput"
+        />
         <span id="page-label">{{ pageLabel }}</span>
-        <input id="page-slider" type="range" min="0" max="1000" step="1" :value="Math.round(clamp(percentNow, 0, 100) * 10)" aria-label="阅读进度" @input="onSeekInput">
       </div>
       <div class="reader-actions">
         <button id="toc-button" class="reader-action-btn" :aria-expanded="tocOpen" @click="openToc"><b>☰</b><span>目录</span></button>

@@ -5,6 +5,9 @@ const styleModules=['shell','browser','uploads','dialogs','media','responsive','
 const css=styleModules.map(name=>readFileSync(new URL(`./styles/${name}.css`,import.meta.url),'utf8')).join('\n')
 const videoPlayer=readFileSync(new URL('./styles/video-player.css',import.meta.url),'utf8')
 const taskCenter=readFileSync(new URL('./components/TaskCenter.vue',import.meta.url),'utf8')
+const reader=readFileSync(new URL('./Reader.vue',import.meta.url),'utf8')
+const audioPlayer=readFileSync(new URL('./components/AudioPlayer.vue',import.meta.url),'utf8')
+const fullBleedProgress=readFileSync(new URL('./components/FullBleedProgress.vue',import.meta.url),'utf8')
 
 describe('audio subtitle header layout',()=>{
   it('keeps the cue count clear of the floating close button',()=>{
@@ -17,7 +20,16 @@ describe('audio subtitle header layout',()=>{
 describe('media control visual composition',()=>{
   it('merges the audio timeline with the content boundary',()=>{
     expect(css).toContain('.audio-preview .audio-playback::before')
-    expect(css).toContain('margin-top: -17px')
+    expect(css).toContain('.audio-preview .full-bleed-progress--audio')
+  })
+
+  it('shares a full-bleed, safe-area-aware progress control',()=>{
+    expect(reader).toContain("import FullBleedProgress from './components/FullBleedProgress.vue'")
+    expect(audioPlayer).toContain("import FullBleedProgress from './FullBleedProgress.vue'")
+    expect(css).not.toContain('.audio-track-wrap')
+    expect(fullBleedProgress).toContain('height: 44px')
+    expect(fullBleedProgress).toContain('env(safe-area-inset-left, 0px)')
+    expect(fullBleedProgress).toContain('env(safe-area-inset-right, 0px)')
   })
 
   it('balances the desktop transport row within the area below the timeline',()=>{
