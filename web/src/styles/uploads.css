@@ -38,8 +38,8 @@
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 0 0 calc(6px + env(safe-area-inset-bottom, 0px));
-  border-top: 0;
+  padding: 8px 0 calc(12px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
   background: rgba(247, 243, 235, 0.96);
   color: var(--muted);
   position: fixed;
@@ -47,12 +47,6 @@
   right: 0;
   bottom: 0;
   z-index: 8;
-}
-.reader-seek {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  width: 100%;
 }
 #font-slider {
   -webkit-appearance: none;
@@ -119,7 +113,7 @@
 .font-popover {
   position: fixed;
   left: 50%;
-  bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   z-index: 9;
   display: flex;

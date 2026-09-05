@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ChevronLeft } from '@lucide/vue'
+import { ArrowLeft } from '@lucide/vue'
+import { computed } from 'vue'
 import type { DriveFile } from './api'
-import FullBleedProgress from './components/FullBleedProgress.vue'
 import { useReaderFlow } from './composables/useReaderFlow'
 
 const props = defineProps<{ file: DriveFile }>()
@@ -10,20 +10,40 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const {
   FONT_MAX, FONT_MIN, LINE_HEIGHTS, adjustFont, clamp, closeToc, errorText,
   flowEl, fontOpen, isDark, jumpToc, kind, loadingText, next, onFontInput,
-  onSeekInput, openToc, pageLabel, percentNow, prefs, previous, setLineHeight,
+  openToc, pageLabel, percentNow, prefs, previous, setLineHeight,
   stage, title, toc, tocActive, tocOpen, toggleTheme, toggleTools, toolsVisible,
   viewportEl, zoneGuard,
 } = useReaderFlow(props.file)
+
+const readerProgressNumber = computed(() => {
+  const value = clamp(percentNow.value, 0, 100)
+  return value >= 99 ? 100 : Math.round(value)
+})
 </script>
 
 <template>
   <section id="reader-view" class="reader-shell" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
     <header class="reader-bar">
       <button id="reader-back" class="reader-icon-btn" aria-label="返回" @click="emit('close')">
-        <ChevronLeft :size="24" :stroke-width="1.8" aria-hidden="true" />
+        <ArrowLeft :size="23" :stroke-width="1.8" aria-hidden="true" />
       </button>
       <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong><small id="reader-kind">{{ kind.toUpperCase() }}</small></div>
-      <span id="page-label" class="reader-progress-text">{{ pageLabel }}</span>
+      <span id="page-label" class="reader-progress-ring" role="img" :aria-label="`阅读进度 ${pageLabel}`">
+        <svg viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="reader-progress-ring-track" cx="18" cy="18" r="15.5" pathLength="100" />
+          <circle
+            class="reader-progress-ring-value"
+            :class="{ empty: percentNow <= 0 }"
+            cx="18"
+            cy="18"
+            r="15.5"
+            pathLength="100"
+            stroke-dasharray="100"
+            :stroke-dashoffset="100 - clamp(percentNow, 0, 100)"
+          />
+        </svg>
+        <b>{{ readerProgressNumber }}</b>
+      </span>
     </header>
     <main id="viewport" ref="viewportEl" class="reader-viewport rf-viewport">
       <div class="rf-pager">
@@ -72,18 +92,6 @@ const {
       </span>
     </div>
     <footer class="reader-footer">
-      <div class="reader-seek">
-        <FullBleedProgress
-          id="page-slider"
-          :percent="clamp(percentNow, 0, 100)"
-          min="0"
-          max="1000"
-          step="1"
-          :value="Math.round(clamp(percentNow, 0, 100) * 10)"
-          aria-label="阅读进度"
-          @input="onSeekInput"
-        />
-      </div>
       <div class="reader-actions">
         <button id="toc-button" class="reader-action-btn" :aria-expanded="tocOpen" @click="openToc"><b>☰</b><span>目录</span></button>
         <button id="font-button" class="reader-action-btn" @click="fontOpen = !fontOpen"><b>A</b><span>排版</span></button>

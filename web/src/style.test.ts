@@ -23,8 +23,7 @@ describe('media control visual composition',()=>{
     expect(css).toContain('.audio-preview .full-bleed-progress--audio')
   })
 
-  it('shares a full-bleed, safe-area-aware progress control',()=>{
-    expect(reader).toContain("import FullBleedProgress from './components/FullBleedProgress.vue'")
+  it('keeps the audio progress control full-bleed and safe-area-aware',()=>{
     expect(audioPlayer).toContain("import FullBleedProgress from './FullBleedProgress.vue'")
     expect(css).not.toContain('.audio-track-wrap')
     expect(fullBleedProgress).toContain('height: 44px')
@@ -45,16 +44,18 @@ describe('media control visual composition',()=>{
 })
 
 describe('reader chrome layout',()=>{
-  it('balances a live header percentage against the standard back icon',()=>{
-    expect(reader).toContain("import { ChevronLeft } from '@lucide/vue'")
-    expect(reader).toContain('class="reader-progress-text"')
+  it('balances a live circular header progress against the standard back icon',()=>{
+    expect(reader).toContain("import { ArrowLeft } from '@lucide/vue'")
+    expect(reader).toContain('class="reader-progress-ring"')
+    expect(reader).toContain('stroke-dashoffset')
     expect(reader).not.toContain('class="reader-bar-spacer"')
     expect(css).toContain('grid-template-columns: 56px minmax(0, 1fr) 56px')
     expect(css).toContain('env(safe-area-inset-top, 0px)')
   })
 
-  it('keeps the footer controls centered without a percentage row',()=>{
-    expect(reader).not.toContain('<span id="page-label">')
+  it('keeps only three centered controls in the footer',()=>{
+    expect(reader).not.toContain('FullBleedProgress')
+    expect(reader).not.toContain('id="page-slider"')
     expect(css).toContain('grid-template-columns: repeat(3, 1fr)')
     expect(css).toContain('min-height: 48px')
   })

@@ -175,7 +175,11 @@ async function clickNext(page: Page, times: number, gapMs = 340) {
 test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从底栏进入', async ({ page }) => {
   const baseTitle='这是一本用于验证超长标题始终保持单行并且相对整个视口几何居中的电子书'.repeat(4)
   const bookName=`${baseTitle}.txt.PDF.epub`
-  await openReader(page,{bookName})
+  await openReader(page,{bookName,toc:[
+    {label:'开头',depth:0,spine:0,block:0,chunk:0,text_path:[0],text_offset:0},
+    {label:'中点',depth:0,spine:6,block:6*BLOCKS_PER_CHUNK,chunk:6,text_path:[0],text_offset:0},
+    {label:'结尾',depth:0,spine:11,block:CHUNK_COUNT*BLOCKS_PER_CHUNK-1,chunk:11,text_path:[0],text_offset:0},
+  ]})
 
   await expect(page.locator('#reader-title')).toHaveText(baseTitle)
   await expect(page).toHaveTitle(`${bookName} · revaro`)
@@ -188,20 +192,21 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     const title=document.querySelector('.reader-bar-title') as HTMLElement
     const titleText=document.getElementById('reader-title') as HTMLElement
     const back=document.getElementById('reader-back') as HTMLElement
-    const progress=document.querySelector('.reader-progress-text') as HTMLElement
+    const progress=document.querySelector('.reader-progress-ring') as HTMLElement
     const titleBox=title.getBoundingClientRect()
     const backBox=back.getBoundingClientRect()
     const progressBox=progress.getBoundingClientRect()
     return {
       center:titleBox.left+titleBox.width/2,
       viewportCenter:viewport/2,
+      viewport,
       backWidth:backBox.width,
       backHeight:backBox.height,
       backBackground:getComputedStyle(back).backgroundColor,
       progressText:progress.textContent,
       progressWidth:progressBox.width,
-      progressRight:viewport-progressBox.right,
-      backLeft:backBox.left,
+      backCenter:backBox.left+backBox.width/2,
+      progressCenter:progressBox.left+progressBox.width/2,
       whiteSpace:getComputedStyle(titleText).whiteSpace,
       overflow:getComputedStyle(titleText).overflow,
       textOverflow:getComputedStyle(titleText).textOverflow,
@@ -209,36 +214,32 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(layout.center-layout.viewportCenter)).toBeLessThan(.5)
-  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0%',progressWidth:56,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
-  expect(Math.abs(layout.backLeft-layout.progressRight)).toBeLessThan(.5)
+  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0',progressWidth:36,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+  expect(Math.abs(layout.backCenter-(layout.viewport-layout.progressCenter))).toBeLessThan(.5)
 
   await page.setViewportSize({width:390,height:844})
   await page.waitForTimeout(350)
   const mobileLayout=await page.evaluate(()=>{
     const viewport=document.documentElement.clientWidth
+    const viewportHeight=document.documentElement.clientHeight
     const title=document.querySelector('.reader-bar-title') as HTMLElement
-    const progress=document.querySelector('.reader-progress-text') as HTMLElement
-    const track=document.querySelector('.full-bleed-progress__track') as HTMLElement
-    const thumb=document.querySelector('.full-bleed-progress__thumb') as HTMLElement
-    const input=document.getElementById('page-slider') as HTMLInputElement
+    const progress=document.querySelector('.reader-progress-ring') as HTMLElement
+    const footer=document.querySelector('.reader-footer') as HTMLElement
     const actions=document.querySelector('.reader-actions') as HTMLElement
     const buttons=Array.from(actions.querySelectorAll<HTMLElement>('.reader-action-btn'))
     const titleBox=title.getBoundingClientRect()
-    const trackBox=track.getBoundingClientRect()
-    const thumbBox=thumb.getBoundingClientRect()
-    const inputBox=input.getBoundingClientRect()
+    const progressBox=progress.getBoundingClientRect()
+    const footerBox=footer.getBoundingClientRect()
     const actionsBox=actions.getBoundingClientRect()
     const buttonBoxes=buttons.map(button=>button.getBoundingClientRect())
     return {
       titleCenter:titleBox.left+titleBox.width/2,
       viewportCenter:viewport/2,
-      progressFits:progress.scrollWidth<=progress.clientWidth,
-      trackLeft:trackBox.left,
-      trackRight:trackBox.right,
-      viewport,
-      thumbLeft:thumbBox.left,
-      thumbRight:thumbBox.right,
-      inputHeight:inputBox.height,
+      progressText:progress.textContent,
+      progressWidth:progressBox.width,
+      footerBottom:viewportHeight-footerBox.bottom,
+      controlsBottomClearance:viewportHeight-Math.max(...buttonBoxes.map(box=>box.bottom)),
+      hasSeek:footer.querySelector('.reader-seek')!==null,
       buttonWidths:buttonBoxes.map(box=>box.width),
       buttonHeights:buttonBoxes.map(box=>box.height),
       buttonCenters:buttonBoxes.map(box=>box.top+box.height/2),
@@ -246,28 +247,18 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(mobileLayout.titleCenter-mobileLayout.viewportCenter)).toBeLessThan(.5)
-  expect(mobileLayout.progressFits).toBe(true)
-  expect(mobileLayout.trackLeft).toBe(0)
-  expect(mobileLayout.trackRight).toBe(mobileLayout.viewport)
-  expect(mobileLayout.thumbLeft).toBeGreaterThanOrEqual(0)
-  expect(mobileLayout.thumbRight).toBeLessThanOrEqual(mobileLayout.viewport)
-  expect(mobileLayout.inputHeight).toBe(44)
+  expect(mobileLayout).toMatchObject({progressText:'0',progressWidth:36,footerBottom:0,hasSeek:false})
+  expect(mobileLayout.controlsBottomClearance).toBeGreaterThanOrEqual(12)
   expect(Math.max(...mobileLayout.buttonWidths)-Math.min(...mobileLayout.buttonWidths)).toBeLessThan(.5)
   expect(Math.min(...mobileLayout.buttonHeights)).toBeGreaterThanOrEqual(44)
   expect(Math.max(...mobileLayout.buttonCenters.map(center=>Math.abs(center-mobileLayout.actionsCenter)))).toBeLessThan(.5)
 
-  await page.locator('#page-slider').evaluate((slider:HTMLInputElement)=>{
-    slider.value='1000'
-    slider.dispatchEvent(new Event('input',{bubbles:true}))
-  })
-  await expect.poll(async()=>parseFloat(await page.locator('#page-label').innerText())).toBeGreaterThan(99)
-  const finalThumb=await page.locator('.full-bleed-progress__thumb').boundingBox()
-  expect(finalThumb).not.toBeNull()
-  expect((finalThumb?.x||0)+(finalThumb?.width||0)).toBeLessThanOrEqual(390)
-  expect(await page.locator('.reader-progress-text').evaluate(el=>{
-    el.textContent='100%'
-    return el.scrollWidth<=el.clientWidth
-  })).toBe(true)
+  await page.locator('#toc-button').click()
+  await page.locator('.toc-item',{hasText:'中点'}).click()
+  await expect(page.locator('#page-label')).toHaveText('50')
+  await page.locator('#toc-button').click()
+  await page.locator('.toc-item',{hasText:'结尾'}).click()
+  await expect(page.locator('#page-label')).toHaveText('100')
 })
 
 test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且绝不重复请求', async ({ page }) => {
@@ -289,7 +280,7 @@ test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且�
     .poll(() => page.locator('#flow .rf-chunk').count(), { timeout: 5000 })
     .toBeLessThanOrEqual(5)
   // 进度条/标签仍有效
-  await expect(page.locator('#page-label')).toContainText('%')
+  await expect(page.locator('#page-label')).toHaveText(/^\d+$/)
 })
 
 test('字号/行距调整纯客户端重排：零 chunk 请求且阅读位置保持', async ({ page }) => {
@@ -307,7 +298,7 @@ test('字号/行距调整纯客户端重排：零 chunk 请求且阅读位置保
 
   expect(Object.keys(flowRequests).length).toBe(chunkBefore)
   expect(nonChunkRequests.length).toBe(flowBefore)
-  await expect(page.locator('#page-label')).toContainText('%')
+  await expect(page.locator('#page-label')).toHaveText(/^\d+$/)
   // 字号变化后 topAnchor 重对齐：阅读进度（文本百分比）基本不变
   const percentAfter = await page.locator('#page-label').textContent()
   expect(Math.abs(parseFloat(percentAfter ?? '0') - parseFloat(percentBefore ?? '0'))).toBeLessThan(2)
@@ -357,7 +348,7 @@ test('后退翻页回到开头不崩溃，进度仍为开头锚点', async ({ pa
     await page.waitForTimeout(320)
   }
   await expect(page.locator('#flow .rf-chunk').first()).toBeVisible()
-  await expect(page.locator('#page-label')).toContainText('%')
+  await expect(page.locator('#page-label')).toHaveText(/^\d+$/)
   await expect(page.locator('#reader-view')).toBeVisible()
 })
 
