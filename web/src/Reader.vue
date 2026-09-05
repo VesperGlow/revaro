@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronLeft } from '@lucide/vue'
 import type { DriveFile } from './api'
 import FullBleedProgress from './components/FullBleedProgress.vue'
 import { useReaderFlow } from './composables/useReaderFlow'
@@ -19,10 +20,10 @@ const {
   <section id="reader-view" class="reader-shell" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
     <header class="reader-bar">
       <button id="reader-back" class="reader-icon-btn" aria-label="返回" @click="emit('close')">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+        <ChevronLeft :size="24" :stroke-width="1.8" aria-hidden="true" />
       </button>
       <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong><small id="reader-kind">{{ kind.toUpperCase() }}</small></div>
-      <span class="reader-bar-spacer" aria-hidden="true"></span>
+      <span id="page-label" class="reader-progress-text">{{ pageLabel }}</span>
     </header>
     <main id="viewport" ref="viewportEl" class="reader-viewport rf-viewport">
       <div class="rf-pager">
@@ -82,7 +83,6 @@ const {
           aria-label="阅读进度"
           @input="onSeekInput"
         />
-        <span id="page-label">{{ pageLabel }}</span>
       </div>
       <div class="reader-actions">
         <button id="toc-button" class="reader-action-btn" :aria-expanded="tocOpen" @click="openToc"><b>☰</b><span>目录</span></button>

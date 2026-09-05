@@ -172,7 +172,7 @@ async function clickNext(page: Page, times: number, gapMs = 340) {
   }
 }
 
-test('阅读器顶栏只有返回与居中标题，目录仅从底栏进入', async ({ page }) => {
+test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从底栏进入', async ({ page }) => {
   const baseTitle='这是一本用于验证超长标题始终保持单行并且相对整个视口几何居中的电子书'.repeat(4)
   const bookName=`${baseTitle}.txt.PDF.epub`
   await openReader(page,{bookName})
@@ -188,16 +188,20 @@ test('阅读器顶栏只有返回与居中标题，目录仅从底栏进入', as
     const title=document.querySelector('.reader-bar-title') as HTMLElement
     const titleText=document.getElementById('reader-title') as HTMLElement
     const back=document.getElementById('reader-back') as HTMLElement
-    const spacer=document.querySelector('.reader-bar-spacer') as HTMLElement
+    const progress=document.querySelector('.reader-progress-text') as HTMLElement
     const titleBox=title.getBoundingClientRect()
     const backBox=back.getBoundingClientRect()
+    const progressBox=progress.getBoundingClientRect()
     return {
       center:titleBox.left+titleBox.width/2,
       viewportCenter:viewport/2,
       backWidth:backBox.width,
       backHeight:backBox.height,
       backBackground:getComputedStyle(back).backgroundColor,
-      spacerVisibility:getComputedStyle(spacer).visibility,
+      progressText:progress.textContent,
+      progressWidth:progressBox.width,
+      progressRight:viewport-progressBox.right,
+      backLeft:backBox.left,
       whiteSpace:getComputedStyle(titleText).whiteSpace,
       overflow:getComputedStyle(titleText).overflow,
       textOverflow:getComputedStyle(titleText).textOverflow,
@@ -205,7 +209,65 @@ test('阅读器顶栏只有返回与居中标题，目录仅从底栏进入', as
     }
   })
   expect(Math.abs(layout.center-layout.viewportCenter)).toBeLessThan(.5)
-  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',spacerVisibility:'hidden',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0%',progressWidth:56,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+  expect(Math.abs(layout.backLeft-layout.progressRight)).toBeLessThan(.5)
+
+  await page.setViewportSize({width:390,height:844})
+  await page.waitForTimeout(350)
+  const mobileLayout=await page.evaluate(()=>{
+    const viewport=document.documentElement.clientWidth
+    const title=document.querySelector('.reader-bar-title') as HTMLElement
+    const progress=document.querySelector('.reader-progress-text') as HTMLElement
+    const track=document.querySelector('.full-bleed-progress__track') as HTMLElement
+    const thumb=document.querySelector('.full-bleed-progress__thumb') as HTMLElement
+    const input=document.getElementById('page-slider') as HTMLInputElement
+    const actions=document.querySelector('.reader-actions') as HTMLElement
+    const buttons=Array.from(actions.querySelectorAll<HTMLElement>('.reader-action-btn'))
+    const titleBox=title.getBoundingClientRect()
+    const trackBox=track.getBoundingClientRect()
+    const thumbBox=thumb.getBoundingClientRect()
+    const inputBox=input.getBoundingClientRect()
+    const actionsBox=actions.getBoundingClientRect()
+    const buttonBoxes=buttons.map(button=>button.getBoundingClientRect())
+    return {
+      titleCenter:titleBox.left+titleBox.width/2,
+      viewportCenter:viewport/2,
+      progressFits:progress.scrollWidth<=progress.clientWidth,
+      trackLeft:trackBox.left,
+      trackRight:trackBox.right,
+      viewport,
+      thumbLeft:thumbBox.left,
+      thumbRight:thumbBox.right,
+      inputHeight:inputBox.height,
+      buttonWidths:buttonBoxes.map(box=>box.width),
+      buttonHeights:buttonBoxes.map(box=>box.height),
+      buttonCenters:buttonBoxes.map(box=>box.top+box.height/2),
+      actionsCenter:actionsBox.top+actionsBox.height/2,
+    }
+  })
+  expect(Math.abs(mobileLayout.titleCenter-mobileLayout.viewportCenter)).toBeLessThan(.5)
+  expect(mobileLayout.progressFits).toBe(true)
+  expect(mobileLayout.trackLeft).toBe(0)
+  expect(mobileLayout.trackRight).toBe(mobileLayout.viewport)
+  expect(mobileLayout.thumbLeft).toBeGreaterThanOrEqual(0)
+  expect(mobileLayout.thumbRight).toBeLessThanOrEqual(mobileLayout.viewport)
+  expect(mobileLayout.inputHeight).toBe(44)
+  expect(Math.max(...mobileLayout.buttonWidths)-Math.min(...mobileLayout.buttonWidths)).toBeLessThan(.5)
+  expect(Math.min(...mobileLayout.buttonHeights)).toBeGreaterThanOrEqual(44)
+  expect(Math.max(...mobileLayout.buttonCenters.map(center=>Math.abs(center-mobileLayout.actionsCenter)))).toBeLessThan(.5)
+
+  await page.locator('#page-slider').evaluate((slider:HTMLInputElement)=>{
+    slider.value='1000'
+    slider.dispatchEvent(new Event('input',{bubbles:true}))
+  })
+  await expect.poll(async()=>parseFloat(await page.locator('#page-label').innerText())).toBeGreaterThan(99)
+  const finalThumb=await page.locator('.full-bleed-progress__thumb').boundingBox()
+  expect(finalThumb).not.toBeNull()
+  expect((finalThumb?.x||0)+(finalThumb?.width||0)).toBeLessThanOrEqual(390)
+  expect(await page.locator('.reader-progress-text').evaluate(el=>{
+    el.textContent='100%'
+    return el.scrollWidth<=el.clientWidth
+  })).toBe(true)
 })
 
 test('窗口化预取：开书只拉附近 chunk，翻页热路径零网络且绝不重复请求', async ({ page }) => {

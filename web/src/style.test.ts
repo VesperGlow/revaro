@@ -44,6 +44,22 @@ describe('media control visual composition',()=>{
   })
 })
 
+describe('reader chrome layout',()=>{
+  it('balances a live header percentage against the standard back icon',()=>{
+    expect(reader).toContain("import { ChevronLeft } from '@lucide/vue'")
+    expect(reader).toContain('class="reader-progress-text"')
+    expect(reader).not.toContain('class="reader-bar-spacer"')
+    expect(css).toContain('grid-template-columns: 56px minmax(0, 1fr) 56px')
+    expect(css).toContain('env(safe-area-inset-top, 0px)')
+  })
+
+  it('keeps the footer controls centered without a percentage row',()=>{
+    expect(reader).not.toContain('<span id="page-label">')
+    expect(css).toContain('grid-template-columns: repeat(3, 1fr)')
+    expect(css).toContain('min-height: 48px')
+  })
+})
+
 describe('task center flyout',()=>{
   it('keeps its surface opaque and completion actions touchable',()=>{
     expect(css).toContain('z-index: 20')
