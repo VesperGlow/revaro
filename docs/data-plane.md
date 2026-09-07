@@ -13,7 +13,7 @@ on opaque object keys and ephemeral job IDs supplied by Go.
 | `blobs/<UUID>` allocation and references | owns | treats keys as opaque |
 | S3, Range readers and multipart streams | requests and commits results | owns transport and retries |
 | BT, URL import, archive and media jobs | validates intent and persists state | owns bounded execution and reports events |
-| codecs and containers | selects user-visible policy | libav engine; no CLI and no codec implementation |
+| codecs and containers | selects user-visible policy | libav engine; ffmpeg CLI only for MKV sidecar remux; no codec implementation |
 
 ## Commit rule
 

@@ -191,20 +191,6 @@ type TorrentEngine interface {
 	StreamTorrent(context.Context, int, int, int64, int64) (io.ReadCloser, error)
 }
 
-const storeBlobMultipartThreshold = int64(64 << 20)
-const storeBlobDefaultPartSize = int64(16 << 20)
-const storeBlobUnknownPartSize = int64(128 << 20)
-
-func storeBlobPartSize(size int64) (int64, error) {
-	if size < 0 {
-		return storeBlobUnknownPartSize, nil
-	}
-	partSize := storeBlobDefaultPartSize
-	if needed := (size + 9999) / 10000; needed > partSize {
-		partSize = ((needed + (1 << 20) - 1) >> 20) << 20
-	}
-	return partSize, nil
-}
 func BlobKey(id string) string { return "blobs/" + id }
 func ValidMultipartPartCount(size, partSize int64) (int, error) {
 	if size < 0 || partSize <= 0 {

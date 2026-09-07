@@ -173,3 +173,27 @@ func TestDocumentSaveConflictOnStaleEtag(t *testing.T) {
 		t.Fatalf("no-etag save=%d", noEtag.Code)
 	}
 }
+
+func TestDocumentEditAndCopyIntegrityMetadata(t *testing.T) {
+	a := newTestApp(t)
+	f := a.readyFile(t, "integrity.txt", []byte("before"))
+	if _, err := a.db.Exec(`UPDATE files SET content_hash=?,hash_algorithm='sha256' WHERE id=?`, sha256hex([]byte("before")), f.ID); err != nil {
+		t.Fatal(err)
+	}
+	rr := a.request("PUT", "/api/files/"+f.ID+"/content", map[string]any{"content": "after", "etag": f.ETag}, true)
+	if rr.Code != 200 {
+		t.Fatalf("edit=%d: %s", rr.Code, rr.Body.String())
+	}
+	edited := decode[File](t, rr)
+	if edited.ContentHash != sha256hex([]byte("after")) || edited.HashAlgorithm != "sha256" {
+		t.Fatalf("stale edit integrity: %+v", edited)
+	}
+	rr = a.request("POST", "/api/files/"+f.ID+"/copy", map[string]any{"parent_id": RootID}, true)
+	if rr.Code != 201 {
+		t.Fatalf("copy=%d: %s", rr.Code, rr.Body.String())
+	}
+	copied := decode[File](t, rr)
+	if copied.ContentHash != edited.ContentHash || copied.HashAlgorithm != edited.HashAlgorithm {
+		t.Fatalf("copy lost integrity: %+v", copied)
+	}
+}

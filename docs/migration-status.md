@@ -14,8 +14,8 @@ owner; Rust receives opaque `blobs/<UUID>` keys and local staging paths only.
   cancellation and bounded expansion.
 - Rust owns media probe, thumbnail, subtitle conversion, fMP4, HLS and audio
   merge through libav. It selects libx264 for incompatible video and the libav
-  AAC encoder for incompatible audio; it does not invoke ffmpeg/ffprobe CLI or
-  implement codecs.
+  AAC encoder for incompatible audio. MKV sidecar subtitle remux uses the
+  ffmpeg CLI; other media operations use libav directly. It does not implement codecs.
 - Audio merge preserves mono or matching multichannel layouts, original
   filename chapters, embedded cover art and merged mov_text subtitles.
 - Go owns public API/auth/UI, SQLite transactions, file metadata and final blob

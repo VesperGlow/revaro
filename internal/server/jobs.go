@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -118,14 +117,5 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			flusher.Flush()
 		}
-	}
-}
-
-func waitForJobSlot(ctx context.Context, slots chan struct{}) error {
-	select {
-	case slots <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }

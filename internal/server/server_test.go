@@ -446,9 +446,7 @@ func (m *mockStorage) DeleteObjects(ctx context.Context, keys []string) error {
 	return nil
 }
 
-// test helpers
-func (m *mockStorage) putBlock(id string, data []byte) { m.blocks[id] = append([]byte(nil), data...) }
-func (m *mockStorage) age(key string, t time.Time)     { m.modified[key] = t }
+func (m *mockStorage) age(key string, t time.Time) { m.modified[key] = t }
 
 func sha256hex(data []byte) string {
 	sum := sha256.Sum256(data)

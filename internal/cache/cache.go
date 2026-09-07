@@ -576,14 +576,6 @@ func diskItemsPerClass(items []diskItem) map[string]int64 {
 	return perClass
 }
 
-// evictDisk 按 predicate 圈定候选、priority 大者与进程内 lastAccess 保留，
-// 逐个删除直到 predicate 为假。调用者不应持有 diskMu。
-func (m *Manager) evictDisk(items []diskItem, need func(diskItem) bool, total *int64, perClass map[string]int64) []diskItem {
-	m.diskMu.Lock()
-	defer m.diskMu.Unlock()
-	return m.evictDiskLocked(items, need, total, perClass, m.classSnapshot())
-}
-
 func (m *Manager) evictDiskLocked(items []diskItem, need func(diskItem) bool, total *int64, perClass map[string]int64, classes map[string]Class) []diskItem {
 	for {
 		var candidates []diskItem
@@ -804,10 +796,6 @@ func (m *Manager) enforceMemoryLimit() {
 	if m.memoryLimit > 0 {
 		m.evictMemoryToLocked(m.memoryLimit)
 	}
-}
-
-func (m *Manager) memoryUsage() int64 {
-	return m.memoryBytes
 }
 
 func (m *Manager) memoryUsageSnapshot() int64 {

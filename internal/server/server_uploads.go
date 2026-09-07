@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"mime"
 	"net/http"
@@ -9,13 +10,49 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/VesperGlow/revaro/internal/ids"
 	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
+
+// Operations on the same upload must cover both S3 and SQLite. Different
+// uploads remain independent, and idle entries are removed from the registry.
+type uploadOperation struct {
+	token chan struct{}
+	refs  int
+}
+
+func (s *Server) lockUpload(ctx context.Context, id string) (func(), error) {
+	s.uploadMu.Lock()
+	if s.uploadOperations == nil {
+		s.uploadOperations = make(map[string]*uploadOperation)
+	}
+	op := s.uploadOperations[id]
+	if op == nil {
+		op = &uploadOperation{token: make(chan struct{}, 1)}
+		op.token <- struct{}{}
+		s.uploadOperations[id] = op
+	}
+	op.refs++
+	s.uploadMu.Unlock()
+	unref := func() {
+		s.uploadMu.Lock()
+		op.refs--
+		if op.refs == 0 {
+			delete(s.uploadOperations, id)
+		}
+		s.uploadMu.Unlock()
+	}
+	select {
+	case <-ctx.Done():
+		unref()
+		return nil, ctx.Err()
+	case <-op.token:
+		return func() { op.token <- struct{}{}; unref() }, nil
+	}
+}
 
 type createUploadInput struct {
 	ParentID string `json:"parent_id"`
@@ -87,6 +124,15 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadGateway, "object storage could not initialize the upload")
 		return
 	}
+	// Once S3 has allocated an upload, every failed metadata path must abort it.
+	committed := false
+	defer func() {
+		if !committed && s3UploadID != "" {
+			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = s.objects.AbortMultipart(abortCtx, objectKey, s3UploadID)
+		}
+	}()
 	now := time.Now().UTC()
 	expires := now.Add(s.cfg.UploadExpires)
 	tx, err := s.db.BeginTx(r.Context(), nil)
@@ -94,17 +140,19 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "database error")
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, fileID, in.ParentID, in.Name, "file", objectKey, in.Size, in.MimeType, "pending", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	result, err := tx.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE id=? AND kind='directory' AND status='ready' AND deleted_at IS NULL)`, fileID, in.ParentID, in.Name, "file", objectKey, in.Size, in.MimeType, "pending", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), in.ParentID)
+	if err == nil {
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			tx.Rollback()
+			problem(w, 409, "parent directory is no longer available")
+			return
+		}
+	}
 	if err == nil {
 		_, err = tx.ExecContext(r.Context(), `INSERT INTO uploads(id,file_id,mode,object_key,s3_upload_id,part_size,expected_size,mime_type,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?, 'pending',?,?)`, uploadID, fileID, mode, objectKey, nullString(s3UploadID), partSize, in.Size, in.MimeType, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano))
 	}
 	if err != nil {
 		tx.Rollback()
-		if s3UploadID != "" {
-			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = s.objects.AbortMultipart(abortCtx, objectKey, s3UploadID)
-			cancel()
-		}
 		if isConflict(err) {
 			problem(w, 409, "an item with that name already exists")
 		} else {
@@ -113,14 +161,10 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		if s3UploadID != "" {
-			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = s.objects.AbortMultipart(abortCtx, objectKey, s3UploadID)
-			cancel()
-		}
 		problem(w, 500, "could not create upload")
 		return
 	}
+	committed = true
 	s.log.Info("blob upload created", "file", in.Name, "size", in.Size, "mode", mode, "object_key", objectKey, "part_size", partSize, "parts", partCount)
 	if taskID, taskErr := s.ensureTask(r.Context(), "upload", "upload", uploadID, "uploading"); taskErr == nil {
 		_, _ = s.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO task_files(task_id,file_id,role) VALUES(?,?,'input')`, taskID, fileID)
@@ -267,6 +311,12 @@ func (s *Server) uploadParts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
+	release, lockErr := s.lockUpload(r.Context(), chi.URLParam(r, "id"))
+	if lockErr != nil {
+		problem(w, 499, "upload request was cancelled")
+		return
+	}
+	defer release()
 	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
 	if err != nil || (u.Status != "pending" && u.Status != "completed") || (u.Status == "pending" && u.expired(time.Now().UTC())) {
 		problem(w, 404, "pending upload not found")
@@ -370,48 +420,83 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) finalizeUpload(ctx context.Context, u uploadRecord, etag, contentHash string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE files SET status='ready',size=?,etag=?,content_hash=?,hash_algorithm=?,updated_at=? WHERE id=? AND status='pending' AND object_key=?`, u.ExpectedSize, etag, contentHash, contentHashAlgorithm, time.Now().UTC().Format(time.RFC3339Nano), u.FileID, u.ObjectKey)
-	}
-	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE uploads SET status='completed',content_hash=?,completed_at=? WHERE id=? AND status='pending'`, contentHash, time.Now().UTC().Format(time.RFC3339Nano), u.ID)
-	}
 	if err != nil {
-		if tx != nil {
-			tx.Rollback()
-		}
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `UPDATE files SET status='ready',size=?,etag=?,content_hash=?,hash_algorithm=?,updated_at=? WHERE id=? AND status='pending' AND object_key=? AND EXISTS (SELECT 1 FROM uploads WHERE id=? AND status='pending')`, u.ExpectedSize, etag, contentHash, contentHashAlgorithm, now, u.FileID, u.ObjectKey, u.ID)
+	if err != nil {
+		return err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return err
+	} else if changed != 1 {
+		return errors.New("pending upload file no longer exists")
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE uploads SET status='completed',content_hash=?,completed_at=? WHERE id=? AND status='pending'`, contentHash, now, u.ID)
+	if err != nil {
+		return err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return err
+	} else if changed != 1 {
+		return errors.New("upload is no longer pending")
+	}
+	return tx.Commit()
+}
+
+var errUploadNotPending = errors.New("pending upload not found")
+
+func (s *Server) abortPendingUpload(ctx context.Context, id string, expiredOnly bool) error {
+	release, err := s.lockUpload(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer release()
+	u, err := s.upload(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u.Status != "pending" || (expiredOnly && !u.expired(time.Now().UTC())) {
+		return errUploadNotPending
+	}
+	// Commit cancellation before deleting bytes. If SQLite fails, keep the
+	// object available for completion or a later cancellation attempt.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE uploads SET status='aborted' WHERE id=? AND status='pending'`, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM files WHERE id=? AND status='pending'`, u.FileID); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
+	}
+	phase, message := "cancelled", ""
+	if expiredOnly {
+		phase, message = "expired", "upload session expired"
+	}
+	s.updateTask(ctx, "upload", id, "cancelled", phase, 0, message)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if err := s.cleanupPendingUploadObject(cleanupCtx, u); err != nil {
+		s.log.Warn("upload object cleanup deferred", "upload", id, "error", err)
 	}
 	return nil
 }
+
 func (s *Server) abortUpload(w http.ResponseWriter, r *http.Request) {
-	u, err := s.upload(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || u.Status != "pending" {
+	err := s.abortPendingUpload(r.Context(), chi.URLParam(r, "id"), false)
+	if errors.Is(err, errUploadNotPending) || errors.Is(err, sql.ErrNoRows) {
 		problem(w, 404, "pending upload not found")
 		return
 	}
-	if err := s.cleanupPendingUploadObject(r.Context(), u); err != nil {
-		s.log.Warn("blob upload object cleanup failed", "upload", u.ID, "object_key", u.ObjectKey, "error", err)
-	}
-	s.updateTask(r.Context(), "upload", u.ID, "cancelled", "cancelled", 0, "")
-	tx, err := s.db.BeginTx(r.Context(), nil)
-	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `UPDATE uploads SET status='aborted' WHERE id=?`, u.ID)
-	}
-	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `DELETE FROM files WHERE id=? AND status='pending'`, u.FileID)
-	}
 	if err != nil {
-		if tx != nil {
-			tx.Rollback()
-		}
-		problem(w, 500, "could not clean upload metadata")
-		return
-	}
-	if err = tx.Commit(); err != nil {
 		problem(w, 500, "could not clean upload metadata")
 		return
 	}
@@ -430,12 +515,6 @@ func (s *Server) cleanupPendingUploadObject(ctx context.Context, u uploadRecord)
 	return s.objects.Delete(ctx, u.ObjectKey, "aborted upload")
 }
 
-func (s *Server) failUpload(ctx context.Context, uploadID, fileID string) {
-	_, _ = s.db.ExecContext(ctx, `UPDATE uploads SET status='failed' WHERE id=?`, uploadID)
-	_, _ = s.db.ExecContext(ctx, `UPDATE files SET status='failed',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), fileID)
-	s.updateTask(ctx, "upload", uploadID, "failed", "uploading", 0, "upload failed")
-}
-
 func (s *Server) CleanupExpiredUploads(ctx context.Context) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM uploads WHERE status='pending' AND expires_at<=?`, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
@@ -451,79 +530,16 @@ func (s *Server) CleanupExpiredUploads(ctx context.Context) {
 	}
 	rows.Close()
 	for _, id := range ids {
-		u, err := s.upload(ctx, id)
-		if err != nil {
-			continue
-		}
-		err = s.cleanupPendingUploadObject(ctx, u)
-		if err != nil {
-			s.log.Warn("stale blob upload cleanup failed", "upload", id, "error", err)
-			continue
-		}
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			continue
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE uploads SET status='aborted' WHERE id=?`, id)
-		if err == nil {
-			_, err = tx.ExecContext(ctx, `DELETE FROM files WHERE id=? AND status='pending'`, u.FileID)
-		}
-		if err == nil {
-			err = tx.Commit()
-		} else {
-			tx.Rollback()
-		}
-		if err == nil {
-			s.log.Info("stale upload cleaned", "upload", id)
-			s.updateTask(ctx, "upload", id, "cancelled", "expired", 0, "upload session expired")
+		if err := s.abortPendingUpload(ctx, id, true); err != nil && !errors.Is(err, errUploadNotPending) && !errors.Is(err, sql.ErrNoRows) {
+			s.log.Warn("stale upload cleanup failed", "upload", id, "error", err)
 		}
 	}
-}
-
-// parallel runs fn over every index concurrently, bounded by limit
-// workers, and returns the first error (other workers finish their
-// in-flight item before the function returns).
-func parallel(indices []int, limit int, fn func(int) error) error {
-	if len(indices) == 0 {
-		return nil
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > len(indices) {
-		limit = len(indices)
-	}
-	queue := make(chan int)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-	for i := 0; i < limit; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for idx := range queue {
-				if err := fn(idx); err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
-				}
-			}
-		}()
-	}
-	for _, idx := range indices {
-		queue <- idx
-	}
-	close(queue)
-	wg.Wait()
-	return firstErr
 }
 
 // referencedStorageKeys returns every content object and derived thumbnail the
 // metadata can still reach, across active and trashed file states.
 func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT object_key,name FROM files WHERE kind='file' AND object_key IS NOT NULL AND object_key <> ''`)
+	rows, err := s.db.QueryContext(ctx, `SELECT object_key,name FROM files WHERE kind='file' AND object_key IS NOT NULL AND object_key <> '' UNION ALL SELECT object_key,'' FROM web_media_playback UNION ALL SELECT object_key,'' FROM web_media_subtitles`)
 	if err != nil {
 		return nil, nil, err
 	}

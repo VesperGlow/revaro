@@ -117,13 +117,13 @@ set -a; . ./.env; set +a
 
 ### S3 公网直连要求
 
-新 blob 的上传、下载、预览和媒体 Range 都直接访问 `S3_PUBLIC_ENDPOINT`，因此 endpoint 必须能被浏览器和运行 FFmpeg 的主机访问，Bucket 仍保持私有并配置下文 CORS。UpCloud 的 checksum 兼容选项仍会自动启用，但“仅私网、关闭 Public access”的旧代理部署不适用于新上传模型。
+浏览器上传始终直连 `S3_PUBLIC_ENDPOINT`；下载和预览默认使用签名地址，启用 `S3_PROXY_TRANSFERS` 时由服务端代理。Rust 媒体 Range 通过 `S3_ENDPOINT` 访问存储。浏览器必须能访问公网 endpoint，Bucket 保持私有并配置下文 CORS；仅私网的 endpoint 无法支持浏览器直传。
 
 管理员设置只在数据库第一次初始化时读取。之后修改环境变量不会重置已有密码，避免部署配置漂移意外改密。随机密码只在新数据库首次成功启动时写入一次；可通过右上角头像进入账户设置修改用户名和密码，修改后所有现有会话都会失效。
 
 首次凭据不会进入容器日志，而是写入 `APP_DATA_DIR/initial-admin-credentials`。该文件权限为 `0600`，仍应在首次登录并修改密码后立即删除；也可以在首次启动前显式配置 `ADMIN_PASSWORD`，避免生成凭据文件。
 
-如果已有数据库的管理员凭据丢失，不要删除数据卷。停止服务后运行一次恢复命令，它会保留文件与元数据、撤销已有会话，并在终端打印新的随机凭据：
+如果已有数据库的管理员凭据丢失，不要删除数据卷。停止服务后运行一次恢复命令，它会保留文件与元数据、撤销已有会话，并把新的随机凭据写入 `APP_DATA_DIR/initial-admin-credentials`（权限 `0600`）：
 
 ```bash
 docker compose stop revaro
@@ -131,7 +131,7 @@ docker compose run --rm --no-deps revaro reset-admin
 docker compose start revaro
 ```
 
-可在命令末尾指定新用户名，例如 `revaro reset-admin owner`。恢复密码同样只显示一次，登录后请立即从右上角账户设置中修改。账户设置也支持上传、更换和移除个人头像；头像文件保存在同一个私有 S3 Bucket 中，大小限制为 2 MiB。
+可在命令末尾指定新用户名，例如 `revaro reset-admin owner`。恢复命令只记录凭据文件路径；读取该文件登录后，请立即修改密码并删除凭据文件。账户设置也支持上传、更换和移除个人头像；头像文件保存在同一个私有 S3 Bucket 中，大小限制为 2 MiB。
 
 ## S3 权限
 
@@ -217,11 +217,14 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 | `GET` | `/s/{token}` | 无需登录，通过稳定分享地址读取文件 |
 | `POST` | `/api/uploads` | 创建 single/multipart blob 上传；小文件直接返回 Presigned PUT |
 | `POST` | `/api/uploads/{id}/parts` | 分批为 Multipart part 签发 Presigned PUT（每批最多 100） |
-| `POST` | `/api/uploads/{id}/complete` | CompleteMultipartUpload/HeadObject 校验后切换为 `ready` |
+| `GET` | `/api/uploads/{id}` | 获取上传会话及已确认分片，用于续传 |
+| `PUT` | `/api/uploads/{id}/parts/{part}` | 持久化已上传分片的 ETag 与大小 |
+| `POST` | `/api/uploads/{id}/complete` | 完成 S3 上传并流式校验 SHA-256 后切换为 `ready` |
 | `DELETE` | `/api/uploads/{id}` | 取消并清理待上传元数据 |
 | `POST` | `/api/audio-merges` | 按给定顺序和可选封面创建后台音频合并任务，可选 FLAC、ALAC 或 AAC |
-| `GET` | `/api/audio-merges` | 查询当前进程中的全部后台音频合并任务 |
-| `GET` / `DELETE` | `/api/audio-merges/{id}` | 查询进度、取消任务或清除已完成记录 |
+| `GET` | `/api/tasks`、`/api/tasks/{id}` | 统一查询上传、下载、解压、音频合并和媒体任务 |
+| `POST` | `/api/tasks/{id}/cancel`、`/retry`、`/input` | 取消、重试或为等待输入的任务提交密码 |
+| `DELETE` | `/api/tasks/{id}` | 删除已结束的任务记录 |
 | `GET` | `/api/files/{id}/audio` | 获取合并音频的章节、封面和流式播放信息 |
 | `GET` | `/api/files/{id}/audio/stream` | 支持 HTTP Range 的浏览器兼容音频流 |
 | `GET` | `/api/files/{id}/video` | 获取与视频同名的外挂字幕轨 |
@@ -232,17 +235,16 @@ Bucket 必须保持私有。浏览器访问依赖 Presigned URL，而不是公�
 | `POST` | `/api/files/{id}/video/hls` | 为浏览器不兼容的视频启动按需 FFmpeg HLS 流 |
 | `GET` / `PUT` | `/api/files/{id}/media/progress` | 读取或保存音频/视频的跨设备播放进度 |
 | `POST` | `/api/files/{id}/extract` | 创建安全检查后后台执行的在线解压任务 |
-| `GET` | `/api/archive-jobs/{id}` | 查询在线解压状态与生成的目录 |
-| `POST` / `GET` | `/api/downloads` | 创建磁力、`.torrent` 或 HTTP(S) 直链离线下载、列出任务 |
-| `GET` / `DELETE` | `/api/downloads/{id}` | 获取文件列表与进度、删除任务及临时分片 |
+| `POST` | `/api/downloads` | 创建磁力、`.torrent` 或 HTTP(S) 直链离线下载 |
+| `GET` | `/api/downloads/{id}` | 获取下载文件列表与进度；取消与删除通过统一任务 API |
 | `POST` | `/api/downloads/{id}/start` | 选择种子内文件并开始下载 |
 | `POST` | `/api/downloads/{id}/pause`、`/resume` | 暂停或继续下载 |
 
 ## 内置磁力与 BT 下载
 
-顶部“离线下载”中心接受 `magnet:`、`.torrent` 和普通 HTTP(S) 直链。任务分别显示下载和导入进度；完成数据由服务端流式完成 S3 Multipart，最终仍是单个 blob，不要求 VPS 本地磁盘容纳完整文件。
+顶部“离线下载”中心接受 `magnet:`、`.torrent` 和普通 HTTP(S) 直链。任务分别显示下载和导入进度；HTTP(S) 直链流式写入 S3；BT 使用本地下载工作区，完成后再导入 S3，因此需要为所选文件和媒体处理产物预留本地磁盘。
 
-通过 BT piece hash 校验的临时分片仍使用 `bt-temp/<infohash>/<piece>` 以支持断点恢复。全部完成后，服务端从分片流式组装 `blobs/` 对象，原子写入文件树，随后删除临时分片并退出 swarm；没有完成后的做种模式。
+BT 由 Rust/librqbit 管理本地下载数据、JSON 会话与 fastresume。完成后，普通文件写入 `blobs/`，适配后的视频及字幕写入 `derived/media/`；Go 原子提交文件树，再清理本地种子数据并退出 swarm。没有完成后的做种模式。
 
 为了防止恶意种子把服务当作内网探测器，BT 节点、HTTP Tracker 与 WebSeed 的私有、回环、链路本地、CGNAT 和保留地址都会被拒绝。离线下载仍会访问公网第三方节点，部署者应遵守所在地法律和内容授权要求；应用不会绕过 Tracker、站点或内容本身的访问控制。
 
@@ -349,7 +351,7 @@ docker compose start revaro
 - 上传暂不做跨浏览器断点恢复；取消或过期会 AbortMultipart/DeleteObject，孤儿 blob 由宽限期 GC 兜底。
 - 回收站项目仍占用对象存储空间；永久删除后内容对象进入异步垃圾回收，直到下一次宽限期后的回收才释放空间。
 - 阅读器不解析 PDF/MOBI；EPUB 上限 128 MiB、TXT 上限 16 MiB，且解析缓存为单实例内存（最多 3 本）。
-- 视频缩略图、兼容播放、字幕转换和音频合并由 Rust data plane 的精简 libav 完成；不调用 ffmpeg/ffprobe CLI，也不自行实现 codec。
+- 视频缩略图、兼容播放、字幕转换和音频合并由 Rust data plane 的精简 libav 完成；MKV 外挂字幕封装调用 ffmpeg CLI，其余处理使用 libav；不自行实现 codec。
 - BT 目前支持 BitTorrent v1/兼容磁力任务的下载与选文件，不提供完成后做种、RSS、Tracker 登录或远程下载规则；边界 piece 可能包含未选文件的少量相邻数据，这是 BT 分片模型的正常现象。
 
 ## 测试

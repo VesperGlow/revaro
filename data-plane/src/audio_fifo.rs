@@ -55,6 +55,14 @@ impl AudioFrameAccumulator {
         if samples == 0 {
             return Ok(());
         }
+        // The native FIFO reads the plane count configured at allocation.
+        // Mismatched frames can otherwise cause an out-of-bounds native read.
+        if frame.format() != self.format
+            || frame.channel_layout() != self.layout
+            || frame.rate() != self.rate
+        {
+            return Err("audio frame does not match encoder FIFO format/layout/rate".into());
+        }
         if self.len().saturating_add(samples) > MAX_BUFFERED_AUDIO_SAMPLES {
             return Err("audio FIFO exceeds bounded sample limit".into());
         }

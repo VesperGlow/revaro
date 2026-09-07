@@ -189,19 +189,6 @@ func (d *DataPlane) put(ctx context.Context, key, mime string, body io.Reader, s
 	return out, decodeResponse(resp, &out)
 }
 
-func (d *DataPlane) uploadPart(ctx context.Context, key, uploadID string, partNumber int32, body io.Reader, size int64) (CompletedPart, error) {
-	values := url.Values{"key": {key}, "upload_id": {uploadID}, "part_number": {strconv.Itoa(int(partNumber))}, "size": {strconv.FormatInt(size, 10)}}
-	resp, err := d.request(ctx, http.MethodPut, "/v1/s3/multipart/upload", values, body, size)
-	if err != nil {
-		return CompletedPart{}, err
-	}
-	var out ObjectInfo
-	if err := decodeResponse(resp, &out); err != nil {
-		return CompletedPart{}, err
-	}
-	return CompletedPart{PartNumber: partNumber, ETag: out.ETag}, nil
-}
-
 func (d *DataPlane) StoreBlob(ctx context.Context, key, mime string, body io.Reader, size int64) (ObjectInfo, error) {
 	values := url.Values{"key": {key}, "mime": {mime}}
 	if size >= 0 {

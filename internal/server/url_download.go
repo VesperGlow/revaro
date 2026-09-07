@@ -293,6 +293,7 @@ func (m *downloadManager) runURLDownload(jobID string, runtime *urlDownloadRunti
 		return
 	}
 	if response.ContentLength >= 0 && stored.Size != response.ContentLength {
+		m.server.discardBlob(key)
 		m.failURLDownload(jobID, fmt.Errorf("下载大小 %d 与服务器声明的 %d 不一致", stored.Size, response.ContentLength))
 		return
 	}

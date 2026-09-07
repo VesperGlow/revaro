@@ -203,14 +203,6 @@ func (s *Server) runAudioHLS(ctx context.Context, f File, session *audioHLSSessi
 	session.finish(err)
 }
 
-func (s *Server) startMediaHLSSource(ctx context.Context, f File) (string, func(), error) {
-	u, err := s.objects.PresignGet(ctx, f.objectKey, f.Name, responseMime(f), true, s.cfg.PresignExpires)
-	if err != nil {
-		return "", nil, err
-	}
-	return u, func() {}, nil
-}
-
 func (s *Server) audioHLSAsset(w http.ResponseWriter, r *http.Request) {
 	session := s.audioHLSSession(chi.URLParam(r, "session"))
 	if session == nil {

@@ -116,7 +116,16 @@ func (s *Server) CleanupObjects(ctx context.Context) {
 		}
 	}
 	rows.Close()
+	// Failed deletions can outlive upload retries and subsequent commits.
+	objects, thumbnails, err := s.referencedStorageKeys(ctx)
+	if err != nil {
+		s.log.Warn("cleanup reference scan failed", "error", err)
+		return
+	}
 	for _, key := range keys {
+		if objects[key] || thumbnails[key] {
+			continue
+		}
 		if err := s.objects.Delete(ctx, key, "deferred object cleanup"); err == nil || storage.IsNotFound(err) {
 			_, _ = s.db.ExecContext(ctx, `DELETE FROM object_cleanup WHERE object_key=?`, key)
 		} else {

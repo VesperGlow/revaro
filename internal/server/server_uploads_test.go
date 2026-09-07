@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -192,5 +194,128 @@ func TestMultipartPartSizeStaysWithinS3Limit(t *testing.T) {
 	partSize := multipartPartSize(1 << 40)
 	if count, err := storage.ValidMultipartPartCount(1<<40, partSize); err != nil || count > 10000 {
 		t.Fatalf("part size=%d count=%d err=%v", partSize, count, err)
+	}
+}
+
+// Pause after obtaining a reader so cancellation can race with verification.
+type gatedUploadStorage struct {
+	storage.Storage
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (g *gatedUploadStorage) OpenRaw(ctx context.Context, key string) (io.ReadCloser, error) {
+	body, err := g.Storage.OpenRaw(ctx, key)
+	close(g.entered)
+	<-g.resume
+	return body, err
+}
+func TestUploadCompletionAndAbortPreserveObject(t *testing.T) {
+	a := newTestApp(t)
+	a.srv.cleanup.Close()
+	u := a.createUpload(t, "race.txt", 3)
+	record, err := a.srv.upload(context.Background(), u.UploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.store.raw[record.ObjectKey] = []byte("abc")
+	gate := &gatedUploadStorage{Storage: a.store, entered: make(chan struct{}), resume: make(chan struct{})}
+	a.srv.objects.store = gate
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() { completed <- a.request("POST", "/api/uploads/"+u.UploadID+"/complete", map[string]any{}, true) }()
+	<-gate.entered
+	aborted := make(chan *httptest.ResponseRecorder, 1)
+	go func() { aborted <- a.request("DELETE", "/api/uploads/"+u.UploadID, nil, true) }()
+	// An abort may finish first only if completion subsequently fails. A
+	// successful completion must always retain its object and ready metadata.
+	abortFinished := false
+	select {
+	case <-aborted:
+		abortFinished = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(gate.resume)
+	rr := <-completed
+	if !abortFinished {
+		<-aborted
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("complete=%d: %s", rr.Code, rr.Body.String())
+	}
+	a.store.mu.RLock()
+	_, exists := a.store.raw[record.ObjectKey]
+	a.store.mu.RUnlock()
+	if !exists {
+		t.Fatal("successful completion lost its object to concurrent abort")
+	}
+
+}
+func TestFinalizeUploadRejectsRemovedFile(t *testing.T) {
+	a := newTestApp(t)
+	u := a.createUpload(t, "removed.txt", 3)
+	record, err := a.srv.upload(context.Background(), u.UploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`DELETE FROM files WHERE id=?`, u.FileID); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.srv.finalizeUpload(context.Background(), record, "etag", "hash"); err == nil {
+		t.Fatal("finalization silently succeeded after file removal")
+	}
+}
+func TestDeferredCleanupKeepsReferencedObjects(t *testing.T) {
+	a := newTestApp(t)
+	a.srv.cleanup.Close()
+	f := a.readyFile(t, "retained.txt", []byte("abc"))
+	a.srv.queueObjectCleanup(context.Background(), f.objectKey, "earlier failed deletion")
+	a.srv.CleanupObjects(context.Background())
+	if _, exists := a.store.raw[f.objectKey]; !exists {
+		t.Fatal("cleanup deleted a referenced object")
+	}
+}
+
+type parentDeletingStorage struct {
+	storage.Storage
+	afterWrite func()
+}
+
+func (g *parentDeletingStorage) PresignPutObject(ctx context.Context, key, mime string, ttl time.Duration) (string, error) {
+	url, err := g.Storage.PresignPutObject(ctx, key, mime, ttl)
+	g.afterWrite()
+	return url, err
+}
+func (g *parentDeletingStorage) StoreBlob(ctx context.Context, key, mime string, body io.Reader, size int64) (storage.ObjectInfo, error) {
+	info, err := g.Storage.StoreBlob(ctx, key, mime, body, size)
+	g.afterWrite()
+	return info, err
+}
+func TestCreationRejectsParentDeletedDuringStorageRequest(t *testing.T) {
+	for _, endpoint := range []string{"/api/uploads", "/api/documents"} {
+		t.Run(endpoint, func(t *testing.T) {
+			a := newTestApp(t)
+			a.srv.cleanup.Close()
+			rr := a.request("POST", "/api/directories", map[string]any{"parent_id": RootID, "name": "destination"}, true)
+			parent := decode[File](t, rr)
+			a.srv.objects.store = &parentDeletingStorage{Storage: a.store, afterWrite: func() {
+				if rr := a.request("DELETE", "/api/files/"+parent.ID, nil, true); rr.Code != 204 {
+					t.Fatalf("delete parent=%d", rr.Code)
+				}
+			}}
+			body := map[string]any{"parent_id": parent.ID, "name": "new.txt"}
+			if endpoint == "/api/uploads" {
+				body["size"] = 3
+			} else {
+				body["content"] = "abc"
+			}
+			rr = a.request("POST", endpoint, body, true)
+			if rr.Code != 409 {
+				t.Fatalf("create=%d: %s", rr.Code, rr.Body.String())
+			}
+			var count int
+			if err := a.db.QueryRow(`SELECT COUNT(*) FROM files WHERE parent_id=?`, parent.ID).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("unreachable children=%d err=%v", count, err)
+			}
+		})
 	}
 }

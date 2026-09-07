@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestTaskManagerUpdateSelectorsShareLifecycleSemantics(t *testing.T) {
@@ -37,5 +38,26 @@ func TestTaskManagerUpdateSelectorsShareLifecycleSemantics(t *testing.T) {
 		if status != "completed" || finished == "" {
 			t.Fatalf("terminal lifecycle for %s: status=%q finished=%q", id, status, finished)
 		}
+	}
+}
+
+func TestURLTaskRetryHandlesDatabaseFailure(t *testing.T) {
+	a := newTestApp(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := a.db.Exec(`INSERT INTO url_download_jobs(id,parent_id,source_url,name,status,created_at,updated_at) VALUES('retry-error',?,'https://example.test/file','file','failed',?,?)`, RootID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	// Project a failed source through the existing update trigger.
+	if _, err := a.db.Exec(`UPDATE url_download_jobs SET status='failed' WHERE id='retry-error'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`CREATE TRIGGER reject_url_retry BEFORE UPDATE ON url_download_jobs BEGIN SELECT RAISE(ABORT,'injected write failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	a.srv.downloads = &downloadManager{}
+	defer func() { a.srv.downloads = nil }()
+	rr := a.request("POST", "/api/tasks/retry-error/retry", nil, true)
+	if rr.Code != 409 {
+		t.Fatalf("retry=%d: %s", rr.Code, rr.Body.String())
 	}
 }

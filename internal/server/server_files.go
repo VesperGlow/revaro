@@ -176,7 +176,13 @@ func (s *Server) createDirectory(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	f := File{ID: ids.New(), ParentID: &in.ParentID, Name: in.Name, Kind: "directory", Status: "ready", CreatedAt: now, UpdatedAt: now}
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, f.ID, in.ParentID, f.Name, f.Kind, f.Status, now, now)
+	result, err := s.db.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,status,created_at,updated_at) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE id=? AND kind='directory' AND status='ready' AND deleted_at IS NULL)`, f.ID, in.ParentID, f.Name, f.Kind, f.Status, now, now, in.ParentID)
+	if err == nil {
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			problem(w, 409, "parent directory is no longer available")
+			return
+		}
+	}
 	if isConflict(err) {
 		problem(w, 409, "an item with that name already exists")
 		return
@@ -258,8 +264,21 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadGateway, "object storage write failed")
 		return
 	}
-	f := File{ID: ids.New(), ParentID: &in.ParentID, Name: in.Name, Kind: "file", Size: stored.Size, MimeType: documentMime(in.Name), ETag: stored.ETag, Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: key}
-	_, err = s.db.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, f.ID, in.ParentID, f.Name, f.Kind, f.objectKey, f.Size, f.MimeType, f.ETag, f.Status, now, now)
+	_, contentHash, err := s.objects.Verify(r.Context(), key, int64(len(content)), hexSHA256(content))
+	if err != nil {
+		s.discardBlob(key)
+		problem(w, 502, "document integrity check failed")
+		return
+	}
+	f := File{ID: ids.New(), ParentID: &in.ParentID, Name: in.Name, Kind: "file", Size: stored.Size, MimeType: documentMime(in.Name), ETag: stored.ETag, ContentHash: contentHash, HashAlgorithm: contentHashAlgorithm, Status: "ready", CreatedAt: now, UpdatedAt: now, objectKey: key}
+	result, err := s.db.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,content_hash,hash_algorithm,status,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE id=? AND kind='directory' AND status='ready' AND deleted_at IS NULL)`, f.ID, in.ParentID, f.Name, f.Kind, f.objectKey, f.Size, f.MimeType, f.ETag, f.ContentHash, f.HashAlgorithm, f.Status, now, now, in.ParentID)
+	if err == nil {
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			s.discardBlob(key)
+			problem(w, 409, "parent directory is no longer available")
+			return
+		}
+	}
 	if isConflict(err) {
 		s.discardBlob(key)
 		problem(w, http.StatusConflict, "an item with that name already exists")
@@ -327,11 +346,17 @@ func (s *Server) updateDocument(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadGateway, "object storage write failed")
 		return
 	}
+	_, contentHash, err := s.objects.Verify(r.Context(), key, int64(len(content)), hexSHA256(content))
+	if err != nil {
+		s.discardBlob(key)
+		problem(w, 502, "document integrity check failed")
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// 原子乐观并发控制：etag 条件放进 UPDATE 的 WHERE 子句。两个并发
+	// 原子乐观并发控制：源对象键放进 UPDATE 的 WHERE 子句。两个并发
 	// 编辑者同时保存时，只有先提交者成功；后提交者命中 0 行并收到 409，
 	// 而不是在检查与写入之间被静默覆盖（TOCTOU）。
-	res, err := s.db.ExecContext(r.Context(), `UPDATE files SET object_key=?,size=?,mime_type=?,etag=?,updated_at=? WHERE id=? AND (etag=? OR ?='' OR etag='')`, key, stored.Size, documentMime(f.Name), stored.ETag, now, f.ID, in.ETag, in.ETag)
+	res, err := s.db.ExecContext(r.Context(), `UPDATE files SET object_key=?,size=?,mime_type=?,etag=?,content_hash=?,hash_algorithm=?,updated_at=? WHERE id=? AND object_key=? AND status='ready' AND deleted_at IS NULL`, key, stored.Size, documentMime(f.Name), stored.ETag, contentHash, contentHashAlgorithm, now, f.ID, f.objectKey)
 	if err != nil {
 		s.discardBlob(key)
 		problem(w, http.StatusInternalServerError, "document content changed but metadata update failed")
@@ -363,7 +388,13 @@ func (s *Server) patchFile(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "name or parent_id is required")
 		return
 	}
-	f, err := s.file(r.Context(), id)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		problem(w, 500, "could not start item update")
+		return
+	}
+	defer tx.Rollback()
+	f, err := scanFile(tx.QueryRowContext(r.Context(), `SELECT `+fileColumns+` FROM files WHERE id=? AND deleted_at IS NULL`, id))
 	if err != nil {
 		problem(w, 404, "file not found")
 		return
@@ -379,14 +410,14 @@ func (s *Server) patchFile(w http.ResponseWriter, r *http.Request) {
 	parent := *f.ParentID
 	if in.ParentID != nil {
 		parent = *in.ParentID
-		p, err := s.file(r.Context(), parent)
+		p, err := scanFile(tx.QueryRowContext(r.Context(), `SELECT `+fileColumns+` FROM files WHERE id=? AND deleted_at IS NULL`, parent))
 		if err != nil || p.Kind != "directory" || p.Status != "ready" {
 			problem(w, 400, "target directory is invalid")
 			return
 		}
 		if f.Kind == "directory" {
 			var cyclic int
-			err = s.db.QueryRowContext(r.Context(), `WITH RECURSIVE d(id) AS (SELECT id FROM files WHERE id=? UNION ALL SELECT f.id FROM files f JOIN d ON f.parent_id=d.id) SELECT EXISTS(SELECT 1 FROM d WHERE id=?)`, id, parent).Scan(&cyclic)
+			err = tx.QueryRowContext(r.Context(), `WITH RECURSIVE d(id) AS (SELECT id FROM files WHERE id=? UNION ALL SELECT f.id FROM files f JOIN d ON f.parent_id=d.id) SELECT EXISTS(SELECT 1 FROM d WHERE id=?)`, id, parent).Scan(&cyclic)
 			if err != nil {
 				problem(w, 500, "database error")
 				return
@@ -397,13 +428,17 @@ func (s *Server) patchFile(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	_, err = s.db.ExecContext(r.Context(), `UPDATE files SET name=?,parent_id=?,updated_at=? WHERE id=?`, name, parent, time.Now().UTC().Format(time.RFC3339Nano), id)
+	_, err = tx.ExecContext(r.Context(), `UPDATE files SET name=?,parent_id=?,updated_at=? WHERE id=?`, name, parent, time.Now().UTC().Format(time.RFC3339Nano), id)
 	if isConflict(err) {
 		problem(w, 409, "an item with that name already exists")
 		return
 	}
 	if err != nil {
 		problem(w, 500, "could not update item")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		problem(w, 500, "could not commit item update")
 		return
 	}
 	updated, _ := s.file(r.Context(), id)
@@ -433,6 +468,13 @@ func (s *Server) copyFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	// Read the source in the publication transaction so a concurrent purge
+	// cannot remove its final reference before this copy acquires one.
+	source, err = scanFile(tx.QueryRowContext(r.Context(), `SELECT `+fileColumns+` FROM files WHERE id=? AND kind='file' AND status='ready' AND deleted_at IS NULL`, source.ID))
+	if err != nil {
+		problem(w, 409, "source file is no longer available")
+		return
+	}
 	name, err := availableCopyName(r.Context(), tx, in.ParentID, source.Name)
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "could not choose a copy name")
@@ -440,8 +482,14 @@ func (s *Server) copyFile(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	copyID := ids.New()
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		copyID, in.ParentID, name, "file", source.objectKey, source.Size, source.MimeType, source.ETag, "ready", now, now)
+	result, err := tx.ExecContext(r.Context(), `INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,content_hash,hash_algorithm,status,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE id=? AND kind='directory' AND status='ready' AND deleted_at IS NULL)`,
+		copyID, in.ParentID, name, "file", source.objectKey, source.Size, source.MimeType, source.ETag, nullString(source.ContentHash), nullString(source.HashAlgorithm), "ready", now, now, in.ParentID)
+	if err == nil {
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			problem(w, 409, "parent directory is no longer available")
+			return
+		}
+	}
 	if isConflict(err) {
 		problem(w, http.StatusConflict, "an item with that name already exists")
 		return
@@ -509,8 +557,27 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 	// 未完成的文件没有可恢复内容，仍直接清掉上传记录；ready 项（包括
 	// 非空目录）整棵移入回收站，内容块继续被 GC 视为存活引用。
 	if f.Kind == "file" && f.Status != "ready" {
-		if _, err = s.db.ExecContext(r.Context(), `DELETE FROM files WHERE id=?`, id); err != nil {
+		var uploadID string
+		err := s.db.QueryRowContext(r.Context(), `SELECT id FROM uploads WHERE file_id=? AND status='pending'`, id).Scan(&uploadID)
+		if err == nil {
+			if err := s.abortPendingUpload(r.Context(), uploadID, false); err != nil {
+				problem(w, 409, "upload changed; refresh before deleting")
+				return
+			}
+			w.WriteHeader(204)
+			return
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			problem(w, 500, "could not read upload metadata")
+			return
+		}
+		result, err := s.db.ExecContext(r.Context(), `DELETE FROM files WHERE id=? AND status<>'ready'`, id)
+		if err != nil {
 			problem(w, 500, "could not delete file")
+			return
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			problem(w, 409, "file changed; refresh before deleting")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

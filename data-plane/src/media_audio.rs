@@ -621,18 +621,20 @@ fn audio_filter(
             "",
         )
         .map_err(|e| e.to_string())?;
-    {
-        let mut sink = graph.get("out").ok_or("audio filter output unavailable")?;
-        sink.set_sample_format(encoder.format());
-        sink.set_channel_layout(encoder.channel_layout());
-        sink.set_sample_rate(encoder.rate());
-    }
+    // Sink setters in the binding discard option errors, including channel
+    // layout errors on newer libav. Explicit constraints are validated and
+    // prevent mono sample planes from being passed to a stereo encoder FIFO.
     graph
         .output("in", 0)
         .map_err(|e| e.to_string())?
         .input("out", 0)
         .map_err(|e| e.to_string())?
-        .parse("anull")
+        .parse(&format!(
+            "aformat=sample_fmts={}:sample_rates={}:channel_layouts=0x{:x}",
+            encoder.format().name(),
+            encoder.rate(),
+            encoder.channel_layout().bits()
+        ))
         .map_err(|e| e.to_string())?;
     graph.validate().map_err(|e| e.to_string())?;
     if let Some(codec) = encoder.codec()
@@ -690,6 +692,53 @@ fn process_filtered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merges_mixed_rates_and_layouts_into_encoder_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let stereo = temp.path().join("stereo.wav");
+        let mono = temp.path().join("mono.wav");
+        for (path, channels, rate) in [(&stereo, "2", "44100"), (&mono, "1", "48000")] {
+            let status = std::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=0.2",
+                    "-ac",
+                    channels,
+                    "-ar",
+                    rate,
+                ])
+                .arg(path)
+                .status()
+                .expect("ffmpeg fixture generator");
+            assert!(status.success());
+        }
+        let output = temp.path().join("mixed.m4a");
+        merge_blocking(
+            &[stereo, mono],
+            &["stereo".into(), "mono".into()],
+            &output,
+            "aac",
+            None,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        let input = format::input(&output).unwrap();
+        let stream = input.streams().best(media::Type::Audio).unwrap();
+        let decoder = codec::context::Context::from_parameters(stream.parameters())
+            .unwrap()
+            .decoder()
+            .audio()
+            .unwrap();
+        assert_eq!(decoder.channels(), 2);
+        assert_eq!(decoder.rate(), 48000);
+        assert!((380_000..450_000).contains(&input.duration()));
+    }
 
     #[test]
     fn parses_merged_webvtt_for_mov_text() {

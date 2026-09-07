@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"time"
 
@@ -134,7 +135,10 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.downloads != nil && task.SourceType == "url_download" {
 		res, err := s.db.ExecContext(r.Context(), `UPDATE url_download_jobs SET status='queued',completed_size=0,download_speed=0,error='',updated_at=? WHERE id=? AND status='failed'`, now, task.SourceID)
-		changed, _ := res.RowsAffected()
+		changed := int64(0)
+		if err == nil {
+			changed, err = res.RowsAffected()
+		}
 		if err != nil || changed != 1 {
 			s.updateTask(r.Context(), task.SourceType, task.SourceID, "failed", "retrying", task.Progress, "download task could not be retried")
 			problem(w, 409, "download task could not be retried")
@@ -159,21 +163,8 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cancelTaskRuntime(ctx context.Context, task Task) {
 	switch task.SourceType {
 	case "upload":
-		u, err := s.upload(ctx, task.SourceID)
-		if err == nil && u.Status == "pending" {
-			_ = s.cleanupPendingUploadObject(ctx, u)
-			tx, txErr := s.db.BeginTx(ctx, nil)
-			if txErr == nil {
-				_, txErr = tx.ExecContext(ctx, `UPDATE uploads SET status='aborted' WHERE id=?`, u.ID)
-				if txErr == nil {
-					_, txErr = tx.ExecContext(ctx, `DELETE FROM files WHERE id=? AND status='pending'`, u.FileID)
-				}
-				if txErr == nil {
-					_ = tx.Commit()
-				} else {
-					_ = tx.Rollback()
-				}
-			}
+		if err := s.abortPendingUpload(ctx, task.SourceID, false); err != nil && !errors.Is(err, errUploadNotPending) && !errors.Is(err, sql.ErrNoRows) {
+			s.log.Warn("task upload cancellation failed", "upload", task.SourceID, "error", err)
 		}
 	case "archive":
 		s.archiveMu.RLock()

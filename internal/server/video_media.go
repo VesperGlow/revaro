@@ -492,10 +492,6 @@ func (s *Server) embeddedSubtitleAsWebVTT(ctx context.Context, video File, strea
 	return out, err
 }
 
-func (s *Server) readFileWithLimit(ctx context.Context, f File, limit int64) ([]byte, error) {
-	return s.objects.Get(ctx, f.objectKey, limit)
-}
-
 func (s *Server) subtitleAsWebVTT(ctx context.Context, subtitle File) ([]byte, error) {
 	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(subtitle.Name)), ".")
 	taskID := s.startRuntimeTask(ctx, "", "subtitle", "subtitle", subtitle.ID)

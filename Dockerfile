@@ -130,7 +130,7 @@ FROM debian:bookworm-slim
 # + 精简 FFmpeg；不安装 Debian 完整 ffmpeg 及其依赖树。
 RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    ca-certificates tzdata libstdc++6 libgcc-s1 libxml2 \
+    ca-certificates tzdata libstdc++6 libgcc-s1 libxml2 wget \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \

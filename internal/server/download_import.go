@@ -42,9 +42,8 @@ func (m *downloadManager) importRuntime(runtime *downloadRuntime) {
 		m.fail(runtime.jobID, err)
 		return
 	}
-	// A restored import starts from the first selected file again. Content
-	// addressing makes already uploaded blocks cheap to deduplicate, while a
-	// reset counter keeps the displayed progress honest after a restart.
+	// A restored import starts from the first selected file again. Reset the
+	// counter so progress describes this import attempt.
 	_, _ = m.server.db.ExecContext(runtime.ctx, `UPDATE download_jobs SET imported_size=0,import_speed=0,current_file='',updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
 	requests := make([]storage.TorrentImportFile, 0)
 	paths := make(map[int]downloadFile)
@@ -140,6 +139,22 @@ func (m *downloadManager) cleanupTorrentImport(files []storage.TorrentImportFile
 			}
 		}
 	}
+	// Cancellation may arrive immediately after publication committed. The
+	// committed file and subtitle references must survive rollback cleanup.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	referenced, _, err := m.server.referencedStorageKeys(ctx)
+	cancel()
+	if err != nil {
+		m.server.log.Warn("torrent cleanup reference scan failed", "error", err)
+		return
+	}
+	filtered := keys[:0]
+	for _, key := range keys {
+		if !referenced[key] {
+			filtered = append(filtered, key)
+		}
+	}
+	keys = filtered
 	for len(keys) > 0 {
 		batch := keys
 		if len(batch) > 1000 {
@@ -164,6 +179,13 @@ func (m *downloadManager) commitImported(ctx context.Context, job downloadJob, f
 		return err
 	}
 	defer tx.Rollback()
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM download_jobs WHERE id=?`, job.ID).Scan(&status); err != nil {
+		return err
+	}
+	if status != "importing" {
+		return errors.New("download is no longer importing")
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	parentID := job.ParentID
 	var targetExists int

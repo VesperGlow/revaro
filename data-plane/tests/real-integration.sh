@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Opt-in acceptance suite. It intentionally uses ffmpeg only to create and
-# inspect fixtures; the Revaro process under test never invokes the CLI.
+# inspect fixtures. Production also uses the CLI for MKV sidecar remux.
 : "${DATA_PLANE_BIN:?set DATA_PLANE_BIN to revaro-data-plane}"
 : "${S3_ENDPOINT:?set S3_ENDPOINT}"
 : "${S3_ACCESS_KEY:?set S3_ACCESS_KEY}"

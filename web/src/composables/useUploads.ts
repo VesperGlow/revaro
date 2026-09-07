@@ -7,13 +7,15 @@ const FILE_CONCURRENCY=3, MULTIPART_CONCURRENCY=4, PART_URL_BATCH=100, UPLOAD_RE
 const UPLOAD_RESUME_KEY='revaro.uploads.v1'
 export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragActive:Ref<boolean>;trashMode:Ref<boolean>;fileInput:Ref<HTMLInputElement|null>;folderInput:Ref<HTMLInputElement|null>;notify:(text:string,kind?:'error'|'success')=>void;openFolder:(id:string)=>Promise<void>}){
  const {tasks,currentId,dragActive,trashMode,fileInput,folderInput,notify,openFolder}=deps
- let activeUploads=0,uploadRefreshTimer=0
+ let activeUploads=0,uploadRefreshTimer=0,disposed=false
+ const verificationRequests=new WeakMap<UploadTask,AbortController>()
  function chooseFiles(){fileInput.value?.click()}
  function chooseFolder(){folderInput.value?.click()}
  interface SavedUpload { uploadId:string; parentId:string; name:string; size:number; lastModified:number }
- function savedUploads():SavedUpload[]{try{return JSON.parse(localStorage.getItem(UPLOAD_RESUME_KEY)||'[]') as SavedUpload[]}catch{return []}}
- function saveUpload(task:UploadTask){if(!task.uploadId)return;const all=savedUploads().filter(x=>x.uploadId!==task.uploadId);all.push({uploadId:task.uploadId,parentId:task.parentId,name:task.file.name,size:task.file.size,lastModified:task.file.lastModified});localStorage.setItem(UPLOAD_RESUME_KEY,JSON.stringify(all))}
- function forgetUpload(id?:string){if(id)localStorage.setItem(UPLOAD_RESUME_KEY,JSON.stringify(savedUploads().filter(x=>x.uploadId!==id)))}
+ function savedUploads():SavedUpload[]{try{const value:unknown=JSON.parse(localStorage.getItem(UPLOAD_RESUME_KEY)||'[]');return Array.isArray(value)?value.filter((x):x is SavedUpload=>!!x&&typeof x.uploadId==='string'&&typeof x.parentId==='string'&&typeof x.name==='string'&&Number.isSafeInteger(x.size)&&x.size>=0&&Number.isFinite(x.lastModified)):[]}catch{return []}}
+ function persistUploads(saved:SavedUpload[]){try{localStorage.setItem(UPLOAD_RESUME_KEY,JSON.stringify(saved))}catch{/* Resume storage is optional; the upload can still finish. */}}
+ function saveUpload(task:UploadTask){if(!task.uploadId)return;const all=savedUploads().filter(x=>x.uploadId!==task.uploadId);all.push({uploadId:task.uploadId,parentId:task.parentId,name:task.file.name,size:task.file.size,lastModified:task.file.lastModified});persistUploads(all)}
+ function forgetUpload(id?:string){if(id)persistUploads(savedUploads().filter(x=>x.uploadId!==id))}
  function queueFiles(files:File[],parentId:string,relativePaths?:Map<File,string>){
    const saved=savedUploads()
    for(const file of files){const resume=saved.find(x=>x.parentId===parentId&&x.name===file.name&&x.size===file.size&&x.lastModified===file.lastModified);tasks.push({id:crypto.randomUUID(),file,parentId,relativePath:relativePaths?.get(file),progress:0,status:'queued',error:'',cancelled:false,uploadId:resume?.uploadId,requests:[]})}
@@ -66,7 +68,7 @@ export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragAc
    }catch(e){notify((e as Error).message)}
  }
  function onDrop(event:DragEvent){dragActive.value=false;if(!trashMode.value&&event.dataTransfer?.files.length)acceptFiles(event.dataTransfer.files)}
- function pumpQueue(){while(activeUploads<FILE_CONCURRENCY){const task=tasks.find(t=>t.status==='queued');if(!task)return;activeUploads++;runUpload(task).finally(()=>{activeUploads--;pumpQueue()})}}
+ function pumpQueue(){if(disposed)return;while(activeUploads<FILE_CONCURRENCY){const task=tasks.find(t=>t.status==='queued');if(!task)return;activeUploads++;runUpload(task).finally(()=>{activeUploads--;pumpQueue()})}}
  interface CreatedUpload { upload_id:string; mode:'single'|'multipart'; url?:string; part_size:number; part_count:number; status?:string; parts?:CompletedPart[] }
  interface CompletedPart { part_number:number; etag:string }
  
@@ -75,7 +77,7 @@ export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragAc
    try{
      let created:CreatedUpload
      if(task.uploadId){
-       try{created=await api<CreatedUpload>(`/api/uploads/${task.uploadId}`)}catch{forgetUpload(task.uploadId);task.uploadId=undefined;created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})}
+       try{created=await api<CreatedUpload>(`/api/uploads/${task.uploadId}`)}catch(error){if((error as ApiError).status!==404)throw error;forgetUpload(task.uploadId);task.uploadId=undefined;created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})}
      }else created=await api<CreatedUpload>('/api/uploads',{method:'POST',body:JSON.stringify({parent_id:task.parentId,name:task.file.name,size:task.file.size,mime_type:task.file.type||'application/octet-stream'})})
      task.uploadId=created.upload_id
      saveUpload(task)
@@ -90,15 +92,18 @@ export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragAc
        parts=await uploadMultipart(task,created)
      }
      if(task.cancelled){await abortRemote(task);return}
-     if(created.status!=='completed')await retrying(()=>api(`/api/uploads/${created.upload_id}/complete`,{method:'POST',body:JSON.stringify({parts})},120000),task)
-     forgetUpload(task.uploadId);task.progress=100;task.status='done';scheduleUploadRefresh();scheduleAutoClear()
-   }catch(e){if(task.cancelled){task.status='cancelled';scheduleAutoClear()}else{task.status='failed';task.error=(e as Error).message}}
+     if(created.status!=='completed'){
+       const controller=new AbortController();verificationRequests.set(task,controller)
+       try{await retrying(()=>api(`/api/uploads/${created.upload_id}/complete`,{method:'POST',body:JSON.stringify({parts}),signal:controller.signal},0),task)}finally{verificationRequests.delete(task)}
+     }
+     forgetUpload(task.uploadId);task.progress=100;task.status='done';scheduleUploadRefresh()
+   }catch(e){if(task.cancelled){task.status='cancelled'}else{task.status='failed';task.error=(e as Error).message}}
  }
  
  async function uploadMultipart(task:UploadTask,created:CreatedUpload):Promise<CompletedPart[]>{
    const existing=new Map((created.parts||[]).map(part=>[part.part_number,part]))
    const numbers=Array.from({length:created.part_count},(_,index)=>index+1).filter(number=>!existing.has(number))
-   const sent=new Array(numbers.length).fill(0) as number[]
+   const sent=Array.from({length:created.part_count},(_,index)=>existing.has(index+1)?Math.min(created.part_size,task.file.size-index*created.part_size):0)
    const completed=new Array<CompletedPart>(created.part_count)
    for(const part of existing.values())completed[part.part_number-1]=part
    for(let from=0;from<numbers.length;from+=PART_URL_BATCH){
@@ -121,7 +126,9 @@ export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragAc
          await retrying(()=>api(`/api/uploads/${created.upload_id}/parts/${part.part_number}`,{method:'PUT',body:JSON.stringify({etag,size:blob.size})}),task)
        }
      }
-     await Promise.all(Array.from({length:Math.min(MULTIPART_CONCURRENCY,data.parts.length)},worker))
+     const results=await Promise.allSettled(Array.from({length:Math.min(MULTIPART_CONCURRENCY,data.parts.length)},worker))
+     const failed=results.find(result=>result.status==='rejected')
+     if(failed?.status==='rejected')throw failed.reason
    }
    return completed
  }
@@ -154,12 +161,10 @@ export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragAc
    })
  }
  function percentage(done:number,total:number){return total===0?100:Math.min(99,Math.round(done/total*100))}
- async function cancelUpload(task:UploadTask){task.cancelled=true;task.requests.forEach(x=>x.abort());await abortRemote(task);forgetUpload(task.uploadId);task.status='cancelled'}
+ async function cancelUpload(task:UploadTask){task.cancelled=true;verificationRequests.get(task)?.abort();task.requests.forEach(x=>x.abort());await abortRemote(task);forgetUpload(task.uploadId);task.status='cancelled'}
  async function abortRemote(task:UploadTask){if(task.uploadId){try{await api(`/api/uploads/${task.uploadId}`,{method:'DELETE'})}catch{/* stale cleanup retries later */}}}
  async function retry(task:UploadTask){await abortRemote(task);task.status='queued';task.error='';task.uploadId=undefined;task.requests=[];task.cancelled=false;pumpQueue()}
- // 完成记录保留在上传进度中，等用户主动清除。
- function scheduleAutoClear(){}
  function scheduleUploadRefresh(){window.clearTimeout(uploadRefreshTimer);uploadRefreshTimer=window.setTimeout(()=>void openFolder(currentId.value),250)}
- function disposeUploads(){window.clearTimeout(uploadRefreshTimer);tasks.forEach(task=>task.requests.forEach(request=>request.abort()))}
- return {chooseFiles,chooseFolder,acceptFiles,acceptFolder,onDrop,cancelUpload,retry,scheduleAutoClear,disposeUploads}
+ function disposeUploads(){disposed=true;window.clearTimeout(uploadRefreshTimer);tasks.forEach(task=>{task.cancelled=true;if(task.status==='queued'||task.status==='uploading')task.status='cancelled';verificationRequests.get(task)?.abort();task.requests.forEach(request=>request.abort())})}
+ return {chooseFiles,chooseFolder,acceptFiles,acceptFolder,onDrop,cancelUpload,retry,disposeUploads}
 }

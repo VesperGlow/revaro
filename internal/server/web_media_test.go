@@ -148,3 +148,39 @@ func TestUnsupportedBTMediaPublishesNoFileOrObjectMetadata(t *testing.T) {
 		t.Fatalf("unsupported logical files=%d err=%v", count, err)
 	}
 }
+
+func TestTorrentRollbackKeepsPublishedMedia(t *testing.T) {
+	app := newTestApp(t)
+	app.srv.cleanup.Close()
+	f := app.readyFile(t, "published.mp4", []byte("video"))
+	subKey := "derived/media/published/0/subtitles/0.vtt"
+	app.store.raw[subKey] = []byte("WEBVTT")
+	if _, err := app.db.Exec(`INSERT INTO web_media_subtitles(file_id,track_index,object_key,size,etag) VALUES(?,0,?,6,'sub')`, f.ID, subKey); err != nil {
+		t.Fatal(err)
+	}
+	manager := &downloadManager{server: app.srv}
+	manager.cleanupTorrentImport([]storage.TorrentImportFile{{Key: f.objectKey, WebPrefix: "derived/media/published/0"}})
+	for _, key := range []string{f.objectKey, subKey} {
+		if _, exists := app.store.raw[key]; !exists {
+			t.Fatalf("rollback removed published object %s", key)
+		}
+	}
+	app.srv.queueObjectCleanup(context.Background(), subKey, "stale rollback")
+	app.srv.CleanupObjects(context.Background())
+	if _, exists := app.store.raw[subKey]; !exists {
+		t.Fatal("deferred cleanup removed published subtitle")
+	}
+}
+func TestTorrentPublicationRejectsCancelledJob(t *testing.T) {
+	app := newTestApp(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := downloadJob{ID: "cancelled-import", ParentID: RootID, Name: "file.bin"}
+	if _, err := app.db.Exec(`INSERT INTO download_jobs(id,parent_id,source_type,source,status,created_at,updated_at) VALUES(?,?,'magnet','magnet:?xt=urn:btih:test','cancelled',?,?)`, job.ID, RootID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	manager := &downloadManager{server: app.srv}
+	err := manager.commitImported(context.Background(), job, []importedDownloadFile{{path: "file.bin", objectKey: "blobs/cancelled", size: 3}}, false)
+	if err == nil {
+		t.Fatal("cancelled download was published")
+	}
+}

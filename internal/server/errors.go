@@ -2,7 +2,6 @@ package server
 
 import (
 	"errors"
-	"net/http"
 )
 
 // AppError is the shared boundary error. Cause is logged internally and never
@@ -34,16 +33,4 @@ func publicError(err error, fallback string) string {
 		return app.Message
 	}
 	return fallback
-}
-
-func problemError(w http.ResponseWriter, status int, err error) {
-	var app *AppError
-	if errors.As(err, &app) {
-		writeJSON(w, status, map[string]any{"error": map[string]any{
-			"status": status, "code": app.Code, "message": app.Message,
-			"retryable": app.Retryable, "action_required": app.ActionRequired,
-		}})
-		return
-	}
-	problemCode(w, status, "internal_error", "操作失败，请稍后重试")
 }

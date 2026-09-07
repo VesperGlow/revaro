@@ -28,11 +28,11 @@ const maxJSONBody = 7 << 20
 const maxDocumentBytes = 1 << 20
 const maxAvatarBytes = 2 << 20
 const avatarObjectKey = "profile/avatar"
-const maxBlocksPerRequest = 1000
-const maxCompleteBody = 32 << 20
 const maxLogicalFileSize = 1 << 40 // 1 TiB
 
 type Server struct {
+	uploadMu           sync.Mutex
+	uploadOperations   map[string]*uploadOperation
 	db                 *sql.DB
 	storage            storage.Storage
 	auth               *auth.Service
