@@ -502,6 +502,17 @@ func (s *Server) copyFile(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, "could not copy audio metadata")
 		return
 	}
+	// Each copy owns its associations. S3 keys identify immutable content, not
+	// the source file; cleanup keeps them while any file still references them.
+	// web_media_ingests is the original torrent attempt, not playback ownership.
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO web_media_playback(file_id,object_key,size,etag,mime_type,duration_ms,video_codec,audio_codec,created_at) SELECT ?,object_key,size,etag,mime_type,duration_ms,video_codec,audio_codec,? FROM web_media_playback WHERE file_id=?`, copyID, now, source.ID); err != nil {
+		problem(w, http.StatusInternalServerError, "could not copy video metadata")
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO web_media_subtitles(file_id,track_index,object_key,size,etag,language,title,is_default,is_forced) SELECT ?,track_index,object_key,size,etag,language,title,is_default,is_forced FROM web_media_subtitles WHERE file_id=?`, copyID, source.ID); err != nil {
+		problem(w, http.StatusInternalServerError, "could not copy subtitle metadata")
+		return
+	}
 	if err = tx.Commit(); err != nil {
 		problem(w, http.StatusInternalServerError, "could not finish copy")
 		return
