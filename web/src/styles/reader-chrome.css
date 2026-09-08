@@ -55,7 +55,7 @@ body.reader-open .connection i, body.reader-open .connection i::before, body.rea
 .reader-progress-ring-value { stroke: var(--accent); transition: stroke-dashoffset .2s ease; }
 .reader-progress-ring-value.empty { opacity: 0; }
 .reader-progress-ring b { font-size: 11px; font-weight: 500; }
-.reader-viewport { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); position: relative; height: 100dvh; overflow: hidden; background: var(--paper); touch-action: pan-y; }
+.reader-viewport { position: relative; height: 100dvh; overflow: hidden; background: var(--paper); touch-action: pan-y; }
 .reader-loading { position: absolute; z-index: 7; inset: 0; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 24px; color: var(--muted); background: var(--paper); font-size: 13px; }
 .page-zone { position: absolute; z-index: 6; top: 0; bottom: 0; width: 33.3334%; margin: 0; padding: 0; border: 0; background: transparent; cursor: pointer; touch-action: pan-y; -webkit-tap-highlight-color: transparent; }
 .page-zone:focus { outline: none; }

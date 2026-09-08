@@ -37,13 +37,14 @@ export function clamp(value: number, min: number, max: number): number {
 }
 
 // computeMargins 计算页边距：内容栏宽限制在可读宽度内（桌面宽屏时居中），
-// 上下留白始终为工具栏留出空间，工具显隐不改变分页。参数只用于
-// 本机的 CSS columns 排版。
+// 移动端根据可视高度使用紧凑留白。工具栏刻意覆盖正文，不参与页边距
+// 计算，显示或隐藏工具栏时保持同一套 CSS columns 排版。
 export function computeMargins(width: number, height: number): { top: number; bottom: number; side: number } {
   const MAX_COLUMN = 720
   let side = Math.round(Math.min(Math.max(width * 0.055, 16), 44))
   if (width - 2 * side > MAX_COLUMN) side = Math.round((width - MAX_COLUMN) / 2)
-  const top = height < 480 ? 68 : 76
-  const bottom = height < 480 ? 88 : 100
+  const mobile = width <= 850
+  const top = mobile ? Math.round(Math.min(28, Math.max(16, height * 0.025))) : 60
+  const bottom = mobile ? Math.round(Math.min(22, Math.max(12, height * 0.018))) : 24
   return { top, bottom, side }
 }

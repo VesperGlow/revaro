@@ -923,7 +923,7 @@ test('持久 L2：重开同一本书零 chunk 请求，manifest 版本变化才�
   for (const n of Object.values(flowRequests)) expect(n).toBe(1)
 })
 
-test('阅读器视觉：保留上下布局，图标居中，明暗与工具显隐不重排', async ({ page }, testInfo) => {
+test('阅读器视觉：菜单覆盖满屏正文，图标居中，明暗与工具显隐不重排', async ({ page }, testInfo) => {
   const paragraphs = [
     '清晨推开窗，山谷里的雾还没有散去。远处的树只露出浅浅的轮廓，溪水的声音从林间传来。',
     '沿着门前的小路慢慢走，脚下的落叶还带着昨夜的雨水。风吹过的时候，树梢轻轻晃动，几束阳光落在路边。',
@@ -942,7 +942,14 @@ test('阅读器视觉：保留上下布局，图标居中，明暗与工具显�
   expect(geometry).toEqual({ dx: 0, dy: 0, width: 24, height: 24 })
   const contentTop = await page.locator('#flow p').first().evaluate(el => el.getClientRects()[0].top)
   const headerBottom = (await page.locator('.reader-bar').boundingBox())!
-  expect(contentTop).toBeGreaterThan(headerBottom.y + headerBottom.height)
+  expect(contentTop).toBeGreaterThanOrEqual(16)
+  expect(contentTop).toBeLessThan(headerBottom.y + headerBottom.height)
+  const layout = await page.locator('#flow').evaluate(el => {
+    const style = getComputedStyle(el)
+    return { height: style.height, padding: style.padding, columnWidth: style.columnWidth, columnGap: style.columnGap, columnHeight: style.getPropertyValue('--revaro-col-height') }
+  })
+  expect(parseFloat(layout.height)).toBe(844)
+  expect(parseFloat(layout.columnHeight)).toBeGreaterThan(800)
 
   await expect(page.locator('.reader-bar .reader-progress-ring')).toBeVisible()
   await expect(page.locator('.reader-footer button')).toHaveCount(3)
@@ -950,7 +957,13 @@ test('阅读器视觉：保留上下布局，图标居中，明暗与工具显�
   await page.screenshot({ path: testInfo.outputPath('reader-light.png') })
   await page.locator('#center-zone').click()
   await expect(page.locator('.reader-bar')).toBeHidden()
+  await expect(page.locator('.reader-footer')).toBeHidden()
+  expect(await page.locator('#flow').evaluate(el => {
+    const style = getComputedStyle(el)
+    return { height: style.height, padding: style.padding, columnWidth: style.columnWidth, columnGap: style.columnGap, columnHeight: style.getPropertyValue('--revaro-col-height') }
+  })).toEqual(layout)
   expect(await page.locator('#flow').evaluate(el => (el as HTMLElement).style.transform)).toBe(transform)
+  await page.screenshot({ path: testInfo.outputPath('reader-immersive.png') })
   await page.locator('#center-zone').click()
   await page.locator('#theme-button').click()
   expect(await page.locator('#flow').evaluate(el => (el as HTMLElement).style.transform)).toBe(transform)

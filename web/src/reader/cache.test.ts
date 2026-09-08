@@ -47,21 +47,24 @@ describe('InFlight', () => {
 })
 
 describe('computeMargins / clamp', () => {
-  it('桌面限制栏宽，并为上下工具栏保留阅读留白', () => {
+  it('桌面恢复原有留白和可读栏宽', () => {
     const margins = computeMargins(1400, 900)
-    expect(margins.top).toBeGreaterThan(58)
-    expect(margins.bottom).toBeGreaterThan(80)
+    expect(margins.top).toBe(60)
+    expect(margins.bottom).toBe(24)
     expect(1400 - 2 * margins.side).toBe(720)
   })
 
-  it('移动端和横屏的正文都避开工具栏，同时保留足够阅读高度', () => {
+  it('移动端随可视高度收紧留白，不为浮层菜单预留空间', () => {
     const margins = computeMargins(390, 600)
-    expect(margins.top).toBeGreaterThan(58)
-    expect(margins.bottom).toBeGreaterThan(80)
+    expect(margins.top).toBe(16)
+    expect(margins.bottom).toBe(12)
+    const tall = computeMargins(390, 1000)
+    expect(tall.top).toBe(25)
+    expect(tall.bottom).toBe(18)
     const landscape = computeMargins(844, 390)
-    expect(landscape.top).toBeGreaterThan(58)
-    expect(landscape.bottom).toBeGreaterThan(80)
-    expect(390 - landscape.top - landscape.bottom).toBeGreaterThan(200)
+    expect(landscape.top).toBe(16)
+    expect(landscape.bottom).toBe(12)
+    expect(390 - landscape.top - landscape.bottom).toBeGreaterThan(350)
   })
 
   it('clamp 与字号边界', () => {

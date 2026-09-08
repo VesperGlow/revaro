@@ -113,9 +113,6 @@ function applyMetrics() {
   const { w, h } = viewportSize()
   lastViewport = { w, h }
   const margins = computeMargins(w, h)
-  const viewportStyle = viewportEl.value ? getComputedStyle(viewportEl.value) : null
-  margins.top += parseFloat(viewportStyle?.paddingTop || '0') || 0
-  margins.bottom += parseFloat(viewportStyle?.paddingBottom || '0') || 0
   metrics = {
     width: w,
     height: h,
