@@ -113,6 +113,9 @@ function applyMetrics() {
   const { w, h } = viewportSize()
   lastViewport = { w, h }
   const margins = computeMargins(w, h)
+  const viewportStyle = viewportEl.value ? getComputedStyle(viewportEl.value) : null
+  margins.top += parseFloat(viewportStyle?.paddingTop || '0') || 0
+  margins.bottom += parseFloat(viewportStyle?.paddingBottom || '0') || 0
   metrics = {
     width: w,
     height: h,
@@ -196,7 +199,8 @@ async function alignToAnchor(): Promise<void> {
   const col = anchor ? colForAnchor(anchor) : currentCol
   currentCol = clamp(col, 0, Math.max(0, cols - 1))
   setX(-currentCol * metrics.pitch)
-  captureTop()
+  if (anchor) { topAnchor = anchor; refreshTocUi() }
+  else captureTop()
 }
 
 // refreshTocUi 按当前 topAnchor 刷新目录高亮与进度显示。
@@ -248,7 +252,7 @@ function percentOfAnchor(anchor: ReadingAnchor): number {
 
 // ---- 翻页 ----
 
-async function goToCol(col: number, animate: boolean): Promise<void> {
+async function goToCol(col: number, animate: boolean, keepAnchor?: ReadingAnchor): Promise<void> {
   if (!manifest.value || stage.value !== 'reading') return
   currentCol = clamp(col, 0, Math.max(0, cols - 1))
   const to = -currentCol * metrics.pitch
@@ -257,7 +261,10 @@ async function goToCol(col: number, animate: boolean): Promise<void> {
   } else {
     setX(to)
   }
-  captureTop()
+  // A layout change can move earlier text onto this page. Keep the original
+  // reading point until the user navigates, so repeated rotations don't drift.
+  if (keepAnchor) { topAnchor = keepAnchor; refreshTocUi() }
+  else captureTop()
   scheduleWindowSync()
 }
 
@@ -569,6 +576,7 @@ function jumpToc(entryIndex: number) {
 }
 
 function onKey(event: KeyboardEvent) {
+  if (event.defaultPrevented || (event.target instanceof Element && event.target.closest('input, select, button:not(.page-zone), summary'))) return
   if (stage.value !== 'reading') return
   if (['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', ' '].includes(event.key)) event.preventDefault()
   if (['ArrowLeft', 'PageUp'].includes(event.key)) previous()
@@ -593,7 +601,7 @@ async function relayout() {
   measureCols()
   if (keep) {
     topAnchor = keep
-    await goToCol(colForAnchor(keep), false)
+    await goToCol(colForAnchor(keep), false, keep)
   } else {
     setX(0)
     currentCol = 0

@@ -38,6 +38,11 @@ const controlsVisible=ref(true)
 const volume=ref(.9)
 const muted=ref(false)
 const volumeFeedback=ref(false)
+const storedRate=Number(localStorage.getItem('revaro-video-rate')||1)
+const rate=ref([0.5,0.75,1,1.25,1.5,2].includes(storedRate)?storedRate:1)
+let controlsHovered=false
+let pointerType='mouse'
+let clickTimer=0
 const pendingSeek=ref<number|null>(null)
 const fullscreen=ref(false)
 const autoplayPending=ref(true)
@@ -84,8 +89,19 @@ function resetPlayback(){
 }
 function showControls(persist=false){
   controlsVisible.value=true;window.clearTimeout(controlsTimer)
-  if(!persist&&playing.value)controlsTimer=window.setTimeout(()=>controlsVisible.value=false,2400)
+  if(!persist&&playing.value)controlsTimer=window.setTimeout(()=>{
+    if(controlsHovered||pendingSeek.value!==null||shell.value?.querySelector('details[open], :focus-visible')){showControls();return}
+    if(!starting.value&&!buffering.value&&!error.value)controlsVisible.value=false
+  },2800)
 }
+
+function setControlsHover(value:boolean){controlsHovered=value;showControls()}
+function onVideoClick(){
+  if(pointerType!=='mouse'){if(!controlsVisible.value)showControls();else if(playing.value)controlsVisible.value=false;return}
+  window.clearTimeout(clickTimer);clickTimer=window.setTimeout(togglePlayback,200)
+}
+function onVideoDoubleClick(){if(pointerType==='mouse'){window.clearTimeout(clickTimer);void toggleFullscreen()}}
+function changeRate(event:Event){rate.value=Number((event.target as HTMLSelectElement).value);if(video.value)video.value.playbackRate=rate.value;localStorage.setItem('revaro-video-rate',String(rate.value));showControls()}
 
 interface MSEStartOptions { fresh?:boolean;suspectSessionID?:string;recoveryReason?:string }
 async function startMSEStream(start:number,autoplay=true,recovery:MSEStartOptions={}){
@@ -214,7 +230,7 @@ async function startCompatibilityStream(start:number,autoplay=true,fallbackReaso
 }
 function onLoadedMetadata(){
   const el=video.value;if(!el)return
-  el.volume=volume.value;el.muted=muted.value
+  el.volume=volume.value;el.muted=muted.value;el.playbackRate=rate.value
   if(directMode.value){duration.value=Number.isFinite(el.duration)?el.duration:0;restoreDirectPosition()}
   applySubtitle()
   updateSubtitleBounds()
@@ -253,7 +269,7 @@ function onWaiting(){
   if(starting.value)return
   buffering.value=true;showControls(true)
 }
-function onCanPlay(){buffering.value=false}
+function onCanPlay(){buffering.value=false;showControls()}
 function onEnded(){
   onPause()
   if(!directMode.value&&!mseMode.value&&currentTime.value<duration.value-1)void startCompatibilityStream(currentTime.value+.05,true,'继续有限兼容流')
@@ -280,7 +296,7 @@ function seekTo(target:number){
   void startCompatibilityStream(target,playing.value,'目标位置不在 HLS 已缓冲范围')
 }
 function previewSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);if(Number.isFinite(value))pendingSeek.value=value;showControls(true)}
-function commitSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);pendingSeek.value=null;seekTo(value)}
+function commitSeek(event:Event){const value=Number((event.target as HTMLInputElement).value);pendingSeek.value=null;seekTo(value);showControls()}
 function togglePlayback(){
   const el=video.value;if(!el)return
   if(starting.value){autoplayPending.value=!autoplayPending.value;showControls(true);return}
@@ -296,7 +312,8 @@ async function toggleFullscreen(){
 }
 function onFullscreenChange(){fullscreen.value=document.fullscreenElement===shell.value}
 function onKey(event:KeyboardEvent){
-  if(event.target instanceof HTMLInputElement||event.target instanceof HTMLSelectElement)return
+  showControls()
+  if(event.defaultPrevented||event.target instanceof Element&&event.target.closest('input, select, button, summary'))return
   if(event.key===' '||event.key==='k'){event.preventDefault();togglePlayback()}
   else if(event.key==='ArrowLeft'){event.preventDefault();seekTo(currentTime.value-5)}
   else if(event.key==='ArrowRight'){event.preventDefault();seekTo(currentTime.value+5)}
@@ -311,6 +328,7 @@ watch(selectedSubtitleURL,url=>{
 },{flush:'post'})
 
 onMounted(async()=>{
+  shell.value?.focus({preventScroll:true})
   document.addEventListener('fullscreenchange',onFullscreenChange)
   if(video.value&&typeof ResizeObserver!=='undefined'){videoResizeObserver=new ResizeObserver(updateSubtitleBounds);videoResizeObserver.observe(video.value)}
   const storedVolume=Number(localStorage.getItem(volumeKey));if(Number.isFinite(storedVolume)&&storedVolume>=0&&storedVolume<=1){volume.value=storedVolume;muted.value=storedVolume===0;if(storedVolume>0)lastAudibleVolume=storedVolume}
@@ -328,7 +346,7 @@ onMounted(async()=>{
   else{await progressPromise;void startMSEStream(savedPosition(),true)}
 })
 onBeforeUnmount(()=>{
-  document.removeEventListener('fullscreenchange',onFullscreenChange);videoResizeObserver?.disconnect();videoResizeObserver=null;window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);stopPlaybackClock();persistProgress(false);playbackGeneration++;disableSubtitleTracks()
+  window.clearTimeout(clickTimer);document.removeEventListener('fullscreenchange',onFullscreenChange);videoResizeObserver?.disconnect();videoResizeObserver=null;window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);window.clearTimeout(controlsTimer);window.clearTimeout(volumeTimer);stopPlaybackClock();persistProgress(false);playbackGeneration++;disableSubtitleTracks()
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
   const hlsSession=hlsSessionId;hlsSessionId='';const fmp4Session=fmp4SessionId;fmp4SessionId='';resetPlayback()
   releaseHLSSession(hlsSession);if(fmp4Session)void fetch(`/api/video/fmp4/${fmp4Session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
@@ -336,14 +354,14 @@ onBeforeUnmount(()=>{
 </script>
 
 <template>
-  <div ref="shell" class="video-player-shell" :class="{'cursor-hidden':cursorHidden}" tabindex="0" @mousemove="showControls()" @mouseleave="playing&&(controlsVisible=false)" @keydown="onKey">
-    <video ref="video" :src="directSource||undefined" :poster="poster" crossorigin="anonymous" autoplay playsinline preload="metadata" @click="togglePlayback" @dblclick="toggleFullscreen" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @waiting="onWaiting" @stalled="onWaiting" @canplay="onCanPlay" @playing="onCanPlay" @play="onPlay" @pause="onPause" @ended="onEnded" @error="onVideoError">
+  <div ref="shell" class="video-player-shell" :class="{'cursor-hidden':cursorHidden}" tabindex="0" @pointermove="$event.pointerType==='mouse'&&showControls()" @pointerdown="pointerType=$event.pointerType" @keydown.tab.capture="showControls()" @keydown="onKey">
+    <video ref="video" :src="directSource||undefined" :poster="poster" crossorigin="anonymous" autoplay playsinline preload="metadata" @click="onVideoClick" @dblclick="onVideoDoubleClick" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @waiting="onWaiting" @stalled="onWaiting" @canplay="onCanPlay" @playing="onCanPlay" @play="onPlay" @pause="onPause" @ended="onEnded" @error="onVideoError">
       <track v-if="selectedSubtitle" ref="subtitleElement" :key="selectedSubtitleKey" kind="subtitles" :src="selectedSubtitleURL" :srclang="selectedSubtitle.language" :label="selectedSubtitle.label" @load="onSubtitleLoad" @error="onSubtitleError">
       你的浏览器不支持这个视频格式。
     </video>
-    <div v-if="activeSubtitleLines.length" class="video-subtitle-overlay" :class="[subtitlePlacement,{raised:controlsVisible||!playing}]" :style="subtitleStyle" aria-live="off"><span v-for="(line,index) in activeSubtitleLines" :key="`${index}:${line}`" :class="subtitleLineClass(index)">{{ line }}</span></div>
+    <div v-if="activeSubtitleLines.length" class="video-subtitle-overlay" :class="subtitlePlacement" :style="subtitleStyle" aria-live="off"><span v-for="(line,index) in activeSubtitleLines" :key="`${index}:${line}`" :class="subtitleLineClass(index)">{{ line }}</span></div>
     <VideoStatusOverlay :item-name="item.name" :direct-mode="directMode" :compatibility-label="compatibilityLabel" :controls-visible="controlsVisible" :playing="playing" :starting="starting" :error="error" :prepare-kind="prepareKind" :prepare-mode="prepareMode" :timeline-position="timelinePosition" :buffering="buffering" :format-time="formatTime" @close="emit('close')" @toggle-playback="togglePlayback" @retry="retryPlayback" />
-    <VideoControls :visible="controlsVisible||!playing" :playing="playing" :starting="starting" :autoplay-pending="autoplayPending" :duration="duration" :timeline-position="timelinePosition" :progress="progress" :volume-state="volumeState" :volume-feedback="volumeFeedback" :volume-percent="volumePercent" :effective-volume="effectiveVolume" :subtitles="subtitles" :active-subtitle="activeSubtitle" :fullscreen="fullscreen" :format-time="formatTime" @toggle-playback="togglePlayback" @preview-seek="previewSeek" @commit-seek="commitSeek" @toggle-mute="toggleMute" @volume-start="volumeFeedback=true" @volume-end="showVolumeFeedback" @change-volume="changeVolume" @choose-subtitle="chooseSubtitle" @download="emit('download',item)" @move="emit('move',item)" @copy="emit('copy',item)" @toggle-fullscreen="toggleFullscreen" />
+    <VideoControls :visible="controlsVisible||!playing" :playing="playing" :starting="starting" :autoplay-pending="autoplayPending" :duration="duration" :timeline-position="timelinePosition" :progress="progress" :volume-state="volumeState" :volume-feedback="volumeFeedback" :volume-percent="volumePercent" :effective-volume="effectiveVolume" :subtitles="subtitles" :active-subtitle="activeSubtitle" :fullscreen="fullscreen" :rate="rate" :playback-info="directMode?'原始文件播放':compatibilityLabel" :format-time="formatTime" @change-rate="changeRate" @hover="setControlsHover" @interact="showControls()" @cancel-seek="pendingSeek=null;showControls()" @toggle-playback="togglePlayback" @preview-seek="previewSeek" @commit-seek="commitSeek" @toggle-mute="toggleMute" @volume-start="volumeFeedback=true" @volume-end="showVolumeFeedback" @change-volume="changeVolume" @choose-subtitle="chooseSubtitle" @download="emit('download',item)" @move="emit('move',item)" @copy="emit('copy',item)" @toggle-fullscreen="toggleFullscreen" />
   </div>
 </template>
 

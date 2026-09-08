@@ -215,7 +215,7 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(layout.center-layout.viewportCenter)).toBeLessThan(.5)
-  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0',progressWidth:48,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
+  expect(layout).toMatchObject({backWidth:44,backHeight:44,backBackground:'rgba(0, 0, 0, 0)',progressText:'0',progressWidth:44,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',titleClipped:true})
   expect(Math.abs(layout.backCenter-(layout.viewport-layout.progressCenter))).toBeLessThan(.5)
 
   await page.setViewportSize({width:390,height:844})
@@ -248,7 +248,7 @@ test('阅读器顶栏平衡返回、居中标题与实时进度，目录仅从�
     }
   })
   expect(Math.abs(mobileLayout.titleCenter-mobileLayout.viewportCenter)).toBeLessThan(.5)
-  expect(mobileLayout).toMatchObject({progressText:'0',progressWidth:48,footerBottom:0,hasSeek:false})
+  expect(mobileLayout).toMatchObject({progressText:'0',progressWidth:44,footerBottom:0,hasSeek:false})
   expect(mobileLayout.controlsBottomClearance).toBeGreaterThanOrEqual(12)
   expect(Math.max(...mobileLayout.buttonWidths)-Math.min(...mobileLayout.buttonWidths)).toBeLessThan(.5)
   expect(Math.min(...mobileLayout.buttonHeights)).toBeGreaterThanOrEqual(60)
@@ -921,4 +921,52 @@ test('持久 L2：重开同一本书零 chunk 请求，manifest 版本变化才�
   await expect(page.locator('#page-label')).not.toBeEmpty()
   expect(Object.keys(flowRequests).sort((a, b) => Number(a) - Number(b))).toEqual(['0', '1', '2', '3'])
   for (const n of Object.values(flowRequests)) expect(n).toBe(1)
+})
+
+test('阅读器视觉：保留上下布局，图标居中，明暗与工具显隐不重排', async ({ page }, testInfo) => {
+  const paragraphs = [
+    '清晨推开窗，山谷里的雾还没有散去。远处的树只露出浅浅的轮廓，溪水的声音从林间传来。',
+    '沿着门前的小路慢慢走，脚下的落叶还带着昨夜的雨水。风吹过的时候，树梢轻轻晃动，几束阳光落在路边。',
+    '我们在石桥上停了一会儿，看水流绕过长满青苔的石头。此刻没有什么事需要赶着完成，也不必急着说话。',
+    '午后，云从山的另一侧飘来。屋檐下摆着两把椅子，一本翻到一半的书，和一杯已经放凉的茶。',
+  ]
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openReader(page, {
+    bookName: '山间来信.epub',
+    chunkHTML: chunk => Array.from({ length: BLOCKS_PER_CHUNK }, (_, index) => `<p data-block="${chunk * BLOCKS_PER_CHUNK + index}"${chunk && !index ? ' data-spine-start' : ''}>${paragraphs[index % paragraphs.length]}</p>`).join(''),
+  })
+  const geometry = await page.locator('#reader-back').evaluate(button => {
+    const icon = button.querySelector('svg')!, a = button.getBoundingClientRect(), b = icon.getBoundingClientRect()
+    return { dx: a.x + a.width / 2 - b.x - b.width / 2, dy: a.y + a.height / 2 - b.y - b.height / 2, width: b.width, height: b.height }
+  })
+  expect(geometry).toEqual({ dx: 0, dy: 0, width: 24, height: 24 })
+  const contentTop = await page.locator('#flow p').first().evaluate(el => el.getClientRects()[0].top)
+  const headerBottom = (await page.locator('.reader-bar').boundingBox())!
+  expect(contentTop).toBeGreaterThan(headerBottom.y + headerBottom.height)
+
+  await expect(page.locator('.reader-bar .reader-progress-ring')).toBeVisible()
+  await expect(page.locator('.reader-footer button')).toHaveCount(3)
+  const transform = await page.locator('#flow').evaluate(el => (el as HTMLElement).style.transform)
+  await page.screenshot({ path: testInfo.outputPath('reader-light.png') })
+  await page.locator('#center-zone').click()
+  await expect(page.locator('.reader-bar')).toBeHidden()
+  expect(await page.locator('#flow').evaluate(el => (el as HTMLElement).style.transform)).toBe(transform)
+  await page.locator('#center-zone').click()
+  await page.locator('#theme-button').click()
+  expect(await page.locator('#flow').evaluate(el => (el as HTMLElement).style.transform)).toBe(transform)
+  const backgrounds = await page.locator('#reader-view').evaluate(el => ['.reader-viewport', '.reader-bar', '.reader-footer'].map(selector => getComputedStyle(el.querySelector(selector)!).backgroundColor))
+  expect(new Set(backgrounds).size).toBe(1)
+  await page.mouse.move(0, 0)
+  await page.screenshot({ path: testInfo.outputPath('reader-dark.png') })
+  await page.locator('#font-button').click()
+  await expect(page.locator('#font-popover')).toBeVisible()
+  const popup = await page.locator('#font-popover').boundingBox()
+  expect(popup!.x).toBeGreaterThan(0); expect(popup!.x + popup!.width).toBeLessThan(390)
+  await page.keyboard.press('Escape'); await expect(page.locator('#font-popover')).toBeHidden(); await expect(page.locator('#reader-view')).toBeVisible()
+  await page.locator('#toc-button').click()
+  await expect(page.locator('#toc-close')).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  expect(await page.evaluate(() => !!document.activeElement?.closest('#toc-drawer'))).toBe(true)
+  await page.keyboard.press('Escape'); await expect(page.locator('#toc-drawer')).toHaveAttribute('aria-hidden','true')
+  await page.keyboard.press('Escape'); await expect(page.locator('#reader-view')).toHaveCount(0)
 })

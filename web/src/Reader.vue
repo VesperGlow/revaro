@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from 'vue'
+import { ChevronLeft, List, Type, SunMoon, X } from '@lucide/vue'
 import type { DriveFile } from './api'
 import { useReaderFlow } from './composables/useReaderFlow'
+import { usePreviewDialog } from './composables/usePreviewDialog'
 
 const props = defineProps<{ file: DriveFile }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -12,16 +15,20 @@ const {
   stage, title, toc, tocActive, tocOpen, toggleTheme, toggleTools, toolsVisible,
   viewportEl, zoneGuard,
 } = useReaderFlow(props.file)
-
+const readerEl = ref<HTMLElement | null>(null)
+watch(tocOpen, open => { if (open) void nextTick(() => readerEl.value?.querySelector<HTMLElement>('#toc-close')?.focus({ preventScroll: true })) })
+usePreviewDialog(readerEl, () => {
+  if (tocOpen.value) { closeToc(); readerEl.value?.querySelector<HTMLElement>('#toc-button')?.focus() }
+  else if (fontOpen.value) { fontOpen.value = false; readerEl.value?.querySelector<HTMLElement>('#font-button')?.focus() }
+  else emit('close')
+})
 </script>
 
 <template>
-  <section id="reader-view" class="reader-shell" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
+  <section id="reader-view" ref="readerEl" class="reader-shell" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1" :class="{ dark: isDark, 'tools-hidden': !toolsVisible }">
     <header class="reader-bar">
       <button id="reader-back" class="reader-icon-btn" aria-label="返回" @click="emit('close')">
-        <svg class="reader-back-icon" viewBox="0 0 18 14" aria-hidden="true">
-          <path d="M18 7H1m6-7-7 7 7 7" />
-        </svg>
+        <ChevronLeft class="reader-back-icon" aria-hidden="true" />
       </button>
       <div class="reader-bar-title"><strong id="reader-title">{{ title }}</strong></div>
       <span id="page-label" class="reader-progress-ring" role="img" :aria-label="`阅读进度 ${pageLabel}`">
@@ -55,8 +62,8 @@ const {
       <button id="next-zone" class="page-zone next-zone" aria-label="下一页" @click="zoneGuard(next)()"></button>
     </main>
     <div id="toc-scrim" class="toc-scrim" :class="{ hidden: !tocOpen }" @click="closeToc"></div>
-    <aside id="toc-drawer" class="toc-drawer" aria-label="书籍目录" :aria-hidden="!tocOpen" :class="{ open: tocOpen }">
-      <div class="toc-heading"><div><small>CONTENTS</small><h2>目录</h2></div><button id="toc-close" aria-label="关闭目录" @click="closeToc">×</button></div>
+    <aside id="toc-drawer" class="toc-drawer" :data-preview-sheet="tocOpen ? '' : undefined" aria-label="书籍目录" :aria-hidden="!tocOpen" :class="{ open: tocOpen }">
+      <div class="toc-heading"><h2>目录</h2><button id="toc-close" aria-label="关闭目录" @click="closeToc"><X aria-hidden="true" /></button></div>
       <nav id="toc-list" class="toc-list">
         <p v-if="!toc.length" class="toc-empty">这本书没有可用目录。</p>
         <button
@@ -71,12 +78,14 @@ const {
         </button>
       </nav>
     </aside>
-    <div id="font-popover" class="font-popover" :class="{ hidden: !fontOpen }">
-      <span>字号</span>
-      <button id="font-smaller" class="font-step" aria-label="减小字号" @click="adjustFont(-1)">A−</button>
-      <input id="font-slider" type="range" :min="FONT_MIN" :max="FONT_MAX" step="1" :value="prefs.fontSize" aria-label="阅读字号" @input="onFontInput">
-      <button id="font-larger" class="font-step" aria-label="增大字号" @click="adjustFont(1)">A+</button>
-      <span class="v2-lineheight">
+    <div id="font-popover" class="font-popover" :class="{ hidden: !fontOpen }" aria-label="排版设置">
+      <div class="reader-setting-row">
+        <span>字号</span>
+        <button id="font-smaller" class="font-step" aria-label="减小字号" @click="adjustFont(-1)">A−</button>
+        <input id="font-slider" type="range" :min="FONT_MIN" :max="FONT_MAX" step="1" :value="prefs.fontSize" aria-label="阅读字号" @input="onFontInput">
+        <button id="font-larger" class="font-step" aria-label="增大字号" @click="adjustFont(1)">A+</button>
+      </div>
+      <div class="reader-setting-row v2-lineheight">
         <span>行距</span>
         <button
           v-for="lh in LINE_HEIGHTS"
@@ -84,14 +93,16 @@ const {
           class="font-step"
           :class="{ 'v2-active': prefs.lineHeight === lh }"
           @click="setLineHeight(lh)"
-        >{{ lh }}</button>
-      </span>
+        >
+          {{ lh }}
+        </button>
+      </div>
     </div>
     <footer class="reader-footer">
       <div class="reader-actions">
-        <button id="toc-button" class="reader-action-btn" :aria-expanded="tocOpen" @click="openToc"><b>☰</b><span>目录</span></button>
-        <button id="font-button" class="reader-action-btn" @click="fontOpen = !fontOpen"><b>A</b><span>排版</span></button>
-        <button id="theme-button" class="reader-action-btn" @click="toggleTheme"><b>◐</b><span>明暗</span></button>
+        <button id="toc-button" class="reader-action-btn" :aria-expanded="tocOpen" @click="fontOpen = false; openToc()"><List aria-hidden="true" /><span>目录</span></button>
+        <button id="font-button" class="reader-action-btn" :aria-expanded="fontOpen" @click="fontOpen = !fontOpen"><Type aria-hidden="true" /><span>排版</span></button>
+        <button id="theme-button" class="reader-action-btn" :aria-label="isDark ? '切换浅色' : '切换深色'" @click="toggleTheme"><SunMoon aria-hidden="true" /><span>明暗</span></button>
       </div>
     </footer>
   </section>

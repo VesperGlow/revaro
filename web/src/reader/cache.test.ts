@@ -47,17 +47,21 @@ describe('InFlight', () => {
 })
 
 describe('computeMargins / clamp', () => {
-  it('桌面宽屏限制栏宽（与旧客户端同源）', () => {
+  it('桌面限制栏宽，并为上下工具栏保留阅读留白', () => {
     const margins = computeMargins(1400, 900)
-    expect(margins.top).toBe(60)
-    expect(margins.bottom).toBe(24)
+    expect(margins.top).toBeGreaterThan(58)
+    expect(margins.bottom).toBeGreaterThan(80)
     expect(1400 - 2 * margins.side).toBe(720)
   })
 
-  it('移动端边距按高度收紧', () => {
+  it('移动端和横屏的正文都避开工具栏，同时保留足够阅读高度', () => {
     const margins = computeMargins(390, 600)
-    expect(margins.top).toBe(16)
-    expect(margins.bottom).toBe(12)
+    expect(margins.top).toBeGreaterThan(58)
+    expect(margins.bottom).toBeGreaterThan(80)
+    const landscape = computeMargins(844, 390)
+    expect(landscape.top).toBeGreaterThan(58)
+    expect(landscape.bottom).toBeGreaterThan(80)
+    expect(390 - landscape.top - landscape.bottom).toBeGreaterThan(200)
   })
 
   it('clamp 与字号边界', () => {

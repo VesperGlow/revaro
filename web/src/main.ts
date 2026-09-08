@@ -7,5 +7,6 @@ import './styles/selection-toolbar.css'
 import './styles/share-dialog.css'
 import './styles/document-editor.css'
 import './styles/reader-flow.css'
+import './styles/reader-chrome.css'
 
 createApp(App).mount('#app')
