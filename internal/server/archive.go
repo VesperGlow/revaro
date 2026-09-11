@@ -41,7 +41,7 @@ var (
 type archiveJob struct {
 	mu sync.RWMutex
 	// The staged object is transient and only survives while this in-memory job
-	// is alive. It lets password retries continue without downloading from S3
+	// is alive. It lets password retries continue without downloading from local storage
 	// again; the password itself is never assigned to the job.
 	tempDir          string
 	archivePath      string
@@ -194,7 +194,7 @@ func (s *Server) startArchiveExtract(w http.ResponseWriter, r *http.Request) {
 	s.archiveMu.Lock()
 	s.archiveJobs[job.ID] = job
 	s.archiveMu.Unlock()
-	jobCtx, jobCancel := context.WithCancel(s.audioHLSCtx)
+	jobCtx, jobCancel := context.WithCancel(s.workCtx)
 	job.cancel = jobCancel
 	if !s.runBackground(func() { s.runArchiveExtract(jobCtx, f, parentID, job, "") }) {
 		jobCancel()
@@ -355,7 +355,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 
 // pollArchiveProgress mirrors the Rust data-plane extraction progress into the
 // in-memory job while ExtractArchive is blocked. The Rust side reports two
-// phases: "downloading" (source staged from S3) and "extracting" (entries
+// phases: "downloading" (source staged from local storage) and "extracting" (entries
 // written to the workspace).
 func (s *Server) pollArchiveProgress(ctx context.Context, job *archiveJob, extractor storage.ArchiveExtractor, archiveSize int64) {
 	ticker := time.NewTicker(400 * time.Millisecond)
@@ -453,7 +453,7 @@ func (s *Server) importExtractedArchive(ctx context.Context, f File, parentID st
 		key, stored, storeErr := s.storeBlob(ctx, io.TeeReader(file, hasher), info.Size(), mimeType)
 		_ = file.Close()
 		if storeErr != nil {
-			return fmt.Errorf("upload extracted file %q to S3: %w", filepath.Base(path), storeErr)
+			return fmt.Errorf("upload extracted file %q to local storage: %w", filepath.Base(path), storeErr)
 		}
 		if stored.Size != info.Size() {
 			s.discardBlob(key)

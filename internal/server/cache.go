@@ -14,11 +14,9 @@ import (
 //	reader/source   书源 blob（内容寻址 immutable，disk-only，冷启动免回源）
 //	reader/books    解析后的 Book（external memory LRU，注册进全局统计）
 //	media/subtitle  字幕转换产物（带 TTL 的临时产物，memory+disk）
-//	media/hls       音视频 HLS 会话工作区（external：会话自管目录，
-//	                经 RegisterExternal 纳入全局统计与容量回收）
 //
-// 缩略图与图片资产本身持久化在 S3 thumbs/ 与 blobs/（内容寻址、immutable
-// 长缓存头），不经本地缓存层；音视频 Range 由 S3/数据平面直接承担。
+// 缩略图与图片资产本身持久化在 local storage thumbs/ 与 blobs/（内容寻址、immutable
+// 长缓存头），不经本地缓存层；音视频 Range 由 local storage/数据平面直接承担。
 
 const (
 	// serverCacheMemoryBytes 是全局 memory L1 的字节上限。
@@ -36,17 +34,16 @@ const (
 	cacheClassReaderSource       = "reader/source"
 	cacheClassReaderBooks        = "reader/books"
 	cacheClassMediaSubtitle      = "media/subtitle"
-	cacheClassMediaHLS           = "media/hls"
 
 	readerFlowManifestQuota = 8 << 20
 	readerFlowChunkQuota    = 64 << 20
 )
 
 // newGlobalCache 装配统一缓存管理器：注册各 cache class 与解析书 external
-// provider。HLS workspace 由 Server 在拥有 session 状态后注册。
+// provider。
 func newGlobalCache(workDir string, diskLimit int64, books *reader.Cache) *cache.Manager {
 	m := cache.New(workDir, serverCacheMemoryBytes, diskLimit)
-	// flow 产物与书源 blob 已持久化在 S3；服务端只保留 manifest/chunk 的
+	// flow 产物与书源 blob 已持久化在 local storage；服务端只保留 manifest/chunk 的
 	// memory 工作缓存，书源 blob 仍保留 disk-only 冷启动优化。
 	m.RegisterClass(cache.Class{Name: cacheClassReaderFlowManifest, Priority: 90, SoftQuota: readerFlowManifestQuota, Memory: true})
 	m.RegisterClass(cache.Class{Name: cacheClassReaderFlowChunk, Priority: 70, SoftQuota: readerFlowChunkQuota, Memory: true})

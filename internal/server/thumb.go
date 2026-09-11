@@ -23,7 +23,7 @@ import (
 )
 
 // 持久化缩略图：图片与 EPUB 封面由 Go 重采样、视频由 Rust/libav 抽帧，
-// 统一存入 S3 的 thumbs/ 前缀（内容寻址、条件写入），前端用带 etag 的
+// 统一存入 local storage 的 thumbs/ 前缀（内容寻址、条件写入），前端用带 etag 的
 // 不可变 URL 请求，浏览器可长期缓存，刷新/重进目录不再重新加载。
 
 const maxThumbBytes = 512 << 10 // 缩略图对象上限
@@ -204,7 +204,7 @@ func (s *Server) audioThumbnail(w http.ResponseWriter, r *http.Request, f File, 
 		return
 	}
 	result := s.audioThumbGroup.DoChan(f.ID+":"+f.ETag, func() (any, error) {
-		ctx, cancel := context.WithTimeout(s.audioHLSCtx, 5*time.Minute)
+		ctx, cancel := context.WithTimeout(s.workCtx, 5*time.Minute)
 		defer cancel()
 		if !acquireThumbSlot(ctx, s.audioThumbSlots) {
 			return nil, ctx.Err()
@@ -290,7 +290,7 @@ func acquireThumbSlot(ctx context.Context, slots chan struct{}) bool {
 	}
 }
 
-// generateVideoThumb uses the same source selection as playback: direct S3
+// generateVideoThumb uses the same source selection as playback: direct local storage
 // Range for blobs and the local compatibility Reader for legacy manifests.
 func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) {
 	if f.Size <= 0 {

@@ -94,7 +94,7 @@ func (s *Server) scheduleMediaAnalysis(f File) {
 	if !isAudioSource(f) && !isVideoSource(f) {
 		return
 	}
-	s.mediaAnalysis.schedule(s.audioHLSCtx, f.ID, func(parent context.Context) {
+	s.mediaAnalysis.schedule(s.workCtx, f.ID, func(parent context.Context) {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		if _, err := s.ensureMediaMetadata(ctx, f); err != nil && !errors.Is(err, context.Canceled) {
@@ -105,7 +105,7 @@ func (s *Server) scheduleMediaAnalysis(f File) {
 
 func (s *Server) ensureMediaMetadata(ctx context.Context, f File) (probedMediaMetadata, error) {
 	result := s.mediaProbeGroup.DoChan(f.ID, func() (any, error) {
-		probeCtx, cancel := context.WithTimeout(s.audioHLSCtx, 2*time.Minute)
+		probeCtx, cancel := context.WithTimeout(s.workCtx, 2*time.Minute)
 		defer cancel()
 		return s.probeMediaMetadata(probeCtx, f)
 	})

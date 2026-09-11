@@ -121,7 +121,7 @@ export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragAc
          const start=idx*created.part_size
          const blob=task.file.slice(start,Math.min(task.file.size,start+created.part_size))
          const etag=await retrying(()=>xhrPut(part.url,blob,task,loaded=>{sent[idx]=loaded;task.progress=Math.floor(percentage(sent.reduce((a,x)=>a+x,0),task.file.size)*.98)}),task)
-         if(!etag)throw new Error('对象存储没有暴露 ETag，请检查 Bucket CORS 的 ExposeHeaders')
+         if(!etag)throw new Error('服务器没有返回分片校验信息')
          completed[idx]={part_number:part.part_number,etag}
          await retrying(()=>api(`/api/uploads/${created.upload_id}/parts/${part.part_number}`,{method:'PUT',body:JSON.stringify({etag,size:blob.size})}),task)
        }
@@ -153,9 +153,9 @@ export function useUploads(deps:{tasks:UploadTask[];currentId:Ref<string>;dragAc
      xhr.onload=()=>{
        detach()
        if(xhr.status>=200&&xhr.status<300)resolve(xhr.getResponseHeader('ETag')||'')
-       else reject(new Error(`S3 上传失败 (${xhr.status})`))
+       else reject(new Error(`上传失败 (${xhr.status})`))
      }
-     xhr.onerror=()=>{detach();reject(new Error('无法连接对象存储，请检查 S3 CORS'))}
+     xhr.onerror=()=>{detach();reject(new Error('无法连接服务器，请检查网络'))}
      xhr.onabort=()=>{detach();reject(new Error('上传已取消'))}
      xhr.send(body)
    })

@@ -6,107 +6,22 @@
   <LoginPage v-else-if="!user" :login="login" @username="login.username=$event" @password="login.password=$event" @second-factor="login.secondFactor=$event" @submit="submitLogin" />
 
   <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
-    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :tasks="backgroundTasks" :download-parent-id="trashMode?ROOT:currentId" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @cancel-task="cancelBackgroundTask" @retry-task="retryBackgroundTask" @tasks-changed="refreshBackgroundTasks" />
+    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :tasks="backgroundTasks" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @cancel-task="cancelBackgroundTask" @retry-task="retryBackgroundTask" @tasks-changed="refreshBackgroundTasks" />
     <section class="content" @click="clearSelectionFromBlank">
-      <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :trash-mode="trashMode" @open-folder="openFolder" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @local-audio-merge="showLocalAudioMerge" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
+      <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :trash-mode="trashMode" @open-folder="openFolder" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
       <input ref="fileInput" hidden type="file" multiple @change="filesChanged">
       <input ref="folderInput" hidden type="file" multiple webkitdirectory @change="folderChanged">
-      <input ref="localMergeInput" hidden type="file" multiple webkitdirectory @change="localMergeChanged">
-      <SelectionToolbar v-if="selectedItems.length&&!modal" :selected-items="selectedItems" :selected-bytes="selectedBytes" :selected-files="selectedFiles" :single-selected="singleSelected" :item-count="items.length" :trash-mode="trashMode" :can-merge-audio="canMergeSelectedAudio" @clear="clearSelection" @restore="restoreSelected" @purge="purgeSelected" @select-all="selectAll" @open="openItem" @merge-audio="showAudioMerge" @extract="extractArchive" @download="downloadSelected" @share="showShare" @rename="showRename" @move="showMoveSelected" @remove="removeSelected" />
+      <SelectionToolbar v-if="selectedItems.length&&!modal" :selected-items="selectedItems" :selected-bytes="selectedBytes" :selected-files="selectedFiles" :single-selected="singleSelected" :item-count="items.length" :trash-mode="trashMode" @clear="clearSelection" @restore="restoreSelected" @purge="purgeSelected" @select-all="selectAll" @open="openItem" @extract="extractArchive" @download="downloadSelected" @share="showShare" @rename="showRename" @move="showMoveSelected" @remove="removeSelected" />
       <div v-if="loading" class="state"><div class="spinner"></div><p>正在读取文件…</p></div>
       <div v-else-if="!items.length" class="state empty"><div class="empty-icon">⌁</div><h3>{{ trashMode?'回收站是空的':'这里还是空的' }}</h3><p>{{ trashMode?'删除的项目会先来到这里。':'拖放文件到这里，或新建一篇文档。' }}</p><div v-if="!trashMode" class="empty-actions"><button class="secondary" @click="newDocument">新建文档</button><button class="primary" @click="chooseFiles">上传文件</button></div></div>
       <FileGrid v-else :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" />
     </section>
 
-    <div v-if="dragActive&&!trashMode" class="drop-zone"><div><span>↓</span><h2>释放以上传到 {{ current?.name || '我的文件' }}</h2><p>文件将通过 Presigned URL 直传 S3</p></div></div>
+    <div v-if="dragActive&&!trashMode" class="drop-zone"><div><span>↓</span><h2>释放以上传到 {{ current?.name || '我的文件' }}</h2><p>文件将保存到服务器本地磁盘</p></div></div>
 
     <div v-if="modal" class="modal-backdrop" :class="{previewing:modal==='preview','audio-previewing':modal==='preview'&&!!selected&&isAudio(selected),'video-previewing':modal==='preview'&&!!selected&&isVideo(selected),editing:modal==='editor',reading:modal==='reader',accounting:modal==='account'}" @click.self="closeBackdrop">
       <section v-if="modal==='rename'" class="modal"><header><div><p class="eyebrow dark">EDIT</p><h2>重命名</h2></div><button @click="closeModal">×</button></header><label>新名称<input v-model="renameValue" maxlength="1024" @keyup.enter="saveRename"></label><footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="modalBusy" @click="saveRename">保存</button></footer></section>
       <MoveCopyDialog v-else-if="modal==='move'" :mode="transferMode" :targets="moveTargets" :initial-id="currentId" :busy="modalBusy" @close="closeModal" @select="transferTo" />
-      <section v-else-if="modal==='audioMerge'" class="modal audio-merge-modal">
-        <header><div><p class="eyebrow dark">AUDIO MERGE</p><h2>合并音频</h2><p>{{ audioMerge.local?'从电脑目录上传素材，输出固定为无损 ALAC M4A':'FLAC / ALAC 真无损，或选择 AAC 节省空间' }}</p></div><button aria-label="关闭" @click="closeAudioMergeModal">×</button></header>
-        <div class="merge-source-tabs" role="tablist" aria-label="合并来源">
-          <button type="button" :class="{active:!audioMerge.local}" :disabled="localMerge.busy" @click="setAudioMergeSource('revaro')"><span>☁</span>从 Revaro 合并</button>
-          <button type="button" :class="{active:audioMerge.local}" :disabled="localMerge.busy" @click="setAudioMergeSource('local')"><span>♬</span>从本地目录合并</button>
-        </div>
-        <template v-if="!audioMerge.local">
-          <div class="audio-merge-layout">
-            <section class="merge-settings-panel">
-              <fieldset class="merge-format-field">
-                <legend>输出格式</legend><div class="merge-format-options">
-                  <button type="button" :class="{active:audioMerge.format==='flac'}" @click="setAudioMergeFormat('flac')"><span>FLAC</span><strong>无损 · 通用</strong><small>下载母版为 .flac</small></button>
-                  <button type="button" :class="{active:audioMerge.format==='alac'}" @click="setAudioMergeFormat('alac')"><span>ALAC</span><strong>无损 · Apple</strong><small>下载母版为 .m4a</small></button>
-                  <button type="button" :class="{active:audioMerge.format==='aac'}" @click="setAudioMergeFormat('aac')"><span>AAC</span><strong>有损 · 192k</strong><small>体积小，直接流播</small></button>
-                </div>
-              </fieldset>
-              <label>输出文件名<input v-model="audioMerge.name" maxlength="1024" :placeholder="`合并音频${audioMergeExtension(audioMerge.format)}`" @keydown.enter.prevent="startAudioMerge"></label>
-              <div class="merge-cover-field">
-                <strong>封面 <small v-if="audioCoverCandidates.length">已识别当前目录 {{ audioCoverCandidates.length }} 张图片</small></strong>
-                <div v-if="audioCoverCandidates.length" class="merge-cover-candidates">
-                  <button v-for="candidate in audioCoverCandidates" :key="candidate.id" type="button" :class="{active:audioMerge.coverFileId===candidate.id}" :title="candidate.name" @click="selectDirectoryCover(candidate)"><img :src="thumbSRC(candidate)" :alt="candidate.name"><span>{{ candidate.name }}</span></button>
-                </div>
-                <button type="button" class="merge-cover-picker" @click="chooseAudioCover">
-                  <img v-if="audioMerge.coverPreview" :src="audioMerge.coverPreview" alt="音频封面预览">
-                  <span v-else>＋</span>
-                  <div><b>{{ audioMerge.coverName||'上传其他封面' }}</b><small>{{ audioMerge.coverPreview?'点击可换成本地图片':'没有合适图片时从设备上传' }}</small></div>
-                </button>
-                <button v-if="audioMerge.coverPreview" type="button" class="merge-cover-remove" @click="clearAudioCover">移除封面</button>
-                <input ref="audioCoverInput" hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="audioCoverChanged">
-              </div>
-              <p class="lossless-note"><strong>{{ audioMerge.format==='flac'?'字幕说明':'字幕与播放说明' }}</strong><template v-if="audioMerge.format==='flac'">FLAC 不支持内嵌字幕；已识别 {{ audioMergeSubtitleCount }} / {{ audioMerge.order.length }} 个同名 VTT，切换 ALAC 或 AAC 后会自动合并并写入字幕轨。</template><template v-else>将内嵌 {{ audioMergeSubtitleCount }} / {{ audioMerge.order.length }} 个同名 VTT；各段字幕会随音频顺序自动校准时间轴。浏览器无法解码 ALAC 时会临时启动 FFmpeg HLS 兼容流。</template></p>
-            </section>
-            <section class="merge-order-panel">
-              <div class="merge-order-heading"><div><strong>播放顺序</strong><small>每个文件会保留为一个分节</small></div><span>{{ audioMerge.order.length }} 段 · {{ formatSize(audioMerge.order.reduce((sum,item)=>sum+item.size,0)) }}</span></div>
-              <div class="merge-order-list">
-                <article v-for="(item,index) in audioMerge.order" :key="item.id">
-                  <b>{{ index+1 }}</b><div><strong :title="item.name">{{ item.name }}</strong><small>{{ formatSize(item.size) }}</small><span v-if="audioSubtitleFor(item)" class="merge-subtitle-match" :class="{disabled:audioMerge.format==='flac'}" :title="audioSubtitleFor(item)?.name"><i>CC</i>{{ audioMerge.format==='flac'?'已找到但 FLAC 不会打包':'将打包' }} · {{ audioSubtitleFor(item)?.name }}</span><span v-else class="merge-subtitle-match missing"><i>CC</i>未找到同名 .vtt</span></div>
-                  <span class="merge-order-actions"><button :disabled="index===0" title="上移" aria-label="上移" @click="moveAudioMergeInput(index,-1)">↑</button><button :disabled="index===audioMerge.order.length-1" title="下移" aria-label="下移" @click="moveAudioMergeInput(index,1)">↓</button></span>
-                </article>
-              </div>
-            </section>
-          </div>
-          <p v-if="audioMerge.error" class="form-error merge-error">{{ audioMerge.error }}</p>
-          <footer><button class="secondary" @click="closeModal">取消</button><button class="primary" :disabled="audioMerge.busy" @click="startAudioMerge">{{ audioMerge.busy?'正在创建…':'开始合并' }}</button></footer>
-        </template>
-        <template v-else>
-          <div v-if="!localMerge.picks.length" class="local-merge-picker">
-            <div class="local-merge-picker-icon">♬</div>
-            <h3>选择电脑上的音频目录</h3>
-            <p>自动识别 WAV 音频、同名 VTT 字幕和封面图片，按自然顺序合并为无损 ALAC M4A。素材只暂存在服务器本地工作区，源文件不会进入对象存储。</p>
-            <button type="button" class="primary" @click="chooseLocalMergeDir">选择音频目录…</button>
-          </div>
-          <div v-else class="local-merge-body">
-            <div class="local-merge-dir"><span :title="localMerge.dirName||'本地目录'">▰ {{ localMerge.dirName||'本地目录' }}</span><button type="button" class="secondary" :disabled="localMerge.busy" @click="chooseLocalMergeDir">更换目录</button></div>
-            <label>输出文件名（固定 ALAC 无损 .m4a）<input v-model="localMerge.name" maxlength="1024" placeholder="合并音频.m4a" :disabled="localMerge.busy" @keydown.enter.prevent="startLocalMerge"></label>
-            <section class="merge-order-panel">
-              <div class="merge-order-heading"><div><strong>播放顺序</strong><small>WAV 已按自然排序，每个文件保留为一个分节</small></div><span>{{ localMerge.order.length }} 段 · {{ formatSize(localMerge.total) }}</span></div>
-              <div class="merge-order-list">
-                <article v-for="(name,index) in localMerge.order" :key="name">
-                  <b>{{ index+1 }}</b><div>
-                    <strong :title="name">{{ name }}</strong><small>{{ formatSize(localFileByName(name)?.size||0) }}</small>
-                    <span v-if="localSubtitleFor(name)" class="merge-subtitle-match" :title="localSubtitleFor(name)"><i>CC</i>将打包 · {{ localSubtitleFor(name) }}</span>
-                    <span v-else class="merge-subtitle-match missing"><i>CC</i>未找到同名 .vtt</span>
-                  </div>
-                  <span class="merge-order-actions"><button :disabled="index===0||localMerge.busy" title="上移" aria-label="上移" @click="moveLocalMergeInput(index,-1)">↑</button><button :disabled="index===localMerge.order.length-1||localMerge.busy" title="下移" aria-label="下移" @click="moveLocalMergeInput(index,1)">↓</button></span>
-                </article>
-              </div>
-            </section>
-            <div class="merge-cover-field">
-              <strong>封面 <small>已识别 {{ localCoverCandidates.length }} 张图片</small></strong>
-              <div v-if="localCoverCandidates.length" class="merge-cover-candidates">
-                <button v-for="candidate in localCoverCandidates" :key="candidate.name" type="button" :class="{active:localMerge.cover===candidate.name}" :title="candidate.name" :disabled="localMerge.busy" @click="selectLocalCoverFile(candidate.name)"><img :src="candidate.preview" :alt="candidate.name"><span>{{ candidate.name }}</span></button>
-              </div>
-              <p v-if="localMerge.coverPreview" class="local-cover-preview"><img :src="localMerge.coverPreview" alt="已选封面预览"><button v-if="localMerge.cover" type="button" class="merge-cover-remove" :disabled="localMerge.busy" @click="clearLocalCover">不使用封面</button></p>
-              <p v-else class="local-cover-none">未选择封面{{ localCoverCandidates.length?`（${localCoverCandidates.length} 张图片均未命名为 cover / folder / front / album 等）`:'' }}</p>
-            </div>
-          </div>
-          <p v-if="localMerge.error" class="form-error merge-error">{{ localMerge.error }}</p>
-          <footer>
-            <button class="secondary" @click="closeModal">取消</button>
-            <button class="primary" :disabled="localMerge.busy||!localMerge.picks.length" @click="startLocalMerge">{{ localMerge.busy?'正在创建…':'上传并合并' }}</button>
-          </footer>
-        </template>
-      </section>
       <section v-else-if="modal==='account'" class="modal account-modal">
         <header><div><h2>账户设置</h2></div><button @click="closeModal">×</button></header>
         <div class="account-layout">

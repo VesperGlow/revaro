@@ -49,17 +49,6 @@ type systemStatusResponse struct {
 		Status  string `json:"status"`
 		Pending int64  `json:"pending"`
 	} `json:"object_cleanup"`
-	MediaSessions struct {
-		Status   string `json:"status"`
-		AudioHLS int    `json:"audio_hls"`
-		VideoHLS int    `json:"video_hls"`
-		FMP4     int    `json:"fmp4"`
-	} `json:"media_sessions"`
-	BT struct {
-		Status    string `json:"status"`
-		Enabled   bool   `json:"enabled"`
-		Available bool   `json:"available"`
-	} `json:"bt"`
 	Backup struct {
 		Status  string `json:"status"`
 		Enabled bool   `json:"enabled"`
@@ -113,24 +102,6 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 	out.ObjectCleanup.Status = "ok"
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM object_cleanup`).Scan(&out.ObjectCleanup.Pending); err != nil {
 		degrade(&out.ObjectCleanup.Status)
-	}
-
-	out.MediaSessions.Status = "ok"
-	s.audioHLSMu.RLock()
-	out.MediaSessions.AudioHLS = len(s.audioHLSSessions)
-	s.audioHLSMu.RUnlock()
-	s.videoHLSMu.RLock()
-	out.MediaSessions.VideoHLS = len(s.videoHLSSessions)
-	s.videoHLSMu.RUnlock()
-	s.videoFMP4Mu.RLock()
-	out.MediaSessions.FMP4 = len(s.videoFMP4Sessions)
-	s.videoFMP4Mu.RUnlock()
-
-	out.BT.Enabled = s.cfg.BTEnabled
-	out.BT.Available = s.downloads != nil
-	out.BT.Status = "ok"
-	if out.BT.Enabled && !out.BT.Available {
-		degrade(&out.BT.Status)
 	}
 
 	// 备份状态只反映配置开关：备份执行失败不会拖垮主服务，也不会在这里

@@ -30,9 +30,7 @@ type ObjectRef struct {
 
 type Storage interface {
 	Ping(context.Context) error
-	PresignPutObject(context.Context, string, string, time.Duration) (string, error)
 	CreateMultipart(context.Context, string, string) (string, error)
-	PresignUploadPart(context.Context, string, string, int32, time.Duration) (string, error)
 	CompleteMultipart(context.Context, string, string, []CompletedPart) (ObjectInfo, error)
 	AbortMultipart(context.Context, string, string) error
 	HeadObject(context.Context, string) (ObjectInfo, error)
@@ -43,7 +41,6 @@ type Storage interface {
 	OpenRaw(context.Context, string) (io.ReadCloser, error)
 	GetObject(context.Context, string, int64) ([]byte, error)
 	DeleteObject(context.Context, string) error
-	PresignGetObject(context.Context, string, string, string, bool, time.Duration) (string, error)
 	ListPrefix(context.Context, string) ([]ObjectRef, error)
 	WalkPrefix(context.Context, string, func([]ObjectRef) error) error
 	DeleteObjects(context.Context, []string) error
@@ -93,102 +90,7 @@ type MediaEngine interface {
 	ProbeMedia(context.Context, string) (MediaProbe, error)
 	MediaThumbnail(context.Context, string, int) ([]byte, error)
 	MediaAudioCover(context.Context, string, int) ([]byte, error)
-	StreamFMP4(context.Context, string, float64, bool, bool) (io.ReadCloser, error)
-	GenerateHLS(context.Context, string, string, float64, bool) (MediaHLS, error)
-	MergeAudio(context.Context, []string, []string, string, string, string) (MediaAudioMerge, error)
-	DecorateAudio(context.Context, string, string, string) error
 	SubtitleWebVTT(context.Context, string, string, *int) ([]byte, error)
-}
-type MediaHLS struct {
-	DurationMS  int64  `json:"duration_ms"`
-	VideoCodec  string `json:"video_codec"`
-	AudioCodec  string `json:"audio_codec"`
-	Transcoding bool   `json:"transcoding"`
-	JobID       string `json:"job_id"`
-}
-type MediaHLSJobStatus struct {
-	Done  bool   `json:"done"`
-	Error string `json:"error"`
-}
-type MediaHLSJobEngine interface {
-	HLSJobStatus(context.Context, string) (MediaHLSJobStatus, error)
-	CancelHLSJob(context.Context, string) error
-}
-type MediaAudioMerge struct {
-	DurationsMS []int64 `json:"durations_ms"`
-	Size        int64   `json:"size"`
-}
-
-type TorrentFile struct {
-	Components []string `json:"components"`
-	Name       string   `json:"name"`
-	Length     int64    `json:"length"`
-	Included   bool     `json:"included"`
-}
-type TorrentDetails struct {
-	ID          int           `json:"id"`
-	InfoHash    string        `json:"info_hash"`
-	Name        string        `json:"name"`
-	Files       []TorrentFile `json:"files"`
-	TotalPieces int           `json:"total_pieces"`
-}
-type TorrentAddResult struct {
-	ID      int            `json:"id"`
-	Details TorrentDetails `json:"details"`
-}
-type TorrentStats struct {
-	ProgressBytes int64 `json:"progress_bytes"`
-	TotalBytes    int64 `json:"total_bytes"`
-	DownloadSpeed int64 `json:"download_speed"`
-	Peers         int   `json:"peers"`
-	Finished      bool  `json:"finished"`
-}
-type TorrentImportFile struct {
-	Index     int    `json:"index"`
-	Key       string `json:"key"`
-	MIME      string `json:"mime"`
-	Size      int64  `json:"size"`
-	WebPrefix string `json:"web_prefix,omitempty"`
-}
-type TorrentImportedFile struct {
-	Index    int            `json:"index"`
-	Key      string         `json:"key"`
-	Size     int64          `json:"size"`
-	ETag     string         `json:"etag"`
-	Consumed bool           `json:"consumed,omitempty"`
-	WebMedia *WebMediaAsset `json:"web_media,omitempty"`
-}
-type WebMediaSubtitle struct {
-	Index    int    `json:"index"`
-	Key      string `json:"key"`
-	Size     int64  `json:"size"`
-	ETag     string `json:"etag"`
-	Language string `json:"language"`
-	Title    string `json:"title"`
-	Default  bool   `json:"default"`
-	Forced   bool   `json:"forced"`
-}
-type WebMediaAsset struct {
-	State      string             `json:"state"`
-	Error      string             `json:"error,omitempty"`
-	Key        string             `json:"key,omitempty"`
-	Size       int64              `json:"size,omitempty"`
-	ETag       string             `json:"etag,omitempty"`
-	DurationMS int64              `json:"duration_ms"`
-	VideoCodec string             `json:"video_codec"`
-	AudioCodec string             `json:"audio_codec"`
-	Subtitles  []WebMediaSubtitle `json:"subtitles,omitempty"`
-}
-type TorrentEngine interface {
-	AddTorrent(context.Context, string, string, []int, bool) (TorrentAddResult, error)
-	TorrentDetails(context.Context, int) (TorrentDetails, error)
-	TorrentStats(context.Context, int) (TorrentStats, error)
-	SelectTorrentFiles(context.Context, int, []int) error
-	StartTorrent(context.Context, int) error
-	PauseTorrent(context.Context, int) error
-	ImportTorrent(context.Context, int, []TorrentImportFile) ([]TorrentImportedFile, error)
-	DeleteTorrent(context.Context, int) error
-	StreamTorrent(context.Context, int, int, int64, int64) (io.ReadCloser, error)
 }
 
 func BlobKey(id string) string { return "blobs/" + id }
@@ -212,4 +114,11 @@ func IsNotFound(err error) bool {
 	}
 	var problem *dataPlaneError
 	return errors.As(err, &problem) && problem.Status == 404
+}
+
+// DatabaseBackup is intentionally separate from the local file store.
+type DatabaseBackup interface {
+	UploadDatabase(context.Context, string, io.Reader, int64) error
+	ListDatabases(context.Context) ([]ObjectRef, error)
+	DeleteDatabases(context.Context, []string) error
 }

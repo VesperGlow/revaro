@@ -17,7 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// Operations on the same upload must cover both S3 and SQLite. Different
+// Operations on the same upload must cover both local storage and SQLite. Different
 // uploads remain independent, and idle entries are removed from the registry.
 type uploadOperation struct {
 	token chan struct{}
@@ -67,7 +67,7 @@ const defaultMultipartPartSize = int64(16 << 20)
 func multipartPartSize(size int64) int64 {
 	partSize := defaultMultipartPartSize
 	if size > partSize*10000 {
-		// Keep safely below S3's 10,000-part limit and round to MiB so the
+		// Keep safely below the 10,000-part limit and round to MiB so the
 		// browser can slice without awkward byte boundaries.
 		partSize = ((size+9999)/10000 + (1 << 20) - 1) / (1 << 20) * (1 << 20)
 	}
@@ -107,30 +107,30 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 	objectKey := storage.BlobKey(ids.New())
 	mode := "single"
 	partSize := max(in.Size, int64(1))
-	var s3UploadID, uploadURL string
+	var multipartID, uploadURL string
 	var partCount int
 	if in.Size >= multipartUploadThreshold {
 		mode = "multipart"
 		partSize = multipartPartSize(in.Size)
 		partCount, err = storage.ValidMultipartPartCount(in.Size, partSize)
 		if err == nil {
-			s3UploadID, err = s.objects.CreateMultipart(r.Context(), objectKey, in.MimeType)
+			multipartID, err = s.objects.CreateMultipart(r.Context(), objectKey, in.MimeType)
 		}
 	} else {
-		uploadURL, err = s.objects.PresignPut(r.Context(), objectKey, in.MimeType, s.cfg.PresignExpires)
+		uploadURL = "/api/uploads/" + uploadID + "/data"
 	}
 	if err != nil {
 		s.log.Error("blob upload initialization failed", "file", in.Name, "mode", mode, "error", err)
 		problem(w, http.StatusBadGateway, "object storage could not initialize the upload")
 		return
 	}
-	// Once S3 has allocated an upload, every failed metadata path must abort it.
+	// Once local storage has allocated an upload, every failed metadata path must abort it.
 	committed := false
 	defer func() {
-		if !committed && s3UploadID != "" {
+		if !committed && multipartID != "" {
 			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			_ = s.objects.AbortMultipart(abortCtx, objectKey, s3UploadID)
+			_ = s.objects.AbortMultipart(abortCtx, objectKey, multipartID)
 		}
 	}()
 	now := time.Now().UTC()
@@ -149,7 +149,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO uploads(id,file_id,mode,object_key,s3_upload_id,part_size,expected_size,mime_type,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?, 'pending',?,?)`, uploadID, fileID, mode, objectKey, nullString(s3UploadID), partSize, in.Size, in.MimeType, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano))
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO uploads(id,file_id,mode,object_key,multipart_id,part_size,expected_size,mime_type,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?, 'pending',?,?)`, uploadID, fileID, mode, objectKey, nullString(multipartID), partSize, in.Size, in.MimeType, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano))
 	}
 	if err != nil {
 		tx.Rollback()
@@ -185,8 +185,8 @@ func nullString(value string) any {
 }
 
 type uploadRecord struct {
-	ID, FileID, Mode, ObjectKey, S3UploadID, MimeType, Status, ExpiresAt string
-	PartSize, ExpectedSize                                               int64
+	ID, FileID, Mode, ObjectKey, MultipartID, MimeType, Status, ExpiresAt string
+	PartSize, ExpectedSize                                                int64
 }
 
 func (u uploadRecord) expired(now time.Time) bool {
@@ -196,7 +196,7 @@ func (u uploadRecord) expired(now time.Time) bool {
 
 func (s *Server) upload(ctx context.Context, id string) (uploadRecord, error) {
 	var u uploadRecord
-	err := s.db.QueryRowContext(ctx, `SELECT id,file_id,mode,object_key,COALESCE(s3_upload_id,''),part_size,expected_size,mime_type,status,expires_at FROM uploads WHERE id=?`, id).Scan(&u.ID, &u.FileID, &u.Mode, &u.ObjectKey, &u.S3UploadID, &u.PartSize, &u.ExpectedSize, &u.MimeType, &u.Status, &u.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,file_id,mode,object_key,COALESCE(multipart_id,''),part_size,expected_size,mime_type,status,expires_at FROM uploads WHERE id=?`, id).Scan(&u.ID, &u.FileID, &u.Mode, &u.ObjectKey, &u.MultipartID, &u.PartSize, &u.ExpectedSize, &u.MimeType, &u.Status, &u.ExpiresAt)
 	return u, err
 }
 
@@ -226,11 +226,7 @@ func (s *Server) getUpload(w http.ResponseWriter, r *http.Request) {
 	partCount, _ := storage.ValidMultipartPartCount(u.ExpectedSize, u.PartSize)
 	var uploadURL string
 	if u.Mode == "single" && u.Status == "pending" {
-		uploadURL, err = s.objects.PresignPut(r.Context(), u.ObjectKey, u.MimeType, s.cfg.PresignExpires)
-		if err != nil {
-			problem(w, 502, "object storage could not resume the upload")
-			return
-		}
+		uploadURL = "/api/uploads/" + u.ID + "/data"
 	}
 	writeJSON(w, 200, map[string]any{"upload_id": u.ID, "file_id": u.FileID, "mode": u.Mode, "url": uploadURL, "part_size": u.PartSize, "part_count": partCount, "expected_size": u.ExpectedSize, "mime_type": u.MimeType, "status": u.Status, "expires_at": u.ExpiresAt, "parts": parts})
 }
@@ -299,12 +295,7 @@ func (s *Server) uploadParts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[partNumber] = true
-		url, signErr := s.objects.PresignPart(r.Context(), u.ObjectKey, u.S3UploadID, partNumber, s.cfg.PresignExpires)
-		if signErr != nil {
-			s.log.Error("multipart part signing failed", "upload", u.ID, "part", partNumber, "error", signErr)
-			problem(w, 502, "object storage could not prepare upload parts")
-			return
-		}
+		url := "/api/uploads/" + u.ID + "/data/" + strconv.Itoa(int(partNumber))
 		parts[i] = map[string]any{"part_number": partNumber, "url": url}
 	}
 	writeJSON(w, 200, map[string]any{"parts": parts})
@@ -372,7 +363,7 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		info, err = s.objects.CompleteMultipart(r.Context(), u.ObjectKey, u.S3UploadID, body.Parts)
+		info, err = s.objects.CompleteMultipart(r.Context(), u.ObjectKey, u.MultipartID, body.Parts)
 	} else {
 		if len(body.Parts) != 0 {
 			problem(w, 400, "single upload must not include multipart parts")
@@ -507,8 +498,8 @@ func (s *Server) abortUpload(w http.ResponseWriter, r *http.Request) {
 // less common case where CompleteMultipart succeeded but SQLite finalization
 // did not. Deleting the key after abort is safe when no object was committed.
 func (s *Server) cleanupPendingUploadObject(ctx context.Context, u uploadRecord) error {
-	if u.Mode == "multipart" && u.S3UploadID != "" {
-		if err := s.objects.AbortMultipart(ctx, u.ObjectKey, u.S3UploadID); err != nil {
+	if u.Mode == "multipart" && u.MultipartID != "" {
+		if err := s.objects.AbortMultipart(ctx, u.ObjectKey, u.MultipartID); err != nil {
 			s.log.Debug("multipart abort skipped", "upload", u.ID, "error", err)
 		}
 	}
@@ -539,7 +530,7 @@ func (s *Server) CleanupExpiredUploads(ctx context.Context) {
 // referencedStorageKeys returns every content object and derived thumbnail the
 // metadata can still reach, across active and trashed file states.
 func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT object_key,name FROM files WHERE kind='file' AND object_key IS NOT NULL AND object_key <> '' UNION ALL SELECT object_key,'' FROM web_media_playback UNION ALL SELECT object_key,'' FROM web_media_subtitles`)
+	rows, err := s.db.QueryContext(ctx, `SELECT object_key,name FROM files WHERE kind='file' AND object_key IS NOT NULL AND object_key <> ''`)
 	if err != nil {
 		return nil, nil, err
 	}

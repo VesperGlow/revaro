@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -52,7 +51,7 @@ func (d *DataPlane) request(ctx context.Context, method, path string, values url
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+d.token)
-	if body != nil && path != "/v1/s3/object" && path != "/v1/s3/multipart/upload" {
+	if body != nil && path != "/v1/backup/object" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if length >= 0 {
@@ -107,196 +106,6 @@ func (d *DataPlane) jsonRequest(ctx context.Context, method, path string, values
 		return nil
 	}
 	return decodeResponse(resp, out)
-}
-
-func (d *DataPlane) Ping(ctx context.Context) error {
-	resp, err := d.request(ctx, http.MethodGet, "/v1/s3/ping", nil, nil, 0)
-	if err == nil {
-		resp.Body.Close()
-	}
-	return err
-}
-
-func seconds(expiry time.Duration) string {
-	return strconv.FormatInt(max(1, int64(expiry/time.Second)), 10)
-}
-
-func (d *DataPlane) PresignPutObject(ctx context.Context, key, mime string, expiry time.Duration) (string, error) {
-	var out struct {
-		URL string `json:"url"`
-	}
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/s3/presign/put", url.Values{"key": {key}, "mime": {mime}, "expires_seconds": {seconds(expiry)}}, nil, &out)
-	return out.URL, err
-}
-
-func (d *DataPlane) CreateMultipart(ctx context.Context, key, mime string) (string, error) {
-	var out struct {
-		UploadID string `json:"upload_id"`
-	}
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/s3/multipart", nil, map[string]any{"key": key, "mime": mime}, &out)
-	return out.UploadID, err
-}
-
-func (d *DataPlane) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expiry time.Duration) (string, error) {
-	var out struct {
-		URL string `json:"url"`
-	}
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/s3/multipart/part", url.Values{"key": {key}, "upload_id": {uploadID}, "part_number": {strconv.Itoa(int(partNumber))}, "expires_seconds": {seconds(expiry)}}, nil, &out)
-	return out.URL, err
-}
-
-func (d *DataPlane) CompleteMultipart(ctx context.Context, key, uploadID string, parts []CompletedPart) (ObjectInfo, error) {
-	var out ObjectInfo
-	err := d.jsonRequest(ctx, http.MethodPut, "/v1/s3/multipart", nil, map[string]any{"key": key, "upload_id": uploadID, "parts": parts}, &out)
-	return out, err
-}
-
-func (d *DataPlane) AbortMultipart(ctx context.Context, key, uploadID string) error {
-	return d.jsonRequest(ctx, http.MethodDelete, "/v1/s3/multipart", nil, map[string]any{"key": key, "upload_id": uploadID}, nil)
-}
-
-func (d *DataPlane) HeadObject(ctx context.Context, key string) (ObjectInfo, error) {
-	var out ObjectInfo
-	err := d.jsonRequest(ctx, http.MethodGet, "/v1/s3/object/info", url.Values{"key": {key}}, nil, &out)
-	return out, err
-}
-
-func (d *DataPlane) OpenRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, error) {
-	resp, err := d.request(ctx, http.MethodGet, "/v1/s3/object", url.Values{"key": {key}, "start": {strconv.FormatInt(start, 10)}, "end": {strconv.FormatInt(end, 10)}}, nil, 0)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Body, nil
-}
-
-func (d *DataPlane) Open(ctx context.Context, key string) (ReadSeekCloserAt, error) {
-	return openObject(ctx, d, key)
-}
-func (d *DataPlane) ReadFile(ctx context.Context, key string, limit int64) ([]byte, error) {
-	return d.GetObject(ctx, key, limit)
-}
-
-func (d *DataPlane) put(ctx context.Context, key, mime string, body io.Reader, size int64, immutable bool) (ObjectInfo, error) {
-	values := url.Values{"key": {key}, "mime": {mime}, "size": {strconv.FormatInt(size, 10)}}
-	if immutable {
-		values.Set("immutable", "true")
-	}
-	resp, err := d.request(ctx, http.MethodPut, "/v1/s3/object", values, body, size)
-	if err != nil {
-		return ObjectInfo{}, err
-	}
-	var out ObjectInfo
-	return out, decodeResponse(resp, &out)
-}
-
-func (d *DataPlane) StoreBlob(ctx context.Context, key, mime string, body io.Reader, size int64) (ObjectInfo, error) {
-	values := url.Values{"key": {key}, "mime": {mime}}
-	if size >= 0 {
-		values.Set("size", strconv.FormatInt(size, 10))
-	}
-	resp, err := d.request(ctx, http.MethodPut, "/v1/s3/blob", values, body, size)
-	if err != nil {
-		return ObjectInfo{}, err
-	}
-	var out ObjectInfo
-	return out, decodeResponse(resp, &out)
-}
-
-func (d *DataPlane) PutObject(ctx context.Context, key, mime string, data []byte) (ObjectInfo, error) {
-	return d.put(ctx, key, mime, bytes.NewReader(data), int64(len(data)), false)
-}
-func (d *DataPlane) PutImmutable(ctx context.Context, key, mime string, data []byte) error {
-	_, err := d.put(ctx, key, mime, bytes.NewReader(data), int64(len(data)), true)
-	var dp *dataPlaneError
-	if errors.As(err, &dp) && dp.Status == http.StatusPreconditionFailed {
-		return nil
-	}
-	return err
-}
-
-func (d *DataPlane) OpenRaw(ctx context.Context, key string) (io.ReadCloser, error) {
-	resp, err := d.request(ctx, http.MethodGet, "/v1/s3/object", url.Values{"key": {key}}, nil, 0)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Body, nil
-}
-
-func (d *DataPlane) GetObject(ctx context.Context, key string, limit int64) ([]byte, error) {
-	body, err := d.OpenRaw(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	defer body.Close()
-	data, err := io.ReadAll(io.LimitReader(body, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, ErrObjectTooLarge
-	}
-	return data, nil
-}
-
-func (d *DataPlane) DeleteObject(ctx context.Context, key string) error {
-	if key == "" {
-		return nil
-	}
-	resp, err := d.request(ctx, http.MethodDelete, "/v1/s3/object", url.Values{"key": {key}}, nil, 0)
-	if err == nil {
-		resp.Body.Close()
-	}
-	return err
-}
-
-func (d *DataPlane) PresignGetObject(ctx context.Context, key, filename, mime string, inline bool, expiry time.Duration) (string, error) {
-	var out struct {
-		URL string `json:"url"`
-	}
-	values := url.Values{"key": {key}, "filename": {filename}, "mime": {mime}, "inline": {strconv.FormatBool(inline)}, "expires_seconds": {seconds(expiry)}}
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/s3/presign/get", values, nil, &out)
-	return out.URL, err
-}
-
-func (d *DataPlane) WalkPrefix(ctx context.Context, prefix string, visit func([]ObjectRef) error) error {
-	continuation := ""
-	for {
-		values := url.Values{"prefix": {prefix}}
-		if continuation != "" {
-			values.Set("continuation", continuation)
-		}
-		var page struct {
-			Objects []struct {
-				Key      string `json:"key"`
-				Size     int64  `json:"size"`
-				Modified int64  `json:"last_modified_unix_ms"`
-			} `json:"objects"`
-			Continuation string `json:"continuation"`
-		}
-		if err := d.jsonRequest(ctx, http.MethodGet, "/v1/s3/objects", values, nil, &page); err != nil {
-			return err
-		}
-		refs := make([]ObjectRef, len(page.Objects))
-		for i, item := range page.Objects {
-			refs[i] = ObjectRef{Key: item.Key, Size: item.Size, LastModified: time.UnixMilli(item.Modified)}
-		}
-		if err := visit(refs); err != nil {
-			return err
-		}
-		continuation = page.Continuation
-		if continuation == "" {
-			return nil
-		}
-	}
-}
-
-func (d *DataPlane) ListPrefix(ctx context.Context, prefix string) ([]ObjectRef, error) {
-	var out []ObjectRef
-	err := d.WalkPrefix(ctx, prefix, func(page []ObjectRef) error { out = append(out, page...); return nil })
-	return out, err
-}
-func (d *DataPlane) DeleteObjects(ctx context.Context, keys []string) error {
-	return d.jsonRequest(ctx, http.MethodDelete, "/v1/s3/objects", nil, map[string]any{"keys": keys}, nil)
 }
 
 func (d *DataPlane) ExtractArchive(ctx context.Context, key, jobID string, archiveSize int64, password string) (string, error) {
@@ -364,45 +173,6 @@ func (d *DataPlane) mediaThumbnail(ctx context.Context, key string, maxDimension
 	return data, nil
 }
 
-func (d *DataPlane) StreamFMP4(ctx context.Context, key string, start float64, includeAudio, transcodeAudio bool) (io.ReadCloser, error) {
-	body, length, err := jsonBody(map[string]any{"key": key, "start_seconds": start, "include_audio": includeAudio, "transcode_audio": transcodeAudio})
-	if err != nil {
-		return nil, err
-	}
-	resp, err := d.request(ctx, http.MethodPost, "/v1/media/fmp4", nil, body, length)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Body, nil
-}
-func (d *DataPlane) GenerateHLS(ctx context.Context, key, outputDir string, start float64, audioOnly bool) (MediaHLS, error) {
-	var out MediaHLS
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/media/hls", nil, map[string]any{"key": key, "output_dir": outputDir, "start_seconds": start, "audio_only": audioOnly}, &out)
-	return out, err
-}
-func (d *DataPlane) HLSJobStatus(ctx context.Context, jobID string) (MediaHLSJobStatus, error) {
-	var out MediaHLSJobStatus
-	err := d.jsonRequest(ctx, http.MethodGet, "/v1/media/hls/"+url.PathEscape(jobID), nil, nil, &out)
-	return out, err
-}
-func (d *DataPlane) CancelHLSJob(ctx context.Context, jobID string) error {
-	return d.jsonRequest(ctx, http.MethodDelete, "/v1/media/hls/"+url.PathEscape(jobID), nil, nil, nil)
-}
-func (d *DataPlane) MergeAudio(ctx context.Context, inputs, inputNames []string, output, format, title string) (MediaAudioMerge, error) {
-	var out MediaAudioMerge
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/media/audio/merge", nil, map[string]any{"inputs": inputs, "input_names": inputNames, "output": output, "format": format, "title": title}, &out)
-	return out, err
-}
-func (d *DataPlane) DecorateAudio(ctx context.Context, input, cover, subtitle string) error {
-	return d.jsonRequest(ctx, http.MethodPost, "/v1/media/audio/decorate", nil, map[string]any{"input": input, "cover": emptyNil(cover), "subtitle": emptyNil(subtitle)}, nil)
-}
-
-func emptyNil(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
 func (d *DataPlane) SubtitleWebVTT(ctx context.Context, key, format string, streamIndex *int) ([]byte, error) {
 	in := map[string]any{"key": key, "format": format}
 	if streamIndex != nil {
@@ -424,44 +194,18 @@ func (d *DataPlane) SubtitleWebVTT(ctx context.Context, key, format string, stre
 	return data, err
 }
 
-func (d *DataPlane) AddTorrent(ctx context.Context, sourceType, source string, selected []int, paused bool) (TorrentAddResult, error) {
-	var out TorrentAddResult
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/bt", nil, map[string]any{"source_type": sourceType, "source": source, "selected": selected, "paused": paused}, &out)
-	return out, err
-}
-func (d *DataPlane) TorrentDetails(ctx context.Context, id int) (TorrentDetails, error) {
-	var out TorrentDetails
-	err := d.jsonRequest(ctx, http.MethodGet, "/v1/bt/"+strconv.Itoa(id), nil, nil, &out)
-	return out, err
-}
-func (d *DataPlane) TorrentStats(ctx context.Context, id int) (TorrentStats, error) {
-	var out TorrentStats
-	err := d.jsonRequest(ctx, http.MethodGet, "/v1/bt/"+strconv.Itoa(id)+"/stats", nil, nil, &out)
-	return out, err
-}
-func (d *DataPlane) SelectTorrentFiles(ctx context.Context, id int, files []int) error {
-	return d.jsonRequest(ctx, http.MethodPut, "/v1/bt/"+strconv.Itoa(id)+"/selection", nil, map[string]any{"files": files}, nil)
-}
-func (d *DataPlane) StartTorrent(ctx context.Context, id int) error {
-	return d.jsonRequest(ctx, http.MethodPost, "/v1/bt/"+strconv.Itoa(id)+"/start", nil, nil, nil)
-}
-func (d *DataPlane) PauseTorrent(ctx context.Context, id int) error {
-	return d.jsonRequest(ctx, http.MethodPost, "/v1/bt/"+strconv.Itoa(id)+"/pause", nil, nil, nil)
-}
-func (d *DataPlane) ImportTorrent(ctx context.Context, id int, files []TorrentImportFile) ([]TorrentImportedFile, error) {
-	var out []TorrentImportedFile
-	err := d.jsonRequest(ctx, http.MethodPost, "/v1/bt/"+strconv.Itoa(id)+"/import", nil, map[string]any{"files": files}, &out)
-	return out, err
-}
-func (d *DataPlane) DeleteTorrent(ctx context.Context, id int) error {
-	return d.jsonRequest(ctx, http.MethodDelete, "/v1/bt/"+strconv.Itoa(id), nil, nil, nil)
-}
-
-func (d *DataPlane) StreamTorrent(ctx context.Context, id, fileID int, start, end int64) (io.ReadCloser, error) {
-	values := url.Values{"start": {strconv.FormatInt(start, 10)}, "end": {strconv.FormatInt(end, 10)}}
-	resp, err := d.request(ctx, http.MethodGet, "/v1/bt/"+strconv.Itoa(id)+"/stream/"+strconv.Itoa(fileID), values, nil, 0)
-	if err != nil {
-		return nil, err
+func (d *DataPlane) UploadDatabase(ctx context.Context, key string, body io.Reader, size int64) error {
+	resp, err := d.request(ctx, http.MethodPut, "/v1/backup/object", url.Values{"key": {key}}, body, size)
+	if err == nil {
+		resp.Body.Close()
 	}
-	return resp.Body, nil
+	return err
+}
+func (d *DataPlane) ListDatabases(ctx context.Context) ([]ObjectRef, error) {
+	var out []ObjectRef
+	err := d.jsonRequest(ctx, http.MethodGet, "/v1/backup/objects", nil, nil, &out)
+	return out, err
+}
+func (d *DataPlane) DeleteDatabases(ctx context.Context, keys []string) error {
+	return d.jsonRequest(ctx, http.MethodDelete, "/v1/backup/objects", nil, map[string]any{"keys": keys}, nil)
 }

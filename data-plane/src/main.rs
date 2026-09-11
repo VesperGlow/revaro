@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    env,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -23,22 +17,17 @@ use tower_http::trace::TraceLayer;
 const PROTOCOL_VERSION: u16 = 1;
 
 mod archive;
-mod audio_fifo;
-mod bt;
+mod backup;
 mod error;
+mod local;
 mod media;
-mod media_audio;
-mod s3;
 
 #[derive(Clone)]
 struct AppState {
     bearer: Arc<[u8]>,
-    s3: s3::S3State,
+    local: local::LocalState,
+    backup: Option<backup::BackupState>,
     media_light_slots: Arc<tokio::sync::Semaphore>,
-    media_stream_slots: Arc<tokio::sync::Semaphore>,
-    media_heavy_slots: Arc<tokio::sync::Semaphore>,
-    hls_jobs: Arc<Mutex<HashMap<String, Arc<media::HlsJob>>>>,
-    bt: bt::BtState,
     archive: archive::ArchiveState,
     archive_slots: Arc<tokio::sync::Semaphore>,
     shutdown: CancellationToken,
@@ -69,65 +58,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let shutdown = CancellationToken::new();
-    let s3 = s3::S3State::from_env().await?;
+    let local = local::LocalState::from_env()?;
+    let backup = backup::BackupState::from_env().await?;
     let state = AppState {
         bearer: Arc::from(format!("Bearer {token}").into_bytes()),
-        s3,
-        // Keep one CPU-heavy encoder on 2C/4G, while allowing probes and other
-        // short control-plane media work to remain responsive.
+        local,
+        backup,
         media_light_slots: Arc::new(tokio::sync::Semaphore::new(2)),
-        media_stream_slots: Arc::new(tokio::sync::Semaphore::new(2)),
-        media_heavy_slots: Arc::new(tokio::sync::Semaphore::new(1)),
-        hls_jobs: Arc::new(Mutex::new(HashMap::new())),
-        bt: bt::BtState::from_env().await?,
         archive: archive::ArchiveState::default(),
         archive_slots: Arc::new(tokio::sync::Semaphore::new(1)),
         shutdown: shutdown.clone(),
     };
     let app = Router::new()
         .route("/v1/health", get(health))
-        .route("/v1/s3/ping", get(s3::ping))
+        .route("/v1/backup/object", put(backup::upload))
         .route(
-            "/v1/s3/object",
-            get(s3::get_range)
-                .put(s3::put_stream)
-                .delete(s3::delete_one),
+            "/v1/backup/objects",
+            get(backup::list).delete(backup::delete),
         )
-        .route("/v1/s3/blob", put(s3::put_blob))
-        .route("/v1/s3/object/info", get(s3::head))
-        .route("/v1/s3/objects", get(s3::list).delete(s3::delete_many))
-        .route("/v1/s3/presign/put", post(s3::presign_put))
-        .route("/v1/s3/presign/get", post(s3::presign_get))
-        .route(
-            "/v1/s3/multipart",
-            post(s3::multipart_create)
-                .put(s3::multipart_complete)
-                .delete(s3::multipart_abort),
-        )
-        .route("/v1/s3/multipart/part", post(s3::multipart_part))
-        .route("/v1/s3/multipart/upload", put(s3::multipart_upload))
         .route("/v1/archive/extract", post(archive::extract))
         .route("/v1/archive/{job_id}/cancel", post(archive::cancel))
         .route("/v1/archive/{job_id}/progress", get(archive::progress))
         .route("/v1/media/probe", post(media::probe))
         .route("/v1/media/thumbnail", post(media::thumbnail))
-        .route("/v1/media/fmp4", post(media::fmp4))
-        .route("/v1/media/hls", post(media::hls))
-        .route(
-            "/v1/media/hls/{job_id}",
-            get(media::hls_status).delete(media::cancel_hls),
-        )
-        .route("/v1/media/audio/merge", post(media_audio::merge))
-        .route("/v1/media/audio/decorate", post(media_audio::decorate))
         .route("/v1/media/subtitle", post(media::subtitle))
-        .route("/v1/bt", post(bt::add))
-        .route("/v1/bt/{id}", get(bt::details).delete(bt::delete))
-        .route("/v1/bt/{id}/stats", get(bt::stats))
-        .route("/v1/bt/{id}/selection", put(bt::select))
-        .route("/v1/bt/{id}/start", post(bt::start))
-        .route("/v1/bt/{id}/pause", post(bt::pause))
-        .route("/v1/bt/{id}/import", post(bt::import))
-        .route("/v1/bt/{id}/stream/{file_id}", get(bt::stream))
         // Control messages are deliberately small. Streaming endpoints opt in
         // to their own byte limits and consume bodies incrementally.
         .layer(DefaultBodyLimit::max(1 << 20))
@@ -138,41 +92,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, protocol = PROTOCOL_VERSION, "data plane ready");
 
-    // Multipart cleanup can require many paginated S3 calls. It is
-    // housekeeping, not a readiness prerequisite, so run it after bind with
-    // both a deadline and shutdown cancellation.
-    let cleanup_s3 = state.s3.clone();
-    let cleanup_shutdown = shutdown.clone();
-    tokio::spawn(async move {
-        let stale_age = env::var("S3_MULTIPART_STALE_SECONDS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .map(Duration::from_secs)
-            .unwrap_or(Duration::from_secs(24 * 60 * 60));
-        let cleanup = tokio::time::timeout(
-            Duration::from_secs(120),
-            cleanup_s3.abort_stale_multipart_uploads(stale_age),
-        );
-        tokio::select! {
-            _ = cleanup_shutdown.cancelled() => {},
-            result = cleanup => match result {
-                Ok(Ok(count)) if count > 0 => tracing::warn!(count, "aborted stale multipart uploads"),
-                Ok(Ok(_)) => {},
-                Ok(Err(error)) => tracing::warn!(?error, "could not clean stale multipart uploads"),
-                Err(_) => tracing::warn!("stale multipart cleanup timed out"),
-            }
-        }
-    });
     let shutdown_for_signal = shutdown.clone();
-    let bt_for_signal = state.bt.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             shutdown_for_signal.cancel();
-            bt_for_signal.stop().await;
         })
         .await?;
-    state.bt.stop().await;
     Ok(())
 }
 

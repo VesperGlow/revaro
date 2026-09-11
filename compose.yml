@@ -2,51 +2,33 @@ services:
   revaro:
     image: "${REVARO_IMAGE:-ghcr.io/vesperglow/revaro:latest}"
     restart: unless-stopped
-    depends_on:
-      minio-init:
-        condition: service_completed_successfully
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:8080"
-      - "${BT_PORT:-51413}:51413/tcp"
-      - "${BT_PORT:-51413}:51413/udp"
     environment:
       APP_ADDR: ":8080"
       APP_DATA_DIR: /data
       APP_WORK_DIR: /data/work
       APP_BASE_URL: "${APP_BASE_URL:-http://localhost:8080}"
       COOKIE_SECURE: "${COOKIE_SECURE:-}"
-
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
-
-      S3_ENDPOINT: http://minio:9000
-      S3_PUBLIC_ENDPOINT: "${S3_PUBLIC_ENDPOINT:-http://localhost:9000}"
-      S3_REGION: "${S3_REGION:-us-east-1}"
-      S3_BUCKET: "${S3_BUCKET:-revaro}"
-      S3_ACCESS_KEY: "${S3_ACCESS_KEY:-minioadmin}"
-      S3_SECRET_KEY: "${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}"
-      S3_PATH_STYLE: "true"
-
-      PRESIGN_EXPIRES: "${PRESIGN_EXPIRES:-15m}"
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       MEDIA_CACHE_CAPACITY: "${MEDIA_CACHE_CAPACITY:-2147483648}"
       UPLOAD_EXPIRES: "${UPLOAD_EXPIRES:-24h}"
       TRASH_RETENTION: "${TRASH_RETENTION:-720h}"
       GC_INTERVAL: "${GC_INTERVAL:-1h}"
-
-      BT_ENABLED: "${BT_ENABLED:-true}"
-      BT_LISTEN_PORT: "51413"
-      BT_MAX_FILES: "${BT_MAX_FILES:-10000}"
-      BT_MAX_TOTAL_SIZE: "${BT_MAX_TOTAL_SIZE:-1099511627776}"
-      BT_METADATA_TIMEOUT: "${BT_METADATA_TIMEOUT:-30m}"
-      BT_STALE_AFTER: "${BT_STALE_AFTER:-48h}"
-
-      BACKUP_ENABLED: "${BACKUP_ENABLED:-true}"
-      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-24h}"
-      BACKUP_RETENTION: "${BACKUP_RETENTION:-14}"
-
       FLOW_CACHE_TTL: "${FLOW_CACHE_TTL:-720h}"
       FLOW_CACHE_CAPACITY: "${FLOW_CACHE_CAPACITY:-1073741824}"
-
+      # Optional: S3 is used exclusively for SQLite database snapshots.
+      BACKUP_ENABLED: "${BACKUP_ENABLED:-}"
+      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-24h}"
+      BACKUP_RETENTION: "${BACKUP_RETENTION:-14}"
+      S3_ENDPOINT: "${S3_ENDPOINT:-}"
+      S3_REGION: "${S3_REGION:-us-east-1}"
+      S3_BUCKET: "${S3_BUCKET:-}"
+      S3_ACCESS_KEY: "${S3_ACCESS_KEY:-}"
+      S3_SECRET_KEY: "${S3_SECRET_KEY:-}"
+      S3_PATH_STYLE: "${S3_PATH_STYLE:-false}"
     volumes:
       - revaro-data:/data
     read_only: true
@@ -57,46 +39,11 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]
       interval: 15s
       timeout: 3s
       retries: 5
       start_period: 30s
 
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    command: server /data --console-address :9001
-    restart: unless-stopped
-    environment:
-      MINIO_ROOT_USER: "${S3_ACCESS_KEY:-minioadmin}"
-      MINIO_ROOT_PASSWORD: "${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}"
-      MINIO_API_CORS_ALLOW_ORIGIN: "${APP_BASE_URL:-http://localhost:8080}"
-    volumes:
-      - minio-data:/data
-    ports:
-      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
-
-  minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
-    depends_on:
-      minio:
-        condition: service_started
-    environment:
-      S3_ACCESS_KEY: "${S3_ACCESS_KEY:-minioadmin}"
-      S3_SECRET_KEY: "${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}"
-      S3_BUCKET: "${S3_BUCKET:-revaro}"
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-          set -eu
-          until mc alias set local http://minio:9000 "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}"; do
-            sleep 1
-          done
-          mc mb --ignore-existing "local/$${S3_BUCKET}"
-          mc anonymous set none "local/$${S3_BUCKET}"
-
 volumes:
   revaro-data:
-  minio-data:

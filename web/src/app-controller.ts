@@ -13,7 +13,6 @@ import MoveCopyDialog from './components/MoveCopyDialog.vue'
 import SelectionToolbar from './components/SelectionToolbar.vue'
 import ShareDialog from './components/ShareDialog.vue'
 import { useAccountSettings } from './composables/useAccountSettings'
-import { useAudioMerge } from './composables/useAudioMerge'
 import { useBackgroundTasks } from './composables/useBackgroundTasks'
 import { useAuthSession } from './composables/useAuthSession'
 import { useUploads } from './composables/useUploads'
@@ -49,7 +48,7 @@ export default defineComponent({
     const selectedIds = ref<Set<string>>(new Set())
     const moveTargets = ref<DriveFile[]>([])
     const transferMode = ref<'move'|'copy'>('move')
-    type ModalName = 'rename'|'move'|'preview'|'share'|'account'|'editor'|'reader'|'audioMerge'
+    type ModalName = 'rename'|'move'|'preview'|'share'|'account'|'editor'|'reader'
     const modal = ref<ModalName|null>(null)
     const readerFile = ref<DriveFile|null>(null)
     const renameValue = ref('')
@@ -59,9 +58,7 @@ export default defineComponent({
     const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
     const fileInput = ref<HTMLInputElement|null>(null)
     const folderInput = ref<HTMLInputElement|null>(null)
-    const localMergeInput = ref<HTMLInputElement|null>(null)
     const avatarInput = ref<HTMLInputElement|null>(null)
-    const audioCoverInput = ref<HTMLInputElement|null>(null)
     let toastTimer = 0
     const editorDirty = computed(() => editor.content !== editor.original || editor.name !== editor.originalName)
     const editorBytes = computed(() => new Blob([editor.content]).size)
@@ -70,8 +67,6 @@ export default defineComponent({
     const selectedItems = computed(() => items.value.filter(item => selectedIds.value.has(item.id)))
     const selectedBytes = computed(() => selectedItems.value.reduce((total,item) => total+(item.kind==='file'?item.size:0),0))
     const selectedFiles = computed(() => selectedItems.value.filter(item => item.kind==='file'))
-    const selectedAudioFiles = computed(() => selectedItems.value.filter(isAudio))
-    const canMergeSelectedAudio = computed(() => selectedItems.value.length>=2&&selectedItems.value.length===selectedAudioFiles.value.length)
     const singleSelected = computed(() => selectedItems.value.length===1?selectedItems.value[0]:null)
     
     const {dialog,askDialog,confirmDialog,promptDialog,finishDialog}=useDialogs()
@@ -79,14 +74,11 @@ export default defineComponent({
     function notify(text:string, kind:'error'|'success'='error') { toast.text=text;toast.kind=kind;window.clearTimeout(toastTimer);toastTimer=window.setTimeout(()=>toast.text='',3600) }
     
     const {account,accountPanel,usernameEditing,usernameSaving,usernameError,usernameInput,avatar,twoFactor,avatarURL,showAccount,startUsernameEdit,cancelUsernameEdit,saveUsername,openAccountPanel,closeAccountPanel,chooseAvatar,uploadAvatar,removeAvatar,savePassword,beginTwoFactorSetup,cancelTwoFactorSetup,enableTwoFactor,regenerateRecoveryCodes,disableTwoFactor,copyRecoveryCodes,downloadRecoveryCodes}=useAccountSettings({user,hasAvatar,avatarVersion,login,items,tasks,modalBusy,avatarInput,notify,openModal,closeModal,confirmDialog})
-    const {audioMerge,localMerge,localUploads,audioCoverCandidates,audioMergeSubtitleCount,audioMergeExtension,audioSubtitleFor,showAudioMerge,chooseAudioCover,clearAudioCover,selectDirectoryCover,setAudioCover,setAudioMergeFormat,moveAudioMergeInput,startAudioMerge,showLocalAudioMerge,chooseLocalMergeDir,localSubtitleFor,onLocalMergeDir,selectLocalCoverFile,clearLocalCover,moveLocalMergeInput,setAudioMergeSource,startLocalMerge,cancelLocalMergeRemote,closeAudioMergeModal,localFileByName,localCoverCandidates}=useAudioMerge({rootId:ROOT,items,current,selectedAudioFiles,canMergeSelectedAudio,currentId,audioCoverInput,localMergeInput,openModal,closeModal,notify,clearSelection,refreshBackgroundTasks:()=>refreshBackgroundTasks()})
     const {chooseFiles,chooseFolder,acceptFiles,acceptFolder,onDrop,cancelUpload,retry,disposeUploads}=useUploads({tasks,currentId,dragActive,trashMode,fileInput,folderInput,notify,openFolder})
-    const {backgroundTasks,refreshJobsFromEvent,refreshBackgroundTasks,cancelBackgroundTask,retryBackgroundTask,jobEvents}=useBackgroundTasks({user,tasks,localUploads,currentId,notify,openFolder,cancelUpload,retryUpload:retry})
+    const {backgroundTasks,refreshJobsFromEvent,refreshBackgroundTasks,cancelBackgroundTask,retryBackgroundTask,jobEvents}=useBackgroundTasks({user,tasks,currentId,notify,openFolder,cancelUpload,retryUpload:retry})
     const {checkSession,submitLogin,logout}=useAuthSession({user,hasAvatar,checking,login,items,tasks,backgroundTasks,openRoute,openFolder,rootId:ROOT,jobEvents,refreshJobs:refreshJobsFromEvent})
     function filesChanged(event:Event){const el=event.target as HTMLInputElement;if(el.files)acceptFiles(el.files);el.value=''}
     function folderChanged(event:Event){const el=event.target as HTMLInputElement;if(el.files)acceptFolder(el.files);el.value=''}
-    function localMergeChanged(event:Event){const el=event.target as HTMLInputElement;if(el.files)onLocalMergeDir(el.files);el.value=''}
-    function audioCoverChanged(event:Event){const el=event.target as HTMLInputElement;if(el.files?.[0])void setAudioCover(el.files[0]);el.value=''}
     function avatarChanged(event:Event){const el=event.target as HTMLInputElement;if(el.files?.[0])void uploadAvatar(el.files[0]);el.value=''}
     function blurEventTarget(event:Event){(event.target as HTMLInputElement).blur()}
     
@@ -240,7 +232,7 @@ export default defineComponent({
       finally{editor.busy=false}
     }
     async function closeEditor(){if(editorDirty.value&&!await confirmDialog({title:'放弃未保存的修改？',message:'关闭后，本次修改将无法恢复。',confirmLabel:'放弃修改',tone:'danger'}))return;closeModal()}
-    function closeBackdrop(){if(modal.value==='editor')void closeEditor();else if(modal.value==='audioMerge')closeAudioMergeModal();else closeModal()}
+    function closeBackdrop(){if(modal.value==='editor')void closeEditor();else closeModal()}
     function toggleSelection(item:DriveFile){
       const next=new Set(selectedIds.value)
       if(next.has(item.id))next.delete(item.id);else next.add(item.id)
@@ -284,6 +276,6 @@ export default defineComponent({
     onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);disposeUploads()})
     
     
-    return {filesChanged,folderChanged,localMergeChanged,audioCoverChanged,avatarChanged,blurEventTarget,isAudio,isVideo,thumbSRC,formatSize,LoginPage,AppDialog,AppTopbar,DocumentEditor,FileBrowserHeader,FileGrid,MoveCopyDialog,SelectionToolbar,ShareDialog,askDialog,confirmDialog,promptDialog,finishDialog,notify,openReader,checkSession,openRoute,openDeepLink,submitLogin,logout,folderURL,openFolder,handlePopState,openModal,closeModal,goUp,openTrash,createFolder,removeSelected,restoreSelected,purgeSelected,emptyTrash,showRename,saveRename,showMove,showMoveSelected,showMoveTargets,showCopy,transferTo,showPreview,showShare,createShare,revokeShare,copyShare,openItem,newDocument,openEditor,saveDocument,closeEditor,closeBackdrop,toggleSelection,clearSelection,selectAll,clearSelectionFromBlank,download,downloadSelected,extractArchive,ROOT,user,hasAvatar,avatarVersion,checking,login,currentId,current,items,breadcrumbs,loading,dragActive,toast,tasks,trashMode,selected,selectedIds,moveTargets,transferMode,modal,readerFile,renameValue,modalBusy,share,editor,directoryStats,fileInput,folderInput,localMergeInput,avatarInput,audioCoverInput,dialog,MediaPreview,Reader,editorDirty,editorBytes,editorIsMarkdown,renderedMarkdown,selectedItems,selectedBytes,selectedFiles,selectedAudioFiles,canMergeSelectedAudio,singleSelected,navActions,account,accountPanel,usernameEditing,usernameSaving,usernameError,usernameInput,avatar,twoFactor,avatarURL,showAccount,startUsernameEdit,cancelUsernameEdit,saveUsername,openAccountPanel,closeAccountPanel,chooseAvatar,uploadAvatar,removeAvatar,savePassword,beginTwoFactorSetup,cancelTwoFactorSetup,enableTwoFactor,regenerateRecoveryCodes,disableTwoFactor,copyRecoveryCodes,downloadRecoveryCodes,audioMerge,localMerge,localUploads,audioCoverCandidates,audioMergeSubtitleCount,audioMergeExtension,audioSubtitleFor,showAudioMerge,chooseAudioCover,clearAudioCover,selectDirectoryCover,setAudioCover,setAudioMergeFormat,moveAudioMergeInput,startAudioMerge,showLocalAudioMerge,chooseLocalMergeDir,localSubtitleFor,onLocalMergeDir,selectLocalCoverFile,clearLocalCover,moveLocalMergeInput,setAudioMergeSource,startLocalMerge,cancelLocalMergeRemote,closeAudioMergeModal,localFileByName,localCoverCandidates,chooseFiles,chooseFolder,acceptFiles,acceptFolder,onDrop,cancelUpload,retry,disposeUploads,backgroundTasks,refreshJobsFromEvent,refreshBackgroundTasks,cancelBackgroundTask,retryBackgroundTask,jobEvents}
+    return {filesChanged,folderChanged,avatarChanged,blurEventTarget,isAudio,isVideo,thumbSRC,formatSize,LoginPage,AppDialog,AppTopbar,DocumentEditor,FileBrowserHeader,FileGrid,MoveCopyDialog,SelectionToolbar,ShareDialog,askDialog,confirmDialog,promptDialog,finishDialog,notify,openReader,checkSession,openRoute,openDeepLink,submitLogin,logout,folderURL,openFolder,handlePopState,openModal,closeModal,goUp,openTrash,createFolder,removeSelected,restoreSelected,purgeSelected,emptyTrash,showRename,saveRename,showMove,showMoveSelected,showMoveTargets,showCopy,transferTo,showPreview,showShare,createShare,revokeShare,copyShare,openItem,newDocument,openEditor,saveDocument,closeEditor,closeBackdrop,toggleSelection,clearSelection,selectAll,clearSelectionFromBlank,download,downloadSelected,extractArchive,ROOT,user,hasAvatar,avatarVersion,checking,login,currentId,current,items,breadcrumbs,loading,dragActive,toast,tasks,trashMode,selected,selectedIds,moveTargets,transferMode,modal,readerFile,renameValue,modalBusy,share,editor,directoryStats,fileInput,folderInput,avatarInput,dialog,MediaPreview,Reader,editorDirty,editorBytes,editorIsMarkdown,renderedMarkdown,selectedItems,selectedBytes,selectedFiles,singleSelected,navActions,account,accountPanel,usernameEditing,usernameSaving,usernameError,usernameInput,avatar,twoFactor,avatarURL,showAccount,startUsernameEdit,cancelUsernameEdit,saveUsername,openAccountPanel,closeAccountPanel,chooseAvatar,uploadAvatar,removeAvatar,savePassword,beginTwoFactorSetup,cancelTwoFactorSetup,enableTwoFactor,regenerateRecoveryCodes,disableTwoFactor,copyRecoveryCodes,downloadRecoveryCodes,chooseFiles,chooseFolder,acceptFiles,acceptFolder,onDrop,cancelUpload,retry,disposeUploads,backgroundTasks,refreshJobsFromEvent,refreshBackgroundTasks,cancelBackgroundTask,retryBackgroundTask,jobEvents}
   }
 })

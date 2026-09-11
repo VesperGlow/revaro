@@ -19,35 +19,28 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// serveFileContent redirects opaque blobs to S3 so Range, cancellation and
-// backpressure stay end-to-end.
+// serveFileContent serves local blobs with native HTTP Range support.
 func (s *Server) serveFileContent(w http.ResponseWriter, r *http.Request, f File, inline bool) {
 	mimeType := safeDeliveryMime(responseMime(f))
 	if mimeType == "application/octet-stream" {
 		inline = false
 	}
-	if s.cfg.ProxyTransfers {
-		rc, err := s.objects.OpenSeek(storage.WithDynamicReadAhead(r.Context()), f.objectKey)
-		if err != nil {
-			problem(w, http.StatusBadGateway, "object storage read failed")
-			return
-		}
-		defer rc.Close()
-		w.Header().Set("Content-Type", mimeType)
-		disposition := "attachment"
-		if inline {
-			disposition = "inline"
-		}
-		w.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+strings.ReplaceAll(url.PathEscape(f.Name), "+", "%20"))
-		http.ServeContent(w, r, f.Name, time.Time{}, rc)
-		return
-	}
-	u, err := s.objects.PresignGet(r.Context(), f.objectKey, f.Name, mimeType, inline, s.cfg.PresignExpires)
+	rc, err := s.objects.OpenSeek(r.Context(), f.objectKey)
 	if err != nil {
-		problem(w, http.StatusBadGateway, "could not create download URL")
+		problem(w, http.StatusNotFound, "file content unavailable")
 		return
 	}
-	http.Redirect(w, r, u, http.StatusFound)
+	defer rc.Close()
+	w.Header().Set("Content-Type", mimeType)
+	disposition := "attachment"
+	if inline {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+strings.ReplaceAll(url.PathEscape(f.Name), "+", "%20"))
+	if f.ETag != "" {
+		w.Header().Set("ETag", "\""+strings.ReplaceAll(f.ETag, "\"", "")+"\"")
+	}
+	http.ServeContent(w, r, f.Name, time.Time{}, rc)
 }
 func (s *Server) readContent(ctx context.Context, f File) ([]byte, error) {
 	return s.objects.Get(ctx, f.objectKey, maxDocumentBytes)
@@ -63,7 +56,7 @@ func (s *Server) storeBlob(ctx context.Context, body io.Reader, size int64, mime
 }
 
 // discardBlob promptly rolls back an object uploaded before its metadata
-// transaction failed. Periodic GC remains the fallback if S3 is unavailable.
+// transaction failed. Periodic GC remains the fallback if local storage is unavailable.
 func (s *Server) discardBlob(key string) {
 	s.discardBlobs([]string{key})
 }
@@ -79,7 +72,7 @@ func (s *Server) discardBlobs(keys []string) {
 		return
 	}
 	s.runBackground(func() {
-		parent := s.audioHLSCtx
+		parent := s.workCtx
 		if parent == nil {
 			parent = context.Background()
 		}

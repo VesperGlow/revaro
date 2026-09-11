@@ -54,9 +54,8 @@ func (s *Server) clearVideoSubtitleCache(fileID string) {
 }
 
 // cachedVideoSubtitle keeps conversion work independent from the lifetime of
-// the browser's <track> request. HLS media attachment can legitimately replace
-// the video element and cancel that request; the FFmpeg conversion should still
-// finish once and be reused when the selected track is attached again.
+// the browser's <track> request. Switching tracks may cancel that request;
+// subtitle extraction should still finish once and be reused on the next request.
 // 字幕转换是真正临时的产物：media/subtitle class 带 TTL，由统一缓存管理器
 // 提供内存 L1 + 磁盘 L2 + singleflight。
 func (s *Server) cachedVideoSubtitle(ctx context.Context, key string, convert func(context.Context) ([]byte, error)) ([]byte, error) {
@@ -75,46 +74,6 @@ func (s *Server) videoMediaInfo(w http.ResponseWriter, r *http.Request) {
 	video, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
 	if err != nil || video.Kind != "file" || video.Status != "ready" || !isVideoSource(video) {
 		problem(w, http.StatusNotFound, "ready video file not found")
-		return
-	}
-	var playbackKey, playbackETag string
-	var playbackSize int64
-	if s.db.QueryRowContext(r.Context(), `SELECT object_key,size,etag FROM web_media_playback WHERE file_id=?`, video.ID).Scan(&playbackKey, &playbackSize, &playbackETag) == nil {
-		playbackURL, err := s.objects.PresignGet(r.Context(), playbackKey, "playback.mp4", "video/mp4", true, 12*time.Hour)
-		if err != nil {
-			problem(w, http.StatusBadGateway, "could not sign optimized video")
-			return
-		}
-		tracks := []videoSubtitleResponse{}
-		rows, err := s.db.QueryContext(r.Context(), `SELECT track_index,object_key,language,title,is_default,is_forced FROM web_media_subtitles WHERE file_id=? ORDER BY track_index`, video.ID)
-		if err != nil {
-			problem(w, 500, "could not read optimized subtitles")
-			return
-		}
-		for rows.Next() {
-			var index int
-			var key, language, title string
-			var def, forced bool
-			if rows.Scan(&index, &key, &language, &title, &def, &forced) != nil {
-				continue
-			}
-			label := strings.TrimSpace(title)
-			if label == "" {
-				_, label = embeddedSubtitleLanguage(language)
-			}
-			if label == "" {
-				label = fmt.Sprintf("内嵌字幕 %d", index+1)
-			}
-			url, signErr := s.objects.PresignGet(r.Context(), key, fmt.Sprintf("subtitle-%d.vtt", index), "text/vtt; charset=utf-8", true, 12*time.Hour)
-			if signErr != nil {
-				rows.Close()
-				problem(w, 502, "could not sign optimized subtitles")
-				return
-			}
-			tracks = append(tracks, videoSubtitleResponse{ID: "optimized-" + strconv.Itoa(index), Name: label, Label: label, Language: language, URL: url, Default: def, Forced: forced})
-		}
-		rows.Close()
-		writeJSON(w, http.StatusOK, map[string]any{"optimized": true, "playback_url": playbackURL, "playback_size": playbackSize, "playback_etag": playbackETag, "subtitles": tracks})
 		return
 	}
 	s.scheduleMediaAnalysis(video)

@@ -49,9 +49,7 @@ body {
 .editor-title > div,
 .task-top > div,
 .folder-heading,
-.title-row,
-.merge-order-list article > div,
-.merge-cover-picker > div {
+.title-row{
   min-width: 0;
   max-width: 100%;
 }
@@ -59,8 +57,6 @@ body {
 .editor-title strong,
 .task-top strong,
 .folder-heading h1,
-.merge-order-list article strong,
-.merge-cover-picker b,
 .move-target {
   display: block;
   min-width: 0;
@@ -434,8 +430,7 @@ button:disabled {
   box-shadow: 0 0 0 1px var(--accent);
 }
 .card-select:hover,
-.card-select.active,
-.merge-format-options button > span {
+.card-select.active{
   color: var(--accent);
 }
 .create-menu-popover button:hover > span,
@@ -443,18 +438,6 @@ button:disabled {
 .folder-list button:hover {
   background: var(--accent-faint);
   color: var(--accent-hover);
-}
-.merge-format-options button:hover,
-.merge-cover-picker:hover {
-  border-color: var(--accent-border);
-  background: var(--accent-faint);
-  color: var(--accent);
-}
-.merge-format-options button.active,
-.merge-cover-candidates button.active {
-  border-color: var(--accent);
-  background: var(--accent-faint);
-  box-shadow: 0 0 0 2px #4f73961a;
 }
 .progress i,
 .upload-progress i {
@@ -492,17 +475,8 @@ button:disabled {
   background: #f2f6f9f1;
   color: var(--accent-hover);
 }
-.merge-order-actions button:hover:not(:disabled),
-.merge-source-tabs button.active {
-  border-color: var(--accent-border);
-  background: var(--accent-faint);
-  color: var(--accent);
-}
 .create-menu-popover button > span,
-.upload-menu-popover button > span,
-.merge-cover-picker > span,
-.merge-order-number,
-.local-merge-icon {
+.upload-menu-popover button > span{
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -514,11 +488,6 @@ button:disabled {
   background: var(--accent);
   color: #fff;
 }
-.local-merge-body > label input:focus {
-  border-color: var(--accent-border);
-  box-shadow: var(--focus-ring);
-}
-.storage-fill,
-.merge-progress > i {
+.storage-fill{
   background: var(--accent);
 }

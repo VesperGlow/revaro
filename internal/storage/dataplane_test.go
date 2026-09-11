@@ -4,17 +4,16 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os"
 	"testing"
 	"time"
 )
 
-func TestDataPlaneS3Lifecycle(t *testing.T) {
-	addr, token := os.Getenv("DATA_PLANE_TEST_ADDR"), os.Getenv("DATA_PLANE_TEST_TOKEN")
-	if addr == "" || token == "" {
-		t.Skip("Rust data-plane integration endpoint not configured")
+func TestLocalBlobLifecycle(t *testing.T) {
+	store, err := NewLocal(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	store := NewDataPlane(addr, token)
+	defer store.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := store.Ping(ctx); err != nil {
@@ -50,9 +49,7 @@ func TestDataPlaneS3Lifecycle(t *testing.T) {
 	if err != nil || len(refs) != 1 || refs[0].Key != key {
 		t.Fatalf("refs=%+v err=%v", refs, err)
 	}
-	if _, err := store.PresignGetObject(ctx, key, "测试.bin", "application/octet-stream", false, time.Minute); err != nil {
-		t.Fatal(err)
-	}
+
 	if err := store.DeleteObjects(ctx, []string{key}); err != nil {
 		t.Fatal(err)
 	}

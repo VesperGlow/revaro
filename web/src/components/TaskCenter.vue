@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Activity, ChevronDown, KeyRound, Pause, Play, Plus, RotateCcw, X as Square } from '@lucide/vue'
+import { Activity, ChevronDown, KeyRound, RotateCcw, X as Square } from '@lucide/vue'
 import { api } from '../api'
 import { formatSize } from '../format'
 import { isActiveTaskStatus } from '../taskStatus'
 import type { BackgroundTask } from '../types'
-import DownloadCreateDialog from './DownloadCreateDialog.vue'
 import StatusBadge from './StatusBadge.vue'
 
-const props=withDefaults(defineProps<{tasks:BackgroundTask[];parentId:string;hideTrigger?:boolean}>(),{hideTrigger:false})
+const props=withDefaults(defineProps<{tasks:BackgroundTask[];hideTrigger?:boolean}>(),{hideTrigger:false})
 const emit=defineEmits<{changed:[];cancel:[task:BackgroundTask];retry:[task:BackgroundTask]}>()
 const center=ref<HTMLDetailsElement|null>(null)
-const download=ref<InstanceType<typeof DownloadCreateDialog>|null>(null)
 const passwordTask=ref<BackgroundTask|null>(null)
 const password=ref('')
 const error=ref('')
@@ -21,15 +19,13 @@ const completed=computed(()=>props.tasks.filter(t=>['completed','cancelled'].inc
 const failed=computed(()=>props.tasks.filter(t=>t.status==='failed'))
 const visibleCompleted=computed(()=>showAllCompleted.value?completed.value:completed.value.slice(0,4))
 const progress=computed(()=>active.value.length?Math.round(active.value.reduce((n,t)=>n+t.progress,0)/active.value.length):0)
-const labels:Record<string,string>={upload:'上传',bt:'BT 下载',url_download:'直链下载',archive_extract:'解压',audio_merge:'音频合并',video_hls:'视频 HLS',audio_hls:'音频 HLS',video_fmp4:'视频转换',subtitle:'字幕处理'}
+const labels:Record<string,string>={upload:'上传',archive_extract:'解压',subtitle:'字幕处理'}
 const status=(task:BackgroundTask)=>task.status==='waiting_input'?(task.type==='archive_extract'?'等待输入密码':'等待输入'):task.status==='retrying'?'等待重试':task.status==='queued'?'排队中':task.status==='running'?task.phase:task.status==='completed'?'已完成':task.status==='cancelled'?'已取消':task.error||'失败'
 function closeCenter(){if(center.value)center.value.open=false}
 function openCenter(){if(center.value)center.value.open=true}
-function openDownload(){closeCenter();download.value?.openCreate()}
-function openTask(task:BackgroundTask){if(task.type==='bt'&&['metadata','waiting'].includes(task.phase)){closeCenter();download.value?.openById(task.source_id||task.id)}else if(task.status==='waiting_input'&&task.type==='archive_extract'){closeCenter();passwordTask.value=task;password.value='';error.value=''}}
+function openTask(task:BackgroundTask){if(task.status==='waiting_input'&&task.type==='archive_extract'){closeCenter();passwordTask.value=task;password.value='';error.value=''}}
 async function submitPassword(){if(!passwordTask.value||!password.value)return;try{await api(`/api/tasks/${passwordTask.value.id}/input`,{method:'POST',body:JSON.stringify({password:password.value})});passwordTask.value=null;password.value='';emit('changed')}catch(e){error.value=(e as Error).message}}
 async function clearFinished(){await Promise.all(completed.value.map(task=>api(`/api/tasks/${task.id}`,{method:'DELETE'}).catch(()=>undefined)));emit('changed')}
-async function downloadAction(task:BackgroundTask,action:'pause'|'resume'){try{await api(`/api/downloads/${task.source_id}/${action}`,{method:'POST'});emit('changed')}catch(e){error.value=(e as Error).message}}
 function closeFromOutside(event:PointerEvent){const target=event.target;if(center.value?.open&&target instanceof Node&&!center.value.contains(target))closeCenter()}
 function closeFromEscape(event:KeyboardEvent){if(event.key!=='Escape')return;if(passwordTask.value){passwordTask.value=null;return}if(center.value?.open){closeCenter();center.value.querySelector<HTMLElement>('summary')?.focus()}}
 onMounted(()=>{document.addEventListener('pointerdown',closeFromOutside);document.addEventListener('keydown',closeFromEscape)})
@@ -41,17 +37,16 @@ defineExpose({openCenter,closeCenter})
   <details ref="center" class="task-center">
     <summary v-show="!hideTrigger" title="任务中心"><Activity/><span v-if="active.length">{{ active.length }}</span></summary>
     <section class="task-panel">
-      <header><div><strong>任务中心</strong><small>{{ active.length?`${active.length} 项进行中 · ${progress}%`:'任务通知' }}</small></div><StatusBadge v-if="failed.length" tone="danger">{{ failed.length }} 项失败</StatusBadge><StatusBadge v-else-if="active.length" tone="info">{{ active.length }} 项活动</StatusBadge><button @click.prevent.stop="openDownload"><Plus/>新建下载</button></header>
+      <header><div><strong>任务中心</strong><small>{{ active.length?`${active.length} 项进行中 · ${progress}%`:'任务通知' }}</small></div><StatusBadge v-if="failed.length" tone="danger">{{ failed.length }} 项失败</StatusBadge><StatusBadge v-else-if="active.length" tone="info">{{ active.length }} 项活动</StatusBadge></header>
       <p v-if="!tasks.length" class="empty">还没有后台任务</p>
       <div v-else class="task-list">
-        <section v-if="active.length" class="task-group active-group"><h3>进行中 <span>{{ active.length }}</span></h3><article v-for="task in active" :key="task.id" @click="openTask(task)"><span class="kind">{{ labels[task.type]||task.type }}</span><div><strong :title="task.name">{{ task.name||labels[task.type]||task.id }}</strong><small>{{ status(task) }}<template v-if="task.speed"> · {{ formatSize(task.speed) }}/s</template></small><i><b :class="task.status" :style="{width:`${task.progress}%`}"></b></i></div><em>{{ Math.round(task.progress) }}%</em><span class="actions"><button v-if="['bt','url_download'].includes(task.type)&&['queued','downloading'].includes(task.phase)" title="暂停" @click.stop="downloadAction(task,'pause')"><Pause/></button><button v-else-if="['bt','url_download'].includes(task.type)&&task.phase==='paused'" title="继续" @click.stop="downloadAction(task,'resume')"><Play/></button><button title="取消" @click.stop="$emit('cancel',task)"><Square/></button><button v-if="task.status==='waiting_input'&&task.type==='archive_extract'" title="输入密码" @click.stop="openTask(task)"><KeyRound/></button></span></article></section>
+        <section v-if="active.length" class="task-group active-group"><h3>进行中 <span>{{ active.length }}</span></h3><article v-for="task in active" :key="task.id" @click="openTask(task)"><span class="kind">{{ labels[task.type]||task.type }}</span><div><strong :title="task.name">{{ task.name||labels[task.type]||task.id }}</strong><small>{{ status(task) }}<template v-if="task.speed"> · {{ formatSize(task.speed) }}/s</template></small><i><b :class="task.status" :style="{width:`${task.progress}%`}"></b></i></div><em>{{ Math.round(task.progress) }}%</em><span class="actions"><button title="取消" @click.stop="$emit('cancel',task)"><Square/></button><button v-if="task.status==='waiting_input'&&task.type==='archive_extract'" title="输入密码" @click.stop="openTask(task)"><KeyRound/></button></span></article></section>
         <section v-if="completed.length" class="task-group completed-group"><h3>最近完成 <span>{{ completed.length }}</span><button class="clear-completed" @click="clearFinished">清除完成</button></h3><article v-for="task in visibleCompleted" :key="task.id"><span class="kind">{{ labels[task.type]||task.type }}</span><div><strong :title="task.name">{{ task.name||labels[task.type]||task.id }}</strong><small>{{ status(task) }}</small><i><b class="completed" style="width:100%"></b></i></div><em>100%</em></article><button v-if="completed.length>4" class="expand" @click="showAllCompleted=!showAllCompleted"><span>{{ showAllCompleted?'收起':`展开其余 ${completed.length-4} 项` }}</span><ChevronDown :class="{up:showAllCompleted}" aria-hidden="true" /></button></section>
         <section v-if="failed.length" class="task-group failed-group"><h3>失败 <span>{{ failed.length }}</span></h3><article v-for="task in failed" :key="task.id"><span class="kind">{{ labels[task.type]||task.type }}</span><div><strong :title="task.name">{{ task.name||labels[task.type]||task.id }}</strong><small>{{ status(task) }}</small><i><b class="failed" style="width:100%"></b></i></div><em>失败</em><span class="actions"><button v-if="task.retry_count<task.max_retries" title="重试" @click.stop="$emit('retry',task)"><RotateCcw/></button></span></article></section>
       </div>
       <p v-if="error" class="error">{{ error }}</p>
     </section>
   </details>
-  <DownloadCreateDialog ref="download" :parent-id="parentId" @changed="$emit('changed')" />
   <Teleport to="body"><div v-if="passwordTask" class="input-backdrop" @pointerdown.self="passwordTask=null"><form class="input-dialog" @pointerdown.stop @submit.prevent="submitPassword"><strong>输入压缩包密码</strong><small>{{ passwordTask.name }}</small><input v-model="password" type="password" maxlength="1024" autofocus><p v-if="error">{{ error }}</p><footer><button type="button" @click="passwordTask=null">取消</button><button :disabled="!password">继续任务</button></footer></form></div></Teleport>
 </template>
 

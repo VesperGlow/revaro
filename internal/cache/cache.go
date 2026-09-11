@@ -9,10 +9,8 @@
 //
 //	reader/flow-manifest  flow manifest（内存工作缓存，内容寻址 immutable）
 //	reader/flow-chunk     flow chunk（内存 byte-LRU，内容寻址 immutable）
-//	reader/source   书源 blob（内容寻址 immutable，避免冷启动回源 S3）
+//	reader/source   书源 blob（内容寻址 immutable，避免冷启动回源 local storage）
 //	media/subtitle  字幕转换产物（真正临时，带 TTL）
-//	media/hls       音视频 HLS 会话工作区（external：目录由会话自己管理，
-//	                通过 RegisterExternal 纳入全局统计与容量回收）
 //
 // 容量策略：managed cache 的 memory/disk byte-LRU 与 external workspace
 // 共享全局预算；class 可声明 priority（大者更晚被淘汰）与 soft quota

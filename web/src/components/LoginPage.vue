@@ -5,7 +5,7 @@ defineEmits<{submit:[];username:[value:string];password:[value:string];secondFac
 
 <template>
   <main class="login-page">
-    <section class="login-visual"><div class="glow glow-a"></div><div class="glow glow-b"></div><div class="visual-copy"><span class="eyebrow">PRIVATE · DIRECT · YOURS</span><h1>你的文件，<br>安静地待在云上。</h1><p>轻量、自托管，浏览器直连你的 S3。</p></div><div class="revaro-card"><span>☁</span><div><strong>不透明对象存储</strong><small>SQLite 元数据 · 原生 Range</small></div></div></section>
+    <section class="login-visual"><div class="glow glow-a"></div><div class="glow glow-b"></div><div class="visual-copy"><span class="eyebrow">PRIVATE · DIRECT · YOURS</span><h1>你的文件，<br>安心地留在硬盘上。</h1><p>轻量、自托管，文件存储在你的本地磁盘。</p></div><div class="revaro-card"><span>☁</span><div><strong>本地文件存储</strong><small>SQLite 元数据 · 原生 Range</small></div></div></section>
     <section class="login-panel">
       <form class="login-form" @submit.prevent="$emit('submit')">
         <div class="logo"><span class="brand-mark small"><img class="ui-image" src="/logo.png" alt="" draggable="false"></span><span>revaro</span></div>

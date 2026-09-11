@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/VesperGlow/revaro/internal/storage"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -14,6 +16,7 @@ import (
 )
 
 func (a *testApp) enableBackups(interval time.Duration, retention int) {
+	a.srv.backup = a.store
 	a.srv.cfg.BackupEnabled = true
 	a.srv.cfg.BackupInterval = interval
 	a.srv.cfg.BackupRetention = retention
@@ -250,6 +253,7 @@ func TestDatabaseBackupSkipsFreshSnapshot(t *testing.T) {
 
 func TestDatabaseBackupDisabledIsNoOp(t *testing.T) {
 	app := newTestApp(t)
+	app.srv.backup = app.store
 	app.srv.cfg.BackupInterval = 24 * time.Hour
 	app.srv.cfg.BackupRetention = 3
 	stale := time.Now().UTC().Add(-72 * time.Hour)
@@ -286,4 +290,15 @@ func TestSystemStatusReportsBackupComponent(t *testing.T) {
 	if out.Backup.Status != "ok" || out.Backup.Enabled {
 		t.Fatalf("disabled backup status = %+v", out.Backup)
 	}
+}
+
+func (m *mockStorage) UploadDatabase(ctx context.Context, key string, body io.Reader, size int64) error {
+	_, err := m.StoreBlob(ctx, key, backupSnapshotMIME, body, size)
+	return err
+}
+func (m *mockStorage) ListDatabases(ctx context.Context) ([]storage.ObjectRef, error) {
+	return m.ListPrefix(ctx, backupObjectPrefix+"/")
+}
+func (m *mockStorage) DeleteDatabases(ctx context.Context, keys []string) error {
+	return m.DeleteObjects(ctx, keys)
 }

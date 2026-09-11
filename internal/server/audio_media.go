@@ -127,12 +127,7 @@ func (s *Server) audioMediaStream(w http.ResponseWriter, r *http.Request) {
 	stream.ETag = etag
 	stream.objectKey = key
 	w.Header().Set("Cache-Control", "private, max-age=3600")
-	u, signErr := s.objects.PresignGet(r.Context(), stream.objectKey, stream.Name, stream.MimeType, true, s.cfg.PresignExpires)
-	if signErr != nil {
-		problem(w, http.StatusBadGateway, "audio stream URL could not be created")
-		return
-	}
-	http.Redirect(w, r, u, http.StatusFound)
+	s.serveFileContent(w, r, stream, true)
 }
 
 func durationMilliseconds(durations []time.Duration) int64 {

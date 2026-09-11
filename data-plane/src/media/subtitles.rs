@@ -1,5 +1,5 @@
 fn subtitle_blocking(
-    reader: crate::s3::S3RangeReader,
+    reader: std::fs::File,
     format: Option<&str>,
     stream_index: Option<usize>,
     cancel: CancellationToken,
@@ -39,7 +39,7 @@ fn subtitle_blocking(
 }
 
 fn embedded_subtitle(
-    reader: crate::s3::S3RangeReader,
+    reader: std::fs::File,
     index: usize,
     cancel: CancellationToken,
 ) -> Result<Vec<u8>, String> {
@@ -312,5 +312,4 @@ fn vtt_time(value: f64) -> String {
         milliseconds % 1000
     )
 }
-
 

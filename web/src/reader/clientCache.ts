@@ -11,7 +11,7 @@
 //
 // 容量与淘汰：全局字节预算内按 LRU 淘汰；统计 hits/misses/evictions/puts
 // 供调试与测试断言。媒体 range / 缩略图 / 资产图片由 HTTP immutable 缓存
-// 头与 S3 直链承担，不复制进 IndexedDB。
+// 头与本地文件接口承担，不复制进 IndexedDB。
 
 import type { FlowManifest } from './types'
 

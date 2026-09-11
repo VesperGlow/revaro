@@ -48,7 +48,7 @@ func (s *Server) readerFile(w http.ResponseWriter, r *http.Request) (File, bool)
 }
 
 // loadBook 返回解析后的 Book：内存 LRU（reader/books class）命中直接
-// 返回；否则经 L2 缓存的书源 blob 解析（冷启动免回源 S3 下载）。
+// 返回；否则经 L2 缓存的书源 blob 解析（冷启动免回源 local storage 下载）。
 func (s *Server) loadBook(ctx context.Context, f File) (*reader.Book, error) {
 	if b := s.books.Get(f.objectKey); b != nil {
 		return b, nil
@@ -196,7 +196,7 @@ func (s *Server) saveBookProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 // openBookSource 打开书源 blob。小体积书源走 reader/source L2（内容寻址
-// immutable）：重复打开与重启后不再回源 S3；大体积直连对象存储流式读取。
+// immutable）：重复打开与重启后不再回源 local storage；大体积直连对象存储流式读取。
 func (s *Server) openBookSource(ctx context.Context, f File) (io.ReadSeekCloser, error) {
 	if f.Size <= maxCachedBookSource {
 		if data, err := s.cache.Load(ctx, cacheClassReaderSource, f.objectKey, 0, func(ctx context.Context) ([]byte, error) {

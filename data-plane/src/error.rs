@@ -28,14 +28,6 @@ impl ApiError {
         }
     }
 
-    pub fn payload_too_large(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::PAYLOAD_TOO_LARGE,
-            message: message.into(),
-            code: None,
-        }
-    }
-
     pub fn upstream(error: impl std::fmt::Display) -> Self {
         Self::upstream_domain("s3", error)
     }
@@ -61,14 +53,6 @@ impl ApiError {
             status: StatusCode::REQUEST_TIMEOUT,
             message: message.into(),
             code: Some("cancelled".into()),
-        }
-    }
-
-    pub fn range_not_satisfiable(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::RANGE_NOT_SATISFIABLE,
-            message: message.into(),
-            code: Some("range".into()),
         }
     }
 

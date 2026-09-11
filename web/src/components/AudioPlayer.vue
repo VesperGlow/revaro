@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type HlsInstance from 'hls.js/light'
 import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL } from '../fileTypes'
 import { formatMediaTime as formatTime } from '../format'
-import type { AudioChapter, AudioHLSResponse, AudioMediaResponse, AudioSubtitle } from '../types'
+import type { AudioChapter, AudioMediaResponse, AudioSubtitle } from '../types'
 import FullBleedProgress from './FullBleedProgress.vue'
 import PreviewMenu from './PreviewMenu.vue'
-import { Music2, Play, Pause, RotateCcw, RotateCw, List, Captions, Volume2, VolumeX, X, SkipBack, SkipForward, Info } from '@lucide/vue'
+import { Music2, Play, Pause, RotateCcw, RotateCw, List, Captions, Volume2, VolumeX, X, SkipBack, SkipForward } from '@lucide/vue'
 
 const props=defineProps<{item:DriveFile}>()
 const audio=ref<HTMLAudioElement|null>(null)
@@ -26,9 +25,6 @@ const nativeDuration=ref(0)
 const buffered=ref(0)
 const rate=ref(1)
 const error=ref('')
-const compatibilityMode=ref(false)
-const compatibilityStarting=ref(false)
-const hlsOffset=ref(0)
 const seekPreview=ref<number|null>(null)
 const seekHover=ref({visible:false,time:0,percent:0})
 const savedVolume=Number(localStorage.getItem('revaro-audio-volume')??0.85)
@@ -39,11 +35,6 @@ let remoteSaveTimer=0
 let restoredPosition=false
 let progressLoaded=false
 let serverPosition=0
-let autoplayRequested=true
-let hls:HlsInstance|null=null
-let hlsSessionId=''
-let hlsGeneration=0
-let progressPromise:Promise<void>|null=null
 
 // Keep the initial source stable so chapter metadata arriving later does not
 // reload media that already started from the user's file click.
@@ -78,7 +69,7 @@ async function loadProgress(){
   progressLoaded=true;restorePosition()
 }
 function restorePosition(){
-  if(!progressLoaded||restoredPosition||compatibilityMode.value||!audio.value||!duration.value)return
+  if(!progressLoaded||restoredPosition||!audio.value||!duration.value)return
   restoredPosition=true;const saved=savedPosition();if(saved>0&&saved<duration.value-5)seek(saved)
 }
 function persistProgress(remote=false){
@@ -118,21 +109,13 @@ function revealSubtitle(){
   void nextTick().then(()=>subtitleList.value?.querySelector<HTMLElement>(`[data-subtitle-index="${subtitleFocusIndex.value}"]`)?.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'}))
 }
 async function togglePlayback(){
-  if(!audio.value||compatibilityStarting.value)return
-  if(audio.value.paused){autoplayRequested=true;try{await audio.value.play()}catch{if(!compatibilityStarting.value)error.value='浏览器无法开始播放，请重试'}}else{autoplayRequested=false;audio.value.pause()}
+  if(!audio.value)return
+  if(audio.value.paused){try{await audio.value.play()}catch{error.value='浏览器无法开始播放，请重试'}}else{audio.value.pause()}
 }
 function seek(time:number,play=false){
   if(!audio.value||!Number.isFinite(time))return
   const target=Math.max(0,Math.min(time,duration.value||time))
-  if(compatibilityMode.value){
-    const local=target-hlsOffset.value
-    const seekable=audio.value.seekable
-    const seekableEnd=seekable.length?seekable.end(seekable.length-1):0
-    if(local<0||local>seekableEnd+0.25){void startCompatibilityStream(target,play||playing.value);return}
-    audio.value.currentTime=local;currentTime.value=target
-  }else{
-    audio.value.currentTime=target;currentTime.value=audio.value.currentTime
-  }
+  audio.value.currentTime=target;currentTime.value=audio.value.currentTime
   if(play)void audio.value.play().catch(()=>{})
 }
 function previewSeek(event:Event){seekPreview.value=Number((event.target as HTMLInputElement).value)}
@@ -156,26 +139,23 @@ function nextChapter(){
 function updateBuffer(){
   const el=audio.value
   if(!el||!duration.value||!el.buffered.length){buffered.value=0;return}
-  const end=(compatibilityMode.value?hlsOffset.value:0)+el.buffered.end(el.buffered.length-1)
+  const end=el.buffered.end(el.buffered.length-1)
   buffered.value=Math.min(100,end/duration.value*100)
 }
 function onLoadedMetadata(){
   const el=audio.value
   if(!el)return
   nativeDuration.value=Number.isFinite(el.duration)?el.duration:0;loading.value=false;waiting.value=false;updateBuffer()
-  if(compatibilityMode.value){currentTime.value=hlsOffset.value+el.currentTime;return}
   restorePosition()
 }
 function onTimeUpdate(){
   if(!audio.value)return
-  currentTime.value=(compatibilityMode.value?hlsOffset.value:0)+audio.value.currentTime;updateBuffer()
+  currentTime.value=audio.value.currentTime;updateBuffer()
   window.clearTimeout(saveTimer);saveTimer=window.setTimeout(()=>persistProgress(false),500)
   if(!remoteSaveTimer)remoteSaveTimer=window.setTimeout(()=>{remoteSaveTimer=0;persistProgress(true)},5000)
 }
 function onPause(){playing.value=false;window.clearTimeout(remoteSaveTimer);remoteSaveTimer=0;persistProgress(true)}
-function onEnded(){
-  if(compatibilityMode.value&&currentTime.value<duration.value-1)void startCompatibilityStream(currentTime.value+.05,true)
-}
+function onEnded(){onPause()}
 function setRate(event:Event){rate.value=Number((event.target as HTMLSelectElement).value);if(audio.value)audio.value.playbackRate=rate.value}
 function applyVolume(){if(audio.value){audio.value.volume=volume.value;audio.value.muted=muted.value}}
 function setVolume(event:Event){
@@ -184,91 +164,22 @@ function setVolume(event:Event){
   localStorage.setItem('revaro-audio-volume',String(volume.value));localStorage.setItem('revaro-audio-muted',String(muted.value));applyVolume()
 }
 function toggleMute(){muted.value=!muted.value;localStorage.setItem('revaro-audio-muted',String(muted.value));applyVolume()}
-async function removeHLSSession(id:string){
-  if(!id)return
-  try{await api(`/api/audio/hls/${id}`,{method:'DELETE'})}catch{/* 闲置清理仍会兜底 */}
-}
-function resetLocalHLS(){
-  hls?.destroy();hls=null
-  if(audio.value){audio.value.pause();audio.value.removeAttribute('src');audio.value.load()}
-}
-async function startCompatibilityStream(start:number,autoplay=false){
-  const generation=++hlsGeneration
-  const previousSession=hlsSessionId
-  hlsSessionId=''
-  compatibilityStarting.value=true
-  resetLocalHLS()
-  compatibilityMode.value=false
-  loading.value=true
-  waiting.value=true
-  error.value=''
-  await removeHLSSession(previousSession)
-  try{
-    const response=await api<AudioHLSResponse>(`/api/files/${props.item.id}/audio/hls`,{method:'POST',body:JSON.stringify({start})})
-    if(generation!==hlsGeneration){void removeHLSSession(response.session_id);return}
-    const el=audio.value
-    if(!el)throw new Error('播放器已经关闭')
-    hlsSessionId=response.session_id
-    hlsOffset.value=response.start
-    currentTime.value=response.start
-    compatibilityMode.value=true
-    await nextTick()
-    const {default:Hls}=await import('hls.js/light')
-    if(Hls.isSupported()){
-      const player=new Hls({enableWorker:true,lowLatencyMode:false})
-      hls=player
-      player.on(Hls.Events.MEDIA_ATTACHED,()=>player.loadSource(response.playlist_url))
-      player.on(Hls.Events.MANIFEST_PARSED,()=>{
-        compatibilityStarting.value=false;loading.value=false;waiting.value=false
-        el.playbackRate=rate.value;applyVolume()
-        if(autoplay)void el.play().catch(()=>{})
-      })
-      player.on(Hls.Events.ERROR,(_event,data)=>{
-        if(!data.fatal)return
-        compatibilityStarting.value=false;loading.value=false;waiting.value=false
-        error.value='暂时无法播放，请重新打开试试'
-      })
-      player.attachMedia(el)
-    }else if(el.canPlayType('application/vnd.apple.mpegurl')){
-      el.src=response.playlist_url;el.load();applyVolume()
-      compatibilityStarting.value=false
-      if(autoplay)void el.play().catch(()=>{})
-    }else{
-      throw new Error('当前浏览器不支持 HLS 播放')
-    }
-  }catch(caught){
-    if(generation!==hlsGeneration)return
-    const failedSession=hlsSessionId;hlsSessionId=''
-    hls?.destroy();hls=null
-    if(failedSession)void removeHLSSession(failedSession)
-    compatibilityMode.value=false
-    compatibilityStarting.value=false;loading.value=false;waiting.value=false
-    error.value=caught instanceof Error?caught.message:'兼容流启动失败'
-  }
-}
-async function onAudioError(){
-  if(compatibilityMode.value||compatibilityStarting.value)return
-  if(progressPromise)await progressPromise
-  const saved=savedPosition()
-  const start=currentTime.value>0?currentTime.value:(saved>0&&(!duration.value||saved<duration.value-5)?saved:0)
-  void startCompatibilityStream(start,autoplayRequested||playing.value)
-}
+function onAudioError(){loading.value=false;waiting.value=false;error.value='浏览器无法播放此原始格式，请下载后使用本地播放器打开'}
 
 onMounted(()=>{
   playerEl.value?.focus({preventScroll:true})
   // Run play immediately after mounting, while mobile browsers still treat it
   // as part of the click that opened the audio preview.
-  progressPromise=loadProgress()
+  void loadProgress()
   applyVolume();audio.value?.load();void audio.value?.play().catch(()=>{})
   void api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`).then(value=>{media.value=value;restorePosition();if(value.subtitles.length&&matchMedia('(min-width: 761px)').matches)openPanel('subtitles',false)}).catch(()=>{/* 普通音频继续走原始 Range 预览 */})
 })
 watch(currentChapterIndex,revealCurrentChapter)
 watch(subtitleFocusIndex,revealSubtitle)
 onBeforeUnmount(()=>{
-  window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);persistProgress(false);hlsGeneration++
+  window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);persistProgress(false)
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
-  const session=hlsSessionId;hlsSessionId='';resetLocalHLS()
-  if(session)void fetch(`/api/audio/hls/${session}`,{method:'DELETE',credentials:'same-origin',keepalive:true})
+  audio.value?.pause();audio.value?.removeAttribute('src');audio.value?.load()
 })
 </script>
 
@@ -281,7 +192,7 @@ onBeforeUnmount(()=>{
           <Music2 v-else aria-hidden="true" />
         </div>
         <div class="audio-chapter-current">
-          <span>{{ compatibilityStarting ? '正在准备播放…' : playing ? '正在播放' : '暂停中' }}</span>
+          <span>{{ playing ? '正在播放' : '暂停中' }}</span>
           <p v-if="chapters.length>1" class="audio-book-title">{{ item.name.replace(/\.[^.]+$/,'') }}</p>
           <h1>{{ currentChapter?.title || item.name.replace(/\.[^.]+$/,'') }}</h1>
           <small v-if="chapters.length>1">第 {{ currentChapterIndex+1 }} / {{ chapters.length }} 章</small>
@@ -297,8 +208,8 @@ onBeforeUnmount(()=>{
         <div class="audio-time"><span>{{ formatTime(displayedTime) }}</span><span>{{ formatTime(duration) }}</span></div>
         <div class="audio-controls">
           <button aria-label="后退15秒" title="后退 15 秒" :disabled="!duration" @click="seek(currentTime-15)"><RotateCcw aria-hidden="true" /><small>15</small></button>
-          <button class="audio-play" :disabled="loading||compatibilityStarting" :aria-label="playing?'暂停':'播放'" @click="togglePlayback">
-            <span v-if="loading||waiting||compatibilityStarting" class="audio-control-spinner"></span><Pause v-else-if="playing" aria-hidden="true" /><Play v-else aria-hidden="true" />
+          <button class="audio-play" :disabled="loading" :aria-label="playing?'暂停':'播放'" @click="togglePlayback">
+            <span v-if="loading||waiting" class="audio-control-spinner"></span><Pause v-else-if="playing" aria-hidden="true" /><Play v-else aria-hidden="true" />
           </button>
           <button aria-label="前进30秒" title="前进 30 秒" :disabled="!duration" @click="seek(currentTime+30)"><RotateCw aria-hidden="true" /><small>30</small></button>
         </div>
@@ -310,10 +221,9 @@ onBeforeUnmount(()=>{
             <template #trigger><VolumeX v-if="muted||volume===0" aria-hidden="true" /><Volume2 v-else aria-hidden="true" /></template>
             <div class="audio-volume"><button :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><VolumeX v-if="muted" aria-hidden="true" /><Volume2 v-else aria-hidden="true" /></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><output>{{ muted?0:Math.round(volume*100) }}%</output></div>
           </PreviewMenu>
-          <PreviewMenu v-if="compatibilityMode" label="播放详情"><template #trigger><Info aria-hidden="true" /></template><p class="media-detail">兼容播放 · HLS</p></PreviewMenu>
         </div>
         <p v-if="error" class="audio-player-error" role="alert">{{ error }}</p>
-        <audio ref="audio" :src="compatibilityMode?undefined:source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @ended="onEnded" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
+        <audio ref="audio" :src="source" autoplay playsinline preload="metadata" @loadedmetadata="onLoadedMetadata" @timeupdate="onTimeUpdate" @progress="updateBuffer" @play="playing=true" @pause="onPause" @ended="onEnded" @waiting="waiting=true" @canplay="waiting=false" @error="onAudioError"></audio>
       </section>
     </main>
     <button v-if="panelOpen" class="audio-panel-scrim" aria-label="收起面板" @click="closePanel"></button>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Cloud, Database, DatabaseBackup, HardDrive, ListTodo, Magnet, Radio, Trash2 } from '@lucide/vue'
+import { Cloud, Database, DatabaseBackup, HardDrive, ListTodo, Trash2 } from '@lucide/vue'
 import { formatSize } from '../format'
 import type { SystemStatus } from '../types'
 import ServiceCard from './ServiceCard.vue'
@@ -52,12 +52,10 @@ defineExpose({openPanel,closePanel})
       <p v-else-if="!status" class="status-empty">正在获取状态…</p>
       <div v-else class="status-grid">
         <ServiceCard title="数据库" :detail="`数据占用 ${formatSize(status.database.bytes)}`" :badge="stateLabel(status.database.status)" :tone="tone(status.database.status)"><template #icon><Database /></template></ServiceCard>
-        <ServiceCard title="S3 / 数据平面" detail="对象存储连接状态" :badge="status.storage.status==='ok'?'可用':'异常'" :tone="tone(status.storage.status)"><template #icon><Cloud /></template></ServiceCard>
+        <ServiceCard title="本地磁盘" detail="本地文件存储状态" :badge="status.storage.status==='ok'?'可用':'异常'" :tone="tone(status.storage.status)"><template #icon><Cloud /></template></ServiceCard>
         <ServiceCard title="服务端缓存" :detail="`内存 ${formatSize(status.cache.memory_bytes)} · 磁盘 ${formatSize(status.cache.disk_bytes)} · ${cacheHitLabel(status)}`" :badge="stateLabel(status.cache.status)" :tone="tone(status.cache.status)"><template #icon><HardDrive /></template></ServiceCard>
         <ServiceCard title="任务" :detail="`排队 ${status.tasks.queued} · 等待 ${status.tasks.waiting} · 失败 ${status.tasks.failed}`" :badge="`${status.tasks.running} 运行中`" :tone="tone(status.tasks.status)"><template #icon><ListTodo /></template></ServiceCard>
         <ServiceCard title="清理队列" :detail="`${status.object_cleanup.pending} 个对象待清理`" :badge="stateLabel(status.object_cleanup.status)" :tone="tone(status.object_cleanup.status)"><template #icon><Trash2 /></template></ServiceCard>
-        <ServiceCard title="媒体会话" :detail="`音频 HLS ${status.media_sessions.audio_hls} · 视频 HLS ${status.media_sessions.video_hls} · fMP4 ${status.media_sessions.fmp4}`" :badge="stateLabel(status.media_sessions.status)" :tone="tone(status.media_sessions.status)"><template #icon><Radio /></template></ServiceCard>
-        <ServiceCard title="BT" :detail="status.bt.enabled?'下载服务已启用':'下载服务未启用'" :badge="status.bt.enabled?(status.bt.available?'可用':'不可用'):'未启用'" :tone="status.bt.enabled?tone(status.bt.status):'neutral'"><template #icon><Magnet /></template></ServiceCard>
         <ServiceCard title="备份" :detail="status.backup.enabled?'自动备份已启用':'自动备份未启用'" :badge="status.backup.enabled?(status.backup.status==='ok'?'可用':'异常'):'未启用'" :tone="status.backup.enabled?tone(status.backup.status):'neutral'"><template #icon><DatabaseBackup /></template></ServiceCard>
       </div>
     </section>

@@ -24,7 +24,7 @@ import (
 // flows/{bookObjectKey}/f{version}/，作为内容级缓存（幂等：manifest 命中
 // 不重建；缺失才单飞构建 + 幂等覆盖；manifest 最后原子提交）。读取路径经
 // 统一缓存管理器的 reader/flow-manifest 与 reader/flow-chunk memory-only
-// 工作缓存，再回源 S3（内容寻址 immutable，无 TTL）；GC 按孤儿/容量回收，
+// 工作缓存，再回源 local storage（内容寻址 immutable，无 TTL）；GC 按孤儿/容量回收，
 // 删除书后产物随 GC 清理。
 
 const maxFlowObject = 8 << 20
@@ -95,15 +95,15 @@ func (s *Server) storeFlow(ctx context.Context, f File) error {
 	return nil
 }
 
-// flowManifestData 读取 manifest 内容：memory 命中免回源 S3，miss 后直接
-// 读取已持久化的 S3 flow 对象。
+// flowManifestData 读取 manifest 内容：memory 命中免回源 local storage，miss 后直接
+// 读取已持久化的 local storage flow 对象。
 func (s *Server) flowManifestData(ctx context.Context, f File) ([]byte, error) {
 	return s.cache.Load(ctx, cacheClassReaderFlowManifest, flowCacheKey(f.objectKey), 0, func(ctx context.Context) ([]byte, error) {
 		return s.objects.Get(ctx, flow.ManifestObjectKey(f.objectKey), maxFlowObject)
 	})
 }
 
-// flowChunkData 读取一个 chunk：memory → S3。manifest 存在但 chunk 对象
+// flowChunkData 读取一个 chunk：memory → local storage。manifest 存在但 chunk 对象
 // 缺失时，强制重建一次再读（自愈）。
 func (s *Server) flowChunkData(ctx context.Context, f File, index int) ([]byte, error) {
 	load := func(ctx context.Context) ([]byte, error) {

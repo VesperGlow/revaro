@@ -171,16 +171,7 @@ pub async fn extract(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .phase = "downloading".to_string();
-        let object = state
-            .s3
-            .client
-            .get_object()
-            .bucket(&state.s3.bucket)
-            .key(&q.key)
-            .send()
-            .await
-            .map_err(ApiError::upstream)?;
-        let mut reader = object.body.into_async_read();
+        let mut reader = tokio::fs::File::from_std(state.local.open(&q.key)?);
         let partial = root.join("source.partial");
         let mut file = tokio::fs::File::create(&partial)
             .await

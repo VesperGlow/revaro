@@ -83,17 +83,8 @@ func (m *ObjectManager) CompleteMultipart(ctx context.Context, key, uploadID str
 	return storage.ObjectInfo{}, appError("multipart_commit_failed", "分片上传提交失败，请重试", err, true)
 }
 func (m *ObjectManager) Ping(ctx context.Context) error { return m.store.Ping(ctx) }
-func (m *ObjectManager) PresignGet(ctx context.Context, key, name, mime string, inline bool, ttl time.Duration) (string, error) {
-	return m.store.PresignGetObject(ctx, key, name, mime, inline, ttl)
-}
-func (m *ObjectManager) PresignPut(ctx context.Context, key, mime string, ttl time.Duration) (string, error) {
-	return m.store.PresignPutObject(ctx, key, mime, ttl)
-}
 func (m *ObjectManager) CreateMultipart(ctx context.Context, key, mime string) (string, error) {
 	return m.store.CreateMultipart(ctx, key, mime)
-}
-func (m *ObjectManager) PresignPart(ctx context.Context, key, id string, part int32, ttl time.Duration) (string, error) {
-	return m.store.PresignUploadPart(ctx, key, id, part, ttl)
 }
 func (m *ObjectManager) AbortMultipart(ctx context.Context, key, id string) error {
 	return m.store.AbortMultipart(ctx, key, id)
@@ -117,11 +108,6 @@ func (m *ObjectManager) Archive() (storage.ArchiveExtractor, bool) {
 	v, ok := m.store.(storage.ArchiveExtractor)
 	return v, ok
 }
-func (m *ObjectManager) Torrent() (storage.TorrentEngine, bool) {
-	v, ok := m.store.(storage.TorrentEngine)
-	return v, ok
-}
-
 func (m *ObjectManager) Delete(ctx context.Context, key, reason string) error {
 	err := m.retry(ctx, "delete", func() error { return m.store.DeleteObject(ctx, key) })
 	if err == nil || storage.IsNotFound(err) {

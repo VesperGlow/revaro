@@ -11,7 +11,6 @@ const props=defineProps<{
   hasAvatar:boolean
   avatarUrl:string
   tasks:BackgroundTask[]
-  downloadParentId:string
 }>()
 
 const emit=defineEmits<{
@@ -49,7 +48,7 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
     <button class="logo brand-button" title="回到我的文件" aria-label="回到我的文件" @click="$emit('home')"><img class="brand-logo" src="/revaro-logo.svg" alt="" aria-hidden="true"></button>
     <div class="top-actions">
       <template v-if="!mobile">
-        <TaskCenter :tasks="tasks" :parent-id="downloadParentId" @changed="$emit('tasksChanged')" @cancel="$emit('cancelTask',$event)" @retry="$emit('retryTask',$event)" />
+        <TaskCenter :tasks="tasks" @changed="$emit('tasksChanged')" @cancel="$emit('cancelTask',$event)" @retry="$emit('retryTask',$event)" />
         <SystemStatus />
         <button class="trash-button" title="回收站" aria-label="打开回收站" @click="$emit('trash')"><Trash2 aria-hidden="true" /></button>
       </template>
@@ -67,7 +66,7 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
           <button class="mobile-tool-item" @click="openMobileAccount"><span class="mobile-task-icon"><Settings aria-hidden="true" /></span><b>账户设置</b></button>
         </section>
       </details>
-      <TaskCenter v-if="mobile" ref="mobileTaskCenter" hide-trigger :tasks="tasks" :parent-id="downloadParentId" @changed="$emit('tasksChanged')" @cancel="$emit('cancelTask',$event)" @retry="$emit('retryTask',$event)" />
+      <TaskCenter v-if="mobile" ref="mobileTaskCenter" hide-trigger :tasks="tasks" @changed="$emit('tasksChanged')" @cancel="$emit('cancelTask',$event)" @retry="$emit('retryTask',$event)" />
     </div>
   </header>
 </template>

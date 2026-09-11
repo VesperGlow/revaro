@@ -71,22 +71,31 @@ func main() {
 		exitCode = 1
 		return
 	}
-	store := storage.NewDataPlane(dataProcess.Addr(), dataProcess.Token())
+	engine := storage.NewDataPlane(dataProcess.Addr(), dataProcess.Token())
+	store, err := storage.NewLocal(filepath.Join(cfg.DataDir, "objects"), engine)
+	if err != nil {
+		log.Error("local storage startup failed", "error", err)
+		exitCode = 1
+		return
+	}
+	defer store.Close()
 	checkCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	err = store.Ping(checkCtx)
 	cancel()
 	if err != nil {
-		log.Error("S3 connection check failed", "bucket", cfg.S3Bucket, "error", err)
+		log.Error("local storage check failed", "error", err)
 		exitCode = 1
 		return
 	}
-	provider := "s3"
-	if cfg.IsUpCloud() {
-		provider = "upcloud"
+	log.Info("local blob storage ready", "path", filepath.Join(cfg.DataDir, "objects"))
+	if err := validateLocalFiles(ctx, db, store); err != nil {
+		log.Error("local storage migration check failed", "error", err)
+		exitCode = 1
+		return
 	}
-	log.Info("S3 connection ready", "bucket", cfg.S3Bucket, "provider", provider, "proxy_transfers", cfg.ProxyTransfers)
-	app := server.New(db, store, authService, cfg, log)
+	app := server.New(db, store, authService, cfg, log, engine)
 	defer app.Close()
+	app.RegisterCleanup("temporary-uploads", time.Hour, 5*time.Minute, true, func(ctx context.Context) error { return store.CleanupTemporary(ctx, cfg.UploadExpires) })
 	app.RegisterCleanup("auth", 15*time.Minute, 5*time.Minute, true, func(cleanupCtx context.Context) error { authService.Cleanup(cleanupCtx); return nil })
 	// Streaming downloads can legitimately run for much longer than a fixed
 	// response deadline. Upload/read deadlines are enforced at the handler and

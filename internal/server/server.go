@@ -39,27 +39,9 @@ type Server struct {
 	cfg                config.Config
 	log                *slog.Logger
 	limiter            *loginLimiter
-	s3Origin           string // S3_PUBLIC_ENDPOINT 的 scheme://host，用于收窄 CSP
 	shareSlots         chan struct{}
-	audioMergeSlots    chan struct{}
-	audioMergeMu       sync.RWMutex
-	audioMergeJobs     map[string]*audioMergeJob
-	localMergeJobSlots chan struct{}
-	localMergeUploads  chan struct{}
-	diskFree           func(string) (int64, error) // override for tests; nil uses statfs
-	audioHLSSlots      chan struct{}
-	audioHLSMu         sync.RWMutex
-	audioHLSSessions   map[string]*audioHLSSession
-	audioHLSCtx        context.Context
-	audioHLSCancel     context.CancelFunc
-	mediaCacheMu       sync.Mutex
-	mediaCacheSizes    map[string]int64
-	videoHLSSlots      chan struct{}
-	videoHLSMu         sync.RWMutex
-	videoHLSSessions   map[string]*videoHLSSession
-	videoFMP4Slots     chan struct{}
-	videoFMP4Mu        sync.RWMutex
-	videoFMP4Sessions  map[string]*videoFMP4Session
+	workCtx            context.Context
+	workCancel         context.CancelFunc
 	mediaAnalysis      *mediaAnalysisScheduler
 	thumbnails         *thumbnailScheduler
 	audioThumbSlots    chan struct{}
@@ -71,7 +53,6 @@ type Server struct {
 	archiveMu          sync.RWMutex
 	archiveJobs        map[string]*archiveJob
 	flowBuilds         singleflight.Group
-	downloads          *downloadManager
 	batchTokensMu      sync.Mutex
 	batchTokens        map[string]batchDownloadToken
 	jobs               *JobManager
@@ -89,6 +70,7 @@ type Server struct {
 	statusSubscribers  map[chan systemStatusResponse]struct{}
 	statusStop         chan struct{}
 	backupCancel       context.CancelFunc
+	backup             storage.DatabaseBackup
 }
 
 type File struct {
@@ -110,41 +92,33 @@ type File struct {
 	objectKey       string
 }
 
-func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, logger *slog.Logger) *Server {
+func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, logger *slog.Logger, backups ...storage.DatabaseBackup) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s3Origin := ""
-	if u, err := url.Parse(cfg.S3PublicEndpoint); err == nil && u.Host != "" {
-		s3Origin = u.Scheme + "://" + u.Host
-	}
-	hlsCtx, hlsCancel := context.WithCancel(context.Background())
+
+	workCtx, workCancel := context.WithCancel(context.Background())
 	resources := newResourceGovernor()
 	s := &Server{
 		db: db, storage: store, auth: a, cfg: cfg, log: logger,
-		jobs:    NewJobManager(),
-		limiter: newLoginLimiter(), s3Origin: s3Origin,
+		jobs:            NewJobManager(),
+		limiter:         newLoginLimiter(),
 		shareSlots:      make(chan struct{}, 8),
-		audioMergeSlots: make(chan struct{}, 2), audioMergeJobs: make(map[string]*audioMergeJob),
-		localMergeJobSlots: make(chan struct{}, maxLocalMergeUploadingJobs),
-		localMergeUploads:  make(chan struct{}, localMergeUploadConcurrency),
-		audioHLSSlots:      make(chan struct{}, 2), audioHLSSessions: make(map[string]*audioHLSSession),
-		videoHLSSlots: make(chan struct{}, 1), videoHLSSessions: make(map[string]*videoHLSSession),
-		videoFMP4Slots: make(chan struct{}, 2), videoFMP4Sessions: make(map[string]*videoFMP4Session),
 		mediaAnalysis:   newMediaAnalysisScheduler(2),
 		thumbnails:      newThumbnailScheduler(1),
 		audioThumbSlots: make(chan struct{}, 1),
 		archiveSlots:    make(chan struct{}, 1), archiveJobs: make(map[string]*archiveJob),
-		audioHLSCtx: hlsCtx, audioHLSCancel: hlsCancel,
-		mediaCacheSizes:   make(map[string]int64),
+		workCtx: workCtx, workCancel: workCancel,
 		statusSubscribers: make(map[chan systemStatusResponse]struct{}), statusStop: make(chan struct{}),
 		batchTokens: make(map[string]batchDownloadToken),
+	}
+	if len(backups) > 0 {
+		s.backup = backups[0]
 	}
 	s.objects = newObjectManager(store)
 	s.objects.server = s
 	s.books = reader.NewCache(bookCacheEntries, bookCacheBytes)
 	s.cache = newGlobalCache(filepath.Join(cfg.WorkDir, "cache"), cfg.MediaCacheCapacity, s.books)
-	s.cache.RegisterExternal(cacheClassMediaHLS, s.mediaCacheStats, s.pruneMediaCache)
 	s.tasks = newTaskManager(db, s.jobs, resources)
 	s.media = newMediaPipeline(store, resources)
 	s.cleanup = newCleanupManager(logger, resources)
@@ -155,25 +129,10 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		return s.media.AudioCover(ctx, file.objectKey, thumbMaxDim)
 	}
 	s.RecoverTasks(context.Background())
-	if cfg.BTEnabled {
-		manager, err := newDownloadManager(s)
-		if err != nil {
-			logger.Error("built-in torrent engine unavailable", "error", err)
-		} else {
-			s.downloads = manager
-		}
-	}
-	// Remove only legacy pending audio placeholders that are not owned by a
-	// durable task. Restorable merges retain their output row through task_files.
-	if result, err := db.Exec(`DELETE FROM files WHERE kind='file' AND status='pending' AND mime_type IN ('audio/mp4','audio/flac') AND object_key IS NULL AND NOT EXISTS (SELECT 1 FROM uploads WHERE uploads.file_id=files.id) AND NOT EXISTS (SELECT 1 FROM task_files WHERE task_files.file_id=files.id)`); err != nil {
-		logger.Error("interrupted audio merge cleanup failed", "error", err)
-	} else if removed, _ := result.RowsAffected(); removed > 0 {
-		logger.Info("interrupted audio merges cleaned", "files", removed)
-	}
 	// Only Revaro-owned, recognizable workspaces are eligible for startup
 	// cleanup. Unknown APP_WORK_DIR contents are never touched.
 	_ = os.MkdirAll(cfg.WorkDir, 0o700)
-	for _, pattern := range []string{"revaro-audio-merge-*", "revaro-audio-hls-*", "revaro-video-hls-*", "revaro-extract-*", backupStagingPattern} {
+	for _, pattern := range []string{"revaro-extract-*", backupStagingPattern} {
 		stale, err := filepath.Glob(filepath.Join(cfg.WorkDir, pattern))
 		if err != nil {
 			logger.Warn("stale workspace scan failed", "pattern", pattern, "error", err)
@@ -185,17 +144,11 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 			}
 		}
 	}
-	s.cleanupUnreferencedLocalMergeDirs()
 	s.restorePersistentTasks()
-	s.cleanup.Register("audio-hls", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupAudioHLSSessions(); return nil })
-	s.cleanup.Register("video-hls", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupVideoHLSSessions(); return nil })
-	s.cleanup.Register("media-cache-size", time.Minute, time.Minute, false, func(context.Context) error { s.refreshMediaCacheUsage(); return nil })
-	s.cleanup.Register("video-fmp4", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupVideoFMP4Sessions(); return nil })
 	s.cleanup.Register("archive-password", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupArchiveJobs(); return nil })
 	s.cleanup.Register("cache", 5*time.Minute, time.Minute, false, func(context.Context) error { s.cache.Prune(); return nil })
 	s.cleanup.Register("uploads", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupExpiredUploads(ctx); return nil })
 	s.cleanup.Register("object-cleanup", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupObjects(ctx); return nil })
-	s.cleanup.Register("local-merges", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupExpiredLocalMerges(ctx); return nil })
 	s.cleanup.Register("trash", 15*time.Minute, 10*time.Minute, true, func(ctx context.Context) error {
 		if s.CleanupExpiredTrash(ctx) > 0 {
 			s.CollectGarbage(ctx)
@@ -255,14 +208,11 @@ func (s *Server) Close() {
 	if s.cache != nil {
 		s.cache.Close()
 	}
-	if s.audioHLSCancel != nil {
-		s.audioHLSCancel()
+	if s.workCancel != nil {
+		s.workCancel()
 	}
 	if s.jobs != nil {
 		s.jobs.Close()
-	}
-	if s.downloads != nil {
-		s.downloads.Close()
 	}
 	s.batchTokensMu.Lock()
 	s.batchTokens = nil
@@ -272,38 +222,6 @@ func (s *Server) Close() {
 	}
 	if s.thumbnails != nil {
 		s.thumbnails.close()
-	}
-	s.audioHLSMu.Lock()
-	sessions := make([]*audioHLSSession, 0, len(s.audioHLSSessions))
-	for _, session := range s.audioHLSSessions {
-		sessions = append(sessions, session)
-	}
-	s.audioHLSSessions = make(map[string]*audioHLSSession)
-	s.audioHLSMu.Unlock()
-	for _, session := range sessions {
-		session.stop()
-		s.forgetMediaCacheSize("audio", session.ID)
-	}
-	s.videoHLSMu.Lock()
-	videoSessions := make([]*videoHLSSession, 0, len(s.videoHLSSessions))
-	for _, session := range s.videoHLSSessions {
-		videoSessions = append(videoSessions, session)
-	}
-	s.videoHLSSessions = make(map[string]*videoHLSSession)
-	s.videoHLSMu.Unlock()
-	for _, session := range videoSessions {
-		session.destroy()
-		s.forgetMediaCacheSize("video", session.ID)
-	}
-	s.videoFMP4Mu.Lock()
-	fmp4Sessions := make([]*videoFMP4Session, 0, len(s.videoFMP4Sessions))
-	for _, session := range s.videoFMP4Sessions {
-		fmp4Sessions = append(fmp4Sessions, session)
-	}
-	s.videoFMP4Sessions = make(map[string]*videoFMP4Session)
-	s.videoFMP4Mu.Unlock()
-	for _, session := range fmp4Sessions {
-		session.destroy()
 	}
 	s.lifecycleWG.Wait()
 	s.archiveMu.RLock()
@@ -363,21 +281,11 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/{id}/preview", s.preview)
 			r.Get("/files/{id}/audio", s.audioMediaInfo)
 			r.Get("/files/{id}/audio/stream", s.audioMediaStream)
-			r.Post("/files/{id}/audio/hls", s.startAudioHLS)
-			r.Get("/audio/hls/{session}/{asset}", s.audioHLSAsset)
-			r.Delete("/audio/hls/{session}", s.stopAudioHLS)
 			r.Get("/files/{id}/video", s.videoMediaInfo)
 			r.Post("/files/{id}/media/reanalyze", s.reanalyzeMedia)
 			r.Get("/files/{id}/video/subtitles/{subtitle}", s.videoSubtitle)
-			r.Get("/files/{id}/video/fmp4", s.videoFMP4Metadata)
-			r.Post("/files/{id}/video/fmp4", s.startVideoFMP4)
-			r.Post("/files/{id}/video/hls", s.startVideoHLS)
 			r.Get("/files/{id}/media/progress", s.mediaProgress)
 			r.Put("/files/{id}/media/progress", s.saveMediaProgress)
-			r.Get("/video/hls/{session}/{asset}", s.videoHLSAsset)
-			r.Delete("/video/hls/{session}", s.stopVideoHLS)
-			r.Get("/video/fmp4/{session}/stream", s.streamVideoFMP4)
-			r.Delete("/video/fmp4/{session}", s.stopVideoFMP4)
 			r.Get("/files/{id}/content", s.getDocument)
 			r.Put("/files/{id}/content", s.updateDocument)
 			r.Get("/files/{id}/book", s.bookInfo)
@@ -403,20 +311,12 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/trash/{id}", s.purgeTrash)
 			r.Post("/uploads", s.createUpload)
 			r.Get("/uploads/{id}", s.getUpload)
+			r.Put("/uploads/{id}/data", s.uploadContent)
+			r.Put("/uploads/{id}/data/{part}", s.uploadContent)
 			r.Post("/uploads/{id}/parts", s.uploadParts)
 			r.Put("/uploads/{id}/parts/{part}", s.recordUploadPart)
 			r.Post("/uploads/{id}/complete", s.completeUpload)
 			r.Delete("/uploads/{id}", s.abortUpload)
-			r.Post("/audio-merges", s.createAudioMerge)
-			r.Post("/audio-merges/local", s.createLocalAudioMerge)
-			r.Post("/audio-merges/local/{id}/files/{fileIndex}/chunks/{chunkIndex}", s.uploadLocalMergeChunk)
-			r.Post("/audio-merges/local/{id}/complete", s.completeLocalAudioMerge)
-			r.Post("/downloads", s.createDownload)
-			r.Get("/downloads/{id}", s.getDownload)
-			r.Post("/downloads/{id}/start", s.startDownload)
-			r.Post("/downloads/{id}/pause", s.pauseDownload)
-			r.Post("/downloads/{id}/resume", s.resumeDownload)
-			r.Get("/downloads/{id}/files/{index}/stream", s.streamDownloadFile)
 		})
 	})
 	r.Handle("/*", webui.Handler())
@@ -437,18 +337,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
-	// CSP 中 S3 直连来源按 S3_PUBLIC_ENDPOINT 收窄；未配置公网 endpoint
-	//（AWS 默认）时保持宽松 https/http，否则浏览器无法直连对象存储。
 	imgSrc, mediaSrc, connectSrc := "'self' data: blob:", "'self' blob:", "'self'"
-	if s.s3Origin != "" {
-		imgSrc += " " + s.s3Origin
-		mediaSrc += " " + s.s3Origin
-		connectSrc += " " + s.s3Origin
-	} else {
-		imgSrc += " https: http:"
-		mediaSrc += " https: http:"
-		connectSrc += " https: http:"
-	}
 	csp := "default-src 'self'; script-src 'self'; img-src " + imgSrc + "; media-src " + mediaSrc +
 		"; style-src 'self' 'unsafe-inline'; connect-src " + connectSrc +
 		"; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors 'none'"

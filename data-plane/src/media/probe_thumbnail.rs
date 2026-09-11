@@ -1,5 +1,5 @@
 fn probe_blocking(
-    reader: crate::s3::S3RangeReader,
+    reader: std::fs::File,
     cancel: CancellationToken,
 ) -> Result<ProbeResponse, String> {
     ffmpeg::init().map_err(|e| e.to_string())?;
@@ -71,7 +71,7 @@ fn probe_blocking(
 }
 
 fn thumbnail_blocking(
-    reader: crate::s3::S3RangeReader,
+    reader: std::fs::File,
     max_dimension: u32,
     attached_picture_only: bool,
     cancel: CancellationToken,
@@ -261,5 +261,4 @@ fn fit(width: u32, height: u32, max_dimension: u32) -> (u32, u32) {
         )
     }
 }
-
 

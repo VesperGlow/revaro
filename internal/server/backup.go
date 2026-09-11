@@ -63,7 +63,7 @@ func parseDatabaseBackupKey(key string) (time.Time, bool) {
 // are logged and retried with a bounded backoff; they never affect request
 // serving.
 func (s *Server) startDatabaseBackups() {
-	if !s.cfg.BackupEnabled || s.cfg.BackupInterval <= 0 {
+	if !s.cfg.BackupEnabled || s.cfg.BackupInterval <= 0 || s.backup == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,7 +145,7 @@ func (s *Server) createDatabaseBackup(ctx context.Context) error {
 		return fmt.Errorf("stat database snapshot: %w", err)
 	}
 	key := databaseBackupObjectKey(time.Now())
-	if _, err := s.objects.Stream(ctx, key, backupSnapshotMIME, file, info.Size()); err != nil {
+	if err := s.backup.UploadDatabase(ctx, key, file, info.Size()); err != nil {
 		return fmt.Errorf("upload database backup %s: %w", key, err)
 	}
 	s.log.Info("database backup uploaded", "key", key, "bytes", info.Size())
@@ -158,7 +158,10 @@ func (s *Server) createDatabaseBackup(ctx context.Context) error {
 }
 
 func (s *Server) listDatabaseBackups(ctx context.Context) ([]databaseBackupRef, error) {
-	refs, err := s.objects.ListPrefix(ctx, backupObjectPrefix+"/")
+	if s.backup == nil {
+		return nil, fmt.Errorf("S3 database backup is not configured")
+	}
+	refs, err := s.backup.ListDatabases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list database backups: %w", err)
 	}
@@ -172,9 +175,8 @@ func (s *Server) listDatabaseBackups(ctx context.Context) ([]databaseBackupRef, 
 	return backups, nil
 }
 
-// pruneDatabaseBackups deletes the oldest snapshots beyond the retention
-// limit. Failed deletions are re-queued by the object manager's durable
-// object-cleanup path.
+// pruneDatabaseBackups deletes old snapshots through the isolated S3 client.
+// Failed retention is retried on the next backup pass.
 func (s *Server) pruneDatabaseBackups(ctx context.Context) error {
 	backups, err := s.listDatabaseBackups(ctx)
 	if err != nil {
@@ -188,7 +190,7 @@ func (s *Server) pruneDatabaseBackups(ctx context.Context) error {
 	for _, backup := range stale {
 		keys = append(keys, backup.key)
 	}
-	if err := s.objects.DeleteMany(ctx, keys, "database-backup-retention"); err != nil {
+	if err := s.backup.DeleteDatabases(ctx, keys); err != nil {
 		return fmt.Errorf("delete %d expired database backups: %w", len(keys), err)
 	}
 	s.log.Info("database backup retention applied", "removed", len(keys), "kept", s.cfg.BackupRetention)

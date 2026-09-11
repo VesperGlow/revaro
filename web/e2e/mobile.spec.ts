@@ -9,7 +9,7 @@ test('手机顶栏状态球和头像工具菜单交互',async({page})=>{
   await expect(statusTrigger).toBeVisible()
   await statusTrigger.click()
   await expect(page.locator('.status-panel')).toBeVisible()
-  await expect(page.locator('.status-panel').getByText('媒体会话')).toBeVisible()
+  await expect(page.locator('.status-panel').getByText('本地磁盘')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.locator('[aria-label="打开任务与工具菜单"]')).toHaveCount(0)
   await page.locator('[aria-label="打开账户与工具菜单"]').click()

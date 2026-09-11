@@ -21,24 +21,15 @@ type Config struct {
 	AdminUsername      string
 	AdminPassword      string
 	S3Endpoint         string
-	S3PublicEndpoint   string
 	S3Region           string
 	S3Bucket           string
 	S3AccessKey        string
 	S3SecretKey        string
 	S3PathStyle        bool
-	ProxyTransfers     bool
-	PresignExpires     time.Duration
 	MediaCacheCapacity int64
 	UploadExpires      time.Duration
 	TrashRetention     time.Duration
 	GCInterval         time.Duration
-	BTEnabled          bool
-	BTListenPort       int
-	BTMaxFiles         int
-	BTMaxTotalSize     int64
-	BTMetadataWait     time.Duration
-	BTStaleAfter       time.Duration
 	BackupEnabled      bool
 	BackupInterval     time.Duration
 	BackupRetention    int
@@ -51,19 +42,18 @@ type Config struct {
 
 func Load() (Config, error) {
 	c := Config{
-		Addr:             env("APP_ADDR", ":8080"),
-		DataDir:          env("APP_DATA_DIR", "/data"),
-		BaseURL:          strings.TrimRight(env("APP_BASE_URL", "http://localhost:8080"), "/"),
-		AdminUsername:    os.Getenv("ADMIN_USERNAME"),
-		AdminPassword:    os.Getenv("ADMIN_PASSWORD"),
-		S3Endpoint:       strings.TrimRight(os.Getenv("S3_ENDPOINT"), "/"),
-		S3PublicEndpoint: strings.TrimRight(os.Getenv("S3_PUBLIC_ENDPOINT"), "/"),
-		S3Region:         env("S3_REGION", "us-east-1"),
-		S3Bucket:         os.Getenv("S3_BUCKET"),
-		S3AccessKey:      os.Getenv("S3_ACCESS_KEY"),
-		S3SecretKey:      os.Getenv("S3_SECRET_KEY"),
-		DataPlaneAddr:    env("DATA_PLANE_ADDR", "127.0.0.1:7081"),
-		DataPlaneBinary:  env("DATA_PLANE_BINARY", "revaro-data-plane"),
+		Addr:            env("APP_ADDR", ":8080"),
+		DataDir:         env("APP_DATA_DIR", "/data"),
+		BaseURL:         strings.TrimRight(env("APP_BASE_URL", "http://localhost:8080"), "/"),
+		AdminUsername:   os.Getenv("ADMIN_USERNAME"),
+		AdminPassword:   os.Getenv("ADMIN_PASSWORD"),
+		S3Endpoint:      strings.TrimRight(os.Getenv("S3_ENDPOINT"), "/"),
+		S3Region:        env("S3_REGION", "us-east-1"),
+		S3Bucket:        os.Getenv("S3_BUCKET"),
+		S3AccessKey:     os.Getenv("S3_ACCESS_KEY"),
+		S3SecretKey:     os.Getenv("S3_SECRET_KEY"),
+		DataPlaneAddr:   env("DATA_PLANE_ADDR", "127.0.0.1:7081"),
+		DataPlaneBinary: env("DATA_PLANE_BINARY", "revaro-data-plane"),
 	}
 	c.WorkDir = env("APP_WORK_DIR", "/work")
 	if raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); raw != "" {
@@ -82,12 +72,6 @@ func Load() (Config, error) {
 	if c.S3PathStyle, err = boolEnv("S3_PATH_STYLE", false); err != nil {
 		return c, err
 	}
-	if c.ProxyTransfers, err = boolEnv("S3_PROXY_TRANSFERS", c.IsUpCloud()); err != nil {
-		return c, err
-	}
-	if c.PresignExpires, err = durationEnv("PRESIGN_EXPIRES", 15*time.Minute); err != nil {
-		return c, err
-	}
 	if c.UploadExpires, err = durationEnv("UPLOAD_EXPIRES", 24*time.Hour); err != nil {
 		return c, err
 	}
@@ -97,29 +81,7 @@ func Load() (Config, error) {
 	if c.GCInterval, err = durationEnv("GC_INTERVAL", time.Hour); err != nil {
 		return c, err
 	}
-	if c.BTEnabled, err = boolEnv("BT_ENABLED", true); err != nil {
-		return c, err
-	}
-	btPort, err := int64Env("BT_LISTEN_PORT", 51413)
-	if err != nil {
-		return c, err
-	}
-	c.BTListenPort = int(btPort)
-	btFiles, err := int64Env("BT_MAX_FILES", 10000)
-	if err != nil {
-		return c, err
-	}
-	c.BTMaxFiles = int(btFiles)
-	if c.BTMaxTotalSize, err = int64Env("BT_MAX_TOTAL_SIZE", 1<<40); err != nil {
-		return c, err
-	}
-	if c.BTMetadataWait, err = durationEnv("BT_METADATA_TIMEOUT", 30*time.Minute); err != nil {
-		return c, err
-	}
-	if c.BTStaleAfter, err = durationEnv("BT_STALE_AFTER", 48*time.Hour); err != nil {
-		return c, err
-	}
-	if c.BackupEnabled, err = boolEnv("BACKUP_ENABLED", true); err != nil {
+	if c.BackupEnabled, err = boolEnv("BACKUP_ENABLED", c.S3Bucket != ""); err != nil {
 		return c, err
 	}
 	if c.BackupInterval, err = durationEnv("BACKUP_INTERVAL", 24*time.Hour); err != nil {
@@ -160,18 +122,6 @@ func Load() (Config, error) {
 	if c.GCInterval < 0 {
 		return c, errors.New("GC_INTERVAL must not be negative")
 	}
-	if c.BTListenPort < 1024 || c.BTListenPort > 65535 {
-		return c, errors.New("BT_LISTEN_PORT must be between 1024 and 65535")
-	}
-	if c.BTMaxFiles < 1 || c.BTMaxFiles > 100000 {
-		return c, errors.New("BT_MAX_FILES must be between 1 and 100000")
-	}
-	if c.BTMaxTotalSize < 1 || c.BTMaxTotalSize > 1<<40 {
-		return c, errors.New("BT_MAX_TOTAL_SIZE must be between 1 byte and 1 TiB")
-	}
-	if c.BTMetadataWait <= 0 || c.BTStaleAfter <= 0 {
-		return c, errors.New("BT_METADATA_TIMEOUT and BT_STALE_AFTER must be positive")
-	}
 	if c.BackupInterval < time.Minute {
 		return c, errors.New("BACKUP_INTERVAL must be at least one minute")
 	}
@@ -182,13 +132,11 @@ func Load() (Config, error) {
 	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") {
 		return c, errors.New("APP_BASE_URL must be an absolute http(s) URL")
 	}
-	if c.S3Bucket == "" || c.S3AccessKey == "" || c.S3SecretKey == "" {
+	if c.BackupEnabled && (c.S3Bucket == "" || c.S3AccessKey == "" || c.S3SecretKey == "") {
 		return c, errors.New("S3_BUCKET, S3_ACCESS_KEY and S3_SECRET_KEY are required")
 	}
-	if c.S3PublicEndpoint == "" {
-		c.S3PublicEndpoint = c.S3Endpoint
-	}
-	for name, endpoint := range map[string]string{"S3_ENDPOINT": c.S3Endpoint, "S3_PUBLIC_ENDPOINT": c.S3PublicEndpoint} {
+
+	for name, endpoint := range map[string]string{"S3_ENDPOINT": c.S3Endpoint} {
 		if endpoint == "" {
 			continue
 		}
@@ -201,17 +149,6 @@ func Load() (Config, error) {
 }
 
 func (c Config) DatabasePath() string { return filepath.Join(c.DataDir, "revaro.db") }
-
-// IsUpCloud reports whether the configured S3 endpoint belongs to UpCloud.
-// Both public and private Managed Object Storage endpoints use this suffix.
-func (c Config) IsUpCloud() bool {
-	u, err := url.Parse(c.S3Endpoint)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-	return host == "upcloudobjects.com" || strings.HasSuffix(host, ".upcloudobjects.com")
-}
 
 func env(name, fallback string) string {
 	if v := os.Getenv(name); v != "" {

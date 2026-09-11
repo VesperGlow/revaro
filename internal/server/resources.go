@@ -3,7 +3,7 @@ package server
 import "context"
 
 // ResourceGovernor composes with the existing per-feature limits and prevents
-// unrelated workloads from consuming all CPU or disk/S3 IO at once.
+// unrelated workloads from consuming all CPU or disk/local storage IO at once.
 type ResourceGovernor struct {
 	cpu chan struct{}
 	io  chan struct{}

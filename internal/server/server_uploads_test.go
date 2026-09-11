@@ -61,7 +61,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 		t.Fatalf("created multipart=%+v", created)
 	}
 	partsRR := a.request("POST", "/api/uploads/"+created.UploadID+"/parts", map[string]any{"part_numbers": []int{1}}, true)
-	if partsRR.Code != http.StatusOK || !strings.Contains(partsRR.Body.String(), "multipart") {
+	if partsRR.Code != http.StatusOK || !strings.Contains(partsRR.Body.String(), "/data/1") {
 		t.Fatalf("parts=%d: %s", partsRR.Code, partsRR.Body.String())
 	}
 	if rr := a.request("POST", "/api/uploads/"+created.UploadID+"/parts", map[string]any{"part_numbers": []int{2}}, true); rr.Code != http.StatusBadRequest {
@@ -280,10 +280,10 @@ type parentDeletingStorage struct {
 	afterWrite func()
 }
 
-func (g *parentDeletingStorage) PresignPutObject(ctx context.Context, key, mime string, ttl time.Duration) (string, error) {
-	url, err := g.Storage.PresignPutObject(ctx, key, mime, ttl)
+func (g *parentDeletingStorage) CreateMultipart(ctx context.Context, key, mime string) (string, error) {
+	id, err := g.Storage.CreateMultipart(ctx, key, mime)
 	g.afterWrite()
-	return url, err
+	return id, err
 }
 func (g *parentDeletingStorage) StoreBlob(ctx context.Context, key, mime string, body io.Reader, size int64) (storage.ObjectInfo, error) {
 	info, err := g.Storage.StoreBlob(ctx, key, mime, body, size)
@@ -304,7 +304,7 @@ func TestCreationRejectsParentDeletedDuringStorageRequest(t *testing.T) {
 			}}
 			body := map[string]any{"parent_id": parent.ID, "name": "new.txt"}
 			if endpoint == "/api/uploads" {
-				body["size"] = 3
+				body["size"] = multipartUploadThreshold
 			} else {
 				body["content"] = "abc"
 			}

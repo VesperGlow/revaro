@@ -1,8 +1,8 @@
 import { computed, nextTick, ref, type Ref } from 'vue'
 import type { VideoSubtitleTrack } from '../types'
-import { containedVideoInsets, setExclusiveSubtitleTrack, subtitleTrackKey, subtitleURLForPlayback, type UnifiedVideoPlayer, type VideoPlaybackMode } from '../videoPlayer'
+import { containedVideoInsets, setExclusiveSubtitleTrack, type UnifiedVideoPlayer } from '../videoPlayer'
 
-export function useVideoSubtitles(options:{video:Ref<HTMLVideoElement|null>;directMode:Ref<boolean>;mseMode:Ref<boolean>;prepareMode:Ref<'mse'|'hls'>;streamOffset:Ref<number>;getPlayer:()=>UnifiedVideoPlayer|null}){
+export function useVideoSubtitles(options:{video:Ref<HTMLVideoElement|null>;getPlayer:()=>UnifiedVideoPlayer|null}){
   const subtitleElement=ref<HTMLTrackElement|null>(null)
   const subtitles=ref<VideoSubtitleTrack[]>([])
   const activeSubtitle=ref(-1)
@@ -12,9 +12,8 @@ export function useVideoSubtitles(options:{video:Ref<HTMLVideoElement|null>;dire
   const subtitleImageInset=ref(0)
   let cueTrack:TextTrack|null=null
   const selectedSubtitle=computed(()=>activeSubtitle.value>=0?subtitles.value[activeSubtitle.value]:undefined)
-  const subtitlePlaybackMode=computed<VideoPlaybackMode>(()=>options.directMode.value?'direct':options.mseMode.value||options.prepareMode.value==='mse'?'mse':'hls')
-  const selectedSubtitleURL=computed(()=>{const track=selectedSubtitle.value;return track?subtitleURLForPlayback(track.url,subtitlePlaybackMode.value,options.streamOffset.value):''})
-  const selectedSubtitleKey=computed(()=>selectedSubtitle.value?subtitleTrackKey(selectedSubtitle.value.id,subtitlePlaybackMode.value,options.streamOffset.value):'')
+  const selectedSubtitleURL=computed(()=>selectedSubtitle.value?.url||'')
+  const selectedSubtitleKey=computed(()=>selectedSubtitle.value?.id||'')
   const subtitleStyle=computed(()=>({'--subtitle-image-bottom':`${subtitleImageBottom.value}px`,'--subtitle-image-inset':`${subtitleImageInset.value}px`} as Record<string,string>))
   function updateSubtitleBounds(){const el=options.video.value;if(!el)return;const bounds=containedVideoInsets(el.clientWidth,el.clientHeight,el.videoWidth,el.videoHeight);subtitleImageBottom.value=bounds.bottom;subtitleImageInset.value=bounds.horizontal}
   function subtitleCueLines(text:string):string[]{const plain=text.replace(/<\/?(?:b|i|u|ruby|rt)(?:\s[^>]*)?>/gi,'').replace(/<v(?:\s[^>]*)?>/gi,'').replace(/<c(?:\.[^\s>]*)*>/gi,'').replace(/<\/[vc]>/gi,'');const decoded=new DOMParser().parseFromString(plain,'text/html').body.textContent||'';return decoded.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)}

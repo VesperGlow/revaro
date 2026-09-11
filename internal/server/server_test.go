@@ -57,12 +57,9 @@ func TestLoginLimiterHasBoundedState(t *testing.T) {
 func TestServerCloseWaitsForOwnedWorkAndRejectsNewWork(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
-		audioHLSCtx: ctx, audioHLSCancel: cancel,
-		jobs:              NewJobManager(),
-		audioHLSSessions:  make(map[string]*audioHLSSession),
-		videoHLSSessions:  make(map[string]*videoHLSSession),
-		videoFMP4Sessions: make(map[string]*videoFMP4Session),
-		archiveJobs:       make(map[string]*archiveJob),
+		workCtx: ctx, workCancel: cancel,
+		jobs:        NewJobManager(),
+		archiveJobs: make(map[string]*archiveJob),
 	}
 	started := make(chan struct{})
 	finished := make(chan struct{})
@@ -504,7 +501,7 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 	store.rawURL = rawServer.URL
 	t.Cleanup(rawServer.Close)
 	dataDir := t.TempDir()
-	cfg := config.Config{DataDir: dataDir, WorkDir: filepath.Join(dataDir, "work"), BaseURL: "http://example.test", ProxyTransfers: true, PresignExpires: time.Minute, UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30}
+	cfg := config.Config{DataDir: dataDir, WorkDir: filepath.Join(dataDir, "work"), BaseURL: "http://example.test", UploadExpires: time.Hour, TrashRetention: 30 * 24 * time.Hour, MediaCacheCapacity: 2 << 30}
 	app := &testApp{t: t, db: db, store: store}
 	app.srv = New(db, store, a, cfg, nil)
 	app.handler = app.srv.Handler()

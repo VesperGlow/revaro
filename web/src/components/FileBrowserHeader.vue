@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChevronDown, ChevronRight, FilePlus2, FolderPlus, FolderUp, Music2, Upload } from '@lucide/vue'
+import { ChevronDown, ChevronRight, FilePlus2, FolderPlus, FolderUp, Upload } from '@lucide/vue'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
 
@@ -19,7 +19,6 @@ const emit=defineEmits<{
   createFolder:[]
   uploadFiles:[]
   uploadFolder:[]
-  localAudioMerge:[]
   leaveTrash:[]
   emptyTrash:[]
 }>()
@@ -38,11 +37,10 @@ function runCreate(action:'document'|'folder'){
   if(action==='document')emit('newDocument')
   else emit('createFolder')
 }
-function runUpload(action:'files'|'folder'|'localMerge'){
+function runUpload(action:'files'|'folder'){
   uploadMenu.value?.removeAttribute('open')
   if(action==='files')emit('uploadFiles')
   else if(action==='folder')emit('uploadFolder')
-  else emit('localAudioMerge')
 }
 function closeMenus(event:PointerEvent){
   const target=event.target as Node|null
@@ -96,7 +94,6 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
         <div class="upload-menu-popover">
           <button @click="runUpload('files')"><span><Upload /></span><div><b>上传文件</b><small>可一次选择多个文件</small></div></button>
           <button @click="runUpload('folder')"><span><FolderUp /></span><div><b>上传文件夹</b><small>保留完整目录结构</small></div></button>
-          <button @click="runUpload('localMerge')"><span><Music2 /></span><div><b>从本地目录合并</b><small>WAV + VTT + 封面，输出 ALAC M4A</small></div></button>
         </div>
       </details>
     </div>

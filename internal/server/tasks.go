@@ -54,12 +54,12 @@ func scanTask(row interface{ Scan(...any) error }) (Task, error) {
 	return t, err
 }
 
-const taskSelect = `SELECT tasks.id,tasks.type,tasks.status,tasks.phase,tasks.progress,tasks.speed,tasks.eta_seconds,tasks.retry_count,tasks.max_retries,tasks.error,tasks.source_type,tasks.source_id,tasks.cancel_requested,tasks.created_at,tasks.started_at,tasks.finished_at,tasks.updated_at,COALESCE((SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id WHERE task_files.task_id=tasks.id AND task_files.role='output' LIMIT 1),(SELECT download_jobs.name FROM download_jobs WHERE download_jobs.id=tasks.source_id),(SELECT url_download_jobs.name FROM url_download_jobs WHERE url_download_jobs.id=tasks.source_id),(SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id WHERE task_files.task_id=tasks.id AND task_files.role='input' LIMIT 1),tasks.type) FROM tasks`
+const taskSelect = `SELECT tasks.id,tasks.type,tasks.status,tasks.phase,tasks.progress,tasks.speed,tasks.eta_seconds,tasks.retry_count,tasks.max_retries,tasks.error,tasks.source_type,tasks.source_id,tasks.cancel_requested,tasks.created_at,tasks.started_at,tasks.finished_at,tasks.updated_at,COALESCE((SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id WHERE task_files.task_id=tasks.id AND task_files.role='output' LIMIT 1),(SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id WHERE task_files.task_id=tasks.id AND task_files.role='input' LIMIT 1),tasks.type) FROM tasks`
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	// Terminal successes are notification-like UI records. Keep durable rows for
 	// history/recovery, but stop returning stale completed/cancelled items.
-	rows, err := s.db.QueryContext(r.Context(), taskSelect+` WHERE tasks.status NOT IN ('completed','cancelled') OR julianday(tasks.finished_at) >= julianday('now','-30 minutes') ORDER BY tasks.created_at DESC LIMIT 500`)
+	rows, err := s.db.QueryContext(r.Context(), taskSelect+` WHERE tasks.type IN ('upload','archive_extract','subtitle') AND (tasks.status NOT IN ('completed','cancelled') OR julianday(tasks.finished_at) >= julianday('now','-30 minutes')) ORDER BY tasks.created_at DESC LIMIT 500`)
 	if err != nil {
 		problem(w, 500, "could not list tasks")
 		return
@@ -125,35 +125,10 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "task cannot be retried")
 		return
 	}
-	if s.downloads != nil && task.SourceType == "download" {
-		if err := s.downloads.resume(r.Context(), task.SourceID); err != nil {
-			s.log.Error("download retry failed", "task", task.ID, "error", err)
-			s.updateTask(r.Context(), task.SourceType, task.SourceID, "failed", "retrying", task.Progress, publicError(err, "下载重试失败，请稍后再试"))
-			problem(w, 409, "download task could not be retried")
-			return
-		}
-	}
-	if s.downloads != nil && task.SourceType == "url_download" {
-		res, err := s.db.ExecContext(r.Context(), `UPDATE url_download_jobs SET status='queued',completed_size=0,download_speed=0,error='',updated_at=? WHERE id=? AND status='failed'`, now, task.SourceID)
-		changed := int64(0)
-		if err == nil {
-			changed, err = res.RowsAffected()
-		}
-		if err != nil || changed != 1 {
-			s.updateTask(r.Context(), task.SourceType, task.SourceID, "failed", "retrying", task.Progress, "download task could not be retried")
-			problem(w, 409, "download task could not be retried")
-			return
-		}
-		s.downloads.startURLDownload(task.SourceID)
-	}
-	if task.SourceType == "archive" || task.SourceType == "audio_merge" {
+	if task.SourceType == "archive" {
 		var raw, created, updated string
-		if s.db.QueryRowContext(r.Context(), `SELECT payload_json,created_at,updated_at FROM tasks WHERE id=?`, task.ID).Scan(&raw, &created, &updated) == nil {
-			if task.SourceType == "archive" {
-				s.restoreArchiveTask(task.ID, "retrying", raw, created, updated)
-			} else {
-				s.restoreAudioTask(task.ID, "retrying", raw, created, updated)
-			}
+		if s.db.QueryRowContext(r.Context(), "SELECT payload_json,created_at,updated_at FROM tasks WHERE id=?", task.ID).Scan(&raw, &created, &updated) == nil {
+			s.restoreArchiveTask(task.ID, "retrying", raw, created, updated)
 		}
 	}
 	s.jobs.Changed()
@@ -187,57 +162,7 @@ func (s *Server) cancelTaskRuntime(ctx context.Context, task Task) {
 				s.cleanupArchiveJobStaging(job)
 			}
 		}
-	case "audio_merge":
-		s.audioMergeMu.RLock()
-		job := s.audioMergeJobs[task.SourceID]
-		s.audioMergeMu.RUnlock()
-		if job != nil {
-			snapshot := job.snapshot()
-			if job.localUpload && snapshot.Status == "uploading" {
-				s.audioMergeMu.Lock()
-				delete(s.audioMergeJobs, job.ID)
-				s.audioMergeMu.Unlock()
-				job.cleanupStaging(s.log)
-				job.releaseUploadSlot(s)
-				_, _ = s.db.ExecContext(ctx, `DELETE FROM files WHERE id=? AND status='pending'`, job.OutputFileID)
-				job.finish("cancelled", "合并已取消", "")
-			} else if job.cancel != nil {
-				job.cancel()
-			}
-		}
-	case "video_hls":
-		s.removeVideoHLSSession(task.SourceID)
-	case "audio_hls":
-		s.removeAudioHLSSession(task.SourceID)
-	case "video_fmp4":
-		s.removeVideoFMP4Session(task.SourceID)
-	case "download":
-		if s.downloads != nil {
-			s.downloads.mu.Lock()
-			runtime := s.downloads.jobs[task.SourceID]
-			delete(s.downloads.jobs, task.SourceID)
-			s.downloads.mu.Unlock()
-			if runtime != nil {
-				runtime.cancel()
-				job, _ := s.downloads.get(context.Background(), task.SourceID, true)
-				s.downloads.cleanupTorrentImport(s.downloads.importRequests(job))
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
-				_ = s.downloads.bt.DeleteTorrent(cleanupCtx, runtime.torrentID)
-				cancel()
-			}
-			_, _ = s.db.ExecContext(ctx, `UPDATE download_jobs SET status='cancelled',ingest_state='cancelled',download_speed=0,import_speed=0,peers=0,updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), task.SourceID)
-		}
-	case "url_download":
-		if s.downloads != nil {
-			s.downloads.urlMu.Lock()
-			runtime := s.downloads.urlJobs[task.SourceID]
-			delete(s.downloads.urlJobs, task.SourceID)
-			s.downloads.urlMu.Unlock()
-			if runtime != nil {
-				runtime.cancel()
-			}
-			_, _ = s.db.ExecContext(ctx, `UPDATE url_download_jobs SET status='cancelled',download_speed=0,updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), task.SourceID)
-		}
+
 	}
 }
 
@@ -274,7 +199,7 @@ func (s *Server) taskInput(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "archive source is unavailable")
 		return
 	}
-	ctx, cancel := context.WithCancel(s.audioHLSCtx)
+	ctx, cancel := context.WithCancel(s.workCtx)
 	job.cancel = cancel
 	if !s.runBackground(func() { s.runArchiveExtract(ctx, f, job.ParentID, job, in.Password) }) {
 		cancel()
@@ -294,12 +219,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "active task cannot be removed")
 		return
 	}
-	if s.downloads != nil && (task.SourceType == "download" || task.SourceType == "url_download") {
-		if err := s.downloads.removeAny(r.Context(), task.SourceID); err != nil {
-			problem(w, 500, "could not remove download task")
-			return
-		}
-	} else {
+	{
 		if task.SourceType == "archive" {
 			s.archiveMu.Lock()
 			job := s.archiveJobs[task.SourceID]
@@ -307,16 +227,6 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 			s.archiveMu.Unlock()
 			if job != nil {
 				s.cleanupArchiveJobStaging(job)
-			}
-		}
-		if task.SourceType == "audio_merge" {
-			s.audioMergeMu.Lock()
-			job := s.audioMergeJobs[task.SourceID]
-			delete(s.audioMergeJobs, task.SourceID)
-			s.audioMergeMu.Unlock()
-			if job != nil {
-				job.cleanupStaging(s.log)
-				job.releaseUploadSlot(s)
 			}
 		}
 		_, err = s.db.ExecContext(r.Context(), `DELETE FROM tasks WHERE id=?`, task.ID)
@@ -331,7 +241,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) RecoverTasks(ctx context.Context) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='cancelled',phase='service_restarted',error='',finished_at=?,updated_at=? WHERE status='running' AND type IN ('video_hls','audio_hls','video_fmp4','subtitle')`, now, now)
+	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='cancelled',phase='service_restarted',error='',finished_at=?,updated_at=? WHERE status NOT IN ('completed','failed','cancelled') AND type IN ('video_hls','audio_hls','video_fmp4','subtitle','audio_merge','bt','download','url_download')`, now, now)
 	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='retrying',phase='recovered',retry_count=retry_count+1,error='recovered after service restart',started_at=NULL,heartbeat_at=NULL,updated_at=? WHERE status='running' AND retry_count<max_retries`, now)
 	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='failed',error='retry limit reached during restart recovery',finished_at=?,updated_at=? WHERE status='running'`, now, now)
 }

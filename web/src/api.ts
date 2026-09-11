@@ -3,7 +3,7 @@ export interface DriveFile { id:string; parent_id:string|null; name:string; kind
 export interface ApiError extends Error { status?:number; data?:unknown }
 
 // 默认 60s 超时：网络挂起时请求会 abort 而不是永久 pending。
-// 大文件经 presigned S3 multipart URL 直传；完整性验证可用 0 关闭固定超时并由调用者取消。
+// 大文件通过同源分片接口上传到本地磁盘；完整性验证可用 0 关闭固定超时并由调用者取消。
 export async function api<T>(path:string, init:RequestInit = {}, timeoutMs = 60000):Promise<T>{
   const headers = new Headers(init.headers)
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type','application/json')
