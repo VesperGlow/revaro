@@ -290,6 +290,13 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 （含引号与 `<` 的构造输入）。安全关键的白名单清洗基于 html5ever 的真实
 HTML5 树构建器，压缩炸弹由声明量与实际读取量双重预算拦截。
 
+阶段 3a 验收：workspace 全绿（server 118 个测试，新增 6 个路由级测试）。
+真实进程实测：登录后 `GET /api/files/{root}/children` 返回空列表、
+`/api/storage/stats` 与 `/api/library/counts` 归零、未知 `type` 返回 400、
+未认证返回 401。两处与直觉相反但忠实于 Go 的行为已写入测试注释：
+children 是**文件在目录之前**（`ORDER BY kind DESC`），面包屑包含根与该
+文件自身（递归 CTE 自请求行向上走再按 depth 倒序）。
+
 阶段 2d 验收（真实进程端到端）：289 个测试全绿。实测启动后
 `POST /api/auth/login` 密码错误返回 401、正确返回 200 并下发
 `revaro_session` cookie，`GET /api/auth/me` 带 cookie 返回档案、不带返回
