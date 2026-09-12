@@ -357,6 +357,16 @@ ETag 保存被拒（409）、不可编辑类型被拒（415）。并发保护靠
 为 null、还原 204、清空回收站 204。刻意的范围裁剪：Go 删除未就绪文件前会
 先中止上传会话，上传模块未移植前只做级联删除（残留分片由按龄清理回收）。
 
+阶段 3a 补充（媒体库聚合的真实进程验证）：种入两级目录与四类媒体加一个
+已回收文件后实测——`/api/library?type=video` 返回的条目带
+`folder_path=["Movies","SciFi"]`（嵌套路径解析在真实端点下正确）；
+`/api/library?type=audio` 通过 `source_etag = files.etag` 连接取到
+`duration_ms=12345`；`/api/library/counts` 为 book/image/video/audio 各 1、
+`file=5`，**已回收的 gone.bin 未被计入**（即此前在 `revaro_core::library`
+中修掉的缺陷在 HTTP 层成立）；`/api/storage/stats` 为 150 字节/5 个文件，
+同样排除已回收的 60 字节。`has_cover` 未出现是正确的——种子数据里该音频行的
+`video_codec` 为空，即没有内嵌封面。
+
 阶段 3a 验收：workspace 全绿（server 118 个测试，新增 6 个路由级测试）。
 真实进程实测：登录后 `GET /api/files/{root}/children` 返回空列表、
 `/api/storage/stats` 与 `/api/library/counts` 归零、未知 `type` 返回 400、
