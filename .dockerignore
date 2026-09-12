@@ -16,6 +16,11 @@ web/.npm-cache/
 internal/webui/dist/
 data-plane/target/
 
+# Rust workspace 的构建产物与前端打包结果。宿主的 target/ 可达数 GB 且
+# 平台相关，进入构建上下文只会拖慢每一次构建。
+/target/
+/dist/
+
 # 仓库文档、CI 与 Compose 配置：不进入任何构建阶段，
 # 这些文件改动不应使镜像层缓存失效
 .github/
