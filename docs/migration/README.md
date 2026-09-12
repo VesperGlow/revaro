@@ -183,7 +183,35 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | TOTP 两步验证与恢复码 | ✅ | `internal/auth/totp.go` |
 | **搜索** | ❌ **不存在** | 无端点、无 UI，仅在注释/定位逻辑中出现同名词 |
 
-## 7. 进度日志
+## 7. 前端 CSS 级联顺序（契约，勿凭猜测）
+
+样式表的加载顺序是**有语义的**：多个文件对同一选择器竞争，顺序决定胜出者
+（例如 `.app-shell` 的 grid 列宽由 shell.css 定义后又被覆盖）。权威顺序取自
+`web/src/main.ts` 与 `web/src/style.css` 的 import 序列：
+
+| # | 文件 | 来源 |
+|---|---|---|
+| 1 | `styles/shell.css` | `style.css` 内 `@import` |
+| 2 | `styles/browser.css` | 同上 |
+| 3 | `styles/uploads.css` | 同上 |
+| 4 | `styles/dialogs.css` | 同上 |
+| 5 | `styles/media.css` | 同上 |
+| 6 | `styles/responsive.css` | 同上 |
+| 7 | `styles/library.css` | 同上 |
+| 8 | `account.css` | `main.ts` |
+| 9 | `ui.css` | `main.ts`（`:root` 令牌的权威定义在这里，覆盖 responsive.css） |
+| 10 | `styles/selection-toolbar.css` | `main.ts` |
+| 11 | `styles/share-dialog.css` | `main.ts` |
+| 12 | `styles/document-editor.css` | `main.ts` |
+| 13 | `styles/reader-flow.css` | `main.ts` |
+| 14 | `styles/reader-chrome.css` | `main.ts` |
+| 15 | `styles/video-player.css` | `VideoPlayer.vue` 的 `<style src>`，随组件加载，故排在最后 |
+
+移植时必须以单个聚合文件（`@import` 或按序拼接）复现这 15 项顺序，并用测试
+固定，避免后续编辑悄悄改变级联结果。
+
+## 8. 进度日志
+
 
 | 阶段 | 状态 | 提交 |
 |---|---|---|
