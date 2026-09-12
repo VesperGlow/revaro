@@ -62,7 +62,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/system/status", get(system_status))
         .route("/files/{id}/audio", get(audio_media_info))
         .route("/tasks", get(list_tasks))
-        .route("/tasks/{id}", get(get_task))
+        .route("/tasks/{id}", get(get_task).delete(delete_task))
+        .route("/tasks/{id}/cancel", axum::routing::post(cancel_task))
+        .route("/tasks/{id}/retry", axum::routing::post(retry_task))
         .route("/library", get(library))
         .route("/library/all", get(library_all))
         .route("/library/counts", get(library_counts))
@@ -1133,6 +1135,134 @@ fn progress_response(
     }
 }
 
+/// Statuses a task can still be acted on from.
+const OPEN_TASK_STATUSES: &str = "('queued','running','waiting_input','retrying')";
+
+/// `POST /api/tasks/{id}/cancel`
+///
+/// Only the durable state is updated. Cancelling the *worker* is a runtime
+/// concern: the Rust port has no task workers yet, so there is nothing holding a
+/// cancellation token. The Go handler also poked its job bus to notify SSE
+/// subscribers, which has no equivalent until the event stream is ported.
+async fn cancel_task(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<http::StatusCode, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            let now = Timestamp::now().to_rfc3339();
+            // A task that has not started is cancelled outright; a running one
+            // only has the request recorded, because the worker decides when it
+            // can stop safely.
+            let changed = connection
+                .execute(
+                    "UPDATE tasks SET cancel_requested = 1, \
+status = CASE WHEN status IN ('queued','retrying','waiting_input') THEN 'cancelled' ELSE status END, \
+finished_at = CASE WHEN status IN ('queued','retrying','waiting_input') THEN ?1 ELSE finished_at END, \
+updated_at = ?1 \
+WHERE id = ?2 AND status NOT IN ('completed','failed','cancelled')",
+                    rusqlite::params![now, id],
+                )
+                .map_err(|error| {
+                    tracing::error!(%error, "could not cancel task");
+                    ApiError::internal("could not cancel task")
+                })?;
+            if changed == 0 {
+                // Either the task does not exist or it already finished; Go
+                // answers both the same way after its own lookup.
+                let exists: bool = connection
+                    .query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)", [&id], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                return Err(if exists {
+                    ApiError::conflict("task is already finished")
+                } else {
+                    ApiError::not_found("task not found")
+                });
+            }
+            Ok(http::StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// `POST /api/tasks/{id}/retry`
+async fn retry_task(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<http::StatusCode, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            let now = Timestamp::now().to_rfc3339();
+            let changed = connection
+                .execute(
+                    "UPDATE tasks SET status = 'retrying', phase = 'queued', \
+retry_count = retry_count + 1, error = '', cancel_requested = 0, \
+started_at = NULL, finished_at = NULL, updated_at = ?1 \
+WHERE id = ?2 AND status = 'failed' AND retry_count < max_retries",
+                    rusqlite::params![now, id],
+                )
+                .map_err(|error| {
+                    tracing::error!(%error, "could not retry task");
+                    ApiError::internal("could not retry task")
+                })?;
+            if changed == 0 {
+                let exists: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)",
+                        [&id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                return Err(if exists {
+                    // Either it is not failed, or it has exhausted its retries;
+                    // Go reports both as "cannot be retried".
+                    ApiError::conflict("task cannot be retried")
+                } else {
+                    ApiError::not_found("task not found")
+                });
+            }
+            Ok(http::StatusCode::ACCEPTED)
+        })
+        .await
+}
+
+/// `DELETE /api/tasks/{id}`
+async fn delete_task(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<http::StatusCode, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            let status = connection
+                .query_row("SELECT status FROM tasks WHERE id = ?1", [&id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| not_found_or(DbError::Query(error), "task not found"))?;
+            // Removing a live task would strand its worker, so only finished
+            // records may be dismissed.
+            if let Ok(parsed) = status.parse::<revaro_core::model::TaskStatus>()
+                && !parsed.is_terminal()
+            {
+                return Err(ApiError::conflict("active task cannot be removed"));
+            }
+            connection
+                .execute("DELETE FROM tasks WHERE id = ?1", [&id])
+                .map_err(|error| {
+                    tracing::error!(%error, "could not remove task");
+                    ApiError::internal("could not remove task")
+                })?;
+            Ok(http::StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
 /// The canonical `tasks` projection.
 ///
 /// `name` is derived rather than stored: the first output file's name, else the
@@ -2030,6 +2160,69 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn task_cancel_retry_and_delete_respect_their_lifecycles() {
+        let state = state().await;
+        let sql: &'static str = "INSERT INTO tasks(id,type,status,phase,progress,speed,retry_count,max_retries,error,cancel_requested,created_at,updated_at) VALUES \
+('q1','upload','queued','waiting',0,0,0,3,'','0','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('r1','upload','running','uploading',10,0,0,3,'','0','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('f1','upload','failed','boom',0,0,0,3,'nope','0','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('d1','upload','failed','boom',0,0,3,3,'limit','0','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('c1','upload','completed','done',100,0,0,3,'','0','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+
+        // A queued task is cancelled outright.
+        let (status, _) = write(&state, "POST", "/api/tasks/q1/cancel", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, task) = call(&state, "/api/tasks/q1").await;
+        assert_eq!(task["status"], "cancelled");
+        assert_eq!(task["cancel_requested"], true);
+
+        // A running task keeps running, but the request is recorded so the
+        // worker can stop at a safe point.
+        let (status, _) = write(&state, "POST", "/api/tasks/r1/cancel", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, task) = call(&state, "/api/tasks/r1").await;
+        assert_eq!(task["status"], "running");
+        assert_eq!(task["cancel_requested"], true);
+
+        // Cancelling a finished task is a conflict; an unknown one is a 404.
+        let (status, body) = write(&state, "POST", "/api/tasks/c1/cancel", None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["message"], "task is already finished");
+        let (status, body) = write(&state, "POST", "/api/tasks/nope/cancel", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["message"], "task not found");
+
+        // Retry clears the failure and re-queues, returning 202.
+        let (status, _) = write(&state, "POST", "/api/tasks/f1/retry", None).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let (_, task) = call(&state, "/api/tasks/f1").await;
+        assert_eq!(task["status"], "retrying");
+        assert_eq!(task["retry_count"], 1);
+        assert!(
+            task.get("error").is_none(),
+            "the stale error must be cleared"
+        );
+
+        // A task that exhausted its retries cannot be retried again.
+        let (status, body) = write(&state, "POST", "/api/tasks/d1/retry", None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["message"], "task cannot be retried");
+        // Neither can one that is not failed.
+        let (status, _) = write(&state, "POST", "/api/tasks/r1/retry", None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // Only finished records may be dismissed.
+        let (status, body) = write(&state, "DELETE", "/api/tasks/r1", None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["message"], "active task cannot be removed");
+        let (status, _) = write(&state, "DELETE", "/api/tasks/c1", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = call(&state, "/api/tasks/c1").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
