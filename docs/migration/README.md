@@ -312,6 +312,12 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 （含引号与 `<` 的构造输入）。安全关键的白名单清洗基于 html5ever 的真实
 HTML5 树构建器，压缩炸弹由声明量与实际读取量双重预算拦截。
 
+阶段 3d 验收：workspace 全绿（server 121）。真实进程实测单请求上传全链路：
+创建返回 `mode=single`/`part_size`/`expires_at`，PUT 数据 204，complete 返回
+带 64 字符 sha256 的 ready 文件，GET 内容为原文，再次 complete 返回 200
+（幂等）。**未实测**：分片模式的 HTTP 层（存储层分片已有单元测试）；
+分片提交不写 `content_hash` 是已记录的缺口。
+
 阶段 3c 补充（真实进程端到端）：在运行中的服务里种入一行文档与对应
 blob，`GET /content` 返回原文、`PUT` 返回 200、再次 `GET` 返回新内容并带上
 真实的 `etag`（size-mtime）与 `updated_at`；数据库核对显示新行指向新 blob、
