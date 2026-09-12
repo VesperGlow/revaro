@@ -1135,9 +1135,6 @@ fn progress_response(
     }
 }
 
-/// Statuses a task can still be acted on from.
-const OPEN_TASK_STATUSES: &str = "('queued','running','waiting_input','retrying')";
-
 /// `POST /api/tasks/{id}/cancel`
 ///
 /// Only the durable state is updated. Cancelling the *worker* is a runtime
