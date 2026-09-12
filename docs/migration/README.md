@@ -160,16 +160,45 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 `cargo xtask check` 会先比对 wasm-bindgen 的固定版本，防止 CLI 与 crate
 的私有 ABI 版本漂移。
 
-## 6. 进度日志
+## 6. 功能清单（用于逐项核对「不回退」）
+
+目标描述里列举了「阅读器、媒体播放、文件管理、搜索、回收站、任务系统」。
+按源码核对后的真实情况如下——**其中「搜索」并不存在**，因此没有需要保留的
+搜索功能，迁移中不应凭空新增：
+
+| 功能 | 迁移前是否存在 | 实现位置 |
+|---|---|---|
+| 文件管理（浏览/新建/重命名/移动/复制/删除/下载） | ✅ | `internal/server/server_files.go` |
+| 上传（单请求 + 分片续传 + 幂等完成） | ✅ | `server_uploads.go`、`upload_content.go` |
+| 回收站（列出/还原/清空/彻底删除/保留期） | ✅ | `server_files.go`，`TRASH_RETENTION` |
+| 任务系统（列表/取消/重试/输入 + SSE 事件） | ✅ | `tasks.go`、`task_manager.go`、`jobs.go` |
+| 分享链接（公开 `/s/{token}`） | ✅ | `server_stream_share.go` |
+| 文本编辑（≤1 MiB 白名单扩展名） | ✅ | `server_files.go` |
+| 阅读器（EPUB/TXT + reading flow） | ✅ | `internal/reader` |
+| 媒体播放（原文件 Range、字幕、进度） | ✅ | `server_stream_share.go`、`video_media.go`、`media_progress.go` |
+| 缩略图与音频封面 | ✅ | `thumb.go` |
+| 压缩包解压 | ✅ | `archive.go` + Rust data-plane |
+| 批量下载（流式 ZIP） | ✅ | `download_batch.go` |
+| 系统状态（含 SSE 流） | ✅ | `system_status.go` |
+| TOTP 两步验证与恢复码 | ✅ | `internal/auth/totp.go` |
+| **搜索** | ❌ **不存在** | 无端点、无 UI，仅在注释/定位逻辑中出现同名词 |
+
+## 7. 进度日志
 
 | 阶段 | 状态 | 提交 |
 |---|---|---|
 | 0 审计 | ✅ | 后端/前端审计文档 |
 | 1 工作区 + 共享类型 | ✅ | `refactor(rust): 建立 Cargo workspace 与前后端共享 core crate` |
 | 2a 数据库层 | ✅ | `refactor(rust): 移植 SQLite 数据库层并接入服务启动` |
-| 2b 对象存储 | 🚧 | `revaro-server::storage` |
+| 2b 对象存储 | ✅ | `refactor(rust): 移植本地对象存储并接入启动与就绪检查` |
 | 2c 阅读器解析 | 🚧 | `crates/revaro-reader`（EPUB/TXT 解析与白名单清洗） |
+| 2d 认证与会话 | 🚧 | `revaro-server::auth` + `/api/auth/*` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
+
+阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
+自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
+尺寸不匹配回滚、符号链接拒读、路径穿越拒绝、7 个并发写者不留撕裂对象、
+分片顺序拼装与 ETag 校验、过期清理不误伤进行中的上传。
 
 阶段 1 验收：128 个测试通过、`cargo fmt --check` 与
 `clippy -D warnings` 干净、`cargo xtask web-build` 产出 192 KB wasm
