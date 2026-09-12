@@ -20,19 +20,10 @@ type Config struct {
 	CookieSecure       bool
 	AdminUsername      string
 	AdminPassword      string
-	S3Endpoint         string
-	S3Region           string
-	S3Bucket           string
-	S3AccessKey        string
-	S3SecretKey        string
-	S3PathStyle        bool
 	MediaCacheCapacity int64
 	UploadExpires      time.Duration
 	TrashRetention     time.Duration
 	GCInterval         time.Duration
-	BackupEnabled      bool
-	BackupInterval     time.Duration
-	BackupRetention    int
 	DataPlaneAddr      string
 	DataPlaneBinary    string
 	FlowCacheTTL       time.Duration
@@ -47,11 +38,6 @@ func Load() (Config, error) {
 		BaseURL:         strings.TrimRight(env("APP_BASE_URL", "http://localhost:8080"), "/"),
 		AdminUsername:   os.Getenv("ADMIN_USERNAME"),
 		AdminPassword:   os.Getenv("ADMIN_PASSWORD"),
-		S3Endpoint:      strings.TrimRight(os.Getenv("S3_ENDPOINT"), "/"),
-		S3Region:        env("S3_REGION", "us-east-1"),
-		S3Bucket:        os.Getenv("S3_BUCKET"),
-		S3AccessKey:     os.Getenv("S3_ACCESS_KEY"),
-		S3SecretKey:     os.Getenv("S3_SECRET_KEY"),
 		DataPlaneAddr:   env("DATA_PLANE_ADDR", "127.0.0.1:7081"),
 		DataPlaneBinary: env("DATA_PLANE_BINARY", "revaro-data-plane"),
 	}
@@ -69,9 +55,6 @@ func Load() (Config, error) {
 	if c.CookieSecure, err = boolEnv("COOKIE_SECURE", strings.HasPrefix(c.BaseURL, "https://")); err != nil {
 		return c, err
 	}
-	if c.S3PathStyle, err = boolEnv("S3_PATH_STYLE", false); err != nil {
-		return c, err
-	}
 	if c.UploadExpires, err = durationEnv("UPLOAD_EXPIRES", 24*time.Hour); err != nil {
 		return c, err
 	}
@@ -81,17 +64,6 @@ func Load() (Config, error) {
 	if c.GCInterval, err = durationEnv("GC_INTERVAL", time.Hour); err != nil {
 		return c, err
 	}
-	if c.BackupEnabled, err = boolEnv("BACKUP_ENABLED", c.S3Bucket != ""); err != nil {
-		return c, err
-	}
-	if c.BackupInterval, err = durationEnv("BACKUP_INTERVAL", 24*time.Hour); err != nil {
-		return c, err
-	}
-	backupRetention, err := int64Env("BACKUP_RETENTION", 14)
-	if err != nil {
-		return c, err
-	}
-	c.BackupRetention = int(backupRetention)
 	if c.MediaCacheCapacity, err = int64Env("MEDIA_CACHE_CAPACITY", 2*1024*1024*1024); err != nil {
 		return c, err
 	}
@@ -122,28 +94,9 @@ func Load() (Config, error) {
 	if c.GCInterval < 0 {
 		return c, errors.New("GC_INTERVAL must not be negative")
 	}
-	if c.BackupInterval < time.Minute {
-		return c, errors.New("BACKUP_INTERVAL must be at least one minute")
-	}
-	if c.BackupRetention < 1 || c.BackupRetention > 1000 {
-		return c, errors.New("BACKUP_RETENTION must be between 1 and 1000")
-	}
 	base, err := url.Parse(c.BaseURL)
 	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") {
 		return c, errors.New("APP_BASE_URL must be an absolute http(s) URL")
-	}
-	if c.BackupEnabled && (c.S3Bucket == "" || c.S3AccessKey == "" || c.S3SecretKey == "") {
-		return c, errors.New("S3_BUCKET, S3_ACCESS_KEY and S3_SECRET_KEY are required")
-	}
-
-	for name, endpoint := range map[string]string{"S3_ENDPOINT": c.S3Endpoint} {
-		if endpoint == "" {
-			continue
-		}
-		u, parseErr := url.Parse(endpoint)
-		if parseErr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return c, fmt.Errorf("%s must be an absolute http(s) URL", name)
-		}
 	}
 	return c, nil
 }

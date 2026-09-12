@@ -12,7 +12,6 @@ services:
       COOKIE_SECURE: "false"
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: revaro-e2e-password
-      BACKUP_ENABLED: "false"
     volumes:
       - revaro-e2e-data:/data
 

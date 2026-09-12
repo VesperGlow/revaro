@@ -28,26 +28,6 @@ impl ApiError {
         }
     }
 
-    pub fn upstream(error: impl std::fmt::Display) -> Self {
-        Self::upstream_domain("s3", error)
-    }
-
-    pub fn upstream_domain(domain: &str, error: impl std::fmt::Display) -> Self {
-        let message = error.to_string();
-        let status = if message.contains("NoSuchKey") || message.contains("NotFound") {
-            StatusCode::NOT_FOUND
-        } else if message.contains("PreconditionFailed") {
-            StatusCode::PRECONDITION_FAILED
-        } else {
-            StatusCode::BAD_GATEWAY
-        };
-        Self {
-            status,
-            message,
-            code: Some(domain.into()),
-        }
-    }
-
     pub fn cancelled(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::REQUEST_TIMEOUT,

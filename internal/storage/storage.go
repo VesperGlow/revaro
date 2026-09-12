@@ -115,10 +115,3 @@ func IsNotFound(err error) bool {
 	var problem *dataPlaneError
 	return errors.As(err, &problem) && problem.Status == 404
 }
-
-// DatabaseBackup is intentionally separate from the local file store.
-type DatabaseBackup interface {
-	UploadDatabase(context.Context, string, io.Reader, int64) error
-	ListDatabases(context.Context) ([]ObjectRef, error)
-	DeleteDatabases(context.Context, []string) error
-}

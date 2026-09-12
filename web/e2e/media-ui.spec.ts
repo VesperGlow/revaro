@@ -14,7 +14,7 @@ function wav() {
   buffer.write('RIFF');buffer.writeUInt32LE(36+length*2,4);buffer.write('WAVEfmt ',8);buffer.writeUInt32LE(16,16);buffer.writeUInt16LE(1,20);buffer.writeUInt16LE(1,22);buffer.writeUInt32LE(8000,24);buffer.writeUInt32LE(16000,28);buffer.writeUInt16LE(2,32);buffer.writeUInt16LE(16,34);buffer.write('data',36);buffer.writeUInt32LE(length*2,40)
   return buffer
 }
-async function mockMedia(page: Page, subtitles = false) {
+async function mockMedia(page: Page) {
   const sound = wav(), video = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
@@ -26,9 +26,7 @@ async function mockMedia(page: Page, subtitles = false) {
     if (path.endsWith('/media/progress')) return json({ position: 10 })
     if (path === '/api/files/audio-1/audio') return json({ duration: 120, has_cover: true, cover_url: '/api/files/image-1/preview', chapters: [
       {id:1,title:'第一章 · 风从山谷来',start:0,end:40}, {id:2,title:'第二章 · 在林间停留',start:40,end:80}, {id:3,title:'第三章 · 晚风与归途',start:80,end:120},
-    ], subtitles: subtitles ? [
-      {id:1,start:0,end:15,text:'清晨，山谷里的雾还没有散去。'}, {id:2,start:15,end:40,text:'沿着溪水走，听见远处传来的鸟鸣。'}, {id:3,start:40,end:80,text:'我们在林间停留了一会儿。'},
-    ] : [] })
+    ] })
     if (path === '/api/files/video-1/video') return json({ subtitles: [{ id:'zh',label:'简体中文',language:'zh',url:'/api/subtitle.vtt',default:true }] })
     if (path === '/api/subtitle.vtt') return route.fulfill({ contentType:'text/vtt', body:'WEBVTT\n\n00:00:00.000 --> 00:00:30.000\n沿着山间的小路，慢慢走。\n' })
     if (path.endsWith('/thumbnail') || path.startsWith('/api/files/image-')) return route.fulfill({ contentType:'image/svg+xml', body:landscape(path.includes('image-2')) })
@@ -78,17 +76,18 @@ for (const width of [1440,390,320]) {
   })
 }
 
-test('音频字幕可以收起，手机按需展开', async ({page},testInfo) => {
-  await page.setViewportSize({width:1440,height:900});await mockMedia(page,true);await open(page,'山间来信.m4a')
-  await expect(page.locator('.audio-subtitle-lines')).toBeVisible()
-  await page.screenshot({path:testInfo.outputPath('audio-subtitles.png')})
-  await page.getByRole('button',{name:'收起面板',exact:true}).last().click()
-  await expect(page.locator('.audio-panel')).toHaveCount(0)
-  await page.setViewportSize({width:390,height:844})
-  await page.getByRole('button',{name:'字幕',exact:true}).click()
-  await expect(page.locator('.audio-panel')).toBeVisible()
-  await noOverflow(page)
-})
+for (const [name, selector] of [['山间来信.m4a', 'audio'], ['山间漫步.webm', 'video']] as const) {
+  test(`不支持的原文件直接报错：${selector}`, async ({page}) => {
+    await mockMedia(page)
+    const requested:string[]=[]
+    page.on('request', request=>requested.push(new URL(request.url()).pathname))
+    await page.route('**/api/files/*/preview', route=>route.fulfill({contentType:'application/octet-stream',body:'not decodable media'}))
+    await open(page,name)
+    await expect.poll(()=>page.locator(selector).evaluate((el:HTMLMediaElement)=>el.error?.code)).toBe(4)
+    await expect(page.getByRole('alert')).toContainText('浏览器无法播放')
+    expect(requested.some(path=>/hls|fmp4|transcode|audio\/stream/.test(path))).toBe(false)
+  })
+}
 
 test('图片：实际大小、拖动边界、缩略图与逐层退出', async ({page},testInfo) => {
   await page.setViewportSize({width:1440,height:900});await mockMedia(page);await open(page,'群山.png')

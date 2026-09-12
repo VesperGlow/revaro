@@ -112,9 +112,7 @@
 .audio-player-error { margin: 12px 0 0; color: #af4b4b; font-size: 12px; line-height: 1.6; text-align: center; }
 .audio-panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--media-line); background: var(--media-panel); }
 .audio-panel > header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--media-line); }
-.audio-panel-tabs { display: flex; gap: 8px; }
-.audio-panel-tabs button { min-width: 64px; height: 44px; border: 0; border-radius: 9px; background: transparent; color: var(--media-muted); font-size: 13px; }
-.audio-panel-tabs button[aria-pressed="true"] { background: var(--media-hover); color: var(--media-ink); font-weight: 600; }
+.audio-panel-tabs { display: flex; align-items: center; min-height: 44px; font-size: 13px; font-weight: 600; }
 .audio-chapter-navigation { display: flex; justify-content: space-between; gap: 8px; padding: 8px 20px; }
 .audio-chapter-navigation button { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--media-muted); font-size: 12px; }
 .audio-chapter-list { overflow-y: auto; overscroll-behavior: contain; padding: 0 12px 20px; }
@@ -122,10 +120,6 @@
 .audio-chapter-list strong { font-size: 13px; font-weight: 450; line-height: 1.5; overflow-wrap: anywhere; }
 .audio-chapter-list small, .audio-chapter-number { font-size: 11px; font-variant-numeric: tabular-nums; }
 .audio-chapter-list button:hover, .audio-chapter-list button[aria-current="true"] { background: var(--media-hover); color: var(--media-accent); }
-.audio-subtitle-lines { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 30% 24px; scroll-padding: 24px; }
-.audio-subtitle-lines button { display: block; width: 100%; min-height: 44px; padding: 16px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--media-muted); text-align: left; font-size: 16px; line-height: 1.8; transition: color .2s; }
-.audio-subtitle-lines button.active { color: var(--media-ink); font-weight: 600; }
-.audio-subtitle-lines button:hover { background: var(--media-hover); }
 .audio-panel-scrim { display: none; }
 @media (max-width: 760px) {
   .preview-commandbar { gap: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
@@ -139,4 +133,4 @@
   .audio-panel-scrim { position: absolute; z-index: 21; inset: 0; display: block; width: 100%; padding: 0; border: 0; background: #17212b40; }
   .preview-prev { left: 8px; } .preview-next { right: 8px; }
 }
-@media (prefers-reduced-motion: reduce) { .image-preview .preview-commandbar, .preview-image-footer, .preview-nav, .audio-subtitle-lines button { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .image-preview .preview-commandbar, .preview-image-footer, .preview-nav { transition: none; } }

@@ -82,7 +82,7 @@ func TestServerCloseWaitsForOwnedWorkAndRejectsNewWork(t *testing.T) {
 	}
 }
 
-// notFoundError emulates the S3 NoSuchKey API error the real store returns.
+// notFoundError emulates a missing local object.
 func notFoundError() error {
 	return storage.ErrNotFound
 }
@@ -137,12 +137,6 @@ func newMockStorage(blockSize int64) *mockStorage {
 }
 
 func (m *mockStorage) Ping(context.Context) error { return nil }
-func (m *mockStorage) PresignPutObject(_ context.Context, key, _ string, _ time.Duration) (string, error) {
-	if m.presignErr != nil {
-		return "", m.presignErr
-	}
-	return "https://s3.example/put/" + key, nil
-}
 func (m *mockStorage) CreateMultipart(_ context.Context, key, _ string) (string, error) {
 	if m.presignErr != nil {
 		return "", m.presignErr
@@ -150,12 +144,6 @@ func (m *mockStorage) CreateMultipart(_ context.Context, key, _ string) (string,
 	id := ids.New()
 	m.multipart[id] = key
 	return id, nil
-}
-func (m *mockStorage) PresignUploadPart(_ context.Context, key, uploadID string, partNumber int32, _ time.Duration) (string, error) {
-	if m.multipart[uploadID] != key {
-		return "", notFoundError()
-	}
-	return "https://s3.example/multipart/" + uploadID + "/" + fmt.Sprint(partNumber), nil
 }
 func (m *mockStorage) CompleteMultipart(_ context.Context, key, uploadID string, _ []storage.CompletedPart) (storage.ObjectInfo, error) {
 	m.mu.Lock()
@@ -204,12 +192,6 @@ func (m *mockStorage) StoreBlob(_ context.Context, key, mimeType string, r io.Re
 	m.raw[key] = data
 	m.rawMime[key] = mimeType
 	return storage.ObjectInfo{Size: size, ETag: "etag"}, nil
-}
-func (m *mockStorage) PresignBlockPut(_ context.Context, id string, _ time.Duration) (string, error) {
-	if m.presignErr != nil {
-		return "", m.presignErr
-	}
-	return "https://s3.example/put/" + id, nil
 }
 func (m *mockStorage) PutBlock(_ context.Context, id string, data []byte) error {
 	m.mu.Lock()
@@ -401,12 +383,6 @@ func (m *mockStorage) DeleteObject(_ context.Context, key string) error {
 	return nil
 }
 
-func (m *mockStorage) PresignGetObject(_ context.Context, key, _, _ string, _ bool, _ time.Duration) (string, error) {
-	if m.rawURL != "" {
-		return m.rawURL + "/" + key, nil
-	}
-	return "https://s3.example/get", nil
-}
 func (m *mockStorage) ListPrefix(_ context.Context, prefix string) ([]storage.ObjectRef, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

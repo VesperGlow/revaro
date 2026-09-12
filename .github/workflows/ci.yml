@@ -162,7 +162,7 @@ jobs:
             type=semver,pattern={{major}}
           labels: |
             org.opencontainers.image.title=revaro
-            org.opencontainers.image.description=Private local file manager with optional S3 database backups
+            org.opencontainers.image.description=Private local file manager with native media playback
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
       - name: Build and publish image
         id: build

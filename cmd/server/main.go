@@ -88,12 +88,7 @@ func main() {
 		return
 	}
 	log.Info("local blob storage ready", "path", filepath.Join(cfg.DataDir, "objects"))
-	if err := validateLocalFiles(ctx, db, store); err != nil {
-		log.Error("local storage migration check failed", "error", err)
-		exitCode = 1
-		return
-	}
-	app := server.New(db, store, authService, cfg, log, engine)
+	app := server.New(db, store, authService, cfg, log)
 	defer app.Close()
 	app.RegisterCleanup("temporary-uploads", time.Hour, 5*time.Minute, true, func(ctx context.Context) error { return store.CleanupTemporary(ctx, cfg.UploadExpires) })
 	app.RegisterCleanup("auth", 15*time.Minute, 5*time.Minute, true, func(cleanupCtx context.Context) error { authService.Cleanup(cleanupCtx); return nil })

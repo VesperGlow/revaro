@@ -114,7 +114,7 @@ func TestCopyPreservesAudioMetadata(t *testing.T) {
 	audio := a.readyFile(t, "album.m4a", []byte("audio-master"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	chapters := `[{"title":"第一节","start_ms":0,"end_ms":10000},{"title":"第二节","start_ms":10000,"end_ms":25000}]`
-	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, audio.ID, 25000, chapters, audio.objectKey, audio.Size, audio.ETag, false, now, now); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO media_metadata(file_id,duration_ms,chapters_json,source_etag,probe_version,analyzed_at) VALUES(?,?,?,?,?,?)`, audio.ID, 25000, chapters, audio.ETag, mediaProbeVersion, now); err != nil {
 		t.Fatal(err)
 	}
 

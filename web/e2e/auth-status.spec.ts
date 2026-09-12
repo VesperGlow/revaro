@@ -9,6 +9,7 @@ test('登录后状态球通过 SSE 展开并关闭系统状态',async({page})=>{
   await expect(panel).toBeVisible()
   await expect(panel.getByText('数据库')).toBeVisible()
   await expect(panel.getByText('本地磁盘')).toBeVisible()
+  await expect(panel.getByText('备份', {exact:true})).toHaveCount(0)
   await expect(page.locator('.system-status summary i')).toHaveCount(1)
   await expect(panel.locator('i')).toHaveCount(0)
   await expect(panel.getByRole('button',{name:'刷新'})).toHaveCount(0)

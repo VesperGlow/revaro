@@ -25,7 +25,11 @@ func TestSystemStatusRequiresAuthenticationAndReportsComponents(t *testing.T) {
 	if status.Tasks.Running != 0 || status.ObjectCleanup.Pending != 0 {
 		t.Fatalf("unexpected counters: %+v", status)
 	}
-	if status.Backup.Status != "ok" {
-		t.Fatalf("unexpected backup status: %+v", status.Backup)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fields["backup"]; exists {
+		t.Fatal("removed backup service is exposed in status")
 	}
 }

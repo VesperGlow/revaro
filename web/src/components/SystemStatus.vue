@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Cloud, Database, DatabaseBackup, HardDrive, ListTodo, Trash2 } from '@lucide/vue'
+import { Cloud, Database, HardDrive, ListTodo, Trash2 } from '@lucide/vue'
 import { formatSize } from '../format'
 import type { SystemStatus } from '../types'
 import ServiceCard from './ServiceCard.vue'
@@ -56,7 +56,6 @@ defineExpose({openPanel,closePanel})
         <ServiceCard title="服务端缓存" :detail="`内存 ${formatSize(status.cache.memory_bytes)} · 磁盘 ${formatSize(status.cache.disk_bytes)} · ${cacheHitLabel(status)}`" :badge="stateLabel(status.cache.status)" :tone="tone(status.cache.status)"><template #icon><HardDrive /></template></ServiceCard>
         <ServiceCard title="任务" :detail="`排队 ${status.tasks.queued} · 等待 ${status.tasks.waiting} · 失败 ${status.tasks.failed}`" :badge="`${status.tasks.running} 运行中`" :tone="tone(status.tasks.status)"><template #icon><ListTodo /></template></ServiceCard>
         <ServiceCard title="清理队列" :detail="`${status.object_cleanup.pending} 个对象待清理`" :badge="stateLabel(status.object_cleanup.status)" :tone="tone(status.object_cleanup.status)"><template #icon><Trash2 /></template></ServiceCard>
-        <ServiceCard title="备份" :detail="status.backup.enabled?'自动备份已启用':'自动备份未启用'" :badge="status.backup.enabled?(status.backup.status==='ok'?'可用':'异常'):'未启用'" :tone="status.backup.enabled?tone(status.backup.status):'neutral'"><template #icon><DatabaseBackup /></template></ServiceCard>
       </div>
     </section>
   </details>

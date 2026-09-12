@@ -241,7 +241,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) RecoverTasks(ctx context.Context) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='cancelled',phase='service_restarted',error='',finished_at=?,updated_at=? WHERE status NOT IN ('completed','failed','cancelled') AND type IN ('video_hls','audio_hls','video_fmp4','subtitle','audio_merge','bt','download','url_download')`, now, now)
+	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='cancelled',phase='service_restarted',error='',finished_at=?,updated_at=? WHERE status NOT IN ('completed','failed','cancelled') AND type='subtitle'`, now, now)
 	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='retrying',phase='recovered',retry_count=retry_count+1,error='recovered after service restart',started_at=NULL,heartbeat_at=NULL,updated_at=? WHERE status='running' AND retry_count<max_retries`, now)
 	_, _ = s.db.ExecContext(ctx, `UPDATE tasks SET status='failed',error='retry limit reached during restart recovery',finished_at=?,updated_at=? WHERE status='running'`, now, now)
 }

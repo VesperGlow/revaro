@@ -407,7 +407,7 @@ func (m *Manager) Invalidate(prefix string) {
 	}
 }
 
-// RegisterExternal 把不由本管理器直接存储的缓存（如 HLS 会话工作区、
+// RegisterExternal 把不由本管理器直接存储的缓存（如阅读解析对象、
 // 解析书内存 LRU）纳入全局统计与容量回收。provider 不提供命中信息时
 // 应返回零值 Hits/Misses；pruner 的预算是该 provider 自身的 tier 上限。
 func (m *Manager) RegisterExternal(name string, stats func() ExternalStats, pruner func(ExternalBudget)) {

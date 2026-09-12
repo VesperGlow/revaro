@@ -4,18 +4,16 @@ import type { DriveFile } from '../api'
 import { api } from '../api'
 import { previewURL } from '../fileTypes'
 import { formatMediaTime as formatTime } from '../format'
-import type { AudioChapter, AudioMediaResponse, AudioSubtitle } from '../types'
+import type { AudioChapter, AudioMediaResponse } from '../types'
 import FullBleedProgress from './FullBleedProgress.vue'
 import PreviewMenu from './PreviewMenu.vue'
-import { Music2, Play, Pause, RotateCcw, RotateCw, List, Captions, Volume2, VolumeX, X, SkipBack, SkipForward } from '@lucide/vue'
+import { Music2, Play, Pause, RotateCcw, RotateCw, List, Volume2, VolumeX, X, SkipBack, SkipForward } from '@lucide/vue'
 
 const props=defineProps<{item:DriveFile}>()
 const audio=ref<HTMLAudioElement|null>(null)
 const panelOpen=ref(false)
-const panelTab=ref<'chapters'|'subtitles'>('chapters')
 const playerEl=ref<HTMLElement|null>(null)
 const coverFailed=ref(false)
-const subtitleList=ref<HTMLElement|null>(null)
 const media=ref<AudioMediaResponse|null>(null)
 const loading=ref(true)
 const waiting=ref(false)
@@ -46,13 +44,6 @@ const currentChapterIndex=computed(()=>{
   return Math.max(0,index)
 })
 const currentChapter=computed(()=>chapters.value[currentChapterIndex.value])
-const subtitles=computed<AudioSubtitle[]>(()=>media.value?.subtitles||[])
-const subtitleFocusIndex=computed(()=>{
-	if(!subtitles.value.length)return -1
-	let focus=0
-	for(let index=0;index<subtitles.value.length;index+=1){if(subtitles.value[index].start<=currentTime.value)focus=index;else break}
-	return focus
-})
 const displayedTime=computed(()=>seekPreview.value??currentTime.value)
 const progress=computed(()=>duration.value?Math.min(100,displayedTime.value/duration.value*100):0)
 const chapterMarkers=computed(()=>chapters.value.slice(1).map(chapter=>({id:chapter.id,percent:duration.value?chapter.start/duration.value*100:0})))
@@ -81,18 +72,17 @@ function persistProgress(remote=false){
 }
 
 function revealCurrentChapter(){
-  if(!panelOpen.value||panelTab.value!=='chapters')return
+  if(!panelOpen.value)return
   void nextTick().then(()=>playerEl.value?.querySelector<HTMLElement>(`[data-chapter-index="${currentChapterIndex.value}"]`)?.scrollIntoView({block:'nearest'}))
 }
-function openPanel(tab:'chapters'|'subtitles',focus=true){
-  panelTab.value=tab;panelOpen.value=true
-  if(focus)void nextTick(()=>playerEl.value?.querySelector<HTMLElement>('.audio-panel .media-icon-button')?.focus())
-  if(tab==='chapters')revealCurrentChapter()
-  else revealSubtitle()
+function openPanel(){
+  panelOpen.value=true
+  void nextTick(()=>playerEl.value?.querySelector<HTMLElement>('.audio-panel .media-icon-button')?.focus())
+  revealCurrentChapter()
 }
 function closePanel(){
   panelOpen.value=false
-  playerEl.value?.querySelector<HTMLElement>(`[data-panel-trigger="${panelTab.value}"]`)?.focus()
+  playerEl.value?.querySelector<HTMLElement>('[data-panel-trigger="chapters"]')?.focus()
 }
 function onKey(event:KeyboardEvent){
   if(event.defaultPrevented)return
@@ -103,10 +93,6 @@ function onKey(event:KeyboardEvent){
   if(event.key===' '){event.preventDefault();void togglePlayback()}
   if(event.key==='ArrowLeft'){event.preventDefault();seek(currentTime.value-15)}
   if(event.key==='ArrowRight'){event.preventDefault();seek(currentTime.value+30)}
-}
-function revealSubtitle(){
-  if(!panelOpen.value||panelTab.value!=='subtitles')return
-  void nextTick().then(()=>subtitleList.value?.querySelector<HTMLElement>(`[data-subtitle-index="${subtitleFocusIndex.value}"]`)?.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'}))
 }
 async function togglePlayback(){
   if(!audio.value)return
@@ -172,10 +158,9 @@ onMounted(()=>{
   // as part of the click that opened the audio preview.
   void loadProgress()
   applyVolume();audio.value?.load();void audio.value?.play().catch(()=>{})
-  void api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`).then(value=>{media.value=value;restorePosition();if(value.subtitles.length&&matchMedia('(min-width: 761px)').matches)openPanel('subtitles',false)}).catch(()=>{/* 普通音频继续走原始 Range 预览 */})
+  void api<AudioMediaResponse>(`/api/files/${props.item.id}/audio`).then(value=>{media.value=value;restorePosition()}).catch(()=>{/* 普通音频继续走原始 Range 预览 */})
 })
 watch(currentChapterIndex,revealCurrentChapter)
-watch(subtitleFocusIndex,revealSubtitle)
 onBeforeUnmount(()=>{
   window.clearTimeout(saveTimer);window.clearTimeout(remoteSaveTimer);persistProgress(false)
   if(currentTime.value>0)void fetch(`/api/files/${props.item.id}/media/progress`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:currentTime.value,duration:duration.value}),credentials:'same-origin',keepalive:true})
@@ -215,8 +200,7 @@ onBeforeUnmount(()=>{
         </div>
         <div class="audio-options">
           <label class="audio-rate"><span class="media-sr-only">播放速度</span><select :value="rate" aria-label="播放速度" @change="setRate"><option v-for="speed in [0.75,1,1.25,1.5,2]" :key="speed" :value="speed">{{ speed }}×</option></select></label>
-          <button data-panel-trigger="chapters" :aria-expanded="panelOpen&&panelTab==='chapters'" @click="panelOpen&&panelTab==='chapters'?closePanel():openPanel('chapters')"><List aria-hidden="true" /><span>章节</span></button>
-          <button v-if="subtitles.length" data-panel-trigger="subtitles" :aria-expanded="panelOpen&&panelTab==='subtitles'" @click="panelOpen&&panelTab==='subtitles'?closePanel():openPanel('subtitles')"><Captions aria-hidden="true" /><span>字幕</span></button>
+          <button data-panel-trigger="chapters" :aria-expanded="panelOpen" @click="panelOpen?closePanel():openPanel()"><List aria-hidden="true" /><span>章节</span></button>
           <PreviewMenu label="音量">
             <template #trigger><VolumeX v-if="muted||volume===0" aria-hidden="true" /><Volume2 v-else aria-hidden="true" /></template>
             <div class="audio-volume"><button :aria-label="muted?'取消静音':'静音'" @click="toggleMute"><VolumeX v-if="muted" aria-hidden="true" /><Volume2 v-else aria-hidden="true" /></button><input :value="volume" type="range" min="0" max="1" step="0.01" aria-label="音量" @input="setVolume"><output>{{ muted?0:Math.round(volume*100) }}%</output></div>
@@ -227,13 +211,10 @@ onBeforeUnmount(()=>{
       </section>
     </main>
     <button v-if="panelOpen" class="audio-panel-scrim" aria-label="收起面板" @click="closePanel"></button>
-    <aside v-if="panelOpen" class="audio-panel" data-preview-sheet :aria-label="panelTab==='chapters'?'音频章节':'音频字幕'">
-      <header><div class="audio-panel-tabs"><button :aria-pressed="panelTab==='chapters'" @click="openPanel('chapters')">章节</button><button v-if="subtitles.length" :aria-pressed="panelTab==='subtitles'" @click="openPanel('subtitles')">字幕</button></div><button class="media-icon-button" aria-label="收起面板" @click="closePanel"><X aria-hidden="true" /></button></header>
-      <template v-if="panelTab==='chapters'">
-        <div class="audio-chapter-navigation"><button :disabled="!duration" @click="previousChapter"><SkipBack aria-hidden="true" />上一章</button><button :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter">下一章<SkipForward aria-hidden="true" /></button></div>
-        <div class="audio-chapter-list"><button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :aria-current="index===currentChapterIndex?'true':undefined" @click="seek(chapter.start,true)"><span class="audio-chapter-number">{{ String(index+1).padStart(2,'0') }}</span><strong>{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }}</small></button></div>
-      </template>
-      <div v-else ref="subtitleList" class="audio-subtitle-lines"><button v-for="(cue,index) in subtitles" :key="cue.id" :data-subtitle-index="index" :class="{active:index===subtitleFocusIndex}" :aria-label="`${formatTime(cue.start)} ${cue.text}`" @click="seek(cue.start,true)">{{ cue.text }}</button></div>
+    <aside v-if="panelOpen" class="audio-panel" data-preview-sheet aria-label="音频章节">
+      <header><div class="audio-panel-tabs"><span>章节</span></div><button class="media-icon-button" aria-label="收起面板" @click="closePanel"><X aria-hidden="true" /></button></header>
+      <div class="audio-chapter-navigation"><button :disabled="!duration" @click="previousChapter"><SkipBack aria-hidden="true" />上一章</button><button :disabled="currentChapterIndex>=chapters.length-1" @click="nextChapter">下一章<SkipForward aria-hidden="true" /></button></div>
+      <div class="audio-chapter-list"><button v-for="(chapter,index) in chapters" :key="chapter.id" :data-chapter-index="index" :aria-current="index===currentChapterIndex?'true':undefined" @click="seek(chapter.start,true)"><span class="audio-chapter-number">{{ String(index+1).padStart(2,'0') }}</span><strong>{{ chapter.title }}</strong><small>{{ formatTime(chapter.start) }}</small></button></div>
     </aside>
   </div>
 </template>

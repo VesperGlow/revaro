@@ -160,11 +160,6 @@ func TestGarbageCollectorKeepsAudioStreamAndCover(t *testing.T) {
 	coverKey := audioThumbnailKey(master.objectKey)
 	a.store.raw[coverKey] = []byte("jpeg-cover")
 	a.store.age(coverKey, time.Now().Add(-48*time.Hour))
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		master.ID, 1000, `[{"title":"Part 1","start_ms":0,"end_ms":1000}]`, streamKey, master.Size, master.ETag, true, now, now); err != nil {
-		t.Fatal(err)
-	}
 	a.srv.CollectGarbage(context.Background())
 	if _, ok := a.store.raw[streamKey]; !ok {
 		t.Fatal("referenced audio stream blob was collected")
@@ -190,7 +185,7 @@ func TestExpiredUploadCannotComplete(t *testing.T) {
 	}
 }
 
-func TestMultipartPartSizeStaysWithinS3Limit(t *testing.T) {
+func TestMultipartPartSizeStaysWithinPartLimit(t *testing.T) {
 	partSize := multipartPartSize(1 << 40)
 	if count, err := storage.ValidMultipartPartCount(1<<40, partSize); err != nil || count > 10000 {
 		t.Fatalf("part size=%d count=%d err=%v", partSize, count, err)

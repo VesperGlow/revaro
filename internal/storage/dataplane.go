@@ -51,7 +51,7 @@ func (d *DataPlane) request(ctx context.Context, method, path string, values url
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+d.token)
-	if body != nil && path != "/v1/backup/object" {
+	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if length >= 0 {
@@ -192,20 +192,4 @@ func (d *DataPlane) SubtitleWebVTT(ctx context.Context, key, format string, stre
 		return nil, ErrObjectTooLarge
 	}
 	return data, err
-}
-
-func (d *DataPlane) UploadDatabase(ctx context.Context, key string, body io.Reader, size int64) error {
-	resp, err := d.request(ctx, http.MethodPut, "/v1/backup/object", url.Values{"key": {key}}, body, size)
-	if err == nil {
-		resp.Body.Close()
-	}
-	return err
-}
-func (d *DataPlane) ListDatabases(ctx context.Context) ([]ObjectRef, error) {
-	var out []ObjectRef
-	err := d.jsonRequest(ctx, http.MethodGet, "/v1/backup/objects", nil, nil, &out)
-	return out, err
-}
-func (d *DataPlane) DeleteDatabases(ctx context.Context, keys []string) error {
-	return d.jsonRequest(ctx, http.MethodDelete, "/v1/backup/objects", nil, map[string]any{"keys": keys}, nil)
 }

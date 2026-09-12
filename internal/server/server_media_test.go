@@ -164,7 +164,7 @@ func TestBookEndpointsEPUB(t *testing.T) {
 func TestThumbnails(t *testing.T) {
 	a := newTestApp(t)
 
-	// 图片：服务端生成 JPEG 缩略图并持久化到 S3（内容寻址），缓存头可长期缓存。
+	// 图片：服务端生成 JPEG 缩略图并持久化到本地（内容寻址），缓存头可长期缓存。
 	photo := a.readyFile(t, "photo.png", realPNG(t, 640, 320))
 	rr := a.request("GET", "/api/files/"+photo.ID+"/thumbnail", nil, true)
 	if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "image/jpeg" {
@@ -205,7 +205,7 @@ func TestThumbnails(t *testing.T) {
 		t.Fatal("typed thumbnail cache namespaces overlap")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, audio.ID, 1000, `[]`, audio.objectKey, audio.Size, audio.ETag, true, now, now); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO media_metadata(file_id,duration_ms,video_codec,source_etag,probe_version,analyzed_at) VALUES(?,?,?,?,?,?)`, audio.ID, 1000, "mjpeg", audio.ETag, mediaProbeVersion, now); err != nil {
 		t.Fatal(err)
 	}
 	plainAudio := a.readyFile(t, "plain.mp3", []byte("plain-audio"))
@@ -239,7 +239,7 @@ func TestAudioThumbnailCacheSelfHealing(t *testing.T) {
 	a := newTestApp(t)
 	audio := a.readyFile(t, "recoverable.m4a", []byte("audio-source"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := a.db.Exec(`INSERT INTO audio_media(file_id,duration_ms,chapters_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, audio.ID, 1000, `[]`, audio.objectKey, audio.Size, audio.ETag, true, now, now); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO media_metadata(file_id,duration_ms,video_codec,source_etag,probe_version,analyzed_at) VALUES(?,?,?,?,?,?)`, audio.ID, 1000, "mjpeg", audio.ETag, mediaProbeVersion, now); err != nil {
 		t.Fatal(err)
 	}
 	cover := realJPEG(t, 80, 80)
@@ -312,17 +312,7 @@ func TestAudioThumbnailCacheSelfHealing(t *testing.T) {
 	if rr := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true); rr.Code != http.StatusNotFound {
 		t.Fatalf("stale cover metadata response=%d", rr.Code)
 	}
-	var hasCover bool
-	if err := a.db.QueryRow(`SELECT has_cover FROM audio_media WHERE file_id=?`, audio.ID).Scan(&hasCover); err != nil || hasCover {
-		t.Fatalf("stale has_cover was not repaired: value=%v err=%v", hasCover, err)
-	}
-	before := generated.Load()
-	if rr := a.request("GET", "/api/files/"+audio.ID+"/thumbnail", nil, true); rr.Code != http.StatusNotFound {
-		t.Fatalf("no-cover response=%d", rr.Code)
-	}
-	if generated.Load() != before {
-		t.Fatal("has_cover=false triggered extraction")
-	}
+
 }
 
 func TestVideoThumbnailWithFFmpeg(t *testing.T) {

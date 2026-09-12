@@ -69,8 +69,6 @@ type Server struct {
 	statusSnapshot     systemStatusResponse
 	statusSubscribers  map[chan systemStatusResponse]struct{}
 	statusStop         chan struct{}
-	backupCancel       context.CancelFunc
-	backup             storage.DatabaseBackup
 }
 
 type File struct {
@@ -92,7 +90,7 @@ type File struct {
 	objectKey       string
 }
 
-func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, logger *slog.Logger, backups ...storage.DatabaseBackup) *Server {
+func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -112,9 +110,6 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 		statusSubscribers: make(map[chan systemStatusResponse]struct{}), statusStop: make(chan struct{}),
 		batchTokens: make(map[string]batchDownloadToken),
 	}
-	if len(backups) > 0 {
-		s.backup = backups[0]
-	}
 	s.objects = newObjectManager(store)
 	s.objects.server = s
 	s.books = reader.NewCache(bookCacheEntries, bookCacheBytes)
@@ -132,7 +127,7 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	// Only Revaro-owned, recognizable workspaces are eligible for startup
 	// cleanup. Unknown APP_WORK_DIR contents are never touched.
 	_ = os.MkdirAll(cfg.WorkDir, 0o700)
-	for _, pattern := range []string{"revaro-extract-*", backupStagingPattern} {
+	for _, pattern := range []string{"revaro-extract-*"} {
 		stale, err := filepath.Glob(filepath.Join(cfg.WorkDir, pattern))
 		if err != nil {
 			logger.Warn("stale workspace scan failed", "pattern", pattern, "error", err)
@@ -160,7 +155,6 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	}
 	s.cleanup.Start()
 	s.startSystemStatusSnapshots()
-	s.startDatabaseBackups()
 	return s
 }
 
@@ -198,9 +192,6 @@ func (s *Server) Close() {
 	s.lifecycleMu.Unlock()
 	if s.statusStop != nil {
 		close(s.statusStop)
-	}
-	if s.backupCancel != nil {
-		s.backupCancel()
 	}
 	if s.cleanup != nil {
 		s.cleanup.Close()
@@ -280,7 +271,6 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/files/batch-download/{token}", s.batchDownload)
 			r.Get("/files/{id}/preview", s.preview)
 			r.Get("/files/{id}/audio", s.audioMediaInfo)
-			r.Get("/files/{id}/audio/stream", s.audioMediaStream)
 			r.Get("/files/{id}/video", s.videoMediaInfo)
 			r.Post("/files/{id}/media/reanalyze", s.reanalyzeMedia)
 			r.Get("/files/{id}/video/subtitles/{subtitle}", s.videoSubtitle)

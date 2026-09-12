@@ -130,21 +130,3 @@ func TestLocalMultipartHTTPResume(t *testing.T) {
 		t.Fatalf("tail range=%d %q", r.Code, r.Body.String())
 	}
 }
-
-func TestDatabaseBackupsUseSeparateStore(t *testing.T) {
-	a, local := localTestApp(t)
-	backup := newMockStorage(0)
-	a.srv.backup = backup
-	a.srv.cfg.BackupRetention = 2
-	if err := a.srv.createDatabaseBackup(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	refs, err := local.ListPrefix(context.Background(), backupObjectPrefix)
-	if err != nil || len(refs) != 0 {
-		t.Fatalf("database backup leaked into local blobs: %v %v", refs, err)
-	}
-	remote, err := backup.ListDatabases(context.Background())
-	if err != nil || len(remote) != 1 {
-		t.Fatalf("remote snapshots=%v %v", remote, err)
-	}
-}

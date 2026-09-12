@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderValue, StatusCode, header::AUTHORIZATION},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use serde::Serialize;
 use subtle::ConstantTimeEq;
@@ -17,7 +17,6 @@ use tower_http::trace::TraceLayer;
 const PROTOCOL_VERSION: u16 = 1;
 
 mod archive;
-mod backup;
 mod error;
 mod local;
 mod media;
@@ -26,7 +25,6 @@ mod media;
 struct AppState {
     bearer: Arc<[u8]>,
     local: local::LocalState,
-    backup: Option<backup::BackupState>,
     media_light_slots: Arc<tokio::sync::Semaphore>,
     archive: archive::ArchiveState,
     archive_slots: Arc<tokio::sync::Semaphore>,
@@ -59,11 +57,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shutdown = CancellationToken::new();
     let local = local::LocalState::from_env()?;
-    let backup = backup::BackupState::from_env().await?;
     let state = AppState {
         bearer: Arc::from(format!("Bearer {token}").into_bytes()),
         local,
-        backup,
         media_light_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         archive: archive::ArchiveState::default(),
         archive_slots: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -71,11 +67,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let app = Router::new()
         .route("/v1/health", get(health))
-        .route("/v1/backup/object", put(backup::upload))
-        .route(
-            "/v1/backup/objects",
-            get(backup::list).delete(backup::delete),
-        )
         .route("/v1/archive/extract", post(archive::extract))
         .route("/v1/archive/{job_id}/cancel", post(archive::cancel))
         .route("/v1/archive/{job_id}/progress", get(archive::progress))

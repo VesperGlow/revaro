@@ -3,36 +3,15 @@ package config
 import (
 	"path/filepath"
 	"testing"
-	"time"
 )
 
-func validEnv(t *testing.T) {
-	t.Helper()
-	t.Setenv("S3_BUCKET", "bucket")
-	t.Setenv("S3_ACCESS_KEY", "key")
-	t.Setenv("S3_SECRET_KEY", "secret")
-	t.Setenv("S3_ENDPOINT", "")
-}
 func TestLoadDefaults(t *testing.T) {
-	validEnv(t)
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.DataDir != "/data" || c.WorkDir != "/work" || c.MediaCacheCapacity != 2<<30 {
 		t.Fatalf("defaults: %+v", c)
-	}
-	if !c.BackupEnabled || c.BackupInterval != 24*time.Hour || c.BackupRetention != 14 {
-		t.Fatalf("backup defaults: %+v", c)
-	}
-}
-func TestLegacyStorageEnvironmentIsIgnored(t *testing.T) {
-	validEnv(t)
-	t.Setenv("BLOCK_SIZE", "invalid")
-	t.Setenv("FASTCDC_MIN_SIZE", "invalid")
-	t.Setenv("BLOCK_RAM_CACHE_CAPACITY", "invalid")
-	if _, err := Load(); err != nil {
-		t.Fatalf("retired storage settings affected startup: %v", err)
 	}
 }
 func TestDatabasePath(t *testing.T) {
@@ -43,51 +22,13 @@ func TestDatabasePath(t *testing.T) {
 	}
 }
 func TestLoadRejectsInvalidActiveSettings(t *testing.T) {
-	validEnv(t)
 	t.Setenv("MEDIA_CACHE_CAPACITY", "-1")
 	if _, err := Load(); err == nil {
 		t.Fatal("invalid media cache accepted")
 	}
 }
 
-func TestLoadRejectsInvalidBackupSettings(t *testing.T) {
-	for name, value := range map[string]string{
-		"BACKUP_INTERVAL":  "30s",
-		"BACKUP_RETENTION": "0",
-		"BACKUP_ENABLED":   "maybe",
-	} {
-		validEnv(t)
-		t.Setenv(name, value)
-		if _, err := Load(); err == nil {
-			t.Fatalf("invalid %s=%s accepted", name, value)
-		}
-	}
-}
-
-func TestLoadBackupOverrides(t *testing.T) {
-	validEnv(t)
-	t.Setenv("BACKUP_INTERVAL", "2h")
-	t.Setenv("BACKUP_RETENTION", "7")
-	c, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !c.BackupEnabled || c.BackupInterval != 2*time.Hour || c.BackupRetention != 7 {
-		t.Fatalf("backup overrides: %+v", c)
-	}
-	validEnv(t)
-	t.Setenv("BACKUP_ENABLED", "false")
-	c, err = Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.BackupEnabled {
-		t.Fatal("BACKUP_ENABLED=false was ignored")
-	}
-}
-
 func TestTrustedProxyCIDRs(t *testing.T) {
-	validEnv(t)
 	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8, 2001:db8::/32")
 	c, err := Load()
 	if err != nil || len(c.TrustedProxies) != 2 {

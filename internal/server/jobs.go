@@ -16,9 +16,7 @@ const (
 	JobCancelled = "cancelled"
 )
 
-// JobManager is the common lifecycle/event plane for background work. Media
-// playback sessions intentionally remain separate because they are ephemeral
-// stream resources rather than user-visible jobs.
+// JobManager publishes lifecycle events for background work.
 type JobManager struct {
 	mu     sync.RWMutex
 	subs   map[chan struct{}]struct{}

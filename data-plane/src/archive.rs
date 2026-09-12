@@ -182,7 +182,7 @@ pub async fn extract(
         loop {
             let n = tokio::select! {
                 _ = cancel.cancelled() => return Err(ApiError::cancelled("archive download cancelled")),
-                result = reader.read(&mut buffer) => result.map_err(ApiError::upstream)?,
+                result = reader.read(&mut buffer) => result.map_err(ApiError::internal)?,
             };
             if n == 0 {
                 break;
@@ -209,7 +209,7 @@ pub async fn extract(
         };
         if copied != q.archive_size as u64 {
             let _ = tokio::fs::remove_file(&partial).await;
-            return Err(ApiError::upstream("archive source size changed"));
+            return Err(ApiError::internal("archive source size changed"));
         }
         tokio::fs::rename(partial, &source)
             .await

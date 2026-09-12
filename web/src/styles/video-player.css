@@ -52,8 +52,6 @@
 .video-error { position: absolute; z-index: 10; top: 50%; left: 50%; width: min(360px, calc(100% - 32px)); max-height: 65%; overflow: auto; padding: 24px; border: 1px solid #ffffff1a; border-radius: 16px; background: #20252bf2; text-align: center; transform: translate(-50%,-50%); }
 .video-error > p { margin: 0 0 16px; font-size: 14px; }
 .video-error > button { min-height: 44px; padding: 0 20px; border: 1px solid #ffffff24; border-radius: 9px; background: #ffffff12; color: inherit; }
-.video-error details { margin-top: 16px; color: var(--player-muted); font-size: 11px; text-align: left; overflow-wrap: anywhere; }
-.video-error summary { cursor: pointer; }
 @keyframes video-spin { to { transform: rotate(360deg); } }
 @media (max-width: 760px) {
   .video-top-shade { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); }

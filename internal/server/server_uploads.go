@@ -543,8 +543,10 @@ func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, ma
 			return nil, nil, err
 		}
 		objects[key] = true
-		if canHaveThumbnail(name) {
-			if videoExts[strings.ToLower(filepath.Ext(name))] {
+		if canHaveThumbnail(name) || audioSourceExts[strings.ToLower(filepath.Ext(name))] {
+			if audioSourceExts[strings.ToLower(filepath.Ext(name))] {
+				thumbnails[audioThumbnailKey(key)] = true
+			} else if videoExts[strings.ToLower(filepath.Ext(name))] {
 				thumbnails[videoThumbnailKey(key)] = true
 			} else {
 				thumbnails[imageThumbnailKey(key)] = true
@@ -555,25 +557,6 @@ func (s *Server) referencedStorageKeys(ctx context.Context) (map[string]bool, ma
 		return nil, nil, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, nil, err
-	}
-	mediaRows, err := s.db.QueryContext(ctx, `SELECT am.stream_object_key,f.object_key,am.has_cover FROM audio_media am JOIN files f ON f.id=am.file_id`)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer mediaRows.Close()
-	for mediaRows.Next() {
-		var streamKey, masterKey string
-		var hasCover bool
-		if err := mediaRows.Scan(&streamKey, &masterKey, &hasCover); err != nil {
-			return nil, nil, err
-		}
-		objects[streamKey] = true
-		if hasCover {
-			thumbnails[audioThumbnailKey(masterKey)] = true
-		}
-	}
-	if err := mediaRows.Err(); err != nil {
 		return nil, nil, err
 	}
 	return objects, thumbnails, nil

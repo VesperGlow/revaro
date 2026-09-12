@@ -47,7 +47,7 @@ describe('video seek authority',()=>{
 })
 
 describe('authoritative media element clock',()=>{
-  it('tracks continuous direct, MSE, and HLS playback from the element',()=>{
+  it('tracks continuous native playback from the element',()=>{
     expect(mediaElementTimelineTime(12.25,'direct',0)).toBe(12.25)
   })
   it('suppresses only paused teardown events, never an actively playing clock',()=>{
@@ -55,7 +55,7 @@ describe('authoritative media element clock',()=>{
     expect(shouldSyncMediaClock(true,false)).toBe(true)
     expect(shouldSyncMediaClock(false,true)).toBe(true)
   })
-  it('keeps the sampler alive through a transient MSE pause until teardown',()=>{
+  it('keeps the sampler alive through a transient pause until teardown',()=>{
     expect(shouldContinueMediaClock(true)).toBe(true)
     expect(shouldContinueMediaClock(false)).toBe(false)
   })

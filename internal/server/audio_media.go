@@ -1,13 +1,9 @@
 package server
 
 import (
-	"database/sql"
-	"encoding/json"
-	"errors"
-	"github.com/go-chi/chi/v5"
 	"net/http"
-	"path/filepath"
-	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type storedAudioChapter struct {
@@ -15,13 +11,6 @@ type storedAudioChapter struct {
 	StartMS int64  `json:"start_ms"`
 	EndMS   int64  `json:"end_ms"`
 }
-
-type storedAudioSubtitle struct {
-	StartMS int64  `json:"start_ms"`
-	EndMS   int64  `json:"end_ms"`
-	Text    string `json:"text"`
-}
-
 type audioChapterResponse struct {
 	ID    int     `json:"id"`
 	Title string  `json:"title"`
@@ -29,111 +18,28 @@ type audioChapterResponse struct {
 	End   float64 `json:"end"`
 }
 
-type audioSubtitleResponse struct {
-	ID    int     `json:"id"`
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
-}
-
 func (s *Server) audioMediaInfo(w http.ResponseWriter, r *http.Request) {
 	f, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || f.Kind != "file" || f.Status != "ready" || !isAudioSource(f) {
+	if err != nil || !isAudioSource(f) {
 		problem(w, http.StatusNotFound, "ready audio file not found")
 		return
 	}
-	var durationMS, streamSize int64
-	var chaptersJSON, subtitlesJSON, streamKey, streamETag string
-	var hasCover bool
-	err = s.db.QueryRowContext(r.Context(), `SELECT duration_ms,chapters_json,subtitles_json,stream_object_key,stream_size,stream_etag,has_cover FROM audio_media WHERE file_id=?`, f.ID).
-		Scan(&durationMS, &chaptersJSON, &subtitlesJSON, &streamKey, &streamSize, &streamETag, &hasCover)
-	if errors.Is(err, sql.ErrNoRows) {
-		metadata, probeErr := s.ensureMediaMetadata(r.Context(), f)
-		if probeErr != nil {
-			problem(w, http.StatusNotFound, "audio metadata is not available")
-			return
-		}
-		durationMS, streamKey, streamSize, streamETag = metadata.DurationMS, f.objectKey, f.Size, f.ETag
-		encoded, _ := json.Marshal(metadata.Chapters)
-		chaptersJSON, subtitlesJSON, hasCover = string(encoded), "[]", false
-		err = nil
-	}
+	metadata, err := s.ensureMediaMetadata(r.Context(), f)
 	if err != nil {
-		problem(w, http.StatusInternalServerError, "could not read audio metadata")
+		problem(w, http.StatusNotFound, "audio metadata is not available")
 		return
 	}
-	var stored []storedAudioChapter
-	if err := json.Unmarshal([]byte(chaptersJSON), &stored); err != nil {
-		problem(w, http.StatusInternalServerError, "audio chapter metadata is invalid")
-		return
+	chapters := make([]audioChapterResponse, 0, len(metadata.Chapters))
+	for index, chapter := range metadata.Chapters {
+		chapters = append(chapters, audioChapterResponse{ID: index + 1, Title: chapter.Title, Start: float64(chapter.StartMS) / 1000, End: float64(chapter.EndMS) / 1000})
 	}
-	chapters := make([]audioChapterResponse, 0, len(stored))
-	for index, chapter := range stored {
-		chapters = append(chapters, audioChapterResponse{
-			ID: index + 1, Title: chapter.Title,
-			Start: float64(chapter.StartMS) / 1000, End: float64(chapter.EndMS) / 1000,
-		})
-	}
-	var storedSubtitles []storedAudioSubtitle
-	if err := json.Unmarshal([]byte(subtitlesJSON), &storedSubtitles); err != nil {
-		problem(w, http.StatusInternalServerError, "audio subtitle metadata is invalid")
-		return
-	}
-	subtitles := make([]audioSubtitleResponse, 0, len(storedSubtitles))
-	for index, cue := range storedSubtitles {
-		subtitles = append(subtitles, audioSubtitleResponse{
-			ID: index + 1, Start: float64(cue.StartMS) / 1000,
-			End: float64(cue.EndMS) / 1000, Text: cue.Text,
-		})
+	hasCover := metadata.VideoCodec != ""
+	cover := ""
+	if hasCover {
+		cover = "/api/files/" + f.ID + "/thumbnail?v=" + f.ETag
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"duration":    float64(durationMS) / 1000,
-		"chapters":    chapters,
-		"subtitles":   subtitles,
-		"stream_url":  "/api/files/" + f.ID + "/audio/stream",
-		"cover_url":   coverURL(f.ID, f.ETag, hasCover),
-		"has_cover":   hasCover,
-		"stream_size": streamSize,
+		"duration": float64(metadata.DurationMS) / 1000, "chapters": chapters,
+		"cover_url": cover, "has_cover": hasCover,
 	})
-}
-
-func coverURL(fileID, etag string, hasCover bool) string {
-	if !hasCover {
-		return ""
-	}
-	return "/api/files/" + fileID + "/thumbnail?v=" + etag
-}
-
-func (s *Server) audioMediaStream(w http.ResponseWriter, r *http.Request) {
-	f, err := s.readableFile(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || f.Kind != "file" || f.Status != "ready" || !isAudioSource(f) {
-		problem(w, http.StatusNotFound, "ready audio file not found")
-		return
-	}
-	var key, etag string
-	var size int64
-	err = s.db.QueryRowContext(r.Context(), `SELECT stream_object_key,stream_size,stream_etag FROM audio_media WHERE file_id=?`, f.ID).Scan(&key, &size, &etag)
-	if errors.Is(err, sql.ErrNoRows) {
-		key, size, etag, err = f.objectKey, f.Size, f.ETag, nil
-	}
-	if err != nil {
-		problem(w, http.StatusInternalServerError, "could not read audio stream metadata")
-		return
-	}
-	stream := f
-	stream.Name = filepath.Base(f.Name)
-	stream.Size = size
-	stream.MimeType = responseMime(f)
-	stream.ETag = etag
-	stream.objectKey = key
-	w.Header().Set("Cache-Control", "private, max-age=3600")
-	s.serveFileContent(w, r, stream, true)
-}
-
-func durationMilliseconds(durations []time.Duration) int64 {
-	var total time.Duration
-	for _, duration := range durations {
-		total += duration
-	}
-	return max(total.Milliseconds(), 1)
 }

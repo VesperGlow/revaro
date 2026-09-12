@@ -110,7 +110,7 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "database error")
 		return
 	}
-	coverRows, err := s.db.QueryContext(r.Context(), `SELECT am.file_id FROM audio_media am JOIN files f ON f.id=am.file_id WHERE f.parent_id=? AND f.deleted_at IS NULL AND am.has_cover=1`, parent.ID)
+	coverRows, err := s.db.QueryContext(r.Context(), `SELECT m.file_id FROM media_metadata m JOIN files f ON f.id=m.file_id WHERE f.parent_id=? AND f.deleted_at IS NULL AND m.source_etag=f.etag AND m.video_codec<>''`, parent.ID)
 	if err != nil {
 		problem(w, 500, "could not load audio covers")
 		return
@@ -135,7 +135,7 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index := range out {
-		out[index].HasCover = covered[out[index].ID]
+		out[index].HasCover = isAudioSource(out[index]) && covered[out[index].ID]
 	}
 	for _, file := range out {
 		s.scheduleVideoThumbnail(file)
@@ -498,8 +498,8 @@ func (s *Server) copyFile(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, "could not copy file")
 		return
 	}
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO audio_media(file_id,duration_ms,chapters_json,subtitles_json,stream_object_key,stream_size,stream_etag,has_cover,created_at,updated_at) SELECT ?,duration_ms,chapters_json,subtitles_json,stream_object_key,stream_size,stream_etag,has_cover,?,? FROM audio_media WHERE file_id=?`, copyID, now, now, source.ID); err != nil {
-		problem(w, http.StatusInternalServerError, "could not copy audio metadata")
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) SELECT ?,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version FROM media_metadata WHERE file_id=?`, copyID, source.ID); err != nil {
+		problem(w, http.StatusInternalServerError, "could not copy media metadata")
 		return
 	}
 	if err = tx.Commit(); err != nil {

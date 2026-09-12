@@ -28,14 +28,12 @@ export interface SystemStatus {
   cache:{status:string;memory_bytes:number;disk_bytes:number;memory_entries:number;disk_entries:number;classes?:Record<string,SystemStatusCacheClass>}
   tasks:{status:string;running:number;queued:number;waiting:number;failed:number}
   object_cleanup:{status:string;pending:number}
-  backup:{status:string;enabled:boolean}
 }
 export interface TOTPStatusResponse { enabled:boolean; recovery_codes:number }
 export interface TOTPSetupResponse { secret:string; uri:string; qr_data_url:string }
 export interface TOTPRecoveryResponse { enabled:boolean; recovery_codes:string[] }
 export interface AudioChapter { id:number; title:string; start:number; end:number }
-export interface AudioSubtitle { id:number; start:number; end:number; text:string }
-export interface AudioMediaResponse { duration:number; chapters:AudioChapter[]; subtitles:AudioSubtitle[]; stream_url:string; cover_url:string; has_cover:boolean; stream_size:number }
+export interface AudioMediaResponse { duration:number; chapters:AudioChapter[]; cover_url:string; has_cover:boolean }
 export interface VideoSubtitleTrack { id:string; name:string; label:string; language:string; url:string; default?:boolean; forced?:boolean }
 export interface VideoMediaResponse { subtitles:VideoSubtitleTrack[] }
 export interface ArchiveJob {

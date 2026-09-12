@@ -40,7 +40,7 @@ describe('upload reliability', () => {
   it('uploads when saved state is malformed and local storage writes fail', async () => {
     const { tasks, uploads } = setup({}, true)
     vi.mocked(api).mockImplementation(async (path) => {
-      if (path === '/api/uploads') return { upload_id: 'new', mode: 'single', url: 'https://s3.test/put' } as never
+      if (path === '/api/uploads') return { upload_id: 'new', mode: 'single', url: '/api/uploads/new/data' } as never
       return {} as never
     })
     uploads.acceptFiles([new File(['abc'], 'file.txt')])
@@ -53,7 +53,7 @@ describe('upload reliability', () => {
     const { tasks, progress, uploads } = setup([{ uploadId: 'resumed', parentId: 'root', name: file.name, size: file.size, lastModified: file.lastModified }])
     vi.mocked(api).mockImplementation(async (path) => {
       if (path === '/api/uploads/resumed') return { upload_id: 'resumed', mode: 'multipart', part_size: 4, part_count: 3, parts: [{ part_number: 1, etag: 'one' }, { part_number: 2, etag: 'two' }] } as never
-      if (path === '/api/uploads/resumed/parts') return { parts: [{ part_number: 3, url: 'https://s3.test/part' }] } as never
+      if (path === '/api/uploads/resumed/parts') return { parts: [{ part_number: 3, url: '/api/uploads/resumed/data/3' }] } as never
       return {} as never
     })
     uploads.acceptFiles([file])

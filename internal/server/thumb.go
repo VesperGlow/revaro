@@ -198,11 +198,6 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) audioThumbnail(w http.ResponseWriter, r *http.Request, f File, key string) {
-	var hasCover bool
-	if err := s.db.QueryRowContext(r.Context(), `SELECT has_cover FROM audio_media WHERE file_id=?`, f.ID).Scan(&hasCover); err != nil || !hasCover {
-		problem(w, http.StatusNotFound, "audio has no cover")
-		return
-	}
 	result := s.audioThumbGroup.DoChan(f.ID+":"+f.ETag, func() (any, error) {
 		ctx, cancel := context.WithTimeout(s.workCtx, 5*time.Minute)
 		defer cancel()
@@ -215,10 +210,6 @@ func (s *Server) audioThumbnail(w http.ResponseWriter, r *http.Request, f File, 
 			return data, nil
 		}
 		data, err := s.generateAudioCover(ctx, f)
-		if errors.Is(err, storage.ErrNoCover) {
-			_, _ = s.db.ExecContext(ctx, `UPDATE audio_media SET has_cover=0,updated_at=? WHERE file_id=?`, time.Now().UTC().Format(time.RFC3339Nano), f.ID)
-			return nil, err
-		}
 		if err != nil {
 			return nil, err
 		}
@@ -290,8 +281,7 @@ func acquireThumbSlot(ctx context.Context, slots chan struct{}) bool {
 	}
 }
 
-// generateVideoThumb uses the same source selection as playback: direct local storage
-// Range for blobs and the local compatibility Reader for legacy manifests.
+// generateVideoThumb reads the original local blob.
 func (s *Server) generateVideoThumb(ctx context.Context, f File) ([]byte, bool) {
 	if f.Size <= 0 {
 		return nil, false

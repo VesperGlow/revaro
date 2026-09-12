@@ -186,7 +186,7 @@ func TestExternalStatsKeepMemoryAndDiskSeparate(t *testing.T) {
 	m.RegisterExternal("reader/books", func() ExternalStats {
 		return ExternalStats{MemoryBytes: 11, MemoryEntries: 2}
 	}, nil)
-	m.RegisterExternal("media/hls", func() ExternalStats {
+	m.RegisterExternal("external/test", func() ExternalStats {
 		return ExternalStats{DiskBytes: 13, DiskEntries: 1}
 	}, nil)
 	t.Cleanup(m.Close)
@@ -203,9 +203,9 @@ func TestExternalStatsKeepMemoryAndDiskSeparate(t *testing.T) {
 	if books.MemoryBytes != 11 || books.MemoryEntries != 2 || books.DiskBytes != 0 || books.DiskEntries != 0 {
 		t.Fatalf("reader/books stats = %+v", books)
 	}
-	hls := stats.Classes["media/hls"]
-	if hls.DiskBytes != 13 || hls.DiskEntries != 1 || hls.MemoryBytes != 0 || hls.MemoryEntries != 0 {
-		t.Fatalf("media/hls stats = %+v", hls)
+	external := stats.Classes["external/test"]
+	if external.DiskBytes != 13 || external.DiskEntries != 1 || external.MemoryBytes != 0 || external.MemoryEntries != 0 {
+		t.Fatalf("external/test stats = %+v", external)
 	}
 }
 
@@ -280,7 +280,7 @@ func TestDiskHitTouchesMemoryLRUWithoutChangingFileMtime(t *testing.T) {
 func TestExternalDiskUsageReservesGlobalBudget(t *testing.T) {
 	m := New(t.TempDir(), 0, 10)
 	m.RegisterClass(Class{Name: "managed", Priority: 50, Disk: true})
-	m.RegisterExternal("media/hls", func() ExternalStats {
+	m.RegisterExternal("external/test", func() ExternalStats {
 		return ExternalStats{DiskBytes: 8, DiskEntries: 1}
 	}, nil) // active/unreclaimable external usage
 	t.Cleanup(m.Close)
