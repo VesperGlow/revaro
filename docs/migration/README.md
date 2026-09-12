@@ -137,6 +137,16 @@ CI；更新 README 与 docs。
   其身份。
 * **`Local` 的 ETag 是 size+mtime 而非内容哈希**。
 * `docs/reader-flow.md` 已过时（提到 S3/HLS，实际是纯本地、无 HLS）。
+* **TOTP 端到端的复现结果不一致（未解决）**：对 `POST /api/auth/totp/setup`
+  返回的 secret 用 RFC 6238 算法计算 ±1 步长的验证码，前三次真实进程尝试
+  `enable` 均返回 401「the authenticator or recovery code is incorrect」，
+  第四次（脚本落在 `docs/migration/repro-totp.py`）却返回 200。客户端算法
+  已用 RFC 6238 附录 B 的四组向量自检，服务端的 base32 解码也由内置
+  `generate_code(RFC_SECRET, 1) == "287082"` 测试固定，因此两边算法都对；
+  差异来源未查清。**在查清之前不应把 TOTP 视为已验收**，建议在 CI 中重复
+  运行该复现脚本；若确为偶发，最可能是 setup 写入与 enable 读取之间的可见性
+  问题（但该路径应返回 410 而非 401，故存疑）。
+
 * 前端 `reader-real-epub.spec.ts` 里有一条**故意失败**的断言
   （`windowSync` 不得把内容向后移动）。
 * **深层嵌套 HTML 的递归遍历**：`revaro-reader` 的白名单清洗按 DOM 树递归
