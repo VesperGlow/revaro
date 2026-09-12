@@ -424,31 +424,29 @@
 }
 .shelf-cover {
   position: relative;
-  display: grid;
-  place-items: center;
+  display: block;
+  width: 100%;
   aspect-ratio: 1;
-  padding: 14px;
-  border: 1px solid var(--line, #e2e6eb);
-  border-radius: 18px;
-  background: linear-gradient(152deg, #f1f5f9, #e3eaf2);
   overflow: hidden;
+  border-radius: 12px;
+  background: transparent;
   cursor: pointer;
   transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
 .shelf-card[role='button']:hover .shelf-cover,
 .shelf-card[role='button']:focus-visible .shelf-cover {
   transform: translateY(-2px);
-  box-shadow: 0 16px 34px #0f172a1c;
+  box-shadow: 0 16px 34px #0f172a24;
 }
 .book-cover {
   position: relative;
   display: block;
+  width: 100%;
   height: 100%;
-  max-width: 100%;
-  aspect-ratio: 2 / 3;
-  border-radius: 7px;
-  background: #fff;
-  box-shadow: 0 14px 30px #0f172a2b;
+  max-width: none;
+  aspect-ratio: auto;
+  border-radius: inherit;
+  background: #e9eef4;
   overflow: hidden;
 }
 .book-cover img {
@@ -456,6 +454,7 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: 50% 42%;
 }
 .book-cover-fallback {
   position: absolute;
@@ -512,70 +511,62 @@
 .series-card {
   cursor: default;
 }
-/* 固定方形卡片：所有封面绝对定位，卡片高度只由宽度决定，与系列数量无关。
-   偏移步长由 BookShelf 依数量计算，数量越多间距越小，始终不越界。 */
+/* 固定方形裁切容器：无底卡、无边框，封面在其内部错位共同铺满整块区域。 */
 .series-stage {
   position: relative;
   width: 100%;
   aspect-ratio: 1;
-  padding: 5%;
-  border: 1px solid var(--line, #e2e6eb);
-  border-radius: 18px;
-  background: linear-gradient(152deg, #eef3f9, #dfe7f0);
+  border-radius: 12px;
+  background: transparent;
   overflow: hidden;
   isolation: isolate;
 }
 .series-cover {
   position: absolute;
-  top: 50%;
+  top: 0;
   left: 0;
-  aspect-ratio: 2 / 3;
+  height: 100%;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: inherit;
   background: transparent;
-  box-shadow: 0 12px 26px #0f172a30;
   overflow: hidden;
-  transform-origin: 50% 82%;
-  transition: box-shadow 0.18s ease, filter 0.18s ease;
+  transform-origin: 50% 50%;
+  box-shadow: 1px 0 0 #0f172a30;
+  transition: filter 0.18s ease;
 }
 .series-cover .book-cover {
   width: 100%;
   height: 100%;
-  max-width: none;
-  aspect-ratio: auto;
-  border-radius: inherit;
-  box-shadow: none;
 }
 .series-cover-main {
-  transform: translateY(-50%);
-  box-shadow: 0 18px 36px #0f172a3d;
+  transform: none;
   z-index: 2;
 }
 .series-cover-fan {
-  transform: translateY(-50%);
+  transform: none;
 }
 .series-cover:hover {
-  filter: brightness(1.04);
-  box-shadow: 0 16px 32px #0f172a44;
+  filter: brightness(1.05);
 }
 .series-cover:focus-visible {
-  z-index: 1200;
+  z-index: 4000;
   outline: 3px solid #93c5fd;
-  outline-offset: 2px;
+  outline-offset: -3px;
 }
 .series-badge {
   position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 1000;
+  top: 8px;
+  left: 8px;
+  z-index: 5000;
   padding: 2px 9px;
   border-radius: 999px;
-  background: #fffffff0;
-  color: #334155;
+  background: #0f172ab8;
+  color: #fff;
   font-size: 11px;
   font-weight: 750;
-  box-shadow: 0 4px 12px #0f172a1f;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(4px);
 }
 
 /* --- 相册分类 --- */
@@ -801,12 +792,9 @@
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 16px 12px;
   }
-  .shelf-cover {
-    border-radius: 14px;
-    padding: 10px;
-  }
+  .shelf-cover,
   .series-stage {
-    border-radius: 14px;
+    border-radius: 10px;
   }
 }
 

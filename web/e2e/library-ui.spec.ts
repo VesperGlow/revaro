@@ -89,15 +89,29 @@ test('分类栏在五个大类之间切换并展示对应视图', async ({ page 
   expect(seriesBox!.width).toBeCloseTo(singleBox!.width, 0)
   expect(seriesBox!.height).toBeCloseTo(singleBox!.height, 0)
 
-  // 所有封面都裁切在卡片边界内，不溢出容器。
+  // 单本卡片：封面几乎铺满整个固定容器，没有额外的白色底卡。
+  const singleCover = await single.locator('.shelf-cover').boundingBox()
+  const singleImage = await single.locator('.book-cover').boundingBox()
+  expect(singleImage!.width).toBeCloseTo(singleCover!.width, 0)
+  expect(singleImage!.height).toBeCloseTo(singleCover!.height, 0)
+
+  // 系列：多本封面共同铺满整个容器区域（允许边缘裁切）。
   const stage = await series.locator('.series-stage').boundingBox()
-  for (const cover of await series.locator('.series-cover').all()) {
-    const box = await cover.boundingBox()
-    expect(box!.x).toBeGreaterThanOrEqual(stage!.x - 1)
-    expect(box!.x + box!.width).toBeLessThanOrEqual(stage!.x + stage!.width + 1)
-    expect(box!.y).toBeGreaterThanOrEqual(stage!.y - 1)
-    expect(box!.y + box!.height).toBeLessThanOrEqual(stage!.y + stage!.height + 1)
-  }
+  const boxes = await Promise.all((await series.locator('.series-cover').all()).map(cover => cover.boundingBox()))
+  const left = Math.min(...boxes.map(box => box!.x))
+  const right = Math.max(...boxes.map(box => box!.x + box!.width))
+  const top = Math.min(...boxes.map(box => box!.y))
+  const bottom = Math.max(...boxes.map(box => box!.y + box!.height))
+  expect(left).toBeLessThanOrEqual(stage!.x + 1)
+  expect(right).toBeGreaterThanOrEqual(stage!.x + stage!.width - 1)
+  expect(top).toBeLessThanOrEqual(stage!.y + 1)
+  expect(bottom).toBeGreaterThanOrEqual(stage!.y + stage!.height - 1)
+
+  // 第一本完整展示，不被容器裁掉。
+  const mainBox = await series.locator('.series-cover-main').boundingBox()
+  expect(mainBox!.x).toBeGreaterThanOrEqual(stage!.x - 1)
+  expect(mainBox!.y).toBeGreaterThanOrEqual(stage!.y - 1)
+  expect(mainBox!.y + mainBox!.height).toBeLessThanOrEqual(stage!.y + stage!.height + 1)
   await page.screenshot({ path: testInfo.outputPath('bookshelf.png') })
 
   // 图片：全部视图 + 图库分类，底部可切换。
@@ -188,14 +202,12 @@ test('同系列书籍再多也收在同一张固定尺寸卡片内', async ({ pa
   const stage = await series.locator('.series-stage').boundingBox()
   expect(stage!.width).toBeCloseTo(stage!.height, 0)
 
-  // 全部封面（含旋转后的外接框）都裁切在卡片边界内。
-  for (const cover of await series.locator('.series-cover').all()) {
-    const box = await cover.boundingBox()
-    expect(box!.x).toBeGreaterThanOrEqual(stage!.x - 1)
-    expect(box!.x + box!.width).toBeLessThanOrEqual(stage!.x + stage!.width + 1)
-    expect(box!.y).toBeGreaterThanOrEqual(stage!.y - 1)
-    expect(box!.y + box!.height).toBeLessThanOrEqual(stage!.y + stage!.height + 1)
-  }
+  // 12 本封面共同铺满整块区域：左缘贴左、右缘抵达（并裁切于）右边界。
+  const boxes = await Promise.all((await series.locator('.series-cover').all()).map(cover => cover.boundingBox()))
+  expect(Math.min(...boxes.map(box => box!.x))).toBeLessThanOrEqual(stage!.x + 1)
+  expect(Math.max(...boxes.map(box => box!.x + box!.width))).toBeGreaterThanOrEqual(stage!.x + stage!.width - 1)
+  expect(Math.min(...boxes.map(box => box!.y))).toBeLessThanOrEqual(stage!.y + 1)
+  expect(Math.max(...boxes.map(box => box!.y + box!.height))).toBeGreaterThanOrEqual(stage!.y + stage!.height - 1)
   await page.screenshot({ path: testInfo.outputPath('bookshelf-many.png') })
 })
 
