@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use revaro_core::ApiError;
 use rusqlite::Connection;
 
 /// Number of connections kept open, matching the Go pool bound.
@@ -355,6 +356,38 @@ impl Database {
         })
         .await
         .map_err(|error| DbError::Worker(error.to_string()))?
+    }
+
+    /// Run `operation` on a blocking thread, allowing it to fail with a
+    /// client-visible [`ApiError`] as well as an internal database error.
+    ///
+    /// Handlers constantly need to distinguish "no such row" (a `404`) from "the
+    /// query broke" (a `500`) *inside* the closure, where the connection is in
+    /// scope. Returning [`ApiError`] from the closure keeps that decision next
+    /// to the query, instead of reconstructing it afterwards from an error kind
+    /// and re-deriving the right message.
+    ///
+    /// # Errors
+    /// Propagates the operation's error, or reports a generic database failure
+    /// if a connection could not be acquired or the worker could not run.
+    pub async fn call_api<T, F>(&self, operation: F) -> Result<T, ApiError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, ApiError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let pool = Arc::clone(&self.pool);
+        tokio::task::spawn_blocking(move || {
+            let mut connection = pool.acquire().map_err(|error| {
+                tracing::error!(%error, "could not acquire a database connection");
+                ApiError::internal("database error")
+            })?;
+            operation(&mut connection)
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "database worker failed");
+            ApiError::internal("database error")
+        })?
     }
 
     /// Create the bookkeeping table and apply every migration that is missing.

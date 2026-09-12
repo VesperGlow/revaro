@@ -17,6 +17,7 @@ pub mod auth_routes;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod file_routes;
 pub mod ids;
 pub mod middleware;
 pub mod proxy;

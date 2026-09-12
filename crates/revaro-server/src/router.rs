@@ -73,6 +73,7 @@ async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Health>, ApiEr
 fn api() -> Router<Arc<AppState>> {
     Router::new()
         .merge(crate::auth_routes::routes())
+        .merge(crate::file_routes::routes())
         .fallback(api_not_found)
 }
 
