@@ -280,6 +280,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 2b 对象存储 | ✅ | `refactor(rust): 移植本地对象存储并接入启动与就绪检查` |
 | 2c 阅读器解析 | ✅ | `refactor(rust): 新增 revaro-reader crate（EPUB/TXT 解析与白名单清洗）` |
 | 2d 认证与会话 | ✅ | `refactor(rust): 移植认证与会话并接通 /api/auth/* 路由` |
+| 验收协议自检 | ✅ | `cargo xtask check` 在 main 上退出码 0（fmt + clippy -D warnings + 全量测试 + wasm32 类型检查） |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
