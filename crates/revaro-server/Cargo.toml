@@ -1,0 +1,38 @@
+[package]
+name = "revaro-server"
+description = "Revaro Axum backend and application entry point"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "revaro_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "revaro"
+path = "src/main.rs"
+
+[dependencies]
+revaro-core = { workspace = true, features = ["axum"] }
+
+axum.workspace = true
+bytes.workspace = true
+http.workspace = true
+mime_guess.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }

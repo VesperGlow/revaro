@@ -4,6 +4,9 @@
 *.db
 *.db-shm
 *.db-wal
+# Cargo build output and the generated browser bundle
+/target/
+/dist/
 web/node_modules/
 web/.npm-cache/
 # 前端构建产物（由 npm run build 生成，go:embed 打进二进制）

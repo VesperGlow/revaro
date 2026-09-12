@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+description = "Build orchestration for the Revaro workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Deliberately dependency-free: the build driver must not add to the dependency
+# graph it is responsible for producing.
+[dependencies]

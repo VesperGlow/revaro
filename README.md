@@ -49,6 +49,24 @@ docker compose up -d
 
 ## 开发与检查
 
+> **迁移进行中**：本仓库正在从「Go 后端 + Vue 前端 + Rust data-plane」迁移为
+> 单一 Rust Cargo workspace（Axum 后端 + Leptos 前端 + 共享 core crate）。
+> 迁移计划、阶段划分与审计结论见 [docs/migration/README.md](docs/migration/README.md)。
+> 下面的 npm / Go 命令在迁移完成前仍然有效；新代码一律使用 Cargo。
+
+新的 Rust 工作区：
+
+```sh
+cargo xtask web-build     # 构建 Leptos 前端到 dist/web
+cargo xtask check         # fmt + clippy + 全量测试 + wasm 类型检查
+cargo xtask build         # release 服务端 + 前端产物
+```
+
+`wasm-bindgen` CLI 版本必须与 workspace 固定的版本一致
+（`cargo install wasm-bindgen-cli --version 0.2.128`）。
+
+迁移前的工具链（逐步下线）：
+
 ```sh
 cd web
 npm ci

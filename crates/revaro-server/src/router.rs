@@ -1,0 +1,197 @@
+//! The HTTP router.
+//!
+//! The shape mirrors the Go chi router so the client contract is unchanged:
+//! `/healthz` and `/readyz` are public probes, `/api/*` always answers JSON
+//! (including its own 404), and everything else is the single-page client.
+//!
+//! Feature routers are attached one migration stage at a time; until then every
+//! unknown API path produces the same `api endpoint not found` body the Go
+//! server produced, so the client's error handling is already correct.
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::routing::get;
+use axum::{Json, Router};
+use revaro_core::ApiError;
+use revaro_core::api::Health;
+
+use crate::config::Config;
+use crate::{middleware, web};
+
+/// Assemble the full application router.
+pub fn build(config: Arc<Config>) -> Router {
+    Router::new()
+        .route("/healthz", get(health))
+        .route("/readyz", get(ready))
+        .nest("/api", api())
+        .fallback(web::serve)
+        .with_state(config.clone())
+        // Order matters, and matches the Go chain: security headers wrap the
+        // origin guard, which wraps the routes.
+        .layer(axum::middleware::from_fn_with_state(
+            config.clone(),
+            middleware::origin_guard,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            config,
+            middleware::security_headers,
+        ))
+}
+
+/// Liveness probe.
+async fn health() -> Json<Health> {
+    Json(Health {
+        status: "ok".to_owned(),
+    })
+}
+
+/// Readiness probe.
+///
+/// Once the database and object store are wired in, this reports `503` while
+/// either is unavailable, exactly as the Go handler did. Until those modules
+/// exist there is nothing to probe, so reporting ready is truthful.
+async fn ready(State(_config): State<Arc<Config>>) -> Json<Health> {
+    Json(Health {
+        status: "ready".to_owned(),
+    })
+}
+
+/// The authenticated API subtree.
+fn api() -> Router<Arc<Config>> {
+    Router::new().fallback(api_not_found)
+}
+
+/// Every unmatched `/api/*` path answers JSON rather than falling through to
+/// the single-page client.
+async fn api_not_found() -> ApiError {
+    ApiError::not_found("api endpoint not found")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use http::{Request, StatusCode};
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    fn test_config() -> Arc<Config> {
+        Arc::new(
+            Config::from_lookup(&|name| match name {
+                "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
+                "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
+                _ => None,
+            })
+            .expect("test configuration is valid"),
+        )
+    }
+
+    async fn get(app: Router, uri: &str, origin: Option<&str>) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder().method("GET").uri(uri);
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        let response = app
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn healthz_reports_ok() {
+        let (status, body) = get(build(test_config()), "/healthz", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!({"status": "ok"}));
+    }
+
+    #[tokio::test]
+    async fn readyz_reports_ready() {
+        let (status, body) = get(build(test_config()), "/readyz", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!({"status": "ready"}));
+    }
+
+    #[tokio::test]
+    async fn unknown_api_paths_answer_json() {
+        let (status, body) = get(build(test_config()), "/api/does-not-exist", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body,
+            serde_json::json!({"error": {"status": 404, "message": "api endpoint not found"}})
+        );
+    }
+
+    #[tokio::test]
+    async fn api_responses_are_not_cached_and_carry_security_headers() {
+        let response = build(test_config())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/does-not-exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let headers = response.headers();
+        assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+        assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
+        assert!(headers.get("content-security-policy").is_some());
+        // HTTP base URL must not advertise HSTS.
+        assert!(headers.get("strict-transport-security").is_none());
+    }
+
+    #[tokio::test]
+    async fn write_requests_require_a_matching_origin() {
+        let app = build(test_config());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/uploads")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/uploads")
+            .header("origin", "http://evil.example.com")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/uploads")
+            .header("origin", "http://localhost:8080")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        // The origin is accepted, so the request reaches the router and misses.
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn reads_do_not_require_an_origin() {
+        let (status, _) = get(build(test_config()), "/healthz", None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_missing_bundle_reports_how_to_build_it() {
+        let response = build(test_config())
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("cargo xtask web-build"), "{text}");
+    }
+}

@@ -1,0 +1,5 @@
+# `cargo xtask <task>` is the single entry point for building and checking the
+# workspace. The alias is what makes that spelling work; `xtask` itself is a
+# normal workspace member so `cargo run -p xtask -- <task>` also works.
+[alias]
+xtask = "run --quiet --package xtask --"
