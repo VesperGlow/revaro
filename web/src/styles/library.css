@@ -1,0 +1,860 @@
+/* ===== 分类栏（侧边可收起分类栏）与媒体库视图 ===== */
+
+/* --- 布局：分类栏占第一列，内容在第二列 --- */
+.app-shell {
+  grid-template-columns: 236px minmax(0, 1fr);
+}
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 70px minmax(0, 1fr);
+}
+.app-shell > .content {
+  grid-column: 2;
+  grid-row: 2;
+}
+.app-shell.library-mode > .content {
+  padding-top: 34px;
+}
+
+.app-sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  position: sticky;
+  top: 66px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 66px);
+  height: calc(100dvh - 66px);
+  padding: 12px 10px 16px;
+  border-right: 1px solid var(--line, #e6eaf0);
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 10px;
+}
+.sidebar-collapse {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 650;
+}
+.sidebar-collapse:hover {
+  background: #eef2f7;
+  color: #334155;
+}
+.sidebar-collapse svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sidebar-mobile-close {
+  display: none;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #64748b;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.sidebar-category {
+  border-radius: 12px;
+}
+.sidebar-category.active {
+  background: #eef4fb;
+}
+.category-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.category-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: #4a5b6d;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: left;
+}
+.category-main:hover {
+  background: #eef2f7;
+  color: #1d4ed8;
+}
+.category-main.active {
+  background: #e4eefb;
+  color: #1d4ed8;
+}
+.category-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: #5b7591;
+}
+.category-main.active .category-icon {
+  color: #2563eb;
+}
+.category-icon svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.category-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.category-count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+.category-main.active .category-count {
+  background: #d3e4fb;
+  color: #1d4ed8;
+}
+.category-expand {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #94a3b8;
+}
+.category-expand:hover {
+  background: #e8eef6;
+  color: #475569;
+}
+.category-expand svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.18s ease;
+}
+.category-expand svg.open {
+  transform: rotate(90deg);
+}
+.category-paths {
+  padding: 2px 0 8px 12px;
+  animation: sidebar-paths-in 0.18s ease;
+}
+@keyframes sidebar-paths-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* --- 分类栏路径树 --- */
+.path-node {
+  min-width: 0;
+}
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: calc(var(--depth, 0) * 12px);
+  border-radius: 9px;
+}
+.path-row.active {
+  background: #ddeafa;
+}
+.path-toggle {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #94a3b8;
+}
+.path-toggle.spacer {
+  pointer-events: none;
+}
+.path-toggle:hover {
+  color: #475569;
+}
+.path-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.16s ease;
+}
+.path-toggle svg.open {
+  transform: rotate(90deg);
+}
+.path-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 8px 0 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #5b6b7d;
+  font-size: 12.5px;
+  font-weight: 550;
+  text-align: left;
+}
+.path-label:hover {
+  color: #1d4ed8;
+}
+.path-label svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.75;
+}
+.path-label span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.path-label em {
+  color: #94a3b8;
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 700;
+}
+.path-row.active .path-label {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+.path-loading {
+  display: block;
+  padding: 5px 10px;
+  color: #9aa7b4;
+  font-size: 11.5px;
+}
+
+.sidebar-foot {
+  padding-top: 8px;
+  margin-top: 6px;
+  border-top: 1px solid #e8edf3;
+}
+.trash-entry {
+  width: 100%;
+  color: #64748b;
+}
+
+/* 收起状态：只保留图标 */
+.app-sidebar.collapsed .category-main {
+  justify-content: center;
+  padding: 0;
+}
+.app-sidebar.collapsed .sidebar-collapse {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+/* --- 媒体库视图 --- */
+.library-view {
+  min-width: 0;
+}
+.library-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 26px;
+}
+.library-heading {
+  min-width: 0;
+}
+.library-heading h1 {
+  margin: 6px 0 6px;
+  font-size: 30px;
+  letter-spacing: -0.03em;
+}
+.library-head .actions {
+  flex-wrap: wrap;
+}
+
+.view-switch,
+.gallery-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line, #e2e6eb);
+  border-radius: 12px;
+  background: #f1f5f9;
+}
+.view-switch button,
+.gallery-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #5b6b7d;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.view-switch button:hover,
+.gallery-switch button:hover {
+  color: #1d4ed8;
+}
+.view-switch button.active,
+.gallery-switch button.active {
+  background: #fff;
+  color: #1d4ed8;
+  box-shadow: 0 2px 8px #0f172a14;
+}
+.view-switch svg,
+.gallery-switch svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gallery-switch {
+  position: sticky;
+  bottom: 18px;
+  z-index: 12;
+  margin: 26px auto 0;
+  width: max-content;
+  max-width: 100%;
+  background: #ffffffef;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 12px 30px #0f172a1f;
+}
+
+/* 拖放提示与内容区域跟随分类栏宽度 */
+.app-shell .drop-zone {
+  inset: 66px 0 0 236px;
+}
+.app-shell.sidebar-collapsed .drop-zone {
+  inset: 66px 0 0 70px;
+}
+
+/* --- 书架 --- */
+.book-shelf {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 24px 20px;
+}
+.shelf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.shelf-cover {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  padding: 14px;
+  border: 1px solid var(--line, #e2e6eb);
+  border-radius: 18px;
+  background: linear-gradient(152deg, #f1f5f9, #e3eaf2);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.shelf-card[role='button']:hover .shelf-cover,
+.shelf-card[role='button']:focus-visible .shelf-cover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 34px #0f172a1c;
+}
+.book-cover {
+  position: relative;
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 14px 30px #0f172a2b;
+  overflow: hidden;
+}
+.book-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.book-cover-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 10px;
+  background: linear-gradient(160deg, #41628a, #1d3350);
+  color: #eef4fb;
+  text-align: center;
+}
+.book-cover-fallback b {
+  font-size: 32px;
+  font-weight: 800;
+  opacity: 0.92;
+}
+.book-cover-fallback small {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.85;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.shelf-meta {
+  min-width: 0;
+  padding: 0 2px;
+}
+.shelf-meta strong {
+  display: block;
+  overflow: hidden;
+  color: #25364a;
+  font-size: 13.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shelf-meta small {
+  display: block;
+  margin-top: 3px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.series-card {
+  cursor: default;
+}
+.series-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  aspect-ratio: 1;
+  padding: 14px 12px;
+  border: 1px solid var(--line, #e2e6eb);
+  border-radius: 18px;
+  background: linear-gradient(152deg, #eef3f9, #dfe7f0);
+  overflow: hidden;
+}
+.series-main {
+  display: grid;
+  place-items: center;
+  flex: 0 0 56%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.series-main .book-cover {
+  transition: transform 0.18s ease;
+}
+.series-main:hover .book-cover {
+  transform: translateY(-2px);
+}
+.series-fan {
+  position: relative;
+  flex: 1;
+  height: 100%;
+}
+.fan-card {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 66%;
+  aspect-ratio: 2 / 3;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  z-index: var(--z, 1);
+  transform: translate(var(--x, 0), -50%) rotate(var(--r, 0deg));
+  transition: transform 0.26s cubic-bezier(0.22, 0.68, 0.32, 1.02);
+}
+.fan-card .book-cover {
+  width: 100%;
+  height: 100%;
+  box-shadow: 0 8px 20px #0f172a33;
+}
+.fan-card:hover {
+  z-index: 30;
+}
+.fan-card:hover .book-cover {
+  box-shadow: 0 12px 26px #0f172a44;
+}
+.fan-more {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: 31;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #1e293be6;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.series-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 32;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: #fffffff0;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 750;
+  box-shadow: 0 4px 12px #0f172a1f;
+}
+.series-toggle {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 33;
+  min-height: 28px;
+  padding: 0 11px;
+  border: 1px solid #cbd9e8;
+  border-radius: 999px;
+  background: #fffffff2;
+  color: #3f5a75;
+  font-size: 11.5px;
+  font-weight: 700;
+  box-shadow: 0 4px 12px #0f172a1f;
+}
+.series-toggle:hover {
+  color: #1d4ed8;
+  border-color: #9dbfe8;
+}
+
+/* --- 相册分类 --- */
+.album-list {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+.album > header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line, #e6eaf0);
+}
+.album > header h3 {
+  margin: 0;
+  color: #25364a;
+  font-size: 16px;
+}
+.album > header p {
+  margin: 3px 0 0;
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+.album > header > span {
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* --- 列表视图 --- */
+.file-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.file-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 62px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: #fff;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+.file-row:hover {
+  border-color: var(--line, #e2e6eb);
+  background: #f7fafc;
+}
+.file-row.selected {
+  border-color: #9dbfe8;
+  background: #f2f7fd;
+}
+.row-select {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid #d5deea;
+  border-radius: 9px;
+  background: #fff;
+  color: transparent;
+}
+.file-row:hover .row-select,
+.row-select:focus-visible,
+.row-select.active {
+  color: #94a3b8;
+}
+.row-select.active {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+.row-select svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.row-preview {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #f1f5f9, #e6edf5);
+}
+.row-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.row-preview .file-type-icon {
+  width: 30px;
+  height: 30px;
+}
+.row-preview .large-video,
+.row-preview .large-audio {
+  width: 34px;
+  height: 34px;
+  font-size: 15px;
+}
+.row-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.row-info strong {
+  overflow: hidden;
+  color: #25364a;
+  font-size: 13.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-info small {
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-trailing {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.row-duration {
+  color: #64748b;
+}
+
+/* --- 响应式 --- */
+@media (max-width: 1100px) {
+  .book-shelf {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 20px 14px;
+  }
+}
+
+@media (max-width: 850px) {
+  .app-shell,
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app-shell > .content {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .app-shell .drop-zone,
+  .app-shell.sidebar-collapsed .drop-zone {
+    inset: calc(60px + env(safe-area-inset-top, 0px)) 0 0;
+  }
+  .app-sidebar {
+    position: fixed;
+    z-index: 60;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(310px, 86vw);
+    height: auto;
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    border-right: 1px solid var(--line, #e6eaf0);
+    box-shadow: 0 24px 60px #0f172a3d;
+    transform: translateX(-104%);
+    visibility: hidden;
+    transition: transform 0.22s ease, visibility 0.22s ease;
+  }
+  .app-sidebar.mobile-open {
+    transform: none;
+    visibility: visible;
+  }
+  .sidebar-mobile-close {
+    display: grid;
+    place-items: center;
+  }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: #0f172a55;
+  }
+  .library-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .library-head .actions {
+    width: 100%;
+  }
+  .library-head .actions > button,
+  .library-head .view-switch {
+    flex: 1;
+  }
+  .library-head .view-switch button {
+    flex: 1;
+    justify-content: center;
+  }
+  .gallery-switch {
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    margin-top: 20px;
+  }
+  .book-shelf {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 16px 12px;
+  }
+  .shelf-cover,
+  .series-stage {
+    border-radius: 14px;
+    padding: 10px;
+  }
+  .series-main {
+    flex-basis: 60%;
+  }
+}
+
+@media (max-width: 520px) {
+  .book-shelf {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .file-view-switch span {
+    display: none;
+  }
+  .file-view-switch button {
+    padding: 0 10px;
+  }
+}
+
+@media (hover: none) {
+  .row-select {
+    color: #94a3b8;
+  }
+}

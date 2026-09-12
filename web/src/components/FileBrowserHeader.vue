@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChevronDown, ChevronRight, FilePlus2, FolderPlus, FolderUp, Upload } from '@lucide/vue'
+import { ChevronDown, ChevronRight, FilePlus2, FolderPlus, FolderUp, LayoutGrid, List, Upload } from '@lucide/vue'
 import type { DriveFile } from '../api'
 import { formatSize } from '../format'
 
@@ -11,6 +11,7 @@ const props=defineProps<{
   totalBytes:number
   fileCount:number
   trashMode:boolean
+  viewMode?:'grid'|'list'
 }>()
 
 const emit=defineEmits<{
@@ -21,6 +22,7 @@ const emit=defineEmits<{
   uploadFolder:[]
   leaveTrash:[]
   emptyTrash:[]
+  'update:viewMode':[mode:'grid'|'list']
 }>()
 
 const createMenu=ref<HTMLDetailsElement|null>(null)
@@ -78,6 +80,10 @@ onBeforeUnmount(()=>{window.removeEventListener('pointerdown',closeMenus);window
     </div>
     <div v-if="trashMode" class="actions"><button class="secondary" @click="$emit('leaveTrash')">返回我的文件</button><button class="trash-empty-action" :disabled="!itemCount" @click="$emit('emptyTrash')">清空回收站</button></div>
     <div v-else class="actions">
+      <div class="view-switch file-view-switch" role="group" aria-label="文件视图切换">
+        <button type="button" :class="{active:viewMode!=='list'}" :aria-pressed="viewMode!=='list'" title="方块视图" @click="emit('update:viewMode','grid')"><LayoutGrid aria-hidden="true" /><span>方块</span></button>
+        <button type="button" :class="{active:viewMode==='list'}" :aria-pressed="viewMode==='list'" title="列表视图" @click="emit('update:viewMode','list')"><List aria-hidden="true" /><span>列表</span></button>
+      </div>
       <div class="desktop-create-actions">
         <button class="secondary" @click="$emit('newDocument')"><FilePlus2 aria-hidden="true" />新建文档</button>
         <button class="secondary" @click="$emit('createFolder')"><FolderPlus aria-hidden="true" />新建文件夹</button>

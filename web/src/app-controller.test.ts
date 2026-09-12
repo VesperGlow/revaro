@@ -5,10 +5,13 @@ describe('app controller', () => {
   it('registers every component referenced by the external App template', () => {
     expect(Object.keys(App.components ?? {}).sort()).toEqual([
       'AppDialog',
+      'AppSidebar',
       'AppTopbar',
       'DocumentEditor',
       'FileBrowserHeader',
       'FileGrid',
+      'FileRows',
+      'LibraryView',
       'LoginPage',
       'MediaPreview',
       'MoveCopyDialog',

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Activity, Settings, Trash2 } from '@lucide/vue'
+import { Activity, Menu, Settings, Trash2 } from '@lucide/vue'
 import { isActiveTaskStatus } from '../taskStatus'
 import type { BackgroundTask } from '../types'
 import TaskCenter from './TaskCenter.vue'
@@ -21,6 +21,7 @@ const emit=defineEmits<{
   cancelTask:[task:BackgroundTask]
   retryTask:[task:BackgroundTask]
   tasksChanged:[]
+  menu:[]
 }>()
 
 const mobile=ref(false)
@@ -45,7 +46,10 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
 
 <template>
   <header class="topbar">
-    <button class="logo brand-button" title="回到我的文件" aria-label="回到我的文件" @click="$emit('home')"><img class="brand-logo" src="/revaro-logo.svg" alt="" aria-hidden="true"></button>
+    <div class="topbar-left">
+      <button v-if="mobile" class="sidebar-mobile-trigger" title="分类栏" aria-label="打开分类栏" @click="$emit('menu')"><Menu aria-hidden="true" /></button>
+      <button class="logo brand-button" title="回到我的文件" aria-label="回到我的文件" @click="$emit('home')"><img class="brand-logo" src="/revaro-logo.svg" alt="" aria-hidden="true"></button>
+    </div>
     <div class="top-actions">
       <template v-if="!mobile">
         <TaskCenter :tasks="tasks" @changed="$emit('tasksChanged')" @cancel="$emit('cancelTask',$event)" @retry="$emit('retryTask',$event)" />
@@ -72,6 +76,10 @@ onBeforeUnmount(()=>{mediaQuery?.removeEventListener('change',updateMobile);docu
 </template>
 
 <style scoped>
+.topbar-left{display:flex;align-items:center;gap:8px;min-width:0}
+.sidebar-mobile-trigger{display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:12px;background:transparent;color:#475569;flex:0 0 auto}
+.sidebar-mobile-trigger:hover{background:#f1f5f9;color:#1d4ed8}
+.sidebar-mobile-trigger svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .brand-logo{display:block;width:auto;height:28px}.brand-button{min-width:0}
 .trash-button{display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:50%;background:transparent;color:#64748b}.trash-button:hover{background:#f1f5f9;color:#334155}.trash-button svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.mobile-account-menu{position:relative}.mobile-account-menu>summary{position:relative;display:grid;width:40px;height:40px;place-items:center;cursor:pointer;list-style:none}.mobile-account-menu>summary::-webkit-details-marker{display:none}.mobile-account-menu>summary .avatar-badge{width:34px;height:34px}.task-menu-badge{position:absolute;top:1px;right:0;width:9px;height:9px;border:2px solid #fff;border-radius:50%;background:#2563eb}.task-menu-badge.failed{display:grid;place-items:center;width:15px;height:15px;border-width:1px;background:#dc2626;color:#fff;font-size:9px;font-style:normal;font-weight:900;line-height:1}.mobile-account-menu>section{position:fixed;z-index:44;top:64px;right:max(10px,env(safe-area-inset-right,0px));display:grid;width:min(210px,calc(100vw - 20px));padding:7px;border:1px solid #dfe6ee;border-radius:15px;background:#fff;box-shadow:0 22px 60px #0f172a2e}.mobile-account-menu hr{width:calc(100% - 12px);margin:5px 6px;border:0;border-top:1px solid #e8edf3}.mobile-tool-item,.mobile-trash{display:flex;align-items:center;min-height:46px;padding:3px 9px;border:0;border-radius:10px;background:#fff;color:#34475e;gap:9px}.mobile-tool-item:hover,.mobile-trash:hover{background:#f4f7fb}.mobile-tool-item{width:100%;cursor:pointer;text-align:left}.mobile-tool-item b,.mobile-trash>b{font-size:13px;font-weight:700}.mobile-tool-item small{margin-left:auto;color:#64748b;font-size:11px}.mobile-tool-item small.failed{color:#dc2626;font-weight:750}.mobile-task-icon{display:grid;width:34px;height:34px;place-items:center;color:#3d5f7e}.mobile-task-icon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.mobile-trash{width:100%;cursor:pointer}.mobile-trash .trash-button{width:34px;height:34px}.mobile-trash b{font-weight:700}
 @media(max-width:850px){.topbar{padding-right:max(14px,env(safe-area-inset-right,0px));padding-left:max(14px,env(safe-area-inset-left,0px))}.brand-logo{height:24px}.brand-button{flex:0 0 auto;white-space:nowrap}.top-actions{flex:0 0 auto;gap:5px}.top-actions :deep(.system-status>summary){width:38px;height:40px}.mobile-account-menu{flex:0 0 auto}}

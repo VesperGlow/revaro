@@ -4,10 +4,13 @@ import { computed, defineAsyncComponent, defineComponent, onBeforeUnmount, onMou
 import { api } from './api'
 import type { DriveFile } from './api'
 import AppDialog from './components/AppDialog.vue'
+import AppSidebar from './components/AppSidebar.vue'
 import AppTopbar from './components/AppTopbar.vue'
 import DocumentEditor from './components/DocumentEditor.vue'
 import FileBrowserHeader from './components/FileBrowserHeader.vue'
 import FileGrid from './components/FileGrid.vue'
+import FileRows from './components/FileRows.vue'
+import LibraryView from './components/LibraryView.vue'
 import LoginPage from './components/LoginPage.vue'
 import MoveCopyDialog from './components/MoveCopyDialog.vue'
 import SelectionToolbar from './components/SelectionToolbar.vue'
@@ -15,17 +18,26 @@ import ShareDialog from './components/ShareDialog.vue'
 import { useAccountSettings } from './composables/useAccountSettings'
 import { useBackgroundTasks } from './composables/useBackgroundTasks'
 import { useAuthSession } from './composables/useAuthSession'
+import { useLibrary } from './composables/useLibrary'
+import { usePersistentMode } from './composables/useLocalView'
 import { useUploads } from './composables/useUploads'
 import { useDialogs } from './composables/useDialogs'
 import { isArchive, isAudio, isBook, isEditable, isMedia, isVideo, thumbSRC } from './fileTypes'
 import { formatSize } from './format'
+import type { LibraryType } from './library'
 import type { ShareResponse, StorageStats, UploadTask } from './types'
 
 const MediaPreview=defineAsyncComponent(()=>import('./components/MediaPreview.vue'))
 const Reader=defineAsyncComponent(()=>import('./Reader.vue'))
 
+const SIDEBAR_COLLAPSED_KEY='revaro:sidebar:collapsed'
+
+function readSidebarCollapsed():boolean{
+  try{return localStorage.getItem(SIDEBAR_COLLAPSED_KEY)==='1'}catch{return false}
+}
+
 export default defineComponent({
-  components:{AppDialog,AppTopbar,DocumentEditor,FileBrowserHeader,FileGrid,LoginPage,MediaPreview,MoveCopyDialog,Reader,SelectionToolbar,ShareDialog},
+  components:{AppDialog,AppSidebar,AppTopbar,DocumentEditor,FileBrowserHeader,FileGrid,FileRows,LibraryView,LoginPage,MediaPreview,MoveCopyDialog,Reader,SelectionToolbar,ShareDialog},
   setup(){
     
     const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -56,6 +68,18 @@ export default defineComponent({
     const share = reactive({ active:false, url:'', createdAt:'', busy:false, error:'', copied:false })
     const editor = reactive({ isNew:false, readonly:false, fileId:'', name:'', originalName:'', content:'', original:'', etag:'', mode:'edit' as 'edit'|'split'|'preview', busy:false, error:'' })
     const directoryStats = reactive<StorageStats>({ total_bytes:0, file_count:0 })
+    // 分类栏与媒体库视图状态：section 决定当前大类，libraryFolderId 为其下的路径过滤。
+    const section = ref<LibraryType>('file')
+    const sidebarCollapsed = ref(readSidebarCollapsed())
+    const sidebarMobileOpen = ref(false)
+    const libraryFolderId = ref<string|null>(null)
+    const treeToken = ref(0)
+    const library = useLibrary()
+    const libraryCounts = library.counts
+    const libraryTrees = library.trees
+    const libraryLoading = library.loading
+    const libraryError = library.error
+    const fileViewMode = usePersistentMode<'grid'|'list'>('revaro:library:media:file','grid',['grid','list'] as const)
     const fileInput = ref<HTMLInputElement|null>(null)
     const folderInput = ref<HTMLInputElement|null>(null)
     const avatarInput = ref<HTMLInputElement|null>(null)
@@ -68,6 +92,23 @@ export default defineComponent({
     const selectedBytes = computed(() => selectedItems.value.reduce((total,item) => total+(item.kind==='file'?item.size:0),0))
     const selectedFiles = computed(() => selectedItems.value.filter(item => item.kind==='file'))
     const singleSelected = computed(() => selectedItems.value.length===1?selectedItems.value[0]:null)
+    // 媒体库条目按分类栏选中的路径过滤；未选路径时展示全部。
+    const libraryItems = computed(()=>{
+      const filter=libraryFolderId.value
+      if(!filter)return library.items.value
+      return library.items.value.filter(item=>item.folder_path.some(folder=>folder.id===filter))
+    })
+    const libraryFilterLabel = computed(()=>{
+      const filter=libraryFolderId.value
+      if(!filter)return '全部位置'
+      for(const item of library.items.value){
+        const index=item.folder_path.findIndex(folder=>folder.id===filter)
+        if(index>=0)return item.folder_path.slice(0,index+1).map(folder=>folder.name).join(' / ')
+      }
+      return '全部位置'
+    })
+    const mediaSection = computed<Exclude<LibraryType,'file'>>(()=>section.value==='file'?'book':section.value)
+    const previewItems = computed(()=>section.value==='file'?items.value:libraryItems.value)
     
     const {dialog,askDialog,confirmDialog,promptDialog,finishDialog}=useDialogs()
     
@@ -83,12 +124,19 @@ export default defineComponent({
     function blurEventTarget(event:Event){(event.target as HTMLInputElement).blur()}
     
     function openReader(item:DriveFile){readerFile.value=item;openModal('reader');history.replaceState({revaroNav:true},'','/read/'+item.id)}
-    // 启动路由：按 URL 恢复到对应文件夹（/f/{id}），再处理阅读器深链。
+    // 启动路由：按 URL 恢复到文件夹（/f/{id}）或分类视图（/library/{type}），再处理阅读器深链。
     async function openRoute(){
+      const lm=location.pathname.match(/^\/library\/(book|image|video|audio|file)(?:\/f\/([^/]+))?\/?$/)
       const fm=location.pathname.match(/^\/f\/([^/]+)\/?$/)
       suppressHistory=true
       try{
-        if(fm){
+        if(lm){
+          const type=lm[1] as LibraryType
+          section.value=type
+          if(lm[2])libraryFolderId.value=decodeURIComponent(lm[2])
+          if(type==='file')await openFolder(ROOT)
+          else await library.loadType(type)
+        }else if(fm){
           const id=decodeURIComponent(fm[1])
           await openFolder(id)
           if(currentId.value!==id)history.replaceState({revaroNav:true},'','/')
@@ -109,6 +157,43 @@ export default defineComponent({
       }catch{/* 文件不存在或不可读：留在当前文件夹 */}
     }
     function folderURL(id:string){return id===ROOT?'/':'/f/'+id}
+    function libraryURL(type:LibraryType,folderId?:string|null){return folderId?'/library/'+type+'/f/'+encodeURIComponent(folderId):'/library/'+type}
+    // 点击分类栏大类：切换到对应界面，文件大类回到普通目录浏览。
+    function openCategory(type:LibraryType){
+      sidebarMobileOpen.value=false
+      libraryFolderId.value=null
+      clearSelection()
+      if(section.value===type){
+        if(type==='file'&&trashMode.value)void openFolder(currentId.value)
+        return
+      }
+      navActions.value.push({kind:'section',section:section.value,folderId:currentId.value})
+      window.history.pushState({revaroNav:true},'')
+      section.value=type
+      trashMode.value=false
+      if(type==='file')void openFolder(currentId.value)
+      else void library.loadType(type)
+      history.replaceState({revaroNav:true},'',libraryURL(type))
+    }
+    function selectLibraryFolder(id:string|null){libraryFolderId.value=id}
+    function navigateDirectory(id:string){section.value='file';sidebarMobileOpen.value=false;void openFolder(id)}
+    function toggleSidebar(){sidebarCollapsed.value=!sidebarCollapsed.value;try{localStorage.setItem(SIDEBAR_COLLAPSED_KEY,sidebarCollapsed.value?'1':'0')}catch{/* 隐私模式下忽略 */}}
+    function refreshLibrary(){void library.refresh()}
+    // 顶栏 Logo 始终回到普通文件浏览的根目录，即使当前停留在分类视图。
+    function goHome(){
+      if(section.value!=='file'){
+        navActions.value.push({kind:'section',section:section.value,folderId:currentId.value})
+        window.history.pushState({revaroNav:true},'')
+        section.value='file';trashMode.value=false;libraryFolderId.value=null
+      }
+      void openFolder(ROOT)
+    }
+    // 媒体库条目根据当前大类选择打开方式：书籍进入阅读器，媒体进入预览。
+    function openLibraryItem(item:DriveFile){
+      if(isBook(item))openReader(item)
+      else if(isMedia(item))showPreview(item)
+      else openItem(item)
+    }
     // 导航请求序号：快速连续切换目录时，只接受最后一次请求的响应，
     // 防止较慢的旧响应覆盖新目录的内容（竞态）。
     let folderSeq=0
@@ -119,14 +204,14 @@ export default defineComponent({
         const [meta,list]=await Promise.all([api<{file:DriveFile;breadcrumbs:DriveFile[]}>(`/api/files/${id}`),api<{items:DriveFile[];total_bytes:number;file_count:number}>(`/api/files/${id}/children`)])
         if(seq!==folderSeq)return
         if(!suppressHistory&&id!==currentId.value){navActions.value.push({kind:'folder',id:currentId.value});window.history.pushState({revaroNav:true},'')}
-        trashMode.value=false;currentId.value=id;current.value=meta.file;breadcrumbs.value=meta.breadcrumbs;items.value=list.items;directoryStats.total_bytes=list.total_bytes;directoryStats.file_count=list.file_count;selected.value=null;clearSelection();history.replaceState({revaroNav:true},'',folderURL(id))
+        trashMode.value=false;currentId.value=id;current.value=meta.file;breadcrumbs.value=meta.breadcrumbs;items.value=list.items;directoryStats.total_bytes=list.total_bytes;directoryStats.file_count=list.file_count;selected.value=null;clearSelection();history.replaceState({revaroNav:true},'',folderURL(id));treeToken.value++;if(section.value!=='file')void library.refresh()
       }catch(e){if(seq===folderSeq)notify((e as Error).message)}
       finally{if(seq===folderSeq)loading.value=false}
     }
     
     // 应用内导航历史：每次进入文件夹/打开弹窗都 pushState，系统返回键先关
     // 弹窗、再逐级返回上一屏，而不是直接退出整个应用。
-    type NavAction={kind:'folder';id:string}|{kind:'modal-close'}
+    type NavAction={kind:'folder';id:string}|{kind:'section';section:LibraryType;folderId:string}|{kind:'modal-close'}
     const navActions=ref<NavAction[]>([])
     let suppressHistory=false
     let popChain:Promise<void>=Promise.resolve()
@@ -134,12 +219,23 @@ export default defineComponent({
       const action=navActions.value.pop()
       if(!action)return
       if(action.kind==='modal-close'){
-        if(modal.value==='reader')history.replaceState({revaroNav:true},'',folderURL(currentId.value))
+        if(modal.value==='reader')history.replaceState({revaroNav:true},'',section.value==='file'?folderURL(currentId.value):libraryURL(section.value))
         modal.value=null;return
       }
       popChain=popChain.then(async()=>{
         suppressHistory=true
-        try{await openFolder(action.id)}finally{suppressHistory=false}
+        try{
+          if(action.kind==='section'){
+            section.value=action.section
+            trashMode.value=false
+            libraryFolderId.value=null
+            if(action.section==='file')await openFolder(action.folderId||ROOT)
+            else await library.loadType(action.section)
+            history.replaceState({revaroNav:true},'',action.section==='file'?folderURL(currentId.value):libraryURL(action.section))
+          }else{
+            await openFolder(action.id)
+          }
+        }finally{suppressHistory=false}
       })
     }
     function openModal(name:ModalName){
@@ -148,7 +244,7 @@ export default defineComponent({
     }
     function closeModal(){if(modal.value)window.history.back()}
     function goUp(){const parent=current.value?.parent_id;if(parent)openFolder(parent)}
-    async function openTrash(){loading.value=true;try{const data=await api<{items:DriveFile[];total_bytes:number;file_count:number}>('/api/trash');trashMode.value=true;items.value=data.items;directoryStats.total_bytes=data.total_bytes;directoryStats.file_count=data.file_count;current.value=null;breadcrumbs.value=[];selected.value=null;clearSelection()}catch(e){notify((e as Error).message)}finally{loading.value=false}}
+    async function openTrash(){section.value='file';libraryFolderId.value=null;loading.value=true;try{const data=await api<{items:DriveFile[];total_bytes:number;file_count:number}>('/api/trash');trashMode.value=true;items.value=data.items;directoryStats.total_bytes=data.total_bytes;directoryStats.file_count=data.file_count;current.value=null;breadcrumbs.value=[];selected.value=null;clearSelection()}catch(e){notify((e as Error).message)}finally{loading.value=false}}
     async function createFolder(){const name=await promptDialog({title:'新建文件夹',message:'给这个文件夹起个名字。',placeholder:'文件夹名称',confirmLabel:'创建'});if(!name)return;try{await api('/api/directories',{method:'POST',body:JSON.stringify({parent_id:currentId.value,name})});await openFolder(currentId.value);notify('文件夹已创建','success')}catch(e){notify((e as Error).message)}}
     async function removeSelected(){
       const targets=[...selectedItems.value]
@@ -243,7 +339,7 @@ export default defineComponent({
     function clearSelectionFromBlank(event:MouseEvent){
       if(!selectedItems.value.length||modal.value)return
       const target=event.target
-      if(!(target instanceof Element)||target.closest('button,a,input,textarea,select,[role="toolbar"],.file-card'))return
+      if(!(target instanceof Element)||target.closest('button,a,input,textarea,select,[role="toolbar"],.file-card,.file-row'))return
       clearSelection()
     }
     function download(item:DriveFile){
@@ -276,6 +372,6 @@ export default defineComponent({
     onBeforeUnmount(()=>{window.removeEventListener('popstate',handlePopState);disposeUploads()})
     
     
-    return {filesChanged,folderChanged,avatarChanged,blurEventTarget,isAudio,isVideo,thumbSRC,formatSize,LoginPage,AppDialog,AppTopbar,DocumentEditor,FileBrowserHeader,FileGrid,MoveCopyDialog,SelectionToolbar,ShareDialog,askDialog,confirmDialog,promptDialog,finishDialog,notify,openReader,checkSession,openRoute,openDeepLink,submitLogin,logout,folderURL,openFolder,handlePopState,openModal,closeModal,goUp,openTrash,createFolder,removeSelected,restoreSelected,purgeSelected,emptyTrash,showRename,saveRename,showMove,showMoveSelected,showMoveTargets,showCopy,transferTo,showPreview,showShare,createShare,revokeShare,copyShare,openItem,newDocument,openEditor,saveDocument,closeEditor,closeBackdrop,toggleSelection,clearSelection,selectAll,clearSelectionFromBlank,download,downloadSelected,extractArchive,ROOT,user,hasAvatar,avatarVersion,checking,login,currentId,current,items,breadcrumbs,loading,dragActive,toast,tasks,trashMode,selected,selectedIds,moveTargets,transferMode,modal,readerFile,renameValue,modalBusy,share,editor,directoryStats,fileInput,folderInput,avatarInput,dialog,MediaPreview,Reader,editorDirty,editorBytes,editorIsMarkdown,renderedMarkdown,selectedItems,selectedBytes,selectedFiles,singleSelected,navActions,account,accountPanel,usernameEditing,usernameSaving,usernameError,usernameInput,avatar,twoFactor,avatarURL,showAccount,startUsernameEdit,cancelUsernameEdit,saveUsername,openAccountPanel,closeAccountPanel,chooseAvatar,uploadAvatar,removeAvatar,savePassword,beginTwoFactorSetup,cancelTwoFactorSetup,enableTwoFactor,regenerateRecoveryCodes,disableTwoFactor,copyRecoveryCodes,downloadRecoveryCodes,chooseFiles,chooseFolder,acceptFiles,acceptFolder,onDrop,cancelUpload,retry,disposeUploads,backgroundTasks,refreshJobsFromEvent,refreshBackgroundTasks,cancelBackgroundTask,retryBackgroundTask,jobEvents}
+    return {filesChanged,folderChanged,avatarChanged,blurEventTarget,isAudio,isVideo,thumbSRC,formatSize,LoginPage,AppDialog,AppSidebar,AppTopbar,DocumentEditor,FileBrowserHeader,FileGrid,FileRows,LibraryView,MoveCopyDialog,SelectionToolbar,ShareDialog,askDialog,confirmDialog,promptDialog,finishDialog,notify,openReader,checkSession,openRoute,openDeepLink,submitLogin,logout,folderURL,openFolder,handlePopState,openModal,closeModal,goUp,openTrash,createFolder,removeSelected,restoreSelected,purgeSelected,emptyTrash,showRename,saveRename,showMove,showMoveSelected,showMoveTargets,showCopy,transferTo,showPreview,showShare,createShare,revokeShare,copyShare,openItem,newDocument,openEditor,saveDocument,closeEditor,closeBackdrop,toggleSelection,clearSelection,selectAll,clearSelectionFromBlank,download,downloadSelected,extractArchive,ROOT,user,hasAvatar,avatarVersion,checking,login,currentId,current,items,breadcrumbs,loading,dragActive,toast,tasks,trashMode,selected,selectedIds,moveTargets,transferMode,modal,readerFile,renameValue,modalBusy,share,editor,directoryStats,fileInput,folderInput,avatarInput,dialog,MediaPreview,Reader,editorDirty,editorBytes,editorIsMarkdown,renderedMarkdown,selectedItems,selectedBytes,selectedFiles,singleSelected,navActions,account,accountPanel,usernameEditing,usernameSaving,usernameError,usernameInput,avatar,twoFactor,avatarURL,showAccount,startUsernameEdit,cancelUsernameEdit,saveUsername,openAccountPanel,closeAccountPanel,chooseAvatar,uploadAvatar,removeAvatar,savePassword,beginTwoFactorSetup,cancelTwoFactorSetup,enableTwoFactor,regenerateRecoveryCodes,disableTwoFactor,copyRecoveryCodes,downloadRecoveryCodes,chooseFiles,chooseFolder,acceptFiles,acceptFolder,onDrop,cancelUpload,retry,disposeUploads,backgroundTasks,refreshJobsFromEvent,refreshBackgroundTasks,cancelBackgroundTask,retryBackgroundTask,jobEvents,section,sidebarCollapsed,sidebarMobileOpen,libraryFolderId,treeToken,libraryCounts,libraryTrees,libraryLoading,libraryError,libraryItems,libraryFilterLabel,mediaSection,previewItems,fileViewMode,openCategory,selectLibraryFolder,navigateDirectory,toggleSidebar,refreshLibrary,openLibraryItem,goHome}
   }
 })

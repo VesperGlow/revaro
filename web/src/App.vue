@@ -5,16 +5,21 @@
   <div v-if="checking" class="splash"><div class="brand-mark"><img class="ui-image" src="/logo.png" alt="" draggable="false"></div><div class="spinner"></div></div>
   <LoginPage v-else-if="!user" :login="login" @username="login.username=$event" @password="login.password=$event" @second-factor="login.secondFactor=$event" @submit="submitLogin" />
 
-  <div v-else class="app-shell" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
-    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :tasks="backgroundTasks" @home="openFolder(ROOT)" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @cancel-task="cancelBackgroundTask" @retry-task="retryBackgroundTask" @tasks-changed="refreshBackgroundTasks" />
+  <div v-else class="app-shell" :class="{'sidebar-collapsed':sidebarCollapsed,'library-mode':section!=='file'}" @dragover.prevent="dragActive=true" @dragleave.self="dragActive=false" @drop.prevent="onDrop">
+    <AppTopbar :user="user" :has-avatar="hasAvatar" :avatar-url="avatarURL" :tasks="backgroundTasks" @home="goHome" @trash="openTrash" @account="showAccount" @avatar-error="hasAvatar=false" @cancel-task="cancelBackgroundTask" @retry-task="retryBackgroundTask" @tasks-changed="refreshBackgroundTasks" @menu="sidebarMobileOpen=true" />
+    <AppSidebar :section="section" :collapsed="sidebarCollapsed" :mobile-open="sidebarMobileOpen" :counts="libraryCounts" :trees="libraryTrees" :active-folder-id="libraryFolderId" :current-folder-id="currentId" :reload-token="treeToken" @select-category="openCategory" @select-folder="selectLibraryFolder" @navigate-directory="navigateDirectory" @toggle-collapse="toggleSidebar" @close-mobile="sidebarMobileOpen=false" @open-trash="openTrash" />
     <section class="content" @click="clearSelectionFromBlank">
-      <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :trash-mode="trashMode" @open-folder="openFolder" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" />
-      <input ref="fileInput" hidden type="file" multiple @change="filesChanged">
-      <input ref="folderInput" hidden type="file" multiple webkitdirectory @change="folderChanged">
-      <SelectionToolbar v-if="selectedItems.length&&!modal" :selected-items="selectedItems" :selected-bytes="selectedBytes" :selected-files="selectedFiles" :single-selected="singleSelected" :item-count="items.length" :trash-mode="trashMode" @clear="clearSelection" @restore="restoreSelected" @purge="purgeSelected" @select-all="selectAll" @open="openItem" @extract="extractArchive" @download="downloadSelected" @share="showShare" @rename="showRename" @move="showMoveSelected" @remove="removeSelected" />
-      <div v-if="loading" class="state"><div class="spinner"></div><p>正在读取文件…</p></div>
-      <div v-else-if="!items.length" class="state empty"><div class="empty-icon">⌁</div><h3>{{ trashMode?'回收站是空的':'这里还是空的' }}</h3><p>{{ trashMode?'删除的项目会先来到这里。':'拖放文件到这里，或新建一篇文档。' }}</p><div v-if="!trashMode" class="empty-actions"><button class="secondary" @click="newDocument">新建文档</button><button class="primary" @click="chooseFiles">上传文件</button></div></div>
-      <FileGrid v-else :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" />
+      <LibraryView v-if="section!=='file'" :type="mediaSection" :items="libraryItems" :loading="libraryLoading" :error="libraryError" :filter-label="libraryFilterLabel" @open="openLibraryItem" @refresh="refreshLibrary" @upload="chooseFiles" />
+      <template v-else>
+        <FileBrowserHeader :breadcrumbs="breadcrumbs" :current="current" :item-count="items.length" :total-bytes="directoryStats.total_bytes" :file-count="directoryStats.file_count" :trash-mode="trashMode" :view-mode="fileViewMode" @open-folder="openFolder" @new-document="newDocument" @create-folder="createFolder" @upload-files="chooseFiles" @upload-folder="chooseFolder" @leave-trash="openFolder(ROOT)" @empty-trash="emptyTrash" @update:view-mode="fileViewMode=$event" />
+        <input ref="fileInput" hidden type="file" multiple @change="filesChanged">
+        <input ref="folderInput" hidden type="file" multiple webkitdirectory @change="folderChanged">
+        <SelectionToolbar v-if="selectedItems.length&&!modal" :selected-items="selectedItems" :selected-bytes="selectedBytes" :selected-files="selectedFiles" :single-selected="singleSelected" :item-count="items.length" :trash-mode="trashMode" @clear="clearSelection" @restore="restoreSelected" @purge="purgeSelected" @select-all="selectAll" @open="openItem" @extract="extractArchive" @download="downloadSelected" @share="showShare" @rename="showRename" @move="showMoveSelected" @remove="removeSelected" />
+        <div v-if="loading" class="state"><div class="spinner"></div><p>正在读取文件…</p></div>
+        <div v-else-if="!items.length" class="state empty"><div class="empty-icon">⌁</div><h3>{{ trashMode?'回收站是空的':'这里还是空的' }}</h3><p>{{ trashMode?'删除的项目会先来到这里。':'拖放文件到这里，或新建一篇文档。' }}</p><div v-if="!trashMode" class="empty-actions"><button class="secondary" @click="newDocument">新建文档</button><button class="primary" @click="chooseFiles">上传文件</button></div></div>
+        <FileRows v-else-if="fileViewMode==='list'" :items="items" :selected-ids="selectedIds" selectable @open="openItem" @select="toggleSelection" />
+        <FileGrid v-else :items="items" :selected-ids="selectedIds" :trash-mode="trashMode" @open="openItem" @select="toggleSelection" />
+      </template>
     </section>
 
     <div v-if="dragActive&&!trashMode" class="drop-zone"><div><span>↓</span><h2>释放以上传到 {{ current?.name || '我的文件' }}</h2><p>文件将保存到服务器本地磁盘</p></div></div>
@@ -105,7 +110,7 @@
       </section>
       <DocumentEditor v-else-if="modal==='editor'" :is-new="editor.isNew" :readonly="editor.readonly" :name="editor.name" :content="editor.content" :mode="editor.mode" :busy="editor.busy" :error="editor.error" :dirty="editorDirty" :bytes="editorBytes" :markdown="editorIsMarkdown" :rendered-markdown="renderedMarkdown" @update:name="editor.name=$event" @update:content="editor.content=$event" @update:mode="editor.mode=$event" @save="saveDocument" @close="closeEditor" />
       <ShareDialog v-else-if="modal==='share'" :file="selected" :active="share.active" :url="share.url" :created-at="share.createdAt" :busy="share.busy" :error="share.error" :copied="share.copied" @close="closeModal" @copy="copyShare" @revoke="revokeShare" @create="createShare" />
-      <MediaPreview v-else-if="modal==='preview'&&selected" :selected="selected" :items="items" @close="closeModal" @change="selected=$event" @download="download" @move="showMove" @copy="showCopy" />
+      <MediaPreview v-else-if="modal==='preview'&&selected" :selected="selected" :items="previewItems" @close="closeModal" @change="selected=$event" @download="download" @move="showMove" @copy="showCopy" />
     </div>
     <Reader v-if="modal==='reader'&&readerFile" :file="readerFile" @close="closeModal" />
     <AppDialog v-if="dialog.open" :title="dialog.title" :message="dialog.message" :confirm-label="dialog.confirmLabel" :cancel-label="dialog.cancelLabel" :tone="dialog.tone" :input="dialog.input" :value="dialog.value" :placeholder="dialog.placeholder" @update:value="dialog.value=$event" @confirm="finishDialog(true)" @cancel="finishDialog(false)" />
