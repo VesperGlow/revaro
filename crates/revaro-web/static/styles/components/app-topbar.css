@@ -1,0 +1,36 @@
+/* AppTopbar.vue's <style scoped> block, ported to a global sheet.
+   Leptos has no scoped-style transform, so every selector is anchored under
+   `.topbar` (the component root). That keeps the class names — the DOM
+   contract — unchanged while reproducing the extra specificity Vue's
+   `[data-v-*]` attribute selector used to add over the global sheets.
+   The two `:deep(svg)` selectors from the original become plain descendant
+   selectors, the `:deep(.system-status>summary)` override included. */
+.topbar .topbar-left{display:flex;align-items:center;gap:8px;min-width:0}
+.topbar .brand-logo{display:block;width:auto;height:28px}
+.topbar .brand-button{min-width:0}
+.topbar .trash-button{display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:50%;background:transparent;color:#64748b}
+.topbar .trash-button:hover{background:#f1f5f9;color:#334155}
+.topbar .trash-button svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.topbar .mobile-account-menu{position:relative}
+.topbar .mobile-account-menu>summary{position:relative;display:grid;width:40px;height:40px;place-items:center;cursor:pointer;list-style:none}
+.topbar .mobile-account-menu>summary::-webkit-details-marker{display:none}
+.topbar .mobile-account-menu>summary .avatar-badge{width:34px;height:34px}
+.topbar .task-menu-badge{position:absolute;top:1px;right:0;width:9px;height:9px;border:2px solid #fff;border-radius:50%;background:#2563eb}
+.topbar .task-menu-badge.failed{display:grid;place-items:center;width:15px;height:15px;border-width:1px;background:#dc2626;color:#fff;font-size:9px;font-style:normal;font-weight:900;line-height:1}
+.topbar .mobile-account-menu>section{position:fixed;z-index:44;top:64px;right:max(10px,env(safe-area-inset-right,0px));display:grid;width:min(210px,calc(100vw - 20px));padding:7px;border:1px solid #dfe6ee;border-radius:15px;background:#fff;box-shadow:0 22px 60px #0f172a2e}
+.topbar .mobile-account-menu hr{width:calc(100% - 12px);margin:5px 6px;border:0;border-top:1px solid #e8edf3}
+.topbar .mobile-tool-item,.topbar .mobile-trash{display:flex;align-items:center;min-height:46px;padding:3px 9px;border:0;border-radius:10px;background:#fff;color:#34475e;gap:9px}
+.topbar .mobile-tool-item:hover,.topbar .mobile-trash:hover{background:#f4f7fb}
+.topbar .mobile-tool-item{width:100%;cursor:pointer;text-align:left}
+.topbar .mobile-tool-item b,.topbar .mobile-trash>b{font-size:13px;font-weight:700}
+.topbar .mobile-tool-item small{margin-left:auto;color:#64748b;font-size:11px}
+.topbar .mobile-tool-item small.failed{color:#dc2626;font-weight:750}
+.topbar .mobile-task-icon{display:grid;width:34px;height:34px;place-items:center;color:#3d5f7e}
+.topbar .mobile-task-icon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.topbar .mobile-trash{width:100%;cursor:pointer}
+.topbar .mobile-trash .trash-button{width:34px;height:34px}
+.topbar .mobile-trash b{font-weight:700}
+@media(max-width:850px){.topbar{padding-right:max(14px,env(safe-area-inset-right,0px));padding-left:max(14px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:24px}.topbar .brand-button{flex:0 0 auto;white-space:nowrap}.topbar .top-actions{flex:0 0 auto;gap:5px}.topbar .top-actions .system-status>summary{width:38px;height:40px}.topbar .mobile-account-menu{flex:0 0 auto}}
+@media(max-width:430px){.topbar{padding-right:max(12px,env(safe-area-inset-right,0px));padding-left:max(12px,env(safe-area-inset-left,0px))}.topbar .top-actions{gap:4px}.topbar .account-button{margin-left:0}}
+@media(max-width:350px){.topbar{padding-right:max(8px,env(safe-area-inset-right,0px));padding-left:max(8px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:22px}.topbar .brand-button{padding-right:2px;padding-left:2px}.topbar .top-actions{gap:2px}}
+@media(max-width:850px){.topbar .mobile-account-menu>section{top:calc(64px + env(safe-area-inset-top,0px));width:min(210px,calc(100vw - 20px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}.topbar .mobile-tool-item{min-width:0}.topbar .mobile-tool-item b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}

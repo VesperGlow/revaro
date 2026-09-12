@@ -1,0 +1,52 @@
+/* Shared file-manager primitives. Loaded after the sheets whose component-local
+   legacy values it converges, exactly as in the Vue load order.
+
+   This file also owns the single authoritative design-token block after the
+   Leptos port de-duplicated the byte-identical copy that used to live in
+   `responsive.css`. Both blocks had the same specificity, so this one (later in
+   the cascade) already won every token; the only divergence was
+   `--shadow-dialog`, where `#17212b33` here beat `#17212b29` there. Deleting the
+   `responsive.css` copy is therefore a pure no-op for rendered output.
+
+   Dead selectors dropped during the port, after confirming nothing in
+   `web/src` (templates or modules) references them: transfer-center,
+   transfer-ring, transfer-popover, transfer-list, download-center,
+   download-ring, download-popover, download-list, download-empty,
+   download-backdrop, download-dialog, merge-center, merge-ring, merge-popover,
+   merge-list, merge-empty, archive-center, archive-ring, archive-popover,
+   archive-list, archive-password-backdrop, archive-password-dialog, task-icon,
+   task-direction and task-actions. Rules that mixed live and dead selectors were
+   split so the live half survives; nothing that a current component uses was
+   removed. */
+:root{
+  --ink:#17212b;--ink-subtle:#44515f;--muted:#768392;--muted-soft:#98a2ae;
+  --line:#e2e6eb;--line-strong:#d2d8e0;--surface:#fff;--paper:#f3f6f8;--surface-subtle:var(--paper);
+  --surface-hover:#eef3f6;--surface-selected:#f2f6f9;--accent:#4f7396;--accent-hover:#3f607f;
+  --accent-soft:#e8f0f6;--accent-faint:#f2f6f9;--accent-border:#ccdbe7;--blue:var(--accent);--blue-hover:var(--accent-hover);
+  --blue-soft:var(--accent-soft);--danger:#d33b3b;--success:#278657;--radius-sm:7px;--radius-md:10px;
+  --radius-lg:14px;--radius-xl:18px;--shadow-popover:0 12px 32px #17212b1a;
+  --shadow-dialog:0 24px 64px #17212b33;--focus-ring:0 0 0 3px #4f73962e;
+  --control-sm:36px;--control-md:40px;--control-lg:44px;--space-1:4px;--space-2:8px;
+  --space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px
+}
+.trash-button{
+  width:var(--control-md);height:var(--control-md);border-radius:var(--radius-md);color:var(--muted)
+}
+.trash-button:hover{
+  background:var(--surface-hover);color:var(--ink-subtle)
+}
+.dialog-backdrop,.account-subdialog-backdrop{background:#17212b66;backdrop-filter:none}
+.app-dialog,.account-subdialog{border:1px solid var(--line);border-radius:var(--radius-xl);box-shadow:var(--shadow-dialog)}
+.app-dialog{padding:var(--space-6);border-color:var(--line);border-radius:var(--radius-xl);box-shadow:var(--shadow-dialog)}
+.dialog-icon{border-radius:var(--radius-md);background:var(--blue-soft);color:var(--blue)}
+.dialog-copy h2{color:var(--ink);font-size:18px}.dialog-copy p{color:var(--muted)}
+.app-dialog input{border-color:var(--line-strong);border-radius:var(--radius-md)}.app-dialog input:focus{border-color:var(--blue);box-shadow:var(--focus-ring)}
+.app-dialog button{border-radius:var(--radius-md)}.app-dialog .dialog-confirm{background:var(--blue)}
+.account-modal{border:1px solid #d8e0e7;border-radius:var(--radius-xl);background:var(--surface);box-shadow:0 26px 70px #17212b38}
+.avatar-settings,.account-setting-row,.account-session-row{border-color:var(--line);border-radius:var(--radius-lg)}
+.avatar-settings,.account-setting-row.security-row{background:var(--surface-subtle)}
+.account-setting-row{background:var(--surface)}.setting-label,.username-line strong{color:var(--ink)}
+.account-modal input{border-color:var(--line-strong)}.account-modal input:focus{border-color:var(--blue);box-shadow:var(--focus-ring)}
+@media(max-width:430px){
+  .account-modal{width:100%;padding:18px 14px}
+}

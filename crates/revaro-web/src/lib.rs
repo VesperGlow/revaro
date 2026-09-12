@@ -21,5 +21,12 @@ mod app;
 #[cfg(target_arch = "wasm32")]
 pub use app::*;
 
+/// Pure, DOM-free client logic.
+///
+/// Declared unconditionally so it is compiled for every target and its unit
+/// tests run under a plain `cargo test -p revaro-web`. Only the views that
+/// consume it are wasm-gated.
+pub mod logic;
+
 /// Version of the client, surfaced in the UI and used to detect a stale bundle.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

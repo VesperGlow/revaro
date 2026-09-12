@@ -1,0 +1,588 @@
+.form-success {
+  margin: -10px 0;
+  color: #15803d;
+  font-size: 13px;
+}
+
+.account-modal form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.account-modal {
+  width: min(780px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+
+.account-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.avatar-settings {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  padding: 22px 14px;
+  border: 1px solid #e1e7ef;
+  border-radius: 15px;
+  background: #f8fafc;
+  text-align: center;
+}
+
+.avatar-large {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  background: #e7effd;
+  color: #2563eb;
+  font-size: 36px;
+  font-weight: 800;
+  box-shadow: 0 0 0 6px #fff, 0 10px 26px #3341551a;
+}
+
+.avatar-large img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-settings h3,
+.account-modal form h3 {
+  margin: 18px 0 7px;
+  color: #25364a;
+  font-size: 15px;
+}
+
+.account-modal form h3 {
+  margin-top: 0;
+}
+
+.avatar-settings > p:not(.form-error) {
+  margin: 0 0 15px;
+  color: #7b899a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.avatar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+
+.avatar-actions .secondary {
+  padding: 9px 12px;
+}
+
+.avatar-settings .form-error {
+  margin-top: 12px;
+  font-size: 11px;
+}
+
+.account-passwords {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.account-modal .form-error {
+  margin: 0;
+}
+
+.modal-hint {
+  margin: -8px 0 2px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.account-overview {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-setting-row {
+  display: flex;
+  min-height: 98px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  border: 1px solid #e1e7ef;
+  border-radius: 15px;
+  background: #fff;
+}
+
+.account-setting-row.security-row {
+  background: #f8fafc;
+}
+
+.account-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+  gap: 18px;
+  padding: 12px 18px;
+  border: 1px dashed #dce4ee;
+  border-radius: 15px;
+  background: #fbfcfe;
+}
+
+.account-session-row > div {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.account-session-row p {
+  margin: 0;
+  color: #8794a6;
+  font-size: 11px;
+}
+
+.account-session-row > button {
+  flex: 0 0 auto;
+  padding: 8px 13px;
+  border: 1px solid #fecaca;
+  border-radius: 9px;
+  background: #fff;
+  color: #dc2626;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.account-session-row > button:hover {
+  background: #fff1f2;
+}
+
+.setting-copy {
+  min-width: 0;
+}
+
+.setting-label {
+  color: #25364a;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.setting-title,
+.username-line {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.username-line {
+  min-height: 32px;
+  margin-top: 4px;
+}
+
+.username-line strong {
+  overflow: hidden;
+  max-width: 260px;
+  color: #17263a;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-username {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.edit-username:hover {
+  background: #eaf1fe;
+  color: #2563eb;
+}
+
+.edit-username svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.account-modal .username-input {
+  width: min(260px, 100%);
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.username-line small {
+  flex: 0 0 auto;
+  color: #7b899a;
+  font-size: 10px;
+}
+
+.username-error {
+  margin-top: 5px !important;
+}
+
+.password-entry {
+  flex: 0 0 auto;
+}
+
+.security-row .setting-copy p {
+  margin: 7px 0 0;
+  color: #718096;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.account-subdialog-backdrop {
+  position: fixed;
+  z-index: 42;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #0f172a70;
+  backdrop-filter: blur(5px);
+}
+
+.account-subdialog {
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  box-shadow: 0 30px 90px #0f172a55;
+}
+
+.password-dialog {
+  width: min(440px, 100%);
+}
+
+.totp-dialog {
+  width: min(720px, 100%);
+}
+
+.subdialog-hint {
+  margin: 7px 0 0;
+  color: #718096;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.login-totp-hint {
+  color: #8491a3;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.two-factor-settings {
+  margin-top: 26px;
+  padding-top: 24px;
+  border-top: 1px solid #e5eaf0;
+}
+
+.two-factor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.two-factor-head h3,
+.totp-instructions h4 {
+  margin: 0 0 6px;
+  color: #25364a;
+  font-size: 15px;
+}
+
+.two-factor-head p,
+.two-factor-idle > p,
+.two-factor-enabled > p,
+.totp-instructions > p,
+.recovery-panel p {
+  margin: 0;
+  color: #6f7f92;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.security-badge {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.security-badge.enabled {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.two-factor-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 76px;
+  color: #7b899a;
+  font-size: 12px;
+}
+
+.two-factor-loading .spinner {
+  width: 18px;
+  height: 18px;
+}
+
+.two-factor-idle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px auto;
+  align-items: end;
+  gap: 14px;
+}
+
+.two-factor-idle > p {
+  align-self: center;
+}
+
+.two-factor-idle .primary {
+  white-space: nowrap;
+}
+
+.totp-enroll {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: 24px;
+  padding: 18px;
+  border: 1px solid #dbe6f5;
+  border-radius: 15px;
+  background: #f8fbff;
+}
+
+.totp-qr {
+  display: grid;
+  place-items: center;
+  align-self: start;
+  overflow: hidden;
+  padding: 9px;
+  border: 1px solid #dce4ee;
+  border-radius: 13px;
+  background: #fff;
+}
+
+.totp-qr img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+.totp-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.manual-secret code {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eaf1fe;
+  color: #214d9a;
+  font: 700 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: .06em;
+}
+
+.two-factor-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.two-factor-actions,
+.recovery-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.danger-button {
+  padding: 11px 17px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff;
+  color: #dc2626;
+  font-weight: 700;
+}
+
+.danger-button:hover {
+  background: #fef2f2;
+}
+
+.danger-button:disabled {
+  opacity: .55;
+}
+
+.recovery-panel {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid #f8d78c;
+  border-radius: 14px;
+  background: #fffbeb;
+}
+
+.recovery-panel strong {
+  color: #92400e;
+  font-size: 13px;
+}
+
+.recovery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 14px 0;
+}
+
+.recovery-grid code {
+  padding: 8px 10px;
+  border: 1px solid #f3dfaa;
+  border-radius: 8px;
+  background: #fff;
+  color: #5e4a21;
+  text-align: center;
+  font: 700 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: .07em;
+}
+
+.two-factor-error {
+  margin-top: 14px !important;
+}
+
+@media (max-width: 720px) {
+  .account-modal {
+    max-height: calc(100vh - 28px);
+    overflow: auto;
+  }
+
+  .account-layout,
+  .account-passwords {
+    grid-template-columns: 1fr;
+  }
+
+  .account-setting-row {
+    min-height: 88px;
+    padding: 15px 14px;
+  }
+
+  .avatar-settings {
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr);
+    column-gap: 16px;
+    text-align: left;
+  }
+
+  .avatar-large {
+    grid-row: 1 / 4;
+    width: 70px;
+    height: 70px;
+    font-size: 25px;
+  }
+
+  .avatar-settings h3 {
+    margin: 0 0 4px;
+  }
+
+  .avatar-settings > p:not(.form-error) {
+    margin-bottom: 8px;
+  }
+
+  .avatar-actions {
+    justify-content: flex-start;
+  }
+
+  .two-factor-head,
+  .two-factor-actions,
+  .recovery-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .two-factor-idle,
+  .totp-enroll,
+  .two-factor-fields,
+  .recovery-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .totp-qr {
+    width: min(220px, 100%);
+    margin: 0 auto;
+  }
+
+  .two-factor-actions button,
+  .recovery-actions button {
+    width: 100%;
+  }
+
+  .account-subdialog-backdrop {
+    padding: 10px;
+  }
+
+  .account-subdialog {
+    max-height: calc(100vh - 20px);
+  }
+}
+
+@media (max-width: 460px) {
+  .account-modal {
+    padding: 19px 16px;
+  }
+
+  .account-setting-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .account-setting-row > button {
+    width: 100%;
+  }
+
+  .account-session-row {
+    align-items: flex-start;
+    padding: 13px 14px;
+  }
+
+  .username-line strong {
+    max-width: calc(100vw - 120px);
+  }
+}
+
+/* Keep account sheets inside the visual viewport on mobile WebViews. */
+.account-modal,.account-subdialog{max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px)}
+@media (max-width:850px){.account-modal,.account-subdialog{max-height:calc(100vh - 28px);max-height:calc(100dvh - 28px)}}
+@media (max-width:460px){.account-modal,.account-subdialog{max-height:calc(100vh - 20px);max-height:calc(100dvh - 20px)}}

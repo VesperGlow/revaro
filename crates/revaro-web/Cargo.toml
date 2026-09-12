@@ -27,4 +27,23 @@ gloo-net.workspace = true
 leptos.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys.workspace = true
+# The shell needs the DOM directly for `#app` mounting, `matchMedia` breakpoint
+# detection and a couple of document-level listeners. `gloo-net` and `leptos`
+# already enable many `web-sys` features; these are the ones this crate names
+# itself, so a dependency bump cannot silently take them away.
+web-sys = { workspace = true, features = [
+    "Document",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlDetailsElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MediaQueryListEvent",
+    "Node",
+    "PointerEvent",
+    "Storage",
+    "Window",
+] }

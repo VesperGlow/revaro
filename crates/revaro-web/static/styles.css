@@ -1,72 +1,60 @@
-:root {
-  color-scheme: light;
-  --surface: #f4f6f9;
-  --surface-raised: #ffffff;
-  --text: #1f2328;
-  --text-muted: #5c6470;
-  --accent: #2f6feb;
-  --danger: #c0392b;
-}
+/* Revaro stylesheet manifest.
+ *
+ * This file is the single entry point `<link rel="stylesheet" href="/styles.css">`
+ * in `index.html`. It replaces the Vue side's two-stage import graph
+ * (`main.ts` importing `style.css`/`account.css`/`ui.css`/... while `style.css`
+ * itself `@import`ed the seven `styles/*.css` parts) with one flat, explicit
+ * list.
+ *
+ * THE ORDER BELOW IS LOAD-BEARING. About 200 rules are last-wins overrides and
+ * the product's layout depends on them. In particular `.app-shell`'s
+ * `grid-template-columns` is declared three times — `230px 1fr` in `shell.css`,
+ * `1fr` in `uploads.css`, and `236px minmax(0,1fr)` in `library.css` — and
+ * library.css must win on desktop, exactly as it did in Vue. Do not reorder,
+ * merge or flatten these imports; `logic::stylesheet` has a unit test that
+ * pins the sequence.
+ *
+ * Effective cascade order recovered from the Vue entry point:
+ *   1  styles/shell.css              7  styles/library.css
+ *   2  styles/browser.css            8  account.css
+ *   3  styles/uploads.css            9  ui.css
+ *   4  styles/dialogs.css           10  styles/selection-toolbar.css
+ *   5  styles/media.css             11  styles/share-dialog.css
+ *   6  styles/responsive.css        12  styles/document-editor.css
+ *                                   13  styles/reader-flow.css
+ *                                   14  styles/reader-chrome.css
+ *                                   15  styles/video-player.css
+ *
+ * `video-player.css` is last because Vue loaded it from
+ * `VideoPlayer.vue`'s `<style src>`, i.e. after every module-level import.
+ *
+ * Appended after those fifteen are the ported `<style scoped>` component
+ * blocks. Vue emitted them with an extra `[data-v-*]` attribute, so they
+ * outranked the global sheets on equal specificity; the port keeps that by
+ * loading them after every global sheet and by anchoring their generic class
+ * names under each component root. The `:deep()` selectors among them are now
+ * plain selectors, since Leptos has no scoped-style transform. */
 
-* {
-  box-sizing: border-box;
-}
+@import "styles/shell.css";
+@import "styles/browser.css";
+@import "styles/uploads.css";
+@import "styles/dialogs.css";
+@import "styles/media.css";
+@import "styles/responsive.css";
+@import "styles/library.css";
+@import "styles/account.css";
+@import "styles/ui.css";
+@import "styles/selection-toolbar.css";
+@import "styles/share-dialog.css";
+@import "styles/document-editor.css";
+@import "styles/reader-flow.css";
+@import "styles/reader-chrome.css";
+@import "styles/video-player.css";
 
-body {
-  margin: 0;
-  min-height: 100vh;
-  background: var(--surface);
-  color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
-}
-
-.shell {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  padding: 2rem;
-  text-align: center;
-}
-
-.shell__title {
-  margin: 0;
-  font-size: 2rem;
-  letter-spacing: 0.04em;
-}
-
-.shell__subtitle {
-  margin: 0.25rem 0 0;
-  color: var(--text-muted);
-}
-
-.shell__status {
-  padding: 1rem 1.5rem;
-  border-radius: 0.75rem;
-  background: var(--surface-raised);
-  box-shadow: 0 1px 3px rgb(15 23 42 / 12%);
-  min-width: 18rem;
-}
-
-.status {
-  margin: 0;
-}
-
-.status--pending {
-  color: var(--text-muted);
-}
-
-.status--ready {
-  color: var(--accent);
-}
-
-.status--failed {
-  color: var(--danger);
-}
-
-.shell__footer {
-  color: var(--text-muted);
-  font-size: 0.8125rem;
-}
+/* Ported component scoped blocks (see the header note above). */
+@import "styles/components/app-topbar.css";
+@import "styles/components/task-center.css";
+@import "styles/components/system-status.css";
+@import "styles/components/service-card.css";
+@import "styles/components/status-badge.css";
+@import "styles/components/directory-flyout.css";

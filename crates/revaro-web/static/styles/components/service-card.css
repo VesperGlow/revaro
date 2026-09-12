@@ -1,0 +1,15 @@
+/* ServiceCard.vue's <style scoped> block, ported to a global sheet.
+   `.service-*` children are anchored under `.service-card` (the component root);
+   the two `:deep(svg)` selectors become plain `svg` descendants and the
+   `.tone-*` overrides are qualified by the root class that carries the tone. */
+.service-card{display:flex;min-width:0;min-height:112px;flex-direction:column;justify-content:space-between;padding:13px;border:1px solid #e5ecf4;border-radius:13px;background:#fff;box-shadow:0 2px 8px #1e3a5f08}
+.service-card .service-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.service-card .service-icon{display:grid;width:34px;height:34px;place-items:center;border-radius:10px;background:#eaf3ff;color:#2474c8}
+.service-card .service-icon svg{width:18px;height:18px;stroke-width:1.9}
+.service-card .service-copy{display:flex;min-width:0;flex-direction:column;gap:3px}
+.service-card .service-copy b{color:#26364b;font-size:13px}
+.service-card .service-copy small{color:#718198;font-size:10.5px;line-height:1.45}
+.service-card.tone-warning .service-icon{background:#fff3e3;color:#b56208}
+.service-card.tone-danger .service-icon{background:#ffebed;color:#c6283b}
+.service-card.tone-neutral .service-icon{background:#f1f5f9;color:#64748b}
+@media(max-width:430px){.service-card{min-height:108px;padding:11px}.service-card .service-icon{width:31px;height:31px;border-radius:9px}.service-card .service-icon svg{width:17px;height:17px}.service-card .service-copy small{font-size:10px}}

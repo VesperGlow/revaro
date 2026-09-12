@@ -1,0 +1,32 @@
+/* Bright full-screen chapter audio player.
+   The `audio-pulse` keyframes were dropped during the Leptos port: the audit
+   found no rule referencing them (`.chapter-equalizer b` uses `chapter-wave`). */
+.chapter-equalizer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  height: 13px;
+}
+.chapter-equalizer b {
+  width: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  animation: chapter-wave 0.75s ease-in-out infinite;
+}
+.chapter-equalizer b:nth-child(1) {
+  height: 7px;
+}
+.chapter-equalizer b:nth-child(2) {
+  height: 12px;
+  animation-delay: 0.15s;
+}
+.chapter-equalizer b:nth-child(3) {
+  height: 9px;
+  animation-delay: 0.3s;
+}
+@keyframes chapter-wave {
+  50% {
+    height: 4px;
+  }
+}

@@ -1,0 +1,461 @@
+/* Dynamic viewport and intrinsic-size guards for HarmonyOS and other mobile WebViews. */
+html,
+body,
+#app {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 100%;
+}
+body {
+  overflow-x: hidden;
+}
+.splash {
+  height: 100vh;
+  height: 100dvh;
+}
+.login-page,
+.app-shell {
+  min-width: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.app-shell > * {
+  min-width: 0;
+}
+.content {
+  min-width: 0;
+  max-width: 100%;
+  padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+}
+.modal-backdrop {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-width: 0;
+  min-height: 0;
+  padding: max(20px, env(safe-area-inset-top, 0px))
+    max(20px, env(safe-area-inset-right, 0px))
+    max(20px, env(safe-area-inset-bottom, 0px))
+    max(20px, env(safe-area-inset-left, 0px));
+  overflow: hidden;
+}
+.document-editor {
+  height: min(880px, calc(100vh - 36px));
+  height: min(880px, calc(100dvh - 36px));
+}
+
+/* File names must never contribute an unbounded intrinsic width. */
+.card-info,
+.editor-title > div,
+.task-top > div,
+.folder-heading,
+.title-row{
+  min-width: 0;
+  max-width: 100%;
+}
+.card-info strong,
+.editor-title strong,
+.task-top strong,
+.folder-heading h1,
+.move-target {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.title-row h1 {
+  flex: 1;
+}
+
+@media (max-width: 850px) {
+  .login-panel {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  .app-shell {
+    grid-template-rows: calc(60px + env(safe-area-inset-top, 0px)) minmax(
+        0,
+        1fr
+      );
+  }
+  .topbar {
+    min-width: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-right: max(18px, env(safe-area-inset-right, 0px));
+    padding-left: max(18px, env(safe-area-inset-left, 0px));
+  }
+  .content {
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+  }
+  .drop-zone {
+    inset: calc(60px + env(safe-area-inset-top, 0px)) 0 0;
+  }
+  .modal-backdrop {
+    padding: max(10px, env(safe-area-inset-top, 0px))
+      max(10px, env(safe-area-inset-right, 0px))
+      max(10px, env(safe-area-inset-bottom, 0px))
+      max(10px, env(safe-area-inset-left, 0px));
+  }
+}
+
+/* File manager visual system: shared surfaces, controls and responsive rhythm. */
+body {
+  background: var(--surface-subtle);
+  color: var(--ink);
+}
+button,
+summary,
+input,
+textarea,
+select {
+  transition:
+    border-color 0.14s,
+    background-color 0.14s,
+    color 0.14s,
+    box-shadow 0.14s;
+}
+button:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 0;
+  box-shadow: var(--focus-ring);
+}
+button:disabled {
+  cursor: not-allowed;
+}
+.topbar {
+  height: 66px;
+  padding: 0 clamp(18px, 3vw, 40px);
+  border-color: var(--line);
+  background: var(--surface);
+}
+.brand-button {
+  letter-spacing: -0.02em;
+}
+.top-actions {
+  gap: 5px;
+}
+.account-button {
+  margin-left: 7px;
+  padding: 4px 8px 4px 4px;
+  border-radius: var(--radius-md);
+}
+.account-button:hover {
+  background: var(--surface-hover);
+}
+.avatar-badge {
+  width: 34px;
+  height: 34px;
+}
+.content {
+  width: min(100%, 1540px);
+  padding-top: 38px;
+}
+.content-head {
+  align-items: flex-end;
+  margin-bottom: 26px;
+}
+.content-head h1 {
+  margin: 6px 0 7px;
+  color: var(--ink);
+  font-size: clamp(24px, 2vw, 30px);
+  font-weight: 720;
+}
+.folder-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted) !important;
+}
+.folder-meta i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.title-row {
+  gap: 10px;
+}
+.actions {
+  gap: 8px;
+}
+.actions .primary,
+.actions .secondary,
+.desktop-create-actions button,
+.create-menu summary,
+.upload-menu summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: var(--control-md);
+  padding: 0 14px;
+  border-radius: var(--radius-md);
+}
+.actions svg {
+  width: 17px;
+  height: 17px;
+}
+.primary {
+  background: var(--blue);
+  box-shadow: none;
+}
+.primary:hover {
+  background: var(--blue-hover);
+}
+.secondary {
+  border-color: var(--line-strong);
+  color: var(--ink-subtle);
+}
+.secondary:hover {
+  border-color: #c5ccd5;
+  background: var(--surface-hover);
+}
+.create-menu-popover,
+.upload-menu-popover {
+  padding: 6px;
+  border-color: var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+}
+.create-menu-popover button,
+.upload-menu-popover button {
+  min-height: 42px;
+  border-radius: var(--radius-md);
+}
+.create-menu-popover button > span,
+.upload-menu-popover button > span {
+  background: var(--surface-subtle);
+  color: var(--ink-subtle);
+}
+.create-menu-popover button > span svg,
+.upload-menu-popover button > span svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+.menu-chevron {
+  width: 14px !important;
+  height: 14px !important;
+}
+.create-menu[open] .menu-chevron {
+  transform: rotate(180deg);
+}
+.file-card {
+  border-color: var(--line);
+  border-radius: var(--radius-sm);
+}
+.file-card:hover {
+  border-color: #bfc7d1;
+}
+.file-card.selected {
+  border-color: var(--blue);
+  background: var(--surface-selected);
+  box-shadow: 0 0 0 1px var(--blue);
+}
+.card-preview {
+  background: var(--surface);
+}
+.preview-tile .card-preview {
+  background: #f1f3f5;
+}
+.card-info strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.card-info small {
+  color: var(--muted);
+}
+.card-select {
+  color: var(--muted);
+}
+.card-select.active {
+  color: var(--blue);
+}
+.modal-backdrop {
+  background: #17212b66;
+  backdrop-filter: none;
+}
+.modal {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-dialog);
+}
+@media (max-width: 850px) {
+  .topbar {
+    height: calc(60px + env(safe-area-inset-top, 0px));
+  }
+  .content {
+    padding-top: 22px;
+  }
+  .content-head {
+    gap: 18px;
+  }
+  .actions {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .create-menu,
+  .upload-menu {
+    min-width: 0;
+  }
+  .file-grid {
+    gap: 8px;
+  }
+  .folder-meta {
+    flex-wrap: wrap;
+  }
+  .content-head h1 {
+    font-size: 24px;
+  }
+}
+@media (max-width: 430px) {
+  .content {
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+  }
+  .title-row {
+    align-items: center;
+  }
+  .content-head h1 {
+    font-size: 22px;
+  }
+  .actions .primary,
+  .actions .secondary,
+  .create-menu summary,
+  .upload-menu summary {
+    padding: 0 10px;
+  }
+  .file-grid {
+    gap: 7px;
+  }
+  .card-info {
+    min-height: 60px;
+  }
+  .card-preview {
+    padding-bottom: 60px;
+  }
+  .file-type-icon {
+    width: 62px;
+    height: 62px;
+  }
+  .folder-type-icon {
+    width: 78px;
+    height: 78px;
+  }
+}
+
+/* The canonical 37-token `:root` block used to live here. During the Leptos
+   port the byte-identical duplicate in `ui.css` was kept as the single
+   authoritative definition and this one was deleted: both blocks had the same
+   specificity, so `ui.css` (later in the cascade) already won for every token,
+   and the only divergence was `--shadow-dialog`, where `ui.css` set
+   `0 24px 64px #17212b33` against the `#17212b29` here. Keeping `ui.css` is
+   therefore a pure no-op for rendered output. */
+
+/* Muted single-hue interaction palette. Media and book preview pixels remain untouched. */
+.brand-mark {
+  background: linear-gradient(145deg, var(--accent-hover), #7897b1);
+  box-shadow: 0 16px 34px #4f73963b;
+}
+.login-visual {
+  background: linear-gradient(145deg, #263b4e, #466882);
+}
+.eyebrow,
+.eyebrow.dark {
+  color: #7897b1;
+}
+.login-form input:focus,
+.modal input:focus {
+  border-color: var(--accent-border);
+  box-shadow: var(--focus-ring);
+}
+.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 6px 16px #4f739630;
+}
+.primary:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  box-shadow: 0 8px 20px #4f739638;
+}
+.file-card:focus-visible {
+  border-color: var(--accent-border);
+  box-shadow: var(--focus-ring);
+}
+.file-card.selected,
+.file-card.selected:hover {
+  border-color: var(--accent);
+  background: var(--accent-faint);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.card-select:hover,
+.card-select.active{
+  color: var(--accent);
+}
+.create-menu-popover button:hover > span,
+.upload-menu-popover button:hover > span,
+.folder-list button:hover {
+  background: var(--accent-faint);
+  color: var(--accent-hover);
+}
+.progress i,
+.upload-progress i {
+  background: var(--accent);
+}
+.folder-list span {
+  color: var(--accent);
+}
+.account-modal > header {
+  align-items: center;
+  margin-bottom: 24px;
+}
+.account-modal > header h2 {
+  line-height: 1.25;
+}
+.account-modal > header > button {
+  align-self: center;
+}
+.modal-backdrop.accounting {
+  background: #17212b78;
+  backdrop-filter: none;
+}
+.avatar,
+.account-avatar,
+.nav.active,
+.nav:hover {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.account-button:focus-visible {
+  outline-color: var(--accent-border);
+}
+.drop-zone {
+  border-color: var(--accent-border);
+  background: #f2f6f9f1;
+  color: var(--accent-hover);
+}
+.create-menu-popover button > span,
+.upload-menu-popover button > span{
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.file-card.selected::after {
+  background: #4f73960a;
+}
+.card-select.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.storage-fill{
+  background: var(--accent);
+}
