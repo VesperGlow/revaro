@@ -290,6 +290,10 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 （含引号与 `<` 的构造输入）。安全关键的白名单清洗基于 html5ever 的真实
 HTML5 树构建器，压缩炸弹由声明量与实际读取量双重预算拦截。
 
+阶段 3c 验收：workspace 全绿（server 121）。测试覆盖文档完整往返、陈旧
+ETag 保存被拒（409）、不可编辑类型被拒（415）。并发保护靠把原 object_key
+放进 UPDATE 的 WHERE 子句实现，避免「检查后写入」之间的静默覆盖。
+
 阶段 3b 验收：workspace 全绿（server 120）。真实进程实测：创建目录 201、
 同名再次创建 409、children 可见、删除 204、回收站列出该项且 `parent_id`
 为 null、还原 204、清空回收站 204。刻意的范围裁剪：Go 删除未就绪文件前会
