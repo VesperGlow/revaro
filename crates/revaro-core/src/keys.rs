@@ -61,6 +61,39 @@ pub fn thumbnail_key(file_id: &str) -> Option<String> {
     Some(format!("{THUMBNAIL_ROOT}{prefix}/{rest}.jpg"))
 }
 
+/// Derive a content-specific thumbnail key in the namespace used by the Go
+/// server.  The object key, rather than the visible file id, is part of the
+/// digest so replacing a file cannot reuse its old thumbnail accidentally.
+#[must_use]
+pub fn derived_thumbnail_key(object_key: &str, namespace: &str) -> String {
+    let digest = sha256_hex(format!("{object_key}|{namespace}").as_bytes());
+    format!("{THUMBNAIL_ROOT}{}/{}.jpg", &digest[..2], &digest[2..])
+}
+
+/// The pre-typed thumbnail namespace kept for one-time migration reads.
+#[must_use]
+pub fn thumbnail_v2_key(object_key: &str) -> String {
+    derived_thumbnail_key(object_key, "thumb-v2")
+}
+
+/// Thumbnail key for still images and EPUB covers.
+#[must_use]
+pub fn image_thumbnail_key(object_key: &str) -> String {
+    derived_thumbnail_key(object_key, "image-thumb-v1")
+}
+
+/// Thumbnail key for audio artwork.
+#[must_use]
+pub fn audio_thumbnail_key(object_key: &str) -> String {
+    derived_thumbnail_key(object_key, "audio-thumb-v1")
+}
+
+/// Thumbnail key for video frames.
+#[must_use]
+pub fn video_thumbnail_key(object_key: &str) -> String {
+    derived_thumbnail_key(object_key, "video-thumb-v3")
+}
+
 /// Directory holding an in-progress multipart upload.
 ///
 /// The upload id scopes the directory and the object key is hashed inside it,
@@ -226,6 +259,22 @@ mod tests {
         assert_ne!(
             flow_book_fingerprint("blobs/abc"),
             flow_book_fingerprint("blobs/def")
+        );
+    }
+
+    #[test]
+    fn typed_thumbnail_keys_are_content_and_namespace_specific() {
+        assert_eq!(
+            image_thumbnail_key("blobs/abc"),
+            "thumbs/bc/f2fb1637978aaf22d41ce720e4a743104a51ae9d5ef44539a8839de0f98d16.jpg"
+        );
+        assert_ne!(
+            image_thumbnail_key("blobs/abc"),
+            audio_thumbnail_key("blobs/abc")
+        );
+        assert_ne!(
+            image_thumbnail_key("blobs/abc"),
+            image_thumbnail_key("blobs/def")
         );
     }
 }

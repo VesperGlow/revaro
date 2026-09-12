@@ -62,7 +62,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/files/{id}/children", get(children))
         .route("/storage/stats", get(storage_stats))
         .route("/system/status", get(system_status))
-        .route("/files/{id}/audio", get(audio_media_info))
         .route("/tasks", get(list_tasks))
         .route("/tasks/{id}", get(get_task).delete(delete_task))
         .route("/tasks/{id}/cancel", axum::routing::post(cancel_task))
@@ -1432,88 +1431,6 @@ async fn get_task(
         .map(Json)
 }
 
-/// Stored media analysis for a file, when it is still current.
-///
-/// The `source_etag = files.etag` condition is what makes an analysis valid: a
-/// file whose bytes were replaced keeps its row but must not be described by
-/// stale metadata. Re-analysing is the media engine's job and is not ported, so
-/// a missing or stale row is reported as unavailable rather than silently
-/// returning yesterday's duration.
-fn current_media_metadata(
-    connection: &Connection,
-    file: &File,
-) -> Result<Option<(i64, String, String)>, ApiError> {
-    connection
-        .query_row(
-            "SELECT duration_ms, chapters_json, video_codec FROM media_metadata \
-WHERE file_id = ?1 AND source_etag = ?2",
-            rusqlite::params![file.id, file.etag],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .map(Some)
-        .or_else(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(database_error(DbError::Query(other))),
-        })
-}
-
-/// `GET /api/files/{id}/audio`
-async fn audio_media_info(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    PathParam(id): PathParam<String>,
-) -> Result<Json<revaro_core::api::media::AudioMedia>, ApiError> {
-    state
-        .db
-        .call_api(move |connection| {
-            let file = lookup_file_any(connection, &id)
-                .map_err(|error| not_found_or(error, "ready audio file not found"))?;
-            if !revaro_core::classify::is_audio(&file) {
-                return Err(ApiError::not_found("ready audio file not found"));
-            }
-            let Some((duration_ms, chapters_json, video_codec)) =
-                current_media_metadata(connection, &file)?
-            else {
-                return Err(ApiError::not_found("audio metadata is not available"));
-            };
-
-            // A corrupt chapters column must not fail the whole response: the
-            // duration and cover are still useful without the chapter list.
-            let chapters: Vec<revaro_core::media::MediaChapter> =
-                serde_json::from_str(&chapters_json).unwrap_or_default();
-            let chapters = chapters
-                .into_iter()
-                .enumerate()
-                .map(|(index, chapter)| revaro_core::media::AudioChapter {
-                    id: index as i32 + 1,
-                    title: chapter.title,
-                    start: chapter.start_ms as f64 / 1000.0,
-                    end: chapter.end_ms as f64 / 1000.0,
-                })
-                .collect();
-
-            let has_cover = !video_codec.is_empty();
-            Ok(revaro_core::api::media::AudioMedia {
-                duration: duration_ms as f64 / 1000.0,
-                chapters,
-                cover_url: if has_cover {
-                    format!("/api/files/{}/thumbnail?v={}", file.id, file.etag)
-                } else {
-                    String::new()
-                },
-                has_cover,
-            })
-        })
-        .await
-        .map(Json)
-}
-
 /// `GET /api/system/status`
 ///
 /// Mirrors Go's snapshot, including two deliberate details:
@@ -2322,7 +2239,7 @@ fn conflict_or(error: DbError) -> ApiError {
 }
 
 /// Map an internal failure onto the response the client expects.
-fn database_error(error: DbError) -> ApiError {
+pub(crate) fn database_error(error: DbError) -> ApiError {
     tracing::error!(%error, "file query failed");
     ApiError::internal("database error")
 }
@@ -2748,15 +2665,16 @@ INSERT INTO task_files(task_id,file_id,role) VALUES('t1','f1','input');";
     async fn audio_info_reports_stored_chapters_and_rejects_stale_analysis() {
         let state = state().await;
         let chapters = r#"[{"title":"Intro","start_ms":0,"end_ms":1500},{"title":"Main","start_ms":1500,"end_ms":12345}]"#;
+        let analyzed_at = Timestamp::now().to_rfc3339();
         let sql: &'static str = Box::leak(format!(
             "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) \
 VALUES('a1','00000000-0000-0000-0000-000000000000','song.flac','file','blobs/a1',10,'audio/flac','e1','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
 ('a2','00000000-0000-0000-0000-000000000000','other.flac','file','blobs/a2',10,'audio/flac','e2','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
 ('a3','00000000-0000-0000-0000-000000000000','plain.mp3','file','blobs/a3',10,'audio/mpeg','e3','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'); \
 INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES \
-('a1',12345,'flac','mjpeg','flac',0,0,0,'{}', '2024-01-01T00:00:00Z','','',0,'[]','e1',2), \
+('a1',12345,'flac','mjpeg','flac',0,0,0,'{}', '{}','','',0,'[]','e1',2), \
 ('a2',9999,'flac','','flac',0,0,0,'[]','2024-01-01T00:00:00Z','','',0,'[]','STALE',2);",
-            chapters
+            chapters, analyzed_at
         ).into_boxed_str());
         seed(&state, sql).await;
 

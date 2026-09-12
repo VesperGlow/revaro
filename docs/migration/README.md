@@ -104,16 +104,18 @@ xtask/                      # 构建编排（cargo xtask ...）
 `cache`（L1/L2 字节 LRU、优先级与软配额、singleflight、磁盘 `.meta` 格式）、
 `system_status`。
 
-### 阶段 5 — 阅读器（进行中）
+### ✅ 阶段 5 — 阅读器（已完成）
 `revaro-reader`：EPUB 解析与白名单清洗、TXT 分章、reading flow 生成
 （确定性 chunk、`data-block` 编号、UTF-16 偏移、TOC 目标）、flow 缓存。
 
 后端 flow 生成、对象持久化和 reader HTTP 端点已在阶段 5a 完成；前端阅读器
 视图仍属于阶段 7，尚未迁移。
 
-### 阶段 6 — 媒体
-`revaro-media`：由 `data-plane` 改造为库（probe、缩略图、音频封面、
-字幕提取、压缩包解压），并接入 `revaro-server`。
+### 🚧 阶段 6 — 媒体与压缩包（进行中）
+阶段 6a 已完成 `revaro-media` 的进程内媒体能力（probe、视频抽帧、音频封面、
+图片/EPUB 缩略图、外置与内嵌字幕），并接入 `revaro-server` 的媒体端点（含
+重新接入的音频信息端点）。
+压缩包解压仍待从 `data-plane` 移植。
 
 ### 阶段 7 — 前端
 Leptos 按模块渐进替换 Vue：外壳/登录 → 文件浏览 → 上传与任务中心 →
@@ -171,8 +173,8 @@ CI；更新 README 与 docs。
 | 分享链接 | `server_stream_share.go` | `share_routes.rs` |
 | 任务系统 + SSE 事件 | `tasks.go`、`task_manager.go`、`jobs.go` | `task_routes.rs`、`tasks/` |
 | 系统状态 + SSE | `system_status.go` | `status_routes.rs` |
-| 缩略图/音频封面 | `thumb.go` | `thumbnail.rs` + `revaro-media` |
-| 媒体探测/字幕 | `media_metadata.go`、`video_media.go` | `revaro-media`（由 `data-plane/` 改造为库） |
+| ~~缩略图/音频封面~~ | `thumb.go` | ✅ 已完成：`media_routes.rs` + `revaro-media` |
+| ~~媒体探测/字幕~~ | `media_metadata.go`、`video_media.go` | ✅ 已完成：`media_routes.rs` + `revaro-media` |
 | 压缩包解压 | `archive.go` | `revaro-media` + `archive_routes.rs` |
 | ~~阅读器 flow + reader 路由~~ | `internal/reader/flow/`、`internal/server/book.go`、`reader_flow.go` | ✅ 已完成：`revaro-reader::flow`、`reader_routes.rs` |
 | 前端各功能视图 | `web/src/components/` | `crates/revaro-web/src/components/` |
@@ -232,25 +234,25 @@ data-plane，Rust 服务是并行推进的新实现，不参与镜像。等到 R
 user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 本地等价命令（cargo build/test）间接验证。
 
-## 4.7 阅读器阶段完成后的状态（供接手者定位）
+## 4.7 当前迁移状态（供接手者定位）
 
 最后一次完整验收（`cargo xtask check` 退出码 0，另行完成 wasm bundle 构建和真实进程验证）：
 
 | 项 | 值 |
 |---|---|
-| 测试 | **333 个**（core 107、reader 55 = 46 单元 + 9 集成、server 145 = 143 单元 + 2 集成、web 21、xtask 5） |
-| 路由覆盖 | **61 条 Go 路径模式中已实现 51 条**，剩 9 条真实缺口（+1 条为核对脚本的正则噪声） |
+| 测试 | **354 个**（core 108、media 14、reader 55 = 46 单元 + 9 集成、server 151 = 149 单元 + 2 集成、web 21、xtask 5） |
+| 路由覆盖 | **61 条 Go 路径模式中已实现 55 条**，剩 5 条真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
 | reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈 |
+| media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | 部署路径 | **未变**：镜像仍构建 Go 服务 + data-plane；Rust 服务并行推进、尚未接管镜像 |
 
-### 剩余 9 条路由（按所需前置条件归类）
+### 剩余 5 条路由（按所需前置条件归类）
 
 | 缺口 | 条数 | 前置条件 |
 |---|---|---|
-| `/files/{id}/thumbnail`、`video`、`video/subtitles`、`media/reanalyze` | 4 | **媒体引擎**：把 `data-plane/` 从独立进程改造为进程内库（probe、缩略图、字幕） |
-| `/files/{id}/extract` | 1 | 同上（libarchive 解压 + 分段状态机） |
+| `/files/{id}/extract` | 1 | `libarchive` 解压 + 分段状态机 |
 | `/files/batch-download/prepare`、`batch-download/{token}` | 2 | 流式 ZIP；Range/流式基础设施已就绪（见 `serve_file`） |
 | `/tasks/{id}/input` | 1 | 依赖压缩包任务；archive 未移植前无可驱动对象 |
 | `/system/status/stream` | 1 | 需要一个 15 秒刷新的状态快照与订阅广播；`JobBus` 的形态可直接复用 |
@@ -359,6 +361,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 3c 文本文档读写 | ✅ | `refactor(rust): 移植文本文档读写端点` |
 | 3d 上传（会话/流式/提交/中止） | ✅ | `refactor(rust): 移植上传（会话、流式写入、幂等提交、中止）` |
 | 5a 阅读器 flow + reader HTTP 端点 | ✅ | 本阶段提交：`revaro-reader::flow`、`reader_routes.rs` |
+| 6a 进程内媒体引擎与媒体端点 | ✅ | `feat(media): 接入进程内媒体引擎与媒体路由` |
 | 7a 前端外壳 + 样式层 + 纯逻辑 | ✅ | `refactor(web): 落地样式表层、应用外壳与纯逻辑模块` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
@@ -367,12 +370,13 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 路径字面量比对：
 
 ```
-Go 路径模式 61 条    已实现 41 条    剩余 20 条（其中 1 条为核对脚本的正则噪声）
+（历史记录，reader 阶段之前）Go 路径模式 61 条    已实现 41 条    剩余 20 条
+（其中 1 条为核对脚本的正则噪声）
 ```
 
 （`/api` 前缀省略；统计时不含正则误匹配的 `Origin`，其余 19 条为真实缺口。）
 
-剩余 19 条按模块：任务输入与事件流（2：`/tasks/{id}/input`、`/events`）、
+（历史记录，reader 阶段之前）剩余 19 条按模块：任务输入与事件流（2：`/tasks/{id}/input`、`/events`）、
 系统状态 SSE（1）、分享公开端（1：`/s/{token}`）、下载/预览/批量下载 ZIP（4）、
 媒体（视频/重探测/字幕，3）、阅读器（book 信息/资产/封面/进度/flow/分片，6）、
 缩略图（1）、压缩包解压（1）。
@@ -381,8 +385,8 @@ Go 路径模式 61 条    已实现 41 条    剩余 20 条（其中 1 条为核
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**在当前阶段之前尚未开始的项目**：分享链接、任务系统与 SSE、系统状态与 SSE、缩略图与音频封面、
-媒体探测与字幕、压缩包解压、阅读器 flow 生成、前端各功能视图、
+**从阶段 6a 继续的项目**：压缩包解压、批量下载 ZIP、依赖 archive 的任务输入、
+系统状态 SSE、前端各功能视图、
 删除 Node/npm 与 Go 构建链。详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +

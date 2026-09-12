@@ -1,0 +1,16 @@
+[package]
+name = "revaro-media"
+description = "In-process media probing, thumbnail generation and subtitle conversion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+revaro-core.workspace = true
+ffmpeg-next.workspace = true
+image = { workspace = true, features = ["bmp", "gif", "png", "webp"] }
+thiserror.workspace = true
+tokio-util.workspace = true

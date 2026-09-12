@@ -18,6 +18,7 @@ authors = ["VesperGlow"]
 # --- workspace members, so members can depend on each other ---
 revaro-core = { path = "crates/revaro-core" }
 revaro-server = { path = "crates/revaro-server" }
+revaro-media = { path = "crates/revaro-media" }
 revaro-reader = { path = "crates/revaro-reader" }
 
 # --- shared types (native + wasm32) ---

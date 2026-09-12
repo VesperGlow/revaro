@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 revaro-core = { workspace = true, features = ["axum"] }
+revaro-media.workspace = true
 revaro-reader.workspace = true
 
 axum.workspace = true

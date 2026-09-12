@@ -73,7 +73,7 @@ async fn reader_file(state: Arc<AppState>, id: String) -> Result<File, ApiError>
         .await
 }
 
-async fn load_book(
+pub(crate) async fn load_book(
     state: Arc<AppState>,
     file: &File,
 ) -> Result<Arc<revaro_reader::Book>, ApiError> {

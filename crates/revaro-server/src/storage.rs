@@ -20,9 +20,9 @@
 //!
 //! ## Deliberate differences from the Go implementation
 //!
-//! * The Go type embedded a `*DataPlane` client for media and archive work. The
-//!   media engine becomes an in-process library later in the migration, so those
-//!   operations are not part of this module at all.
+//! * The Go type embedded a `*DataPlane` client for media and archive work. Media
+//!   decoding now lives in the `revaro-media` library; archive operations will
+//!   use the same boundary when that remaining migration stage is implemented.
 //! * `walk_prefix` is gone. Go streamed batches to bound memory during garbage
 //!   collection; here [`LocalStore::list_prefix`] returns the full list and the
 //!   caller processes it in chunks. The store is single-user and local, so the

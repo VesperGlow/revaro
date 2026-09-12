@@ -19,6 +19,8 @@ pub mod db;
 pub mod error;
 pub mod file_routes;
 pub mod ids;
+pub mod media_routes;
+pub mod media_runtime;
 pub mod middleware;
 pub mod proxy;
 pub mod reader_routes;

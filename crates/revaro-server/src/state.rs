@@ -128,6 +128,8 @@ pub struct AppState {
     pub store: LocalStore,
     /// Administrator credentials, sessions and second factor.
     pub auth: AuthService,
+    /// Native media probing, thumbnail and subtitle coordination.
+    pub media: crate::media_runtime::MediaRuntime,
     /// Task-change notifications for the event stream.
     pub jobs: JobBus,
     /// Parsed books and serialized reader-flow builders.
@@ -143,11 +145,14 @@ impl AppState {
         store: LocalStore,
         auth: AuthService,
     ) -> Arc<Self> {
+        let media_cache_capacity =
+            usize::try_from(config.media_cache_capacity.max(0)).unwrap_or(usize::MAX);
         Arc::new(Self {
             config,
             db,
             store,
             auth,
+            media: crate::media_runtime::MediaRuntime::with_cache_capacity(media_cache_capacity),
             jobs: JobBus::new(256),
             reader: ReaderRuntime::new(),
         })
