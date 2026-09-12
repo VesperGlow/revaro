@@ -363,6 +363,18 @@ children 是**文件在目录之前**（`ORDER BY kind DESC`），面包屑包�
 `$argon2id$v=19$m=65536,t=3,p=2$<salt>$<hash>`（无填充标准 base64），
 会话 token 以 base64 RawURL 的 sha256 存储——两者都是既有数据继续可用的前提。
 
+阶段 2d 补充（会话与 Cookie 的真实进程验证）：
+
+- HTTP 基址下登录下发 `revaro_session=…; HttpOnly; SameSite=Lax; Path=/;
+  Max-Age=2592000`——没有 `Secure`（http 下正确）、没有 `Domain`
+- HTTPS 基址下同一 Cookie 带上 `Secure`，并额外下发
+  `Strict-Transport-Security: max-age=31536000`；跨 scheme 的 Origin
+  （`http://` 对 `https://`）被判 403
+- 修改口令返回 204 并下发清空 Cookie（`Max-Age=-1`、
+  `Expires=Thu, 01 Jan 1970 00:00:01 GMT`，与 Go 的 `time.Unix(1,0)` 一致）；
+  **旧 Cookie 随即 401、旧口令 401、新口令 200**——「改凭据即清空全部会话」
+  这一安全不变量在真实进程中成立
+
 阶段 7（外壳）验收：15 个样式表按权威级联顺序聚合，`logic::stylesheet`
 的测试固定该顺序；应用外壳与登录页落地；纯逻辑模块 21 个测试生效并通过
 （此前因模块未声明而从未编译）。
