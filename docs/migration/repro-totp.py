@@ -88,7 +88,55 @@ def main() -> int:
             "secret is accepted, so two-factor authentication cannot be enabled."
         )
         return 1
-    print("\nTOTP enable succeeded; no defect.")
+    recovery = body["recovery_codes"]
+    print(f"enable ok; {len(recovery)} recovery codes")
+
+    failures = []
+
+    def check(label, condition):
+        print(f"  {label}: {'ok' if condition else 'FAILED'}")
+        if not condition:
+            failures.append(label)
+
+    # Password alone must no longer be enough, and the client must be told the
+    # second factor is required rather than merely rejected.
+    status, payload, _ = call("POST", "/api/auth/login", {"username": "admin", "password": PASSWORD})
+    check("login without a second factor is refused", status == 401)
+    check("...with code totp_required", (payload or {}).get("error", {}).get("code") == "totp_required")
+
+    # A code for the *next* step works. It cannot be the current step: enabling
+    # records the step it consumed, and reusing a step is exactly what the
+    # replay protection refuses.
+    fresh = hotp(key, int(time.time()) // 30 + 1)
+    status, _, _ = call(
+        "POST", "/api/auth/login",
+        {"username": "admin", "password": PASSWORD, "second_factor": fresh},
+    )
+    check("login with a fresh code succeeds", status == 200)
+
+    # The same code must not work twice: TOTP replay protection.
+    status, _, _ = call(
+        "POST", "/api/auth/login",
+        {"username": "admin", "password": PASSWORD, "second_factor": fresh},
+    )
+    check("the same code is refused the second time (replay)", status == 401)
+
+    # Recovery codes are single use.
+    status, _, _ = call(
+        "POST", "/api/auth/login",
+        {"username": "admin", "password": PASSWORD, "second_factor": recovery[0]},
+    )
+    check("a recovery code works once", status == 200)
+    status, _, _ = call(
+        "POST", "/api/auth/login",
+        {"username": "admin", "password": PASSWORD, "second_factor": recovery[0]},
+    )
+    check("the same recovery code is refused the second time", status == 401)
+
+    if failures:
+        print("\nDEFECTS: " + ", ".join(failures))
+        return 1
+    print("\nAll TOTP behaviours verified.")
     return 0
 
 

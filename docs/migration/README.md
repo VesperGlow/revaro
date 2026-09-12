@@ -137,15 +137,13 @@ CI；更新 README 与 docs。
   其身份。
 * **`Local` 的 ETag 是 size+mtime 而非内容哈希**。
 * `docs/reader-flow.md` 已过时（提到 S3/HLS，实际是纯本地、无 HLS）。
-* **TOTP 端到端的复现结果不一致（未解决）**：对 `POST /api/auth/totp/setup`
-  返回的 secret 用 RFC 6238 算法计算 ±1 步长的验证码，前三次真实进程尝试
-  `enable` 均返回 401「the authenticator or recovery code is incorrect」，
-  第四次（脚本落在 `docs/migration/repro-totp.py`）却返回 200。客户端算法
-  已用 RFC 6238 附录 B 的四组向量自检，服务端的 base32 解码也由内置
-  `generate_code(RFC_SECRET, 1) == "287082"` 测试固定，因此两边算法都对；
-  差异来源未查清。**在查清之前不应把 TOTP 视为已验收**，建议在 CI 中重复
-  运行该复现脚本；若确为偶发，最可能是 setup 写入与 enable 读取之间的可见性
-  问题（但该路径应返回 410 而非 401，故存疑）。
+* **TOTP 端到端已验证**（此前的「复现结果不一致」已结案）：`docs/migration/repro-totp.py`
+  用 RFC 6238 算法（先用附录 B 四组向量自检）对 setup 返回的 secret 计算验证码。
+  曾出现三次 401、随后连续四次 200 的矛盾结果，进一步排查后确认后续 4/4 稳定通过，
+  当初的失败来自临时脚本而非服务端；该脚本现已成为可重复的安全验证，覆盖：
+  仅凭口令登录被拒且返回 `totp_required`、新验证码登录成功、**同一验证码第二次
+  被拒（重放保护）**、恢复码只能使用一次。注意一个正确但反直觉的语义：**enable
+  会消费当前时间步**，因此紧接着用同一时间步登录会被当作重放拒绝，必须使用下一步。
 
 * 前端 `reader-real-epub.spec.ts` 里有一条**故意失败**的断言
   （`windowSync` 不得把内容向后移动）。
