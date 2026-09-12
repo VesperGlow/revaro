@@ -143,6 +143,62 @@ CI；更新 README 与 docs。
   下降，与 Go 的 `x/net/html` 行为一致。理论上的栈耗尽 DoS（不是脚本执行），
   尚未加深度上限。若后续把上传来源视为不可信，应补一个显式深度限制。
 
+## 4.5 接手指南：剩余工作与约定
+
+若由新的会话接手，读这一节即可继续，不必回溯对话历史。
+
+### 剩余工作清单（Go 源文件 → Rust 落点）
+
+| 剩余模块 | Go 源 | Rust 落点 |
+|---|---|---|
+| 文件浏览/新建/改名/复制/删除 | `server_files.go` | `crates/revaro-server/src/file_routes.rs`（进行中） |
+| 回收站列表/还原/清空/彻底删除 | `server_files.go` 540-760 | 同上 |
+| 文档读写（≤1 MiB） | `server_files.go` 160-370 | `document_routes.rs` |
+| 上传（单请求 + 分片 + 幂等完成） | `server_uploads.go`、`upload_content.go` | `upload_routes.rs` |
+| 上传/下载的流式与 Range | `server_stream_share.go` | `stream.rs` |
+| 批量下载 ZIP | `download_batch.go` | `batch_download.rs` |
+| 分享链接 | `server_stream_share.go` | `share_routes.rs` |
+| 任务系统 + SSE 事件 | `tasks.go`、`task_manager.go`、`jobs.go` | `task_routes.rs`、`tasks/` |
+| 系统状态 + SSE | `system_status.go` | `status_routes.rs` |
+| 缩略图/音频封面 | `thumb.go` | `thumbnail.rs` + `revaro-media` |
+| 媒体探测/字幕 | `media_metadata.go`、`video_media.go` | `revaro-media`（由 `data-plane/` 改造为库） |
+| 压缩包解压 | `archive.go` | `revaro-media` + `archive_routes.rs` |
+| 阅读器 flow 生成 | `internal/reader/flow/` | `revaro-reader::flow`（`Book` 已按此设计） |
+| 前端各功能视图 | `web/src/components/` | `crates/revaro-web/src/components/` |
+| 删除 Node/npm 与 Go 链 | `web/`、`internal/`、`cmd/`、`go.mod`、Dockerfile、CI | 最后一步 |
+
+### 代码约定（新模块必须遵守）
+
+- **错误**：一律返回 `revaro_core::ApiError`（已实现 `IntoResponse`），状态码与
+  消息字符串必须与 Go 一致——有测试依赖这些字符串。
+- **数据库**：全部经由 `state.db.call(|conn| …)`，同步 `rusqlite` 绝不直接跑在
+  异步运行时上。唯一性冲突用 `DbError::is_constraint_violation()` 判成 409，
+  不要用「先 SELECT 再 INSERT」。
+- **共享类型**：请求/响应 DTO 放 `revaro-core/src/api.rs`，领域类型放
+  `revaro-core/src/model.rs`，纯规则放 `validate.rs` / `classify.rs` / `library.rs`。
+  **前端也要用的逻辑必须放 core**，不要写第二份。
+- **路由模块**：照抄 `auth_routes.rs` 的结构，在 `router.rs` 里用一行 `.merge(...)`
+  接入 `/api`（写请求自动受 Origin 守卫保护）。
+- **对象存储**：只通过 `state.store`（`LocalStore`）访问，键一律用
+  `revaro_core::keys` 生成，不要自己拼字符串。
+- **测试**：每个模块自带 `#[cfg(test)] mod tests`，用
+  `tower::ServiceExt::oneshot` 打路由；写请求需要 `Origin` 头与有效会话 cookie。
+- **文档注释**：英文，解释「为什么」而不只是「做什么」，风格对齐
+  `crates/revaro-server/src/storage.rs`。
+
+### 验收协议（每个阶段都必须走）
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                 # 不许有失败
+cargo build -p revaro-web --target wasm32-unknown-unknown
+cargo xtask web-build                  # 产出 dist/web
+```
+
+再加上一次真实进程验证：启动 `revaro`，用 `curl` 走通该阶段新增的端点。
+仅在以上全部通过后才提交，并在本文件的进度日志里记录验收结果。
+
 ## 5. 构建与检查
 
 ```sh
