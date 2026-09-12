@@ -18,16 +18,16 @@ use axum::response::{IntoResponse, Response};
 use tokio::io::AsyncReadExt as _;
 use tokio_util::io::ReaderStream;
 
-use crate::config::Config;
+use crate::state::AppState;
 
 /// Serve a file from the bundle, or `index.html` for a client-side route.
-pub async fn serve(State(config): State<std::sync::Arc<Config>>, uri: Uri) -> Response {
+pub async fn serve(State(state): State<std::sync::Arc<AppState>>, uri: Uri) -> Response {
     let Some(relative) = safe_relative_path(uri.path()) else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
 
-    let Some(path) = resolve(&config.web_dir, &relative).await else {
-        return index_response(&config.web_dir).await;
+    let Some(path) = resolve(&state.config.web_dir, &relative).await else {
+        return index_response(&state.config.web_dir).await;
     };
     file_response(&path).await
 }

@@ -9,7 +9,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use revaro_server::config::Config;
+use revaro_server::db::Database;
 use revaro_server::router;
+use revaro_server::state::AppState;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -32,7 +34,22 @@ async fn main() -> ExitCode {
         }
     };
 
-    let app = router::build(config.clone());
+    let database = match open_database(&config) {
+        Ok(database) => database,
+        Err(error) => {
+            tracing::error!(%error, "database startup failed");
+            return ExitCode::FAILURE;
+        }
+    };
+    tracing::info!(path = %database.path().display(), "database ready");
+
+    if let Err(error) = prepare_work_directory(&config) {
+        tracing::error!(%error, path = %config.work_dir.display(), "work directory startup check failed");
+        return ExitCode::FAILURE;
+    }
+
+    let state = AppState::new(config.clone(), database);
+    let app = router::build(state);
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -64,9 +81,38 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Open and migrate the SQLite database.
+fn open_database(config: &Config) -> Result<Database, revaro_server::db::DbError> {
+    Database::open(config.database_path())
+}
+
+/// Create the work directory and prove it is writable.
+///
+/// The Go server refused to start when the work directory could not hold a
+/// probe file, because archive extraction and reader caches would fail later
+/// anyway — and failing at startup is far easier to diagnose.
+fn prepare_work_directory(config: &Config) -> std::io::Result<()> {
+    std::fs::create_dir_all(&config.work_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&config.work_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let probe = config.work_dir.join(".revaro-write-check");
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(&probe)?;
+    Ok(())
+}
+
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("revaro_server=info,tower_http=warn"));
+    // The filter must name the *binary* crate (`revaro`) as well as the library
+    // crates: `tracing` targets are module paths, and an event emitted from
+    // `main.rs` has target `revaro`, which a `revaro_server=info` directive
+    // would filter out. Getting this wrong silences startup logging entirely.
+    const DEFAULT_FILTER: &str =
+        "revaro=info,revaro_server=info,revaro_media=info,revaro_reader=info,tower_http=warn";
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)

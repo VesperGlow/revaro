@@ -18,7 +18,7 @@ use http::{Method, StatusCode};
 
 use revaro_core::ApiError;
 
-use crate::config::Config;
+use crate::state::AppState;
 
 /// Content-Security-Policy applied to every response.
 ///
@@ -31,7 +31,7 @@ form-action 'self'; frame-src 'none'; frame-ancestors 'none'";
 
 /// Add the product's security headers to every response.
 pub async fn security_headers(
-    State(config): State<Arc<Config>>,
+    State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -60,7 +60,7 @@ pub async fn security_headers(
         "content-security-policy",
         CONTENT_SECURITY_POLICY.parse().expect("valid header value"),
     );
-    if config.base_url.starts_with("https://") {
+    if state.config.base_url.starts_with("https://") {
         headers.insert(
             "strict-transport-security",
             "max-age=31536000".parse().expect("valid header value"),
@@ -77,7 +77,7 @@ pub async fn security_headers(
 
 /// Reject state-changing requests that do not come from the application origin.
 pub async fn origin_guard(
-    State(config): State<Arc<Config>>,
+    State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -91,7 +91,7 @@ pub async fn origin_guard(
     let Ok(origin) = origin.to_str() else {
         return ApiError::forbidden("origin not allowed").into_response();
     };
-    if !same_origin(&config.base_url, origin) {
+    if !same_origin(&state.config.base_url, origin) {
         return ApiError::forbidden("origin not allowed").into_response();
     }
     next.run(request).await

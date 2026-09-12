@@ -13,10 +13,12 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod middleware;
 pub mod proxy;
 pub mod router;
+pub mod state;
 pub mod web;
 
 pub use config::Config;

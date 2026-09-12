@@ -16,49 +16,61 @@ use axum::{Json, Router};
 use revaro_core::ApiError;
 use revaro_core::api::Health;
 
-use crate::config::Config;
+use crate::state::AppState;
 use crate::{middleware, web};
 
 /// Assemble the full application router.
-pub fn build(config: Arc<Config>) -> Router {
+pub fn build(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .nest("/api", api())
         .fallback(web::serve)
-        .with_state(config.clone())
+        .with_state(state.clone())
         // Order matters, and matches the Go chain: security headers wrap the
         // origin guard, which wraps the routes.
         .layer(axum::middleware::from_fn_with_state(
-            config.clone(),
+            state.clone(),
             middleware::origin_guard,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            config,
+            state,
             middleware::security_headers,
         ))
 }
 
-/// Liveness probe.
+/// Liveness probe: the process is up.
 async fn health() -> Json<Health> {
     Json(Health {
         status: "ok".to_owned(),
     })
 }
 
-/// Readiness probe.
+/// Readiness probe: the database answers.
 ///
-/// Once the database and object store are wired in, this reports `503` while
-/// either is unavailable, exactly as the Go handler did. Until those modules
-/// exist there is nothing to probe, so reporting ready is truthful.
-async fn ready(State(_config): State<Arc<Config>>) -> Json<Health> {
-    Json(Health {
-        status: "ready".to_owned(),
-    })
+/// Object storage joins this check once the storage module is migrated; the Go
+/// handler answered `503 object storage unavailable` in that case.
+async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Health>, ApiError> {
+    let database = state.db.clone();
+    let reachable = tokio::task::spawn_blocking(move || database.ping())
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "readiness check could not run");
+            ApiError::unavailable("database unavailable")
+        })?;
+    match reachable {
+        Ok(()) => Ok(Json(Health {
+            status: "ready".to_owned(),
+        })),
+        Err(error) => {
+            tracing::warn!(%error, "readiness check failed");
+            Err(ApiError::unavailable("database unavailable"))
+        }
+    }
 }
 
 /// The authenticated API subtree.
-fn api() -> Router<Arc<Config>> {
+fn api() -> Router<Arc<AppState>> {
     Router::new().fallback(api_not_found)
 }
 
@@ -71,19 +83,24 @@ async fn api_not_found() -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::db::Database;
     use axum::body::Body;
     use http::{Request, StatusCode};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
-    fn test_config() -> Arc<Config> {
-        Arc::new(
-            Config::from_lookup(&|name| match name {
-                "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
-                "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
-                _ => None,
-            })
-            .expect("test configuration is valid"),
+    /// Shared state for router tests: in-memory database, no web bundle.
+    pub fn test_state() -> Arc<AppState> {
+        let config = Config::from_lookup(&|name| match name {
+            "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
+            "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
+            _ => None,
+        })
+        .expect("test configuration is valid");
+        AppState::new(
+            Arc::new(config),
+            Database::open_in_memory().expect("in-memory database"),
         )
     }
 
@@ -104,21 +121,21 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_reports_ok() {
-        let (status, body) = get(build(test_config()), "/healthz", None).await;
+        let (status, body) = get(build(test_state()), "/healthz", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({"status": "ok"}));
     }
 
     #[tokio::test]
-    async fn readyz_reports_ready() {
-        let (status, body) = get(build(test_config()), "/readyz", None).await;
+    async fn readyz_reports_ready_when_the_database_answers() {
+        let (status, body) = get(build(test_state()), "/readyz", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({"status": "ready"}));
     }
 
     #[tokio::test]
     async fn unknown_api_paths_answer_json() {
-        let (status, body) = get(build(test_config()), "/api/does-not-exist", None).await;
+        let (status, body) = get(build(test_state()), "/api/does-not-exist", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             body,
@@ -128,7 +145,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_responses_are_not_cached_and_carry_security_headers() {
-        let response = build(test_config())
+        let response = build(test_state())
             .oneshot(
                 Request::builder()
                     .uri("/api/does-not-exist")
@@ -142,13 +159,13 @@ mod tests {
         assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
         assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
         assert!(headers.get("content-security-policy").is_some());
-        // HTTP base URL must not advertise HSTS.
+        // An HTTP base URL must not advertise HSTS.
         assert!(headers.get("strict-transport-security").is_none());
     }
 
     #[tokio::test]
     async fn write_requests_require_a_matching_origin() {
-        let app = build(test_config());
+        let app = build(test_state());
         let request = Request::builder()
             .method("POST")
             .uri("/api/uploads")
@@ -179,13 +196,13 @@ mod tests {
 
     #[tokio::test]
     async fn reads_do_not_require_an_origin() {
-        let (status, _) = get(build(test_config()), "/healthz", None).await;
+        let (status, _) = get(build(test_state()), "/healthz", None).await;
         assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn a_missing_bundle_reports_how_to_build_it() {
-        let response = build(test_config())
+        let response = build(test_state())
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
