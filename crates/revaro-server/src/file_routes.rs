@@ -27,6 +27,7 @@ use axum::{Json, Router};
 use revaro_core::ApiError;
 use revaro_core::api::{Children, FileDetail, Library, LibraryAll, LibraryBuckets};
 use revaro_core::classify::LibraryKind;
+use revaro_core::keys;
 use revaro_core::library as aggregation;
 use revaro_core::model::{
     File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats,
@@ -67,6 +68,7 @@ pub fn routes() -> Router<Arc<AppState>> {
             axum::routing::patch(patch_file).delete(delete_file),
         )
         .route("/files/{id}/copy", axum::routing::post(copy_file))
+        .route("/documents", axum::routing::post(create_document))
         .route("/trash", get(trash).delete(empty_trash))
         .route("/trash/{id}/restore", axum::routing::post(restore_trash))
         .route("/trash/{id}", axum::routing::delete(purge_trash))
@@ -969,6 +971,87 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
     Ok(Json(updated))
 }
 
+/// `POST /api/documents` — create a new text document.
+///
+/// The bytes are written first and the row second, so a failed insert can
+/// discard the freshly written object rather than leave an unreferenced blob.
+/// The parent check is folded into the insert for the same reason as elsewhere:
+/// a directory deleted concurrently must not be written into.
+async fn create_document(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    Json(request): Json<revaro_core::api::CreateDocumentRequest>,
+) -> Result<(http::StatusCode, Json<File>), ApiError> {
+    revaro_core::validate::validate_document(&request.name, &request.content)?;
+
+    let file_id = crate::ids::new_id();
+    let object_key = keys::blob_key(&crate::ids::new_id());
+    let mime = revaro_core::classify::document_mime(&request.name).to_owned();
+    let bytes = request.content.into_bytes();
+    let size = bytes.len() as i64;
+
+    let mut source: &[u8] = &bytes;
+    let stored = state
+        .store
+        .write_stream(&object_key, &mut source, size)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "document write failed");
+            ApiError::new(502, "object storage write failed")
+        })?;
+    let content_hash = keys::sha256_hex(&bytes);
+
+    let insert = {
+        let (parent_id, name) = (request.parent_id.clone(), request.name.clone());
+        let (object_key, mime, content_hash) =
+            (object_key.clone(), mime.clone(), content_hash.clone());
+        state
+            .db
+            .call_api(move |connection| {
+                let now = Timestamp::now().to_rfc3339();
+                let inserted = connection
+                    .execute(
+                        "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,\
+content_hash,hash_algorithm,status,created_at,updated_at) \
+SELECT ?1,?2,?3,'file',?4,?5,?6,?7,?8,?9,'ready',?10,?10 \
+WHERE EXISTS(SELECT 1 FROM files WHERE id = ?2 AND kind = 'directory' AND status = 'ready' \
+AND deleted_at IS NULL)",
+                        rusqlite::params![
+                            file_id,
+                            parent_id,
+                            name,
+                            object_key,
+                            size,
+                            mime,
+                            stored.etag,
+                            content_hash,
+                            CONTENT_HASH_ALGORITHM,
+                            now,
+                        ],
+                    )
+                    .map_err(|error| conflict_or(DbError::Query(error)))?;
+                if inserted != 1 {
+                    return Err(ApiError::conflict(
+                        "parent directory is no longer available",
+                    ));
+                }
+                lookup_file_for_commit(connection, &file_id).map_err(database_error)
+            })
+            .await
+    };
+
+    match insert {
+        Ok(file) => Ok((http::StatusCode::CREATED, Json(file))),
+        Err(error) => {
+            // The row never landed, so the object is unreachable.
+            if let Err(cleanup) = state.store.delete(&object_key).await {
+                tracing::warn!(%cleanup, key = %object_key, "could not discard an orphaned document blob");
+            }
+            Err(error)
+        }
+    }
+}
+
 /// Pick a free name for a copy of `original` inside `parent_id`.
 ///
 /// Mirrors Go exactly: the source name if it is free, otherwise
@@ -1412,6 +1495,68 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn creating_a_document_stores_bytes_and_commits_a_ready_row() {
+        let state = state().await;
+        let root = ROOT_ID;
+        let (status, created) = write(
+            &state,
+            "POST",
+            "/api/documents",
+            Some(serde_json::json!({"parent_id": root, "name": "todo.md", "content": "# hi\n"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created["name"], "todo.md");
+        assert_eq!(created["status"], "ready");
+        assert_eq!(created["size"], 5);
+        assert_eq!(created["mime_type"], "text/markdown; charset=utf-8");
+        assert_eq!(created["content_hash"].as_str().unwrap().len(), 64);
+        assert_eq!(created["hash_algorithm"], "sha256");
+
+        // The bytes really landed in the object store, and the file is readable
+        // back through the document endpoint.
+        let id = created["id"].as_str().unwrap().to_owned();
+        let (status, body) = call(&state, &format!("/api/files/{id}/content")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["content"], "# hi\n");
+
+        // A non-editable extension is refused before anything is written.
+        let (status, body) = write(
+            &state,
+            "POST",
+            "/api/documents",
+            Some(serde_json::json!({"parent_id": root, "name": "photo.png", "content": "x"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["message"],
+            "this file type cannot be edited as text"
+        );
+
+        // A vanished parent is a conflict, and no orphan blob is left behind.
+        let before = std::fs::read_dir(state.store.root().join("blobs"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        let (status, _) = write(
+            &state,
+            "POST",
+            "/api/documents",
+            Some(serde_json::json!({
+                "parent_id": "0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f",
+                "name": "lost.md",
+                "content": "x"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let after = std::fs::read_dir(state.store.root().join("blobs"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(before, after, "a failed create must not leak a blob");
     }
 
     #[tokio::test]
