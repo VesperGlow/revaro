@@ -86,8 +86,8 @@ xtask/                      # 构建编排（cargo xtask ...）
 
 ### 阶段 2 — 后端基础设施
 `revaro-server` 内按 Go 包顺序移植，每个模块带 Go 测试对应的 Rust 测试：
-1. `database`：连接、WAL、busy timeout、嵌入式迁移（001/002 原样）、
-   `schema_migrations`。
+1. **`database`（已完成）**：连接池、WAL、busy timeout、嵌入式迁移
+   （001/002 原样引用）、`schema_migrations`、目录/文件权限。
 2. `storage`：`objects/` 本地存储、临时文件 + fsync + 原子 rename、
    分片上传目录、只读句柄、前缀扫描、cleanup 队列。
 3. `ids` / `auth`：UUIDv4、Argon2id 口令、session cookie、TOTP
@@ -155,3 +155,27 @@ cargo test --workspace    # 仅测试
 ```sh
 cargo install wasm-bindgen-cli --version 0.2.128
 ```
+
+CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
+`cargo xtask check` 会先比对 wasm-bindgen 的固定版本，防止 CLI 与 crate
+的私有 ABI 版本漂移。
+
+## 6. 进度日志
+
+| 阶段 | 状态 | 提交 |
+|---|---|---|
+| 0 审计 | ✅ | 后端/前端审计文档 |
+| 1 工作区 + 共享类型 | ✅ | `refactor(rust): 建立 Cargo workspace 与前后端共享 core crate` |
+| 2a 数据库层 | ✅ | `refactor(rust): 移植 SQLite 数据库层并接入服务启动` |
+| 2b 对象存储 | 🚧 | `revaro-server::storage` |
+| 2c 阅读器解析 | 🚧 | `crates/revaro-reader`（EPUB/TXT 解析与白名单清洗） |
+| CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
+
+阶段 1 验收：128 个测试通过、`cargo fmt --check` 与
+`clippy -D warnings` 干净、`cargo xtask web-build` 产出 192 KB wasm
+包、实测二进制正确响应 `/healthz`、`/readyz`、`/api/*` JSON 404、
+SPA 回退与路径穿越防护。
+
+阶段 2a 验收：141 个测试通过；实测启动自动建库并应用迁移 1+2，
+13 张表齐全；`directory_stats` 递归触发器、`object_cleanup` 触发器与
+外键约束均有测试覆盖。
