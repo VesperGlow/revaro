@@ -368,6 +368,7 @@ func (s *Server) updateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, _ := s.file(r.Context(), f.ID)
+	s.cleanup.Wake("object-cleanup")
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -699,6 +700,8 @@ func (s *Server) purgeTrash(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "could not permanently delete item")
 		return
 	}
+	s.cleanup.Wake("object-cleanup")
+	s.refreshSystemStatus()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -717,13 +720,14 @@ func (s *Server) emptyTrash(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "could not empty trash")
 		return
 	}
+	s.cleanup.Wake("object-cleanup")
+	s.refreshSystemStatus()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // CleanupExpiredTrash permanently removes complete trash trees whose root has
-// exceeded the configured retention period. It only removes metadata; the
-// caller should request a garbage-collection pass when the return value is
-// non-zero so the now-unreferenced local storage objects are reclaimed as well.
+// exceeded the configured retention period. Deletion triggers atomically queue
+// the content for reclamation, and the worker is woken after commit.
 func (s *Server) CleanupExpiredTrash(ctx context.Context) int64 {
 	if s.cfg.TrashRetention == 0 {
 		return 0
@@ -757,6 +761,7 @@ func (s *Server) CleanupExpiredTrash(ctx context.Context) int64 {
 		s.log.Error("commit expired trash cleanup failed", "error", err)
 		return 0
 	}
+	s.cleanup.Wake("object-cleanup")
 	s.log.Info("expired trash permanently deleted", "roots", roots, "items", items, "retention", s.cfg.TrashRetention)
 	return roots
 }

@@ -98,9 +98,6 @@ func (m *ObjectManager) OpenSeek(ctx context.Context, key string) (storage.ReadS
 func (m *ObjectManager) PutImmutable(ctx context.Context, key, mime string, data []byte) error {
 	return m.store.PutImmutable(ctx, key, mime, data)
 }
-func (m *ObjectManager) ListPrefix(ctx context.Context, prefix string) ([]storage.ObjectRef, error) {
-	return m.store.ListPrefix(ctx, prefix)
-}
 func (m *ObjectManager) WalkPrefix(ctx context.Context, prefix string, fn func([]storage.ObjectRef) error) error {
 	return m.store.WalkPrefix(ctx, prefix, fn)
 }

@@ -22,9 +22,11 @@ func TestCleanupManagerRetriesFailedPass(t *testing.T) {
 	manager := newCleanupManager(slog.New(slog.NewTextHandler(io.Discard, nil)), newResourceGovernor())
 	defer manager.Close()
 	var calls atomic.Int32
+	firstPass := make(chan struct{})
 	done := make(chan struct{})
 	manager.Register("retry", time.Hour, time.Second, true, func(context.Context) error {
 		if calls.Add(1) == 1 {
+			close(firstPass)
 			return errors.New("temporary")
 		}
 		close(done)
@@ -32,14 +34,15 @@ func TestCleanupManagerRetriesFailedPass(t *testing.T) {
 	})
 	// Force the retry due immediately instead of waiting for production backoff.
 	manager.Start()
-	time.Sleep(20 * time.Millisecond)
-	manager.mu.Lock()
-	manager.jobs["retry"].next = time.Now()
-	manager.mu.Unlock()
-	manager.wake <- struct{}{}
+	select {
+	case <-firstPass:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup pass did not start")
+	}
+	manager.Wake("retry")
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("cleanup pass was not retried")
 	}
 }

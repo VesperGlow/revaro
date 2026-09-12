@@ -218,7 +218,21 @@ func (l *Local) DeleteObjects(ctx context.Context, keys []string) error {
 }
 func (l *Local) WalkPrefix(ctx context.Context, prefix string, visit func([]ObjectRef) error) error {
 	page := make([]ObjectRef, 0, 256)
-	err := fs.WalkDir(l.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+	start := "."
+	if prefix != "" {
+		if !validKey(strings.TrimSuffix(prefix, "/")) {
+			return errors.New("invalid object prefix")
+		}
+		if strings.HasSuffix(prefix, "/") {
+			start = strings.TrimSuffix(prefix, "/")
+		} else {
+			start = path.Dir(prefix)
+		}
+	}
+	err := fs.WalkDir(l.root.FS(), start, func(name string, entry fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

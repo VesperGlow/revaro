@@ -24,10 +24,8 @@ export interface SystemStatusCacheClass {
 export interface SystemStatus {
   status:'ok'|'degraded'
   database:{status:string;bytes:number}
-  storage:{status:string}
+  storage:{status:string;bytes:number;trash_bytes:number;file_count:number}
   cache:{status:string;memory_bytes:number;disk_bytes:number;memory_entries:number;disk_entries:number;classes?:Record<string,SystemStatusCacheClass>}
-  tasks:{status:string;running:number;queued:number;waiting:number;failed:number}
-  object_cleanup:{status:string;pending:number}
 }
 export interface TOTPStatusResponse { enabled:boolean; recovery_codes:number }
 export interface TOTPSetupResponse { secret:string; uri:string; qr_data_url:string }

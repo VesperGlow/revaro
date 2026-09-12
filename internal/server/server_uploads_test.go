@@ -154,7 +154,7 @@ func TestGarbageCollectorStreamsPagesAndBoundsDeleteBatches(t *testing.T) {
 }
 
 func TestGarbageCollectorKeepsAudioStreamAndCover(t *testing.T) {
-	a := newTestAppWithBlockSize(t, 8)
+	a := newTestApp(t)
 	master := a.readyFile(t, "book.flac", []byte("lossless-master"))
 	streamKey := master.objectKey
 	coverKey := audioThumbnailKey(master.objectKey)

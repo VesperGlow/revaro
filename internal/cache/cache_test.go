@@ -363,3 +363,16 @@ func TestUnregisteredClassPanics(t *testing.T) {
 	}()
 	_ = m.Has("nope", "k")
 }
+
+// Get 读取 memory L1（class 未声明 Memory 时永远 miss）。
+func (m *Manager) Get(class, key string) ([]byte, bool) {
+	m.mu.Lock()
+	data, ok := m.getMemory(m.classOf(class), key)
+	m.mu.Unlock()
+	if ok {
+		m.classStats(class).hits.Add(1)
+		return data, true
+	}
+	m.classStats(class).misses.Add(1)
+	return nil, false
+}

@@ -28,3 +28,8 @@ compose.e2e.yml
 web/e2e/
 web/test-results/
 web/playwright-report/
+
+# Go / Web tests run in quality and E2E jobs, not production compilation.
+# Rust inline tests remain in the image's checked dependency chain.
+**/*_test.go
+**/*.test.ts

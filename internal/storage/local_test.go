@@ -123,3 +123,31 @@ func TestLocalMultipartSurvivesRestartAndVerifiesParts(t *testing.T) {
 		t.Fatalf("deleted=%v", err)
 	}
 }
+
+func TestLocalWalkPrefixIsScopedAndToleratesMissingDirectories(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewLocal(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, key := range []string{"flows/blobs/a/f1/manifest.json", "flows/blobs/a/f2/chunk.html", "flows/blobs/ab/f1/manifest.json", "blobs/a"} {
+		if _, err := store.PutObject(ctx, key, "", []byte("data")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		prefix string
+		count  int
+	}{{"flows/blobs/a/", 2}, {"flows/blobs/a", 3}, {"flows/blobs/missing/", 0}, {"missing/key", 0}, {"blobs/a", 1}} {
+		refs, err := store.ListPrefix(ctx, tc.prefix)
+		if err != nil || len(refs) != tc.count {
+			t.Fatalf("prefix %q: %v %v", tc.prefix, refs, err)
+		}
+	}
+	for _, prefix := range []string{"../", "/", "flows/../../"} {
+		if _, err := store.ListPrefix(ctx, prefix); err == nil {
+			t.Fatalf("unsafe prefix %q accepted", prefix)
+		}
+	}
+}

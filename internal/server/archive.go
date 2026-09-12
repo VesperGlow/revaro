@@ -44,7 +44,6 @@ type archiveJob struct {
 	// is alive. It lets password retries continue without downloading from local storage
 	// again; the password itself is never assigned to the job.
 	tempDir          string
-	archivePath      string
 	passwordDeadline time.Time
 	changed          func()
 	cancel           context.CancelFunc
@@ -110,23 +109,17 @@ func (job *archiveJob) resumeWithPassword() bool {
 	return true
 }
 
-func (job *archiveJob) setStaged(tempDir, archivePath string) {
+func (job *archiveJob) setStaged(tempDir string) {
 	job.mu.Lock()
-	job.tempDir, job.archivePath = tempDir, archivePath
+	job.tempDir = tempDir
 	job.mu.Unlock()
-}
-
-func (job *archiveJob) staged() (string, string) {
-	job.mu.RLock()
-	defer job.mu.RUnlock()
-	return job.tempDir, job.archivePath
 }
 
 func (job *archiveJob) takeStagedDir() string {
 	job.mu.Lock()
 	defer job.mu.Unlock()
 	tempDir := job.tempDir
-	job.tempDir, job.archivePath = "", ""
+	job.tempDir = ""
 	return tempDir
 }
 
@@ -241,18 +234,6 @@ func archiveExpandedLimit(archiveSize int64) int64 {
 	return limit
 }
 
-func archiveDiskAvailable(path string) (int64, error) {
-	var stat unix.Statfs_t
-	if err := unix.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	available := uint64(stat.Bavail) * uint64(stat.Bsize)
-	if available > uint64(^uint64(0)>>1) {
-		return int64(^uint64(0) >> 1), nil
-	}
-	return int64(available), nil
-}
-
 func archiveFailureMessage(err error) string {
 	if err == nil {
 		return "解压失败：未知错误"
@@ -329,7 +310,7 @@ func (s *Server) runArchiveExtract(ctx context.Context, f File, parentID string,
 		return
 	}
 	expectedRoot := filepath.Join(s.cfg.WorkDir, "revaro-extract-"+job.ID)
-	job.setStaged(expectedRoot, filepath.Join(expectedRoot, "source.archive"))
+	job.setStaged(expectedRoot)
 	job.update("checking", 2, "正在准备压缩包")
 	pollCtx, pollCancel := context.WithCancel(ctx)
 	pollDone := make(chan struct{})

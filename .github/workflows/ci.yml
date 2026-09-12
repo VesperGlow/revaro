@@ -107,7 +107,7 @@ jobs:
         run: docker compose -f compose.e2e.yml up -d --no-build
       - name: Wait for readiness
         run: |
-          for attempt in {1..90}; do
+          for _attempt in {1..90}; do
             curl --fail --silent http://127.0.0.1:18080/readyz && exit 0
             sleep 2
           done
@@ -176,6 +176,5 @@ jobs:
           # container job 已编译并 E2E 验证同一提交的 amd64 层。
           # 此处通常只组装镜像配置并推送，不再重复编译。
           cache-from: type=gha,scope=revaro-image-amd64-v2
-          cache-to: type=gha,scope=revaro-image-amd64-v2,mode=max,ignore-error=true,timeout=10m
       - name: Record image digest
         run: echo "Published ghcr.io/vesperglow/revaro@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

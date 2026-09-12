@@ -87,7 +87,7 @@ func (s *Server) discardBlobs(keys []string) {
 				s.log.Warn("uncommitted blob cleanup failed", "objects", len(batch), "error", err)
 				now := time.Now().UTC().Format(time.RFC3339Nano)
 				for _, key := range batch {
-					_, _ = s.db.ExecContext(context.Background(), `INSERT INTO object_cleanup(object_key,reason,created_at,updated_at) VALUES(?,'metadata commit rollback',?,?) ON CONFLICT(object_key) DO UPDATE SET retry_count=retry_count+1,updated_at=excluded.updated_at`, key, now, now)
+					_, _ = s.db.ExecContext(context.Background(), `INSERT INTO object_cleanup(object_key,reason,created_at,updated_at) VALUES(?,'metadata commit rollback',?,?) ON CONFLICT(object_key) DO UPDATE SET retry_count=retry_count+1,updated_at=excluded.updated_at,generation=object_cleanup.generation+1`, key, now, now)
 				}
 				return
 			}
@@ -96,35 +96,80 @@ func (s *Server) discardBlobs(keys []string) {
 	})
 }
 
-func (s *Server) CleanupObjects(ctx context.Context) {
-	rows, err := s.db.QueryContext(ctx, `SELECT object_key FROM object_cleanup ORDER BY updated_at LIMIT 1000`)
+// CleanupObjects reclaims only unreferenced keys. Failed work stays durable.
+func (s *Server) CleanupObjects(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT object_key,generation FROM object_cleanup ORDER BY updated_at LIMIT 1000`)
 	if err != nil {
-		return
+		return err
 	}
-	keys := []string{}
+	type cleanupEntry struct {
+		key        string
+		generation int64
+	}
+	var keys []cleanupEntry
 	for rows.Next() {
-		var key string
-		if rows.Scan(&key) == nil {
-			keys = append(keys, key)
+		var entry cleanupEntry
+		if err := rows.Scan(&entry.key, &entry.generation); err != nil {
+			rows.Close()
+			return err
 		}
+		keys = append(keys, entry)
 	}
+	err = rows.Err()
 	rows.Close()
-	// Failed deletions can outlive upload retries and subsequent commits.
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return nil
+	}
 	objects, thumbnails, err := s.referencedStorageKeys(ctx)
 	if err != nil {
-		s.log.Warn("cleanup reference scan failed", "error", err)
-		return
+		return err
 	}
-	for _, key := range keys {
-		if objects[key] || thumbnails[key] {
-			continue
+	var failures error
+	for _, entry := range keys {
+		key := entry.key
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if err := s.objects.Delete(ctx, key, "deferred object cleanup"); err == nil || storage.IsNotFound(err) {
-			_, _ = s.db.ExecContext(ctx, `DELETE FROM object_cleanup WHERE object_key=?`, key)
-		} else {
-			_, _ = s.db.ExecContext(ctx, `UPDATE object_cleanup SET retry_count=retry_count+1,updated_at=? WHERE object_key=?`, time.Now().UTC().Format(time.RFC3339Nano), key)
+		if !objects[key] && !thumbnails[key] {
+			if err := s.deleteUnreferencedObject(ctx, key); err != nil {
+				failures = errors.Join(failures, err)
+				_, _ = s.db.ExecContext(ctx, `UPDATE object_cleanup SET retry_count=retry_count+1,updated_at=? WHERE object_key=?`, time.Now().UTC().Format(time.RFC3339Nano), key)
+				continue
+			}
+		}
+		// A live reference cancels this deletion. Removing that reference later
+		// atomically queues it again, so shared copies cannot starve the queue.
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM object_cleanup WHERE object_key=? AND generation=?`, key, entry.generation); err != nil {
+			return err
 		}
 	}
+	if failures == nil && len(keys) == 1000 {
+		s.cleanup.Wake("object-cleanup")
+	}
+	return failures
+}
+func (s *Server) deleteUnreferencedObject(ctx context.Context, key string) error {
+	if strings.HasPrefix(key, "blobs/") {
+		// Retain the blob queue entry until every derived object was reclaimed.
+		if err := s.objects.WalkPrefix(ctx, "flows/"+key+"/", func(page []storage.ObjectRef) error {
+			keys := make([]string, 0, len(page))
+			for _, object := range page {
+				keys = append(keys, object.Key)
+			}
+			return s.objects.DeleteMany(ctx, keys, "deleted file derivatives")
+		}); err != nil {
+			return err
+		}
+		for _, thumb := range []string{thumbnailKey(key), imageThumbnailKey(key), audioThumbnailKey(key), videoThumbnailKey(key)} {
+			if err := s.objects.Delete(ctx, thumb, "deleted file thumbnail"); err != nil {
+				return err
+			}
+		}
+	}
+	return s.objects.Delete(ctx, key, "deferred object cleanup")
 }
 
 func (s *Server) queueObjectCleanup(ctx context.Context, key, reason string) {
@@ -132,7 +177,7 @@ func (s *Server) queueObjectCleanup(ctx context.Context, key, reason string) {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO object_cleanup(object_key,reason,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(object_key) DO UPDATE SET reason=excluded.reason,retry_count=retry_count+1,updated_at=excluded.updated_at`, key, reason, now, now)
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO object_cleanup(object_key,reason,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(object_key) DO UPDATE SET reason=excluded.reason,retry_count=retry_count+1,updated_at=excluded.updated_at,generation=object_cleanup.generation+1`, key, reason, now, now)
 }
 
 func responseMime(f File) string {

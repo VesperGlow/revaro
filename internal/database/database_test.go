@@ -46,8 +46,8 @@ func TestOpenCreatesSchemaAndMigrations(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 1 {
-		t.Fatalf("expected one initial schema, got %d", versions)
+	if versions != 2 {
+		t.Fatalf("expected initial schema and cleanup migration, got %d", versions)
 	}
 	// root 行存在
 	var roots int

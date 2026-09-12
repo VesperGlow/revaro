@@ -44,6 +44,19 @@ func (m *CleanupManager) Register(name string, interval, timeout time.Duration, 
 }
 func (m *CleanupManager) Start() { m.wg.Add(1); go m.loop() }
 func (m *CleanupManager) Close() { m.cancel(); m.wg.Wait() }
+
+// Wake coalesces requests without spawning concurrent cleanup workers.
+func (m *CleanupManager) Wake(name string) {
+	m.mu.Lock()
+	if job := m.jobs[name]; job != nil {
+		job.next = time.Now()
+	}
+	m.mu.Unlock()
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
 func (m *CleanupManager) loop() {
 	defer m.wg.Done()
 	timer := time.NewTimer(0)
@@ -58,20 +71,25 @@ func (m *CleanupManager) loop() {
 		now := time.Now()
 		m.mu.Lock()
 		due := []*cleanupJob{}
-		next := now.Add(time.Hour)
 		for _, job := range m.jobs {
 			if !job.next.After(now) {
 				due = append(due, job)
 				job.next = now.Add(job.interval)
-			}
-			if job.next.Before(next) {
-				next = job.next
 			}
 		}
 		m.mu.Unlock()
 		for _, job := range due {
 			m.run(job)
 		}
+		// Runs can change retry deadlines or receive an explicit wake.
+		m.mu.Lock()
+		next := time.Now().Add(time.Hour)
+		for _, job := range m.jobs {
+			if job.next.Before(next) {
+				next = job.next
+			}
+		}
+		m.mu.Unlock()
 		delay := time.Until(next)
 		if delay < time.Second {
 			delay = time.Second

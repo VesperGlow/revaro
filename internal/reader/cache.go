@@ -65,14 +65,6 @@ func (c *Cache) Stats() (int64, int) {
 	return c.bytes, c.order.Len()
 }
 
-// Trim 收敛容量（Put 时已逐次淘汰；这里防御性再跑一遍，供全局 pruner
-// 周期触发）。
-func (c *Cache) Trim() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.trimLocked(c.maxBytes)
-}
-
 // TrimTo 为 Global CacheManager 提供 memory budget 协调。它不会扩大
 // reader cache 自身配置的上限；负数表示本次不要求收敛。
 func (c *Cache) TrimTo(maxBytes int64) {

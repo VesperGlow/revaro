@@ -21,7 +21,7 @@ func TestCancelArchiveDoesNotRemoveActiveWorkerWorkspace(t *testing.T) {
 	jobCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	job := &archiveJob{ID: "active-job", FileID: "file", Status: "extracting", cancel: cancel}
-	job.setStaged(workspace, filepath.Join(workspace, "source.archive"))
+	job.setStaged(workspace)
 	app.srv.archiveMu.Lock()
 	app.srv.archiveJobs[job.ID] = job
 	app.srv.archiveMu.Unlock()
@@ -118,7 +118,7 @@ func TestArchivePasswordStateKeepsAndCleansStaging(t *testing.T) {
 	app := newTestApp(t)
 	tempDir := t.TempDir()
 	job := &archiveJob{ID: "job-staged", FileID: "file-staged", Status: "checking"}
-	job.setStaged(tempDir, tempDir+"/source.zip")
+	job.setStaged(tempDir)
 	job.needsPassword("需要密码")
 	if snapshot := job.snapshot(); snapshot.Status != "waiting_password" {
 		t.Fatalf("password state=%q", snapshot.Status)
@@ -130,7 +130,9 @@ func TestArchivePasswordStateKeepsAndCleansStaging(t *testing.T) {
 		t.Fatalf("expired password state=%q error=%q", snapshot.Status, snapshot.Error)
 	}
 	app.srv.cleanupArchiveJobStaging(job)
-	if stagedDir, stagedPath := job.staged(); stagedDir != "" || stagedPath != "" {
-		t.Fatalf("staging references were not cleared: dir=%q path=%q", stagedDir, stagedPath)
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	if job.tempDir != "" {
+		t.Fatalf("staging directory reference was not cleared: %q", job.tempDir)
 	}
 }

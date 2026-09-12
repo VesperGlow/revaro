@@ -143,11 +143,9 @@ func New(db *sql.DB, store storage.Storage, a *auth.Service, cfg config.Config, 
 	s.cleanup.Register("archive-password", time.Minute, time.Minute, false, func(context.Context) error { s.cleanupArchiveJobs(); return nil })
 	s.cleanup.Register("cache", 5*time.Minute, time.Minute, false, func(context.Context) error { s.cache.Prune(); return nil })
 	s.cleanup.Register("uploads", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupExpiredUploads(ctx); return nil })
-	s.cleanup.Register("object-cleanup", 15*time.Minute, 5*time.Minute, true, func(ctx context.Context) error { s.CleanupObjects(ctx); return nil })
+	s.cleanup.Register("object-cleanup", 15*time.Minute, 5*time.Minute, true, s.CleanupObjects)
 	s.cleanup.Register("trash", 15*time.Minute, 10*time.Minute, true, func(ctx context.Context) error {
-		if s.CleanupExpiredTrash(ctx) > 0 {
-			s.CollectGarbage(ctx)
-		}
+		s.CleanupExpiredTrash(ctx)
 		return nil
 	})
 	if cfg.GCInterval > 0 {

@@ -87,33 +87,12 @@ func notFoundError() error {
 	return storage.ErrNotFound
 }
 
-type testBlock struct {
-	ID   string
-	Size int64
-}
-type testManifest struct {
-	Version int
-	Size    int64
-	Blocks  []testBlock
-}
-
-func (m testManifest) ID() string  { raw, _ := json.Marshal(m); return sha256hex(raw) }
-func (m testManifest) Key() string { return "manifests/" + m.ID() }
-
-// mockStorage emulates object storage in memory. Legacy-shaped maps remain in
-// this test helper only so old database fixtures can be exercised.
+// mockStorage emulates the current UUID blob store in memory.
 type mockStorage struct {
 	mu               sync.RWMutex
-	blocks           map[string][]byte // by block id
-	manifests        map[string]testManifest
 	raw              map[string][]byte // raw object key -> content
 	rawMime          map[string]string
 	modified         map[string]time.Time
-	blockSize        int64
-	presignErr       error
-	putManifestErr   error
-	getManifestErr   error
-	omitManifestList bool
 	multipart        map[string]string
 	rawURL           string
 	deleteBatchSizes []int
@@ -121,26 +100,17 @@ type mockStorage struct {
 	storeBlobErr     error
 }
 
-func newMockStorage(blockSize int64) *mockStorage {
-	if blockSize <= 0 {
-		blockSize = 4 << 20
-	}
+func newMockStorage() *mockStorage {
 	return &mockStorage{
-		blocks:    map[string][]byte{},
-		manifests: map[string]testManifest{},
 		raw:       map[string][]byte{},
 		rawMime:   map[string]string{},
 		modified:  map[string]time.Time{},
-		blockSize: blockSize,
 		multipart: map[string]string{},
 	}
 }
 
 func (m *mockStorage) Ping(context.Context) error { return nil }
 func (m *mockStorage) CreateMultipart(_ context.Context, key, _ string) (string, error) {
-	if m.presignErr != nil {
-		return "", m.presignErr
-	}
 	id := ids.New()
 	m.multipart[id] = key
 	return id, nil
@@ -193,118 +163,14 @@ func (m *mockStorage) StoreBlob(_ context.Context, key, mimeType string, r io.Re
 	m.rawMime[key] = mimeType
 	return storage.ObjectInfo{Size: size, ETag: "etag"}, nil
 }
-func (m *mockStorage) PutBlock(_ context.Context, id string, data []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if sha256hex(data) != id {
-		return errors.New("block hash mismatch")
-	}
-	if _, ok := m.blocks[id]; !ok {
-		m.blocks[id] = append([]byte(nil), data...)
-	}
-	return nil
-}
-func (m *mockStorage) HeadBlock(_ context.Context, id string) (testBlock, error) {
-	data, ok := m.blocks[id]
-	if !ok {
-		return testBlock{}, notFoundError()
-	}
-	return testBlock{ID: id, Size: int64(len(data))}, nil
-}
-func (m *mockStorage) GetBlock(_ context.Context, id string) ([]byte, error) {
-	data, ok := m.blocks[id]
-	if !ok {
-		return nil, notFoundError()
-	}
-	return append([]byte(nil), data...), nil
-}
-func (m *mockStorage) ListBlocks(context.Context) ([]storage.ObjectRef, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var out []storage.ObjectRef
-	for id, data := range m.blocks {
-		key := "blocks/" + id
-		out = append(out, storage.ObjectRef{Key: key, Size: int64(len(data)), LastModified: m.modified[key]})
-	}
-	return out, nil
-}
-func (m *mockStorage) PutManifest(_ context.Context, mm testManifest) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.putManifestErr != nil {
-		return "", m.putManifestErr
-	}
-	key := mm.Key()
-	m.manifests[key] = mm
-	return key, nil
-}
-func (m *mockStorage) GetManifest(_ context.Context, key string) (testManifest, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.getManifestErr != nil {
-		return testManifest{}, m.getManifestErr
-	}
-	mm, ok := m.manifests[key]
-	if !ok {
-		return testManifest{}, notFoundError()
-	}
-	return mm, nil
-}
-func (m *mockStorage) ListManifests(context.Context) ([]storage.ObjectRef, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.omitManifestList {
-		return []storage.ObjectRef{}, nil
-	}
-	var out []storage.ObjectRef
-	for key := range m.manifests {
-		out = append(out, storage.ObjectRef{Key: key, Size: 1, LastModified: m.modified[key]})
-	}
-	return out, nil
-}
-func (m *mockStorage) Store(_ context.Context, r io.Reader) (string, testManifest, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return "", testManifest{}, err
-	}
-	mm := testManifest{Version: 1}
-	for len(data) > 0 {
-		n := len(data)
-		if int64(n) > m.blockSize {
-			n = int(m.blockSize)
-		}
-		chunk := data[:n]
-		data = data[n:]
-		id := sha256hex(chunk)
-		m.blocks[id] = append([]byte(nil), chunk...)
-		mm.Blocks = append(mm.Blocks, testBlock{ID: id, Size: int64(len(chunk))})
-		mm.Size += int64(len(chunk))
-	}
-	key := mm.Key()
-	m.manifests[key] = mm
-	return key, mm, nil
-}
 func (m *mockStorage) Open(_ context.Context, key string) (storage.ReadSeekCloserAt, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	mm, ok := m.manifests[key]
+	data, ok := m.raw[key]
 	if !ok {
-		if data, rawOK := m.raw[key]; rawOK {
-			return nopReadSeekCloser{Reader: bytes.NewReader(data)}, nil
-		}
 		return nil, notFoundError()
 	}
-	var buf bytes.Buffer
-	for _, b := range mm.Blocks {
-		data, ok := m.blocks[b.ID]
-		if !ok {
-			return nil, notFoundError()
-		}
-		buf.Write(data)
-	}
-	return nopReadSeekCloser{Reader: bytes.NewReader(buf.Bytes())}, nil
+	return nopReadSeekCloser{Reader: bytes.NewReader(data)}, nil
 }
 
 type nopReadSeekCloser struct{ *bytes.Reader }
@@ -375,11 +241,7 @@ func (m *mockStorage) DeleteObject(_ context.Context, key string) error {
 	defer m.mu.Unlock()
 	delete(m.raw, key)
 	delete(m.rawMime, key)
-	delete(m.manifests, key)
 	delete(m.modified, key)
-	if id := strings.TrimPrefix(key, "blocks/"); id != key {
-		delete(m.blocks, strings.ReplaceAll(id, "/", ""))
-	}
 	return nil
 }
 
@@ -435,11 +297,7 @@ type testApp struct {
 	cookie  *http.Cookie
 }
 
-func newTestApp(t *testing.T) *testApp {
-	return newTestAppWithBlockSize(t, 4<<20)
-}
-
-// requireMediaEngine skips tests that exercise the Rust libav/archive/torrent
+// requireMediaEngine skips tests that exercise the Rust libav/archive
 // engines, which are only present when the real data plane is wired in.
 func (a *testApp) requireMediaEngine(t *testing.T) {
 	t.Helper()
@@ -447,7 +305,7 @@ func (a *testApp) requireMediaEngine(t *testing.T) {
 		t.Skip("Rust media engine is unavailable")
 	}
 }
-func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
+func newTestApp(t *testing.T) *testApp {
 	t.Helper()
 	db, err := database.Open(t.TempDir() + "/revaro.db")
 	if err != nil {
@@ -457,7 +315,7 @@ func newTestAppWithBlockSize(t *testing.T, blockSize int64) *testApp {
 	if _, err := a.Initialize(context.Background(), "admin", "a-secure-test-password"); err != nil {
 		t.Fatal(err)
 	}
-	store := newMockStorage(blockSize)
+	store := newMockStorage()
 	rawServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := strings.TrimPrefix(r.URL.Path, "/")
 		store.mu.RLock()

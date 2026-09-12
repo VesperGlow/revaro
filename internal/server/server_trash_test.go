@@ -134,6 +134,7 @@ func TestEmptyTrashRemovesEveryDeletedTree(t *testing.T) {
 
 func TestExpiredTrashCleanupRemovesOnlyExpiredTrees(t *testing.T) {
 	a := newTestApp(t)
+	a.srv.cleanup.Close()
 	parentRR := a.request("POST", "/api/directories", map[string]any{"parent_id": RootID, "name": "Expired"}, true)
 	parent := decode[File](t, parentRR)
 	child := a.readyFile(t, "child.txt", []byte("expired content"))
@@ -161,9 +162,14 @@ func TestExpiredTrashCleanupRemovesOnlyExpiredTrees(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM files WHERE id=? AND deleted_at IS NOT NULL`, recent.ID).Scan(&recentItems); err != nil || recentItems != 1 {
 		t.Fatalf("recent trash was deleted: count=%d err=%v", recentItems, err)
 	}
-	a.srv.CollectGarbage(context.Background())
-	if _, ok := a.store.manifests[child.objectKey]; ok {
+	if err := a.srv.CleanupObjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.store.raw[child.objectKey]; ok {
 		t.Fatal("content of expired trash was not reclaimed")
+	}
+	if _, ok := a.store.raw[recent.objectKey]; !ok {
+		t.Fatal("recent trash content was reclaimed")
 	}
 	if roots := a.srv.CleanupExpiredTrash(context.Background()); roots != 0 {
 		t.Fatalf("second cleanup removed %d roots", roots)

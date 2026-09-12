@@ -30,7 +30,7 @@ func TestLocalBlobLifecycle(t *testing.T) {
 	if info.Size != int64(len(payload)) || info.ETag == "" {
 		t.Fatalf("info=%+v", info)
 	}
-	reader, err := store.Open(WithDynamicReadAhead(ctx), key)
+	reader, err := store.Open(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}

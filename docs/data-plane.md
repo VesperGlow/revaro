@@ -12,6 +12,10 @@ All application data stays on local disk; no database backup service is included
 
 The application exposes a newly uploaded file only after its bytes, size, integrity hash and SQLite transaction are committed. Upload cancellation and completion are serialized. Metadata failures retain enough state to retry; unreferenced blobs are removed after the grace period. Shared UUID references remain alive while any active or trashed file references them.
 
+Permanent deletion (including emptying or expiring trash) atomically queues blob cleanup in the same SQLite transaction. The cleanup worker is woken after commit and removes unreferenced originals, thumbnails and reader flow objects without the orphan-upload grace period. Failed deletions stay queued for retries and server restart. Queue generations protect concurrent re-enqueues; shared copies cancel deletion until their last reference is removed. Periodic orphan GC remains a fallback for abandoned uploads and late-generated caches; `GC_INTERVAL=0` disables that scan, not explicit deletion cleanup.
+
+System status reports logical ready-file bytes, including trash and counting each copied file separately, plus trash bytes and file count. This is not filesystem capacity or physical deduplicated blob usage. Tasks and cleanup internals are not exposed in the status panel.
+
 The server owns worker cancellation and waits for workers during shutdown. Tasks include uploads, archive extraction and subtitle preparation. Reader caches are kept under the configured work directory; durable reader objects and thumbnails are local.
 
 Fresh installations create only the current product schema. There is no migration or compatibility path for previous storage or media-processing products.

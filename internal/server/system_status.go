@@ -29,8 +29,13 @@ type systemClassStat struct {
 type systemStatusResponse struct {
 	Status   string          `json:"status"`
 	Database systemComponent `json:"database"`
-	Storage  systemComponent `json:"storage"`
-	Cache    struct {
+	Storage  struct {
+		Status     string `json:"status"`
+		Bytes      int64  `json:"bytes"`
+		TrashBytes int64  `json:"trash_bytes"`
+		FileCount  int64  `json:"file_count"`
+	} `json:"storage"`
+	Cache struct {
 		Status        string                     `json:"status"`
 		MemoryBytes   int64                      `json:"memory_bytes"`
 		DiskBytes     int64                      `json:"disk_bytes"`
@@ -38,17 +43,6 @@ type systemStatusResponse struct {
 		DiskEntries   int                        `json:"disk_entries"`
 		Classes       map[string]systemClassStat `json:"classes,omitempty"`
 	} `json:"cache"`
-	Tasks struct {
-		Status  string `json:"status"`
-		Running int64  `json:"running"`
-		Queued  int64  `json:"queued"`
-		Waiting int64  `json:"waiting"`
-		Failed  int64  `json:"failed"`
-	} `json:"tasks"`
-	ObjectCleanup struct {
-		Status  string `json:"status"`
-		Pending int64  `json:"pending"`
-	} `json:"object_cleanup"`
 }
 
 func (s *Server) collectSystemStatus(parent context.Context) systemStatusResponse {
@@ -72,6 +66,9 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 		degrade(&out.Storage.Status)
 	}
 
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0),COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL THEN size ELSE 0 END),0),COUNT(*) FROM files WHERE kind='file' AND status='ready'`).Scan(&out.Storage.Bytes, &out.Storage.TrashBytes, &out.Storage.FileCount); err != nil {
+		degrade(&out.Storage.Status)
+	}
 	out.Cache.Status = "ok"
 	if s.cache == nil {
 		degrade(&out.Cache.Status)
@@ -88,16 +85,6 @@ func (s *Server) collectSystemStatus(parent context.Context) systemStatusRespons
 			}
 		}
 		out.Cache.Classes = classes
-	}
-
-	out.Tasks.Status = "ok"
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE status='running'), COUNT(*) FILTER (WHERE status IN ('queued','retrying')), COUNT(*) FILTER (WHERE status='waiting_input'), COUNT(*) FILTER (WHERE status='failed') FROM tasks`).Scan(&out.Tasks.Running, &out.Tasks.Queued, &out.Tasks.Waiting, &out.Tasks.Failed); err != nil {
-		degrade(&out.Tasks.Status)
-	}
-
-	out.ObjectCleanup.Status = "ok"
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM object_cleanup`).Scan(&out.ObjectCleanup.Pending); err != nil {
-		degrade(&out.ObjectCleanup.Status)
 	}
 
 	return out

@@ -16,7 +16,6 @@ import (
 
 	"github.com/VesperGlow/revaro/internal/reader"
 	"github.com/VesperGlow/revaro/internal/reader/flow"
-	"github.com/VesperGlow/revaro/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -209,5 +208,5 @@ func (s *Server) openBookSource(ctx context.Context, f File) (io.ReadSeekCloser,
 		}
 		// L2 读失败（磁盘满等）降级直连，不阻断阅读
 	}
-	return s.objects.OpenSeek(storage.WithDynamicReadAhead(ctx), f.objectKey)
+	return s.objects.OpenSeek(ctx, f.objectKey)
 }

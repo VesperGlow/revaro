@@ -237,19 +237,6 @@ func (m *Manager) getMemory(c Class, key string) ([]byte, bool) {
 	return append([]byte(nil), item.data...), true
 }
 
-// Get 读取 memory L1（class 未声明 Memory 时永远 miss）。
-func (m *Manager) Get(class, key string) ([]byte, bool) {
-	m.mu.Lock()
-	data, ok := m.getMemory(m.classOf(class), key)
-	m.mu.Unlock()
-	if ok {
-		m.classStats(class).hits.Add(1)
-		return data, true
-	}
-	m.classStats(class).misses.Add(1)
-	return nil, false
-}
-
 // Has 报告条目在任一 tier 中是否存在（未过期）。磁盘状态来自内存索引，
 // 因此不会为一次状态查询读取 meta；Prune 会校准外部删除或写入残留。
 func (m *Manager) Has(class, key string) bool {

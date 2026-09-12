@@ -56,7 +56,7 @@ func TestShareLinkCanBeReadRotatedAndRevoked(t *testing.T) {
 }
 
 func TestPublicShareStreamsMultiBlockFiles(t *testing.T) {
-	a := newTestAppWithBlockSize(t, 8)
+	a := newTestApp(t)
 	content := []byte("0123456789ABCDEFGHIJ")
 	f := a.readyFile(t, "clip.mp4", content)
 	share := a.request("POST", "/api/files/"+f.ID+"/share", nil, true)

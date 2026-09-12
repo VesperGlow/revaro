@@ -14,7 +14,9 @@ RUN cd web && npm run build
 FROM golang:1.26-alpine AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# Persist the standard-library build cache in an exported layer, so Go source
+# changes do not recompile it on fresh CI runners. Flags match the final build.
+RUN go mod download && CGO_ENABLED=0 GOOS=linux go build -trimpath std
 # 仅复制 Go 源码：README / docs / workflow / data-plane 等与 Go 构建无关的
 # 改动不再使本层失效；前端产物由 web 阶段在下一步提供
 COPY cmd ./cmd
