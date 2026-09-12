@@ -1,19 +1,21 @@
 //! The authenticated file browser and its basic lifecycle actions.
 //!
 //! This slice owns folder navigation, breadcrumbs, the grid/list choice,
-//! selection, file and folder mutations, and the trash view. Specialised
-//! readers and media controls remain separate stages; live file cards still
-//! open through the authenticated preview/download endpoints.
+//! selection, file and folder mutations, and the trash view. Media previews
+//! are mounted in the same authenticated shell so their session and gallery
+//! state stay attached to the listing.
 
 use std::collections::HashSet;
 
 use leptos::prelude::*;
 use revaro_core::api::auth::Session;
-use revaro_core::api::files::{Children, CreateDirectoryRequest, FileDetail, PatchFileRequest};
+use revaro_core::api::files::{
+    Children, CopyFileRequest, CreateDirectoryRequest, FileDetail, PatchFileRequest,
+};
 use revaro_core::classify;
 use revaro_core::ids::ROOT_ID;
 use revaro_core::model::{File, FileKind, FileStatus};
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
 use crate::api;
 use crate::logic::format::format_size;
@@ -21,8 +23,10 @@ use crate::logic::routing::{folder_id, folder_url};
 
 use super::dialogs::ActionDialog;
 use super::icons;
+use super::media::MediaPreview;
 use super::selection_toolbar::SelectionToolbar;
 use super::tasks::{TaskCenter, TaskController};
+use super::transfer::{TransferDialog, TransferMode};
 use super::uploads::{UploadController, UploadSurface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +43,12 @@ enum DialogState {
     Restore,
     Purge,
     EmptyTrash,
+}
+
+#[derive(Debug, Clone)]
+struct TransferRequest {
+    mode: TransferMode,
+    targets: Vec<File>,
 }
 
 /// The authenticated file browser.
@@ -62,6 +72,13 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
     let dialog_busy = RwSignal::new(false);
     let dialog_error = RwSignal::new(String::new());
     let feedback = RwSignal::new(String::new());
+    let media_file = RwSignal::new(None::<File>);
+    let transfer_open = RwSignal::new(false);
+    let transfer_targets = RwSignal::new(Vec::<File>::new());
+    let transfer_mode = RwSignal::new(TransferMode::Move);
+    let transfer_target_id = RwSignal::new(ROOT_ID.to_owned());
+    let transfer_busy = RwSignal::new(false);
+    let transfer_error = RwSignal::new(String::new());
 
     let load_folder = {
         let current_id = current_id;
@@ -459,15 +476,188 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
         })
     };
 
+    let start_transfer = {
+        let transfer_open = transfer_open;
+        let transfer_targets = transfer_targets;
+        let transfer_mode = transfer_mode;
+        let transfer_target_id = transfer_target_id;
+        let transfer_error = transfer_error;
+        let current_id = current_id;
+        let media_file = media_file;
+        Callback::new(move |request: TransferRequest| {
+            if request.targets.is_empty() || trash_mode.get_untracked() {
+                return;
+            }
+            transfer_targets.set(request.targets);
+            transfer_mode.set(request.mode);
+            transfer_target_id.set(current_id.get_untracked());
+            transfer_error.set(String::new());
+            media_file.set(None);
+            transfer_open.set(true);
+        })
+    };
+    let show_move_selected = {
+        let start_transfer = start_transfer.clone();
+        let items = items;
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| {
+            let targets = items
+                .get_untracked()
+                .into_iter()
+                .filter(|item| selected_ids.get_untracked().contains(&item.id))
+                .collect();
+            start_transfer.run(TransferRequest {
+                mode: TransferMode::Move,
+                targets,
+            });
+        })
+    };
+    let close_transfer = {
+        let transfer_open = transfer_open;
+        let transfer_targets = transfer_targets;
+        let transfer_error = transfer_error;
+        Callback::new(move |(): ()| {
+            if !transfer_busy.get_untracked() {
+                transfer_open.set(false);
+                transfer_targets.set(Vec::new());
+                transfer_error.set(String::new());
+            }
+        })
+    };
+    let transfer_unauthorized = {
+        let transfer_open = transfer_open;
+        let on_logout = on_logout.clone();
+        Callback::new(move |(): ()| {
+            transfer_open.set(false);
+            on_logout.run(());
+        })
+    };
+    let submit_transfer = {
+        let transfer_open = transfer_open;
+        let transfer_targets = transfer_targets;
+        let transfer_mode = transfer_mode;
+        let transfer_busy = transfer_busy;
+        let transfer_error = transfer_error;
+        let selected_ids = selected_ids;
+        let current_id = current_id;
+        let load_folder = load_folder.clone();
+        let feedback = feedback;
+        let on_logout = on_logout.clone();
+        Callback::new(move |parent_id: String| {
+            if transfer_busy.get_untracked() {
+                return;
+            }
+            let targets = transfer_targets.get_untracked();
+            if targets.is_empty() || parent_id.is_empty() {
+                return;
+            }
+            transfer_busy.set(true);
+            transfer_error.set(String::new());
+            let mode = transfer_mode.get_untracked();
+            let refresh_id = current_id.get_untracked();
+            let refresh = load_folder.clone();
+            let logout = on_logout.clone();
+            leptos::task::spawn_local(async move {
+                let mut completed = 0_usize;
+                let mut first_error = None::<String>;
+                let mut unauthorized = false;
+                for item in targets {
+                    let result = match mode {
+                        TransferMode::Move => api::patch_file(
+                            &item.id,
+                            &PatchFileRequest {
+                                name: None,
+                                parent_id: Some(parent_id.clone()),
+                            },
+                        )
+                        .await
+                        .map(|_| ()),
+                        TransferMode::Copy => api::copy_file(
+                            &item.id,
+                            &CopyFileRequest {
+                                parent_id: parent_id.clone(),
+                            },
+                        )
+                        .await
+                        .map(|_| ()),
+                    };
+                    match result {
+                        Ok(()) => completed += 1,
+                        Err(request_error) if request_error.is_unauthorized() => {
+                            unauthorized = true;
+                            break;
+                        }
+                        Err(request_error) => {
+                            first_error.get_or_insert_with(|| {
+                                format!("{}：{}", item.name, request_error.message)
+                            });
+                        }
+                    }
+                }
+                transfer_busy.set(false);
+                if unauthorized {
+                    transfer_open.set(false);
+                    logout.run(());
+                    return;
+                }
+                transfer_open.set(false);
+                transfer_targets.set(Vec::new());
+                selected_ids.set(HashSet::new());
+                refresh.run(refresh_id);
+                let verb = if mode == TransferMode::Copy {
+                    "复制"
+                } else {
+                    "移动"
+                };
+                if let Some(message) = first_error {
+                    feedback.set(format!("已{verb} {completed} 项，部分项目失败：{message}"));
+                } else {
+                    feedback.set(format!("已{verb} {completed} 项"));
+                }
+            });
+        })
+    };
+    let move_media = {
+        let start_transfer = start_transfer.clone();
+        Callback::new(move |file: File| {
+            start_transfer.run(TransferRequest {
+                mode: TransferMode::Move,
+                targets: vec![file],
+            });
+        })
+    };
+    let copy_media = {
+        let start_transfer = start_transfer.clone();
+        Callback::new(move |file: File| {
+            start_transfer.run(TransferRequest {
+                mode: TransferMode::Copy,
+                targets: vec![file],
+            });
+        })
+    };
+
     let open_item = {
         let load_folder = load_folder.clone();
         let trash_mode = trash_mode;
+        let media_file = media_file;
         Callback::new(move |item: File| {
             if trash_mode.get_untracked() {
+                if item.kind == FileKind::File
+                    && (classify::is_image(&item)
+                        || classify::is_audio(&item)
+                        || classify::is_video(&item))
+                {
+                    media_file.set(Some(item));
+                }
                 return;
             }
             if item.kind == FileKind::Directory {
                 load_folder.run(item.id);
+            } else if classify::is_image(&item)
+                || classify::is_audio(&item)
+                || classify::is_video(&item)
+            {
+                media_file.set(Some(item));
             } else {
                 open_file(&item);
             }
@@ -509,6 +699,8 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
     let shell_upload_drop = uploads_for_view.clone();
     let upload_surface = uploads_for_view.clone();
     let task_center_for_view = leptos::__reexports::send_wrapper::SendWrapper::new(task_center);
+    let close_media = Callback::new(move |(): ()| media_file.set(None));
+    let download_media = Callback::new(move |file: File| download_file(&file));
 
     view! {
         <div
@@ -708,7 +900,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                                 <button
                                     type="button"
                                     class:active=move || view_mode.get() == ViewMode::Grid
-                                    aria-pressed=move || view_mode.get() == ViewMode::Grid
+                                    aria-pressed=move || if view_mode.get() == ViewMode::Grid { "true" } else { "false" }
                                     title="方块视图"
                                     on:click=move |_| view_mode.set(ViewMode::Grid)
                                 >
@@ -717,7 +909,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                                 <button
                                     type="button"
                                     class:active=move || view_mode.get() == ViewMode::List
-                                    aria-pressed=move || view_mode.get() == ViewMode::List
+                                    aria-pressed=move || if view_mode.get() == ViewMode::List { "true" } else { "false" }
                                     title="列表视图"
                                     on:click=move |_| view_mode.set(ViewMode::List)
                                 >
@@ -751,6 +943,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                         on_clear=clear_selection.clone()
                         on_select_all=select_all.clone()
                         on_rename=show_rename.clone()
+                        on_move=show_move_selected.clone()
                         on_delete=show_delete.clone()
                         on_restore=show_restore.clone()
                         on_purge=show_purge.clone()
@@ -858,6 +1051,44 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                             error=dialog_error
                             on_cancel=close_dialog.clone()
                             on_confirm=submit_dialog.clone()
+                        />
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                }
+            }}
+            <Show when=move || media_file.get().is_some() fallback=|| ()>
+                {move || {
+                    if media_file.get().is_some() {
+                        view! {
+                            <MediaPreview
+                                selected=media_file
+                                items=items
+                                on_close=close_media
+                                on_download=download_media
+                                on_move=move_media
+                                on_copy=copy_media
+                            />
+                        }
+                        .into_any()
+                    } else {
+                        ().into_any()
+                    }
+                }}
+            </Show>
+            {move || {
+                if transfer_open.get() {
+                    view! {
+                        <TransferDialog
+                            mode=transfer_mode.get_untracked()
+                            targets=transfer_targets.get_untracked()
+                            target_id=transfer_target_id
+                            busy=transfer_busy
+                            error=transfer_error
+                            on_cancel=close_transfer.clone()
+                            on_confirm=submit_transfer.clone()
+                            on_unauthorized=transfer_unauthorized.clone()
                         />
                     }
                     .into_any()
@@ -980,7 +1211,7 @@ fn FileTile(
                 type="button"
                 title=move || if selected_ids.get().contains(&item_id_for_title) { "取消选择" } else { "选择项目" }
                 aria-label=move || if selected_ids.get().contains(&item_id_for_label) { "取消选择" } else { "选择项目" }
-                aria-pressed=move || selected_ids.get().contains(&item_id_for_pressed)
+                aria-pressed=move || if selected_ids.get().contains(&item_id_for_pressed) { "true" } else { "false" }
                 class:active=move || selected_ids.get().contains(&item_id_for_active)
                 on:click=move |event: web_sys::MouseEvent| {
                     event.stop_propagation();
@@ -1053,7 +1284,7 @@ fn FileRow(
                 type="button"
                 title=move || if selected_ids.get().contains(&item_id_for_title) { "取消选择" } else { "选择项目" }
                 aria-label=move || if selected_ids.get().contains(&item_id_for_label) { "取消选择" } else { "选择项目" }
-                aria-pressed=move || selected_ids.get().contains(&item_id_for_pressed)
+                aria-pressed=move || if selected_ids.get().contains(&item_id_for_pressed) { "true" } else { "false" }
                 class:active=move || selected_ids.get().contains(&item_id_for_active)
                 on:click=move |event: web_sys::MouseEvent| {
                     event.stop_propagation();
@@ -1172,13 +1403,31 @@ fn file_icon(file: &File) -> AnyView {
 }
 
 fn open_file(file: &File) {
-    let path = if classify::is_image(file) || classify::is_video(file) || classify::is_audio(file) {
-        format!("/api/files/{}/preview", file.id)
-    } else {
-        format!("/api/files/{}/download", file.id)
+    download_file(file);
+}
+
+fn download_file(file: &File) {
+    let path = format!("/api/files/{}/download", file.id);
+    let Some(window) = web_sys::window() else {
+        return;
     };
-    if let Some(window) = web_sys::window() {
-        let _ = window.open_with_url_and_target(&path, "_blank");
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(body) = document.body() else {
+        return;
+    };
+    let Ok(anchor) = document.create_element("a") else {
+        return;
+    };
+    let _ = anchor.set_attribute("href", &path);
+    let _ = anchor.set_attribute("download", &file.name);
+    let _ = anchor.set_attribute("hidden", "");
+    if body.append_child(&anchor).is_ok()
+        && let Ok(anchor) = anchor.dyn_into::<web_sys::HtmlElement>()
+    {
+        anchor.click();
+        anchor.remove();
     }
 }
 

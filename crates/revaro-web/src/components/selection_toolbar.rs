@@ -16,6 +16,7 @@ pub fn SelectionToolbar(
     on_clear: Callback<()>,
     on_select_all: Callback<()>,
     on_rename: Callback<()>,
+    on_move: Callback<()>,
     on_delete: Callback<()>,
     on_restore: Callback<()>,
     on_purge: Callback<()>,
@@ -35,6 +36,7 @@ pub fn SelectionToolbar(
         !entries.is_empty() && selected_ids.get().len() == entries.len()
     };
     let rename = on_rename;
+    let move_items = on_move;
     let delete = on_delete;
     let restore = on_restore;
     let purge = on_purge;
@@ -78,6 +80,10 @@ pub fn SelectionToolbar(
                             <span>"重命名"</span>
                         </button>
                     </Show>
+                    <button type="button" on:click=move |_| move_items.run(())>
+                        {super::icons::move_icon()}
+                        <span>"移动"</span>
+                    </button>
                     <button class="danger" type="button" on:click=move |_| delete.run(())>
                         {trash_icon()}
                         <span>"删除"</span>

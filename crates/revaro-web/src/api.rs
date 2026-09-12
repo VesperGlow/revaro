@@ -20,13 +20,15 @@
 use gloo_net::http::Request;
 use revaro_core::api::auth::{LoginRequest, Session};
 use revaro_core::api::files::{
-    Children, CreateDirectoryRequest, FileDetail, PatchFileRequest, Trash,
+    Children, CopyFileRequest, CreateDirectoryRequest, FileDetail, PatchFileRequest, Trash,
 };
+use revaro_core::api::media::{AudioMedia, VideoMedia};
 use revaro_core::api::tasks::{TaskInputRequest, TaskList};
 use revaro_core::api::uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
 };
+use revaro_core::model::MediaProgress;
 use revaro_core::{ErrorCode, ErrorEnvelope};
 
 /// A failed request to an authenticated JSON endpoint.
@@ -109,6 +111,32 @@ pub async fn fetch_children(id: &str) -> Result<Children, RequestError> {
 /// Fetch the top-level entries in the trash.
 pub async fn fetch_trash() -> Result<Trash, RequestError> {
     get_json("/api/trash").await
+}
+
+/// Fetch the optional chapter and cover metadata for an audio file.
+pub async fn fetch_audio_media(id: &str) -> Result<AudioMedia, RequestError> {
+    get_json(&format!("/api/files/{id}/audio")).await
+}
+
+/// Fetch the subtitle tracks advertised for a video file.
+pub async fn fetch_video_media(id: &str) -> Result<VideoMedia, RequestError> {
+    get_json(&format!("/api/files/{id}/video")).await
+}
+
+/// Fetch a saved playback position. The server returns zeroes for a first play.
+pub async fn fetch_media_progress(id: &str) -> Result<MediaProgress, RequestError> {
+    get_json(&format!("/api/files/{id}/media/progress")).await
+}
+
+/// Save a playback position and the duration known by the browser.
+pub async fn save_media_progress(
+    id: &str,
+    progress: &MediaProgress,
+) -> Result<MediaProgress, RequestError> {
+    let request = Request::put(&format!("/api/files/{id}/media/progress"))
+        .json(progress)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
 }
 
 /// Fetch the durable tasks shown by the task centre.
@@ -223,6 +251,17 @@ pub async fn patch_file(
     request: &PatchFileRequest,
 ) -> Result<revaro_core::model::File, RequestError> {
     let request = Request::patch(&format!("/api/files/{id}"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Copy a live file or directory below another live directory.
+pub async fn copy_file(
+    id: &str,
+    request: &CopyFileRequest,
+) -> Result<revaro_core::model::File, RequestError> {
+    let request = Request::post(&format!("/api/files/{id}/copy"))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await

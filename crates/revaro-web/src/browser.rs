@@ -100,6 +100,16 @@ pub fn on_pointerdown(callback: impl Fn(web_sys::PointerEvent) + 'static) -> Own
     OwnedListener(Some(window_event_listener(ev::pointerdown, callback)))
 }
 
+/// Listen for viewport changes while a transient browser view is mounted.
+pub fn on_resize(callback: impl Fn(leptos::ev::UiEvent) + 'static) -> OwnedListener {
+    OwnedListener(Some(window_event_listener(ev::resize, callback)))
+}
+
+/// Listen for changes to the document's fullscreen element.
+pub fn on_fullscreenchange(callback: impl Fn(leptos::ev::Event) + 'static) -> OwnedListener {
+    OwnedListener(Some(window_event_listener(ev::fullscreenchange, callback)))
+}
+
 /// A document/window listener that unregisters when dropped or released.
 ///
 /// Leptos's raw [`WindowListenerHandle`] is a remove-only handle; wrapping it

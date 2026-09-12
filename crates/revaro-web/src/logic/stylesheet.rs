@@ -83,7 +83,7 @@ pub const CASCADE: [Stylesheet; 15] = [
 /// global sheets at equal specificity; loading them last and anchoring their
 /// generic class names under each component root reproduces that. They are
 /// listed separately because they are not part of the original 15-file cascade.
-pub const COMPONENT_SHEETS: [Stylesheet; 6] = [
+pub const COMPONENT_SHEETS: [Stylesheet; 7] = [
     Stylesheet::new(
         "styles/components/app-topbar.css",
         "AppTopbar scoped block; :deep() resolved",
@@ -107,6 +107,10 @@ pub const COMPONENT_SHEETS: [Stylesheet; 6] = [
     Stylesheet::new(
         "styles/components/directory-flyout.css",
         "DirectoryPicker transition as a class toggle",
+    ),
+    Stylesheet::new(
+        "styles/components/directory-picker.css",
+        "DirectoryPicker and transfer dialog layout",
     ),
 ];
 
