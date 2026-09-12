@@ -69,6 +69,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/trash", get(trash).delete(empty_trash))
         .route("/trash/{id}/restore", axum::routing::post(restore_trash))
         .route("/trash/{id}", axum::routing::delete(purge_trash))
+        .route(
+            "/files/{id}/content",
+            get(get_document).put(update_document),
+        )
 }
 
 /// Decode one `files` row selected with [`FILE_COLUMNS`].
@@ -135,6 +139,20 @@ fn lookup_file(connection: &rusqlite::Connection, id: &str) -> Result<File, DbEr
     connection
         .query_row(
             &format!("SELECT {FILE_COLUMNS} FROM files WHERE id = ?1 AND deleted_at IS NULL"),
+            [id],
+            scan_file,
+        )
+        .map_err(DbError::Query)
+}
+
+/// A file by id, including soft-deleted rows.
+///
+/// Content delivery deliberately resolves trashed rows: an item stays readable
+/// until it is restored or purged, which is what Go's `readableFile` did.
+fn lookup_file_any(connection: &rusqlite::Connection, id: &str) -> Result<File, DbError> {
+    connection
+        .query_row(
+            &format!("SELECT {FILE_COLUMNS} FROM files WHERE id = ?1"),
             [id],
             scan_file,
         )
@@ -761,6 +779,165 @@ DELETE FROM files WHERE id IN tree",
         .await
 }
 
+/// The hash algorithm recorded alongside `content_hash`.
+const CONTENT_HASH_ALGORITHM: &str = "sha256";
+
+/// `GET /api/files/{id}/content`
+async fn get_document(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<Json<revaro_core::api::DocumentContent>, ApiError> {
+    let file = state
+        .db
+        .call_api(move |connection| {
+            let file = lookup_file_any(connection, &id)
+                .map_err(|error| not_found_or(error, "ready file not found"))?;
+            if file.kind != FileKind::File || file.status != FileStatus::Ready {
+                return Err(ApiError::not_found("ready file not found"));
+            }
+            Ok(file)
+        })
+        .await?;
+
+    // The name decides editability, not the stored MIME type: a `.md` uploaded
+    // as octet-stream is still editable.
+    if !revaro_core::classify::is_editable_name(&file.name) {
+        return Err(ApiError::unsupported_media_type(
+            "this file type cannot be edited as text",
+        ));
+    }
+    if file.size > revaro_core::limits::MAX_DOCUMENT_BYTES as i64 {
+        return Err(ApiError::payload_too_large(
+            "editable documents cannot exceed 1 MiB",
+        ));
+    }
+
+    let bytes = state
+        .store
+        .read(&file.object_key, revaro_core::limits::MAX_DOCUMENT_BYTES)
+        .await
+        .map_err(|error| match error {
+            crate::storage::StorageError::TooLarge { .. } => {
+                ApiError::payload_too_large("editable documents cannot exceed 1 MiB")
+            }
+            crate::storage::StorageError::NotFound => ApiError::not_found("ready file not found"),
+            other => {
+                tracing::error!(%other, "document read failed");
+                ApiError::new(502, "object storage read failed")
+            }
+        })?;
+
+    // Rust strings are UTF-8 by construction, so an invalid byte sequence only
+    // reaches here from a file that is not actually text.
+    let content = String::from_utf8(bytes)
+        .map_err(|_| ApiError::unsupported_media_type("file is not valid UTF-8 text"))?;
+
+    Ok(Json(revaro_core::api::DocumentContent {
+        content,
+        etag: file.etag,
+        updated_at: file.updated_at,
+    }))
+}
+
+/// `PUT /api/files/{id}/content`
+async fn update_document(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+    Json(request): Json<revaro_core::api::UpdateDocumentRequest>,
+) -> Result<Json<File>, ApiError> {
+    let file = state
+        .db
+        .call_api(move |connection| {
+            let file = lookup_file(connection, &id)
+                .map_err(|error| not_found_or(error, "ready file not found"))?;
+            if file.kind != FileKind::File || file.status != FileStatus::Ready {
+                return Err(ApiError::not_found("ready file not found"));
+            }
+            Ok(file)
+        })
+        .await?;
+
+    revaro_core::validate::validate_document(&file.name, &request.content)?;
+
+    // An empty ETag means "I did not read a version", so the check is skipped;
+    // the conditional UPDATE below still protects against a lost update.
+    if !request.etag.is_empty() && !file.etag.is_empty() && request.etag != file.etag {
+        return Err(ApiError::conflict(
+            "document changed elsewhere; reopen it before saving",
+        ));
+    }
+
+    let bytes = request.content.into_bytes();
+    let size = bytes.len() as i64;
+    let object_key = revaro_core::keys::blob_key(&crate::ids::new_id());
+    let mut source: &[u8] = &bytes;
+    let stored = state
+        .store
+        .write_stream(&object_key, &mut source, size)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "document write failed");
+            ApiError::new(502, "object storage write failed")
+        })?;
+    let content_hash = revaro_core::keys::sha256_hex(&bytes);
+    let mime = revaro_core::classify::document_mime(&file.name).to_owned();
+
+    // The previous object key is part of the WHERE clause, so two concurrent
+    // savers cannot both win: the loser updates zero rows and gets a 409 instead
+    // of silently overwriting the winner between a check and a write.
+    let previous_key = file.object_key.clone();
+    let file_id = file.id.clone();
+    let update = {
+        let object_key = object_key.clone();
+        let content_hash = content_hash.clone();
+        state
+            .db
+            .call_api(move |connection| {
+                let now = Timestamp::now().to_rfc3339();
+                let changed = connection
+                    .execute(
+                        "UPDATE files SET object_key = ?1, size = ?2, mime_type = ?3, etag = ?4, \
+content_hash = ?5, hash_algorithm = ?6, updated_at = ?7 \
+WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
+                        rusqlite::params![
+                            object_key,
+                            size,
+                            mime,
+                            stored.etag,
+                            content_hash,
+                            CONTENT_HASH_ALGORITHM,
+                            now,
+                            file_id,
+                            previous_key,
+                        ],
+                    )
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                if changed == 0 {
+                    return Err(ApiError::conflict(
+                        "document changed elsewhere; reopen it before saving",
+                    ));
+                }
+                lookup_file(connection, &file_id).map_err(database_error)
+            })
+            .await
+    };
+
+    let updated = match update {
+        Ok(updated) => updated,
+        Err(error) => {
+            // The metadata write failed, so the object we just stored is
+            // unreachable; remove it rather than leaking a blob.
+            if let Err(cleanup) = state.store.delete(&object_key).await {
+                tracing::warn!(%cleanup, key = %object_key, "could not discard an orphaned document blob");
+            }
+            return Err(error);
+        }
+    };
+    Ok(Json(updated))
+}
+
 /// Map a uniqueness violation onto `409` and anything else onto `500`.
 fn conflict_or(error: DbError) -> ApiError {
     if error.is_constraint_violation() {
@@ -1104,6 +1281,71 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         let (status, body) = write(&state, "DELETE", "/api/trash/f1", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn documents_round_trip_and_reject_stale_writes() {
+        let state = state().await;
+        // A stored blob plus the row that points at it.
+        // Seed the row with the store's real ETag: without it the optimistic
+        // concurrency check has nothing to compare against and a stale save
+        // would be indistinguishable from a first one.
+        let stored = state.store.put("blobs/doc1", b"hello").await.unwrap();
+        let sql: &'static str = Box::leak(
+            format!(
+                "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) \
+VALUES('doc1','00000000-0000-0000-0000-000000000000','notes.md','file','blobs/doc1',5,'text/markdown','{}','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');",
+                stored.etag
+            )
+            .into_boxed_str(),
+        );
+        seed(&state, sql).await;
+
+        let (status, body) = call(&state, "/api/files/doc1/content").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["content"], "hello");
+        let etag = body["etag"].as_str().unwrap().to_owned();
+
+        // A save with the ETag we read succeeds and returns the updated row.
+        let (status, updated) = write(
+            &state,
+            "PUT",
+            "/api/files/doc1/content",
+            Some(serde_json::json!({"content": "world!", "etag": etag})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["size"], 6);
+        assert_eq!(updated["content_hash"].as_str().unwrap().len(), 64);
+
+        let (_, body) = call(&state, "/api/files/doc1/content").await;
+        assert_eq!(body["content"], "world!");
+
+        // A save carrying the *old* ETag is refused rather than silently
+        // overwriting the newer content.
+        let (status, body) = write(
+            &state,
+            "PUT",
+            "/api/files/doc1/content",
+            Some(serde_json::json!({"content": "stale", "etag": etag})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body["error"]["message"],
+            "document changed elsewhere; reopen it before saving"
+        );
+
+        // A binary file is not editable text.
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) \
+VALUES('bin1','00000000-0000-0000-0000-000000000000','photo.png','file','blobs/bin1',3,'ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+        let (status, body) = call(&state, "/api/files/bin1/content").await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            body["error"]["message"],
+            "this file type cannot be edited as text"
+        );
     }
 
     #[tokio::test]
