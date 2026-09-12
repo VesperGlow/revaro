@@ -71,7 +71,9 @@ async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Health>, ApiEr
 
 /// The authenticated API subtree.
 fn api() -> Router<Arc<AppState>> {
-    Router::new().fallback(api_not_found)
+    Router::new()
+        .merge(crate::auth_routes::routes())
+        .fallback(api_not_found)
 }
 
 /// Every unmatched `/api/*` path answers JSON rather than falling through to
@@ -108,11 +110,9 @@ mod tests {
         let store = LocalStore::open(&store_root)
             .await
             .expect("object store opens");
-        AppState::new(
-            Arc::new(config),
-            Database::open_in_memory().expect("in-memory database"),
-            store,
-        )
+        let database = Database::open_in_memory().expect("in-memory database");
+        let auth = crate::auth::AuthService::new(database.clone());
+        AppState::new(Arc::new(config), database, store, auth)
     }
 
     async fn get(app: Router, uri: &str, origin: Option<&str>) -> (StatusCode, serde_json::Value) {

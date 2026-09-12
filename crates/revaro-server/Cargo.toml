@@ -20,12 +20,16 @@ path = "src/main.rs"
 revaro-core = { workspace = true, features = ["axum"] }
 
 axum.workspace = true
+axum-extra.workspace = true
+base64.workspace = true
 bytes.workspace = true
 http.workspace = true
 mime_guess.workspace = true
+rand.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -34,6 +38,19 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+# Not in the root `[workspace.dependencies]` table: declared here so the shared
+# manifest is not touched while other crates are mid-migration.
+aes-gcm = "0.10"
+argon2 = "0.5"
+hmac = "0.12"
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
+sha1 = "0.10"
+time = "0.3"
+
+# The workspace default enables only `jpeg`; the avatar sniffer and the TOTP QR
+# code both need PNG encoding, so the feature is added here rather than globally.
+image = { workspace = true, features = ["png"] }
 
 [dev-dependencies]
 http-body-util.workspace = true

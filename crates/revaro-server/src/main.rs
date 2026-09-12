@@ -62,7 +62,29 @@ async fn main() -> ExitCode {
     }
     tracing::info!(path = %store.root().display(), "local object storage ready");
 
-    let state = AppState::new(config.clone(), database, store);
+    let auth = revaro_server::auth::AuthService::new(database.clone());
+    let state = AppState::new(config.clone(), database, store, auth);
+    match state
+        .auth
+        .initialize(&config.admin_username, &config.admin_password)
+        .await
+    {
+        Ok(credentials) if credentials.created && credentials.generated => {
+            tracing::warn!(
+                username = %credentials.username,
+                password = %credentials.password,
+                "generated initial administrator credentials; sign in and change them"
+            );
+        }
+        Ok(credentials) if credentials.created => {
+            tracing::info!(username = %credentials.username, "administrator account created");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(%error, "administrator initialization failed");
+            return ExitCode::FAILURE;
+        }
+    }
     let app = router::build(state);
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
@@ -80,9 +102,12 @@ async fn main() -> ExitCode {
         "server started"
     );
 
-    match axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
+    match axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
     {
         Ok(()) => {
             tracing::info!("server stopped");

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use crate::auth::AuthService;
 use crate::config::Config;
 use crate::db::Database;
 use crate::storage::LocalStore;
@@ -20,12 +21,24 @@ pub struct AppState {
     pub db: Database,
     /// The local object store holding original bytes and derived artifacts.
     pub store: LocalStore,
+    /// Administrator credentials, sessions and second factor.
+    pub auth: AuthService,
 }
 
 impl AppState {
     /// Build the state for a running server.
     #[must_use]
-    pub fn new(config: Arc<Config>, db: Database, store: LocalStore) -> Arc<Self> {
-        Arc::new(Self { config, db, store })
+    pub fn new(
+        config: Arc<Config>,
+        db: Database,
+        store: LocalStore,
+        auth: AuthService,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config,
+            db,
+            store,
+            auth,
+        })
     }
 }
