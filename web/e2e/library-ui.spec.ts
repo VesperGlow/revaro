@@ -211,18 +211,50 @@ test('同系列书籍再多也收在同一张固定尺寸卡片内', async ({ pa
   await page.screenshot({ path: testInfo.outputPath('bookshelf-many.png') })
 })
 
-test('移动端通过抽屉打开分类栏', async ({ page }, testInfo) => {
+test('移动端浮动抽屉：开关跟随、内容不位移、backdrop 与 Esc 关闭', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockLibrary(page)
   await login(page)
 
   const sidebar = page.locator('.app-sidebar')
+  const handle = page.locator('.sidebar-handle')
+  const content = page.locator('.content')
   await expect(sidebar).toBeHidden()
-  await page.getByRole('button', { name: '打开分类栏' }).click()
+  await expect(handle).toBeVisible()
+  await expect(handle).toHaveAttribute('aria-label', '展开分类栏')
+  const closedContent = await content.boundingBox()
+
+  // 展开：抽屉滑入，按钮跟随到抽屉右边缘，图标切换为 <
+  await handle.click()
   await expect(sidebar).toHaveClass(/mobile-open/)
+  await expect(handle).toHaveClass(/open/)
+  await expect(handle).toHaveAttribute('aria-label', '收起分类栏')
+  // 抽屉里分类是图标+文字的横向完整布局
+  await expect(sidebar.locator('.category-label').first()).toBeVisible()
   await expect(sidebar.locator('[data-category="image"]')).toBeVisible()
-  await page.waitForTimeout(320)
+  // 等滑入动画（250ms）结束再量尺寸
+  await page.waitForTimeout(360)
+  // 主内容不被推动
+  const openContent = await content.boundingBox()
+  expect(openContent!.x).toBeCloseTo(closedContent!.x, 1)
+  // 按钮停在抽屉右边缘
+  const drawer = await sidebar.boundingBox()
+  const handleBox = await handle.boundingBox()
+  expect(handleBox!.x + handleBox!.width / 2).toBeCloseTo(drawer!.x + drawer!.width, 0)
   await page.screenshot({ path: testInfo.outputPath('mobile-drawer.png') })
+
+  // 点击 backdrop 空白处立即收起
+  await page.locator('.sidebar-backdrop').click({ position: { x: 360, y: 700 } })
+  await expect(sidebar).not.toHaveClass(/mobile-open/)
+
+  // Esc 收起
+  await handle.click()
+  await expect(sidebar).toHaveClass(/mobile-open/)
+  await page.keyboard.press('Escape')
+  await expect(sidebar).not.toHaveClass(/mobile-open/)
+
+  // 通过悬浮按钮再次展开后选择分类，抽屉自动收起
+  await handle.click()
   await sidebar.locator('[data-category="image"]').click()
   await expect(page.locator('.library-view')).toBeVisible()
   await expect(sidebar).not.toHaveClass(/mobile-open/)
