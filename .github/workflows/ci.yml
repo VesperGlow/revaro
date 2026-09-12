@@ -70,6 +70,48 @@ jobs:
           command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked --version 0.22.2 --root "$HOME/.cargo-audit"
           cargo audit --file Cargo.lock
 
+  rust:
+    name: Rust workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml pins the channel, the components and the wasm32
+        # target, so rustup installs exactly what the workspace needs.
+        run: rustup show active-toolchain
+      - name: Restore the cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Install wasm-bindgen CLI
+        # The CLI and the wasm-bindgen crate share a private ABI version and must
+        # match exactly. The prebuilt binary is used because compiling the CLI
+        # from source costs several minutes on every run; `cargo xtask check`
+        # fails loudly if this version drifts from the manifest pin.
+        run: |
+          curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
+            -o /tmp/wasm-bindgen.tar.gz \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.128/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp
+          install -m 0755 /tmp/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl/wasm-bindgen "$HOME/.cargo/bin/"
+          wasm-bindgen --version
+      - name: Install native build dependencies
+        # rusqlite bundles SQLite and therefore needs a C compiler; the media and
+        # reader crates add ffmpeg/libarchive/clang/cmake as the migration lands.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake pkg-config \
+            libbz2-dev liblzma-dev libzstd-dev liblz4-dev libssl-dev libxml2-dev libacl1-dev
+      - name: Check the workspace
+        # fmt + clippy (-D warnings) + the full test suite + a wasm32 type-check
+        # of the browser client.
+        run: cargo xtask check
+
   container:
     name: Build amd64 image and E2E
     runs-on: ubuntu-24.04

@@ -219,7 +219,61 @@ fn web_check(root: &Path) -> Result<(), String> {
     run(&mut command, "type-check the web client")
 }
 
+/// Fail when the pinned `wasm-bindgen` crate and the CLI version drift apart.
+///
+/// `wasm-bindgen` glue and the compiled module share a private ABI version, so a
+/// mismatch produces confusing runtime failures rather than a build error. The
+/// pin is necessarily written down twice (the workspace manifest and this
+/// driver), so it is checked rather than trusted.
+fn check_wasm_bindgen_pin(root: &Path) -> Result<(), String> {
+    let manifest = root.join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest)
+        .map_err(|error| format!("could not read {}: {error}", manifest.display()))?;
+    let pinned = manifest_dependency_version(&text, "wasm-bindgen").ok_or_else(|| {
+        format!("{} does not pin a `wasm-bindgen` version", manifest.display())
+    })?;
+    let pinned = pinned.trim_start_matches('=');
+    if pinned != WASM_BINDGEN_CLI_VERSION {
+        return Err(format!(
+            "wasm-bindgen version drift: Cargo.toml pins {pinned}, but xtask expects \
+             {WASM_BINDGEN_CLI_VERSION}.\nUpdate WASM_BINDGEN_CLI_VERSION in xtask/src/main.rs \
+             and install the matching CLI:\n    cargo install wasm-bindgen-cli --version {pinned}"
+        ));
+    }
+    Ok(())
+}
+
+/// Extract the version of `name` from a manifest's `[workspace.dependencies]`
+/// table, handling both `name = "1.2.3"` and `name = { version = "1.2.3", .. }`.
+fn manifest_dependency_version(manifest: &str, name: &str) -> Option<String> {
+    for line in manifest.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix(name) else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim();
+        if let Some(inline) = rest.strip_prefix('{') {
+            let version = inline
+                .split(',')
+                .map(str::trim)
+                .find_map(|entry| entry.strip_prefix("version"))?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .trim_matches('"');
+            return Some(version.to_owned());
+        }
+        return Some(rest.trim_matches('"').to_owned());
+    }
+    None
+}
+
 fn check(root: &Path) -> Result<(), String> {
+    check_wasm_bindgen_pin(root)?;
+
     let mut fmt = cargo();
     fmt.current_dir(root)
         .args(["fmt", "--all", "--", "--check"]);
@@ -279,5 +333,42 @@ fn run(command: &mut Command, description: &str) -> Result<(), String> {
         Err(format!(
             "failed to {description}: {printable} exited with {status}"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_a_plain_version_string() {
+        let manifest = "[workspace.dependencies]\nwasm-bindgen = \"=0.2.128\"\n";
+        assert_eq!(manifest_dependency_version(manifest, "wasm-bindgen").as_deref(), Some("=0.2.128"));
+    }
+
+    #[test]
+    fn extracts_a_version_from_an_inline_table() {
+        let manifest = "[workspace.dependencies]\nwasm-bindgen = { version = \"=0.2.128\", features = [\"x\"] }\n";
+        assert_eq!(manifest_dependency_version(manifest, "wasm-bindgen").as_deref(), Some("=0.2.128"));
+    }
+
+    #[test]
+    fn does_not_confuse_a_prefixed_dependency_name() {
+        // `wasm-bindgen-futures` must not be mistaken for `wasm-bindgen`.
+        let manifest = "[workspace.dependencies]\nwasm-bindgen-futures = \"=0.4.78\"\n";
+        assert_eq!(manifest_dependency_version(manifest, "wasm-bindgen"), None);
+    }
+
+    #[test]
+    fn reports_a_missing_dependency() {
+        assert_eq!(manifest_dependency_version("[dependencies]\nserde = \"1\"\n", "wasm-bindgen"), None);
+    }
+
+    #[test]
+    fn the_pin_agrees_with_this_driver() {
+        // Guards the real manifest: if this fails, update WASM_BINDGEN_CLI_VERSION
+        // and reinstall the CLI.
+        let root = workspace_root().expect("workspace root");
+        check_wasm_bindgen_pin(&root).expect("wasm-bindgen pin must match xtask");
     }
 }
