@@ -73,6 +73,10 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/files/{id}/media/progress",
             get(media_progress).put(save_media_progress),
         )
+        .route(
+            "/files/{id}/share",
+            get(get_share).post(create_share).delete(revoke_share),
+        )
         .route("/trash", get(trash).delete(empty_trash))
         .route("/trash/{id}/restore", axum::routing::post(restore_trash))
         .route("/trash/{id}", axum::routing::delete(purge_trash))
@@ -975,6 +979,126 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
     Ok(Json(updated))
 }
 
+/// A share token: 32 random bytes as unpadded base64url (43 characters).
+///
+/// The length is also enforced when the public link is redeemed, so a token is
+/// never guessable and a malformed one is rejected before touching the database.
+fn new_share_token() -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
+}
+
+fn share_url(base_url: &str, token: &str) -> String {
+    format!("{base_url}/s/{token}")
+}
+
+/// `GET /api/files/{id}/share`
+async fn get_share(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<Json<revaro_core::api::share::Status>, ApiError> {
+    let base_url = state.config.base_url.clone();
+    state
+        .db
+        .call_api(move |connection| {
+            // Joining the file row means a share for a file that has since been
+            // deleted or reverted to pending is reported as inactive rather than
+            // handing back a dead link.
+            let found = connection
+                .query_row(
+                    "SELECT s.token, s.created_at FROM shares s JOIN files f ON f.id = s.file_id \
+WHERE s.file_id = ?1 AND f.kind = 'file' AND f.status = 'ready' AND f.deleted_at IS NULL",
+                    [&id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map(Some)
+                .or_else(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(database_error(DbError::Query(other))),
+                })?;
+            Ok(match found {
+                None => revaro_core::api::share::Status {
+                    active: false,
+                    url: None,
+                    created_at: None,
+                },
+                Some((token, created_at)) => revaro_core::api::share::Status {
+                    active: true,
+                    url: Some(share_url(&base_url, &token)),
+                    created_at: Timestamp::parse(&created_at).ok(),
+                },
+            })
+        })
+        .await
+        .map(Json)
+}
+
+/// `POST /api/files/{id}/share`
+async fn create_share(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<(http::StatusCode, Json<revaro_core::api::share::Status>), ApiError> {
+    let token = new_share_token();
+    let base_url = state.config.base_url.clone();
+    let created_at = Timestamp::now();
+    let created = created_at.to_rfc3339();
+    let issued = token.clone();
+    let issued_at = created.clone();
+    state
+        .db
+        .call_api(move |connection| {
+            let file = lookup_file(connection, &id)
+                .map_err(|error| not_found_or(error, "ready file not found"))?;
+            if file.kind != FileKind::File || file.status != FileStatus::Ready {
+                return Err(ApiError::not_found("ready file not found"));
+            }
+            // Re-sharing rotates the token, so a leaked link can be revoked by
+            // sharing again rather than only by deleting the share.
+            connection
+                .execute(
+                    "INSERT INTO shares(file_id,token,created_at) VALUES(?1,?2,?3) \
+ON CONFLICT(file_id) DO UPDATE SET token = excluded.token, created_at = excluded.created_at",
+                    rusqlite::params![id, issued, issued_at],
+                )
+                .map_err(|error| {
+                    tracing::error!(%error, "could not create a share link");
+                    ApiError::internal("could not create share link")
+                })?;
+            Ok(())
+        })
+        .await?;
+    Ok((
+        http::StatusCode::CREATED,
+        Json(revaro_core::api::share::Status {
+            active: true,
+            url: Some(share_url(&base_url, &token)),
+            created_at: Some(created_at),
+        }),
+    ))
+}
+
+/// `DELETE /api/files/{id}/share`
+async fn revoke_share(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<http::StatusCode, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            connection
+                .execute("DELETE FROM shares WHERE file_id = ?1", [&id])
+                .map_err(|error| {
+                    tracing::error!(%error, "could not revoke the share link");
+                    ApiError::internal("could not revoke share link")
+                })?;
+            Ok(http::StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
 /// Media rows that may carry a playback position.
 ///
 /// The position is only meaningful for audio and video, and Go refused the
@@ -1626,6 +1750,53 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn sharing_creates_rotates_and_revokes_a_link() {
+        let state = state().await;
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+VALUES('f1','00000000-0000-0000-0000-000000000000','a.bin','file','blobs/f1',3,'application/octet-stream','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('d1','00000000-0000-0000-0000-000000000000','dir','directory',NULL,0,'','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+
+        // Not shared yet: the client renders the "create link" affordance from
+        // this rather than from a 404.
+        let (status, body) = call(&state, "/api/files/f1/share").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!({"active": false}));
+
+        let (status, created) = write(&state, "POST", "/api/files/f1/share", None).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created["active"], true);
+        let url = created["url"].as_str().unwrap().to_owned();
+        assert!(url.starts_with("http://localhost:8080/s/"), "{url}");
+        let token = url.rsplit('/').next().unwrap().to_owned();
+        // 32 random bytes as unpadded base64url.
+        assert_eq!(token.len(), 43);
+        assert!(
+            token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
+
+        // Re-sharing rotates the token, so a leaked link can be retired.
+        let (_, again) = write(&state, "POST", "/api/files/f1/share", None).await;
+        assert_ne!(again["url"], created["url"]);
+        assert_eq!(again["active"], true);
+
+        // A directory cannot be shared.
+        let (status, body) = write(&state, "POST", "/api/files/d1/share", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["message"], "ready file not found");
+
+        // Revoking is idempotent and returns the file to "not shared".
+        let (status, _) = write(&state, "DELETE", "/api/files/f1/share", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, body) = call(&state, "/api/files/f1/share").await;
+        assert_eq!(body, serde_json::json!({"active": false}));
+        let (status, _) = write(&state, "DELETE", "/api/files/f1/share", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
