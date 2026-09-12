@@ -5,12 +5,75 @@
 //! collaborators here as they are migrated, rather than threading a growing
 //! argument list through every handler.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::auth::AuthService;
 use crate::config::Config;
 use crate::db::Database;
 use crate::storage::LocalStore;
+use revaro_reader::BookCache;
+
+/// Process-wide reader caches and per-book build locks.
+///
+/// The parsed-book cache bounds memory, while the keyed locks prevent two
+/// simultaneous first opens from parsing and writing the same derived flow
+/// twice. The lock maps intentionally contain only object-store keys, never
+/// request-controlled filesystem paths.
+#[derive(Debug)]
+pub struct ReaderRuntime {
+    /// LRU of parsed EPUB/TXT books.
+    pub books: BookCache,
+    book_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    flow_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl ReaderRuntime {
+    /// Create the bounded reader runtime used by the server.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            books: BookCache::new(4, 128 << 20),
+            book_locks: Mutex::new(HashMap::new()),
+            flow_locks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Serialize cold loads for one object-store key.
+    pub async fn book_lock(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self.lock_for(key, &self.book_locks);
+        lock.lock_owned().await
+    }
+
+    /// Serialize flow generation for one object-store key.
+    pub async fn flow_lock(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self.lock_for(key, &self.flow_locks);
+        lock.lock_owned().await
+    }
+
+    fn lock_for(
+        &self,
+        key: &str,
+        locks: &Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = locks.lock().unwrap_or_else(PoisonError::into_inner);
+        // The map owns one strong reference. Once no guard or waiter owns the
+        // other references, the key is idle and can be removed on the next
+        // lookup. This keeps a busy-key optimization from becoming a lifetime
+        // sized map as uploads and deletions accumulate.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
+
+impl Default for ReaderRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A change notification bus for the job/task event stream.
 ///
@@ -67,6 +130,8 @@ pub struct AppState {
     pub auth: AuthService,
     /// Task-change notifications for the event stream.
     pub jobs: JobBus,
+    /// Parsed books and serialized reader-flow builders.
+    pub reader: ReaderRuntime,
 }
 
 impl AppState {
@@ -84,6 +149,27 @@ impl AppState {
             store,
             auth,
             jobs: JobBus::new(256),
+            reader: ReaderRuntime::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reader_lock_maps_discard_idle_keys() {
+        let runtime = ReaderRuntime::new();
+        {
+            let _guard = runtime.book_lock("first").await;
+            assert_eq!(runtime.book_locks.lock().unwrap().len(), 1);
+        }
+        {
+            let _guard = runtime.book_lock("second").await;
+            let locks = runtime.book_locks.lock().unwrap();
+            assert_eq!(locks.len(), 1);
+            assert!(locks.contains_key("second"));
+        }
     }
 }

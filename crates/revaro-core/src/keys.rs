@@ -117,6 +117,23 @@ pub fn flow_book_key(flow_key: &str) -> Option<String> {
     Some(format!("{root}/{id}"))
 }
 
+/// Short fingerprint used by the browser to namespace persisted flow chunks.
+///
+/// The object key is content-addressed by the upload path in the current
+/// storage layout, and the first eight digest bytes preserve the historical
+/// sixteen-character wire value without putting the full SHA-256 in every
+/// manifest.
+#[must_use]
+pub fn flow_book_fingerprint(book_object_key: &str) -> String {
+    let digest = crate::hash::sha256(book_object_key.as_bytes());
+    let mut out = String::with_capacity(16);
+    for byte in digest.into_iter().take(8) {
+        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+    }
+    out
+}
+
 /// Lowercase hex SHA-256 of `bytes`.
 ///
 /// Implemented here so the shared crate stays dependency-light and works on
@@ -199,6 +216,16 @@ mod tests {
         assert_eq!(
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn flow_book_fingerprint_is_a_stable_short_digest() {
+        assert_eq!(flow_book_fingerprint("blobs/abc"), "8a49932cc4d7d9b6");
+        assert_eq!(flow_book_fingerprint("blobs/abc").len(), 16);
+        assert_ne!(
+            flow_book_fingerprint("blobs/abc"),
+            flow_book_fingerprint("blobs/def")
         );
     }
 }

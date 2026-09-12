@@ -188,7 +188,10 @@ pub(crate) fn lookup_file_for_commit(
 ///
 /// Content delivery deliberately resolves trashed rows: an item stays readable
 /// until it is restored or purged, which is what Go's `readableFile` did.
-fn lookup_file_any(connection: &rusqlite::Connection, id: &str) -> Result<File, DbError> {
+pub(crate) fn lookup_file_any(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<File, DbError> {
     connection
         .query_row(
             &format!("SELECT {FILE_COLUMNS} FROM files WHERE id = ?1"),

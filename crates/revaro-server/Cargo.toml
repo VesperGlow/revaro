@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 revaro-core = { workspace = true, features = ["axum"] }
+revaro-reader.workspace = true
 
 axum.workspace = true
 axum-extra.workspace = true
@@ -56,3 +57,4 @@ image = { workspace = true, features = ["png"] }
 [dev-dependencies]
 http-body-util.workspace = true
 tower = { workspace = true, features = ["util"] }
+zip.workspace = true

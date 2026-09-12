@@ -21,6 +21,7 @@ pub mod file_routes;
 pub mod ids;
 pub mod middleware;
 pub mod proxy;
+pub mod reader_routes;
 pub mod router;
 pub mod state;
 pub mod storage;

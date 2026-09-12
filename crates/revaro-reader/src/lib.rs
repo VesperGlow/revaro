@@ -2,9 +2,8 @@
 //!
 //! This crate is the parsing half of the Go `internal/reader` package: it turns
 //! an uploaded `.epub` or `.txt` file into an immutable [`Book`]. The reading
-//! *flow* generator (`internal/reader/flow`) is a separate follow-up task; the
-//! types here are shaped so it can consume them directly, without re-reading
-//! the source file:
+//! flow generator is in [`flow`], and consumes these types directly without
+//! re-reading the source file:
 //!
 //! * [`Book::chapters`] holds one already-sanitized XHTML fragment per spine
 //!   item, in reading order, each carrying its `data-source-path` marker.
@@ -12,6 +11,8 @@
 //!   HTML refers to by index.
 //! * [`Book::toc`] uses [`revaro_core::reader::TocEntry`], the shared model the
 //!   flow builder resolves onto global block numbers.
+//! * `flow::build` turns that parsed book into deterministic, cacheable HTML
+//!   chunks and a shared flow manifest.
 //!
 //! ## Trust model
 //!
@@ -52,6 +53,7 @@ mod budget;
 mod cache;
 mod dom;
 mod epub;
+pub mod flow;
 mod image;
 mod model;
 mod path;

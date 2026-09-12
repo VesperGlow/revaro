@@ -104,9 +104,12 @@ xtask/                      # 构建编排（cargo xtask ...）
 `cache`（L1/L2 字节 LRU、优先级与软配额、singleflight、磁盘 `.meta` 格式）、
 `system_status`。
 
-### 阶段 5 — 阅读器
+### 阶段 5 — 阅读器（进行中）
 `revaro-reader`：EPUB 解析与白名单清洗、TXT 分章、reading flow 生成
 （确定性 chunk、`data-block` 编号、UTF-16 偏移、TOC 目标）、flow 缓存。
+
+后端 flow 生成、对象持久化和 reader HTTP 端点已在阶段 5a 完成；前端阅读器
+视图仍属于阶段 7，尚未迁移。
 
 ### 阶段 6 — 媒体
 `revaro-media`：由 `data-plane` 改造为库（probe、缩略图、音频封面、
@@ -171,7 +174,7 @@ CI；更新 README 与 docs。
 | 缩略图/音频封面 | `thumb.go` | `thumbnail.rs` + `revaro-media` |
 | 媒体探测/字幕 | `media_metadata.go`、`video_media.go` | `revaro-media`（由 `data-plane/` 改造为库） |
 | 压缩包解压 | `archive.go` | `revaro-media` + `archive_routes.rs` |
-| 阅读器 flow 生成 | `internal/reader/flow/` | `revaro-reader::flow`（`Book` 已按此设计） |
+| ~~阅读器 flow + reader 路由~~ | `internal/reader/flow/`、`internal/server/book.go`、`reader_flow.go` | ✅ 已完成：`revaro-reader::flow`、`reader_routes.rs` |
 | 前端各功能视图 | `web/src/components/` | `crates/revaro-web/src/components/` |
 | 删除 Node/npm 与 Go 链 | `web/`、`internal/`、`cmd/`、`go.mod`、Dockerfile、CI | 最后一步 |
 
@@ -229,23 +232,23 @@ data-plane，Rust 服务是并行推进的新实现，不参与镜像。等到 R
 user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 本地等价命令（cargo build/test）间接验证。
 
-## 4.7 本轮结束时的状态（供接手者定位）
+## 4.7 阅读器阶段完成后的状态（供接手者定位）
 
-最后一次完整验收（`cargo xtask check` 退出码 0）：
+最后一次完整验收（`cargo xtask check` 退出码 0，另行完成 wasm bundle 构建和真实进程验证）：
 
 | 项 | 值 |
 |---|---|
-| 测试 | **313 个**（core 104、reader 47、server 136、web 21、xtask 5），12 个测试目标 |
-| 路由覆盖 | **61 条 Go 路径模式中已实现 45 条**，剩 15 条真实缺口（+1 条为核对脚本的正则噪声） |
+| 测试 | **333 个**（core 107、reader 55 = 46 单元 + 9 集成、server 145 = 143 单元 + 2 集成、web 21、xtask 5） |
+| 路由覆盖 | **61 条 Go 路径模式中已实现 51 条**，剩 9 条真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
-| wasm32 | `revaro-web` 可构建 |
+| wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
+| reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈 |
 | 部署路径 | **未变**：镜像仍构建 Go 服务 + data-plane；Rust 服务并行推进、尚未接管镜像 |
 
-### 剩余 15 条路由（按所需前置条件归类）
+### 剩余 9 条路由（按所需前置条件归类）
 
 | 缺口 | 条数 | 前置条件 |
 |---|---|---|
-| `/files/{id}/book`、`book/assets`、`book/cover`、`book/flow`、`book/flow/chunks`、`book/progress` | 6 | **阅读器 flow 生成器**（`internal/reader/flow`，约 1200 行 Go）。`revaro-reader` 的 `Book` 已按「让 flow 直接消费」设计 |
 | `/files/{id}/thumbnail`、`video`、`video/subtitles`、`media/reanalyze` | 4 | **媒体引擎**：把 `data-plane/` 从独立进程改造为进程内库（probe、缩略图、字幕） |
 | `/files/{id}/extract` | 1 | 同上（libarchive 解压 + 分段状态机） |
 | `/files/batch-download/prepare`、`batch-download/{token}` | 2 | 流式 ZIP；Range/流式基础设施已就绪（见 `serve_file`） |
@@ -255,7 +258,7 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 ### 尚未开始的大块
 
 - **前端功能视图**：外壳、样式层与纯逻辑已落地，但文件浏览器、阅读器、播放器、
-  上传队列、任务中心等视图仍是占位。
+  上传队列、任务中心等视图仍是占位；reader 后端端点已可供视图接入。
 - **删除 Node/npm 与 Go 链**：`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`
   仍在，且 Dockerfile/CI 仍以它们为准。必须等 Rust 服务覆盖全部功能后再切换。
 
@@ -341,8 +344,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 ## 8. 进度日志
 
 
-**已完成的阶段**（截至最后一次验证：`cargo xtask check` 退出码 0，
-共 298 个测试 = core 104 + reader 47 + server 121 + web 21 + xtask 5）
+**已完成的阶段**（当前状态以 §4.7 为准；下面较早条目保留每个阶段的历史验收记录）
 
 | 阶段 | 状态 | 提交 |
 |---|---|---|
@@ -356,10 +358,11 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 3b 文件写操作与回收站 | ✅ | `refactor(rust): 移植文件写操作与回收站` |
 | 3c 文本文档读写 | ✅ | `refactor(rust): 移植文本文档读写端点` |
 | 3d 上传（会话/流式/提交/中止） | ✅ | `refactor(rust): 移植上传（会话、流式写入、幂等提交、中止）` |
+| 5a 阅读器 flow + reader HTTP 端点 | ✅ | 本阶段提交：`revaro-reader::flow`、`reader_routes.rs` |
 | 7a 前端外壳 + 样式层 + 纯逻辑 | ✅ | `refactor(web): 落地样式表层、应用外壳与纯逻辑模块` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
-**实现覆盖率（可复现的度量）**：按**去重后的路径模式**统计
+**历史实现覆盖率记录**：按**去重后的路径模式**统计
 `internal/server/server.go` 的注册路由，并与三个路由模块加 `router.rs` 中的
 路径字面量比对：
 
@@ -378,7 +381,7 @@ Go 路径模式 61 条    已实现 41 条    剩余 20 条（其中 1 条为核
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**尚未开始**：分享链接、任务系统与 SSE、系统状态与 SSE、缩略图与音频封面、
+**在当前阶段之前尚未开始的项目**：分享链接、任务系统与 SSE、系统状态与 SSE、缩略图与音频封面、
 媒体探测与字幕、压缩包解压、阅读器 flow 生成、前端各功能视图、
 删除 Node/npm 与 Go 构建链。详见 §4.5 的剩余工作映射。
 

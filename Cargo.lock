@@ -2228,6 +2228,7 @@ dependencies = [
  "qrcode",
  "rand",
  "revaro-core",
+ "revaro-reader",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2242,6 +2243,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zip",
 ]
 
 [[package]]

@@ -501,8 +501,20 @@ pub mod book {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct SaveProgressRequest {
-        /// Reading position.
-        pub anchor: Anchor,
+        /// Reading position. An empty object clears the saved position.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub anchor: Option<Anchor>,
+    }
+
+    /// Response of `GET /api/files/{id}/book/progress`.
+    ///
+    /// The response deliberately accepts the same empty shape as the write
+    /// request: old installations return `{}` when no usable progress exists.
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Progress {
+        /// Saved reading position, omitted when it is absent or invalid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub anchor: Option<Anchor>,
     }
 
     /// Response of `GET /api/files/{id}/book/flow`.
@@ -626,7 +638,10 @@ pub mod progress {
 
 /// Convenience re-exports of the payload modules.
 pub use archive::Job as ArchiveJob;
-pub use book::{Flow, Info as BookInfo, SaveProgressRequest as SaveBookProgressRequest};
+pub use book::{
+    Flow, Info as BookInfo, Progress as BookProgress,
+    SaveProgressRequest as SaveBookProgressRequest,
+};
 pub use files::{
     BatchDownloadRequest, BatchDownloadTicket, Children, CopyFileRequest, CreateDirectoryRequest,
     CreateDocumentRequest, DocumentContent, FileDetail, PatchFileRequest, Trash,
@@ -659,6 +674,30 @@ mod tests {
         let request: auth::LoginRequest =
             serde_json::from_str(r#"{"username":"a","password":"b"}"#).unwrap();
         assert_eq!(request.second_factor, "");
+    }
+
+    #[test]
+    fn book_progress_allows_an_empty_write_and_omits_an_empty_anchor() {
+        let request: book::SaveProgressRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(request.anchor, None);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({})
+        );
+
+        let response = book::Progress::default();
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn book_progress_write_still_rejects_unknown_members() {
+        let error = serde_json::from_str::<book::SaveProgressRequest>(
+            r#"{"anchor":null,"unexpected":true}"#,
+        );
+        assert!(error.is_err());
     }
 
     #[test]
