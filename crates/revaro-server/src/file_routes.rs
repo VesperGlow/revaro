@@ -34,10 +34,12 @@ use revaro_core::model::{
 };
 use revaro_core::time::Timestamp;
 use rusqlite::{Connection, Row};
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::auth::extract::AuthUser;
 use crate::db::DbError;
 use crate::state::AppState;
+use crate::storage::StorageError;
 
 /// The canonical `files` column list.
 ///
@@ -75,6 +77,8 @@ pub fn routes() -> Router<Arc<AppState>> {
             axum::routing::patch(patch_file).delete(delete_file),
         )
         .route("/files/{id}/copy", axum::routing::post(copy_file))
+        .route("/files/{id}/download", get(download))
+        .route("/files/{id}/preview", get(preview))
         .route("/documents", axum::routing::post(create_document))
         .route(
             "/files/{id}/media/progress",
@@ -1699,6 +1703,253 @@ updated_at = excluded.updated_at",
         .map(Json)
 }
 
+/// Percent-encode a filename for the RFC 5987 `filename*` parameter.
+///
+/// Only unreserved characters survive literally; everything else (spaces
+/// included) becomes `%XX`, which is what makes non-ASCII names work without an
+/// ambiguous header.
+fn encode_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for byte in name.as_bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        if unreserved {
+            out.push(char::from(*byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// A single byte range parsed from a `Range` header.
+enum ByteRange {
+    /// `bytes=a-b`, already clamped to the object size.
+    Span(u64, u64),
+    /// The range is syntactically valid but lies entirely past the end.
+    Unsatisfiable,
+    /// No range, or one we deliberately ignore (multi-range, wrong unit).
+    Ignore,
+}
+
+/// Parse a `Range: bytes=…` header.
+///
+/// Only a single range is honoured. A multi-range request falls back to the full
+/// representation, which RFC 9110 permits and which avoids emitting a multipart
+/// response for a client that can simply re-request.
+fn parse_range(header: Option<&str>, size: u64) -> ByteRange {
+    let Some(value) = header else {
+        return ByteRange::Ignore;
+    };
+    let Some(spec) = value.trim().strip_prefix("bytes=") else {
+        return ByteRange::Ignore;
+    };
+    if spec.contains(',') {
+        return ByteRange::Ignore;
+    }
+    let Some((start, end)) = spec.split_once('-') else {
+        return ByteRange::Ignore;
+    };
+
+    let (start, end) = if start.is_empty() {
+        // A suffix range: the last N bytes.
+        let Ok(length) = end.trim().parse::<u64>() else {
+            return ByteRange::Ignore;
+        };
+        if length == 0 {
+            return ByteRange::Unsatisfiable;
+        }
+        (size.saturating_sub(length), size.saturating_sub(1))
+    } else {
+        let Ok(start) = start.trim().parse::<u64>() else {
+            return ByteRange::Ignore;
+        };
+        let end = if end.trim().is_empty() {
+            size.saturating_sub(1)
+        } else {
+            match end.trim().parse::<u64>() {
+                Ok(end) => end.min(size.saturating_sub(1)),
+                Err(_) => return ByteRange::Ignore,
+            }
+        };
+        (start, end)
+    };
+
+    if size == 0 || start >= size || start > end {
+        return ByteRange::Unsatisfiable;
+    }
+    ByteRange::Span(start, end)
+}
+
+/// `GET /api/files/{id}/download` and `GET /api/files/{id}/preview`.
+///
+/// Implements the subset of `http.ServeContent` the product relies on: a strong
+/// `ETag`, `Accept-Ranges`, single-range `206` responses and `416` for an
+/// unsatisfiable range. `If-Range` is honoured so a client resuming a download
+/// after the file changed re-fetches it whole instead of stitching two versions
+/// together — getting that wrong corrupts resumed downloads silently.
+async fn serve_file(
+    state: Arc<AppState>,
+    id: String,
+    inline: bool,
+    request_headers: http::HeaderMap,
+) -> Result<axum::response::Response, ApiError> {
+    let file = state
+        .db
+        .call_api(move |connection| {
+            let file = lookup_file_any(connection, &id)
+                .map_err(|error| not_found_or(error, "ready file not found"))?;
+            if file.kind != FileKind::File || file.status != FileStatus::Ready {
+                return Err(ApiError::not_found("ready file not found"));
+            }
+            Ok(file)
+        })
+        .await?;
+
+    if inline && !revaro_core::classify::is_previewable(&file) {
+        return Err(ApiError::unsupported_media_type(
+            "preview is not available for this file type",
+        ));
+    }
+
+    let mime =
+        revaro_core::classify::safe_delivery_mime(&revaro_core::classify::response_mime(&file));
+    // An active web format is delivered as opaque bytes, so it must not be
+    // rendered inline even when the caller asked for a preview.
+    let inline = inline && mime != "application/octet-stream";
+    let disposition = if inline { "inline" } else { "attachment" };
+
+    let object = state
+        .store
+        .open_object(&file.object_key)
+        .await
+        .map_err(|error| match error {
+            StorageError::NotFound => ApiError::not_found("ready file not found"),
+            other => {
+                tracing::error!(%other, "object read failed");
+                ApiError::new(502, "object storage read failed")
+            }
+        })?;
+    let size = object.size.max(0) as u64;
+    // A quoted validator, as the product has always sent it.
+    let etag = format!("\"{}\"", object.etag.replace('"', ""));
+
+    // `If-Range` with a non-matching validator means the client's partial copy is
+    // stale, so the range is ignored and the whole file is sent.
+    let range = match request_headers
+        .get(http::header::IF_RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(if_range) if if_range.trim() != etag => ByteRange::Ignore,
+        _ => parse_range(
+            request_headers
+                .get(http::header::RANGE)
+                .and_then(|v| v.to_str().ok()),
+            size,
+        ),
+    };
+
+    // `Body::from_stream` cannot set a length, so it is tracked here and added
+    // below; a `206` must advertise the range's length, not the object's.
+    let mut content_length: Option<u64> = None;
+    let mut response = match range {
+        ByteRange::Unsatisfiable => {
+            let mut response = axum::response::Response::new(axum::body::Body::empty());
+            *response.status_mut() = http::StatusCode::RANGE_NOT_SATISFIABLE;
+            response.headers_mut().insert(
+                http::header::CONTENT_RANGE,
+                format!("bytes */{size}")
+                    .parse()
+                    .expect("valid header value"),
+            );
+            response
+        }
+        ByteRange::Span(start, end) => {
+            let length = end - start + 1;
+            content_length = Some(length);
+            let mut file_handle = object.file;
+            file_handle
+                .seek(std::io::SeekFrom::Start(start))
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, "object seek failed");
+                    ApiError::new(502, "object storage read failed")
+                })?;
+            let stream = tokio_util::io::ReaderStream::new(file_handle.take(length));
+            let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
+            *response.status_mut() = http::StatusCode::PARTIAL_CONTENT;
+            response.headers_mut().insert(
+                http::header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{size}")
+                    .parse()
+                    .expect("valid header value"),
+            );
+            response
+        }
+        ByteRange::Ignore => {
+            content_length = Some(size);
+            let stream = tokio_util::io::ReaderStream::new(object.file);
+            axum::response::Response::new(axum::body::Body::from_stream(stream))
+        }
+    };
+
+    let headers = response.headers_mut();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        mime.parse().unwrap_or_else(|_| {
+            "application/octet-stream"
+                .parse()
+                .expect("valid header value")
+        }),
+    );
+    headers.insert(
+        http::header::CONTENT_DISPOSITION,
+        format!(
+            "{disposition}; filename*=UTF-8''{}",
+            encode_filename(&file.name)
+        )
+        .parse()
+        .map_err(|_| ApiError::internal("could not build the download header"))?,
+    );
+    headers.insert(
+        http::header::ETAG,
+        etag.parse().expect("quoted etag is a header value"),
+    );
+    headers.insert(
+        http::header::ACCEPT_RANGES,
+        "bytes".parse().expect("valid header value"),
+    );
+    if let Some(length) = content_length {
+        headers.insert(
+            http::header::CONTENT_LENGTH,
+            length
+                .to_string()
+                .parse()
+                .expect("a length is a valid header value"),
+        );
+    }
+    Ok(response)
+}
+
+/// `GET /api/files/{id}/download`
+async fn download(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+    headers: http::HeaderMap,
+) -> Result<axum::response::Response, ApiError> {
+    serve_file(state, id, false, headers).await
+}
+
+/// `GET /api/files/{id}/preview`
+async fn preview(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+    headers: http::HeaderMap,
+) -> Result<axum::response::Response, ApiError> {
+    serve_file(state, id, true, headers).await
+}
+
 /// `POST /api/documents` — create a new text document.
 ///
 /// The bytes are written first and the row second, so a failed insert can
@@ -2832,6 +3083,147 @@ INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec
         assert!(
             !video,
             "a video must not advertise an audio cover, matching Go"
+        );
+    }
+
+    /// A raw request, for endpoints whose body is bytes rather than JSON.
+    async fn raw(
+        state: &Arc<AppState>,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, http::HeaderMap, Vec<u8>) {
+        let mut builder = Request::builder().uri(uri).header(
+            "cookie",
+            format!("{}={}", crate::auth::SESSION_COOKIE, token(state).await),
+        );
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let response = crate::router::build(state.clone())
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        (status, headers, bytes)
+    }
+
+    #[tokio::test]
+    async fn download_serves_ranges_and_preview_refuses_opaque_types() {
+        let state = state().await;
+        // Two stored objects with very different delivery rules.
+        state.store.put("blobs/doc1", b"0123456789").await.unwrap();
+        state
+            .store
+            .put("blobs/img1", b"\xff\xd8\xff\xe0jpeg")
+            .await
+            .unwrap();
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+VALUES('doc1','00000000-0000-0000-0000-000000000000','a b&c.bin','file','blobs/doc1',10,'application/octet-stream','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('img1','00000000-0000-0000-0000-000000000000','photo.jpg','file','blobs/img1',6,'image/jpeg','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+
+        // Whole file.
+        let (status, headers, body) = raw(&state, "/api/files/doc1/download", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"0123456789");
+        assert_eq!(headers.get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(headers.get("content-length").unwrap(), "10");
+        assert!(
+            headers
+                .get("etag")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with('"')
+        );
+        // The disposition encodes spaces and reserved characters.
+        assert_eq!(
+            headers.get("content-disposition").unwrap(),
+            "attachment; filename*=UTF-8''a%20b%26c.bin"
+        );
+
+        // A byte range is a 206 carrying only that slice.
+        let (status, headers, body) = raw(
+            &state,
+            "/api/files/doc1/download",
+            &[("range", "bytes=2-5")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body, b"2345");
+        assert_eq!(headers.get("content-range").unwrap(), "bytes 2-5/10");
+        assert_eq!(headers.get("content-length").unwrap(), "4");
+
+        // An open-ended range runs to the end.
+        let (status, _, body) =
+            raw(&state, "/api/files/doc1/download", &[("range", "bytes=8-")]).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body, b"89");
+
+        // A suffix range takes the last N bytes.
+        let (status, _, body) =
+            raw(&state, "/api/files/doc1/download", &[("range", "bytes=-3")]).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body, b"789");
+
+        // Past the end is unsatisfiable, and says so with the object's size.
+        let (status, headers, _) = raw(
+            &state,
+            "/api/files/doc1/download",
+            &[("range", "bytes=99-200")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(headers.get("content-range").unwrap(), "bytes */10");
+
+        // A multi-range request falls back to the whole representation rather
+        // than emitting multipart.
+        let (status, _, body) = raw(
+            &state,
+            "/api/files/doc1/download",
+            &[("range", "bytes=0-1,4-5")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"0123456789");
+
+        // A stale If-Range means the client's partial copy is out of date, so the
+        // range must be ignored instead of stitched onto new bytes.
+        let (status, _, body) = raw(
+            &state,
+            "/api/files/doc1/download",
+            &[("range", "bytes=2-5"), ("if-range", "\"stale\"")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"0123456789");
+
+        // Preview is inline for a renderable type...
+        let (status, headers, _) = raw(&state, "/api/files/img1/preview", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            headers
+                .get("content-disposition")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("inline")
+        );
+
+        // ...and refused for one the browser must not render.
+        let (status, body) = call(&state, "/api/files/doc1/preview").await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            body["error"]["message"],
+            "preview is not available for this file type"
         );
     }
 
