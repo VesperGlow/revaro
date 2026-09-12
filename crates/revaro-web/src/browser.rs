@@ -84,12 +84,12 @@ pub fn local_storage_remove(key: &str) {
 /// needs. The caller owns the returned handle and should release it through
 /// [`OwnedListener::release`] in an `on_cleanup`.
 pub fn on_keydown(callback: impl Fn(web_sys::KeyboardEvent) + 'static) -> OwnedListener {
-    OwnedListener(window_event_listener(ev::keydown, callback))
+    OwnedListener(Some(window_event_listener(ev::keydown, callback)))
 }
 
 /// Listen for a pointer press anywhere in the window.
 pub fn on_pointerdown(callback: impl Fn(web_sys::PointerEvent) + 'static) -> OwnedListener {
-    OwnedListener(window_event_listener(ev::pointerdown, callback))
+    OwnedListener(Some(window_event_listener(ev::pointerdown, callback)))
 }
 
 /// A document/window listener that unregisters when dropped or released.

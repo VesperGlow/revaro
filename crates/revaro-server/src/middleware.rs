@@ -22,9 +22,10 @@ use crate::state::AppState;
 
 /// Content-Security-Policy applied to every response.
 ///
-/// `script-src 'self'` is what makes the wasm bundle safe: there is no
-/// `unsafe-inline` and no third-party origin.
-pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
+/// `script-src 'self' 'wasm-unsafe-eval'` permits the browser's WebAssembly
+/// compiler while keeping inline JavaScript, string-eval and third-party
+/// origins disabled.
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
 img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; \
 connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; \
 form-action 'self'; frame-src 'none'; frame-ancestors 'none'";
@@ -178,8 +179,8 @@ mod tests {
     fn api_responses_are_never_cached() {
         // The policy string is part of the security contract; a typo here would
         // silently weaken the application.
-        assert!(CONTENT_SECURITY_POLICY.contains("script-src 'self'"));
-        assert!(!CONTENT_SECURITY_POLICY.contains("unsafe-eval"));
+        assert!(CONTENT_SECURITY_POLICY.contains("script-src 'self' 'wasm-unsafe-eval'"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("'unsafe-eval'"));
         assert!(CONTENT_SECURITY_POLICY.contains("object-src 'none'"));
         assert!(CONTENT_SECURITY_POLICY.contains("frame-ancestors 'none'"));
     }

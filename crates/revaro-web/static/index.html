@@ -15,14 +15,11 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <!-- Vue mounted here and the ported `responsive.css` styles `#app`
-         (`min-width/max-width/min-height`), so the mount id is part of the DOM
-         contract and is kept. -->
+    <!-- Leptos mounts the Rust wasm application here and the ported
+         `responsive.css` styles `#app` (`min-width/max-width/min-height`), so
+         the mount id is part of the DOM contract and is kept. -->
     <div id="app"></div>
-    <script type="module">
-      import init from '/revaro_web.js'
-      init()
-    </script>
+    <script type="module" src="/revaro_boot.js"></script>
     <noscript>Revaro 需要启用 JavaScript。</noscript>
   </body>
 </html>

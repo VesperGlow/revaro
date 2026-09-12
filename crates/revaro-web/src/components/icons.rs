@@ -11,6 +11,8 @@
 //! Each helper returns `impl IntoView` rather than being a component: there is
 //! no state to own and no props to thread.
 
+#![allow(dead_code)]
+
 use leptos::prelude::*;
 
 /// Lucide `activity` — the task-centre trigger.
@@ -107,6 +109,31 @@ pub fn folder_closed() -> impl IntoView {
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
             <path d="M2 10h20"></path>
+        </svg>
+    }
+}
+
+/// Lucide `file-text` — a generic text document.
+pub fn file_text() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
+            <path d="M14 2v6h6"></path>
+            <path d="M8 13h8"></path>
+            <path d="M8 17h8"></path>
+            <path d="M8 9h2"></path>
+        </svg>
+    }
+}
+
+/// Lucide `file` — a fallback for files without a specialised type.
+pub fn file() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
+            <path d="M14 2v6h6"></path>
         </svg>
     }
 }

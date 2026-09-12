@@ -19,6 +19,12 @@
 mod app;
 
 #[cfg(target_arch = "wasm32")]
+mod api;
+
+#[cfg(target_arch = "wasm32")]
+mod components;
+
+#[cfg(target_arch = "wasm32")]
 pub use app::*;
 
 /// Pure, DOM-free client logic.

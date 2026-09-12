@@ -3,10 +3,8 @@
 //! The Vue app funnelled every request through `web/src/api.ts`, which merged a
 //! caller `AbortSignal` with a 60 s timeout, defaulted `Content-Type` to JSON and
 //! unwrapped the `{error:{status,code,message}}` envelope into an `ApiError`.
-//! This module is the same contract, narrowed to the two endpoints required to
-//! decide "login page or app shell": `GET /api/auth/me` and
-//! `POST /api/auth/login` (plus `POST /api/auth/logout`, so the account button
-//! is not a dead end).
+//! This module is the same contract for the authenticated shell: session and
+//! login, logout, folder metadata/children and the read-only trash listing.
 //!
 //! The request/response bodies are the shared types from
 //! [`revaro_core::api::auth`], so a field rename on the server breaks this build
@@ -18,7 +16,33 @@
 
 use gloo_net::http::Request;
 use revaro_core::api::auth::{LoginRequest, Session};
+use revaro_core::api::files::{Children, FileDetail, Trash};
 use revaro_core::{ErrorCode, ErrorEnvelope};
+
+/// A failed request to an authenticated JSON endpoint.
+///
+/// Keeping the status and optional shared error code alongside the message
+/// lets the view distinguish an expired session from a server-side failure
+/// without matching translated text. The browser only receives the server's
+/// envelope; transport and malformed-response failures are represented with
+/// status `0`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestError {
+    /// HTTP status, or `0` when no usable HTTP response arrived.
+    pub status: u16,
+    /// Machine-readable code from the shared error envelope, when present.
+    pub code: Option<ErrorCode>,
+    /// Human-readable failure detail.
+    pub message: String,
+}
+
+impl RequestError {
+    /// True when the browser should return to the login screen.
+    #[must_use]
+    pub fn is_unauthorized(&self) -> bool {
+        self.status == 401
+    }
+}
 
 /// A rejected login, decoded from the shared error envelope when possible.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +86,21 @@ pub async fn fetch_session() -> Option<Session> {
     response.json::<Session>().await.ok()
 }
 
+/// Fetch a directory's metadata and breadcrumb trail.
+pub async fn fetch_file(id: &str) -> Result<FileDetail, RequestError> {
+    get_json(&format!("/api/files/{id}")).await
+}
+
+/// Fetch the live children and aggregate counters of a directory.
+pub async fn fetch_children(id: &str) -> Result<Children, RequestError> {
+    get_json(&format!("/api/files/{id}/children")).await
+}
+
+/// Fetch the top-level entries in the trash.
+pub async fn fetch_trash() -> Result<Trash, RequestError> {
+    get_json("/api/trash").await
+}
+
 /// Sign in, mapping a non-2xx answer to a decoded [`LoginError`].
 pub async fn login(request: &LoginRequest) -> Result<Session, LoginError> {
     let sent = Request::post("/api/auth/login")
@@ -101,6 +140,44 @@ pub async fn logout() {
 /// A transport failure (offline, DNS, malformed body) carries no HTTP status.
 fn transport(message: String) -> LoginError {
     LoginError {
+        status: 0,
+        code: None,
+        message,
+    }
+}
+
+/// Fetch and decode a JSON endpoint using the shared error envelope.
+async fn get_json<T>(path: &str) -> Result<T, RequestError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let response = Request::get(path)
+        .send()
+        .await
+        .map_err(|error| request_transport(error.to_string()))?;
+    if response.ok() {
+        return response
+            .json::<T>()
+            .await
+            .map_err(|error| request_transport(error.to_string()));
+    }
+    let status = response.status();
+    match response.json::<ErrorEnvelope>().await {
+        Ok(envelope) => Err(RequestError {
+            status,
+            code: envelope.error.code,
+            message: envelope.error.message,
+        }),
+        Err(_) => Err(RequestError {
+            status,
+            code: None,
+            message: format!("请求失败 ({status})"),
+        }),
+    }
+}
+
+fn request_transport(message: String) -> RequestError {
+    RequestError {
         status: 0,
         code: None,
         message,

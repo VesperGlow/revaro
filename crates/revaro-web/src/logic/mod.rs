@@ -12,5 +12,6 @@
 
 pub mod format;
 pub mod image_geometry;
+pub mod routing;
 pub mod stylesheet;
 pub mod task_status;

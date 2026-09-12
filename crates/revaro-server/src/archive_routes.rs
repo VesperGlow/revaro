@@ -1716,7 +1716,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         drop(permit);
-        for _ in 0..50 {
+        // The full workspace runs this beside media and reader integration
+        // tests. Keep the durable-state poll long enough that scheduler and
+        // SQLite pool contention cannot make this lifecycle assertion flaky.
+        for _ in 0..250 {
             let cancelled: bool = state
                 .db
                 .call({

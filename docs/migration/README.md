@@ -77,8 +77,8 @@ xtask/                      # 构建编排（cargo xtask ...）
 * `revaro-server` 骨架：配置（含 `TRUSTED_PROXIES` CIDR）、错误→响应映射、
   安全响应头、Origin 守卫、SPA 静态服务、`/healthz`、`/readyz`、
   `/api/*` JSON 404。
-* `revaro-web` 骨架：Leptos CSR 外壳，调用 `/healthz` 并用共享的
-  `revaro_core::api::Health` 解析响应。
+* `revaro-web` 骨架：Leptos CSR wasm 入口、同源静态 loader 与严格 CSP 兼容的
+  客户端挂载点；后续阶段在此基础上接入真实登录和文件浏览视图。
 * `data-plane/` 暂以 `workspace.exclude` 保持独立，Go 后端继续可用。
 
 验收：`cargo test`、`cargo clippy -D warnings`、`cargo fmt --check`、
@@ -111,7 +111,7 @@ xtask/                      # 构建编排（cargo xtask ...）
 后端 flow 生成、对象持久化和 reader HTTP 端点已在阶段 5a 完成；前端阅读器
 视图仍属于阶段 7，尚未迁移。
 
-### 🚧 阶段 6 — 媒体与压缩包（进行中）
+### ✅ 阶段 6 — 媒体与压缩包（后端已完成）
 阶段 6a 已完成 `revaro-media` 的进程内媒体能力（probe、视频抽帧、音频封面、
 图片/EPUB 缩略图、外置与内嵌字幕），并接入 `revaro-server` 的媒体端点（含
 重新接入的音频信息端点）。
@@ -126,6 +126,11 @@ xtask/                      # 构建编排（cargo xtask ...）
 ### 阶段 7 — 前端
 Leptos 按模块渐进替换 Vue：外壳/登录 → 文件浏览 → 上传与任务中心 →
 媒体播放 → 阅读器（最高风险项）。CSS 约 98.5% 可原样复用。
+
+阶段 7b 已完成登录/会话恢复、认证后的文件夹元数据与 children 加载、面包屑
+导航、网格/列表切换、文件预览/下载入口和回收站只读视图。请求带序列号，旧的
+目录响应不会覆盖较新的导航；过期会话会回到登录页。上传、编辑、任务中心、
+媒体专用查看器和阅读器仍按后续切片接入。
 
 ### 阶段 8 — 收尾
 删除 `web/`（npm 链）、`internal/`、`cmd/`、`go.mod`；重写 Dockerfile 与
@@ -174,16 +179,16 @@ CI；更新 README 与 docs。
 | ~~回收站列表/还原/清空/彻底删除~~ | `server_files.go` 540-760 | ✅ 已完成：`file_routes.rs` |
 | ~~文档读写（≤1 MiB）~~ | `server_files.go` 160-370 | ✅ 已完成：并入 `file_routes.rs`（`/files/{id}/content`） |
 | ~~上传（单请求 + 分片 + 幂等完成）~~ | `server_uploads.go`、`upload_content.go` | ✅ 已完成：`upload_routes.rs`（分片提交暂不写 `content_hash`） |
-| 上传/下载的流式与 Range | `server_stream_share.go` | `stream.rs` |
+| ~~上传/下载的流式与 Range~~ | `server_stream_share.go` | ✅ 已完成：`file_routes.rs`（下载/预览、Range）与上传路由 |
 | ~~批量下载 ZIP~~ | `download_batch.go` | ✅ 已完成：`batch_download.rs` |
-| 分享链接 | `server_stream_share.go` | `share_routes.rs` |
-| 任务系统 + SSE 事件 | `tasks.go`、`task_manager.go`、`jobs.go` | `file_routes.rs` 已覆盖任务列表/取消/重试/删除与 `/events`；归档任务输入与生命周期由 `archive_routes.rs` 完成 |
+| ~~分享链接~~ | `server_stream_share.go` | ✅ 已完成：`file_routes.rs`（文件分享与公开 `/s/{token}`） |
+| ~~任务系统 + SSE 事件~~ | `tasks.go`、`task_manager.go`、`jobs.go` | ✅ 已完成：`file_routes.rs` 覆盖任务列表/取消/重试/删除与 `/events`；归档任务输入与生命周期由 `archive_routes.rs` 完成 |
 | ~~系统状态 + SSE~~ | `system_status.go` | ✅ 已完成：`status_routes.rs` |
 | ~~缩略图/音频封面~~ | `thumb.go` | ✅ 已完成：`media_routes.rs` + `revaro-media` |
 | ~~媒体探测/字幕~~ | `media_metadata.go`、`video_media.go` | ✅ 已完成：`media_routes.rs` + `revaro-media` |
 | ~~压缩包解压~~ | `archive.go` | ✅ 已完成：`revaro-media` + `archive_routes.rs`（`/files/{id}/extract`、归档任务输入与恢复） |
 | ~~阅读器 flow + reader 路由~~ | `internal/reader/flow/`、`internal/server/book.go`、`reader_flow.go` | ✅ 已完成：`revaro-reader::flow`、`reader_routes.rs` |
-| 前端各功能视图 | `web/src/components/` | `crates/revaro-web/src/components/` |
+| 前端各功能视图 | `web/src/components/` | 进行中：`crates/revaro-web/src/components/` 已完成登录、文件浏览和回收站只读视图 |
 | 删除 Node/npm 与 Go 链 | `web/`、`internal/`、`cmd/`、`go.mod`、Dockerfile、CI | 最后一步 |
 
 ### 代码约定（新模块必须遵守）
@@ -246,10 +251,11 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 | 项 | 值 |
 |---|---|
-| 测试 | **379 个**（core 109、media 21、reader 55 = 46 单元 + 9 集成、server 168 = 166 单元 + 2 集成、web 21、xtask 5） |
+| 测试 | **382 个**（core 109、media 21、reader 55 = 46 单元 + 9 集成、server 168 = 166 单元 + 2 集成、web 24、xtask 5） |
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
+| 前端行为 | Chromium 真实验证登录、认证后根目录、目录导航、面包屑返回、回收站，以及 `revaro_boot.js`、品牌图标资源均为 200 |
 | reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈 |
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
@@ -264,8 +270,8 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 ### 尚未开始的大块
 
-- **前端功能视图**：外壳、样式层与纯逻辑已落地，但文件浏览器、阅读器、播放器、
-  上传队列、任务中心等视图仍是占位；reader 后端端点已可供视图接入。
+- **前端功能视图**：登录、会话恢复、文件浏览、网格/列表切换和回收站只读视图已落地；
+  上传队列、文件操作、任务中心、媒体查看器和 reader 视图仍待接入，后端端点已可用。
 - **删除 Node/npm 与 Go 链**：`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`
   仍在，且 Dockerfile/CI 仍以它们为准。必须等 Rust 服务覆盖全部功能后再切换。
 
@@ -371,6 +377,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 6c Rust 批量下载 ZIP | ✅ | `feat(download): 迁移批量 ZIP 流式下载` |
 | 6d 系统状态 SSE | ✅ | `feat(status): 迁移系统状态快照与 SSE` |
 | 7a 前端外壳 + 样式层 + 纯逻辑 | ✅ | `refactor(web): 落地样式表层、应用外壳与纯逻辑模块` |
+| 7b 登录 + 文件浏览器 + 回收站只读视图 | ✅ | `feat(web): 接入认证文件浏览器视图` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -393,7 +400,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**从阶段 6d 继续的项目**：前端各功能视图、
+**从阶段 7b 继续的项目**：上传/文件操作、任务中心、媒体查看器、reader 前端视图、
 删除 Node/npm 与 Go 构建链。详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
@@ -465,9 +472,15 @@ children 是**文件在目录之前**（`ORDER BY kind DESC`），面包屑包�
   **旧 Cookie 随即 401、旧口令 401、新口令 200**——「改凭据即清空全部会话」
   这一安全不变量在真实进程中成立
 
-阶段 7（外壳）验收：15 个样式表按权威级联顺序聚合，`logic::stylesheet`
+阶段 7a 验收：15 个样式表按权威级联顺序聚合，`logic::stylesheet`
 的测试固定该顺序；应用外壳与登录页落地；纯逻辑模块 21 个测试生效并通过
 （此前因模块未声明而从未编译）。
+
+阶段 7b 验收：`revaro-web` 使用共享认证、文件和回收站 DTO，目录请求带序列号
+避免过期响应覆盖当前视图；新增路由恢复规则 3 个单元测试。真实 Chromium
+验证通过登录、根目录加载、创建目录后刷新、目录进入、面包屑返回和回收站；严格
+`script-src 'self' 'wasm-unsafe-eval'` 下 wasm 正常挂载，loader、logo 和 favicon
+均由 Rust bundle 静态目录返回 200。`cargo xtask check` 共 382 个测试通过。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
