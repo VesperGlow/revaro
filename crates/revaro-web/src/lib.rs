@@ -22,6 +22,9 @@ mod app;
 mod api;
 
 #[cfg(target_arch = "wasm32")]
+mod browser;
+
+#[cfg(target_arch = "wasm32")]
 mod components;
 
 #[cfg(target_arch = "wasm32")]

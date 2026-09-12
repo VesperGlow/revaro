@@ -112,6 +112,21 @@ pub fn task_status_label(status: TaskStatus, kind: &str, phase: &str, error: &st
     }
 }
 
+/// Convert a server progress value into a safe percentage for CSS and text.
+///
+/// The server normally emits a finite value in the inclusive `0..=100` range,
+/// but a browser must still render a malformed or partially migrated response
+/// without producing invalid CSS. Non-finite values are treated as unknown
+/// progress and numeric values are rounded after clamping.
+#[must_use]
+pub fn task_progress_percent(progress: f64) -> u8 {
+    if progress.is_finite() {
+        progress.clamp(0.0, 100.0).round() as u8
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +225,15 @@ mod tests {
             task_status_label(TaskStatus::Failed, "upload", "", ""),
             "失败"
         );
+    }
+
+    #[test]
+    fn sanitizes_progress_before_rendering() {
+        assert_eq!(task_progress_percent(f64::NAN), 0);
+        assert_eq!(task_progress_percent(f64::NEG_INFINITY), 0);
+        assert_eq!(task_progress_percent(f64::INFINITY), 0);
+        assert_eq!(task_progress_percent(-10.0), 0);
+        assert_eq!(task_progress_percent(12.5), 13);
+        assert_eq!(task_progress_percent(150.0), 100);
     }
 }

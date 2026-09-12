@@ -10,6 +10,7 @@ mod dialogs;
 mod file_browser;
 mod login;
 mod selection_toolbar;
+mod tasks;
 mod uploads;
 
 pub use file_browser::FileBrowser;

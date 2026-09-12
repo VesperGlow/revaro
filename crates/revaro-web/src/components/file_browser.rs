@@ -22,6 +22,7 @@ use crate::logic::routing::{folder_id, folder_url};
 use super::dialogs::ActionDialog;
 use super::icons;
 use super::selection_toolbar::SelectionToolbar;
+use super::tasks::{TaskCenter, TaskController};
 use super::uploads::{UploadController, UploadSurface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +200,18 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
         upload_feedback,
         on_logout.clone(),
     );
+
+    let task_refresh = {
+        let current_id = current_id;
+        let trash_mode = trash_mode;
+        let load_folder = load_folder.clone();
+        Callback::new(move |(): ()| {
+            if !trash_mode.get_untracked() {
+                load_folder.run(current_id.get_untracked());
+            }
+        })
+    };
+    let task_center = TaskController::new(on_logout.clone(), task_refresh, upload_feedback);
     let uploads_for_cleanup = leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
     on_cleanup(move || uploads_for_cleanup.dispose());
 
@@ -495,6 +508,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
     let shell_upload_leave = uploads_for_view.clone();
     let shell_upload_drop = uploads_for_view.clone();
     let upload_surface = uploads_for_view.clone();
+    let task_center_for_view = leptos::__reexports::send_wrapper::SendWrapper::new(task_center);
 
     view! {
         <div
@@ -517,6 +531,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                     </button>
                 </div>
                 <div class="top-actions">
+                    <TaskCenter controller=task_center_for_view />
                     <span class="connection" aria-label="服务已连接">
                         <i></i>
                         "服务已连接"

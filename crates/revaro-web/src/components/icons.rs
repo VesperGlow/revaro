@@ -50,6 +50,39 @@ pub fn trash() -> impl IntoView {
     }
 }
 
+/// Lucide `square-x` — cancel a background task.
+pub fn close_square() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+            <path d="m9 9 6 6"></path>
+            <path d="m15 9-6 6"></path>
+        </svg>
+    }
+}
+
+/// Lucide `key-round` — supply an archive password.
+pub fn key_round() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777Zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+        </svg>
+    }
+}
+
+/// Lucide `rotate-ccw` — retry a failed background task.
+pub fn rotate_ccw() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path>
+            <path d="M3 3v5h5"></path>
+        </svg>
+    }
+}
+
 /// Lucide `book-open` — the 书架 category.
 pub fn book_open() -> impl IntoView {
     view! {

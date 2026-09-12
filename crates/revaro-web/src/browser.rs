@@ -21,6 +21,7 @@ use web_sys::MediaQueryListEvent;
 /// kept alive for the page's lifetime, matching the Vue components'
 /// `onMounted`/`onBeforeUnmount` pair; the shell never unmounts, so the closure
 /// is intentionally forgotten instead of stored.
+#[allow(dead_code)]
 pub fn media_query_signal(query: &str) -> RwSignal<bool> {
     let signal = RwSignal::new(media_query_matches(query));
     let Some(window) = web_sys::window() else {
@@ -29,9 +30,10 @@ pub fn media_query_signal(query: &str) -> RwSignal<bool> {
     let Ok(Some(list)) = window.match_media(query) else {
         return signal;
     };
-    let listener = Closure::<dyn FnMut(MediaQueryListEvent)>::new(move |event: MediaQueryListEvent| {
-        signal.set(event.matches());
-    });
+    let listener =
+        Closure::<dyn FnMut(MediaQueryListEvent)>::new(move |event: MediaQueryListEvent| {
+            signal.set(event.matches());
+        });
     let _ = list.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
     listener.forget();
     signal
@@ -39,6 +41,7 @@ pub fn media_query_signal(query: &str) -> RwSignal<bool> {
 
 /// One-shot `matchMedia(query).matches`, false when the API is unavailable.
 #[must_use]
+#[allow(dead_code)]
 pub fn media_query_matches(query: &str) -> bool {
     web_sys::window()
         .and_then(|window| window.match_media(query).ok().flatten())
@@ -51,6 +54,7 @@ pub fn media_query_matches(query: &str) -> bool {
 /// `try/catch` for the same reason, and a missing preference must never break
 /// startup.
 #[must_use]
+#[allow(dead_code)]
 pub fn local_storage_get(key: &str) -> Option<String> {
     web_sys::window()?
         .local_storage()
@@ -62,16 +66,20 @@ pub fn local_storage_get(key: &str) -> Option<String> {
 }
 
 /// Write a `localStorage` value, ignoring a throwing storage.
+#[allow(dead_code)]
 pub fn local_storage_set(key: &str, value: &str) {
-    if let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    if let Some(storage) =
+        web_sys::window().and_then(|window| window.local_storage().ok().flatten())
     {
         let _ = storage.set_item(key, value);
     }
 }
 
 /// Remove a `localStorage` value, ignoring a throwing storage.
+#[allow(dead_code)]
 pub fn local_storage_remove(key: &str) {
-    if let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    if let Some(storage) =
+        web_sys::window().and_then(|window| window.local_storage().ok().flatten())
     {
         let _ = storage.remove_item(key);
     }

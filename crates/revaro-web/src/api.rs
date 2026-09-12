@@ -22,6 +22,7 @@ use revaro_core::api::auth::{LoginRequest, Session};
 use revaro_core::api::files::{
     Children, CreateDirectoryRequest, FileDetail, PatchFileRequest, Trash,
 };
+use revaro_core::api::tasks::{TaskInputRequest, TaskList};
 use revaro_core::api::uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
@@ -108,6 +109,43 @@ pub async fn fetch_children(id: &str) -> Result<Children, RequestError> {
 /// Fetch the top-level entries in the trash.
 pub async fn fetch_trash() -> Result<Trash, RequestError> {
     get_json("/api/trash").await
+}
+
+/// Fetch the durable tasks shown by the task centre.
+pub async fn fetch_tasks() -> Result<TaskList, RequestError> {
+    get_json("/api/tasks").await
+}
+
+/// Ask a running or waiting task to stop.
+pub async fn cancel_task(id: &str) -> Result<(), RequestError> {
+    let request = Request::post(&format!("/api/tasks/{id}/cancel"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Retry a failed task on the server's next worker pass.
+pub async fn retry_task(id: &str) -> Result<(), RequestError> {
+    let request = Request::post(&format!("/api/tasks/{id}/retry"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Supply input to a task waiting for it, currently an archive password.
+pub async fn submit_task_input(id: &str, request: &TaskInputRequest) -> Result<(), RequestError> {
+    let request = Request::post(&format!("/api/tasks/{id}/input"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Remove one terminal task notification from the durable task history.
+pub async fn delete_task(id: &str) -> Result<(), RequestError> {
+    let request = Request::delete(&format!("/api/tasks/{id}"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
 }
 
 /// Start or resume a browser upload session.
