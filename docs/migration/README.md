@@ -229,6 +229,45 @@ data-plane，Rust 服务是并行推进的新实现，不参与镜像。等到 R
 user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 本地等价命令（cargo build/test）间接验证。
 
+## 4.7 本轮结束时的状态（供接手者定位）
+
+最后一次完整验收（`cargo xtask check` 退出码 0）：
+
+| 项 | 值 |
+|---|---|
+| 测试 | **313 个**（core 104、reader 47、server 136、web 21、xtask 5），12 个测试目标 |
+| 路由覆盖 | **61 条 Go 路径模式中已实现 45 条**，剩 15 条真实缺口（+1 条为核对脚本的正则噪声） |
+| fmt / clippy | 全绿（clippy 带 `-D warnings`） |
+| wasm32 | `revaro-web` 可构建 |
+| 部署路径 | **未变**：镜像仍构建 Go 服务 + data-plane；Rust 服务并行推进、尚未接管镜像 |
+
+### 剩余 15 条路由（按所需前置条件归类）
+
+| 缺口 | 条数 | 前置条件 |
+|---|---|---|
+| `/files/{id}/book`、`book/assets`、`book/cover`、`book/flow`、`book/flow/chunks`、`book/progress` | 6 | **阅读器 flow 生成器**（`internal/reader/flow`，约 1200 行 Go）。`revaro-reader` 的 `Book` 已按「让 flow 直接消费」设计 |
+| `/files/{id}/thumbnail`、`video`、`video/subtitles`、`media/reanalyze` | 4 | **媒体引擎**：把 `data-plane/` 从独立进程改造为进程内库（probe、缩略图、字幕） |
+| `/files/{id}/extract` | 1 | 同上（libarchive 解压 + 分段状态机） |
+| `/files/batch-download/prepare`、`batch-download/{token}` | 2 | 流式 ZIP；Range/流式基础设施已就绪（见 `serve_file`） |
+| `/tasks/{id}/input` | 1 | 依赖压缩包任务；archive 未移植前无可驱动对象 |
+| `/system/status/stream` | 1 | 需要一个 15 秒刷新的状态快照与订阅广播；`JobBus` 的形态可直接复用 |
+
+### 尚未开始的大块
+
+- **前端功能视图**：外壳、样式层与纯逻辑已落地，但文件浏览器、阅读器、播放器、
+  上传队列、任务中心等视图仍是占位。
+- **删除 Node/npm 与 Go 链**：`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`
+  仍在，且 Dockerfile/CI 仍以它们为准。必须等 Rust 服务覆盖全部功能后再切换。
+
+### 一条值得记住的框架差异（已由测试发现）
+
+**Axum 的中间件会覆盖处理器设置的响应头，与 Go 相反。** Go 的 `securityHeaders`
+包裹在最外层，但处理器最后执行、其设置的头生效；Axum 的 `from_fn` 在
+`next.run()` **之后**才修改响应，因此中间件反而是最后写入者。这曾导致公开分享
+响应的 `Referrer-Policy: no-referrer` 与 `CSP: sandbox` 被全局值静默覆盖——
+沙箱与防 Referer 外泄同时失效。现 `security_headers` 一律「仅在缺失时写入」。
+任何后续新增的、需要按响应调整安全头的端点都要注意这一点。
+
 ## 5. 构建与检查
 
 ```sh
