@@ -12,6 +12,7 @@ use revaro_server::config::Config;
 use revaro_server::db::Database;
 use revaro_server::router;
 use revaro_server::state::AppState;
+use revaro_server::storage::LocalStore;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -48,7 +49,20 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let state = AppState::new(config.clone(), database);
+    let store = match LocalStore::open(config.objects_dir()).await {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!(%error, "local object storage startup failed");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = store.ping().await {
+        tracing::error!(%error, "local object storage check failed");
+        return ExitCode::FAILURE;
+    }
+    tracing::info!(path = %store.root().display(), "local object storage ready");
+
+    let state = AppState::new(config.clone(), database, store);
     let app = router::build(state);
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,

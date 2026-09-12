@@ -58,6 +58,22 @@ impl Timestamp {
         }
     }
 
+    /// Convert a filesystem or wall-clock timestamp.
+    ///
+    /// Used wherever the object store reports a modification time, so the
+    /// server and the reader describe the same instant identically.
+    #[must_use]
+    pub fn from_system_time(value: std::time::SystemTime) -> Self {
+        if let Ok(delta) = value.duration_since(std::time::UNIX_EPOCH) {
+            Self(DateTime::<Utc>::from(std::time::UNIX_EPOCH + delta))
+        } else if let Ok(delta) = std::time::UNIX_EPOCH.duration_since(value) {
+            Self(DateTime::<Utc>::from(std::time::UNIX_EPOCH - delta))
+        } else {
+            // Only reachable on platforms that cannot represent the difference.
+            Self::epoch()
+        }
+    }
+
     /// Milliseconds since the Unix epoch.
     #[must_use]
     pub fn unix_millis(&self) -> i64 {
@@ -274,6 +290,26 @@ mod tests {
         assert!(whole < fraction);
         // ...but the text disagrees, which is exactly the caveat.
         assert!(whole.to_rfc3339() > fraction.to_rfc3339());
+    }
+
+    #[test]
+    fn converts_system_time_on_both_sides_of_the_epoch() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let after = UNIX_EPOCH + Duration::new(1_714_982_889, 500_000_000);
+        assert_eq!(
+            Timestamp::from_system_time(after).to_rfc3339(),
+            "2024-05-06T08:08:09.5Z"
+        );
+
+        let before = UNIX_EPOCH - Duration::new(1, 500_000_000);
+        let converted = Timestamp::from_system_time(before);
+        // 1.5 seconds before the epoch, expressed without losing the fraction.
+        assert_eq!(converted.unix_millis(), -1500);
+        assert_eq!(
+            Timestamp::from_system_time(UNIX_EPOCH).to_rfc3339(),
+            "1970-01-01T00:00:00Z"
+        );
     }
 
     #[test]

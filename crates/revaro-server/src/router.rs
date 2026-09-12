@@ -85,22 +85,33 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::db::Database;
+    use crate::storage::LocalStore;
     use axum::body::Body;
     use http::{Request, StatusCode};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
-    /// Shared state for router tests: in-memory database, no web bundle.
-    pub fn test_state() -> Arc<AppState> {
+    /// Shared state for router tests: in-memory database, a scratch object
+    /// store, and no web bundle.
+    pub async fn test_state() -> Arc<AppState> {
         let config = Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
             _ => None,
         })
         .expect("test configuration is valid");
+        let store_root = std::env::temp_dir().join(format!(
+            "revaro-router-store-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let store = LocalStore::open(&store_root)
+            .await
+            .expect("object store opens");
         AppState::new(
             Arc::new(config),
             Database::open_in_memory().expect("in-memory database"),
+            store,
         )
     }
 
@@ -121,21 +132,21 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_reports_ok() {
-        let (status, body) = get(build(test_state()), "/healthz", None).await;
+        let (status, body) = get(build(test_state().await), "/healthz", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({"status": "ok"}));
     }
 
     #[tokio::test]
     async fn readyz_reports_ready_when_the_database_answers() {
-        let (status, body) = get(build(test_state()), "/readyz", None).await;
+        let (status, body) = get(build(test_state().await), "/readyz", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({"status": "ready"}));
     }
 
     #[tokio::test]
     async fn unknown_api_paths_answer_json() {
-        let (status, body) = get(build(test_state()), "/api/does-not-exist", None).await;
+        let (status, body) = get(build(test_state().await), "/api/does-not-exist", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             body,
@@ -145,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_responses_are_not_cached_and_carry_security_headers() {
-        let response = build(test_state())
+        let response = build(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/api/does-not-exist")
@@ -165,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_requests_require_a_matching_origin() {
-        let app = build(test_state());
+        let app = build(test_state().await);
         let request = Request::builder()
             .method("POST")
             .uri("/api/uploads")
@@ -196,13 +207,13 @@ mod tests {
 
     #[tokio::test]
     async fn reads_do_not_require_an_origin() {
-        let (status, _) = get(build(test_state()), "/healthz", None).await;
+        let (status, _) = get(build(test_state().await), "/healthz", None).await;
         assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn a_missing_bundle_reports_how_to_build_it() {
-        let response = build(test_state())
+        let response = build(test_state().await)
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
