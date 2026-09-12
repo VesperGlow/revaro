@@ -37,38 +37,41 @@ pub async fn security_headers(
 ) -> Response {
     let is_api = request.uri().path().starts_with("/api/");
     let mut response = next.run(request).await;
-    let headers = response.headers_mut();
-    headers.insert(
-        "x-content-type-options",
-        "nosniff".parse().expect("valid header value"),
-    );
-    headers.insert(
-        "x-frame-options",
-        "DENY".parse().expect("valid header value"),
-    );
-    headers.insert(
-        "referrer-policy",
-        "same-origin".parse().expect("valid header value"),
-    );
-    headers.insert(
-        "permissions-policy",
-        "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
-            .parse()
-            .expect("valid header value"),
-    );
-    headers.insert(
-        "content-security-policy",
-        CONTENT_SECURITY_POLICY.parse().expect("valid header value"),
-    );
-    if state.config.base_url.starts_with("https://") {
-        headers.insert(
-            "strict-transport-security",
+
+    // Insert only when the header is absent. Axum middleware wraps the handler,
+    // so by this point the handler has already set its own headers; a plain
+    // `insert` would silently overwrite them. That matters here: the public
+    // share endpoint sets a stricter per-response policy (no-referrer, a
+    // `sandbox` CSP) which must win — in the Go server the handler ran last and
+    // won for exactly the same reason.
+    for (name, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+        ("referrer-policy", "same-origin"),
+        (
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        ),
+        ("content-security-policy", CONTENT_SECURITY_POLICY),
+    ] {
+        if !response.headers().contains_key(name) {
+            response.headers_mut().insert(
+                http::header::HeaderName::from_static(name),
+                value.parse().expect("valid header value"),
+            );
+        }
+    }
+    if state.config.base_url.starts_with("https://")
+        && !response.headers().contains_key("strict-transport-security")
+    {
+        response.headers_mut().insert(
+            http::header::HeaderName::from_static("strict-transport-security"),
             "max-age=31536000".parse().expect("valid header value"),
         );
     }
-    if is_api {
-        headers.insert(
-            "cache-control",
+    if is_api && !response.headers().contains_key("cache-control") {
+        response.headers_mut().insert(
+            http::header::CACHE_CONTROL,
             "no-store".parse().expect("valid header value"),
         );
     }

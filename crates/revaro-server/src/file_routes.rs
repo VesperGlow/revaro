@@ -1787,24 +1787,12 @@ fn parse_range(header: Option<&str>, size: u64) -> ByteRange {
 /// unsatisfiable range. `If-Range` is honoured so a client resuming a download
 /// after the file changed re-fetches it whole instead of stitching two versions
 /// together — getting that wrong corrupts resumed downloads silently.
-async fn serve_file(
+pub(crate) async fn serve_file(
     state: Arc<AppState>,
-    id: String,
+    file: File,
     inline: bool,
     request_headers: http::HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
-    let file = state
-        .db
-        .call_api(move |connection| {
-            let file = lookup_file_any(connection, &id)
-                .map_err(|error| not_found_or(error, "ready file not found"))?;
-            if file.kind != FileKind::File || file.status != FileStatus::Ready {
-                return Err(ApiError::not_found("ready file not found"));
-            }
-            Ok(file)
-        })
-        .await?;
-
     if inline && !revaro_core::classify::is_previewable(&file) {
         return Err(ApiError::unsupported_media_type(
             "preview is not available for this file type",
@@ -1937,7 +1925,27 @@ async fn download(
     PathParam(id): PathParam<String>,
     headers: http::HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
-    serve_file(state, id, false, headers).await
+    let file = ready_file(state.clone(), id, "ready file not found").await?;
+    serve_file(state, file, false, headers).await
+}
+
+/// Resolve a live, ready file by id.
+async fn ready_file(
+    state: Arc<AppState>,
+    id: String,
+    missing: &'static str,
+) -> Result<File, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            let file =
+                lookup_file_any(connection, &id).map_err(|error| not_found_or(error, missing))?;
+            if file.kind != FileKind::File || file.status != FileStatus::Ready {
+                return Err(ApiError::not_found(missing));
+            }
+            Ok(file)
+        })
+        .await
 }
 
 /// `GET /api/files/{id}/preview`
@@ -1947,8 +1955,125 @@ async fn preview(
     PathParam(id): PathParam<String>,
     headers: http::HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
-    serve_file(state, id, true, headers).await
+    let file = ready_file(state.clone(), id, "ready file not found").await?;
+    serve_file(state, file, true, headers).await
 }
+
+/// Concurrent public downloads allowed at once.
+///
+/// A share URL is a bearer credential that anyone can hit without signing in, so
+/// the endpoint is rate-limited by admission rather than by identity: beyond the
+/// limit a client is told to come back shortly instead of being allowed to
+/// saturate the server's file handles.
+static SHARE_SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+
+fn share_slots() -> &'static tokio::sync::Semaphore {
+    SHARE_SLOTS.get_or_init(|| tokio::sync::Semaphore::new(8))
+}
+
+/// The public share table, mounted outside `/api` and therefore unauthenticated.
+pub fn public_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/s/{token}", get(public_share))
+}
+
+/// `GET /s/{token}`
+async fn public_share(
+    State(state): State<Arc<AppState>>,
+    PathParam(token): PathParam<String>,
+    headers: http::HeaderMap,
+) -> Result<axum::response::Response, ApiError> {
+    // The token space is fixed at 43 characters; anything outside the accepted
+    // band is rejected before touching the database.
+    if token.len() < 32 || token.len() > 128 {
+        return Err(ApiError::not_found("share not found"));
+    }
+
+    let lookup = token.clone();
+    let file = state
+        .db
+        .call_api(move |connection| {
+            let file = connection
+                .query_row(
+                    &format!(
+                        "SELECT {FILE_COLUMNS} FROM files WHERE id = (SELECT file_id FROM shares WHERE token = ?1) AND kind = 'file' AND status = 'ready' AND deleted_at IS NULL"
+                    ),
+                    [&lookup],
+                    scan_file,
+                )
+                .map_err(|error| not_found_or(DbError::Query(error), "share not found"))?;
+            Ok(file)
+        })
+        .await?;
+
+    // A share link is a credential in a URL, so the response must not be cached,
+    // must not leak the referrer, must not be indexed, and must render in a
+    // sandbox with no script or network access.
+    const PUBLIC_CSP: &str = "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'";
+
+    let permit = match share_slots().try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            let mut response = axum::response::Response::new(axum::body::Body::empty());
+            *response.status_mut() = http::StatusCode::TOO_MANY_REQUESTS;
+            response.headers_mut().insert(
+                http::header::RETRY_AFTER,
+                "5".parse().expect("valid header value"),
+            );
+            response.headers_mut().insert(
+                http::header::CONTENT_TYPE,
+                "application/json".parse().expect("valid header value"),
+            );
+            let body = serde_json::to_vec(
+                &ApiError::too_many_requests("public downloads are busy; try again shortly")
+                    .envelope(),
+            )
+            .unwrap_or_default();
+            *response.body_mut() = axum::body::Body::from(body);
+            return Ok(response);
+        }
+    };
+
+    tracing::info!(
+        file = %file.name,
+        file_id = %file.id,
+        token_prefix = %&token[..token.len().min(8)],
+        "public share served"
+    );
+
+    let inline = revaro_core::classify::is_previewable(&file);
+    let mut response = serve_file(state, file, inline, headers).await?;
+    let response_headers = response.headers_mut();
+    response_headers.insert(
+        http::header::CACHE_CONTROL,
+        "no-store".parse().expect("valid"),
+    );
+    response_headers.insert(
+        http::header::REFERRER_POLICY,
+        "no-referrer".parse().expect("valid"),
+    );
+    response_headers.insert(
+        http::header::HeaderName::from_static("x-robots-tag"),
+        "noindex, nofollow, noarchive".parse().expect("valid"),
+    );
+    response_headers.insert(
+        http::header::CONTENT_SECURITY_POLICY,
+        PUBLIC_CSP.parse().expect("valid"),
+    );
+    // The permit is intentionally held until the response is dropped, so the
+    // slot covers the whole body transfer rather than just the lookup.
+    response
+        .extensions_mut()
+        .insert(SharePermit(std::sync::Arc::new(permit)));
+    Ok(response)
+}
+
+/// Keeps a public-download slot occupied for the lifetime of the response.
+///
+/// `Arc` because response extensions require `Clone`; the permit itself is not
+/// cloneable, and sharing one across clones is exactly right — the slot is
+/// released when the last handle is dropped.
+#[derive(Clone)]
+struct SharePermit(#[allow(dead_code)] std::sync::Arc<tokio::sync::SemaphorePermit<'static>>);
 
 /// `POST /api/documents` — create a new text document.
 ///
@@ -3113,6 +3238,94 @@ INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec
             .to_bytes()
             .to_vec();
         (status, headers, bytes)
+    }
+
+    #[tokio::test]
+    async fn a_public_share_link_serves_without_a_session_and_carries_hardening_headers() {
+        let state = state().await;
+        state.store.put("blobs/s1", b"shared bytes").await.unwrap();
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+VALUES('s1','00000000-0000-0000-0000-000000000000','report.txt','file','blobs/s1',12,'text/plain','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+
+        // Create the share through the authenticated endpoint to get a real token.
+        let (status, share) = write(&state, "POST", "/api/files/s1/share", None).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let token = share["url"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        // Redeem it with NO cookie: the token is the credential.
+        let response = crate::router::build(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/s/{token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        // A link that leaked must not be cached, indexed, or able to run script.
+        assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+        assert_eq!(headers.get("referrer-policy").unwrap(), "no-referrer");
+        assert_eq!(
+            headers.get("x-robots-tag").unwrap(),
+            "noindex, nofollow, noarchive"
+        );
+        assert_eq!(
+            headers.get("content-security-policy").unwrap(),
+            "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'"
+        );
+        assert_eq!(headers.get("accept-ranges").unwrap(), "bytes");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"shared bytes");
+
+        // A range works through the public endpoint too, so media can seek.
+        let response = crate::router::build(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/s/{token}"))
+                    .header("range", "bytes=0-5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+
+        // Unknown and malformed tokens are indistinguishable from missing ones.
+        for bad in ["0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f", "short"] {
+            let response = crate::router::build(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/s/{bad}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{bad}");
+        }
+
+        // Revoking the share kills the link immediately.
+        let (status, _) = write(&state, "DELETE", "/api/files/s1/share", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let response = crate::router::build(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/s/{token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
