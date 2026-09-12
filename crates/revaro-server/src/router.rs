@@ -74,6 +74,7 @@ fn api() -> Router<Arc<AppState>> {
     Router::new()
         .merge(crate::auth_routes::routes())
         .merge(crate::file_routes::routes())
+        .merge(crate::upload_routes::routes())
         .fallback(api_not_found)
 }
 
@@ -202,8 +203,15 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
-        // The origin is accepted, so the request reaches the router and misses.
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // The origin is accepted, so the guard lets the request through. Assert
+        // the *absence* of 403 rather than a specific downstream status: this
+        // route now exists and answers 401, and pinning a status here would
+        // break every time a route is added.
+        assert_ne!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a same-origin write must pass the origin guard"
+        );
     }
 
     #[tokio::test]

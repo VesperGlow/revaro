@@ -24,6 +24,7 @@ pub mod proxy;
 pub mod router;
 pub mod state;
 pub mod storage;
+pub mod upload_routes;
 pub mod web;
 
 pub use config::Config;

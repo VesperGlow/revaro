@@ -145,6 +145,23 @@ fn lookup_file(connection: &rusqlite::Connection, id: &str) -> Result<File, DbEr
         .map_err(DbError::Query)
 }
 
+/// Look up a file row for the upload commit path.
+///
+/// `pub(crate)` because the upload module needs the same decode but lives in its
+/// own module; duplicating [`FILE_COLUMNS`] there would let the two drift.
+pub(crate) fn lookup_file_for_commit(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<File, DbError> {
+    connection
+        .query_row(
+            &format!("SELECT {FILE_COLUMNS} FROM files WHERE id = ?1"),
+            [id],
+            scan_file,
+        )
+        .map_err(DbError::Query)
+}
+
 /// A file by id, including soft-deleted rows.
 ///
 /// Content delivery deliberately resolves trashed rows: an item stays readable
