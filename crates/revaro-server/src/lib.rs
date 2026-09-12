@@ -12,6 +12,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod archive_routes;
+pub mod archive_runtime;
 pub mod auth;
 pub mod auth_routes;
 pub mod config;

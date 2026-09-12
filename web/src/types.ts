@@ -39,7 +39,7 @@ export interface ArchiveJob {
   file_id:string
   parent_id:string
   name:string
-  status:'queued'|'downloading'|'checking'|'extracting'|'importing'|'waiting_password'|'done'|'failed'
+  status:'queued'|'downloading'|'checking'|'extracting'|'importing'|'waiting_password'|'done'|'failed'|'cancelled'
   progress:number
   message:string
   output_id?:string

@@ -443,6 +443,8 @@ pub mod archive {
         Done,
         /// Finished unsuccessfully.
         Failed,
+        /// Cancelled by the user or by process shutdown.
+        Cancelled,
     }
 
     /// Snapshot returned by `POST /api/files/{id}/extract` and by task input.

@@ -172,24 +172,32 @@ fn clean_relative_path(path: &str) -> Option<String> {
     }
 }
 
-/// Validate an entry path coming out of an archive before it is written into
-/// the object store.
+/// Normalize and validate an entry path coming out of an archive.
 ///
 /// This is the path-traversal defence for archive extraction: absolute paths,
 /// Windows drive prefixes and `..` escapes are all refused, and each component
-/// must be a legal file name.
+/// must be a legal file name. Backslashes are kept as characters here rather
+/// than being treated as separators. That matches the historical Linux server
+/// and avoids making a path safe on one platform while changing its meaning on
+/// another; a backslash in a component is rejected by [`validate_name`].
+///
+/// The returned value uses `/` separators and contains no `.` or `..`
+/// components, so callers can join it below a trusted extraction directory.
 ///
 /// # Errors
 /// `400` describing why the entry was refused.
-pub fn validate_archive_path(path: &str) -> Result<(), ApiError> {
+pub fn normalize_archive_path(path: &str) -> Result<String, ApiError> {
     let trimmed = path.trim();
-    let normalized = trimmed.replace('\\', "/");
-    if normalized.is_empty() || normalized.starts_with('/') || trimmed.contains('\0') {
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || trimmed.contains('\0')
+    {
         return Err(ApiError::bad_request(
             "archive contains an invalid absolute path",
         ));
     }
-    let Some(clean) = clean_relative_path(&normalized) else {
+    let Some(clean) = clean_relative_path(trimmed) else {
         return Err(ApiError::bad_request(
             "archive contains a path outside its root",
         ));
@@ -206,7 +214,16 @@ pub fn validate_archive_path(path: &str) -> Result<(), ApiError> {
             )));
         }
     }
-    Ok(())
+    Ok(clean)
+}
+
+/// Validate an entry path coming out of an archive before it is written into
+/// the object store.
+///
+/// # Errors
+/// `400` describing why the entry was refused.
+pub fn validate_archive_path(path: &str) -> Result<(), ApiError> {
+    normalize_archive_path(path).map(|_| ())
 }
 
 /// Validate a media playback position before it is stored.
@@ -466,6 +483,13 @@ mod tests {
             error.message
         );
         assert!(error.message.contains("is not supported"));
+    }
+
+    #[test]
+    fn rejects_backslashes_inside_archive_components() {
+        let error = validate_archive_path("dir\\file.txt").unwrap_err();
+        assert!(error.message.starts_with("archive path "));
+        assert!(error.message.contains("path separators"));
     }
 
     #[test]

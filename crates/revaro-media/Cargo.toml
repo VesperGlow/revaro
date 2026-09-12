@@ -12,5 +12,10 @@ authors.workspace = true
 revaro-core.workspace = true
 ffmpeg-next.workspace = true
 image = { workspace = true, features = ["bmp", "gif", "png", "webp"] }
+libarchive2.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+zip.workspace = true

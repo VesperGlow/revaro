@@ -7,6 +7,7 @@
 //! conversion.  The server runs the blocking methods on a worker thread and
 //! supplies a cancellation token for request disconnects and shutdown.
 
+mod archive;
 mod image;
 mod probe;
 mod subtitle;
@@ -18,6 +19,10 @@ use std::sync::OnceLock;
 use ffmpeg_next as ffmpeg;
 use tokio_util::sync::CancellationToken;
 
+pub use archive::{
+    ArchiveEngine, ArchiveError, ArchivePhase, ArchiveProgress, ArchiveResult, MAX_ARCHIVE_ENTRIES,
+    MAX_ARCHIVE_PASSWORD_BYTES, expanded_limit,
+};
 pub use image::resize_image_to_jpeg;
 pub use revaro_core::media::{EmbeddedSubtitle, MediaChapter, MediaProbe};
 

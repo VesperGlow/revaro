@@ -130,6 +130,8 @@ pub struct AppState {
     pub auth: AuthService,
     /// Native media probing, thumbnail and subtitle coordination.
     pub media: crate::media_runtime::MediaRuntime,
+    /// Native archive extraction and task lifecycle coordination.
+    pub archive: crate::archive_runtime::ArchiveRuntime,
     /// Task-change notifications for the event stream.
     pub jobs: JobBus,
     /// Parsed books and serialized reader-flow builders.
@@ -153,6 +155,7 @@ impl AppState {
             store,
             auth,
             media: crate::media_runtime::MediaRuntime::with_cache_capacity(media_cache_capacity),
+            archive: crate::archive_runtime::ArchiveRuntime::new(),
             jobs: JobBus::new(256),
             reader: ReaderRuntime::new(),
         })

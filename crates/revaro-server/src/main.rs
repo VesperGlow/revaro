@@ -85,7 +85,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    let app = router::build(state);
+    let app = router::build(state.clone());
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -93,6 +93,11 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // Recover archive tasks only after the listener is bound. A failed bind
+    // must not leave background extraction workers running in a process that
+    // is about to exit.
+    revaro_server::archive_routes::recover(state.clone()).await;
 
     tracing::info!(
         addr = %addr,
@@ -102,13 +107,14 @@ async fn main() -> ExitCode {
         "server started"
     );
 
-    match axum::serve(
+    let result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
-    .await
-    {
+    .await;
+    state.archive.shutdown();
+    match result {
         Ok(()) => {
             tracing::info!("server stopped");
             ExitCode::SUCCESS

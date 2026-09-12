@@ -30,7 +30,7 @@ use revaro_core::classify::LibraryKind;
 use revaro_core::keys;
 use revaro_core::library as aggregation;
 use revaro_core::model::{
-    File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats,
+    File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats, Task,
 };
 use revaro_core::time::Timestamp;
 use rusqlite::{Connection, Row};
@@ -1144,15 +1144,16 @@ fn progress_response(
 
 /// `POST /api/tasks/{id}/cancel`
 ///
-/// Only the durable state is updated. Cancelling the *worker* is a runtime
-/// concern: the Rust port has no task workers yet, so there is nothing holding a
-/// cancellation token. The Go handler also poked its job bus to notify SSE
-/// subscribers, which has no equivalent until the event stream is ported.
+/// Durable state is updated first, then the archive runtime receives the same
+/// cancellation request. The database write wins races with a worker finishing
+/// at the same time, while the runtime token lets a large extraction stop at a
+/// bounded read boundary.
 async fn cancel_task(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
+    let task_id = id.clone();
     let jobs = state.jobs.clone();
     state
         .db
@@ -1191,7 +1192,9 @@ WHERE id = ?2 AND status NOT IN ('completed','failed','cancelled')",
             jobs.changed();
             Ok(http::StatusCode::NO_CONTENT)
         })
-        .await
+        .await?;
+    crate::archive_routes::cancel_task_runtime(&state, &task_id).await;
+    Ok(http::StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/tasks/{id}/retry`
@@ -1200,6 +1203,7 @@ async fn retry_task(
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
+    let task_id = id.clone();
     let jobs = state.jobs.clone();
     state
         .db
@@ -1236,7 +1240,9 @@ WHERE id = ?2 AND status = 'failed' AND retry_count < max_retries",
             jobs.changed();
             Ok(http::StatusCode::ACCEPTED)
         })
-        .await
+        .await?;
+    crate::archive_routes::retry_task_runtime(&state, &task_id).await;
+    Ok(http::StatusCode::ACCEPTED)
 }
 
 /// `DELETE /api/tasks/{id}`
@@ -1246,13 +1252,21 @@ async fn delete_task(
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
     let jobs = state.jobs.clone();
-    state
+    let (status_code, source_type, source_id) = state
         .db
         .call_api(move |connection| {
-            let status = connection
-                .query_row("SELECT status FROM tasks WHERE id = ?1", [&id], |row| {
-                    row.get::<_, String>(0)
-                })
+            let (status, source_type, source_id) = connection
+                .query_row(
+                    "SELECT status,source_type,source_id FROM tasks WHERE id = ?1",
+                    [&id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                            row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        ))
+                    },
+                )
                 .map_err(|error| not_found_or(DbError::Query(error), "task not found"))?;
             // Removing a live task would strand its worker, so only finished
             // records may be dismissed.
@@ -1268,9 +1282,21 @@ async fn delete_task(
                     ApiError::internal("could not remove task")
                 })?;
             jobs.changed();
-            Ok(http::StatusCode::NO_CONTENT)
+            Ok((http::StatusCode::NO_CONTENT, source_type, source_id))
         })
-        .await
+        .await?;
+    if source_type == "archive" {
+        crate::archive_routes::delete_task_runtime(
+            &state,
+            &Task {
+                source_type,
+                source_id,
+                ..Task::default()
+            },
+        )
+        .await;
+    }
+    Ok(status_code)
 }
 
 /// How often a quiet stream emits a comment so intermediaries keep the
