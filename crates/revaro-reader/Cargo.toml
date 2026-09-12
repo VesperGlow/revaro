@@ -1,0 +1,31 @@
+[package]
+name = "revaro-reader"
+description = "EPUB/TXT book parsing and HTML sanitisation for the Revaro reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+revaro-core.workspace = true
+quick-xml.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+
+# Not declared in the root workspace manifest, so they are pinned here instead.
+#
+# * `html5ever` + `markup5ever_rcdom` replace Go's `golang.org/x/net/html`. The
+#   sanitizer is security-critical, so it must run on a real HTML5 tree builder
+#   rather than a hand-rolled tokenizer; `rcdom` is the reference tree sink the
+#   parser ships with.
+# * `encoding_rs` provides the GBK decoder Go got from
+#   `golang.org/x/text/encoding/simplifiedchinese`.
+# * `regex` mirrors Go's RE2 `txtChapterRe`. The pattern is rewritten to use
+#   `[0-9]` instead of `\d`, because Rust's `\d` is Unicode-aware while Go's is
+#   ASCII-only.
+encoding_rs = "0.8"
+html5ever = "0.39"
+markup5ever_rcdom = "0.39"
+regex = "1"
