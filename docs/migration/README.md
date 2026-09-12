@@ -199,6 +199,28 @@ cargo xtask web-build                  # 产出 dist/web
 再加上一次真实进程验证：启动 `revaro`，用 `curl` 走通该阶段新增的端点。
 仅在以上全部通过后才提交，并在本文件的进度日志里记录验收结果。
 
+## 4.6 部署现状（迁移期间）
+
+根 `Cargo.toml` 用 `exclude = ["data-plane"]` 把既有的 data-plane 留在
+workspace 之外，Go 服务仍以同名二进制启动它。这一点已实测验证：
+
+```sh
+cd data-plane && cargo check --locked   # 退出码 0
+```
+
+即根 workspace 的存在不会让 `data-plane/` 变成「认为自己在 workspace 里」
+而构建失败，Dockerfile 的 data-plane 阶段（`COPY data-plane/Cargo.*` +
+`cargo build --locked`）保持可用。
+
+**因此在本迁移完成前，部署路径不变**：Dockerfile 依旧构建 Go 服务 +
+data-plane，Rust 服务是并行推进的新实现，不参与镜像。等到 Rust 服务覆盖
+全部功能后，才把 Dockerfile 切到 `cargo xtask build` 并删除
+`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`。
+
+本环境无法验证容器构建：docker 守护进程不可用，podman 能启动但受
+user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
+本地等价命令（cargo build/test）间接验证。
+
 ## 5. 构建与检查
 
 ```sh
