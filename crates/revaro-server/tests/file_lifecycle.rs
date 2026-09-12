@@ -248,6 +248,27 @@ async fn a_file_can_be_created_uploaded_browsed_copied_shared_trashed_and_purged
         "a committed upload records a sha256"
     );
 
+    // A client may retry cleanup after losing the completion response. It is
+    // idempotent and must not remove the object that the commit transaction
+    // already made visible.
+    let (status, _) = harness
+        .json(
+            "DELETE",
+            &format!("/api/uploads/{upload_id}"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, still_available) = harness
+        .json(
+            "GET",
+            &format!("/api/files/{file_id}/content"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(still_available["content"], "hello world\n");
+
     // Now it appears, with the directory's aggregate updated by the trigger.
     let (_, listing) = harness
         .json(

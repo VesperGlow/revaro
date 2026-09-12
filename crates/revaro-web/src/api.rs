@@ -12,12 +12,19 @@
 //! [`ErrorEnvelope`], which is how the login form can branch on the
 //! `totp_required` code without string-matching a message.
 //!
-//! Only compiled for wasm; the pure parts of the client live in `crate::logic`.
+//! Raw upload bytes intentionally use the browser XHR API in
+//! [`crate::components::uploads`], where progress and cancellation are
+//! available; this module owns the JSON session and commit calls. Only compiled
+//! for wasm; the pure parts of the client live in `crate::logic`.
 
 use gloo_net::http::Request;
 use revaro_core::api::auth::{LoginRequest, Session};
 use revaro_core::api::files::{
     Children, CreateDirectoryRequest, FileDetail, PatchFileRequest, Trash,
+};
+use revaro_core::api::uploads::{
+    CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
+    UploadPartsRequest, UploadPartsResponse, UploadStatus,
 };
 use revaro_core::{ErrorCode, ErrorEnvelope};
 
@@ -101,6 +108,65 @@ pub async fn fetch_children(id: &str) -> Result<Children, RequestError> {
 /// Fetch the top-level entries in the trash.
 pub async fn fetch_trash() -> Result<Trash, RequestError> {
     get_json("/api/trash").await
+}
+
+/// Start or resume a browser upload session.
+pub async fn create_upload(request: &CreateUploadRequest) -> Result<CreateUpload, RequestError> {
+    let request = Request::post("/api/uploads")
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Read the server-side state of an upload session for local resume.
+pub async fn fetch_upload(id: &str) -> Result<UploadStatus, RequestError> {
+    get_json(&format!("/api/uploads/{id}")).await
+}
+
+/// Request one-use URLs for a batch of multipart parts.
+pub async fn fetch_upload_parts(
+    id: &str,
+    request: &UploadPartsRequest,
+) -> Result<UploadPartsResponse, RequestError> {
+    let request = Request::post(&format!("/api/uploads/{id}/parts"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Acknowledge the ETag and exact size of one stored multipart part.
+pub async fn record_upload_part(
+    id: &str,
+    part_number: i32,
+    request: &RecordUploadPartRequest,
+) -> Result<(), RequestError> {
+    let request = Request::put(&format!("/api/uploads/{id}/parts/{part_number}"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Commit the upload transaction. The signal is deliberately supplied by the
+/// caller so cancelling a slow commit does not leave a request running after
+/// the task has already been removed from the queue.
+pub async fn complete_upload(
+    id: &str,
+    request: &CompleteUploadRequest,
+    signal: Option<&web_sys::AbortSignal>,
+) -> Result<revaro_core::model::File, RequestError> {
+    let request = Request::post(&format!("/api/uploads/{id}/complete"))
+        .abort_signal(signal)
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Abandon a session and remove its pending file row and staging bytes.
+pub async fn abort_upload(id: &str) -> Result<(), RequestError> {
+    let request = Request::delete(&format!("/api/uploads/{id}"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
 }
 
 /// Create a directory below a live directory.

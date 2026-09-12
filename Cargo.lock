@@ -2462,7 +2462,10 @@ name = "revaro-web"
 version = "1.0.0"
 dependencies = [
  "console_error_panic_hook",
+ "futures-channel",
+ "futures-util",
  "gloo-net 0.7.0",
+ "js-sys",
  "leptos",
  "revaro-core",
  "serde",

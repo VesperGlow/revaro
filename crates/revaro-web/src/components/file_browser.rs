@@ -22,6 +22,7 @@ use crate::logic::routing::{folder_id, folder_url};
 use super::dialogs::ActionDialog;
 use super::icons;
 use super::selection_toolbar::SelectionToolbar;
+use super::uploads::{UploadController, UploadSurface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
@@ -171,6 +172,35 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
             });
         })
     };
+
+    let file_input = NodeRef::<leptos::html::Input>::new();
+    let folder_input = NodeRef::<leptos::html::Input>::new();
+    let upload_refresh = {
+        let current_id = current_id;
+        let trash_mode = trash_mode;
+        let load_folder = load_folder.clone();
+        Callback::new(move |parent_id: String| {
+            if !trash_mode.get_untracked() && current_id.get_untracked() == parent_id {
+                load_folder.run(parent_id);
+            }
+        })
+    };
+    let upload_feedback = {
+        let feedback = feedback;
+        Callback::new(move |message: String| feedback.set(message))
+    };
+    let uploads = UploadController::new(
+        current_id,
+        current,
+        trash_mode,
+        file_input,
+        folder_input,
+        upload_refresh,
+        upload_feedback,
+        on_logout.clone(),
+    );
+    let uploads_for_cleanup = leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
+    on_cleanup(move || uploads_for_cleanup.dispose());
 
     let clear_selection = {
         let selected_ids = selected_ids;
@@ -458,8 +488,22 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
         Callback::new(move |(): ()| load_folder.run(ROOT_ID.to_owned()))
     };
 
+    let uploads_for_view = leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
+    let upload_from_top = uploads_for_view.clone();
+    let upload_folder_from_top = uploads_for_view.clone();
+    let shell_upload = uploads_for_view.clone();
+    let shell_upload_leave = uploads_for_view.clone();
+    let shell_upload_drop = uploads_for_view.clone();
+    let upload_surface = uploads_for_view.clone();
+
     view! {
-        <div class="app-shell" class:sidebar-collapsed=move || sidebar_collapsed.get()>
+        <div
+            class="app-shell"
+            class:sidebar-collapsed=move || sidebar_collapsed.get()
+            on:dragover=move |event: web_sys::DragEvent| shell_upload.on_drag_over(event)
+            on:dragleave=move |event: web_sys::DragEvent| shell_upload_leave.on_drag_leave(event)
+            on:drop=move |event: web_sys::DragEvent| shell_upload_drop.on_drop(event)
+        >
             <header class="topbar">
                 <div class="topbar-left">
                     <button
@@ -477,6 +521,25 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                         <i></i>
                         "服务已连接"
                     </span>
+                    <details class="upload-menu">
+                        <summary class="secondary" title="上传文件">"上传"</summary>
+                        <div class="upload-menu-popover">
+                            <button type="button" on:click=move |_| upload_from_top.choose_files()>
+                                <span aria-hidden="true">"↑"</span>
+                                <div>
+                                    <b>"上传文件"</b>
+                                    <small>"选择一个或多个文件"</small>
+                                </div>
+                            </button>
+                            <button type="button" on:click=move |_| upload_folder_from_top.choose_folder()>
+                                <span aria-hidden="true">"↥"</span>
+                                <div>
+                                    <b>"上传文件夹"</b>
+                                    <small>"保留目录结构"</small>
+                                </div>
+                            </button>
+                        </div>
+                    </details>
                     <button
                         class="trash-button"
                         type="button"
@@ -787,6 +850,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                     ().into_any()
                 }
             }}
+            <UploadSurface controller=upload_surface />
         </div>
     }
 }

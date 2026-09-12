@@ -653,6 +653,59 @@ async fn abort_upload(
         .call_api(move |connection| load_upload_api(connection, &id))
         .await?;
 
+    // A lost completion response can make the browser issue DELETE after the
+    // transaction has already made the file visible. Keep the abort endpoint
+    // idempotent without allowing that race to delete a committed object.
+    if record.status == UploadStatus::Completed {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    let file_id = record.file_id.clone();
+    let upload_id = record.id.clone();
+    let removed = state
+        .db
+        .call_api(move |connection| {
+            let transaction = connection
+                .transaction()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            let deleted_upload = transaction
+                .execute(
+                    "DELETE FROM uploads WHERE id = ?1 AND file_id = ?2 AND status <> 'completed' \
+AND EXISTS (SELECT 1 FROM files WHERE id = ?2 AND status = 'pending')",
+                    rusqlite::params![upload_id, file_id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            if deleted_upload != 1 {
+                transaction
+                    .rollback()
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                return Ok(false);
+            }
+            // The pending file row is invisible to every listing, so removing it
+            // is what actually cancels the upload.
+            let deleted_file = transaction
+                .execute(
+                    "DELETE FROM files WHERE id = ?1 AND status = 'pending'",
+                    [&file_id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            if deleted_file != 1 {
+                return Err(ApiError::conflict("upload state changed"));
+            }
+            transaction
+                .commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(true)
+        })
+        .await?;
+    if !removed {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    // Claiming the pending rows before touching storage closes the race with
+    // completion: a completion that is already committed fails the conditional
+    // delete, while one that is still assembling can no longer publish a ready
+    // row after this cleanup wins.
     if let Some(multipart_id) = &record.multipart_id
         && let Err(error) = state
             .store
@@ -665,31 +718,7 @@ async fn abort_upload(
         tracing::warn!(%error, upload = %record.id, "could not remove a partial object");
     }
 
-    let file_id = record.file_id.clone();
-    let upload_id = record.id.clone();
-    state
-        .db
-        .call_api(move |connection| {
-            let transaction = connection
-                .transaction()
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            transaction
-                .execute("DELETE FROM uploads WHERE id = ?1", [&upload_id])
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            // The pending file row is invisible to every listing, so removing it
-            // is what actually cancels the upload.
-            transaction
-                .execute(
-                    "DELETE FROM files WHERE id = ?1 AND status = 'pending'",
-                    [&file_id],
-                )
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            transaction
-                .commit()
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            Ok(StatusCode::NO_CONTENT)
-        })
-        .await
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn etag_response(etag: &str) -> http::Response<Body> {

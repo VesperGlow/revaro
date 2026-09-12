@@ -23,7 +23,10 @@ serde_json.workspace = true
 # failing on wasm-only APIs.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook.workspace = true
+futures-channel.workspace = true
+futures-util.workspace = true
 gloo-net.workspace = true
+js-sys.workspace = true
 leptos.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
@@ -33,6 +36,11 @@ wasm-bindgen-futures.workspace = true
 # itself, so a dependency bump cannot silently take them away.
 web-sys = { workspace = true, features = [
     "Document",
+    "AbortController",
+    "AbortSignal",
+    "Blob",
+    "DataTransfer",
+    "DragEvent",
     "Element",
     "Event",
     "EventTarget",
@@ -46,7 +54,13 @@ web-sys = { workspace = true, features = [
     "MediaQueryListEvent",
     "Node",
     "PointerEvent",
+    "ProgressEvent",
     "SubmitEvent",
     "Storage",
     "Window",
+    "File",
+    "FileList",
+    "XmlHttpRequest",
+    "XmlHttpRequestEventTarget",
+    "XmlHttpRequestUpload",
 ] }
