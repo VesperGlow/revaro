@@ -736,14 +736,18 @@ AND status = 'ready' AND deleted_at IS NULL)",
                 .map_err(|error| database_error(DbError::Query(error)))?;
             transaction
                 .execute("UPDATE files SET parent_id = ?1 WHERE id = ?2", rusqlite::params![parent, id])
-                .map_err(|error| conflict_or(DbError::Query(error)))?;
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            // This is the statement the unique name index actually fires on: the
+            // row only becomes visible to `files_unique_name` once `deleted_at`
+            // is cleared. Mapping the conflict on the *first* update instead
+            // turned every restore collision into a 500.
             transaction
                 .execute(
                     "UPDATE files SET deleted_at = NULL, restore_parent_id = NULL, trash_root_id = NULL \
 WHERE trash_root_id = ?1",
                     [&id],
                 )
-                .map_err(|error| database_error(DbError::Query(error)))?;
+                .map_err(|error| restore_conflict_or(DbError::Query(error)))?;
             transaction
                 .commit()
                 .map_err(|error| database_error(DbError::Query(error)))?;
@@ -953,6 +957,17 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
         }
     };
     Ok(Json(updated))
+}
+
+/// Restore reports its conflict with a different message: the name is taken at
+/// the location the item is going *back* to, which is more actionable than the
+/// generic duplicate-name message.
+fn restore_conflict_or(error: DbError) -> ApiError {
+    if error.is_constraint_violation() {
+        ApiError::conflict("an item with that name already exists at the restore location")
+    } else {
+        database_error(error)
+    }
 }
 
 /// Map a uniqueness violation onto `409` and anything else onto `500`.
@@ -1245,6 +1260,50 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn restoring_onto_a_taken_name_reports_the_restore_location() {
+        let state = state().await;
+        let root = ROOT_ID;
+
+        let (_, first) = write(
+            &state,
+            "POST",
+            "/api/directories",
+            Some(serde_json::json!({"parent_id": root, "name": "shared"})),
+        )
+        .await;
+        let first_id = first["id"].as_str().unwrap().to_owned();
+
+        let (status, _) = write(&state, "DELETE", &format!("/api/files/{first_id}"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // Occupy the name at the original location.
+        let (status, _) = write(
+            &state,
+            "POST",
+            "/api/directories",
+            Some(serde_json::json!({"parent_id": root, "name": "shared"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        // Restoring can no longer go back to the root under that name. The
+        // message names the restore location specifically, which is the Go
+        // wording and more actionable than a bare duplicate-name error.
+        let (status, body) = write(
+            &state,
+            "POST",
+            &format!("/api/trash/{first_id}/restore"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body["error"]["message"],
+            "an item with that name already exists at the restore location"
+        );
     }
 
     #[tokio::test]
