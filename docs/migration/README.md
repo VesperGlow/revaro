@@ -290,6 +290,13 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 （含引号与 `<` 的构造输入）。安全关键的白名单清洗基于 html5ever 的真实
 HTML5 树构建器，压缩炸弹由声明量与实际读取量双重预算拦截。
 
+阶段 3c 补充（真实进程端到端）：在运行中的服务里种入一行文档与对应
+blob，`GET /content` 返回原文、`PUT` 返回 200、再次 `GET` 返回新内容并带上
+真实的 `etag`（size-mtime）与 `updated_at`；数据库核对显示新行指向新 blob、
+`hash_algorithm=sha256`、`content_hash` 为 64 字符，且迁移 002 的触发器已把
+被替换的旧 blob 以 `file replaced` 入队等待回收——证明写入路径与清理队列的
+集成是通的。
+
 阶段 3c 验收：workspace 全绿（server 121）。测试覆盖文档完整往返、陈旧
 ETag 保存被拒（409）、不可编辑类型被拒（415）。并发保护靠把原 object_key
 放进 UPDATE 的 WHERE 子句实现，避免「检查后写入」之间的静默覆盖。
