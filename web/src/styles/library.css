@@ -413,6 +413,7 @@
 .book-shelf {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  align-items: start;
   gap: 24px 20px;
 }
 .shelf-card {
@@ -484,7 +485,11 @@
   -webkit-line-clamp: 3;
 }
 .shelf-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   min-width: 0;
+  min-height: 37px;
   padding: 0 2px;
 }
 .shelf-meta strong {
@@ -493,93 +498,77 @@
   color: #25364a;
   font-size: 13.5px;
   font-weight: 700;
+  line-height: 19px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .shelf-meta small {
   display: block;
-  margin-top: 3px;
   color: #94a3b8;
   font-size: 11px;
+  line-height: 15px;
 }
 
 .series-card {
   cursor: default;
 }
+/* 固定方形卡片：所有封面绝对定位，卡片高度只由宽度决定，与系列数量无关。
+   偏移步长由 BookShelf 依数量计算，数量越多间距越小，始终不越界。 */
 .series-stage {
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  width: 100%;
   aspect-ratio: 1;
-  padding: 14px 12px;
+  padding: 5%;
   border: 1px solid var(--line, #e2e6eb);
   border-radius: 18px;
   background: linear-gradient(152deg, #eef3f9, #dfe7f0);
   overflow: hidden;
+  isolation: isolate;
 }
-.series-main {
-  display: grid;
-  place-items: center;
-  flex: 0 0 56%;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.series-main .book-cover {
-  transition: transform 0.18s ease;
-}
-.series-main:hover .book-cover {
-  transform: translateY(-2px);
-}
-.series-fan {
-  position: relative;
-  flex: 1;
-  height: 100%;
-}
-.fan-card {
+.series-cover {
   position: absolute;
   top: 50%;
   left: 0;
-  width: 66%;
   aspect-ratio: 2 / 3;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
-  z-index: var(--z, 1);
-  transform: translate(var(--x, 0), -50%) rotate(var(--r, 0deg));
-  transition: transform 0.26s cubic-bezier(0.22, 0.68, 0.32, 1.02);
+  box-shadow: 0 12px 26px #0f172a30;
+  overflow: hidden;
+  transform-origin: 50% 82%;
+  transition: box-shadow 0.18s ease, filter 0.18s ease;
 }
-.fan-card .book-cover {
+.series-cover .book-cover {
   width: 100%;
   height: 100%;
-  box-shadow: 0 8px 20px #0f172a33;
+  max-width: none;
+  aspect-ratio: auto;
+  border-radius: inherit;
+  box-shadow: none;
 }
-.fan-card:hover {
-  z-index: 30;
+.series-cover-main {
+  transform: translateY(-50%);
+  box-shadow: 0 18px 36px #0f172a3d;
+  z-index: 2;
 }
-.fan-card:hover .book-cover {
-  box-shadow: 0 12px 26px #0f172a44;
+.series-cover-fan {
+  transform: translateY(-50%);
 }
-.fan-more {
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
-  z-index: 31;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: #1e293be6;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
+.series-cover:hover {
+  filter: brightness(1.04);
+  box-shadow: 0 16px 32px #0f172a44;
+}
+.series-cover:focus-visible {
+  z-index: 1200;
+  outline: 3px solid #93c5fd;
+  outline-offset: 2px;
 }
 .series-badge {
   position: absolute;
   top: 10px;
   left: 10px;
-  z-index: 32;
+  z-index: 1000;
   padding: 2px 9px;
   border-radius: 999px;
   background: #fffffff0;
@@ -587,25 +576,6 @@
   font-size: 11px;
   font-weight: 750;
   box-shadow: 0 4px 12px #0f172a1f;
-}
-.series-toggle {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 33;
-  min-height: 28px;
-  padding: 0 11px;
-  border: 1px solid #cbd9e8;
-  border-radius: 999px;
-  background: #fffffff2;
-  color: #3f5a75;
-  font-size: 11.5px;
-  font-weight: 700;
-  box-shadow: 0 4px 12px #0f172a1f;
-}
-.series-toggle:hover {
-  color: #1d4ed8;
-  border-color: #9dbfe8;
 }
 
 /* --- 相册分类 --- */
@@ -831,13 +801,12 @@
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 16px 12px;
   }
-  .shelf-cover,
-  .series-stage {
+  .shelf-cover {
     border-radius: 14px;
     padding: 10px;
   }
-  .series-main {
-    flex-basis: 60%;
+  .series-stage {
+    border-radius: 14px;
   }
 }
 

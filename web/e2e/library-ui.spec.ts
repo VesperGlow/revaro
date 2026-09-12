@@ -7,10 +7,10 @@ const folder = (id: string, name: string) => ({ id, name })
 
 const library = {
   book: [
-    { id: 'book-1', parent_id: ROOT, name: '星海拾遗 第1卷.epub', kind: 'file', size: 120000, status: 'ready', created_at: '', updated_at: '', folder_path: [] },
-    { id: 'book-2', parent_id: ROOT, name: '星海拾遗 第2卷.epub', kind: 'file', size: 130000, status: 'ready', created_at: '', updated_at: '', folder_path: [] },
-    { id: 'book-3', parent_id: ROOT, name: '星海拾遗 第3卷.epub', kind: 'file', size: 140000, status: 'ready', created_at: '', updated_at: '', folder_path: [] },
-    { id: 'book-4', parent_id: ROOT, name: '独立短篇.epub', kind: 'file', size: 90000, status: 'ready', created_at: '', updated_at: '', folder_path: [] },
+    { id: 'book-1', parent_id: 'books', name: '星海拾遗 第1卷.epub', kind: 'file', size: 120000, status: 'ready', created_at: '', updated_at: '', folder_path: [folder('books', '书籍')] },
+    { id: 'book-2', parent_id: 'books', name: '星海拾遗 第2卷.epub', kind: 'file', size: 130000, status: 'ready', created_at: '', updated_at: '', folder_path: [folder('books', '书籍')] },
+    { id: 'book-3', parent_id: 'books', name: '星海拾遗 第3卷.epub', kind: 'file', size: 140000, status: 'ready', created_at: '', updated_at: '', folder_path: [folder('books', '书籍')] },
+    { id: 'book-4', parent_id: 'books', name: '独立短篇.epub', kind: 'file', size: 90000, status: 'ready', created_at: '', updated_at: '', folder_path: [folder('books', '书籍')] },
   ],
   image: [
     { id: 'image-1', parent_id: 'photos', name: '群山.png', kind: 'file', size: 200000, status: 'ready', created_at: '', updated_at: '', folder_path: [folder('photos', 'Photos')] },
@@ -36,15 +36,16 @@ const rootItems = [
 
 const cover = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900"><rect width="600" height="900" fill="#3f6b8f"/><rect x="40" y="60" width="520" height="780" fill="#2b4c68"/><text x="300" y="470" fill="#e8f1f8" font-size="64" text-anchor="middle">BOOK</text></svg>`
 
-async function mockLibrary(page: Page) {
+async function mockLibrary(page: Page, books = library.book) {
+  const payload = { ...library, book: books }
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
     if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
     if (path === '/api/auth/login') return json({ username: 'admin', has_avatar: false })
     if (path === '/api/events' || path === '/api/system/status/stream') return route.fulfill({ contentType: 'text/event-stream', body: '' })
-    if (path === '/api/library/all') return json({ items: library, counts })
-    if (path === '/api/library/counts') return json(counts)
+    if (path === '/api/library/all') return json({ items: payload, counts: { ...counts, book: books.length } })
+    if (path === '/api/library/counts') return json({ ...counts, book: books.length })
     if (path === `/api/files/${ROOT}/children`) return json({ items: rootItems, total_bytes: 900000, file_count: 4 })
     if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, name: '我的文件', kind: 'directory' }, breadcrumbs: [] })
     if (path === '/api/files/photos/children') return json({ items: [], total_bytes: 0, file_count: 0 })
@@ -72,15 +73,31 @@ test('分类栏在五个大类之间切换并展示对应视图', async ({ page 
     await expect(sidebar.locator(`[data-category="${type}"]`)).toBeVisible()
   }
 
-  // 书架：无文件夹，封面方块展示，同系列折叠成一张卡牌。
+  // 书架：无文件夹，封面方块展示，同系列收成一张固定尺寸的错位卡牌。
   await sidebar.locator('[data-category="book"]').click()
   await expect(page.locator('.book-shelf')).toBeVisible()
   await expect(page.locator('.shelf-card')).toHaveCount(2)
   const series = page.locator('.series-card')
   await expect(series).toContainText('同系列 · 3 本')
-  await expect(page.locator('.series-fan .fan-card')).toHaveCount(2)
-  await series.locator('.series-toggle').click()
-  await expect(series).toHaveClass(/expanded/)
+  await expect(series.locator('.series-cover-main')).toHaveCount(1)
+  await expect(series.locator('.series-cover-fan')).toHaveCount(2)
+
+  // 系列卡片固定方形：与单本卡片同尺寸，不因数量变化。
+  const single = page.locator('.shelf-card:not(.series-card)').first()
+  const seriesBox = await series.boundingBox()
+  const singleBox = await single.boundingBox()
+  expect(seriesBox!.width).toBeCloseTo(singleBox!.width, 0)
+  expect(seriesBox!.height).toBeCloseTo(singleBox!.height, 0)
+
+  // 所有封面都裁切在卡片边界内，不溢出容器。
+  const stage = await series.locator('.series-stage').boundingBox()
+  for (const cover of await series.locator('.series-cover').all()) {
+    const box = await cover.boundingBox()
+    expect(box!.x).toBeGreaterThanOrEqual(stage!.x - 1)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(stage!.x + stage!.width + 1)
+    expect(box!.y).toBeGreaterThanOrEqual(stage!.y - 1)
+    expect(box!.y + box!.height).toBeLessThanOrEqual(stage!.y + stage!.height + 1)
+  }
   await page.screenshot({ path: testInfo.outputPath('bookshelf.png') })
 
   // 图片：全部视图 + 图库分类，底部可切换。
@@ -134,6 +151,52 @@ test('分类栏可收起并可展开路径', async ({ page }, testInfo) => {
   const photos = page.locator('.app-sidebar .path-label', { hasText: 'Photos' })
   await expect(photos).toBeVisible()
   await expect(photos.locator('em')).toHaveText('2')
+
+  // 手风琴：打开书架后，图片的路径树自动收起，同时只有一个路径树。
+  await page.locator('.app-sidebar [data-category="book"]').click()
+  await expect(page.locator('.app-sidebar .category-paths')).toHaveCount(1)
+  await expect(page.locator('.app-sidebar .path-label', { hasText: '书籍' })).toBeVisible()
+  await expect(page.locator('.app-sidebar .path-label', { hasText: 'Photos' })).toHaveCount(0)
+  await page.locator('.app-sidebar [data-category="video"]').click()
+  await expect(page.locator('.app-sidebar .category-paths')).toHaveCount(1)
+  await expect(page.locator('.app-sidebar .path-label', { hasText: '书籍' })).toHaveCount(0)
+  await expect(page.locator('.app-sidebar .path-label', { hasText: 'Videos' })).toBeVisible()
+})
+
+test('同系列书籍再多也收在同一张固定尺寸卡片内', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 950 })
+  const many = Array.from({ length: 12 }, (_, index) => ({
+    id: `long-${index}`,
+    parent_id: 'books',
+    name: `长夜行 第${index + 1}卷.epub`,
+    kind: 'file',
+    size: 100000,
+    status: 'ready',
+    created_at: '',
+    updated_at: '',
+    folder_path: [folder('books', '书籍')],
+  }))
+  await mockLibrary(page, many)
+  await login(page)
+  await page.locator('.app-sidebar [data-category="book"]').click()
+
+  const series = page.locator('.series-card')
+  await expect(series.locator('.series-cover-main')).toHaveCount(1)
+  await expect(series.locator('.series-cover-fan')).toHaveCount(11)
+
+  // 卡片保持方形：高度由宽度决定，与数量无关。
+  const stage = await series.locator('.series-stage').boundingBox()
+  expect(stage!.width).toBeCloseTo(stage!.height, 0)
+
+  // 全部封面（含旋转后的外接框）都裁切在卡片边界内。
+  for (const cover of await series.locator('.series-cover').all()) {
+    const box = await cover.boundingBox()
+    expect(box!.x).toBeGreaterThanOrEqual(stage!.x - 1)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(stage!.x + stage!.width + 1)
+    expect(box!.y).toBeGreaterThanOrEqual(stage!.y - 1)
+    expect(box!.y + box!.height).toBeLessThanOrEqual(stage!.y + stage!.height + 1)
+  }
+  await page.screenshot({ path: testInfo.outputPath('bookshelf-many.png') })
 })
 
 test('移动端通过抽屉打开分类栏', async ({ page }, testInfo) => {

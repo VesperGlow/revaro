@@ -13,3 +13,6 @@ data-plane/target/
 .DS_Store
 web/test-results/
 web/playwright-report/
+
+# 本地演示截图（临时）
+.demo-shots/

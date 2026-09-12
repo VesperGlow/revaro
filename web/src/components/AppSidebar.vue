@@ -27,26 +27,22 @@ const emit=defineEmits<{
 const icons={book:BookOpen,image:Image,video:Film,audio:Music,file:FolderClosed}
 const EXPANDED_KEY='revaro:sidebar:expanded'
 
-function readExpanded():LibraryType[]{
+// 手风琴：同一时间只展开一个分类的路径树，打开新分类时自动收起旧的。
+function readExpanded():LibraryType|null{
   try{
     const raw=localStorage.getItem(EXPANDED_KEY)
-    if(raw===null)return []
-    const parsed:unknown=JSON.parse(raw)
-    return Array.isArray(parsed)?parsed.filter((value):value is LibraryType=>LIBRARY_CATEGORIES.some(category=>category.type===value)):[]
-  }catch{return []}
+    if(!raw)return null
+    return LIBRARY_CATEGORIES.some(category=>category.type===raw)?raw as LibraryType:null
+  }catch{return null}
 }
-const expanded=ref<Set<LibraryType>>(new Set(readExpanded()))
-watch(expanded,value=>{try{localStorage.setItem(EXPANDED_KEY,JSON.stringify([...value]))}catch{/* 隐私模式下忽略 */}},{deep:true})
+const expanded=ref<LibraryType|null>(readExpanded())
+watch(expanded,value=>{try{ if(value)localStorage.setItem(EXPANDED_KEY,value); else localStorage.removeItem(EXPANDED_KEY) }catch{/* 隐私模式下忽略 */}})
 
-function isExpanded(type:LibraryType){return expanded.value.has(type)}
-function toggleExpand(type:LibraryType){
-  const next=new Set(expanded.value)
-  if(next.has(type))next.delete(type);else next.add(type)
-  expanded.value=next
-}
+function isExpanded(type:LibraryType){return expanded.value===type}
+function toggleExpand(type:LibraryType){expanded.value=expanded.value===type?null:type}
 function selectCategory(type:LibraryType){
+  expanded.value=type
   emit('select-category',type)
-  if(!expanded.value.has(type))toggleExpand(type)
   emit('close-mobile')
 }
 function chooseFolder(id:string|null){emit('select-folder',id)}
