@@ -65,6 +65,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/tasks/{id}", get(get_task).delete(delete_task))
         .route("/tasks/{id}/cancel", axum::routing::post(cancel_task))
         .route("/tasks/{id}/retry", axum::routing::post(retry_task))
+        .route("/events", get(job_events))
         .route("/library", get(library))
         .route("/library/all", get(library_all))
         .route("/library/counts", get(library_counts))
@@ -1146,6 +1147,7 @@ async fn cancel_task(
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
+    let jobs = state.jobs.clone();
     state
         .db
         .call_api(move |connection| {
@@ -1180,6 +1182,7 @@ WHERE id = ?2 AND status NOT IN ('completed','failed','cancelled')",
                     ApiError::not_found("task not found")
                 });
             }
+            jobs.changed();
             Ok(http::StatusCode::NO_CONTENT)
         })
         .await
@@ -1191,6 +1194,7 @@ async fn retry_task(
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
+    let jobs = state.jobs.clone();
     state
         .db
         .call_api(move |connection| {
@@ -1223,6 +1227,7 @@ WHERE id = ?2 AND status = 'failed' AND retry_count < max_retries",
                     ApiError::not_found("task not found")
                 });
             }
+            jobs.changed();
             Ok(http::StatusCode::ACCEPTED)
         })
         .await
@@ -1234,6 +1239,7 @@ async fn delete_task(
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
+    let jobs = state.jobs.clone();
     state
         .db
         .call_api(move |connection| {
@@ -1255,9 +1261,69 @@ async fn delete_task(
                     tracing::error!(%error, "could not remove task");
                     ApiError::internal("could not remove task")
                 })?;
+            jobs.changed();
             Ok(http::StatusCode::NO_CONTENT)
         })
         .await
+}
+
+/// How often a quiet stream emits a comment so intermediaries keep the
+/// connection open. Matches Go's 20-second keepalive.
+const EVENT_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `GET /api/events`
+///
+/// Server-sent events carrying `event: jobs` with `{"changed":true}`. The
+/// payload is deliberately opaque: the client reacts by re-reading
+/// `GET /api/tasks`, so no task detail travels through the stream.
+///
+/// The first event is sent immediately, so a client that subscribes after a
+/// change still refreshes once rather than waiting for the next one.
+async fn job_events(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+) -> axum::response::Response {
+    use futures_util::StreamExt as _;
+    use tokio::sync::broadcast::error::RecvError;
+
+    const CHANGED: &[u8] = b"event: jobs\ndata: {\"changed\":true}\n\n";
+    const KEEPALIVE: &[u8] = b": keepalive\n\n";
+
+    let receiver = state.jobs.subscribe();
+    // The initial event is a separate stream rather than a "first iteration"
+    // flag: chaining states the intent directly and keeps the unfold body to a
+    // single responsibility.
+    let initial = futures_util::stream::once(async {
+        Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(CHANGED))
+    });
+    let subsequent = futures_util::stream::unfold(receiver, move |mut receiver| async move {
+        loop {
+            match tokio::time::timeout(EVENT_KEEPALIVE, receiver.recv()).await {
+                Ok(Ok(())) => {
+                    return Some((Ok(bytes::Bytes::from_static(CHANGED)), receiver));
+                }
+                // Closed means the server is going away; lagged means this client
+                // fell behind and will resynchronise on reconnect.
+                Ok(Err(RecvError::Closed)) => return None,
+                Ok(Err(RecvError::Lagged(_))) => continue,
+                Err(_) => {
+                    return Some((Ok(bytes::Bytes::from_static(KEEPALIVE)), receiver));
+                }
+            }
+        }
+    });
+    let stream = initial.chain(subsequent);
+
+    let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        "text/event-stream".parse().expect("valid header value"),
+    );
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        "no-store".parse().expect("valid header value"),
+    );
+    response
 }
 
 /// The canonical `tasks` projection.
@@ -2157,6 +2223,45 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn task_mutations_publish_a_change_notification() {
+        let state = state().await;
+        let sql: &'static str = "INSERT INTO tasks(id,type,status,phase,progress,speed,retry_count,max_retries,error,cancel_requested,created_at,updated_at) VALUES \
+('f1','upload','failed','boom',0,0,0,3,'nope','0','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('c1','upload','completed','done',100,0,0,3,'','0','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+
+        // Subscribe before the mutation, and drain anything already queued.
+        let mut receiver = state.jobs.subscribe();
+        while receiver.try_recv().is_ok() {}
+
+        let (status, _) = write(&state, "POST", "/api/tasks/f1/retry", None).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(
+            receiver.try_recv().is_ok(),
+            "a successful retry must notify the event stream"
+        );
+
+        // A refused mutation publishes nothing, so clients are not woken for a
+        // change that did not happen.
+        while receiver.try_recv().is_ok() {}
+        let (status, _) = write(&state, "POST", "/api/tasks/nope/cancel", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            receiver.try_recv().is_err(),
+            "a rejected mutation must stay quiet"
+        );
+
+        // Deleting requires a *terminal* task: the retry above left f1 in
+        // `retrying`, which is still active.
+        let (status, _) = write(&state, "DELETE", "/api/tasks/c1", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(
+            receiver.try_recv().is_ok(),
+            "a deletion must notify the event stream"
+        );
     }
 
     #[tokio::test]
