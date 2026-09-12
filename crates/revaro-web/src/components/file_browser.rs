@@ -1,14 +1,15 @@
-//! The first usable authenticated browser screen.
+//! The authenticated file browser and its basic lifecycle actions.
 //!
-//! This slice owns folder navigation, breadcrumbs, the grid/list choice and a
-//! read-only trash view. Mutating actions and specialised readers are separate
-//! stages; a card therefore opens a file through the already authenticated
-//! preview/download endpoints instead of presenting controls that have no
-//! handler yet.
+//! This slice owns folder navigation, breadcrumbs, the grid/list choice,
+//! selection, file and folder mutations, and the trash view. Specialised
+//! readers and media controls remain separate stages; live file cards still
+//! open through the authenticated preview/download endpoints.
+
+use std::collections::HashSet;
 
 use leptos::prelude::*;
 use revaro_core::api::auth::Session;
-use revaro_core::api::files::{Children, FileDetail};
+use revaro_core::api::files::{Children, CreateDirectoryRequest, FileDetail, PatchFileRequest};
 use revaro_core::classify;
 use revaro_core::ids::ROOT_ID;
 use revaro_core::model::{File, FileKind, FileStatus};
@@ -18,12 +19,24 @@ use crate::api;
 use crate::logic::format::format_size;
 use crate::logic::routing::{folder_id, folder_url};
 
+use super::dialogs::ActionDialog;
 use super::icons;
+use super::selection_toolbar::SelectionToolbar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
     Grid,
     List,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DialogState {
+    CreateFolder,
+    Rename { id: String },
+    Delete,
+    Restore,
+    Purge,
+    EmptyTrash,
 }
 
 /// The authenticated file browser.
@@ -41,6 +54,12 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
     let view_mode = RwSignal::new(ViewMode::Grid);
     let sidebar_collapsed = RwSignal::new(false);
     let request_sequence = RwSignal::new(0_u64);
+    let selected_ids = RwSignal::new(HashSet::<String>::new());
+    let dialog = RwSignal::new(None::<DialogState>);
+    let dialog_value = RwSignal::new(String::new());
+    let dialog_busy = RwSignal::new(false);
+    let dialog_error = RwSignal::new(String::new());
+    let feedback = RwSignal::new(String::new());
 
     let load_folder = {
         let current_id = current_id;
@@ -53,12 +72,16 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
         let error = error;
         let trash_mode = trash_mode;
         let request_sequence = request_sequence;
+        let selected_ids = selected_ids;
+        let feedback = feedback;
         let on_logout = on_logout.clone();
         Callback::new(move |id: String| {
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
+            feedback.set(String::new());
+            selected_ids.set(HashSet::new());
             let requested_id = id;
             let logout = on_logout.clone();
 
@@ -109,12 +132,16 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
         let error = error;
         let trash_mode = trash_mode;
         let request_sequence = request_sequence;
+        let selected_ids = selected_ids;
+        let feedback = feedback;
         let on_logout = on_logout.clone();
         Callback::new(move |(): ()| {
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
+            feedback.set(String::new());
+            selected_ids.set(HashSet::new());
             let logout = on_logout.clone();
 
             leptos::task::spawn_local(async move {
@@ -142,6 +169,250 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                     Ok(_) | Err(_) => {}
                 }
             });
+        })
+    };
+
+    let clear_selection = {
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| selected_ids.set(HashSet::new()))
+    };
+    let toggle_selection = {
+        let selected_ids = selected_ids;
+        Callback::new(move |item: File| {
+            selected_ids.update(|selected| {
+                if !selected.insert(item.id.clone()) {
+                    selected.remove(&item.id);
+                }
+            });
+        })
+    };
+    let select_all = {
+        let items = items;
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| {
+            let entries = items.get_untracked();
+            if selected_ids.get_untracked().len() == entries.len() {
+                selected_ids.set(HashSet::new());
+            } else {
+                selected_ids.set(entries.into_iter().map(|item| item.id).collect());
+            }
+        })
+    };
+
+    let show_create_folder = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
+        Callback::new(move |(): ()| {
+            dialog_value.set(String::new());
+            dialog_error.set(String::new());
+            dialog.set(Some(DialogState::CreateFolder));
+        })
+    };
+    let show_rename = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
+        let items = items;
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| {
+            let Some(item) = items
+                .get_untracked()
+                .into_iter()
+                .find(|item| selected_ids.get_untracked().contains(&item.id))
+            else {
+                return;
+            };
+            dialog_value.set(item.name);
+            dialog_error.set(String::new());
+            dialog.set(Some(DialogState::Rename { id: item.id }));
+        })
+    };
+    let show_delete = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| {
+            if selected_ids.get_untracked().is_empty() {
+                return;
+            }
+            dialog_value.set(String::new());
+            dialog_error.set(String::new());
+            dialog.set(Some(DialogState::Delete));
+        })
+    };
+    let show_restore = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| {
+            if selected_ids.get_untracked().is_empty() {
+                return;
+            }
+            dialog_value.set(String::new());
+            dialog_error.set(String::new());
+            dialog.set(Some(DialogState::Restore));
+        })
+    };
+    let show_purge = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| {
+            if selected_ids.get_untracked().is_empty() {
+                return;
+            }
+            dialog_value.set(String::new());
+            dialog_error.set(String::new());
+            dialog.set(Some(DialogState::Purge));
+        })
+    };
+    let show_empty_trash = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
+        let items = items;
+        let trash_mode = trash_mode;
+        Callback::new(move |(): ()| {
+            if !trash_mode.get_untracked() || items.get_untracked().is_empty() {
+                return;
+            }
+            dialog_value.set(String::new());
+            dialog_error.set(String::new());
+            dialog.set(Some(DialogState::EmptyTrash));
+        })
+    };
+
+    let submit_dialog = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_busy = dialog_busy;
+        let dialog_error = dialog_error;
+        let selected_ids = selected_ids;
+        let current_id = current_id;
+        let trash_mode = trash_mode;
+        let feedback = feedback;
+        let load_folder = load_folder.clone();
+        let load_trash = load_trash.clone();
+        let on_logout = on_logout.clone();
+        Callback::new(move |value: String| {
+            let Some(state) = dialog.get_untracked() else {
+                return;
+            };
+            if dialog_busy.get_untracked() {
+                return;
+            }
+            dialog_busy.set(true);
+            dialog_error.set(String::new());
+            let mut ids: Vec<String> = selected_ids.get_untracked().into_iter().collect();
+            ids.sort_unstable();
+            let parent_id = current_id.get_untracked();
+            let refresh_parent_id = parent_id.clone();
+            let in_trash = trash_mode.get_untracked();
+            let refresh_folder = load_folder.clone();
+            let refresh_trash = load_trash.clone();
+            let logout = on_logout.clone();
+
+            leptos::task::spawn_local(async move {
+                let result: Result<String, api::RequestError> = async {
+                    match state {
+                        DialogState::CreateFolder => {
+                            let name = value.trim().to_owned();
+                            if name.is_empty() {
+                                Err(api::RequestError {
+                                    status: 0,
+                                    code: None,
+                                    message: "文件夹名称不能为空".to_owned(),
+                                })
+                            } else {
+                                api::create_directory(&CreateDirectoryRequest { parent_id, name })
+                                    .await
+                                    .map(|_| "文件夹已创建".to_owned())
+                            }
+                        }
+                        DialogState::Rename { id } => {
+                            let name = value.trim().to_owned();
+                            if name.is_empty() {
+                                Err(api::RequestError {
+                                    status: 0,
+                                    code: None,
+                                    message: "名称不能为空".to_owned(),
+                                })
+                            } else {
+                                api::patch_file(
+                                    &id,
+                                    &PatchFileRequest {
+                                        name: Some(name),
+                                        parent_id: None,
+                                    },
+                                )
+                                .await
+                                .map(|_| "名称已更新".to_owned())
+                            }
+                        }
+                        DialogState::Delete => {
+                            for id in ids {
+                                api::delete_file(&id).await?;
+                            }
+                            Ok("已移入回收站".to_owned())
+                        }
+                        DialogState::Restore => {
+                            for id in ids {
+                                api::restore_trash(&id).await?;
+                            }
+                            Ok("已恢复所选项目".to_owned())
+                        }
+                        DialogState::Purge => {
+                            for id in ids {
+                                api::purge_trash(&id).await?;
+                            }
+                            Ok("已永久删除所选项目".to_owned())
+                        }
+                        DialogState::EmptyTrash => {
+                            api::empty_trash().await?;
+                            Ok("回收站已清空".to_owned())
+                        }
+                    }
+                }
+                .await;
+
+                dialog_busy.set(false);
+                match result {
+                    Ok(message) => {
+                        dialog.set(None);
+                        dialog_value.set(String::new());
+                        dialog_error.set(String::new());
+                        selected_ids.set(HashSet::new());
+                        if in_trash {
+                            refresh_trash.run(());
+                        } else {
+                            refresh_folder.run(refresh_parent_id);
+                        }
+                        feedback.set(message);
+                    }
+                    Err(request_error) if request_error.is_unauthorized() => {
+                        dialog.set(None);
+                        logout.run(());
+                    }
+                    Err(request_error) => dialog_error.set(request_error.message),
+                }
+            });
+        })
+    };
+    let close_dialog = {
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
+        let dialog_busy = dialog_busy;
+        Callback::new(move |(): ()| {
+            if !dialog_busy.get_untracked() {
+                dialog.set(None);
+                dialog_value.set(String::new());
+                dialog_error.set(String::new());
+            }
         })
     };
 
@@ -375,13 +646,38 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                                     "列表"
                                 </button>
                             </div>
+                            <button class="secondary" type="button" on:click={move |_| show_create_folder.run(())}>
+                                "新建文件夹"
+                            </button>
                         }>
                             <button class="secondary" type="button" on:click={move |_| return_home.run(())}>
                                 "返回我的文件"
                             </button>
+                            <button
+                                class="trash-empty-action"
+                                type="button"
+                                prop:disabled=move || items.get().is_empty()
+                                on:click={move |_| show_empty_trash.run(())}
+                            >
+                                "清空回收站"
+                            </button>
                         </Show>
                     </div>
                 </div>
+
+                <Show when=move || !selected_ids.get().is_empty() fallback=|| ()>
+                    <SelectionToolbar
+                        items=items
+                        selected_ids=selected_ids
+                        trash_mode=trash_mode
+                        on_clear=clear_selection.clone()
+                        on_select_all=select_all.clone()
+                        on_rename=show_rename.clone()
+                        on_delete=show_delete.clone()
+                        on_restore=show_restore.clone()
+                        on_purge=show_purge.clone()
+                    />
+                </Show>
 
                 {move || {
                     if loading.get() {
@@ -439,6 +735,8 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                                     <FileTile
                                         item=item
                                         trash_mode=trash_mode
+                                        selected_ids=selected_ids
+                                        on_select=toggle_selection.clone()
                                         on_open=open_item.clone()
                                     />
                                 </For>
@@ -452,6 +750,8 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                                     <FileRow
                                         item=item
                                         trash_mode=trash_mode
+                                        selected_ids=selected_ids
+                                        on_select=toggle_selection.clone()
                                         on_open=open_item.clone()
                                     />
                                 </For>
@@ -461,15 +761,105 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                     }
                 }}
             </section>
+            <Show when=move || !feedback.get().is_empty() fallback=|| ()>
+                <div class="toast" role="status">{move || feedback.get()}</div>
+            </Show>
+            {move || {
+                if let Some(state) = dialog.get() {
+                    let (title, message, confirm_label, danger, input) =
+                        dialog_config(&state, selected_ids.get().len());
+                    view! {
+                        <ActionDialog
+                            title=title
+                            message=message
+                            confirm_label=confirm_label
+                            danger=danger
+                            input=input
+                            value=dialog_value
+                            busy=dialog_busy
+                            error=dialog_error
+                            on_cancel=close_dialog.clone()
+                            on_confirm=submit_dialog.clone()
+                        />
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                }
+            }}
         </div>
     }
 }
 
+fn dialog_config(
+    state: &DialogState,
+    selected_count: usize,
+) -> (String, String, String, bool, bool) {
+    match state {
+        DialogState::CreateFolder => (
+            "新建文件夹".to_owned(),
+            "给当前文件夹起一个名称。".to_owned(),
+            "创建".to_owned(),
+            false,
+            true,
+        ),
+        DialogState::Rename { .. } => (
+            "重命名".to_owned(),
+            "名称修改后会立即保存。".to_owned(),
+            "保存".to_owned(),
+            false,
+            true,
+        ),
+        DialogState::Delete => (
+            "移入回收站".to_owned(),
+            format!("确定要把选中的 {selected_count} 项移入回收站吗？"),
+            "移入回收站".to_owned(),
+            true,
+            false,
+        ),
+        DialogState::Restore => (
+            "恢复项目".to_owned(),
+            format!("选中的 {selected_count} 项会恢复到原来的位置。"),
+            "恢复".to_owned(),
+            false,
+            false,
+        ),
+        DialogState::Purge => (
+            "永久删除".to_owned(),
+            format!("选中的 {selected_count} 项及其内容将被永久删除，无法撤销。"),
+            "永久删除".to_owned(),
+            true,
+            false,
+        ),
+        DialogState::EmptyTrash => (
+            "清空回收站".to_owned(),
+            "回收站中的所有内容将被永久删除，无法撤销。".to_owned(),
+            "清空回收站".to_owned(),
+            true,
+            false,
+        ),
+    }
+}
+
 #[component]
-fn FileTile(item: File, trash_mode: RwSignal<bool>, on_open: Callback<File>) -> impl IntoView {
+fn FileTile(
+    item: File,
+    trash_mode: RwSignal<bool>,
+    selected_ids: RwSignal<HashSet<String>>,
+    on_select: Callback<File>,
+    on_open: Callback<File>,
+) -> impl IntoView {
     let name = item.name.clone();
     let item_for_click = item.clone();
+    let item_for_key = item.clone();
+    let item_for_select_click = item.clone();
+    let item_for_select_key = item.clone();
     let item_for_meta = item.clone();
+    let item_id_for_class = item.id.clone();
+    let item_id_for_title = item.id.clone();
+    let item_id_for_label = item.id.clone();
+    let item_id_for_pressed = item.id.clone();
+    let item_id_for_active = item.id.clone();
     let class = tile_class(&item);
     let label = format!(
         "{}，{}",
@@ -480,12 +870,14 @@ fn FileTile(item: File, trash_mode: RwSignal<bool>, on_open: Callback<File>) -> 
             "文件"
         }
     );
+    let on_select_click = on_select.clone();
     let on_open_click = on_open.clone();
     let on_open_key = on_open;
 
     view! {
         <article
             class=class
+            class:selected=move || selected_ids.get().contains(&item_id_for_class)
             role="button"
             tabindex="0"
             aria-label=label
@@ -495,14 +887,32 @@ fn FileTile(item: File, trash_mode: RwSignal<bool>, on_open: Callback<File>) -> 
                 }
             }
             on:keydown=move |event: web_sys::KeyboardEvent| {
-                if event.key() == "Enter" || event.key() == " " {
+                if event.key() == "Enter" && !trash_mode.get_untracked() {
                     event.prevent_default();
-                    if !trash_mode.get_untracked() || item.kind == FileKind::File {
-                        on_open_key.run(item.clone());
-                    }
+                    on_open_key.run(item_for_key.clone());
+                } else if event.key() == " " {
+                    event.prevent_default();
+                    on_select.run(item_for_select_key.clone());
                 }
             }
         >
+            <button
+                class="card-select"
+                type="button"
+                title=move || if selected_ids.get().contains(&item_id_for_title) { "取消选择" } else { "选择项目" }
+                aria-label=move || if selected_ids.get().contains(&item_id_for_label) { "取消选择" } else { "选择项目" }
+                aria-pressed=move || selected_ids.get().contains(&item_id_for_pressed)
+                class:active=move || selected_ids.get().contains(&item_id_for_active)
+                on:click=move |event: web_sys::MouseEvent| {
+                    event.stop_propagation();
+                    on_select_click.run(item_for_select_click.clone());
+                }
+                on:keydown=move |event: web_sys::KeyboardEvent| event.stop_propagation()
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m5 12 4 4L19 6"></path>
+                </svg>
+            </button>
             <div class="card-preview" title=move || if item.kind == FileKind::Directory { "打开文件夹" } else { "打开文件" }>
                 {file_preview(&item)}
             </div>
@@ -515,16 +925,32 @@ fn FileTile(item: File, trash_mode: RwSignal<bool>, on_open: Callback<File>) -> 
 }
 
 #[component]
-fn FileRow(item: File, trash_mode: RwSignal<bool>, on_open: Callback<File>) -> impl IntoView {
+fn FileRow(
+    item: File,
+    trash_mode: RwSignal<bool>,
+    selected_ids: RwSignal<HashSet<String>>,
+    on_select: Callback<File>,
+    on_open: Callback<File>,
+) -> impl IntoView {
     let name = item.name.clone();
     let item_for_click = item.clone();
+    let item_for_key = item.clone();
+    let item_for_select_click = item.clone();
+    let item_for_select_key = item.clone();
     let item_for_meta = item.clone();
+    let item_id_for_class = item.id.clone();
+    let item_id_for_title = item.id.clone();
+    let item_id_for_label = item.id.clone();
+    let item_id_for_pressed = item.id.clone();
+    let item_id_for_active = item.id.clone();
     let class = row_class(&item);
+    let on_select_click = on_select.clone();
     let on_open_click = on_open.clone();
     let on_open_key = on_open;
     view! {
         <article
             class=class
+            class:selected=move || selected_ids.get().contains(&item_id_for_class)
             role="button"
             tabindex="0"
             aria-label=name.clone()
@@ -534,14 +960,32 @@ fn FileRow(item: File, trash_mode: RwSignal<bool>, on_open: Callback<File>) -> i
                 }
             }
             on:keydown=move |event: web_sys::KeyboardEvent| {
-                if event.key() == "Enter" || event.key() == " " {
+                if event.key() == "Enter" && !trash_mode.get_untracked() {
                     event.prevent_default();
-                    if !trash_mode.get_untracked() || item.kind == FileKind::File {
-                        on_open_key.run(item.clone());
-                    }
+                    on_open_key.run(item_for_key.clone());
+                } else if event.key() == " " {
+                    event.prevent_default();
+                    on_select.run(item_for_select_key.clone());
                 }
             }
         >
+            <button
+                class="row-select"
+                type="button"
+                title=move || if selected_ids.get().contains(&item_id_for_title) { "取消选择" } else { "选择项目" }
+                aria-label=move || if selected_ids.get().contains(&item_id_for_label) { "取消选择" } else { "选择项目" }
+                aria-pressed=move || selected_ids.get().contains(&item_id_for_pressed)
+                class:active=move || selected_ids.get().contains(&item_id_for_active)
+                on:click=move |event: web_sys::MouseEvent| {
+                    event.stop_propagation();
+                    on_select_click.run(item_for_select_click.clone());
+                }
+                on:keydown=move |event: web_sys::KeyboardEvent| event.stop_propagation()
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m5 12 4 4L19 6"></path>
+                </svg>
+            </button>
             <div class="row-preview">{file_preview(&item)}</div>
             <div class="row-info">
                 <strong title=name.clone()>{name.clone()}</strong>

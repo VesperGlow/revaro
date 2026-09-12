@@ -132,6 +132,11 @@ Leptos 按模块渐进替换 Vue：外壳/登录 → 文件浏览 → 上传与�
 目录响应不会覆盖较新的导航；过期会话会回到登录页。上传、编辑、任务中心、
 媒体专用查看器和阅读器仍按后续切片接入。
 
+阶段 7c 已完成文件选择工具栏、全选/取消选择、新建文件夹、重命名、批量移入
+回收站，以及回收站中的批量恢复、永久删除和清空操作。操作对话框统一处理
+输入校验、处理中状态、取消/ESC、服务端错误和成功后的列表刷新；上传队列、
+任务中心、媒体专用查看器和阅读器仍按后续切片接入。
+
 ### 阶段 8 — 收尾
 删除 `web/`（npm 链）、`internal/`、`cmd/`、`go.mod`；重写 Dockerfile 与
 CI；更新 README 与 docs。
@@ -188,7 +193,7 @@ CI；更新 README 与 docs。
 | ~~媒体探测/字幕~~ | `media_metadata.go`、`video_media.go` | ✅ 已完成：`media_routes.rs` + `revaro-media` |
 | ~~压缩包解压~~ | `archive.go` | ✅ 已完成：`revaro-media` + `archive_routes.rs`（`/files/{id}/extract`、归档任务输入与恢复） |
 | ~~阅读器 flow + reader 路由~~ | `internal/reader/flow/`、`internal/server/book.go`、`reader_flow.go` | ✅ 已完成：`revaro-reader::flow`、`reader_routes.rs` |
-| 前端各功能视图 | `web/src/components/` | 进行中：`crates/revaro-web/src/components/` 已完成登录、文件浏览和回收站只读视图 |
+| 前端各功能视图 | `web/src/components/` | 进行中：`crates/revaro-web/src/components/` 已完成登录、文件浏览、文件操作和回收站视图 |
 | 删除 Node/npm 与 Go 链 | `web/`、`internal/`、`cmd/`、`go.mod`、Dockerfile、CI | 最后一步 |
 
 ### 代码约定（新模块必须遵守）
@@ -271,7 +276,8 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 ### 尚未开始的大块
 
 - **前端功能视图**：登录、会话恢复、文件浏览、网格/列表切换和回收站只读视图已落地；
-  上传队列、文件操作、任务中心、媒体查看器和 reader 视图仍待接入，后端端点已可用。
+  文件选择与基础操作已落地；上传队列、任务中心、媒体查看器和 reader 视图仍待接入，
+  后端端点已可用。
 - **删除 Node/npm 与 Go 链**：`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`
   仍在，且 Dockerfile/CI 仍以它们为准。必须等 Rust 服务覆盖全部功能后再切换。
 
@@ -378,6 +384,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 6d 系统状态 SSE | ✅ | `feat(status): 迁移系统状态快照与 SSE` |
 | 7a 前端外壳 + 样式层 + 纯逻辑 | ✅ | `refactor(web): 落地样式表层、应用外壳与纯逻辑模块` |
 | 7b 登录 + 文件浏览器 + 回收站只读视图 | ✅ | `feat(web): 接入认证文件浏览器视图` |
+| 7c 文件选择与基础操作 | ✅ | `feat(web): 接入文件操作与回收站动作` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -400,7 +407,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**从阶段 7b 继续的项目**：上传/文件操作、任务中心、媒体查看器、reader 前端视图、
+**从阶段 7c 继续的项目**：上传队列、任务中心、媒体查看器、reader 前端视图、
 删除 Node/npm 与 Go 构建链。详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
@@ -481,6 +488,12 @@ children 是**文件在目录之前**（`ORDER BY kind DESC`），面包屑包�
 验证通过登录、根目录加载、创建目录后刷新、目录进入、面包屑返回和回收站；严格
 `script-src 'self' 'wasm-unsafe-eval'` 下 wasm 正常挂载，loader、logo 和 favicon
 均由 Rust bundle 静态目录返回 200。`cargo xtask check` 共 382 个测试通过。
+
+阶段 7c 验收：真实 Chromium 验证通过文件选择、创建目录、单项重命名、批量移入
+回收站、恢复，以及永久删除和清空回收站；同名重命名的 409 会留在对话框中显示，
+不会丢失当前选择。对话框确认、取消和列表刷新均实际走 Rust API；浏览器控制台
+仅记录预期的未登录探测 401 与冲突 409。`cargo xtask check`、wasm 构建和
+`cargo xtask web-build` 在本阶段改动后继续通过。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

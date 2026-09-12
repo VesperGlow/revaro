@@ -6,8 +6,10 @@
 
 pub mod icons;
 
+mod dialogs;
 mod file_browser;
 mod login;
+mod selection_toolbar;
 
 pub use file_browser::FileBrowser;
 pub use login::LoginView;

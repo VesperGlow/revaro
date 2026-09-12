@@ -4,7 +4,7 @@
 //! caller `AbortSignal` with a 60 s timeout, defaulted `Content-Type` to JSON and
 //! unwrapped the `{error:{status,code,message}}` envelope into an `ApiError`.
 //! This module is the same contract for the authenticated shell: session and
-//! login, logout, folder metadata/children and the read-only trash listing.
+//! login, logout, folder metadata/children, file mutations and trash actions.
 //!
 //! The request/response bodies are the shared types from
 //! [`revaro_core::api::auth`], so a field rename on the server breaks this build
@@ -16,7 +16,9 @@
 
 use gloo_net::http::Request;
 use revaro_core::api::auth::{LoginRequest, Session};
-use revaro_core::api::files::{Children, FileDetail, Trash};
+use revaro_core::api::files::{
+    Children, CreateDirectoryRequest, FileDetail, PatchFileRequest, Trash,
+};
 use revaro_core::{ErrorCode, ErrorEnvelope};
 
 /// A failed request to an authenticated JSON endpoint.
@@ -101,6 +103,59 @@ pub async fn fetch_trash() -> Result<Trash, RequestError> {
     get_json("/api/trash").await
 }
 
+/// Create a directory below a live directory.
+pub async fn create_directory(
+    request: &CreateDirectoryRequest,
+) -> Result<revaro_core::model::File, RequestError> {
+    let request = Request::post("/api/directories")
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Rename or move one live file or directory.
+pub async fn patch_file(
+    id: &str,
+    request: &PatchFileRequest,
+) -> Result<revaro_core::model::File, RequestError> {
+    let request = Request::patch(&format!("/api/files/{id}"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Move a live item into the trash.
+pub async fn delete_file(id: &str) -> Result<(), RequestError> {
+    let request = Request::delete(&format!("/api/files/{id}"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Restore one root item from the trash.
+pub async fn restore_trash(id: &str) -> Result<(), RequestError> {
+    let request = Request::post(&format!("/api/trash/{id}/restore"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Permanently remove one root item from the trash.
+pub async fn purge_trash(id: &str) -> Result<(), RequestError> {
+    let request = Request::delete(&format!("/api/trash/{id}"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Permanently remove every item currently in the trash.
+pub async fn empty_trash() -> Result<(), RequestError> {
+    let request = Request::delete("/api/trash")
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
 /// Sign in, mapping a non-2xx answer to a decoded [`LoginError`].
 pub async fn login(request: &LoginRequest) -> Result<Session, LoginError> {
     let sent = Request::post("/api/auth/login")
@@ -173,6 +228,53 @@ where
             code: None,
             message: format!("请求失败 ({status})"),
         }),
+    }
+}
+
+/// Send an already encoded JSON request and decode its success body.
+async fn send_json<T>(request: Request) -> Result<T, RequestError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let response = request
+        .send()
+        .await
+        .map_err(|error| request_transport(error.to_string()))?;
+    if response.ok() {
+        return response
+            .json::<T>()
+            .await
+            .map_err(|error| request_transport(error.to_string()));
+    }
+    Err(decode_request_error(response).await)
+}
+
+/// Send a request whose successful response has no body.
+async fn send_empty(request: Request) -> Result<(), RequestError> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| request_transport(error.to_string()))?;
+    if response.ok() {
+        return Ok(());
+    }
+    Err(decode_request_error(response).await)
+}
+
+/// Decode the shared error envelope from a non-successful response.
+async fn decode_request_error(response: gloo_net::http::Response) -> RequestError {
+    let status = response.status();
+    match response.json::<ErrorEnvelope>().await {
+        Ok(envelope) => RequestError {
+            status,
+            code: envelope.error.code,
+            message: envelope.error.message,
+        },
+        Err(_) => RequestError {
+            status,
+            code: None,
+            message: format!("请求失败 ({status})"),
+        },
     }
 }
 
