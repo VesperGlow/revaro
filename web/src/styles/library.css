@@ -1,7 +1,7 @@
 /* ===== 分类栏（侧边可收起分类栏）与媒体库视图 ===== */
 
 :root {
-  --drawer-width: min(280px, 78vw);
+  --drawer-width: min(300px, 78vw);
   --drawer-duration: 250ms;
   --drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -747,20 +747,21 @@
   .app-shell.sidebar-collapsed .drop-zone {
     inset: calc(60px + env(safe-area-inset-top, 0px)) 0 0;
   }
-  /* 浮动抽屉：默认完全移出可视区，不占布局宽度、不推动主内容 */
+  /* 浮动抽屉：内容高度的浮层，默认完全移出可视区，不推动主内容 */
   .app-sidebar {
     position: fixed;
     z-index: 60;
     top: 0;
+    bottom: auto;
     left: 0;
-    bottom: 0;
     width: var(--drawer-width);
     height: auto;
-    padding-top: calc(14px + env(safe-area-inset-top, 0px));
-    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 8px);
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 0
+      calc(10px + env(safe-area-inset-bottom, 0px));
     border-right: 1px solid var(--line, #e6eaf0);
     border-radius: 0 18px 18px 0;
-    box-shadow: 0 24px 60px #0f172a3d;
+    box-shadow: 0 20px 48px #0f172a33;
     transform: translateX(-100%);
     visibility: hidden;
     transition:
@@ -774,6 +775,55 @@
   /* 抽屉用悬浮开关收起，桌面折叠按钮在窄屏隐藏 */
   .sidebar-head {
     display: none;
+  }
+
+  /* 一级入口：整行 50px，图标+文字横向排列，选中只有一整行淡蓝底 */
+  .sidebar-nav {
+    gap: 0;
+  }
+  .sidebar-category,
+  .sidebar-category.active {
+    border-radius: 0;
+    background: transparent;
+  }
+  .category-row {
+    gap: 0;
+  }
+  .category-main {
+    min-height: 50px;
+    padding: 0 18px;
+    border-radius: 0;
+    gap: 14px;
+    font-size: 15.5px;
+  }
+  .category-main:hover {
+    background: #eef2f7;
+  }
+  .category-main.active,
+  .category-main.active:hover {
+    border-radius: 0;
+    background: #e6f0fc;
+    color: #1d4ed8;
+  }
+  .category-icon {
+    width: 22px;
+    height: 22px;
+  }
+  .category-icon svg {
+    width: 21px;
+    height: 21px;
+  }
+  .category-label {
+    font-weight: 600;
+  }
+  /* 回收站与主分类之间的浅色分隔线 */
+  .sidebar-foot {
+    margin-top: 0;
+    padding-top: 6px;
+    border-top: 1px solid #e9eef4;
+  }
+  .trash-entry {
+    border-radius: 0;
   }
 
   /* backdrop 只压在主内容之上，层级低于抽屉与悬浮开关 */
@@ -792,7 +842,7 @@
     pointer-events: auto;
   }
 
-  /* 左侧垂直居中的悬浮开关：展开后停靠抽屉右边缘，图标 > 变 < */
+  /* 左侧垂直居中的悬浮开关：展开后贴在抽屉右边缘，图标 > 变 < */
   .sidebar-handle {
     display: grid;
     place-items: center;
@@ -801,14 +851,14 @@
     left: 0;
     top: 50%;
     width: 32px;
-    height: 56px;
+    height: 52px;
     padding: 0;
     border: 1px solid #dbe3ec;
     border-left: 0;
-    border-radius: 0 13px 13px 0;
+    border-radius: 0 12px 12px 0;
     background: #fffffff5;
     color: #475569;
-    box-shadow: 0 8px 22px #0f172a2b;
+    box-shadow: 0 6px 18px #0f172a26;
     backdrop-filter: blur(8px);
     transform: translateY(-50%) translateX(0);
     transition:
@@ -817,8 +867,8 @@
       color 0.16s ease;
   }
   .sidebar-handle.open {
-    border-radius: 13px;
-    transform: translateY(-50%) translateX(calc(var(--drawer-width) - 50%));
+    border-radius: 12px;
+    transform: translateY(-50%) translateX(calc(var(--drawer-width) - 22px));
   }
   .sidebar-handle:hover {
     color: #1d4ed8;

@@ -89,11 +89,11 @@ const categoryHint=computed(()=>Object.fromEntries(LIBRARY_CATEGORIES.map(catego
           <button type="button" class="category-main" :data-category="category.type" :class="{active:section===category.type}" :title="rail?category.label:categoryHint[category.type]" :aria-current="section===category.type?'page':undefined" @click="selectCategory(category.type)">
             <span class="category-icon"><component :is="icons[category.type]" aria-hidden="true" /></span>
             <span v-if="!rail" class="category-label">{{ category.label }}</span>
-            <span v-if="!rail&&counts[category.type]" class="category-count">{{ counts[category.type] }}</span>
+            <span v-if="!rail&&!mobile&&counts[category.type]" class="category-count">{{ counts[category.type] }}</span>
           </button>
-          <button v-if="!rail" type="button" class="category-expand" :aria-expanded="isExpanded(category.type)" :aria-label="`${isExpanded(category.type)?'收起':'展开'}${category.label}路径`" :title="isExpanded(category.type)?'收起路径':'展开路径'" @click.stop="toggleExpand(category.type)"><ChevronRight :class="{open:isExpanded(category.type)}" aria-hidden="true" /></button>
+          <button v-if="!rail&&!mobile" type="button" class="category-expand" :aria-expanded="isExpanded(category.type)" :aria-label="`${isExpanded(category.type)?'收起':'展开'}${category.label}路径`" :title="isExpanded(category.type)?'收起路径':'展开路径'" @click.stop="toggleExpand(category.type)"><ChevronRight :class="{open:isExpanded(category.type)}" aria-hidden="true" /></button>
         </div>
-        <div v-if="!rail&&isExpanded(category.type)" class="category-paths">
+        <div v-if="!rail&&!mobile&&isExpanded(category.type)" class="category-paths">
           <SidebarPathTree v-if="category.type!=='file'&&trees[category.type]" :node="trees[category.type]!" :active-folder-id="activeFolderId" :depth="0" @select="chooseFolder" />
           <p v-else-if="category.type!=='file'" class="path-loading">还没有{{ category.label }}内容</p>
           <SidebarFileTree v-else :current-id="currentFolderId" :reload-token="reloadToken" @navigate="navigateDirectory" />

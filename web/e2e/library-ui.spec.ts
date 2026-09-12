@@ -229,18 +229,35 @@ test('移动端浮动抽屉：开关跟随、内容不位移、backdrop 与 Esc 
   await expect(sidebar).toHaveClass(/mobile-open/)
   await expect(handle).toHaveClass(/open/)
   await expect(handle).toHaveAttribute('aria-label', '收起分类栏')
-  // 抽屉里分类是图标+文字的横向完整布局
+  // 抽屉里分类是图标+文字的横向完整布局，且只有一级入口
   await expect(sidebar.locator('.category-label').first()).toBeVisible()
   await expect(sidebar.locator('[data-category="image"]')).toBeVisible()
+  await expect(sidebar.locator('.category-expand')).toHaveCount(0)
+  await expect(sidebar.locator('.category-count')).toHaveCount(0)
+  await expect(sidebar.locator('.category-paths')).toHaveCount(0)
+  // 一级入口约 50px 高，选中项是一整行淡蓝底（宽度铺满抽屉）
+  const activeRow = sidebar.locator('[data-category="file"]')
+  const activeBox = await activeRow.boundingBox()
+  expect(activeBox!.height).toBeGreaterThanOrEqual(48)
+  expect(activeBox!.height).toBeLessThanOrEqual(52)
   // 等滑入动画（250ms）结束再量尺寸
   await page.waitForTimeout(360)
+  const drawer = await sidebar.boundingBox()
+  expect(Math.abs(activeBox!.width - drawer!.width)).toBeLessThanOrEqual(2)
+  // 回收站与主分类之间有一条浅色分隔线
+  const dividerWidth = await sidebar.locator('.sidebar-foot').evaluate(el => getComputedStyle(el).borderTopWidth)
+  expect(dividerWidth).not.toBe('0px')
   // 主内容不被推动
   const openContent = await content.boundingBox()
   expect(openContent!.x).toBeCloseTo(closedContent!.x, 1)
-  // 按钮停在抽屉右边缘
-  const drawer = await sidebar.boundingBox()
+  // 开关贴在抽屉右边缘（仅少量外露）并换成 <
   const handleBox = await handle.boundingBox()
-  expect(handleBox!.x + handleBox!.width / 2).toBeCloseTo(drawer!.x + drawer!.width, 0)
+  expect(handleBox!.width).toBeCloseTo(32, 0)
+  expect(handleBox!.height).toBeCloseTo(52, 0)
+  expect(handleBox!.x + handleBox!.width).toBeGreaterThanOrEqual(drawer!.x + drawer!.width - 1)
+  expect(handleBox!.x + handleBox!.width).toBeLessThanOrEqual(drawer!.x + drawer!.width + 14)
+  // 开关固定在屏幕左侧垂直居中
+  expect(handleBox!.y + handleBox!.height / 2).toBeCloseTo(422, 0)
   await page.screenshot({ path: testInfo.outputPath('mobile-drawer.png') })
 
   // 点击 backdrop 空白处立即收起
