@@ -69,6 +69,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         )
         .route("/files/{id}/copy", axum::routing::post(copy_file))
         .route("/documents", axum::routing::post(create_document))
+        .route(
+            "/files/{id}/media/progress",
+            get(media_progress).put(save_media_progress),
+        )
         .route("/trash", get(trash).delete(empty_trash))
         .route("/trash/{id}/restore", axum::routing::post(restore_trash))
         .route("/trash/{id}", axum::routing::delete(purge_trash))
@@ -971,6 +975,133 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
     Ok(Json(updated))
 }
 
+/// Media rows that may carry a playback position.
+///
+/// The position is only meaningful for audio and video, and Go refused the
+/// endpoints for anything else so a client cannot use this table as arbitrary
+/// per-file key/value storage.
+fn require_media_file(connection: &Connection, id: &str) -> Result<File, ApiError> {
+    let file = lookup_file(connection, id)
+        .map_err(|error| not_found_or(error, "ready media file not found"))?;
+    if file.kind != FileKind::File
+        || file.status != FileStatus::Ready
+        || !(revaro_core::classify::is_audio(&file) || revaro_core::classify::is_video(&file))
+    {
+        return Err(ApiError::not_found("ready media file not found"));
+    }
+    Ok(file)
+}
+
+/// Milliseconds to whole seconds, the unit the player speaks.
+fn progress_response(
+    position_ms: i64,
+    duration_ms: i64,
+    updated_at: Option<Timestamp>,
+) -> revaro_core::api::progress::Media {
+    revaro_core::api::progress::Media {
+        position: position_ms as f64 / 1000.0,
+        duration: duration_ms as f64 / 1000.0,
+        updated_at,
+    }
+}
+
+/// `GET /api/files/{id}/media/progress`
+async fn media_progress(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<Json<revaro_core::api::progress::Media>, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            require_media_file(connection, &id)?;
+            // A file that has never been played reports zeroes rather than 404,
+            // so the player can call this unconditionally on open.
+            let row = connection
+                .query_row(
+                    "SELECT position_ms, duration_ms, updated_at FROM media_progress WHERE file_id = ?1",
+                    [&id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map(Some)
+                .or_else(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(database_error(DbError::Query(other))),
+                })?;
+            Ok(match row {
+                None => progress_response(0, 0, None),
+                Some((position, duration, updated_at)) => {
+                    progress_response(position, duration, Timestamp::parse(&updated_at).ok())
+                }
+            })
+        })
+        .await
+        .map(Json)
+}
+
+/// `PUT /api/files/{id}/media/progress`
+async fn save_media_progress(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+    Json(request): Json<revaro_core::api::progress::Media>,
+) -> Result<Json<revaro_core::api::progress::Media>, ApiError> {
+    // Rejects NaN, infinities, negatives, anything beyond a week, and a position
+    // more than five seconds past a known duration. These values become integer
+    // milliseconds under a CHECK constraint, so an out-of-range value would
+    // otherwise surface as a 500 rather than a 400.
+    revaro_core::validate::validate_media_progress(request.position, request.duration)?;
+    let position_ms = (request.position * 1000.0).round() as i64;
+    let duration_ms = (request.duration * 1000.0).round() as i64;
+
+    state
+        .db
+        .call_api(move |connection| {
+            require_media_file(connection, &id)?;
+            let now = Timestamp::now().to_rfc3339();
+            // A zero duration means "not known yet" and must not erase a
+            // duration established by an earlier save.
+            connection
+                .execute(
+                    "INSERT INTO media_progress(file_id,position_ms,duration_ms,updated_at) \
+VALUES(?1,?2,?3,?4) ON CONFLICT(file_id) DO UPDATE SET \
+position_ms = excluded.position_ms, \
+duration_ms = CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms \
+ELSE media_progress.duration_ms END, \
+updated_at = excluded.updated_at",
+                    rusqlite::params![id, position_ms, duration_ms, now],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+
+            let stored = connection
+                .query_row(
+                    "SELECT position_ms, duration_ms, updated_at FROM media_progress WHERE file_id = ?1",
+                    [&id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(progress_response(
+                stored.0,
+                stored.1,
+                Timestamp::parse(&stored.2).ok(),
+            ))
+        })
+        .await
+        .map(Json)
+}
+
 /// `POST /api/documents` — create a new text document.
 ///
 /// The bytes are written first and the row second, so a failed insert can
@@ -1495,6 +1626,71 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn media_progress_round_trips_and_refuses_impossible_values() {
+        let state = state().await;
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+VALUES('v1','00000000-0000-0000-0000-000000000000','clip.mp4','file','blobs/v1',10,'video/mp4','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('x1','00000000-0000-0000-0000-000000000000','notes.bin','file','blobs/x1',10,'application/octet-stream','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+
+        // Never played: zeroes, not a 404, so the player can call it blindly.
+        let (status, body) = call(&state, "/api/files/v1/media/progress").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["position"], 0.0);
+        assert_eq!(body["duration"], 0.0);
+        assert!(body.get("updated_at").is_none());
+
+        let (status, saved) = write(
+            &state,
+            "PUT",
+            "/api/files/v1/media/progress",
+            Some(serde_json::json!({"position": 12.5, "duration": 100.0})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(saved["position"], 12.5);
+        assert_eq!(saved["duration"], 100.0);
+        assert!(saved["updated_at"].is_string());
+
+        // A save that does not know the duration must not erase the known one.
+        let (status, saved) = write(
+            &state,
+            "PUT",
+            "/api/files/v1/media/progress",
+            Some(serde_json::json!({"position": 30.0, "duration": 0.0})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(saved["position"], 30.0);
+        assert_eq!(
+            saved["duration"], 100.0,
+            "a zero duration means unknown, not reset"
+        );
+
+        // Out-of-range and non-finite values are 400, never a 500 from the
+        // column's CHECK constraint.
+        for payload in [
+            serde_json::json!({"position": -1.0, "duration": 10.0}),
+            serde_json::json!({"position": 10.0, "duration": -1.0}),
+            serde_json::json!({"position": 10.0, "duration": 700000.0}),
+            serde_json::json!({"position": 20.0, "duration": 10.0}),
+        ] {
+            let (status, body) =
+                write(&state, "PUT", "/api/files/v1/media/progress", Some(payload)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body["error"]["message"],
+                "media progress values are invalid"
+            );
+        }
+
+        // A non-media file is refused outright.
+        let (status, body) = call(&state, "/api/files/x1/media/progress").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["message"], "ready media file not found");
     }
 
     #[tokio::test]
