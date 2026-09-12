@@ -294,6 +294,9 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 ## 8. 进度日志
 
 
+**已完成的阶段**（截至最后一次验证：`cargo xtask check` 退出码 0，
+共 298 个测试 = core 104 + reader 47 + server 121 + web 21 + xtask 5）
+
 | 阶段 | 状态 | 提交 |
 |---|---|---|
 | 0 审计 | ✅ | 后端/前端审计文档 |
@@ -302,8 +305,16 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 2b 对象存储 | ✅ | `refactor(rust): 移植本地对象存储并接入启动与就绪检查` |
 | 2c 阅读器解析 | ✅ | `refactor(rust): 新增 revaro-reader crate（EPUB/TXT 解析与白名单清洗）` |
 | 2d 认证与会话 | ✅ | `refactor(rust): 移植认证与会话并接通 /api/auth/* 路由` |
-| 验收协议自检 | ✅ | `cargo xtask check` 在 main 上退出码 0（fmt + clippy -D warnings + 全量测试 + wasm32 类型检查） |
+| 3a 文件浏览/统计/媒体库（只读） | ✅ | `refactor(rust): 移植文件浏览、存储统计与媒体库读取端点` |
+| 3b 文件写操作与回收站 | ✅ | `refactor(rust): 移植文件写操作与回收站` |
+| 3c 文本文档读写 | ✅ | `refactor(rust): 移植文本文档读写端点` |
+| 3d 上传（会话/流式/提交/中止） | ✅ | `refactor(rust): 移植上传（会话、流式写入、幂等提交、中止）` |
+| 7a 前端外壳 + 样式层 + 纯逻辑 | ✅ | `refactor(web): 落地样式表层、应用外壳与纯逻辑模块` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
+
+**尚未开始**：分享链接、任务系统与 SSE、系统状态与 SSE、缩略图与音频封面、
+媒体探测与字幕、压缩包解压、阅读器 flow 生成、前端各功能视图、
+删除 Node/npm 与 Go 构建链。详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
 9 个集成测试通过，fmt/clippy(-D warnings) 干净。审计发现的两个真实缺陷
