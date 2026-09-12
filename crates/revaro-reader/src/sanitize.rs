@@ -336,9 +336,8 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
     /// dropped empty blocks forward so anchors into them still resolve. Both are
     /// HTML-escaped — see the module docs.
     fn write_block_extra(&mut self) {
-        let chapter = self.chapter.clone();
         self.push(" data-source-path=\"");
-        let escaped = escape_html(&chapter);
+        let escaped = escape_html(&self.chapter);
         self.push(&escaped);
         self.push("\"");
         if self.pending.is_empty() {

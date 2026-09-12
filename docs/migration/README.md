@@ -139,6 +139,9 @@ CI；更新 README 与 docs。
 * `docs/reader-flow.md` 已过时（提到 S3/HLS，实际是纯本地、无 HLS）。
 * 前端 `reader-real-epub.spec.ts` 里有一条**故意失败**的断言
   （`windowSync` 不得把内容向后移动）。
+* **深层嵌套 HTML 的递归遍历**：`revaro-reader` 的白名单清洗按 DOM 树递归
+  下降，与 Go 的 `x/net/html` 行为一致。理论上的栈耗尽 DoS（不是脚本执行），
+  尚未加深度上限。若后续把上传来源视为不可信，应补一个显式深度限制。
 
 ## 5. 构建与检查
 
