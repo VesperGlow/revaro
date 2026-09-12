@@ -219,9 +219,16 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 1 工作区 + 共享类型 | ✅ | `refactor(rust): 建立 Cargo workspace 与前后端共享 core crate` |
 | 2a 数据库层 | ✅ | `refactor(rust): 移植 SQLite 数据库层并接入服务启动` |
 | 2b 对象存储 | ✅ | `refactor(rust): 移植本地对象存储并接入启动与就绪检查` |
-| 2c 阅读器解析 | 🚧 | `crates/revaro-reader`（EPUB/TXT 解析与白名单清洗） |
+| 2c 阅读器解析 | ✅ | `refactor(rust): 新增 revaro-reader crate（EPUB/TXT 解析与白名单清洗）` |
 | 2d 认证与会话 | 🚧 | `revaro-server::auth` + `/api/auth/*` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
+
+阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
+9 个集成测试通过，fmt/clippy(-D warnings) 干净。审计发现的两个真实缺陷
+已修复并有集成测试固定：`epub_parsing_is_byte_deterministic`（同一压缩包
+两次解析逐字节一致）与 `attribute_values_in_paths_and_ids_are_html_escaped`
+（含引号与 `<` 的构造输入）。安全关键的白名单清洗基于 html5ever 的真实
+HTML5 树构建器，压缩炸弹由声明量与实际读取量双重预算拦截。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
