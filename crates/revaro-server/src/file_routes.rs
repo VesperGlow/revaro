@@ -61,6 +61,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/storage/stats", get(storage_stats))
         .route("/system/status", get(system_status))
         .route("/files/{id}/audio", get(audio_media_info))
+        .route("/tasks", get(list_tasks))
+        .route("/tasks/{id}", get(get_task))
         .route("/library", get(library))
         .route("/library/all", get(library_all))
         .route("/library/counts", get(library_counts))
@@ -1131,6 +1133,105 @@ fn progress_response(
     }
 }
 
+/// The canonical `tasks` projection.
+///
+/// `name` is derived rather than stored: the first output file's name, else the
+/// first input file's name, else the task type. Doing it in SQL keeps the task
+/// centre to one query instead of a lookup per row.
+const TASK_COLUMNS: &str = "tasks.id,tasks.type,tasks.status,tasks.phase,tasks.progress,\
+tasks.speed,tasks.eta_seconds,tasks.retry_count,tasks.max_retries,tasks.error,tasks.source_type,\
+tasks.source_id,tasks.cancel_requested,tasks.created_at,tasks.started_at,tasks.finished_at,\
+tasks.updated_at,COALESCE((SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id \
+WHERE task_files.task_id=tasks.id AND task_files.role='output' LIMIT 1),\
+(SELECT files.name FROM task_files JOIN files ON files.id=task_files.file_id \
+WHERE task_files.task_id=tasks.id AND task_files.role='input' LIMIT 1),tasks.type)";
+
+/// Decode one row selected with [`TASK_COLUMNS`].
+pub fn scan_task(row: &Row<'_>) -> rusqlite::Result<revaro_core::model::Task> {
+    Ok(revaro_core::model::Task {
+        id: row.get(0)?,
+        task_type: row.get(1)?,
+        status: enum_column(row, 2, "status")?,
+        phase: row.get(3)?,
+        progress: row.get(4)?,
+        speed: row.get(5)?,
+        eta_seconds: row.get(6)?,
+        retry_count: row.get(7)?,
+        max_retries: row.get(8)?,
+        error: row.get(9)?,
+        // Nullable in the schema, but the wire format is a plain string that is
+        // omitted when empty, so NULL becomes "".
+        source_type: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+        source_id: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+        cancel_requested: row.get(12)?,
+        created_at: timestamp_column(row, 13)?,
+        started_at: optional_timestamp_column(row, 14)?,
+        finished_at: optional_timestamp_column(row, 15)?,
+        updated_at: timestamp_column(row, 16)?,
+        name: row.get(17)?,
+    })
+}
+
+/// The task types the task centre shows.
+///
+/// Other types exist in the table for internal bookkeeping and are deliberately
+/// not surfaced, matching Go's filter.
+const VISIBLE_TASK_TYPES: &str = "('upload','archive_extract','subtitle')";
+
+/// `GET /api/tasks`
+async fn list_tasks(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+) -> Result<Json<revaro_core::api::TaskList>, ApiError> {
+    state
+        .db
+        .call_api(|connection| {
+            // Terminal successes are notification-like records: the durable row
+            // is kept for history, but it stops being returned after half an
+            // hour so the panel does not accumulate stale entries.
+            let sql = format!(
+                "SELECT {TASK_COLUMNS} FROM tasks WHERE tasks.type IN {VISIBLE_TASK_TYPES} \
+AND (tasks.status NOT IN ('completed','cancelled') \
+OR julianday(tasks.finished_at) >= julianday('now','-30 minutes')) \
+ORDER BY tasks.created_at DESC LIMIT 500"
+            );
+            let mut statement = connection
+                .prepare(&sql)
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            let rows = statement
+                .query_map([], scan_task)
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.map_err(|error| database_error(DbError::Query(error)))?);
+            }
+            Ok(revaro_core::api::TaskList { items })
+        })
+        .await
+        .map(Json)
+}
+
+/// `GET /api/tasks/{id}`
+async fn get_task(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<Json<revaro_core::model::Task>, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            connection
+                .query_row(
+                    &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE tasks.id = ?1"),
+                    [&id],
+                    scan_task,
+                )
+                .map_err(|error| not_found_or(DbError::Query(error), "task not found"))
+        })
+        .await
+        .map(Json)
+}
+
 /// Stored media analysis for a file, when it is still current.
 ///
 /// The `source_etag = files.etag` condition is what makes an analysis valid: a
@@ -1929,6 +2030,44 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn tasks_are_listed_with_a_derived_name_and_hidden_when_stale() {
+        let state = state().await;
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+VALUES('f1','00000000-0000-0000-0000-000000000000','holiday.mp4','file','blobs/f1',10,'video/mp4','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'); \
+INSERT INTO tasks(id,type,status,phase,progress,speed,eta_seconds,retry_count,max_retries,error,source_type,source_id,cancel_requested,created_at,started_at,finished_at,updated_at) VALUES \
+('t1','upload','running','uploading',42.5,1024,30,0,3,'','upload','u1',0,'2024-01-02T00:00:00Z','2024-01-02T00:00:01Z',NULL,'2024-01-02T00:00:02Z'), \
+('t2','upload','completed','done',100,0,NULL,0,3,'','upload','u2',0,'2024-01-01T00:00:00Z','2024-01-01T00:00:01Z','2024-01-01T00:00:02Z','2024-01-01T00:00:02Z'), \
+('t3','internal','queued','x',0,0,NULL,0,3,'','x','y',0,'2024-01-03T00:00:00Z',NULL,NULL,'2024-01-03T00:00:00Z'); \
+INSERT INTO task_files(task_id,file_id,role) VALUES('t1','f1','input');";
+        seed(&state, sql).await;
+
+        let (status, body) = call(&state, "/api/tasks").await;
+        assert_eq!(status, StatusCode::OK);
+        let items = body["items"].as_array().unwrap();
+        // t2 finished long ago and is filtered out; t3 is not a task-centre type.
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["id"], "t1");
+        assert_eq!(items[0]["type"], "upload");
+        assert_eq!(items[0]["status"], "running");
+        assert_eq!(items[0]["progress"], 42.5);
+        assert_eq!(items[0]["eta_seconds"], 30);
+        assert_eq!(items[0]["cancel_requested"], false);
+        // The name comes from the joined input file.
+        assert_eq!(items[0]["name"], "holiday.mp4");
+        // A non-running task omits its optional fields rather than sending nulls.
+        assert!(items[0].get("finished_at").is_none());
+
+        let (status, body) = call(&state, "/api/tasks/t1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], "t1");
+        assert_eq!(body["started_at"], "2024-01-02T00:00:01Z");
+
+        let (status, body) = call(&state, "/api/tasks/nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["message"], "task not found");
     }
 
     #[tokio::test]
