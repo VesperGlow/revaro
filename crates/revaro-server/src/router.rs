@@ -81,6 +81,7 @@ fn api() -> Router<Arc<AppState>> {
         .merge(crate::file_routes::routes())
         .merge(crate::media_routes::routes())
         .merge(crate::reader_routes::routes())
+        .merge(crate::status_routes::routes())
         .merge(crate::upload_routes::routes())
         .fallback(api_not_found)
 }

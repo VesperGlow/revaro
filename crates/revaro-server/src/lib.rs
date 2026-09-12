@@ -29,6 +29,7 @@ pub mod proxy;
 pub mod reader_routes;
 pub mod router;
 pub mod state;
+pub mod status_routes;
 pub mod storage;
 pub mod upload_routes;
 pub mod web;

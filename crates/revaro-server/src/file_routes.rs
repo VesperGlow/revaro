@@ -61,7 +61,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/files/{id}", get(get_file))
         .route("/files/{id}/children", get(children))
         .route("/storage/stats", get(storage_stats))
-        .route("/system/status", get(system_status))
         .route("/tasks", get(list_tasks))
         .route("/tasks/{id}", get(get_task).delete(delete_task))
         .route("/tasks/{id}/cancel", axum::routing::post(cancel_task))
@@ -1455,101 +1454,6 @@ async fn get_task(
         })
         .await
         .map(Json)
-}
-
-/// `GET /api/system/status`
-///
-/// Mirrors Go's snapshot, including two deliberate details:
-///
-/// * the storage figures count **ready files regardless of trash**, so `bytes`
-///   includes trashed bytes and `trash_bytes` is the subset that is trashed.
-///   `GET /api/storage/stats` answers the different question "live bytes" — the
-///   two are not interchangeable.
-/// * a component that cannot be measured degrades the whole response, rather
-///   than reporting a plausible zero. The cache layer is not ported yet, so the
-///   cache component reports `degraded` exactly as Go does with a nil cache,
-///   and the overall status is therefore `degraded` until it is wired up.
-async fn system_status(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<revaro_core::api::system::Status>, ApiError> {
-    let measured = state
-        .db
-        .call_api(|connection| {
-            let mut status = revaro_core::api::system::Status {
-                status: "ok".to_owned(),
-                database: revaro_core::api::system::Component {
-                    status: "ok".to_owned(),
-                    bytes: 0,
-                },
-                storage: revaro_core::api::system::Storage {
-                    status: "ok".to_owned(),
-                    bytes: 0,
-                    trash_bytes: 0,
-                    file_count: 0,
-                },
-                cache: revaro_core::api::system::Cache {
-                    // No cache layer exists in the Rust port yet; saying `ok`
-                    // would claim a measurement that was never taken.
-                    status: "degraded".to_owned(),
-                    memory_bytes: 0,
-                    disk_bytes: 0,
-                    memory_entries: 0,
-                    disk_entries: 0,
-                    classes: None,
-                },
-            };
-            // Go's `degrade` helper marks the component *and* the whole
-            // response, so an unavailable cache degrades the overall status.
-            status.status = "degraded".to_owned();
-
-            let pages = connection.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0));
-            let page_size =
-                connection.query_row("PRAGMA page_size", [], |row| row.get::<_, i64>(0));
-            match (pages, page_size) {
-                (Ok(pages), Ok(page_size)) => status.database.bytes = pages * page_size,
-                _ => {
-                    status.database.status = "degraded".to_owned();
-                    status.status = "degraded".to_owned();
-                }
-            }
-
-            let storage = connection.query_row(
-                "SELECT COALESCE(SUM(size),0), \
-COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL THEN size ELSE 0 END),0), COUNT(*) \
-FROM files WHERE kind = 'file' AND status = 'ready'",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            );
-            match storage {
-                Ok((bytes, trash_bytes, file_count)) => {
-                    status.storage.bytes = bytes;
-                    status.storage.trash_bytes = trash_bytes;
-                    status.storage.file_count = file_count;
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "could not measure storage");
-                    status.storage.status = "degraded".to_owned();
-                    status.status = "degraded".to_owned();
-                }
-            }
-            Ok(status)
-        })
-        .await?;
-
-    // The store is probed outside the transaction because it is asynchronous
-    // and independent of the database.
-    let mut measured = measured;
-    if state.store.ping().await.is_err() {
-        measured.storage.status = "degraded".to_owned();
-        measured.status = "degraded".to_owned();
-    }
-    Ok(Json(measured))
 }
 
 /// `GET /api/files/{id}/media/progress`
