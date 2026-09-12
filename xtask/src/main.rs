@@ -230,7 +230,10 @@ fn check_wasm_bindgen_pin(root: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(&manifest)
         .map_err(|error| format!("could not read {}: {error}", manifest.display()))?;
     let pinned = manifest_dependency_version(&text, "wasm-bindgen").ok_or_else(|| {
-        format!("{} does not pin a `wasm-bindgen` version", manifest.display())
+        format!(
+            "{} does not pin a `wasm-bindgen` version",
+            manifest.display()
+        )
     })?;
     let pinned = pinned.trim_start_matches('=');
     if pinned != WASM_BINDGEN_CLI_VERSION {
@@ -343,13 +346,19 @@ mod tests {
     #[test]
     fn extracts_a_plain_version_string() {
         let manifest = "[workspace.dependencies]\nwasm-bindgen = \"=0.2.128\"\n";
-        assert_eq!(manifest_dependency_version(manifest, "wasm-bindgen").as_deref(), Some("=0.2.128"));
+        assert_eq!(
+            manifest_dependency_version(manifest, "wasm-bindgen").as_deref(),
+            Some("=0.2.128")
+        );
     }
 
     #[test]
     fn extracts_a_version_from_an_inline_table() {
         let manifest = "[workspace.dependencies]\nwasm-bindgen = { version = \"=0.2.128\", features = [\"x\"] }\n";
-        assert_eq!(manifest_dependency_version(manifest, "wasm-bindgen").as_deref(), Some("=0.2.128"));
+        assert_eq!(
+            manifest_dependency_version(manifest, "wasm-bindgen").as_deref(),
+            Some("=0.2.128")
+        );
     }
 
     #[test]
@@ -361,7 +370,10 @@ mod tests {
 
     #[test]
     fn reports_a_missing_dependency() {
-        assert_eq!(manifest_dependency_version("[dependencies]\nserde = \"1\"\n", "wasm-bindgen"), None);
+        assert_eq!(
+            manifest_dependency_version("[dependencies]\nserde = \"1\"\n", "wasm-bindgen"),
+            None
+        );
     }
 
     #[test]
