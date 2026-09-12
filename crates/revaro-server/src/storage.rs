@@ -226,6 +226,22 @@ impl LocalStore {
         })
     }
 
+    /// Open an object synchronously after checking that its final path component
+    /// is a regular file.
+    ///
+    /// Batch ZIP generation runs on a blocking thread because `zip`'s writer is
+    /// synchronous. Keeping this check in the store means that the blocking
+    /// path has the same key validation and symlink rejection as async reads,
+    /// rather than teaching a response module how object paths work.
+    pub(crate) fn open_object_blocking(&self, key: &str) -> Result<std::fs::File, StorageError> {
+        let path = self.path_for(key)?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(map_not_found)?;
+        if !metadata.is_file() {
+            return Err(StorageError::NotFound);
+        }
+        std::fs::File::open(&path).map_err(map_not_found)
+    }
+
     /// Read a whole object, refusing anything larger than `limit`.
     ///
     /// # Errors

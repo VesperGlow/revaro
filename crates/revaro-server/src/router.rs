@@ -77,6 +77,7 @@ fn api() -> Router<Arc<AppState>> {
     Router::new()
         .merge(crate::auth_routes::routes())
         .merge(crate::archive_routes::routes())
+        .merge(crate::batch_download::routes())
         .merge(crate::file_routes::routes())
         .merge(crate::media_routes::routes())
         .merge(crate::reader_routes::routes())

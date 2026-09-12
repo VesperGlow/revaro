@@ -117,7 +117,9 @@ xtask/                      # 构建编排（cargo xtask ...）
 重新接入的音频信息端点）。
 阶段 6b 已完成压缩包解压的 Rust 迁移：`revaro-media` 使用 `libarchive2` 做
 有界解码与落盘，`archive_routes.rs` 负责持久化任务、密码输入、取消、恢复、
-对象存储导入和目录树事务。剩余的是批量下载 ZIP 与系统状态 SSE。
+对象存储导入和目录树事务。
+阶段 6c 已完成批量下载 ZIP：`batch_download.rs` 负责用户绑定的一次性票据、
+文件名净化、流式 ZIP 背压和对象存储读取。剩余的是系统状态 SSE。
 
 ### 阶段 7 — 前端
 Leptos 按模块渐进替换 Vue：外壳/登录 → 文件浏览 → 上传与任务中心 →
@@ -171,7 +173,7 @@ CI；更新 README 与 docs。
 | ~~文档读写（≤1 MiB）~~ | `server_files.go` 160-370 | ✅ 已完成：并入 `file_routes.rs`（`/files/{id}/content`） |
 | ~~上传（单请求 + 分片 + 幂等完成）~~ | `server_uploads.go`、`upload_content.go` | ✅ 已完成：`upload_routes.rs`（分片提交暂不写 `content_hash`） |
 | 上传/下载的流式与 Range | `server_stream_share.go` | `stream.rs` |
-| 批量下载 ZIP | `download_batch.go` | `batch_download.rs` |
+| ~~批量下载 ZIP~~ | `download_batch.go` | ✅ 已完成：`batch_download.rs` |
 | 分享链接 | `server_stream_share.go` | `share_routes.rs` |
 | 任务系统 + SSE 事件 | `tasks.go`、`task_manager.go`、`jobs.go` | `file_routes.rs` 已覆盖任务列表/取消/重试/删除与 `/events`；归档任务输入与生命周期由 `archive_routes.rs` 完成 |
 | 系统状态 + SSE | `system_status.go` | `status_routes.rs` |
@@ -242,20 +244,19 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 | 项 | 值 |
 |---|---|
-| 测试 | **370 个**（core 109、media 21、reader 55 = 46 单元 + 9 集成、server 159 = 157 单元 + 2 集成、web 21、xtask 5） |
-| 路由覆盖 | **61 条 Go 路径模式中已实现 57 条**，剩 3 条真实缺口（+1 条为核对脚本的正则噪声） |
+| 测试 | **376 个**（core 109、media 21、reader 55 = 46 单元 + 9 集成、server 165 = 163 单元 + 2 集成、web 21、xtask 5） |
+| 路由覆盖 | **61 条 Go 路径模式中已实现 59 条**，剩 1 条真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
 | reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈 |
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
-| archive 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；真实进程通过登录、ZIP 上传、解压任务轮询及导入文件 MIME/SHA-256 核验 |
+| archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | 部署路径 | **未变**：镜像仍构建 Go 服务 + data-plane；Rust 服务并行推进、尚未接管镜像 |
 
-### 剩余 3 条路由（按所需前置条件归类）
+### 剩余 1 条路由（按所需前置条件归类）
 
 | 缺口 | 条数 | 前置条件 |
 |---|---|---|
-| `/files/batch-download/prepare`、`batch-download/{token}` | 2 | 流式 ZIP；Range/流式基础设施已就绪（见 `serve_file`） |
 | `/system/status/stream` | 1 | 需要一个 15 秒刷新的状态快照与订阅广播；`JobBus` 的形态可直接复用 |
 
 ### 尚未开始的大块
@@ -312,8 +313,8 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 媒体播放（原文件 Range、字幕、进度） | ✅ | `server_stream_share.go`、`video_media.go`、`media_progress.go` |
 | 缩略图与音频封面 | ✅ | `thumb.go` |
 | 压缩包解压 | ✅ | `revaro-media` + `archive_routes.rs`；旧 data-plane 仍只供迁移期部署使用 |
-| 批量下载（流式 ZIP） | ✅ | `download_batch.go` |
-| 系统状态（含 SSE 流） | ✅ | `system_status.go` |
+| 批量下载（流式 ZIP） | ✅ | `batch_download.rs` |
+| 系统状态（含 SSE 流） | ⏳ | 待迁移：`status_routes.rs` |
 | TOTP 两步验证与恢复码 | ✅ | `internal/auth/totp.go` |
 | **搜索** | ❌ **不存在** | 无端点、无 UI，仅在注释/定位逻辑中出现同名词 |
 
@@ -364,6 +365,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 5a 阅读器 flow + reader HTTP 端点 | ✅ | 本阶段提交：`revaro-reader::flow`、`reader_routes.rs` |
 | 6a 进程内媒体引擎与媒体端点 | ✅ | `feat(media): 接入进程内媒体引擎与媒体路由` |
 | 6b Rust 归档解压与任务生命周期 | ✅ | `feat(archive): 迁移归档解压与任务生命周期` |
+| 6c Rust 批量下载 ZIP | ✅ | `feat(download): 迁移批量 ZIP 流式下载` |
 | 7a 前端外壳 + 样式层 + 纯逻辑 | ✅ | `refactor(web): 落地样式表层、应用外壳与纯逻辑模块` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
@@ -387,7 +389,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**从阶段 6b 继续的项目**：批量下载 ZIP、系统状态 SSE、前端各功能视图、
+**从阶段 6c 继续的项目**：系统状态 SSE、前端各功能视图、
 删除 Node/npm 与 Go 构建链。详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +

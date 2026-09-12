@@ -156,7 +156,7 @@ fn optional_timestamp_column(row: &Row<'_>, index: usize) -> rusqlite::Result<Op
 }
 
 /// A live (non-deleted) file by id.
-fn lookup_file(connection: &rusqlite::Connection, id: &str) -> Result<File, DbError> {
+pub(crate) fn lookup_file(connection: &rusqlite::Connection, id: &str) -> Result<File, DbError> {
     connection
         .query_row(
             &format!("SELECT {FILE_COLUMNS} FROM files WHERE id = ?1 AND deleted_at IS NULL"),

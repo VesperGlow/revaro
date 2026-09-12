@@ -56,8 +56,8 @@ time = "0.3"
 # The workspace default enables only `jpeg`; the avatar sniffer and the TOTP QR
 # code both need PNG encoding, so the feature is added here rather than globally.
 image = { workspace = true, features = ["png"] }
+zip.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
 tower = { workspace = true, features = ["util"] }
-zip.workspace = true

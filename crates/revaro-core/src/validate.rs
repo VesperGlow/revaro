@@ -289,15 +289,13 @@ pub fn validate_upload_part_batch(
 /// # Errors
 /// `400` for an empty list, too many ids, a malformed id, or a duplicate.
 pub fn validate_batch_download_ids(ids: &[String]) -> Result<(), ApiError> {
-    /// Ceiling on how many files one archive may contain.
-    pub const MAX_BATCH_FILES: usize = 1000;
-
     if ids.is_empty() {
         return Err(ApiError::bad_request("at least one file id is required"));
     }
-    if ids.len() > MAX_BATCH_FILES {
+    if ids.len() > limits::MAX_BATCH_DOWNLOAD_FILES {
         return Err(ApiError::bad_request(format!(
-            "a maximum of {MAX_BATCH_FILES} files can be downloaded at once"
+            "a maximum of {} files can be downloaded at once",
+            limits::MAX_BATCH_DOWNLOAD_FILES
         )));
     }
     let mut seen = std::collections::HashSet::with_capacity(ids.len());

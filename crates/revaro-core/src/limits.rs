@@ -29,6 +29,9 @@ pub const MULTIPART_UPLOAD_THRESHOLD: i64 = 16 << 20;
 /// Preferred multipart part size.
 pub const DEFAULT_MULTIPART_PART_SIZE: i64 = 16 << 20;
 
+/// Maximum number of files in one prepared batch-download archive.
+pub const MAX_BATCH_DOWNLOAD_FILES: usize = 1000;
+
 /// Maximum length of a `Content-Type` header value accepted from a client.
 pub const MAX_MIME_TYPE_LEN: usize = 255;
 
