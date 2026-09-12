@@ -32,7 +32,7 @@ use revaro_core::model::{
     File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats,
 };
 use revaro_core::time::Timestamp;
-use rusqlite::Row;
+use rusqlite::{Connection, Row};
 
 use crate::auth::extract::AuthUser;
 use crate::db::DbError;
@@ -66,6 +66,7 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/files/{id}",
             axum::routing::patch(patch_file).delete(delete_file),
         )
+        .route("/files/{id}/copy", axum::routing::post(copy_file))
         .route("/trash", get(trash).delete(empty_trash))
         .route("/trash/{id}/restore", axum::routing::post(restore_trash))
         .route("/trash/{id}", axum::routing::delete(purge_trash))
@@ -968,6 +969,148 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
     Ok(Json(updated))
 }
 
+/// Pick a free name for a copy of `original` inside `parent_id`.
+///
+/// Mirrors Go exactly: the source name if it is free, otherwise
+/// `"<stem> - 副本<ext>"`, then `"<stem> - 副本 N<ext>"` up to 9999. The suffix is
+/// part of the product's Chinese UI and is reproduced verbatim.
+fn available_copy_name(
+    connection: &Connection,
+    parent_id: &str,
+    original: &str,
+) -> Result<String, ApiError> {
+    let taken = |name: &str| -> Result<bool, ApiError> {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM files WHERE parent_id = ?1 AND name = ?2 \
+AND deleted_at IS NULL)",
+                rusqlite::params![parent_id, name],
+                |row| row.get(0),
+            )
+            .map_err(|error| database_error(DbError::Query(error)))
+    };
+
+    if !taken(original)? {
+        return Ok(original.to_owned());
+    }
+
+    let extension = revaro_core::classify::extension(original);
+    let (stem, suffix) = if extension.is_empty() {
+        (original, "")
+    } else {
+        (
+            &original[..original.len() - extension.len() - 1],
+            &original[original.len() - extension.len() - 1..],
+        )
+    };
+
+    for index in 1..=9999 {
+        let marker = if index > 1 {
+            format!(" - 副本 {index}")
+        } else {
+            " - 副本".to_owned()
+        };
+        let candidate = format!("{stem}{marker}{suffix}");
+        // A long original name can push the copy name past the limit; that is a
+        // failure, not something to silently truncate.
+        revaro_core::validate::validate_name(&candidate)
+            .map_err(|_| ApiError::internal("copy name is too long"))?;
+        if !taken(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+    Err(ApiError::internal("too many copies with the same name"))
+}
+
+/// `POST /api/files/{id}/copy`
+async fn copy_file(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+    Json(request): Json<revaro_core::api::CopyFileRequest>,
+) -> Result<(http::StatusCode, Json<File>), ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            let source = lookup_file(connection, &id)
+                .map_err(|error| not_found_or(error, "ready file not found"))?;
+            if source.kind != FileKind::File || source.status != FileStatus::Ready {
+                return Err(ApiError::not_found("ready file not found"));
+            }
+            let parent = lookup_file(connection, &request.parent_id)
+                .map_err(|_| ApiError::bad_request("target directory is invalid"))?;
+            if parent.kind != FileKind::Directory || parent.status != FileStatus::Ready {
+                return Err(ApiError::bad_request("target directory is invalid"));
+            }
+
+            let transaction = connection
+                .transaction()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+
+            // Re-read inside the transaction so a concurrent purge cannot drop
+            // the final reference to the blob between the check and the insert.
+            let source = transaction
+                .query_row(
+                    &format!(
+                        "SELECT {FILE_COLUMNS} FROM files WHERE id = ?1 AND kind = 'file' \
+AND status = 'ready' AND deleted_at IS NULL"
+                    ),
+                    [&id],
+                    scan_file,
+                )
+                .map_err(|_| ApiError::conflict("source file is no longer available"))?;
+
+            let name = available_copy_name(&transaction, &request.parent_id, &source.name)?;
+            let copy_id = crate::ids::new_id();
+            let now = Timestamp::now().to_rfc3339();
+            let inserted = transaction
+                .execute(
+                    "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,\
+content_hash,hash_algorithm,status,created_at,updated_at) \
+SELECT ?1,?2,?3,'file',?4,?5,?6,?7,?8,?9,'ready',?10,?10 \
+WHERE EXISTS(SELECT 1 FROM files WHERE id = ?2 AND kind = 'directory' AND status = 'ready' \
+AND deleted_at IS NULL)",
+                    rusqlite::params![
+                        copy_id,
+                        request.parent_id,
+                        name,
+                        source.object_key,
+                        source.size,
+                        source.mime_type,
+                        source.etag,
+                        source.content_hash,
+                        source.hash_algorithm,
+                        now,
+                    ],
+                )
+                .map_err(|error| conflict_or(DbError::Query(error)))?;
+            if inserted != 1 {
+                return Err(ApiError::conflict("parent directory is no longer available"));
+            }
+
+            // Carry the analysis across so the copy does not have to be probed
+            // again. A source with no metadata simply copies zero rows.
+            transaction
+                .execute(
+                    "INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,\
+width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,\
+source_etag,probe_version) SELECT ?1,duration_ms,container,video_codec,audio_codec,width,height,\
+bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,\
+probe_version FROM media_metadata WHERE file_id = ?2",
+                    rusqlite::params![copy_id, id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+
+            let copied = lookup_file(&transaction, &copy_id).map_err(database_error)?;
+            transaction
+                .commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok((http::StatusCode::CREATED, copied))
+        })
+        .await
+        .map(|(status, file)| (status, Json(file)))
+}
+
 /// Restore reports its conflict with a different message: the name is taken at
 /// the location the item is going *back* to, which is more actionable than the
 /// generic duplicate-name message.
@@ -1269,6 +1412,82 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn copy_reuses_the_blob_and_suffixes_the_name() {
+        let state = state().await;
+        let root = ROOT_ID;
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) \
+VALUES('f1','00000000-0000-0000-0000-000000000000','notes.md','file','blobs/f1',5,'text/markdown','e1','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');";
+        seed(&state, sql).await;
+
+        // The source name is taken at the root, so the copy is suffixed with the
+        // product's Chinese marker rather than failing.
+        let (status, first) = write(
+            &state,
+            "POST",
+            "/api/files/f1/copy",
+            Some(serde_json::json!({"parent_id": root})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(first["name"], "notes - 副本.md");
+        // A copy shares the object, so no bytes are duplicated.
+        assert!(
+            first.get("object_key").is_none(),
+            "the object key must never be exposed"
+        );
+
+        let (status, second) = write(
+            &state,
+            "POST",
+            "/api/files/f1/copy",
+            Some(serde_json::json!({"parent_id": root})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(second["name"], "notes - 副本 2.md");
+
+        // Into a directory where the name is free, the original name is kept.
+        let (_, dir) = write(
+            &state,
+            "POST",
+            "/api/directories",
+            Some(serde_json::json!({"parent_id": root, "name": "sub"})),
+        )
+        .await;
+        let dir_id = dir["id"].as_str().unwrap().to_owned();
+        let (status, third) = write(
+            &state,
+            "POST",
+            "/api/files/f1/copy",
+            Some(serde_json::json!({"parent_id": dir_id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(third["name"], "notes.md");
+
+        // Copying onto an invalid target is a 400, and a missing source a 404.
+        let (status, body) = write(
+            &state,
+            "POST",
+            "/api/files/f1/copy",
+            Some(serde_json::json!({"parent_id": "0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["message"], "target directory is invalid");
+
+        let (status, body) = write(
+            &state,
+            "POST",
+            "/api/files/0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f/copy",
+            Some(serde_json::json!({"parent_id": root})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["message"], "ready file not found");
     }
 
     #[tokio::test]
