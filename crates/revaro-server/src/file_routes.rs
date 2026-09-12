@@ -28,7 +28,9 @@ use revaro_core::ApiError;
 use revaro_core::api::{Children, FileDetail, Library, LibraryAll, LibraryBuckets};
 use revaro_core::classify::LibraryKind;
 use revaro_core::library as aggregation;
-use revaro_core::model::{File, FileKind, FolderRef, LibraryCounts, LibraryItem, StorageStats};
+use revaro_core::model::{
+    File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats,
+};
 use revaro_core::time::Timestamp;
 use rusqlite::Row;
 
@@ -59,6 +61,14 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/library", get(library))
         .route("/library/all", get(library_all))
         .route("/library/counts", get(library_counts))
+        .route("/directories", axum::routing::post(create_directory))
+        .route(
+            "/files/{id}",
+            axum::routing::patch(patch_file).delete(delete_file),
+        )
+        .route("/trash", get(trash).delete(empty_trash))
+        .route("/trash/{id}/restore", axum::routing::post(restore_trash))
+        .route("/trash/{id}", axum::routing::delete(purge_trash))
 }
 
 /// Decode one `files` row selected with [`FILE_COLUMNS`].
@@ -426,6 +436,340 @@ async fn library_counts(
     Ok(Json(aggregation::bucket_counts(&data.files)))
 }
 
+/// `POST /api/directories`
+async fn create_directory(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    Json(request): Json<revaro_core::api::CreateDirectoryRequest>,
+) -> Result<(http::StatusCode, Json<File>), ApiError> {
+    revaro_core::validate::validate_name(&request.name)?;
+    let id = crate::ids::new_id();
+    let created = state
+        .db
+        .call_api(move |connection| {
+            let valid: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM files WHERE id = ?1 AND kind = 'directory' \
+AND status = 'ready' AND deleted_at IS NULL)",
+                    [&request.parent_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            if !valid {
+                return Err(ApiError::bad_request("parent directory is invalid"));
+            }
+            let now = Timestamp::now().to_rfc3339();
+            connection
+                .execute(
+                    "INSERT INTO files(id,parent_id,name,kind,status,created_at,updated_at) \
+VALUES(?1,?2,?3,'directory','ready',?4,?4)",
+                    rusqlite::params![id, request.parent_id, request.name, now],
+                )
+                .map_err(|error| conflict_or(DbError::Query(error)))?;
+            lookup_file(connection, &id).map_err(database_error)
+        })
+        .await?;
+    Ok((http::StatusCode::CREATED, Json(created)))
+}
+
+/// `PATCH /api/files/{id}` — rename, move, or both.
+async fn patch_file(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+    Json(request): Json<revaro_core::api::PatchFileRequest>,
+) -> Result<Json<File>, ApiError> {
+    if revaro_core::ids::is_root(&id) {
+        return Err(ApiError::bad_request("root cannot be modified"));
+    }
+    if let Some(name) = &request.name {
+        revaro_core::validate::validate_name(name)?;
+    }
+    let updated = state
+        .db
+        .call_api(move |connection| {
+            let existing = lookup_file(connection, &id)
+                .map_err(|error| not_found_or(error, "file not found"))?;
+            let name = request
+                .name
+                .clone()
+                .unwrap_or_else(|| existing.name.clone());
+            let parent = request
+                .parent_id
+                .clone()
+                .or_else(|| existing.parent_id.clone());
+
+            if let Some(parent_id) = &parent
+                && parent_id != &existing.parent_id.clone().unwrap_or_default()
+            {
+                let valid: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM files WHERE id = ?1 AND kind = 'directory' \
+AND status = 'ready' AND deleted_at IS NULL)",
+                        [parent_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                if !valid {
+                    return Err(ApiError::bad_request("target directory is invalid"));
+                }
+                if existing.kind == FileKind::Directory {
+                    // The authoritative cycle check, ported from Go: does the
+                    // destination live inside the directory being moved?
+                    let cyclic: bool = connection
+                        .query_row(
+                            "WITH RECURSIVE d(id) AS (SELECT id FROM files WHERE id = ?1 \
+UNION ALL SELECT f.id FROM files f JOIN d ON f.parent_id = d.id) \
+SELECT EXISTS(SELECT 1 FROM d WHERE id = ?2)",
+                            rusqlite::params![id, parent_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| database_error(DbError::Query(error)))?;
+                    if cyclic {
+                        return Err(ApiError::bad_request(
+                            "a directory cannot be moved into itself or its descendants",
+                        ));
+                    }
+                }
+            }
+
+            connection
+                .execute(
+                    "UPDATE files SET name = ?1, parent_id = ?2, updated_at = ?3 WHERE id = ?4",
+                    rusqlite::params![name, parent, Timestamp::now().to_rfc3339(), id],
+                )
+                .map_err(|error| conflict_or(DbError::Query(error)))?;
+            lookup_file(connection, &id).map_err(database_error)
+        })
+        .await?;
+    Ok(Json(updated))
+}
+
+/// `DELETE /api/files/{id}` — move into the trash, or drop unfinished rows.
+///
+/// A file that is still pending has no recoverable content, so Go removed it
+/// outright rather than trashing it. This port keeps that behaviour but not the
+/// pending-upload abort that precedes it in Go: aborting needs the upload
+/// module, and until it lands the cascade delete removes the `uploads` row while
+/// any multipart staging is reaped by the store's age-based cleanup.
+async fn delete_file(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<http::StatusCode, ApiError> {
+    if revaro_core::ids::is_root(&id) {
+        return Err(ApiError::bad_request("root cannot be deleted"));
+    }
+    state
+        .db
+        .call_api(move |connection| {
+            let file = lookup_file(connection, &id).map_err(|error| not_found_or(error, "file not found"))?;
+
+            if file.kind == FileKind::File && file.status != FileStatus::Ready {
+                let changed = connection
+                    .execute("DELETE FROM files WHERE id = ?1 AND status <> 'ready'", [&id])
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                if changed != 1 {
+                    return Err(ApiError::conflict("file changed; refresh before deleting"));
+                }
+                return Ok(http::StatusCode::NO_CONTENT);
+            }
+
+            let now = Timestamp::now().to_rfc3339();
+            let transaction = connection
+                .transaction()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            // Marking the whole subtree and then detaching the root keeps every
+            // trashed row reachable from the trash listing, while the original
+            // parent is remembered so a restore can go back.
+            transaction
+                .execute(
+                    "WITH RECURSIVE tree(id) AS (SELECT id FROM files WHERE id = ?1 \
+AND deleted_at IS NULL UNION ALL SELECT f.id FROM files f JOIN tree t ON f.parent_id = t.id \
+WHERE f.deleted_at IS NULL) \
+UPDATE files SET deleted_at = ?2, trash_root_id = ?1 WHERE id IN tree",
+                    rusqlite::params![id, now],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .execute(
+                    "UPDATE files SET restore_parent_id = parent_id, parent_id = NULL WHERE id = ?1",
+                    [&id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(http::StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// `GET /api/trash`
+async fn trash(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+) -> Result<Json<revaro_core::api::Trash>, ApiError> {
+    state
+        .db
+        .call_api(|connection| {
+            let sql = format!(
+                "SELECT {FILE_COLUMNS} FROM files WHERE deleted_at IS NOT NULL AND trash_root_id = id \
+ORDER BY deleted_at DESC"
+            );
+            let items = query_files(connection, sql, []).map_err(database_error)?;
+            let (total_bytes, file_count) = connection
+                .query_row(
+                    "SELECT COALESCE(SUM(size),0), COUNT(*) FROM files \
+WHERE kind = 'file' AND status = 'ready' AND deleted_at IS NOT NULL",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(revaro_core::api::Trash { items, total_bytes, file_count })
+        })
+        .await
+        .map(Json)
+}
+
+/// `DELETE /api/trash` — empty it.
+async fn empty_trash(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+) -> Result<http::StatusCode, ApiError> {
+    state
+        .db
+        .call_api(|connection| {
+            let transaction = connection
+                .transaction()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            // Deferred foreign keys let the cascade order settle before the
+            // constraints are checked at commit.
+            transaction
+                .execute_batch("PRAGMA defer_foreign_keys=ON")
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .execute("DELETE FROM files WHERE deleted_at IS NOT NULL", [])
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(http::StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// `POST /api/trash/{id}/restore`
+async fn restore_trash(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<http::StatusCode, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            let file = connection
+                .query_row(
+                    &format!(
+                        "SELECT {FILE_COLUMNS} FROM files \
+WHERE id = ?1 AND deleted_at IS NOT NULL AND trash_root_id = id"
+                    ),
+                    [&id],
+                    scan_file,
+                )
+                .map_err(|error| not_found_or(DbError::Query(error), "trash item not found"))?;
+
+            // An item whose original directory is gone has to go back to the
+            // root: Go treated the root as a valid fallback.
+            let parent = match &file.restore_parent_id {
+                Some(candidate) => {
+                    let valid: bool = connection
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM files WHERE id = ?1 AND kind = 'directory' \
+AND status = 'ready' AND deleted_at IS NULL)",
+                            [candidate],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| database_error(DbError::Query(error)))?;
+                    if valid { candidate.clone() } else { revaro_core::ids::ROOT_ID.to_owned() }
+                }
+                None => revaro_core::ids::ROOT_ID.to_owned(),
+            };
+
+            let transaction = connection
+                .transaction()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .execute("UPDATE files SET parent_id = ?1 WHERE id = ?2", rusqlite::params![parent, id])
+                .map_err(|error| conflict_or(DbError::Query(error)))?;
+            transaction
+                .execute(
+                    "UPDATE files SET deleted_at = NULL, restore_parent_id = NULL, trash_root_id = NULL \
+WHERE trash_root_id = ?1",
+                    [&id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(http::StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// `DELETE /api/trash/{id}` — remove one item permanently.
+async fn purge_trash(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<http::StatusCode, ApiError> {
+    state
+        .db
+        .call_api(move |connection| {
+            let present: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM files WHERE id = ?1 AND deleted_at IS NOT NULL \
+AND trash_root_id = id)",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            if !present {
+                return Err(ApiError::not_found("trash item not found"));
+            }
+            let transaction = connection
+                .transaction()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .execute_batch("PRAGMA defer_foreign_keys=ON")
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            // Deleting the subtree fires the cleanup trigger, which queues every
+            // blob for reclamation in the same transaction.
+            transaction
+                .execute(
+                    "WITH RECURSIVE tree(id) AS (SELECT id FROM files WHERE id = ?1 \
+UNION ALL SELECT f.id FROM files f JOIN tree t ON f.parent_id = t.id) \
+DELETE FROM files WHERE id IN tree",
+                    [&id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(http::StatusCode::NO_CONTENT)
+        })
+        .await
+}
+
+/// Map a uniqueness violation onto `409` and anything else onto `500`.
+fn conflict_or(error: DbError) -> ApiError {
+    if error.is_constraint_violation() {
+        ApiError::conflict("an item with that name already exists")
+    } else {
+        database_error(error)
+    }
+}
+
 /// Map an internal failure onto the response the client expects.
 fn database_error(error: DbError) -> ApiError {
     tracing::error!(%error, "file query failed");
@@ -537,6 +881,229 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
                 "NULL".to_owned()
             }
         )
+    }
+
+    /// An authenticated write request: writes also need a same-origin `Origin`
+    /// header because of the origin guard.
+    async fn write(
+        state: &Arc<AppState>,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("origin", "http://localhost:8080")
+            .header(
+                "cookie",
+                format!("{}={}", crate::auth::SESSION_COOKIE, token(state).await),
+            );
+        let payload = match body {
+            Some(value) => {
+                builder = builder.header("content-type", "application/json");
+                value.to_string()
+            }
+            None => String::new(),
+        };
+        let request = builder.body(Body::from(payload)).unwrap();
+        let response = crate::router::build(state.clone())
+            .oneshot(request)
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_rename_move_delete_and_restore_round_trip() {
+        let state = state().await;
+        let root = ROOT_ID;
+
+        // Create a directory, then a child directory inside it.
+        let (status, parent) = write(
+            &state,
+            "POST",
+            "/api/directories",
+            Some(serde_json::json!({"parent_id": root, "name": "movies"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let parent_id = parent["id"].as_str().unwrap().to_owned();
+        assert_eq!(parent["kind"], "directory");
+
+        let (status, child) = write(
+            &state,
+            "POST",
+            "/api/directories",
+            Some(serde_json::json!({"parent_id": parent_id, "name": "scifi"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let child_id = child["id"].as_str().unwrap().to_owned();
+
+        // A duplicate name in the same directory is a conflict, not a 500.
+        let (status, body) = write(
+            &state,
+            "POST",
+            "/api/directories",
+            Some(serde_json::json!({"parent_id": root, "name": "movies"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body["error"]["message"],
+            "an item with that name already exists"
+        );
+
+        // An invalid name is refused before touching the database.
+        let (status, body) = write(
+            &state,
+            "POST",
+            "/api/directories",
+            Some(serde_json::json!({"parent_id": root, "name": "a/b"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["message"],
+            "name cannot contain path separators"
+        );
+
+        // Renaming works, and the new name is what the listing shows.
+        let (status, renamed) = write(
+            &state,
+            "PATCH",
+            &format!("/api/files/{parent_id}"),
+            Some(serde_json::json!({"name": "films"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(renamed["name"], "films");
+
+        // Moving a directory into its own descendant must be refused.
+        let (status, body) = write(
+            &state,
+            "PATCH",
+            &format!("/api/files/{parent_id}"),
+            Some(serde_json::json!({"parent_id": child_id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["message"],
+            "a directory cannot be moved into itself or its descendants"
+        );
+
+        // The root is immutable.
+        let (status, body) = write(
+            &state,
+            "PATCH",
+            &format!("/api/files/{root}"),
+            Some(serde_json::json!({"name": "x"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["message"], "root cannot be modified");
+
+        // Soft delete moves the whole subtree into the trash.
+        let (status, _) = write(&state, "DELETE", &format!("/api/files/{parent_id}"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, trash) = call(&state, "/api/trash").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            trash["items"].as_array().unwrap().len(),
+            1,
+            "only the trash root is listed"
+        );
+        assert_eq!(trash["items"][0]["name"], "films");
+        assert_eq!(trash["file_count"], 0, "directories hold no bytes");
+
+        // The subtree is detached from the root listing...
+        let (_, children) = call(&state, &format!("/api/files/{root}/children")).await;
+        assert!(children["items"].as_array().unwrap().is_empty());
+
+        // ...and restore brings it back under its original parent (the root).
+        let (status, _) = write(
+            &state,
+            "POST",
+            &format!("/api/trash/{parent_id}/restore"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, children) = call(&state, &format!("/api/files/{root}/children")).await;
+        assert_eq!(children["items"].as_array().unwrap().len(), 1);
+        assert_eq!(children["items"][0]["name"], "films");
+
+        // Restoring something that is not in the trash is a 404.
+        let (status, body) = write(
+            &state,
+            "POST",
+            &format!("/api/trash/{parent_id}/restore"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn purge_and_empty_remove_rows_permanently() {
+        let state = state().await;
+        let sql: &'static str = Box::leak(
+            format!(
+                "{}{}",
+                file_row(
+                    "f1",
+                    ROOT_ID,
+                    "a.bin",
+                    "file",
+                    3,
+                    "application/octet-stream"
+                ),
+                file_row(
+                    "f2",
+                    ROOT_ID,
+                    "b.bin",
+                    "file",
+                    4,
+                    "application/octet-stream"
+                )
+            )
+            .into_boxed_str(),
+        );
+        seed(&state, sql).await;
+
+        // Two soft-deleted files, then purge one and empty the rest.
+        for id in ["f1", "f2"] {
+            let (status, _) = write(&state, "DELETE", &format!("/api/files/{id}"), None).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        let (_, trash) = call(&state, "/api/trash").await;
+        assert_eq!(trash["items"].as_array().unwrap().len(), 2);
+        assert_eq!(trash["total_bytes"], 7);
+        assert_eq!(trash["file_count"], 2);
+
+        let (status, _) = write(&state, "DELETE", "/api/trash/f1", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, trash) = call(&state, "/api/trash").await;
+        assert_eq!(trash["items"].as_array().unwrap().len(), 1);
+
+        let (status, _) = write(&state, "DELETE", "/api/trash", None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, trash) = call(&state, "/api/trash").await;
+        assert!(trash["items"].as_array().unwrap().is_empty());
+
+        // Purging something already gone is a 404.
+        let (status, body) = write(&state, "DELETE", "/api/trash/f1", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["message"], "trash item not found");
     }
 
     #[tokio::test]
