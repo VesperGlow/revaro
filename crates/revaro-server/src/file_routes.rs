@@ -59,6 +59,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/files/{id}", get(get_file))
         .route("/files/{id}/children", get(children))
         .route("/storage/stats", get(storage_stats))
+        .route("/system/status", get(system_status))
         .route("/library", get(library))
         .route("/library/all", get(library_all))
         .route("/library/counts", get(library_counts))
@@ -1129,6 +1130,101 @@ fn progress_response(
     }
 }
 
+/// `GET /api/system/status`
+///
+/// Mirrors Go's snapshot, including two deliberate details:
+///
+/// * the storage figures count **ready files regardless of trash**, so `bytes`
+///   includes trashed bytes and `trash_bytes` is the subset that is trashed.
+///   `GET /api/storage/stats` answers the different question "live bytes" — the
+///   two are not interchangeable.
+/// * a component that cannot be measured degrades the whole response, rather
+///   than reporting a plausible zero. The cache layer is not ported yet, so the
+///   cache component reports `degraded` exactly as Go does with a nil cache,
+///   and the overall status is therefore `degraded` until it is wired up.
+async fn system_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<revaro_core::api::system::Status>, ApiError> {
+    let measured = state
+        .db
+        .call_api(|connection| {
+            let mut status = revaro_core::api::system::Status {
+                status: "ok".to_owned(),
+                database: revaro_core::api::system::Component {
+                    status: "ok".to_owned(),
+                    bytes: 0,
+                },
+                storage: revaro_core::api::system::Storage {
+                    status: "ok".to_owned(),
+                    bytes: 0,
+                    trash_bytes: 0,
+                    file_count: 0,
+                },
+                cache: revaro_core::api::system::Cache {
+                    // No cache layer exists in the Rust port yet; saying `ok`
+                    // would claim a measurement that was never taken.
+                    status: "degraded".to_owned(),
+                    memory_bytes: 0,
+                    disk_bytes: 0,
+                    memory_entries: 0,
+                    disk_entries: 0,
+                    classes: None,
+                },
+            };
+            // Go's `degrade` helper marks the component *and* the whole
+            // response, so an unavailable cache degrades the overall status.
+            status.status = "degraded".to_owned();
+
+            let pages = connection.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0));
+            let page_size =
+                connection.query_row("PRAGMA page_size", [], |row| row.get::<_, i64>(0));
+            match (pages, page_size) {
+                (Ok(pages), Ok(page_size)) => status.database.bytes = pages * page_size,
+                _ => {
+                    status.database.status = "degraded".to_owned();
+                    status.status = "degraded".to_owned();
+                }
+            }
+
+            let storage = connection.query_row(
+                "SELECT COALESCE(SUM(size),0), \
+COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL THEN size ELSE 0 END),0), COUNT(*) \
+FROM files WHERE kind = 'file' AND status = 'ready'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            );
+            match storage {
+                Ok((bytes, trash_bytes, file_count)) => {
+                    status.storage.bytes = bytes;
+                    status.storage.trash_bytes = trash_bytes;
+                    status.storage.file_count = file_count;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not measure storage");
+                    status.storage.status = "degraded".to_owned();
+                    status.status = "degraded".to_owned();
+                }
+            }
+            Ok(status)
+        })
+        .await?;
+
+    // The store is probed outside the transaction because it is asynchronous
+    // and independent of the database.
+    let mut measured = measured;
+    if state.store.ping().await.is_err() {
+        measured.storage.status = "degraded".to_owned();
+        measured.status = "degraded".to_owned();
+    }
+    Ok(Json(measured))
+}
+
 /// `GET /api/files/{id}/media/progress`
 async fn media_progress(
     State(state): State<Arc<AppState>>,
@@ -1750,6 +1846,35 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn system_status_counts_trashed_bytes_separately_from_live_bytes() {
+        let state = state().await;
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+VALUES('a','00000000-0000-0000-0000-000000000000','a.bin','file','blobs/a',100,'application/octet-stream','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('b','00000000-0000-0000-0000-000000000000','b.bin','file','blobs/b',60,'application/octet-stream','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'); \
+UPDATE files SET deleted_at='2024-01-01T00:00:00Z', trash_root_id='b' WHERE id='b';";
+        seed(&state, sql).await;
+
+        let (status, body) = call(&state, "/api/system/status").await;
+        assert_eq!(status, StatusCode::OK);
+        // Storage figures deliberately include trash, unlike /storage/stats.
+        assert_eq!(body["storage"]["bytes"], 160);
+        assert_eq!(body["storage"]["trash_bytes"], 60);
+        assert_eq!(body["storage"]["file_count"], 2);
+        assert!(body["database"]["bytes"].as_i64().unwrap() > 0);
+        // The cache layer does not exist yet, so it reports degraded — claiming
+        // "ok" would assert a measurement nobody took — and degrades the whole
+        // response, exactly as Go does with a nil cache.
+        assert_eq!(body["cache"]["status"], "degraded");
+        assert_eq!(body["status"], "degraded");
+
+        // The live-bytes endpoint answers the other question and must exclude
+        // the trashed file.
+        let (_, live) = call(&state, "/api/storage/stats").await;
+        assert_eq!(live["total_bytes"], 100);
+        assert_eq!(live["file_count"], 1);
     }
 
     #[tokio::test]
