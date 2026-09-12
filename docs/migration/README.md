@@ -151,10 +151,10 @@ CI；更新 README 与 docs。
 
 | 剩余模块 | Go 源 | Rust 落点 |
 |---|---|---|
-| 文件浏览/新建/改名/复制/删除 | `server_files.go` | `crates/revaro-server/src/file_routes.rs`（进行中） |
-| 回收站列表/还原/清空/彻底删除 | `server_files.go` 540-760 | 同上 |
-| 文档读写（≤1 MiB） | `server_files.go` 160-370 | `document_routes.rs` |
-| 上传（单请求 + 分片 + 幂等完成） | `server_uploads.go`、`upload_content.go` | `upload_routes.rs` |
+| ~~文件浏览/新建/改名/复制/删除~~ | `server_files.go` | ✅ 已完成：`file_routes.rs` |
+| ~~回收站列表/还原/清空/彻底删除~~ | `server_files.go` 540-760 | ✅ 已完成：`file_routes.rs` |
+| ~~文档读写（≤1 MiB）~~ | `server_files.go` 160-370 | ✅ 已完成：并入 `file_routes.rs`（`/files/{id}/content`） |
+| ~~上传（单请求 + 分片 + 幂等完成）~~ | `server_uploads.go`、`upload_content.go` | ✅ 已完成：`upload_routes.rs`（分片提交暂不写 `content_hash`） |
 | 上传/下载的流式与 Range | `server_stream_share.go` | `stream.rs` |
 | 批量下载 ZIP | `download_batch.go` | `batch_download.rs` |
 | 分享链接 | `server_stream_share.go` | `share_routes.rs` |
