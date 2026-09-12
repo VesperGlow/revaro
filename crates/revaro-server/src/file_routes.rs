@@ -254,15 +254,20 @@ ORDER BY kind DESC, name COLLATE NOCASE"
             mark_audio_covers(connection, &parent.id, &mut items)?;
 
             // `directory_stats` is maintained by SQL triggers, so it is the
-            // authoritative aggregate and no recount is needed here.
+            // authoritative aggregate and no recount is needed. A missing row
+            // means the database is inconsistent, and reporting zero bytes for
+            // a directory that has content would be a silently wrong answer —
+            // so this fails loudly, as Go did.
             let (total_bytes, file_count) = connection
                 .query_row(
-                    "SELECT COALESCE(total_bytes,0), COALESCE(file_count,0) FROM directory_stats \
-WHERE directory_id = ?1",
+                    "SELECT total_bytes, file_count FROM directory_stats WHERE directory_id = ?1",
                     [&parent.id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .unwrap_or((0, 0));
+                .map_err(|error| {
+                    tracing::error!(%error, directory = %parent.id, "directory usage is missing");
+                    ApiError::internal("could not calculate directory usage")
+                })?;
 
             Ok(Children {
                 items,
@@ -298,7 +303,11 @@ AND m.video_codec <> ''",
         covered.push(row.map_err(|error| database_error(DbError::Query(error)))?);
     }
     for item in items.iter_mut() {
-        if covered.iter().any(|id| id == &item.id) {
+        // Go guards this with `isAudioSource(f) && covered[f.ID]`: a video's
+        // generated thumbnail is fetched through its own endpoint and must not
+        // be advertised as an audio cover, because the browser keys its
+        // album-art rendering on `has_cover`.
+        if revaro_core::classify::is_audio(item) && covered.iter().any(|id| id == &item.id) {
             item.has_cover = true;
         }
     }
@@ -1357,6 +1366,53 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         let (status, body) = write(&state, "DELETE", "/api/trash/f1", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "trash item not found");
+    }
+
+    #[tokio::test]
+    async fn has_cover_is_reported_for_audio_only() {
+        let state = state().await;
+        // Both rows have analysed metadata with a video stream (which is how an
+        // embedded cover is represented), so only the audio guard distinguishes
+        // them.
+        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES \
+('a1','00000000-0000-0000-0000-000000000000','song.flac','file','blobs/a1',10,'audio/flac','e1','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+('v1','00000000-0000-0000-0000-000000000000','clip.mp4','file','blobs/v1',20,'video/mp4','e2','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'); \
+INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES \
+('a1',1000,'flac','mjpeg','flac',0,0,0,'[]','2024-01-01T00:00:00Z','','',0,'[]','e1',2), \
+('v1',2000,'mp4','h264','aac',1920,1080,0,'[]','2024-01-01T00:00:00Z','','',0,'[]','e2',2);";
+        seed(&state, sql).await;
+
+        let (status, body) = call(&state, &format!("/api/files/{ROOT_ID}/children")).await;
+        assert_eq!(status, StatusCode::OK);
+        let flags: Vec<(&str, bool)> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                (
+                    item["name"].as_str().unwrap(),
+                    item["has_cover"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect();
+        let audio = flags
+            .iter()
+            .find(|(name, _)| *name == "song.flac")
+            .unwrap()
+            .1;
+        let video = flags
+            .iter()
+            .find(|(name, _)| *name == "clip.mp4")
+            .unwrap()
+            .1;
+        assert!(
+            audio,
+            "an audio file with embedded art must report has_cover"
+        );
+        assert!(
+            !video,
+            "a video must not advertise an audio cover, matching Go"
+        );
     }
 
     #[tokio::test]
