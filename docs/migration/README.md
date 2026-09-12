@@ -326,8 +326,12 @@ HTML5 树构建器，压缩炸弹由声明量与实际读取量双重预算拦�
 阶段 3d 验收：workspace 全绿（server 121）。真实进程实测单请求上传全链路：
 创建返回 `mode=single`/`part_size`/`expires_at`，PUT 数据 204，complete 返回
 带 64 字符 sha256 的 ready 文件，GET 内容为原文，再次 complete 返回 200
-（幂等）。**未实测**：分片模式的 HTTP 层（存储层分片已有单元测试）；
-分片提交不写 `content_hash` 是已记录的缺口。
+（幂等）。分片模式的 HTTP 层此后也已真实进程端到端验证：20 MiB 上传被判定为
+multipart（part_size 16 MiB、part_count 2），两片分别 PUT 后 ack、
+complete 返回 ready 且 size 正确；**落盘对象与源文件逐字节相同**
+（sha256 一致）。拒绝路径同样验证：中间分片被截断 → 400、越界分片号 → 400、
+空分片列表 complete → 400。分片提交不写 `content_hash` 仍是已记录的缺口
+（complete 返回的 content_hash 为空）。
 
 阶段 3c 补充（真实进程端到端）：在运行中的服务里种入一行文档与对应
 blob，`GET /content` 返回原文、`PUT` 返回 200、再次 `GET` 返回新内容并带上
