@@ -209,6 +209,92 @@ pub fn validate_archive_path(path: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Validate a media playback position before it is stored.
+///
+/// The rules exist because the position is attacker-controlled and ends up in
+/// SQLite as milliseconds: a negative, not-a-number or absurd value would
+/// either fail the column's `CHECK` constraint with a `500` or store nonsense
+/// that the player would then seek to. The bounds are the ones the Go server
+/// enforced, including the tolerance that lets a client report a position a few
+/// seconds past a slightly stale duration.
+///
+/// # Errors
+/// `400` when any value is out of range.
+pub fn validate_media_progress(position: f64, duration: f64) -> Result<(), ApiError> {
+    /// A week, far beyond any real media file this product handles.
+    const MAX_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
+    /// How far past the recorded duration a position may be.
+    const POSITION_TOLERANCE: f64 = 5.0;
+
+    let in_range = |value: f64| value.is_finite() && (0.0..=MAX_SECONDS).contains(&value);
+    if !in_range(position)
+        || !in_range(duration)
+        || (duration > 0.0 && position > duration + POSITION_TOLERANCE)
+    {
+        return Err(ApiError::bad_request("media progress values are invalid"));
+    }
+    Ok(())
+}
+
+/// Validate a batch request for upload part URLs.
+///
+/// Returns the numbers in request order. Duplicates are rejected because each
+/// returned URL is single-use; handing out two URLs for one part would let a
+/// client upload it twice and produce a wrong entity tag on the second attempt.
+///
+/// # Errors
+/// `400` when the batch size is wrong, or a number is out of range or repeated.
+pub fn validate_upload_part_batch(
+    numbers: &[i32],
+    part_count: usize,
+) -> Result<Vec<i32>, ApiError> {
+    if numbers.is_empty() || numbers.len() > limits::MAX_UPLOAD_PART_BATCH {
+        return Err(ApiError::bad_request(format!(
+            "request between 1 and {} upload parts",
+            limits::MAX_UPLOAD_PART_BATCH
+        )));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(numbers.len());
+    for number in numbers {
+        let valid = *number >= 1 && (*number as usize) <= part_count && seen.insert(*number);
+        if !valid {
+            return Err(ApiError::bad_request("invalid multipart part number"));
+        }
+    }
+    Ok(numbers.to_vec())
+}
+
+/// Validate the id list of a batch download request.
+///
+/// Only the shape is checked here; whether each id resolves to a readable file
+/// needs the database and belongs to the server.
+///
+/// # Errors
+/// `400` for an empty list, too many ids, a malformed id, or a duplicate.
+pub fn validate_batch_download_ids(ids: &[String]) -> Result<(), ApiError> {
+    /// Ceiling on how many files one archive may contain.
+    pub const MAX_BATCH_FILES: usize = 1000;
+
+    if ids.is_empty() {
+        return Err(ApiError::bad_request("at least one file id is required"));
+    }
+    if ids.len() > MAX_BATCH_FILES {
+        return Err(ApiError::bad_request(format!(
+            "a maximum of {MAX_BATCH_FILES} files can be downloaded at once"
+        )));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    for id in ids {
+        if !crate::ids::is_uuid(id) {
+            return Err(ApiError::bad_request("invalid file id"));
+        }
+        if !seen.insert(id) {
+            return Err(ApiError::bad_request("duplicate file id"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +481,97 @@ mod tests {
             "invalid multipart part number"
         );
         assert_eq!(validate_part_number(-1, 3).unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn accepts_ordinary_playback_positions() {
+        assert!(validate_media_progress(0.0, 0.0).is_ok());
+        assert!(validate_media_progress(12.5, 100.0).is_ok());
+        // A position slightly past a stale duration is tolerated.
+        assert!(validate_media_progress(103.0, 100.0).is_ok());
+        // A week exactly is still in range.
+        assert!(validate_media_progress(7.0 * 24.0 * 3600.0, 0.0).is_ok());
+    }
+
+    #[test]
+    fn rejects_impossible_playback_positions() {
+        let error = || validate_media_progress(f64::NAN, 0.0).unwrap_err();
+        assert_eq!(error().message, "media progress values are invalid");
+        for (position, duration) in [
+            (f64::NAN, 0.0),
+            (f64::INFINITY, 0.0),
+            (0.0, f64::NAN),
+            (0.0, f64::NEG_INFINITY),
+            (-0.1, 0.0),
+            (0.0, -1.0),
+            (7.0 * 24.0 * 3600.0 + 1.0, 0.0),
+            (0.0, 7.0 * 24.0 * 3600.0 + 1.0),
+            // More than the tolerance past a known duration.
+            (106.0, 100.0),
+        ] {
+            let result = validate_media_progress(position, duration);
+            assert!(result.is_err(), "{position}/{duration} should be rejected");
+            assert_eq!(result.unwrap_err().status, 400);
+        }
+    }
+
+    #[test]
+    fn upload_part_batches_are_bounded_and_unique() {
+        assert_eq!(
+            validate_upload_part_batch(&[1, 2, 3], 3).unwrap(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            validate_upload_part_batch(&[], 3).unwrap_err().message,
+            "request between 1 and 100 upload parts"
+        );
+        let too_many: Vec<i32> = (1..=101).collect();
+        assert_eq!(
+            validate_upload_part_batch(&too_many, 10_000)
+                .unwrap_err()
+                .message,
+            "request between 1 and 100 upload parts"
+        );
+        // Out of range, zero, negative and duplicate numbers are all refused.
+        for bad in [vec![0], vec![-1], vec![4], vec![1, 1]] {
+            assert_eq!(
+                validate_upload_part_batch(&bad, 3).unwrap_err().message,
+                "invalid multipart part number",
+                "{bad:?}"
+            );
+        }
+        // Exactly 100 is allowed.
+        let full: Vec<i32> = (1..=100).collect();
+        assert!(validate_upload_part_batch(&full, 100).is_ok());
+    }
+
+    #[test]
+    fn batch_download_id_lists_are_validated() {
+        let id = "0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f".to_owned();
+        assert!(validate_batch_download_ids(std::slice::from_ref(&id)).is_ok());
+        assert_eq!(
+            validate_batch_download_ids(&[]).unwrap_err().message,
+            "at least one file id is required"
+        );
+        assert_eq!(
+            validate_batch_download_ids(&[id.clone(), id.clone()])
+                .unwrap_err()
+                .message,
+            "duplicate file id"
+        );
+        assert_eq!(
+            validate_batch_download_ids(&["nope".to_owned()])
+                .unwrap_err()
+                .message,
+            "invalid file id"
+        );
+        let too_many: Vec<String> = (0..1001).map(|index| format!("{index:0>36}")).collect();
+        assert!(
+            validate_batch_download_ids(&too_many)
+                .unwrap_err()
+                .message
+                .starts_with("a maximum of 1000 files")
+        );
     }
 
     #[test]
