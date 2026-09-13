@@ -372,7 +372,7 @@ pub async fn cancel_task_runtime(state: &Arc<AppState>, task_id: &str) {
     };
     let waiting = handle.snapshot().status == JobStatus::WaitingPassword;
     if waiting && let Some(snapshot) = state.archive.mark_cancelled(&task.source_id) {
-        persist_snapshot(state, &snapshot).await;
+        persist_cancelled_snapshot(state, &snapshot).await;
         cleanup_output(state, &task.source_id).await;
         state.archive.remove_if(&task.source_id, &handle);
     }
@@ -544,6 +544,13 @@ async fn run_attempt(
             }
         },
     };
+    // Cancellation and semaphore release can become ready at the same time.
+    // Re-check after acquiring the slot so a queued task cannot start an
+    // extraction merely because the select chose the permit branch.
+    if cancel.is_cancelled() {
+        settle_cancelled(&state, &handle, &output).await;
+        return;
+    }
 
     let progress = Arc::new(Mutex::new(ArchiveProgress {
         phase: ArchivePhase::Checking,
@@ -686,15 +693,20 @@ async fn settle_cancelled(
     handle: &Arc<crate::archive_runtime::ArchiveJobHandle>,
     output: &Path,
 ) {
+    let id = handle.id();
     handle.update(
         JobStatus::Cancelled,
         handle.snapshot().progress,
         "解压已取消".to_owned(),
         String::new(),
     );
-    persist_snapshot(state, &handle.snapshot()).await;
+    // A retry replaces the runtime handle while the old worker may still be
+    // unwinding. Only the live attempt may settle the durable task.
+    if state.archive.is_current(&id, handle) {
+        persist_cancelled_snapshot(state, &handle.snapshot()).await;
+    }
     let _ = remove_output(output).await;
-    state.archive.remove_if(&handle.id(), handle);
+    state.archive.remove_if(&id, handle);
 }
 
 async fn settle_failure(
@@ -702,7 +714,7 @@ async fn settle_failure(
     handle: &Arc<crate::archive_runtime::ArchiveJobHandle>,
     error: WorkerError,
 ) {
-    if matches!(error, WorkerError::Cancelled) {
+    if matches!(error, WorkerError::Cancelled) || handle.is_cancelled() {
         let output = output_directory(state, &handle.id()).ok();
         if let Some(output) = output {
             settle_cancelled(state, handle, &output).await;
@@ -984,13 +996,15 @@ fn commit_import_sync(
     let transaction = connection
         .transaction()
         .map_err(|error| database_error(DbError::Query(error)))?;
-    let task_status: Option<String> = transaction
-        .query_row("SELECT status FROM tasks WHERE id = ?1", [task_id], |row| {
-            row.get(0)
-        })
+    let task_state: Option<(String, bool)> = transaction
+        .query_row(
+            "SELECT status,cancel_requested FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .optional()
         .map_err(|error| database_error(DbError::Query(error)))?;
-    if task_status.as_deref() != Some("running") {
+    if !matches!(task_state.as_ref(), Some((status, false)) if status == "running") {
         return Ok(None);
     }
     let valid_parent: bool = transaction
@@ -1072,7 +1086,7 @@ fn commit_import_sync(
     }
     let changed = transaction
         .execute(
-            "UPDATE tasks SET status='completed',phase='done',progress=100,error='',finished_at=COALESCE(finished_at,?1),updated_at=?1 WHERE id=?2 AND status='running'",
+            "UPDATE tasks SET status='completed',phase='done',progress=100,error='',finished_at=COALESCE(finished_at,?1),updated_at=?1 WHERE id=?2 AND status='running' AND cancel_requested=0",
             rusqlite::params![now, task_id],
         )
         .map_err(|error| database_error(DbError::Query(error)))?;
@@ -1307,24 +1321,33 @@ async fn persist_snapshot(state: &Arc<AppState>, snapshot: &ArchiveJob) {
     let error = snapshot.error.clone();
     let id = snapshot.id.clone();
     let now = Timestamp::now().to_rfc3339();
+    // A user cancellation is committed before the runtime token is notified.
+    // Ordinary progress writes must therefore never resurrect that task. The
+    // cancellation snapshot itself is allowed to finish the transition.
     let result = state
         .db
         .call_api(move |connection| {
             let changed = match task_status.as_str() {
                 "running" => connection
                     .execute(
-                        "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,started_at=COALESCE(started_at,?5),heartbeat_at=?5,updated_at=?5 WHERE id=?6",
+                        "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,started_at=COALESCE(started_at,?5),heartbeat_at=?5,updated_at=?5 WHERE id=?6 AND cancel_requested=0 AND status NOT IN ('completed','failed','cancelled')",
                         rusqlite::params![task_status, phase, progress, error, now, id],
                     )
                     .map_err(|error| database_error(DbError::Query(error)))?,
-                "completed" | "failed" | "cancelled" => connection
+                "completed" | "failed" => connection
                     .execute(
-                        "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,finished_at=COALESCE(finished_at,?5),updated_at=?5 WHERE id=?6",
+                        "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,finished_at=COALESCE(finished_at,?5),updated_at=?5 WHERE id=?6 AND cancel_requested=0 AND status NOT IN ('completed','failed','cancelled')",
+                        rusqlite::params![task_status, phase, progress, error, now, id],
+                    )
+                    .map_err(|error| database_error(DbError::Query(error)))?,
+                "cancelled" => connection
+                    .execute(
+                        "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,finished_at=COALESCE(finished_at,?5),updated_at=?5 WHERE id=?6 AND cancel_requested=1 AND status NOT IN ('completed','failed','cancelled')",
                         rusqlite::params![task_status, phase, progress, error, now, id],
                     )
                     .map_err(|error| database_error(DbError::Query(error)))?,
                 _ => connection.execute(
-                    "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,finished_at=NULL,updated_at=?5 WHERE id=?6",
+                    "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,finished_at=NULL,updated_at=?5 WHERE id=?6 AND cancel_requested=0 AND status NOT IN ('completed','failed','cancelled')",
                     rusqlite::params![task_status, phase, progress, error, now, id],
                 ).map_err(|error| database_error(DbError::Query(error)))?,
             };
@@ -1333,6 +1356,34 @@ async fn persist_snapshot(state: &Arc<AppState>, snapshot: &ArchiveJob) {
         .await;
     if let Err(error) = result {
         tracing::warn!(%error, task = %snapshot.id, "could not persist archive task state");
+    }
+    state.jobs.changed();
+}
+
+/// Persist cancellation during process shutdown or after a worker has observed
+/// its token. The runtime identity check keeps an old retry attempt from
+/// cancelling the replacement attempt that reuses the same durable task id.
+async fn persist_cancelled_snapshot(state: &Arc<AppState>, snapshot: &ArchiveJob) {
+    let task_status = task_status_for(snapshot.status);
+    let task_status = task_status.as_str().to_owned();
+    let phase = archive_status_name(snapshot.status).to_owned();
+    let progress = f64::from(snapshot.progress);
+    let error = snapshot.error.clone();
+    let id = snapshot.id.clone();
+    let now = Timestamp::now().to_rfc3339();
+    let result = state
+        .db
+        .call_api(move |connection| {
+            connection
+                .execute(
+                    "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4,finished_at=COALESCE(finished_at,?5),updated_at=?5 WHERE id=?6 AND status IN ('queued','running','retrying','waiting_input')",
+                    rusqlite::params![task_status, phase, progress, error, now, id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))
+        })
+        .await;
+    if let Err(error) = result {
+        tracing::warn!(%error, task = %snapshot.id, "could not persist cancelled archive task state");
     }
     state.jobs.changed();
 }
@@ -1873,6 +1924,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output_count, 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_requested_running_task_is_not_completed_by_import_commit() {
+        let state = state().await;
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let now = Timestamp::now().to_rfc3339();
+        state
+            .db
+            .call({
+                let task_id = task_id.clone();
+                move |connection| {
+                    connection
+                        .execute(
+                            "INSERT INTO tasks(id,type,status,phase,progress,error,cancel_requested,payload_json,created_at,updated_at) VALUES(?1,'archive_extract','running','importing',35,'',1,'{}',?2,?2)",
+                            rusqlite::params![task_id, now],
+                        )
+                        .map_err(DbError::Query)?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+
+        let task_id_for_status = task_id.clone();
+        let result = state
+            .db
+            .call_api(move |connection| {
+                commit_import_sync(connection, &task_id, ROOT_ID, "cancelled-output", &[], &[])
+            })
+            .await
+            .unwrap();
+        assert_eq!(result, None);
+
+        let status: String = state
+            .db
+            .call(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT status FROM tasks WHERE id = ?1",
+                        [&task_id_for_status],
+                        |row| row.get(0),
+                    )
+                    .map_err(DbError::Query)
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, "running");
     }
 
     #[tokio::test]

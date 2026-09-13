@@ -2195,17 +2195,19 @@ mod tests {
     use tower::ServiceExt as _;
 
     async fn state() -> Arc<AppState> {
-        let config = Config::from_lookup(&|name| match name {
-            "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
-            "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
-            _ => None,
-        })
-        .unwrap();
         let root = std::env::temp_dir().join(format!(
             "revaro-files-store-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
+        let config = Config::from_lookup(&|name| match name {
+            "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
+            "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
+            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
+            _ => None,
+        })
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
         let store = LocalStore::open(&root).await.unwrap();
         let database = Database::open_in_memory().unwrap();
         let auth = crate::auth::AuthService::new(database.clone());
@@ -2654,11 +2656,10 @@ UPDATE files SET deleted_at='2024-01-01T00:00:00Z', trash_root_id='b' WHERE id='
         assert_eq!(body["storage"]["trash_bytes"], 60);
         assert_eq!(body["storage"]["file_count"], 2);
         assert!(body["database"]["bytes"].as_i64().unwrap() > 0);
-        // The cache layer does not exist yet, so it reports degraded — claiming
-        // "ok" would assert a measurement nobody took — and degrades the whole
-        // response, exactly as Go does with a nil cache.
-        assert_eq!(body["cache"]["status"], "degraded");
-        assert_eq!(body["status"], "degraded");
+        // The test state uses an isolated writable work directory, so the
+        // process-wide cache manager has completed its real startup probe.
+        assert_eq!(body["cache"]["status"], "ok");
+        assert_eq!(body["status"], "ok");
 
         // The live-bytes endpoint answers the other question and must exclude
         // the trashed file.

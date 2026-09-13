@@ -189,6 +189,19 @@ reader、字幕路由和 system status 已改为使用同一实例。路由测�
 上传过期、回收站、对象队列和 orphan/flow GC 测试；release 进程实测启动时清理过期上传、
 回收站、session、对象队列、临时文件和孤儿 flow/blob，并以 0 退出响应 SIGTERM。
 
+阶段 9d 修复迁移复核发现的归档取消竞态：任务进度写入尊重已落库的
+`cancel_requested`，提交目录树的事务在最终更新时再次检查取消标记；抢到归档并发槽位后
+重新检查令牌，取消收敛只允许当前重试尝试写入终态，避免旧 worker 覆盖新尝试。新增
+`cancel_requested` 运行中任务的事务测试、重试尝试身份测试，并将文件状态测试的工作目录
+隔离到独立可写目录。`cargo xtask check` 通过 **429 个测试**、fmt、clippy
+`-D warnings` 和 wasm32 检查；`cargo audit --file Cargo.lock` 退出码为 0，仅保留
+Leptos 传递依赖的两个未维护警告。当前 Dockerfile 通过
+`sudo buildah bud --isolation=chroot --userns=host --storage-driver=vfs` 完成干净检查层、
+wasm/release 构建和 `localhost/revaro:9c-image-host` 最终镜像，镜像元数据确认入口为单一
+`revaro`、默认用户为非 root `revaro`、运行层不含 Go/Node/npm。当前开发环境的 Docker
+daemon 不可用，Buildah 运行容器又被沙箱拒绝 `/proc` 挂载，因此本轮只完成了镜像构建和
+元数据验证；下一步仍是 CI Docker runner 的真实容器 E2E/GHCR 发布观察及目标部署验收。
+
 ## 4. 已记录的风险与遗留问题
 
 来自两份审计，迁移时必须逐条处理：
@@ -313,11 +326,12 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 
 ## 4.7 当前迁移状态（供接手者定位）
 
-最后一次完整验收（`cargo xtask check` 退出码 0，另行完成 wasm bundle 构建和真实进程验证）：
+最后一次完整验收（当前源代码的 `cargo xtask check` 退出码 0，另行完成 wasm bundle、
+依赖审计和生产 Dockerfile 构建）：
 
 | 项 | 值 |
 |---|---|
-| 测试 | **427 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 188 = 185 单元 + 3 集成、web 46、xtask 5） |
+| 测试 | **429 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 190 = 187 单元 + 3 集成、web 46、xtask 5） |
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |

@@ -81,6 +81,16 @@ impl ArchiveRuntime {
             .cloned()
     }
 
+    /// Check whether a handle is still the live attempt for a task id.
+    #[must_use]
+    pub fn is_current(&self, id: &str, expected: &Arc<ArchiveJobHandle>) -> bool {
+        self.jobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+    }
+
     /// Remove a job from the process map after its worker has settled.
     pub fn remove(&self, id: &str) -> Option<Arc<ArchiveJobHandle>> {
         self.jobs
@@ -241,6 +251,15 @@ impl ArchiveJobHandle {
             .cancel();
     }
 
+    /// Return whether the current attempt has received a cancellation request.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_cancelled()
+    }
+
     /// Update status and monotonic progress.
     pub fn update(&self, status: JobStatus, progress: i32, message: String, error: String) {
         let mut job = self.job.lock().unwrap_or_else(PoisonError::into_inner);
@@ -378,5 +397,16 @@ mod tests {
         assert_eq!(handle.snapshot().status, JobStatus::WaitingPassword);
         assert!(runtime.expire_password_wait(id).is_some());
         assert_eq!(handle.snapshot().status, JobStatus::Failed);
+    }
+
+    #[test]
+    fn only_the_current_attempt_can_settle_a_reused_task_id() {
+        let runtime = ArchiveRuntime::new();
+        let id = "archive-retry-job";
+        let first = runtime.register(job(id));
+        let second = runtime.register(job(id));
+
+        assert!(!runtime.is_current(id, &first));
+        assert!(runtime.is_current(id, &second));
     }
 }
