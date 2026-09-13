@@ -11,8 +11,10 @@
 
 生产 Compose 的 `APP_BASE_URL` 默认值会从 `APP_PORT` 推导；留空时例如
 `APP_PORT=18081` 会得到 `http://localhost:18081`，显式设置公网地址则保持原值。
-CI 在构建镜像前用 `docker compose config --format json` 同时断言这两种情况，防止
-宿主端口调整后登录请求被 Origin 守卫拒绝。
+`COOKIE_SECURE` 默认保持为空，由 Rust 按 `APP_BASE_URL` 自动决定 HTTPS Cookie
+属性。CI 在构建镜像前用 `docker compose config --format json` 同时断言两种
+基址和两种情况下的空 Cookie 覆盖值，防止宿主端口调整后 Origin 守卫拒绝登录，
+或示例配置意外关闭 HTTPS Cookie 安全属性。
 
 容器 job 是 `revaro-image-amd64-v3` BuildKit 缓存的唯一写入者；发布 job 只读取
 该缓存并推送经过验证的 GHCR 镜像。主分支不会在缓存导出期间取消，PR 仍会取消

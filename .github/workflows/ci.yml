@@ -81,12 +81,18 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npx playwright install --with-deps chromium
-      - name: Validate Compose base URL defaults
+      - name: Validate Compose origin defaults
         run: |
           compose_default_base_url="$(APP_PORT=18081 APP_BASE_URL= docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
           test "$compose_default_base_url" = "http://localhost:18081"
           compose_custom_base_url="$(APP_PORT=18081 APP_BASE_URL=https://files.example.test docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
           test "$compose_custom_base_url" = "https://files.example.test"
+          compose_http_cookie_secure="$(APP_PORT=18081 APP_BASE_URL= COOKIE_SECURE= docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.COOKIE_SECURE')"
+          test -z "$compose_http_cookie_secure"
+          compose_https_cookie_secure="$(APP_PORT=18081 APP_BASE_URL=https://files.example.test COOKIE_SECURE= docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.COOKIE_SECURE')"
+          test -z "$compose_https_cookie_secure"
+          example_cookie_secure="$(sed -n 's/^COOKIE_SECURE=//p' .env.example)"
+          test -z "$example_cookie_secure"
       - uses: docker/setup-buildx-action@v4.1.0
       - name: Build checked amd64 image once
         uses: docker/build-push-action@v7.3.0

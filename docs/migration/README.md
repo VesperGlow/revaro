@@ -269,6 +269,9 @@ workspace 的 fmt、clippy、全量测试、wasm 检查和 release 构建；Comp
 临时产物进入后续 release 层；release 阶段从已验证的源码重新生成最终二进制和
 前端资源。
 
+`.env.example` 保持 `COOKIE_SECURE` 为空，让服务端根据 `APP_BASE_URL` 自动启用
+HTTPS Cookie 属性；只有确实需要覆盖默认行为时才显式设置它。
+
 浏览器测试位于 `tests/e2e/`，并由 `.dockerignore` 排除；Dockerfile 只复制 Cargo
 workspace、Rust 静态资源和 release 产物。根 workspace 已不再排除 sidecar，仓库中
 也不再有 Go、Vue/Vite 或独立 data-plane 源码；test-only npm 包不进入生产镜像。
@@ -427,6 +430,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8e Compose 部署基址与 CI 配置校验 | ✅ | `fix(deploy): 让 Compose 基址跟随映射端口` |
 | 8f EPUB 实际浏览器验收 | ✅ | `test(e2e): 验证 Rust EPUB 阅读器流程` |
 | 8g 生产镜像 EPUB 容器行为验收 | ✅ | `test(deploy): 验收生产镜像阅读器流程` |
+| 8h HTTPS Cookie 默认安全属性 | ✅ | `fix(deploy): 保持 HTTPS Cookie 自动安全属性` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -648,9 +652,17 @@ target，解决 Buildah 提交约 4 GiB 中间层时的空间失败；release �
 `localhost/revaro:8c-image-host`，通过 Buildah `--isolation=chroot` 在镜像内以
 非 root `revaro` 用户启动单一服务，并设置与测试端口一致的 `APP_BASE_URL`；
 `tests/e2e` 的媒体、TXT、EPUB 三条真实 Chromium 场景全部通过（3 passed）。
-这补齐了 EPUB 前端流程在生产镜像权限、静态资源和进程内后端组合下的验收；下一步
-仍是 CI Docker runner 的正式构建/发布观察和目标部署环境的卷权限、反向代理基址
-确认。
+这补齐了 EPUB 前端流程在生产镜像权限、静态资源和进程内后端组合下的验收；随后
+阶段 8h 修正并验证了 HTTPS Cookie 的默认配置。下一步仍是 CI Docker runner 的
+正式构建/发布观察和目标部署环境的卷权限、反向代理基址确认。
+
+阶段 8h 验收：`.env.example` 不再把 `COOKIE_SECURE` 固定为 `false`；CI 新增
+HTTP/HTTPS 两种 Compose 渲染断言，确保该变量留空并由 Rust 按基址决定。使用
+`docker compose --env-file .env.example config` 核对默认端口、回环绑定和空值，
+并以 `APP_BASE_URL=https://files.example.test`、空 `COOKIE_SECURE` 启动真实
+release `revaro`，带匹配 Origin 登录返回的 session Cookie 实际含 `Secure`。
+`cargo xtask check`（407 个测试、fmt、clippy、wasm32）仍通过；下一步进入 CI
+Docker runner 和目标部署环境验收。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
