@@ -202,6 +202,15 @@ wasm/release 构建和 `localhost/revaro:9c-image-host` 最终镜像，镜像元
 daemon 不可用，Buildah 运行容器又被沙箱拒绝 `/proc` 挂载，因此本轮只完成了镜像构建和
 元数据验证；下一步仍是 CI Docker runner 的真实容器 E2E/GHCR 发布观察及目标部署验收。
 
+阶段 9e 修复主分支 CI 的 native 依赖缺口。真实的 `CI #268` 在
+`Rust workspace / Check the workspace` 失败，后续镜像、Chromium E2E 和发布 job 被跳过；
+当前 workflow 只安装了 libarchive 所需依赖，却没有为 `ffmpeg-next` 启用的
+`avcodec`、`avformat`、`avfilter`、`swscale` 和 `swresample` 安装 FFmpeg 开发包。
+本地将 pkg-config 指向空目录后复现了 `libavutil.pc` 缺失，补入七个 `libav*-dev` 包后，
+清理 target 的 `cargo xtask check` 重新通过 429 个测试、fmt、clippy `-D warnings` 和
+wasm32 检查；workflow YAML 与包名检查也通过。修复提交推送后，下一步是观察新的 CI
+运行是否进入容器 E2E 和 GHCR 发布阶段。
+
 ## 4. 已记录的风险与遗留问题
 
 来自两份审计，迁移时必须逐条处理：
@@ -343,6 +352,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 | 依赖审计 | `cargo audit --file Cargo.lock` 退出码 0、0 个漏洞；`quick-xml` 已从 0.38.4 升级到 0.41.0，消除 RUSTSEC-2026-0194/0195；仅保留来自 Leptos 传递依赖的 `paste` 与 `proc-macro-error2` 未维护警告 |
 | runtime 镜像边界 | CI 在容器 E2E 前检查默认 UID/GID 10001 的 `revaro` 用户，并确认最终运行层没有 Go、Node、npm；本地更新镜像执行同一检查通过 |
 | 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过；Compose 默认基址随 `APP_PORT` 联动 |
+| CI 复盘 | `CI #268` 在 `Check the workspace` 失败，原因是 workflow 缺少 FFmpeg 开发依赖；阶段 9e 已补齐，新的 CI 运行尚未完成 |
 
 ### 剩余 0 条真实路由
 
