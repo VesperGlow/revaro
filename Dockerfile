@@ -67,7 +67,8 @@ COPY xtask ./xtask
 # run by the Rust CI job, while this layer guarantees that a publishable image
 # cannot be assembled from a source tree that fails its own checks.
 FROM rust-base AS rust-checked
-RUN CARGO_INCREMENTAL=0 cargo xtask check
+RUN CARGO_INCREMENTAL=0 cargo xtask check \
+    && cargo clean
 
 FROM rust-checked AS rust-build
 RUN CARGO_INCREMENTAL=0 cargo xtask build

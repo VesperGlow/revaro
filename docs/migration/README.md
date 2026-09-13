@@ -264,17 +264,21 @@ cargo xtask web-build                  # 产出 dist/web
 Dockerfile 的构建检查使用与运行层匹配的 FFmpeg 前缀，并在镜像依赖链执行
 workspace 的 fmt、clippy、全量测试、wasm 检查和 release 构建；Compose 显式将
 `APP_WEB_DIR` 指向 `/opt/revaro/web`，保持只读根文件系统、`/data` 持久卷和
-`/readyz` healthcheck。
+`/readyz` healthcheck。检查阶段成功后会执行 `cargo clean`，避免 debug/wasm
+临时产物进入后续 release 层；release 阶段从已验证的源码重新生成最终二进制和
+前端资源。
 
 浏览器测试位于 `tests/e2e/`，并由 `.dockerignore` 排除；Dockerfile 只复制 Cargo
 workspace、Rust 静态资源和 release 产物。根 workspace 已不再排除 sidecar，仓库中
 也不再有 Go、Vue/Vite 或独立 data-plane 源码；test-only npm 包不进入生产镜像。
 
-本环境无法验证容器构建：系统 Docker service 无法启动；临时手动启动的
-Docker daemon 又被当前沙箱禁止 BuildKit bind mount 和 `unshare`，podman
-则受 user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
-本地等价命令（cargo build/test）间接验证，镜像本身仍由 CI 的 Docker runner
-验收。
+本环境的系统 Docker service 仍无法启动；临时手动启动的 Docker daemon 被当前
+沙箱禁止 BuildKit bind mount 和 `unshare`。本轮改用等价的 Buildah 路径完成了
+真实镜像构建：`--isolation=chroot --userns=host --storage-driver=vfs` 成功生成
+`localhost/revaro:8c-image-host`，并启动镜像内的单一 `revaro` 进程验证了
+`/healthz`、`/readyz`、SPA 回退和两个 Chromium 场景（媒体查看器/实时传输、
+TXT 阅读器）。Buildah 的 host-userns 是当前环境的验收手段；正式 Docker 镜像
+仍由 CI 的 Docker runner 构建和发布。
 
 ## 4.7 当前迁移状态（供接手者定位）
 
@@ -291,7 +295,7 @@ Docker daemon 又被当前沙箱禁止 BuildKit bind mount 和 `unshare`，podma
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
-| 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像 |
+| 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过 |
 
 ### 剩余 0 条真实路由
 
@@ -417,6 +421,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8a Rust-only 生产镜像与 CI | ✅ | `build(rust): 切换生产构建与部署链` |
 | 8b 删除旧实现与 Vue/Vite 构建链 | ✅ | `cleanup(rust): 删除旧实现与构建链` |
 | 8c EPUB DOM 深度安全边界 | ✅ | `security(reader): 限制 EPUB DOM 遍历深度` |
+| 8d Rust 镜像构建与容器行为验收 | ✅ | `build(deploy): 控制检查层产物体积并验收 Rust 镜像` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -440,7 +445,8 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
 **阶段 8b 已完成**：test-only 浏览器 harness 已独立，旧 Go、Vue/Vite 和 data-plane
-源码已删除；下一步是用 CI/发布环境完成一次真实 Rust 镜像构建验收。
+源码已删除；阶段 8d 已用本地 Buildah 完成 Rust 镜像和容器行为验收，正式发布仍
+以 CI 的 Docker runner 为准。
 详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
@@ -606,8 +612,18 @@ metadata 均只包含 `revaro-core`、`revaro-media`、`revaro-reader`、
 文本、元素和媒体辅助遍历改为显式栈，清洗器的兼容递归带同一深度防线。单元
 测试覆盖深度边界与文档顺序，EPUB 集成测试覆盖真实超深章节；`cargo xtask check`
 通过 **407 个测试**，`cargo xtask build`、wasm32 检查和 release 进程的
-`/healthz`、`/readyz`、SPA 响应继续通过。下一步仍是 CI/发布环境的真实
-Rust 镜像构建和容器内 Chromium 验收。
+`/healthz`、`/readyz`、SPA 响应继续通过；随后由阶段 8d 完成了本地 Rust
+镜像构建和容器内 Chromium 验收。
+
+阶段 8d 验收：Dockerfile 的检查层在 `cargo xtask check` 成功后清理 debug/wasm
+target，解决 Buildah 提交约 4 GiB 中间层时的空间失败；release 构建随后从源码
+完成，最终镜像包含单一 `revaro`、`dist/web` 和 FFmpeg 动态库。使用
+`sudo buildah bud --isolation=chroot --userns=host --storage-driver=vfs` 成功
+构建 `localhost/revaro:8c-image-host`；在同一镜像内以非 root `revaro` 用户启动
+后，`/healthz` 与 `/readyz` 返回 200，`/read/not-a-uuid` 和未知静态资源正确
+返回 SPA，真实 Chromium 的媒体和 TXT reader 两个用例均通过（2 passed）。
+本阶段的下一步入口是 CI Docker runner 的正式构建/发布观察，以及在目标部署环境
+确认镜像 registry、卷权限和反向代理的 `APP_BASE_URL` 配置。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
