@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use leptos::prelude::*;
-use revaro_core::model::File;
+use revaro_core::classify;
+use revaro_core::model::{File, FileKind};
 
 use crate::logic::format::format_size;
 
@@ -20,16 +21,37 @@ pub fn SelectionToolbar(
     on_delete: Callback<()>,
     on_restore: Callback<()>,
     on_purge: Callback<()>,
+    on_open: Callback<File>,
+    on_extract: Callback<File>,
+    on_download: Callback<()>,
+    on_share: Callback<File>,
 ) -> impl IntoView {
     let selected_count = move || selected_ids.get().len();
-    let selected_bytes = move || {
+    let selected_items = move || {
+        let ids = selected_ids.get();
         items
             .get()
             .into_iter()
-            .filter(|item| selected_ids.get().contains(&item.id))
-            .filter(|item| item.kind == revaro_core::model::FileKind::File)
+            .filter(|item| ids.contains(&item.id))
+            .collect::<Vec<_>>()
+    };
+    let selected_bytes = move || {
+        selected_items()
+            .iter()
+            .filter(|item| item.kind == FileKind::File)
             .map(|item| u64::try_from(item.size).unwrap_or(0))
             .sum::<u64>()
+    };
+    let single_item = move || {
+        let mut selected = selected_items().into_iter();
+        let item = selected.next();
+        item.filter(|_| selected.next().is_none())
+    };
+    let selected_file_count = move || {
+        selected_items()
+            .into_iter()
+            .filter(|item| item.kind == FileKind::File)
+            .count()
     };
     let all_selected = move || {
         let entries = items.get();
@@ -40,6 +62,10 @@ pub fn SelectionToolbar(
     let delete = on_delete;
     let restore = on_restore;
     let purge = on_purge;
+    let open = on_open;
+    let extract = on_extract;
+    let download = on_download;
+    let share = on_share;
 
     view! {
         <div class="selection-toolbar" role="toolbar" aria-label="所选项目操作">
@@ -74,14 +100,91 @@ pub fn SelectionToolbar(
                         {check_icon()}
                         <span>{move || if all_selected() { "取消全选" } else { "全选" }}</span>
                     </button>
+                    <Show
+                        when=move || {
+                            single_item().is_some_and(|item| {
+                                item.kind == FileKind::Directory
+                                    || classify::is_editable(&item)
+                                    || classify::is_book(&item)
+                                    || classify::is_image(&item)
+                                    || classify::is_audio(&item)
+                                    || classify::is_video(&item)
+                            })
+                        }
+                        fallback=|| ()
+                    >
+                        {move || {
+                            single_item().map_or_else(
+                                || ().into_any(),
+                                |item| {
+                                    let label = if item.kind == FileKind::Directory {
+                                        "打开"
+                                    } else if classify::is_book(&item) {
+                                        "阅读"
+                                    } else if classify::is_editable(&item) {
+                                        "编辑文本"
+                                    } else if classify::is_image(&item) {
+                                        "预览"
+                                    } else {
+                                        "播放"
+                                    };
+                                    view! {
+                                        <button type="button" on:click=move |_| open.run(item.clone())>
+                                            {open_icon(&item)}
+                                            <span>{label}</span>
+                                        </button>
+                                    }
+                                    .into_any()
+                                },
+                            )
+                        }}
+                    </Show>
+                    <Show
+                        when=move || single_item().is_some_and(|item| classify::is_archive(&item))
+                        fallback=|| ()
+                    >
+                        {move || {
+                            single_item().map_or_else(
+                                || ().into_any(),
+                                |item| {
+                                    view! {
+                                        <button type="button" on:click=move |_| extract.run(item.clone())>
+                                            {archive_icon()}
+                                            <span>"在线解压"</span>
+                                        </button>
+                                    }
+                                    .into_any()
+                                },
+                            )
+                        }}
+                    </Show>
+                    <Show when=move || { selected_file_count() > 0 } fallback=|| ()>
+                        <button type="button" on:click=move |_| download.run(())>
+                            {download_icon()}
+                            <span>{move || format!("下载{}", if selected_file_count() > 1 { format!(" ({})", selected_file_count()) } else { String::new() })}</span>
+                        </button>
+                    </Show>
+                    <Show when=move || single_item().is_some_and(|item| item.kind == FileKind::File) fallback=|| ()>
+                        {move || {
+                            single_item().map_or_else(
+                                || ().into_any(),
+                                |item| view! {
+                                    <button type="button" on:click=move |_| share.run(item.clone())>
+                                        {share_icon()}
+                                        <span>"分享"</span>
+                                    </button>
+                                }.into_any(),
+                            )
+                        }}
+                    </Show>
                     <Show when=move || selected_count() == 1 fallback=|| ()>
                         <button type="button" on:click=move |_| rename.run(())>
-                            {edit_icon()}
+                            {rename_icon()}
                             <span>"重命名"</span>
                         </button>
                     </Show>
                     <button type="button" on:click=move |_| move_items.run(())>
-                        {super::icons::move_icon()}
+                        {move_arrow_icon()}
                         <span>"移动"</span>
                     </button>
                     <button class="danger" type="button" on:click=move |_| delete.run(())>
@@ -91,6 +194,14 @@ pub fn SelectionToolbar(
                 </Show>
             </div>
         </div>
+    }
+}
+
+fn move_arrow_icon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 12h14m-5-5 5 5-5 5"></path>
+        </svg>
     }
 }
 
@@ -107,6 +218,75 @@ fn edit_icon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="m4 16-.8 4 4-.8L18.5 7.9l-3.2-3.2L4 16Z"></path>
+        </svg>
+    }
+}
+
+fn rename_icon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 5h14M12 5v14M9 19h6"></path>
+        </svg>
+    }
+}
+
+fn open_icon(file: &File) -> AnyView {
+    if file.kind == FileKind::Directory {
+        view! {
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 7h7l2 2h9v9H3z"></path>
+            </svg>
+        }
+        .into_any()
+    } else if classify::is_editable(file) {
+        edit_icon().into_any()
+    } else if classify::is_book(file) {
+        view! {
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5c-1.7-1.4-4.2-2-8-2v14c3.8 0 6.3.6 8 2 1.7-1.4 4.2-2 8-2V3c-3.8 0-6.3.6-8 2Zm0 0v14"></path>
+            </svg>
+        }
+        .into_any()
+    } else if classify::is_image(file) {
+        view! {
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>
+            </svg>
+        }
+        .into_any()
+    } else {
+        view! {
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7Z"></path>
+            </svg>
+        }
+        .into_any()
+    }
+}
+
+fn archive_icon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 4h14v6H5zM5 14h14v6H5zM12 4v16M9 8h3m-3 4h3m-3 4h3"></path>
+        </svg>
+    }
+}
+
+fn download_icon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"></path>
+        </svg>
+    }
+}
+
+fn share_icon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="18" cy="5" r="2.5"></circle>
+            <circle cx="6" cy="12" r="2.5"></circle>
+            <circle cx="18" cy="19" r="2.5"></circle>
+            <path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4"></path>
         </svg>
     }
 }

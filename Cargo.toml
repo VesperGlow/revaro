@@ -45,6 +45,8 @@ uuid = { version = "1", features = ["v4"] }
 # --- frontend (wasm32) ---
 leptos = { version = "0.8", features = ["csr"] }
 leptos_router = { version = "0.8" }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+ammonia = "4.1"
 wasm-bindgen = "=0.2.128"
 wasm-bindgen-futures = "=0.4.78"
 js-sys = "0.3"

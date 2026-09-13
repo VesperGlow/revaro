@@ -64,31 +64,49 @@ pub fn PreviewMenu(label: String, icon: MenuIcon, children: Children) -> impl In
 
     let menu_for_escape = menu;
     view! {
-        <details node_ref=menu class="preview-menu">
-            <summary
-                aria-label=label.clone()
-                title=label
-                on:keydown=move |event: KeyboardEvent| {
-                    if event.key() == "Escape" {
-                        if let Some(details) = menu_for_escape.get() {
-                            if details.open() {
-                                event.prevent_default();
-                                event.stop_propagation();
-                                details.set_open(false);
-                                let _ = details
-                                    .query_selector("summary")
-                                    .ok()
-                                    .flatten()
-                                    .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
-                                    .map(|element| element.focus());
-                            }
+        <details
+            node_ref=menu
+            class="preview-menu"
+            on:keydown=move |event: KeyboardEvent| {
+                if event.key() == "Escape" {
+                    if let Some(details) = menu_for_escape.get() {
+                        if details.open() {
+                            event.prevent_default();
+                            event.stop_propagation();
+                            details.set_open(false);
+                            let _ = details
+                                .query_selector("summary")
+                                .ok()
+                                .flatten()
+                                .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+                                .map(|element| element.focus());
                         }
                     }
                 }
+            }
+        >
+            <summary
+                aria-label=label.clone()
+                title=label
             >
                 {menu_icon(icon)}
             </summary>
-            <div class="preview-menu-panel">{children()}</div>
+            <div
+                class="preview-menu-panel"
+                on:click=move |event: MouseEvent| {
+                    let Some(target) = event
+                        .target()
+                        .and_then(|target| target.dyn_into::<Element>().ok())
+                    else {
+                        return;
+                    };
+                    if target.closest("[data-close-menu]").ok().flatten().is_some()
+                        && let Some(details) = menu.get()
+                    {
+                        details.set_open(false);
+                    }
+                }
+            >{children()}</div>
         </details>
     }
 }
@@ -231,7 +249,17 @@ pub fn MediaPreview(
             move |file: File| selected.set(Some(file))
         });
         move |event: KeyboardEvent| {
+            if event.default_prevented() {
+                return;
+            }
             if event.key() == "Escape" {
+                if web_sys::window()
+                    .and_then(|window| window.document())
+                    .and_then(|document| document.fullscreen_element())
+                    .is_some()
+                {
+                    return;
+                }
                 if let Some(details) = root
                     .get()
                     .and_then(|element| element.query_selector("details[open]").ok().flatten())
@@ -494,7 +522,14 @@ pub fn MediaPreview(
                 Callback::new(move |file: File| selected.set(Some(file))),
             );
         }
-        drag.set(DragState::default());
+        // Keep the gesture flags through the synthetic click emitted after a
+        // drag/pinch. The reference viewer ignores that click; the next
+        // pointer-down starts a new gesture and clears the flags.
+        drag.update(|state| {
+            state.active = false;
+            state.dx = 0.0;
+            state.dy = 0.0;
+        });
     };
 
     let on_stage_click = move |event: MouseEvent| {
@@ -596,7 +631,10 @@ pub fn MediaPreview(
                         } else {
                             let image_file = classify::is_image(&file);
                             view! {
-                                <header class="preview-commandbar">
+                                <header
+                                    class="preview-commandbar"
+                                    inert=move || image_file && !chrome_visible.get()
+                                >
                                     <div class="preview-file-meta">
                                         <strong title=file.name.clone()>{file.name.clone()}</strong>
                                     </div>
@@ -607,21 +645,21 @@ pub fn MediaPreview(
                                     </Show>
                                     <div class="preview-file-actions">
                                         <PreviewMenu label="更多操作".to_owned() icon=MenuIcon::More>
-                                            <button type="button" on:click={
+                                            <button type="button" data-close-menu="true" on:click={
                                                 let download = download.clone();
                                                 let file = file.clone();
                                                 move |_| download.run(file.clone())
                                             }>
                                                 {icons::download()}<span>"下载"</span>
                                             </button>
-                                            <button type="button" on:click={
+                                            <button type="button" data-close-menu="true" on:click={
                                                 let move_item = move_item.clone();
                                                 let file = file.clone();
                                                 move |_| move_item.run(file.clone())
                                             }>
                                                 {icons::move_icon()}<span>"移动"</span>
                                             </button>
-                                            <button type="button" on:click={
+                                            <button type="button" data-close-menu="true" on:click={
                                                 let copy_item = copy_item.clone();
                                                 let file = file.clone();
                                                 move |_| copy_item.run(file.clone())
@@ -690,7 +728,7 @@ pub fn MediaPreview(
                                         </p>
                                     </Show>
                                     <Show when=move || gallery_items(&items.get()).len().gt(&1) fallback=|| ()>
-                                        <button class="media-icon-button preview-nav preview-prev" type="button" aria-label="上一张" on:click={
+                                        <button class="media-icon-button preview-nav preview-prev" type="button" aria-label="上一张" inert=move || !chrome_visible.get() on:click={
                                             let selected = selected;
                                             let items = items;
                                             let set_selected = set_selected.clone();
@@ -699,7 +737,7 @@ pub fn MediaPreview(
                                                 change_gallery(selected, items, -1, set_selected.clone());
                                             }
                                         }>{icons::chevron_left()}</button>
-                                        <button class="media-icon-button preview-nav preview-next" type="button" aria-label="下一张" on:click={
+                                        <button class="media-icon-button preview-nav preview-next" type="button" aria-label="下一张" inert=move || !chrome_visible.get() on:click={
                                             let selected = selected;
                                             let items = items;
                                             let set_selected = set_selected.clone();
@@ -712,7 +750,7 @@ pub fn MediaPreview(
                                 }.into_any()
                             } else if classify::is_audio(&file) {
                                 view! {
-                                    <AudioPlayer item=file on_download=on_download.clone() on_move=on_move.clone() on_copy=on_copy.clone() />
+                                    <AudioPlayer item=file />
                                 }.into_any()
                             } else if classify::is_video(&file) {
                                 view! {
@@ -727,7 +765,10 @@ pub fn MediaPreview(
                 {move || {
                     if selected.get().as_ref().is_some_and(classify::is_image) {
                         view! {
-                            <footer class="preview-image-footer">
+                                <footer
+                                    class="preview-image-footer"
+                                    inert=move || !chrome_visible.get()
+                                >
                                 <div class="preview-image-tools" aria-label="图片工具">
                                     <button class="media-icon-button" type="button" aria-label="适应窗口" title="适应窗口" prop:disabled=move || loading.get() || image_error.get() on:click=move |_| fit_zoom(zoom, pan)>{icons::scan()}</button>
                                     <button class="media-icon-button" type="button" aria-label="缩小" title="缩小" prop:disabled=move || zoom.get() <= 1.0 || loading.get() || image_error.get() on:click=move |_| set_zoom(zoom, pan, natural, stage_size, zoom.get_untracked() / 1.2, Point { x: 0.0, y: 0.0 }, Point { x: 0.0, y: 0.0 })>{icons::zoom_out()}</button>
@@ -1044,7 +1085,19 @@ fn trap_focus(root: NodeRef<leptos::html::Section>, event: &KeyboardEvent) {
     let Some(root) = root.get() else {
         return;
     };
-    let Ok(nodes) = root.query_selector_all(
+    let scope = root
+        .query_selector("[data-preview-sheet]")
+        .ok()
+        .flatten()
+        .filter(|sheet| {
+            web_sys::window()
+                .and_then(|window| window.get_computed_style(sheet).ok().flatten())
+                .is_some_and(|style| {
+                    style.get_property_value("position").unwrap_or_default() != "static"
+                })
+        })
+        .unwrap_or_else(|| root.clone().unchecked_into());
+    let Ok(nodes) = scope.query_selector_all(
         "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex=\"-1\"])"
     ) else {
         return;
@@ -1054,7 +1107,22 @@ fn trap_focus(root: NodeRef<leptos::html::Section>, event: &KeyboardEvent) {
         let Some(node) = nodes.item(index) else {
             continue;
         };
-        if let Ok(element) = node.dyn_into::<web_sys::HtmlElement>() {
+        let Ok(element) = node.dyn_into::<web_sys::HtmlElement>() else {
+            continue;
+        };
+        let element_node: Element = element.clone().unchecked_into();
+        let visible = element_node.get_client_rects().length() > 0
+            && element_node
+                .closest("[inert], [aria-hidden=\"true\"]")
+                .ok()
+                .flatten()
+                .is_none()
+            && web_sys::window()
+                .and_then(|window| window.get_computed_style(&element_node).ok().flatten())
+                .is_none_or(|style| {
+                    style.get_property_value("visibility").unwrap_or_default() != "hidden"
+                });
+        if visible {
             focusable.push(element);
         }
     }
@@ -1077,7 +1145,16 @@ fn trap_focus(root: NodeRef<leptos::html::Section>, event: &KeyboardEvent) {
     let active_is_last = active
         .as_ref()
         .is_some_and(|active| active.is_same_node(Some(&last_element)));
-    if (event.shift_key() && active_is_first) || (!event.shift_key() && active_is_last) {
+    let active_in_scope = active
+        .as_ref()
+        .is_some_and(|active| scope.contains(Some(active.unchecked_ref::<web_sys::Node>())));
+    let root_element: Element = root.clone().unchecked_into();
+    let active_is_root = active
+        .as_ref()
+        .is_some_and(|active| active.is_same_node(Some(&root_element)));
+    if (event.shift_key() && (active_is_first || active_is_root || !active_in_scope))
+        || (!event.shift_key() && (active_is_last || active_is_root || !active_in_scope))
+    {
         event.prevent_default();
         let _ = if event.shift_key() {
             last.focus()

@@ -8,11 +8,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use js_sys::{Function, Object, Reflect};
 use leptos::ev::{Event, MouseEvent, PointerEvent};
 use leptos::prelude::*;
 use revaro_core::media::VideoSubtitleTrack;
 use revaro_core::model::{File, MediaProgress};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use web_sys::{
     Element, HtmlInputElement, HtmlMediaElement, HtmlSelectElement, HtmlTrackElement,
@@ -81,6 +83,20 @@ pub fn VideoPlayer(
     let poster = format!("/api/files/{}/thumbnail", item.id);
     let item_name = item.name.clone();
     let item_id = item.id.clone();
+
+    // The reference focuses the player shell after mounting so keyboard
+    // shortcuts (space, arrows, m, f) work immediately without requiring a
+    // preliminary click on the video surface.
+    if let Some(window) = web_sys::window() {
+        let shell_for_focus = shell;
+        let callback = Closure::once_into_js(move || {
+            if let Some(element) = shell_for_focus.get() {
+                let _ = element.focus();
+            }
+        });
+        let _ = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
+    }
 
     let timeline_position = move || pending_seek.get().unwrap_or_else(|| current_time.get());
     let progress = move || {
@@ -421,6 +437,7 @@ pub fn VideoPlayer(
             false,
         );
     };
+    let shell_for_rate_focus = shell;
     let change_rate = move |event: Event| {
         let Some(select) = event
             .target()
@@ -433,6 +450,23 @@ pub fn VideoPlayer(
         browser::local_storage_set("revaro-video-rate", &value.to_string());
         if let Some(video) = video_media_element(video) {
             video.set_playback_rate(value);
+        }
+        // Leptos may patch the reactive select while handling `change`.
+        // Restore its focus on the next layout turn so Escape still reaches
+        // the open menu, matching the native Vue select behavior.
+        if let Some(window) = web_sys::window() {
+            let callback = Closure::once_into_js(move || {
+                let Some(select) = shell_for_rate_focus
+                    .get()
+                    .and_then(|shell| shell.query_selector("details[open] select").ok().flatten())
+                    .and_then(|element| element.dyn_into::<HtmlSelectElement>().ok())
+                else {
+                    return;
+                };
+                let _ = select.focus();
+            });
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
         }
         show_video_controls(
             controls_visible,
@@ -508,10 +542,14 @@ pub fn VideoPlayer(
         };
         if document.fullscreen_element().is_some() {
             document.exit_fullscreen();
-        } else if element.request_fullscreen().is_err() {
-            return;
+        } else {
+            let Some(video) = video_element(video) else {
+                return;
+            };
+            if !request_fullscreen(&element, &video) {
+                return;
+            }
         }
-        fullscreen.set(document.fullscreen_element().is_none());
     };
     let mut fullscreen_listener = browser::on_fullscreenchange({
         let shell = shell;
@@ -716,6 +754,7 @@ pub fn VideoPlayer(
                 node_ref=video
                 src=source
                 poster=poster
+                crossorigin="anonymous"
                 autoplay
                 playsinline
                 preload="metadata"
@@ -809,15 +848,15 @@ pub fn VideoPlayer(
                             <option value="0.5">"0.5×"</option><option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
                         </select></label>
                         <label class="video-setting video-mobile-volume"><span>"音量"</span><input type="range" min="0" max="1" step="0.01" aria-label="音量" prop:value=move || effective_volume().to_string() on:input=change_volume /></label>
-                        <button type="button" on:click={
+                        <button type="button" data-close-menu="true" on:click={
                             let on_download = download_for_menu.clone(); let item = item.clone();
                             move |_| on_download.run(item.clone())
                         }>{icons::download()}<span>"下载"</span></button>
-                        <button type="button" on:click={
+                        <button type="button" data-close-menu="true" on:click={
                             let on_move = move_for_menu.clone(); let item = item.clone();
                             move |_| on_move.run(item.clone())
                         }>{icons::move_icon()}<span>"移动"</span></button>
-                        <button type="button" on:click={
+                        <button type="button" data-close-menu="true" on:click={
                             let on_copy = copy_for_menu.clone(); let item = item.clone();
                             move |_| on_copy.run(item.clone())
                         }>{icons::copy()}<span>"复制"</span></button>
@@ -830,6 +869,30 @@ pub fn VideoPlayer(
             </div>
         </div>
     }
+}
+
+/// Request the same hidden-navigation fullscreen mode as the reference
+/// player, with the old WebKit video fallback for mobile Safari.
+fn request_fullscreen(element: &Element, video: &HtmlVideoElement) -> bool {
+    let options = Object::new();
+    let _ = Reflect::set(
+        &options,
+        &JsValue::from_str("navigationUI"),
+        &JsValue::from_str("hide"),
+    );
+    let request = Reflect::get(element.as_ref(), &JsValue::from_str("requestFullscreen"))
+        .ok()
+        .and_then(|value| value.dyn_into::<Function>().ok());
+    if let Some(request) = request
+        && request.call1(element.as_ref(), options.as_ref()).is_ok()
+    {
+        return true;
+    }
+
+    Reflect::get(video.as_ref(), &JsValue::from_str("webkitEnterFullscreen"))
+        .ok()
+        .and_then(|value| value.dyn_into::<Function>().ok())
+        .is_some_and(|enter| enter.call0(video.as_ref()).is_ok())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1007,6 +1070,25 @@ fn show_video_controls(
                     || buffering.get_untracked()
                     || !error.get_untracked().is_empty()
                 {
+                    return;
+                }
+                let focus_or_menu_active = web_sys::window()
+                    .and_then(|window| window.document())
+                    .and_then(|document| {
+                        document
+                            .query_selector(".video-player-shell")
+                            .ok()
+                            .flatten()
+                    })
+                    .is_some_and(|shell| {
+                        shell
+                            .query_selector("details[open], :focus-visible")
+                            .ok()
+                            .flatten()
+                            .is_some()
+                    });
+                if focus_or_menu_active {
+                    show_video_controls(visible, timer, playing, starting, buffering, error, false);
                     return;
                 }
                 visible.set(false);

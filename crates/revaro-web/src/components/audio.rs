@@ -25,12 +25,7 @@ use super::media::{MenuIcon, PreviewMenu};
 
 /// Full-screen audio player mounted inside [`super::media::MediaPreview`].
 #[component]
-pub fn AudioPlayer(
-    item: File,
-    on_download: Callback<File>,
-    on_move: Callback<File>,
-    on_copy: Callback<File>,
-) -> impl IntoView {
+pub fn AudioPlayer(item: File) -> impl IntoView {
     let player = NodeRef::<leptos::html::Div>::new();
     let audio = NodeRef::<leptos::html::Audio>::new();
     let media = RwSignal::new(None::<AudioMedia>);
@@ -393,7 +388,6 @@ pub fn AudioPlayer(
         if let Some(audio) = audio_element(audio) {
             audio.set_playback_rate(value);
         }
-        browser::local_storage_set("revaro-audio-rate", &value.to_string());
     };
     let set_volume = move |event: Event| {
         let Some(element) = event
@@ -503,6 +497,9 @@ pub fn AudioPlayer(
             };
             mounted.set(true);
             element.set_src(&source);
+            let _ = element
+                .unchecked_ref::<web_sys::Element>()
+                .set_attribute("playsinline", "");
             element.set_preload("metadata");
             element.set_autoplay(true);
             element.set_volume(volume.get_untracked());
@@ -528,9 +525,6 @@ pub fn AudioPlayer(
     let book_title = title.clone();
     let heading_title = title.clone();
     let cover_name = item.name.clone();
-    let download_for_menu = on_download.clone();
-    let move_for_menu = on_move.clone();
-    let copy_for_menu = on_copy.clone();
     view! {
         <div node_ref=player class="chapter-audio-player" class:panel-open=move || panel_open.get() tabindex="0" on:keydown=on_key>
             <main class="audio-main">
@@ -593,23 +587,6 @@ pub fn AudioPlayer(
                                 <output>{move || format!("{}%", if muted.get() { 0 } else { (volume.get() * 100.0).round() as u64 })}</output>
                             </div>
                         </PreviewMenu>
-                        <PreviewMenu label="更多操作".to_owned() icon=MenuIcon::More>
-                            <button type="button" on:click={
-                                let on_download = download_for_menu.clone();
-                                let item = item.clone();
-                                move |_| on_download.run(item.clone())
-                            }>{icons::download()}<span>"下载"</span></button>
-                            <button type="button" on:click={
-                                let on_move = move_for_menu.clone();
-                                let item = item.clone();
-                                move |_| on_move.run(item.clone())
-                            }>{icons::move_icon()}<span>"移动"</span></button>
-                            <button type="button" on:click={
-                                let on_copy = copy_for_menu.clone();
-                                let item = item.clone();
-                                move |_| on_copy.run(item.clone())
-                            }>{icons::copy()}<span>"复制"</span></button>
-                        </PreviewMenu>
                     </div>
                     <Show when=move || !error.get().is_empty() fallback=|| ()>
                         <p class="audio-player-error" role="alert">{move || error.get()}</p>
@@ -627,7 +604,7 @@ pub fn AudioPlayer(
                     </div>
                     <div class="audio-chapter-list">
                         <For each=move || chapters() key=|chapter| chapter.id let:chapter>
-                            <button type="button" aria-current=move || if chapters().iter().position(|value| value.id == chapter.id) == Some(current_chapter_index()) { Some("true") } else { None } on:click={
+                            <button type="button" data-chapter-index=move || chapter.id.saturating_sub(1).to_string() aria-current=move || if chapters().iter().position(|value| value.id == chapter.id) == Some(current_chapter_index()) { Some("true") } else { None } on:click={
                                 let seek_callback = seek_callback;
                                 move |_| seek_callback.with_value(|seek| seek(chapter.start, true))
                             }>

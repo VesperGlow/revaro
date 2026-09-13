@@ -20,6 +20,7 @@ use web_sys::{Event, EventSource};
 
 use crate::api::{self, RequestError};
 use crate::browser;
+use crate::logic::feedback::Feedback;
 use crate::logic::format::format_size;
 use crate::logic::task_status::{
     is_active_task_status, task_progress_percent, task_status_label, task_type_label,
@@ -42,6 +43,7 @@ enum TaskGroup {
 /// Browser handles belonging to one task-centre instance.
 struct TaskRuntime {
     disposed: Cell<bool>,
+    started: Cell<bool>,
     source: RefCell<Option<EventSource>>,
     event_listeners: RefCell<Vec<EventListener>>,
     reconnect_timer: Cell<Option<i32>>,
@@ -56,6 +58,7 @@ impl TaskRuntime {
     fn new() -> Self {
         Self {
             disposed: Cell::new(false),
+            started: Cell::new(false),
             source: RefCell::new(None),
             event_listeners: RefCell::new(Vec::new()),
             reconnect_timer: Cell::new(None),
@@ -86,7 +89,33 @@ pub struct TaskController {
     runtime: Rc<TaskRuntime>,
     on_logout: Callback<()>,
     on_refresh_folder: Callback<()>,
-    feedback: Callback<String>,
+    feedback: Callback<Feedback>,
+    on_upload_cancel: Option<Callback<String>>,
+    on_upload_retry: Option<Callback<String, bool>>,
+}
+
+/// Document-level listeners owned by one rendered task-centre disclosure.
+///
+/// The desktop and mobile top bars swap their `TaskCenter` child at the
+/// responsive breakpoint, but they share the same controller and its SSE
+/// connection.  These listeners therefore need a view-scoped lifetime that
+/// is separate from the controller's application lifetime.
+pub struct TaskViewListeners {
+    outside: browser::OwnedListener,
+    escape: browser::OwnedListener,
+}
+
+impl TaskViewListeners {
+    fn new(outside: browser::OwnedListener, escape: browser::OwnedListener) -> Self {
+        Self { outside, escape }
+    }
+}
+
+impl Drop for TaskViewListeners {
+    fn drop(&mut self) {
+        self.outside.release();
+        self.escape.release();
+    }
 }
 
 /// The wrapper is required by Leptos view callbacks because the controller
@@ -98,7 +127,7 @@ impl TaskController {
     pub fn new(
         on_logout: Callback<()>,
         on_refresh_folder: Callback<()>,
-        feedback: Callback<String>,
+        feedback: Callback<Feedback>,
     ) -> Self {
         Self {
             tasks: RwSignal::new(Vec::new()),
@@ -116,17 +145,33 @@ impl TaskController {
             on_logout,
             on_refresh_folder,
             feedback,
+            on_upload_cancel: None,
+            on_upload_retry: None,
         }
     }
 
+    /// Bind the browser-local upload queue to the unified task centre. The
+    /// reference client delegates upload actions to that queue so XHRs are
+    /// aborted before the remote session is removed.
+    pub fn set_upload_actions(
+        &mut self,
+        on_cancel: Callback<String>,
+        on_retry: Callback<String, bool>,
+    ) {
+        self.on_upload_cancel = Some(on_cancel);
+        self.on_upload_retry = Some(on_retry);
+    }
+
     /// Start the initial snapshot and the event-stream lifecycle.
-    pub fn mount(&self) {
-        self.refresh();
+    pub fn mount(&self) -> TaskViewListeners {
+        if !self.runtime.started.replace(true) {
+            self.refresh();
+        }
         self.connect_events();
 
         let center = self.center;
         let outside_controller = self.clone();
-        let mut outside = browser::on_pointerdown(move |event| {
+        let outside = browser::on_pointerdown(move |event| {
             let Some(details) = center.get() else {
                 return;
             };
@@ -143,7 +188,7 @@ impl TaskController {
         });
 
         let escape_controller = self.clone();
-        let mut escape = browser::on_keydown(move |event| {
+        let escape = browser::on_keydown(move |event| {
             if event.key() != "Escape" {
                 return;
             }
@@ -155,10 +200,7 @@ impl TaskController {
             }
         });
 
-        on_cleanup(move || {
-            outside.release();
-            escape.release();
-        });
+        TaskViewListeners::new(outside, escape)
     }
 
     /// Close the native disclosure panel.
@@ -166,6 +208,24 @@ impl TaskController {
         if let Some(details) = self.center.get() {
             details.set_open(false);
         }
+    }
+
+    /// Open the native disclosure panel from the mobile account/tools menu.
+    pub fn open_center(&self) {
+        if let Some(details) = self.center.get() {
+            details.set_open(true);
+        }
+    }
+
+    /// Refresh the durable task projection after a foreground action starts a
+    /// job (for example archive extraction).
+    pub fn refresh_now(&self) {
+        self.refresh_coalesced();
+    }
+
+    /// Expose the reactive snapshot to the mobile account/tools summary.
+    pub fn task_signal(&self) -> RwSignal<Vec<Task>> {
+        self.tasks
     }
 
     fn is_center_open(&self) -> bool {
@@ -189,6 +249,18 @@ impl TaskController {
 
     /// Start a cancellation request for one active task.
     pub fn cancel(&self, id: String) {
+        if let Some(task) = self.find_task(&id)
+            && task.source_type == "upload"
+            && let Some(callback) = self.on_upload_cancel
+        {
+            if !self.begin_action(&id) {
+                return;
+            }
+            callback.run(task.source_id);
+            self.finish_action(&id);
+            self.refresh_coalesced();
+            return;
+        }
         if !self.begin_action(&id) {
             return;
         }
@@ -211,7 +283,24 @@ impl TaskController {
         if task.status != TaskStatus::Failed || task.retry_count >= task.max_retries {
             return;
         }
-        if !self.begin_action(&id) {
+        let upload_action_started = if task.source_type == "upload" {
+            if let Some(callback) = self.on_upload_retry {
+                if !self.begin_action(&id) {
+                    return;
+                }
+                if callback.run(task.source_id.clone()) {
+                    self.finish_action(&id);
+                    self.refresh_coalesced();
+                    return;
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !upload_action_started && !self.begin_action(&id) {
             return;
         }
         let controller = self.clone();
@@ -341,7 +430,7 @@ impl TaskController {
         if error.is_unauthorized() {
             self.on_logout.run(());
         } else {
-            self.feedback.run(error.message.clone());
+            self.feedback.run(Feedback::error(error.message.clone()));
         }
     }
 
@@ -405,17 +494,18 @@ impl TaskController {
             }
             match task.status {
                 TaskStatus::Completed => {
-                    self.feedback.run(format!("「{}」任务完成", task.name));
+                    self.feedback
+                        .run(Feedback::success(format!("「{}」任务完成", task.name)));
                     if task.task_type == task_type::ARCHIVE_EXTRACT {
                         self.on_refresh_folder.run(());
                     }
                 }
                 TaskStatus::Failed => {
-                    self.feedback.run(if task.error.is_empty() {
+                    self.feedback.run(Feedback::error(if task.error.is_empty() {
                         format!("「{}」任务失败", task.name)
                     } else {
                         task.error.clone()
-                    });
+                    }));
                 }
                 TaskStatus::Cancelled => {}
                 TaskStatus::Queued
@@ -439,8 +529,10 @@ impl TaskController {
         let source = match EventSource::new("/api/events") {
             Ok(source) => source,
             Err(error) => {
-                self.feedback
-                    .run(format!("任务事件流不可用：{}", js_error_text(error)));
+                self.feedback.run(Feedback::error(format!(
+                    "任务事件流不可用：{}",
+                    js_error_text(error)
+                )));
                 self.start_fallback();
                 self.schedule_reconnect();
                 return;
@@ -550,10 +642,9 @@ impl TaskController {
 
 /// Render the task trigger, panel and archive input dialog.
 #[component]
-pub fn TaskCenter(controller: UiTaskController) -> impl IntoView {
-    let cleanup = controller.clone();
-    on_cleanup(move || cleanup.dispose());
-    controller.mount();
+pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl IntoView {
+    let listeners = controller.mount();
+    on_cleanup(move || drop(listeners));
 
     let center = controller.center;
     let tasks = controller.tasks;
@@ -633,7 +724,14 @@ pub fn TaskCenter(controller: UiTaskController) -> impl IntoView {
 
     view! {
         <details node_ref=center class="task-center">
-            <summary title="任务中心" aria-label="打开任务中心">
+            // Keep a real (hidden) summary for the mobile, trigger-less
+            // instance. Without it, HTML details inserts its UA "Details"
+            // summary, which was not present in the reference top bar.
+            <summary
+                class:task-trigger-hidden=hide_trigger
+                title="任务中心"
+                aria-label="打开任务中心"
+            >
                 {crate::components::icons::activity()}
                 <Show when=move || active_count.get() != 0 fallback=|| ()>
                     <span>{move || active_count.get()}</span>
@@ -884,9 +982,17 @@ fn TaskRow(
                 && task.task_type == task_type::ARCHIVE_EXTRACT
         }
     });
+    let open_row = {
+        let password = password.clone();
+        move || {
+            if show_password.get_untracked() {
+                password.run(());
+            }
+        }
+    };
 
     view! {
-        <article class=row_class>
+        <article class=row_class on:click=move |_| open_row()>
             <span class="kind">{kind}</span>
             <div>
                 <strong title=name.clone()>{name.clone()}</strong>
@@ -906,7 +1012,10 @@ fn TaskRow(
                         title="取消"
                         aria-label="取消任务"
                         prop:disabled=move || busy.get()
-                        on:click=move |_| cancel.run(())
+                        on:click=move |event: web_sys::MouseEvent| {
+                            event.stop_propagation();
+                            cancel.run(())
+                        }
                     >
                         {crate::components::icons::close_square()}
                     </button>
@@ -916,22 +1025,31 @@ fn TaskRow(
                             title="输入密码"
                             aria-label="输入压缩包密码"
                             prop:disabled=move || busy.get()
-                            on:click=move |_| password.run(())
+                            on:click=move |event: web_sys::MouseEvent| {
+                                event.stop_propagation();
+                                password.run(())
+                            }
                         >
                             {crate::components::icons::key_round()}
                         </button>
                     </Show>
                 </Show>
-                <Show when=move || show_retry fallback=|| ()>
+                <Show
+                    when=move || {
+                        let (retry_count, max_retries) = current_retry.get();
+                        show_retry && retry_count < max_retries
+                    }
+                    fallback=|| ()
+                >
                     <button
                         type="button"
                         title="重试"
                         aria-label="重试任务"
-                        prop:disabled=move || {
-                            let (retry_count, max_retries) = current_retry.get();
-                            busy.get() || retry_count >= max_retries
+                        prop:disabled=move || busy.get()
+                        on:click=move |event: web_sys::MouseEvent| {
+                            event.stop_propagation();
+                            retry.run(())
                         }
-                        on:click=move |_| retry.run(())
                     >
                         {crate::components::icons::rotate_ccw()}
                     </button>

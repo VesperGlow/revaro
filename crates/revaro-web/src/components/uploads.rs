@@ -31,7 +31,7 @@ use web_sys::{
 };
 
 use crate::api::{self, RequestError};
-use crate::logic::format::format_size;
+use crate::logic::feedback::Feedback;
 use crate::logic::upload::{directory_paths, part_size, relative_path_parts, transfer_progress};
 
 const FILE_CONCURRENCY: usize = 3;
@@ -56,7 +56,6 @@ struct UploadTask {
     id: String,
     file: BrowserFile,
     parent_id: String,
-    relative_path: String,
     progress: u8,
     status: UploadTaskStatus,
     error: String,
@@ -164,7 +163,7 @@ pub struct UploadController {
     folder_input: NodeRef<leptos::html::Input>,
     runtime: Rc<UploadRuntime>,
     refresh_folder: Callback<String>,
-    feedback: Callback<String>,
+    feedback: Callback<Feedback>,
     on_logout: Callback<()>,
 }
 
@@ -179,7 +178,7 @@ impl UploadController {
         file_input: NodeRef<leptos::html::Input>,
         folder_input: NodeRef<leptos::html::Input>,
         refresh_folder: Callback<String>,
-        feedback: Callback<String>,
+        feedback: Callback<Feedback>,
         on_logout: Callback<()>,
     ) -> Self {
         Self {
@@ -247,13 +246,13 @@ impl UploadController {
             let parts = match relative_path_parts(&raw) {
                 Ok(parts) => parts,
                 Err(message) => {
-                    self.feedback.run(message.to_owned());
+                    self.feedback.run(Feedback::error(message));
                     return;
                 }
             };
             if parts.last().map(String::as_str) != Some(file.name().as_str()) {
                 self.feedback
-                    .run("文件夹中包含与文件名不一致的路径".to_owned());
+                    .run(Feedback::error("文件夹中包含与文件名不一致的路径"));
                 return;
             }
             records.push((file, parts, raw.replace('\\', "/")));
@@ -272,7 +271,9 @@ impl UploadController {
                     None => ("", path.as_str()),
                 };
                 let Some(parent_id) = folder_ids.get(parent_path).cloned() else {
-                    controller.feedback.run(format!("无法解析目录“{path}”"));
+                    controller
+                        .feedback
+                        .run(Feedback::error(format!("无法解析目录“{path}”")));
                     return;
                 };
                 match ensure_upload_directory(&parent_id, name).await {
@@ -290,18 +291,19 @@ impl UploadController {
             for (file, parts, relative_path) in records {
                 let directory = parts[..parts.len() - 1].join("/");
                 let Some(parent_id) = folder_ids.get(&directory).cloned() else {
-                    controller
-                        .feedback
-                        .run(format!("无法解析“{relative_path}”的上传位置"));
+                    controller.feedback.run(Feedback::error(format!(
+                        "无法解析“{relative_path}”的上传位置"
+                    )));
                     return;
                 };
                 queued.push((file, relative_path, parent_id));
             }
             controller.queue_files_with_parents(queued);
             controller.refresh_if_current(destination);
-            controller
-                .feedback
-                .run(format!("已保留目录结构，开始上传 {} 个文件", paths.len()));
+            controller.feedback.run(Feedback::success(format!(
+                "已保留目录结构，开始上传 {} 个文件",
+                paths.len()
+            )));
             controller.pump();
         });
     }
@@ -466,16 +468,47 @@ impl UploadController {
         });
     }
 
-    /// Remove completed and cancelled entries from the local panel.
-    pub fn clear_finished(&self) {
-        self.tasks.update(|tasks| {
-            tasks.retain(|task| {
-                !matches!(
-                    task.status,
-                    UploadTaskStatus::Done | UploadTaskStatus::Cancelled
-                )
-            });
+    /// Route a task-centre action to the local upload task that owns the
+    /// server-side upload session.
+    pub fn cancel_by_upload_id(&self, upload_id: String) {
+        let task_id = self
+            .tasks
+            .get_untracked()
+            .into_iter()
+            .find(|task| task.upload_id.as_deref() == Some(upload_id.as_str()))
+            .map(|task| task.id);
+        if let Some(task_id) = task_id {
+            self.cancel(task_id);
+            return;
+        }
+        let controller = self.clone();
+        leptos::task::spawn_local(async move {
+            if let Err(error) = api::abort_upload(&upload_id).await
+                && error.status != 404
+            {
+                controller.handle_request_error(&error);
+            }
         });
+    }
+
+    /// Retry a task-centre upload through the browser queue when its file
+    /// handle is still available after the upload failed.
+    pub fn retry_by_upload_id(&self, upload_id: String) -> bool {
+        let task_id = self
+            .tasks
+            .get_untracked()
+            .into_iter()
+            .find(|task| task.upload_id.as_deref() == Some(upload_id.as_str()))
+            .map(|task| task.id);
+        if let Some(task_id) = task_id {
+            self.retry(task_id);
+            true
+        } else {
+            // The local File handle can disappear when the page is reloaded,
+            // but the durable task still supports the reference client's
+            // server-side retry path. Let TaskController fall through to it.
+            false
+        }
     }
 
     /// Abort browser requests when the authenticated shell is unmounted.
@@ -514,7 +547,7 @@ impl UploadController {
     fn queue_files_with_parents(&self, files: Vec<(BrowserFile, String, String)>) {
         let saved = saved_uploads();
         self.tasks.update(|tasks| {
-            for (file, relative_path, parent_id) in files.iter().cloned() {
+            for (file, _relative_path, parent_id) in files.iter().cloned() {
                 let size = file_size(&file);
                 let resume = saved.iter().find(|entry| {
                     entry.parent_id == parent_id
@@ -526,7 +559,6 @@ impl UploadController {
                     id: self.next_task_id(),
                     file,
                     parent_id,
-                    relative_path,
                     progress: 0,
                     status: UploadTaskStatus::Queued,
                     error: String::new(),
@@ -1101,12 +1133,18 @@ impl UploadController {
         if error.is_unauthorized() {
             self.on_logout.run(());
         } else {
-            self.feedback.run(error.message.clone());
+            self.feedback.run(Feedback::error(error.message.clone()));
         }
     }
 }
 
-/// Render hidden inputs, the drop target and the local progress panel.
+/// Render the hidden chooser inputs and the drag/drop surface.
+///
+/// The reference client does not render a second foreground upload queue in
+/// the file browser. Upload progress is represented by the durable task
+/// centre; the browser-local queue remains an implementation detail so that
+/// it can cancel, retry and resume byte transfers without changing the shell
+/// layout.
 #[component]
 pub fn UploadSurface(controller: UiUploadController) -> impl IntoView {
     let file_input = controller.file_input;
@@ -1119,24 +1157,14 @@ pub fn UploadSurface(controller: UiUploadController) -> impl IntoView {
 
     let file_controller = controller.clone();
     let folder_controller = controller.clone();
-    let clear_controller = controller.clone();
-    let clear_finished = Callback::new(move |_: ()| clear_controller.clear_finished());
-    let cancel = {
-        let controller = controller.clone();
-        Callback::new(move |task_id: String| controller.cancel(task_id))
-    };
-    let retry = {
-        let controller = controller.clone();
-        Callback::new(move |task_id: String| controller.retry(task_id))
-    };
     let drag_active = controller.drag_active;
-    let tasks = controller.tasks;
     let current_folder = controller.current_folder;
 
     view! {
         <input
             node_ref=file_input
             class="upload-input"
+            hidden
             type="file"
             multiple
             aria-label="选择文件上传"
@@ -1149,6 +1177,7 @@ pub fn UploadSurface(controller: UiUploadController) -> impl IntoView {
         <input
             node_ref=folder_input
             class="upload-input"
+            hidden
             type="file"
             multiple
             aria-label="选择文件夹上传"
@@ -1173,149 +1202,6 @@ pub fn UploadSurface(controller: UiUploadController) -> impl IntoView {
                 </div>
             </div>
         </Show>
-        <Show when=move || !tasks.get().is_empty() fallback=|| ()>
-            <section class="upload-panel" aria-label="上传队列">
-                <header>
-                    <div>
-                        <strong>"上传队列"</strong>
-                        <span>{move || format!("{} 个文件", tasks.get().len())}</span>
-                    </div>
-                    <button type="button" on:click=move |_| clear_finished.run(())>
-                        "清除已完成"
-                    </button>
-                </header>
-                <div class="task-list">
-                    <For
-                        each=move || tasks.get()
-                        key=|task| task.id.clone()
-                        let:task
-                    >
-                        <UploadTaskRow task=task tasks=tasks on_cancel=cancel on_retry=retry />
-                    </For>
-                </div>
-            </section>
-        </Show>
-    }
-}
-
-#[component]
-fn UploadTaskRow(
-    task: UploadTask,
-    tasks: RwSignal<Vec<UploadTask>>,
-    on_cancel: Callback<String>,
-    on_retry: Callback<String>,
-) -> impl IntoView {
-    let task_id = task.id.clone();
-    let name = task.file.name();
-    let size = file_size(&task.file);
-    let relative_path = task.relative_path;
-    let status = Signal::derive_local({
-        let task_id = task_id.clone();
-        move || task_state(tasks, &task_id).0
-    });
-    let progress = Signal::derive_local({
-        let task_id = task_id.clone();
-        move || task_state(tasks, &task_id).1
-    });
-    let has_error = Signal::derive_local({
-        let task_id = task_id.clone();
-        move || !task_state(tasks, &task_id).2.is_empty()
-    });
-    let error_text = Signal::derive_local({
-        let task_id = task_id.clone();
-        move || task_state(tasks, &task_id).2
-    });
-    let cancel = {
-        let task_id = task_id.clone();
-        Callback::new(move |_: ()| on_cancel.run(task_id.clone()))
-    };
-    let retry = {
-        let task_id = task_id.clone();
-        Callback::new(move |_: ()| on_retry.run(task_id.clone()))
-    };
-    let cancel_label = format!("取消上传 {name}");
-    let retry_label = format!("重试上传 {name}");
-
-    view! {
-        <article class=move || upload_task_class(status.get())>
-            <div class="task-top">
-                <span class="task-icon" aria-hidden="true">"↑"</span>
-                <div>
-                    <strong title=name.clone()>{name.clone()}</strong>
-                    <small>
-                        {if relative_path.is_empty() { format_size(size as u64) } else { relative_path }}
-                        " · "
-                        {move || upload_status_label(status.get())}
-                    </small>
-                </div>
-                <em>{move || format!("{}%", progress.get())}</em>
-                <span class="task-actions">
-                    <Show
-                        when=move || matches!(status.get(), UploadTaskStatus::Queued | UploadTaskStatus::Uploading)
-                        fallback=move || ()
-                    >
-                        <button
-                            type="button"
-                            title="取消上传"
-                            aria-label=cancel_label.clone()
-                            on:click=move |_| cancel.run(())
-                        >
-                            "取消"
-                        </button>
-                    </Show>
-                    <Show
-                        when=move || matches!(status.get(), UploadTaskStatus::Failed | UploadTaskStatus::Cancelled)
-                        fallback=move || ()
-                    >
-                        <button
-                            type="button"
-                            title="重试上传"
-                            aria-label=retry_label.clone()
-                            on:click=move |_| retry.run(())
-                        >
-                            "重试"
-                        </button>
-                    </Show>
-                </span>
-            </div>
-            <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow=move || progress.get()>
-                <b style=move || format!("width: {}%", progress.get())></b>
-            </div>
-            <Show when=move || has_error.get() fallback=|| ()>
-                <p class="task-error" role="alert">{move || error_text.get()}</p>
-            </Show>
-        </article>
-    }
-}
-
-fn task_state(tasks: RwSignal<Vec<UploadTask>>, task_id: &str) -> (UploadTaskStatus, u8, String) {
-    tasks
-        .get()
-        .into_iter()
-        .find(|task| task.id == task_id)
-        .map(|task| (task.status, task.progress, task.error))
-        .unwrap_or((UploadTaskStatus::Cancelled, 0, String::new()))
-}
-
-fn upload_task_class(status: UploadTaskStatus) -> &'static str {
-    match status {
-        UploadTaskStatus::Done => "upload-task completed",
-        UploadTaskStatus::Retrying => "upload-task retrying",
-        UploadTaskStatus::Failed => "upload-task failed",
-        UploadTaskStatus::Cancelled => "upload-task cancelled",
-        UploadTaskStatus::Queued => "upload-task queued",
-        UploadTaskStatus::Uploading => "upload-task uploading",
-    }
-}
-
-fn upload_status_label(status: UploadTaskStatus) -> &'static str {
-    match status {
-        UploadTaskStatus::Queued => "排队中",
-        UploadTaskStatus::Uploading => "上传中",
-        UploadTaskStatus::Done => "已完成",
-        UploadTaskStatus::Retrying => "准备重试",
-        UploadTaskStatus::Failed => "失败",
-        UploadTaskStatus::Cancelled => "已取消",
     }
 }
 

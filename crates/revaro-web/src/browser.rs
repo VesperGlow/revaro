@@ -105,9 +105,20 @@ pub fn on_resize(callback: impl Fn(leptos::ev::UiEvent) + 'static) -> OwnedListe
     OwnedListener(Some(window_event_listener(ev::resize, callback)))
 }
 
+/// Listen for viewport or scroll-container movement while a positioned
+/// transient view is mounted.
+pub fn on_scroll(callback: impl Fn(leptos::ev::Event) + 'static) -> OwnedListener {
+    OwnedListener(Some(window_event_listener(ev::scroll, callback)))
+}
+
 /// Listen for changes to the document's fullscreen element.
 pub fn on_fullscreenchange(callback: impl Fn(leptos::ev::Event) + 'static) -> OwnedListener {
     OwnedListener(Some(window_event_listener(ev::fullscreenchange, callback)))
+}
+
+/// Listen for browser history navigation.
+pub fn on_popstate(callback: impl Fn(web_sys::PopStateEvent) + 'static) -> OwnedListener {
+    OwnedListener(Some(window_event_listener(ev::popstate, callback)))
 }
 
 /// A document/window listener that unregisters when dropped or released.

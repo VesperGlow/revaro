@@ -217,7 +217,7 @@ pub fn ReaderView(
         .map(|value| value.title())
         .unwrap_or_else(|| "revaro · 私人网盘".to_owned());
     if let Some(document) = &document {
-        document.set_title(&format!("{} · revaro", title.get_untracked()));
+        document.set_title(&format!("{} · revaro", file.name));
     }
 
     let file_id = file.id.clone();
@@ -227,7 +227,6 @@ pub fn ReaderView(
     };
 
     let mut key_listener = {
-        let root = root;
         let runtime = runtime.clone();
         let viewport = viewport;
         let flow = flow;
@@ -251,15 +250,10 @@ pub fn ReaderView(
                 let _ = control;
                 return;
             }
-            if event.key() == "Tab" {
-                trap_focus(root, &event);
-                return;
-            }
             if event.key() == "Escape" {
                 if toc_open.get_untracked() {
                     event.prevent_default();
                     toc_open.set(false);
-                    focus_element_by_id("toc-button");
                 } else if font_open.get_untracked() {
                     event.prevent_default();
                     font_open.set(false);
@@ -391,7 +385,6 @@ pub fn ReaderView(
         let toc_open = toc_open;
         move |_| {
             toc_open.set(false);
-            focus_element_by_id("toc-button");
         }
     };
     let open_toc = {
@@ -400,7 +393,7 @@ pub fn ReaderView(
         move |_| {
             font_open.set(false);
             toc_open.set(true);
-            focus_element_by_id("toc-close");
+            focus_element_after_render("toc-close");
         }
     };
     let toggle_font = {
@@ -414,6 +407,15 @@ pub fn ReaderView(
             tools_visible.update(|value| *value = !*value);
             if !tools_visible.get_untracked() {
                 font_open.set(false);
+            }
+        }
+    };
+    let trap_keydown = {
+        let root = root;
+        move |event: web_sys::KeyboardEvent| {
+            if event.key() == "Tab" {
+                event.prevent_default();
+                trap_focus(root, &event);
             }
         }
     };
@@ -691,8 +693,9 @@ pub fn ReaderView(
             class:tools-hidden=move || !tools_visible.get()
             role="dialog"
             aria-modal="true"
-            attr:aria-label=move || title.get()
+            aria-label=move || title.get()
             tabindex="-1"
+            on:keydown=trap_keydown
         >
             <header class="reader-bar">
                 <button id="reader-back" class="reader-icon-btn" type="button" aria-label="返回" on:click=close_view.clone()>
@@ -715,7 +718,7 @@ pub fn ReaderView(
                             r="17.5"
                             pathLength="100"
                             stroke-dasharray="100"
-                            attr:stroke-dashoffset=move || format!("{}", 100.0 - percent.get().clamp(0.0, 100.0))
+                            stroke-dashoffset=move || format!("{}", 100.0 - percent.get().clamp(0.0, 100.0))
                         ></circle>
                     </svg>
                     <b>{move || format!("{}", percent.get().round().clamp(0.0, 100.0))}</b>
@@ -756,6 +759,7 @@ pub fn ReaderView(
                 id="toc-drawer"
                 class="toc-drawer"
                 class:open=move || toc_open.get()
+                data-preview-sheet=move || toc_open.get().then_some("")
                 aria-label="书籍目录"
                 aria-hidden=move || if toc_open.get() { "false" } else { "true" }
             >
@@ -928,6 +932,16 @@ fn focus_element_by_id(id: &str) {
     {
         let _ = element.focus();
     }
+}
+
+fn focus_element_after_render(id: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let id = id.to_owned();
+    let callback = Closure::once_into_js(move || focus_element_by_id(&id));
+    let _ =
+        window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
 }
 
 fn clear_timer(timer: &mut Option<i32>) {
@@ -2525,7 +2539,19 @@ fn trap_focus(root: SectionRef, event: &web_sys::KeyboardEvent) {
     let Some(root) = root.get() else {
         return;
     };
-    let Ok(nodes) = root.query_selector_all(
+    let scope = root
+        .query_selector("[data-preview-sheet]")
+        .ok()
+        .flatten()
+        .filter(|sheet| {
+            web_sys::window()
+                .and_then(|window| window.get_computed_style(sheet).ok().flatten())
+                .is_some_and(|style| {
+                    style.get_property_value("position").unwrap_or_default() != "static"
+                })
+        })
+        .unwrap_or_else(|| root.clone().unchecked_into());
+    let Ok(nodes) = scope.query_selector_all(
         r#"button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])"#,
     ) else {
         return;
@@ -2535,7 +2561,22 @@ fn trap_focus(root: SectionRef, event: &web_sys::KeyboardEvent) {
         let Some(node) = nodes.item(index) else {
             continue;
         };
-        if let Ok(element) = node.dyn_into::<HtmlElement>() {
+        let Ok(element) = node.dyn_into::<HtmlElement>() else {
+            continue;
+        };
+        let element_node: Element = element.clone().unchecked_into();
+        let visible = element_node.get_client_rects().length() > 0
+            && element_node
+                .closest("[inert], [aria-hidden=\"true\"]")
+                .ok()
+                .flatten()
+                .is_none()
+            && web_sys::window()
+                .and_then(|window| window.get_computed_style(&element_node).ok().flatten())
+                .is_none_or(|style| {
+                    style.get_property_value("visibility").unwrap_or_default() != "hidden"
+                });
+        if visible {
             focusable.push(element);
         }
     }
@@ -2550,21 +2591,29 @@ fn trap_focus(root: SectionRef, event: &web_sys::KeyboardEvent) {
     let active = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.active_element());
-    let first_node: Element = first.clone().unchecked_into();
-    let last_node: Element = last.clone().unchecked_into();
-    if event.shift_key()
-        && active
-            .as_ref()
-            .is_some_and(|value| value.is_same_node(Some(&first_node)))
+    let first_element: Element = first.clone().unchecked_into();
+    let last_element: Element = last.clone().unchecked_into();
+    let active_is_first = active
+        .as_ref()
+        .is_some_and(|value| value.is_same_node(Some(&first_element)));
+    let active_is_last = active
+        .as_ref()
+        .is_some_and(|value| value.is_same_node(Some(&last_element)));
+    let active_in_scope = active
+        .as_ref()
+        .is_some_and(|value| scope.contains(Some(value.unchecked_ref::<web_sys::Node>())));
+    let root_element: Element = root.clone().unchecked_into();
+    let active_is_root = active
+        .as_ref()
+        .is_some_and(|value| value.is_same_node(Some(&root_element)));
+    if (event.shift_key() && (active_is_first || active_is_root || !active_in_scope))
+        || (!event.shift_key() && (active_is_last || active_is_root || !active_in_scope))
     {
         event.prevent_default();
-        let _ = last.focus();
-    } else if !event.shift_key()
-        && active
-            .as_ref()
-            .is_some_and(|value| value.is_same_node(Some(&last_node)))
-    {
-        event.prevent_default();
-        let _ = first.focus();
+        let _ = if event.shift_key() {
+            last.focus()
+        } else {
+            first.focus()
+        };
     }
 }

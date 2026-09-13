@@ -7,6 +7,7 @@
    `.input-dialog` stay global — their names are unique to this component. */
 .task-center{position:relative}
 .task-center>summary{position:relative;display:grid;place-items:center;width:44px;height:44px;border-radius:50%;cursor:pointer;list-style:none}
+.task-center>summary.task-trigger-hidden{display:none}
 .task-center>summary::-webkit-details-marker{display:none}
 .task-center>summary:hover{background:#f1f5f9}
 .task-center>summary svg{width:21px;color:#3d5f7e}

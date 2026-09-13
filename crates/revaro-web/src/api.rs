@@ -17,21 +17,32 @@
 //! available; this module owns the JSON session and commit calls. Only compiled
 //! for wasm; the pure parts of the client live in `crate::logic`.
 
-use gloo_net::http::Request;
-use revaro_core::api::auth::{LoginRequest, Session};
+use gloo_net::http::{Request, RequestBuilder};
+use revaro_core::api::auth::{
+    AvatarRequest, ChangePasswordRequest, ChangeUsernameRequest, LoginRequest, PasswordCodeRequest,
+    PasswordRequest, Session, TotpRecovery, TotpSetup, TotpStatus,
+};
 use revaro_core::api::book::{Info as BookInfo, Progress as BookProgress, SaveProgressRequest};
 use revaro_core::api::files::{
-    Children, CopyFileRequest, CreateDirectoryRequest, FileDetail, PatchFileRequest, Trash,
+    Children, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest, DocumentContent,
+    FileDetail, PatchFileRequest, Trash, UpdateDocumentRequest,
 };
+use revaro_core::api::library::LibraryAll;
 use revaro_core::api::media::{AudioMedia, VideoMedia};
+use revaro_core::api::share::Status as ShareStatus;
 use revaro_core::api::tasks::{TaskInputRequest, TaskList};
 use revaro_core::api::uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
 };
+use revaro_core::api::{ArchiveJob, BatchDownloadRequest, BatchDownloadTicket};
 use revaro_core::model::MediaProgress;
 use revaro_core::reader::FlowManifest;
 use revaro_core::{ErrorCode, ErrorEnvelope};
+use web_sys::{AbortSignal, RequestCredentials};
+
+const API_TIMEOUT_MS: u32 = 60_000;
+const READER_FLOW_TIMEOUT_MS: u32 = 120_000;
 
 /// A failed request to an authenticated JSON endpoint.
 ///
@@ -93,7 +104,10 @@ impl LoginError {
 /// `checkSession` in the Vue app swallowed every failure and showed the login
 /// page, and the shell keeps that behaviour.
 pub async fn fetch_session() -> Option<Session> {
-    let response = Request::get("/api/auth/me").send().await.ok()?;
+    let response = api_request(Request::get("/api/auth/me"))
+        .send()
+        .await
+        .ok()?;
     if !response.ok() {
         return None;
     }
@@ -110,9 +124,40 @@ pub async fn fetch_children(id: &str) -> Result<Children, RequestError> {
     get_json(&format!("/api/files/{id}/children")).await
 }
 
+/// Fetch the UTF-8 content and optimistic-concurrency ETag of an editable file.
+pub async fn fetch_document(id: &str) -> Result<DocumentContent, RequestError> {
+    get_json(&format!("/api/files/{id}/content")).await
+}
+
+/// Create a new editable document in a directory.
+pub async fn create_document(
+    request: &CreateDocumentRequest,
+) -> Result<revaro_core::model::File, RequestError> {
+    let request = api_request(Request::post("/api/documents"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Save an editable document with its last observed ETag.
+pub async fn update_document(
+    id: &str,
+    request: &UpdateDocumentRequest,
+) -> Result<revaro_core::model::File, RequestError> {
+    let request = api_request(Request::put(&format!("/api/files/{id}/content")))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
 /// Fetch the top-level entries in the trash.
 pub async fn fetch_trash() -> Result<Trash, RequestError> {
     get_json("/api/trash").await
+}
+
+/// Fetch every media bucket and its sidebar counts in one request.
+pub async fn fetch_library_all() -> Result<LibraryAll, RequestError> {
+    get_json("/api/library/all").await
 }
 
 /// Fetch the optional chapter and cover metadata for an audio file.
@@ -140,7 +185,7 @@ pub async fn save_book_progress(
     id: &str,
     progress: &SaveProgressRequest,
 ) -> Result<(), RequestError> {
-    let request = Request::put(&format!("/api/files/{id}/book/progress"))
+    let request = api_request(Request::put(&format!("/api/files/{id}/book/progress")))
         .json(progress)
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -148,12 +193,19 @@ pub async fn save_book_progress(
 
 /// Fetch the no-cache flow manifest used to lay out the book.
 pub async fn fetch_book_flow(id: &str) -> Result<FlowManifest, RequestError> {
-    get_json(&format!("/api/files/{id}/book/flow")).await
+    get_json_with_timeout(
+        &format!("/api/files/{id}/book/flow"),
+        READER_FLOW_TIMEOUT_MS,
+    )
+    .await
 }
 
 /// Fetch one sanitized flow chunk as HTML.
 pub async fn fetch_book_chunk(id: &str, index: i32) -> Result<String, RequestError> {
+    // The reference reader deliberately used a raw same-origin fetch for
+    // chunks, so a large chapter is not cut off by the generic 60s JSON timer.
     let response = Request::get(&format!("/api/files/{id}/book/flow/chunks/{index}"))
+        .credentials(RequestCredentials::SameOrigin)
         .send()
         .await
         .map_err(|error| request_transport(error.to_string()))?;
@@ -176,7 +228,7 @@ pub async fn save_media_progress(
     id: &str,
     progress: &MediaProgress,
 ) -> Result<MediaProgress, RequestError> {
-    let request = Request::put(&format!("/api/files/{id}/media/progress"))
+    let request = api_request(Request::put(&format!("/api/files/{id}/media/progress")))
         .json(progress)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
@@ -189,7 +241,7 @@ pub async fn fetch_tasks() -> Result<TaskList, RequestError> {
 
 /// Ask a running or waiting task to stop.
 pub async fn cancel_task(id: &str) -> Result<(), RequestError> {
-    let request = Request::post(&format!("/api/tasks/{id}/cancel"))
+    let request = api_request(Request::post(&format!("/api/tasks/{id}/cancel")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -197,7 +249,7 @@ pub async fn cancel_task(id: &str) -> Result<(), RequestError> {
 
 /// Retry a failed task on the server's next worker pass.
 pub async fn retry_task(id: &str) -> Result<(), RequestError> {
-    let request = Request::post(&format!("/api/tasks/{id}/retry"))
+    let request = api_request(Request::post(&format!("/api/tasks/{id}/retry")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -205,7 +257,7 @@ pub async fn retry_task(id: &str) -> Result<(), RequestError> {
 
 /// Supply input to a task waiting for it, currently an archive password.
 pub async fn submit_task_input(id: &str, request: &TaskInputRequest) -> Result<(), RequestError> {
-    let request = Request::post(&format!("/api/tasks/{id}/input"))
+    let request = api_request(Request::post(&format!("/api/tasks/{id}/input")))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -213,7 +265,7 @@ pub async fn submit_task_input(id: &str, request: &TaskInputRequest) -> Result<(
 
 /// Remove one terminal task notification from the durable task history.
 pub async fn delete_task(id: &str) -> Result<(), RequestError> {
-    let request = Request::delete(&format!("/api/tasks/{id}"))
+    let request = api_request(Request::delete(&format!("/api/tasks/{id}")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -221,7 +273,7 @@ pub async fn delete_task(id: &str) -> Result<(), RequestError> {
 
 /// Start or resume a browser upload session.
 pub async fn create_upload(request: &CreateUploadRequest) -> Result<CreateUpload, RequestError> {
-    let request = Request::post("/api/uploads")
+    let request = api_request(Request::post("/api/uploads"))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
@@ -237,7 +289,7 @@ pub async fn fetch_upload_parts(
     id: &str,
     request: &UploadPartsRequest,
 ) -> Result<UploadPartsResponse, RequestError> {
-    let request = Request::post(&format!("/api/uploads/{id}/parts"))
+    let request = api_request(Request::post(&format!("/api/uploads/{id}/parts")))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
@@ -249,9 +301,11 @@ pub async fn record_upload_part(
     part_number: i32,
     request: &RecordUploadPartRequest,
 ) -> Result<(), RequestError> {
-    let request = Request::put(&format!("/api/uploads/{id}/parts/{part_number}"))
-        .json(request)
-        .map_err(|error| request_transport(error.to_string()))?;
+    let request = api_request(Request::put(&format!(
+        "/api/uploads/{id}/parts/{part_number}"
+    )))
+    .json(request)
+    .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
 }
 
@@ -263,16 +317,18 @@ pub async fn complete_upload(
     request: &CompleteUploadRequest,
     signal: Option<&web_sys::AbortSignal>,
 ) -> Result<revaro_core::model::File, RequestError> {
-    let request = Request::post(&format!("/api/uploads/{id}/complete"))
-        .abort_signal(signal)
-        .json(request)
-        .map_err(|error| request_transport(error.to_string()))?;
+    let request = api_request_with_signal(
+        Request::post(&format!("/api/uploads/{id}/complete")),
+        signal,
+    )
+    .json(request)
+    .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
 }
 
 /// Abandon a session and remove its pending file row and staging bytes.
 pub async fn abort_upload(id: &str) -> Result<(), RequestError> {
-    let request = Request::delete(&format!("/api/uploads/{id}"))
+    let request = api_request(Request::delete(&format!("/api/uploads/{id}")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -282,7 +338,7 @@ pub async fn abort_upload(id: &str) -> Result<(), RequestError> {
 pub async fn create_directory(
     request: &CreateDirectoryRequest,
 ) -> Result<revaro_core::model::File, RequestError> {
-    let request = Request::post("/api/directories")
+    let request = api_request(Request::post("/api/directories"))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
@@ -293,7 +349,7 @@ pub async fn patch_file(
     id: &str,
     request: &PatchFileRequest,
 ) -> Result<revaro_core::model::File, RequestError> {
-    let request = Request::patch(&format!("/api/files/{id}"))
+    let request = api_request(Request::patch(&format!("/api/files/{id}")))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
@@ -304,7 +360,7 @@ pub async fn copy_file(
     id: &str,
     request: &CopyFileRequest,
 ) -> Result<revaro_core::model::File, RequestError> {
-    let request = Request::post(&format!("/api/files/{id}/copy"))
+    let request = api_request(Request::post(&format!("/api/files/{id}/copy")))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
@@ -312,7 +368,7 @@ pub async fn copy_file(
 
 /// Move a live item into the trash.
 pub async fn delete_file(id: &str) -> Result<(), RequestError> {
-    let request = Request::delete(&format!("/api/files/{id}"))
+    let request = api_request(Request::delete(&format!("/api/files/{id}")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -320,7 +376,7 @@ pub async fn delete_file(id: &str) -> Result<(), RequestError> {
 
 /// Restore one root item from the trash.
 pub async fn restore_trash(id: &str) -> Result<(), RequestError> {
-    let request = Request::post(&format!("/api/trash/{id}/restore"))
+    let request = api_request(Request::post(&format!("/api/trash/{id}/restore")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -328,7 +384,7 @@ pub async fn restore_trash(id: &str) -> Result<(), RequestError> {
 
 /// Permanently remove one root item from the trash.
 pub async fn purge_trash(id: &str) -> Result<(), RequestError> {
-    let request = Request::delete(&format!("/api/trash/{id}"))
+    let request = api_request(Request::delete(&format!("/api/trash/{id}")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
@@ -336,15 +392,52 @@ pub async fn purge_trash(id: &str) -> Result<(), RequestError> {
 
 /// Permanently remove every item currently in the trash.
 pub async fn empty_trash() -> Result<(), RequestError> {
-    let request = Request::delete("/api/trash")
+    let request = api_request(Request::delete("/api/trash"))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
 }
 
+/// Start the background extraction job for a ready archive.
+pub async fn extract_archive(id: &str) -> Result<ArchiveJob, RequestError> {
+    let request = api_request(Request::post(&format!("/api/files/{id}/extract")))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Read the current public-share state of a file.
+pub async fn fetch_share(id: &str) -> Result<ShareStatus, RequestError> {
+    get_json(&format!("/api/files/{id}/share")).await
+}
+
+/// Create or replace a public-share link.
+pub async fn create_share(id: &str) -> Result<ShareStatus, RequestError> {
+    let request = api_request(Request::post(&format!("/api/files/{id}/share")))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Revoke a public-share link.
+pub async fn revoke_share(id: &str) -> Result<(), RequestError> {
+    let request = api_request(Request::delete(&format!("/api/files/{id}/share")))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Reserve the one-use ZIP download ticket for multiple files.
+pub async fn prepare_batch_download(ids: Vec<String>) -> Result<BatchDownloadTicket, RequestError> {
+    let request = api_request(Request::post("/api/files/batch-download/prepare"))
+        .json(&BatchDownloadRequest { ids })
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
 /// Sign in, mapping a non-2xx answer to a decoded [`LoginError`].
 pub async fn login(request: &LoginRequest) -> Result<Session, LoginError> {
-    let sent = Request::post("/api/auth/login")
+    let sent = api_request(Request::post("/api/auth/login"))
         .json(request)
         .map_err(|error| transport(error.to_string()))?
         .send()
@@ -375,7 +468,78 @@ pub async fn login(request: &LoginRequest) -> Result<Session, LoginError> {
 
 /// End the session. Failures are ignored: the shell clears local state anyway.
 pub async fn logout() {
-    let _ = Request::post("/api/auth/logout").send().await;
+    let _ = api_request(Request::post("/api/auth/logout")).send().await;
+}
+
+/// Change the signed-in user's login name.
+pub async fn change_username(request: &ChangeUsernameRequest) -> Result<(), RequestError> {
+    let request = api_request(Request::patch("/api/profile/username"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Change the signed-in user's password.
+pub async fn change_password(request: &ChangePasswordRequest) -> Result<(), RequestError> {
+    let request = api_request(Request::patch("/api/auth/password"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Read the administrator's TOTP state.
+pub async fn fetch_totp_status() -> Result<TotpStatus, RequestError> {
+    get_json("/api/auth/totp").await
+}
+
+/// Begin TOTP enrollment and return the secret and QR data URL.
+pub async fn begin_totp_setup(request: &PasswordRequest) -> Result<TotpSetup, RequestError> {
+    let request = api_request(Request::post("/api/auth/totp/setup"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Confirm TOTP enrollment and receive one-time recovery codes.
+pub async fn enable_totp(request: &PasswordCodeRequest) -> Result<TotpRecovery, RequestError> {
+    let request = api_request(Request::post("/api/auth/totp/enable"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Generate a replacement set of recovery codes.
+pub async fn regenerate_totp_recovery_codes(
+    request: &PasswordCodeRequest,
+) -> Result<TotpRecovery, RequestError> {
+    let request = api_request(Request::post("/api/auth/totp/recovery-codes"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
+}
+
+/// Disable TOTP after re-verifying the password and second factor.
+pub async fn disable_totp(request: &PasswordCodeRequest) -> Result<(), RequestError> {
+    let request = api_request(Request::delete("/api/auth/totp"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Store a validated avatar data URL.
+pub async fn update_avatar(request: &AvatarRequest) -> Result<(), RequestError> {
+    let request = api_request(Request::put("/api/profile/avatar"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Remove the stored avatar.
+pub async fn delete_avatar() -> Result<(), RequestError> {
+    let request = api_request(Request::delete("/api/profile/avatar"))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
 }
 
 /// A transport failure (offline, DNS, malformed body) carries no HTTP status.
@@ -392,7 +556,27 @@ async fn get_json<T>(path: &str) -> Result<T, RequestError>
 where
     T: serde::de::DeserializeOwned,
 {
-    let response = Request::get(path)
+    let request = api_request(Request::get(path))
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    get_json_with_request(request).await
+}
+
+async fn get_json_with_timeout<T>(path: &str, timeout_ms: u32) -> Result<T, RequestError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let request = api_request_timeout(Request::get(path), timeout_ms, None)
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    get_json_with_request(request).await
+}
+
+async fn get_json_with_request<T>(request: Request) -> Result<T, RequestError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let response = request
         .send()
         .await
         .map_err(|error| request_transport(error.to_string()))?;
@@ -470,4 +654,49 @@ fn request_transport(message: String) -> RequestError {
         code: None,
         message,
     }
+}
+
+/// Apply the old Vue client's same-origin cookie policy and 60-second
+/// cancellation boundary to every JSON request.
+///
+/// `AbortSignal::any` preserves the upload controller's explicit cancellation
+/// while still preventing a hung commit from remaining pending forever. The
+/// timeout signal is owned by the browser request after this builder is
+/// consumed, so it is safe for the local Rust value to be dropped here.
+fn api_request(builder: RequestBuilder) -> RequestBuilder {
+    api_request_with_timeout(builder, API_TIMEOUT_MS, None)
+}
+
+fn api_request_with_signal(
+    builder: RequestBuilder,
+    caller_signal: Option<&AbortSignal>,
+) -> RequestBuilder {
+    api_request_with_timeout(builder, API_TIMEOUT_MS, caller_signal)
+}
+
+fn api_request_timeout(
+    builder: RequestBuilder,
+    timeout_ms: u32,
+    caller_signal: Option<&AbortSignal>,
+) -> RequestBuilder {
+    api_request_with_timeout(builder, timeout_ms, caller_signal)
+}
+
+fn api_request_with_timeout(
+    builder: RequestBuilder,
+    timeout_ms: u32,
+    caller_signal: Option<&AbortSignal>,
+) -> RequestBuilder {
+    let timeout_signal = AbortSignal::timeout_with_u32(timeout_ms);
+    let signal = if let Some(caller_signal) = caller_signal {
+        let signals = js_sys::Array::new();
+        signals.push(caller_signal);
+        signals.push(&timeout_signal);
+        AbortSignal::any(&signals.into())
+    } else {
+        timeout_signal
+    };
+    builder
+        .credentials(RequestCredentials::SameOrigin)
+        .abort_signal(Some(&signal))
 }

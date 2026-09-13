@@ -15,6 +15,10 @@ use wasm_bindgen::JsCast;
 use crate::api;
 use crate::browser;
 
+const POPOVER_MARGIN: f64 = 10.0;
+const POPOVER_GAP: f64 = 6.0;
+const POPOVER_HEIGHT: f64 = 340.0;
+
 /// A directory picker embedded in a transfer dialog.
 #[component]
 pub fn DirectoryPicker(
@@ -25,7 +29,10 @@ pub fn DirectoryPicker(
     on_unauthorized: Callback<()>,
 ) -> impl IntoView {
     let root = NodeRef::<leptos::html::Div>::new();
+    let trigger = NodeRef::<leptos::html::Button>::new();
+    let panel = NodeRef::<leptos::html::Section>::new();
     let expanded = RwSignal::new(false);
+    let panel_style = RwSignal::new(String::new());
     let current_id = RwSignal::new(initial_id.clone());
     let current = RwSignal::new(None::<File>);
     let breadcrumbs = RwSignal::new(Vec::<File>::new());
@@ -50,29 +57,26 @@ pub fn DirectoryPicker(
             if excluded_ids.contains(&id) {
                 return;
             }
+            let notify = current_id.get_untracked() != id;
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
             let excluded_ids = excluded_ids.clone();
             leptos::task::spawn_local(async move {
-                let result = async {
-                    let detail = api::fetch_file(&id).await?;
-                    let children = api::fetch_children(&id).await?;
-                    let folders = children
-                        .items
-                        .into_iter()
-                        .filter(|item| {
-                            item.kind == FileKind::Directory && !excluded_ids.contains(&item.id)
-                        })
-                        .collect::<Vec<_>>();
-                    Ok::<(File, Vec<File>, Vec<File>), api::RequestError>((
-                        detail.file,
-                        detail.breadcrumbs,
-                        folders,
-                    ))
-                }
-                .await;
+                let result = fetch_directory_data(&id, &excluded_ids).await;
+
+                // The Vue picker returned to the virtual root when a stale
+                // non-root target disappeared (for example after a move or
+                // delete in another tab). Keep that recovery path instead of
+                // leaving the transfer dialog permanently stuck on an error.
+                let (loaded_id, result) = match result {
+                    Err(request_error) if !request_error.is_unauthorized() && id != ROOT_ID => (
+                        ROOT_ID.to_owned(),
+                        fetch_directory_data(ROOT_ID, &excluded_ids).await,
+                    ),
+                    result => (id.clone(), result),
+                };
 
                 if request_sequence.get_untracked() != sequence {
                     return;
@@ -80,8 +84,7 @@ pub fn DirectoryPicker(
                 loading.set(false);
                 match result {
                     Ok((file, path, children)) => {
-                        let notify = current_id.get_untracked() != id;
-                        current_id.set(id.clone());
+                        current_id.set(loaded_id.clone());
                         current.set(Some(file));
                         breadcrumbs.set(path);
                         folders.set(children);
@@ -89,7 +92,7 @@ pub fn DirectoryPicker(
                         // the user chooses a folder, the transfer dialog owns
                         // the selected target through this callback.
                         if notify {
-                            on_change.run(id);
+                            on_change.run(loaded_id);
                         }
                     }
                     Err(request_error) if request_error.is_unauthorized() => {
@@ -105,8 +108,58 @@ pub fn DirectoryPicker(
     // child folders are ready when the dialog is first inspected.
     load_folder.run(initial_id);
 
+    let update_position = {
+        let trigger = trigger;
+        let panel_style = panel_style;
+        Callback::new(move |_: ()| {
+            let Some(trigger) = trigger.get() else {
+                return;
+            };
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let rect = trigger.get_bounding_client_rect();
+            let viewport_width = window
+                .inner_width()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(1024.0);
+            let viewport_height = window
+                .inner_height()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(768.0);
+            let below = viewport_height - rect.bottom() - POPOVER_GAP - POPOVER_MARGIN;
+            let above = rect.top() - POPOVER_GAP - POPOVER_MARGIN;
+            let opens_up = below < POPOVER_HEIGHT.min(240.0) && above > below;
+            let available = 150.0_f64.max(POPOVER_HEIGHT.min(if opens_up { above } else { below }));
+            let width = rect.width().min(viewport_width - POPOVER_MARGIN * 2.0);
+            let left =
+                POPOVER_MARGIN.max((rect.left()).min(viewport_width - POPOVER_MARGIN - width));
+            let top = if opens_up {
+                "auto".to_owned()
+            } else {
+                format!("{}px", (rect.bottom() + POPOVER_GAP).round())
+            };
+            let bottom = if opens_up {
+                format!("{}px", (viewport_height - rect.top() + POPOVER_GAP).round())
+            } else {
+                "auto".to_owned()
+            };
+            panel_style.set(format!(
+                "position:fixed;left:{}px;width:{}px;max-height:{}px;top:{};bottom:{};",
+                left.round(),
+                width.round(),
+                available.round(),
+                top,
+                bottom
+            ));
+        })
+    };
+
     let mut outside_listener = {
         let root = root;
+        let panel = panel;
         browser::on_pointerdown(move |event| {
             if !expanded.get_untracked() {
                 return;
@@ -114,7 +167,12 @@ pub fn DirectoryPicker(
             let inside = event
                 .target()
                 .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
-                .and_then(|target| root.get().map(|root| root.contains(Some(&target))))
+                .map(|target| {
+                    root.get().is_some_and(|root| root.contains(Some(&target)))
+                        || panel
+                            .get()
+                            .is_some_and(|panel| panel.contains(Some(&target)))
+                })
                 .unwrap_or(false);
             if !inside {
                 expanded.set(false);
@@ -128,14 +186,41 @@ pub fn DirectoryPicker(
             expanded.set(false);
         }
     });
+    let mut resize_listener = {
+        let update_position = update_position;
+        browser::on_resize(move |_| {
+            if expanded.get_untracked() {
+                update_position.run(());
+            }
+        })
+    };
+    let mut scroll_listener = {
+        let update_position = update_position;
+        browser::on_scroll(move |_| {
+            if expanded.get_untracked() {
+                update_position.run(());
+            }
+        })
+    };
+    Effect::new(move |_| {
+        if disabled.get() {
+            expanded.set(false);
+        }
+    });
     on_cleanup(move || {
         outside_listener.release();
         escape_listener.release();
+        resize_listener.release();
+        scroll_listener.release();
     });
 
+    let update_on_toggle = update_position;
     let toggle = move |_| {
         if !disabled.get_untracked() {
             expanded.update(|open| *open = !*open);
+            if expanded.get_untracked() {
+                update_on_toggle.run(());
+            }
         }
     };
     let path_label = move || directory_path(&current_id.get(), &current.get(), &breadcrumbs.get());
@@ -147,10 +232,10 @@ pub fn DirectoryPicker(
     view! {
         <div node_ref=root class="directory-picker" class:expanded=move || expanded.get()>
             <button
+                node_ref=trigger
                 type="button"
                 class="directory-trigger"
                 aria-expanded=move || if expanded.get() { "true" } else { "false" }
-                aria-label="选择目标目录"
                 title=path_label
                 prop:disabled=move || disabled.get()
                 on:click=toggle
@@ -160,7 +245,8 @@ pub fn DirectoryPicker(
                 {chevron_down_icon()}
             </button>
             <Show when=move || expanded.get() fallback=|| ()>
-                <section class="directory-popover" aria-label="选择目标目录">
+                <leptos::portal::Portal>
+                    <section node_ref=panel class="directory-popover" style=move || panel_style.get() aria-label="选择目标目录">
                     <nav class="directory-breadcrumbs" aria-label="目录路径">
                         <button
                             type="button"
@@ -229,10 +315,25 @@ pub fn DirectoryPicker(
                             }
                         }}
                     </div>
-                </section>
+                    </section>
+                </leptos::portal::Portal>
             </Show>
         </div>
     }
+}
+
+async fn fetch_directory_data(
+    id: &str,
+    excluded_ids: &HashSet<String>,
+) -> Result<(File, Vec<File>, Vec<File>), api::RequestError> {
+    let detail = api::fetch_file(id).await?;
+    let children = api::fetch_children(id).await?;
+    let folders = children
+        .items
+        .into_iter()
+        .filter(|item| item.kind == FileKind::Directory && !excluded_ids.contains(&item.id))
+        .collect::<Vec<_>>();
+    Ok((detail.file, detail.breadcrumbs, folders))
 }
 
 fn directory_breadcrumbs(
@@ -266,15 +367,34 @@ fn directory_path(current_id: &str, current: &Option<File>, breadcrumbs: &[File]
 }
 
 fn folder_open_icon() -> impl IntoView {
-    view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z"></path><path d="M3.5 9h17"></path></svg> }
+    view! {
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path>
+        </svg>
+    }
 }
 
 fn folder_icon() -> impl IntoView {
-    view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5Z"></path></svg> }
+    view! {
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+        </svg>
+    }
 }
 
 fn home_icon() -> impl IntoView {
-    view! { <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-7 9 7v9H3Z"></path><path d="M9 20v-6h6v6"></path></svg> }
+    view! {
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+            <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+        </svg>
+    }
 }
 
 fn chevron_down_icon() -> impl IntoView {

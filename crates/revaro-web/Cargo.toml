@@ -17,6 +17,8 @@ crate-type = ["cdylib", "rlib"]
 revaro-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+pulldown-cmark.workspace = true
+ammonia.workspace = true
 
 # Everything browser-specific is only pulled in for the wasm target, so a native
 # `cargo check --workspace` compiles this crate to an empty stub instead of
@@ -51,6 +53,7 @@ web-sys = { workspace = true, features = [
     "Element",
     "Event",
     "EventSource",
+    "FileReader",
     "EventTarget",
     "HtmlDetailsElement",
     "HtmlElement",
@@ -63,6 +66,9 @@ web-sys = { workspace = true, features = [
     "HtmlVideoElement",
     "History",
     "KeyboardEvent",
+    "MessageEvent",
+    "Navigator",
+    "Clipboard",
     "Location",
     "MediaQueryList",
     "MediaQueryListEvent",
@@ -72,6 +78,7 @@ web-sys = { workspace = true, features = [
     "ProgressEvent",
     "Range",
     "Response",
+    "RequestCredentials",
     "SubmitEvent",
     "Storage",
     "TextTrack",

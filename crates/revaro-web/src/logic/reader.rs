@@ -264,7 +264,7 @@ pub fn validate_manifest(manifest: &FlowManifest) -> bool {
             || i64::from(entry.block) >= total_blocks
             || entry.text_path.len() > Anchor::MAX_PATH
             || entry.text_path.iter().any(|index| *index < 0)
-            || manifest.chunk_for_block(entry.block) != Some(entry.chunk)
+            || (entry.chunk >= 0 && manifest.chunk_for_block(entry.block) != Some(entry.chunk))
         {
             return false;
         }

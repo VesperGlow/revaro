@@ -8,14 +8,16 @@ use crate::api;
 
 /// The login page from which a successful session enters the file browser.
 #[component]
-pub fn LoginView(on_success: Callback<Session>) -> impl IntoView {
-    let username = RwSignal::new("admin".to_owned());
+pub fn LoginView(
+    username: RwSignal<String>,
+    notice: RwSignal<String>,
+    on_success: Callback<Session>,
+) -> impl IntoView {
     let password = RwSignal::new(String::new());
     let second_factor = RwSignal::new(String::new());
     let totp_required = RwSignal::new(false);
     let busy = RwSignal::new(false);
     let error = RwSignal::new(String::new());
-    let notice = RwSignal::new(String::new());
 
     let submit = move |event: SubmitEvent| {
         event.prevent_default();

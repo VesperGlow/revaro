@@ -10,8 +10,10 @@
 //! Anything that touches the DOM lives in `crate::app` / `crate::components`
 //! behind `#[cfg(target_arch = "wasm32")]` instead.
 
+pub mod feedback;
 pub mod format;
 pub mod image_geometry;
+pub mod markdown;
 pub mod media;
 pub mod reader;
 pub mod routing;

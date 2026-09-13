@@ -1,5 +1,7 @@
 //! Small, target-independent rules for restoring the file-browser route.
 
+use revaro_core::classify::LibraryKind;
+
 /// Resolve a browser pathname to a folder id.
 ///
 /// Only the file-browser route is accepted here. A malformed or unrelated
@@ -38,6 +40,42 @@ pub fn folder_url(id: &str, root_id: &str) -> String {
     }
 }
 
+/// Resolve a media-library pathname and its optional folder filter.
+#[must_use]
+pub fn library_route(pathname: &str) -> Option<(LibraryKind, Option<String>)> {
+    let rest = pathname.strip_prefix("/library/")?.trim_end_matches('/');
+    let mut parts = rest.split('/');
+    let kind = parts.next()?.parse().ok()?;
+    let folder = match (parts.next(), parts.next(), parts.next()) {
+        (None, None, None) => None,
+        (Some("f"), Some(id), None) if !id.is_empty() && id != "." && id != ".." => {
+            Some(id.to_owned())
+        }
+        _ => return None,
+    };
+    Some((kind, folder))
+}
+
+/// Build the canonical media-library URL.
+#[must_use]
+pub fn library_url(kind: LibraryKind, folder_id: Option<&str>) -> String {
+    match folder_id {
+        Some(folder_id) if !folder_id.is_empty() => {
+            format!("/library/{}/f/{}", kind.as_str(), js_url_encode(folder_id))
+        }
+        _ => format!("/library/{}", kind.as_str()),
+    }
+}
+
+fn js_url_encode(value: &str) -> String {
+    // Folder ids are UUID-like in the product, so replacing the path
+    // separators explicitly is enough while keeping this pure and wasm-free.
+    value
+        .replace('%', "%25")
+        .replace('/', "%2F")
+        .replace('?', "%3F")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +109,23 @@ mod tests {
     fn root_has_the_short_url() {
         assert_eq!(folder_url(ROOT, ROOT), "/");
         assert_eq!(folder_url("folder", ROOT), "/f/folder");
+    }
+
+    #[test]
+    fn parses_library_routes_and_rejects_extra_segments() {
+        assert_eq!(
+            library_route("/library/image"),
+            Some((LibraryKind::Image, None))
+        );
+        assert_eq!(
+            library_route("/library/audio/f/folder"),
+            Some((LibraryKind::Audio, Some("folder".to_owned())))
+        );
+        assert_eq!(library_route("/library/file/f/../secret"), None);
+        assert_eq!(library_route("/library/nope"), None);
+        assert_eq!(
+            library_url(LibraryKind::Image, Some("folder")),
+            "/library/image/f/folder"
+        );
     }
 }
