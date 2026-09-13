@@ -278,7 +278,8 @@ workspace、Rust 静态资源和 release 产物。根 workspace 已不再排除 
 真实镜像构建：`--isolation=chroot --userns=host --storage-driver=vfs` 成功生成
 `localhost/revaro:8c-image-host`，并启动镜像内的单一 `revaro` 进程验证了
 `/healthz`、`/readyz`、SPA 回退和两个 Chromium 场景（媒体查看器/实时传输、
-TXT 阅读器）。Buildah 的 host-userns 是当前环境的验收手段；正式 Docker 镜像
+TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah 的 host-userns 是
+当前环境的验收手段；正式 Docker 镜像
 仍由 CI 的 Docker runner 构建和发布。
 
 ## 4.7 当前迁移状态（供接手者定位）
@@ -425,6 +426,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8d Rust 镜像构建与容器行为验收 | ✅ | `build(deploy): 控制检查层产物体积并验收 Rust 镜像` |
 | 8e Compose 部署基址与 CI 配置校验 | ✅ | `fix(deploy): 让 Compose 基址跟随映射端口` |
 | 8f EPUB 实际浏览器验收 | ✅ | `test(e2e): 验证 Rust EPUB 阅读器流程` |
+| 8g 生产镜像 EPUB 容器行为验收 | ✅ | `test(deploy): 验收生产镜像阅读器流程` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -641,6 +643,14 @@ target，解决 Buildah 提交约 4 GiB 中间层时的空间失败；release �
 进度 PUT 和重新打开后的活动目录项；媒体、TXT 和 EPUB 三条 Chromium 场景全部
 通过（3 passed）。下一轮继续从 CI Docker runner 的正式构建/发布观察和目标部署
 环境验收进入。
+
+阶段 8g 验收：复用阶段 8d 从 Rust workspace 构建的
+`localhost/revaro:8c-image-host`，通过 Buildah `--isolation=chroot` 在镜像内以
+非 root `revaro` 用户启动单一服务，并设置与测试端口一致的 `APP_BASE_URL`；
+`tests/e2e` 的媒体、TXT、EPUB 三条真实 Chromium 场景全部通过（3 passed）。
+这补齐了 EPUB 前端流程在生产镜像权限、静态资源和进程内后端组合下的验收；下一步
+仍是 CI Docker runner 的正式构建/发布观察和目标部署环境的卷权限、反向代理基址
+确认。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
