@@ -4,7 +4,7 @@
 The test uploads it through the application and exercises native video playback,
 subtitle discovery and playback controls against a real `revaro` process.
 
-Run the two current browser tests from this directory:
+Run the current browser tests from this directory:
 
 ```sh
 npm ci

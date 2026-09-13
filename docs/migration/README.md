@@ -191,8 +191,8 @@ Node/npm 仅保留为 test-only Playwright 运行器，不属于生产构建或�
   被拒（重放保护）**、恢复码只能使用一次。注意一个正确但反直觉的语义：**enable
   会消费当前时间步**，因此紧接着用同一时间步登录会被当作重放拒绝，必须使用下一步。
 
-* 前端 `reader-real-epub.spec.ts` 里有一条**故意失败**的断言
-  （`windowSync` 不得把内容向后移动）。
+* ~~前端 `reader-real-epub.spec.ts` 里有一条**故意失败**的断言~~：阶段 8f
+  已用真实 EPUB 上传、阅读流、目录跳转和进度恢复验收替代这条历史记录。
 * ~~**深层嵌套 HTML 的递归遍历**~~：`revaro-reader` 现在在 HTML5 DOM 解析后用
   显式栈检查 `MAX_HTML_TREE_DEPTH = 256`，超过上限的树不会进入清洗、导航或
   flow 遍历；清洗器保留的兼容递归也带有同一深度防线。这样不可信 EPUB 不会用
@@ -291,8 +291,8 @@ TXT 阅读器）。Buildah 的 host-userns 是当前环境的验收手段；正�
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
-| 前端行为 | Chromium 真实验证登录、认证后根目录、目录导航、面包屑返回、回收站、单文件上传、16 MiB+1 多分片上传、目录树上传、取消/重试和已完成会话恢复；任务中心通过真实加密 ZIP 验证 SSE 刷新、取消、密码恢复、完成清除和移动端布局；媒体查看器通过真实图片、WAV、WebM 和 VTT 验证图片缩放/缩略图/下载、目录移动/复制、音频章节、视频倍速与字幕；阅读器通过真实 TXT 上传验证 flow chunk 首屏、CSS columns 翻页、触屏 pointer swipe、目录跳转、字号/行距/主题、进度重开和 `/read/{id}` 深链；`revaro_boot.js`、品牌图标资源均为 200 |
-| reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈；`tests/e2e/rust-reader-ui.spec.ts` 通过真实浏览器验证 reader 视图、缓存恢复、目录、重排、触屏翻页和深链 |
+| 前端行为 | Chromium 真实验证登录、认证后根目录、目录导航、面包屑返回、回收站、单文件上传、16 MiB+1 多分片上传、目录树上传、取消/重试和已完成会话恢复；任务中心通过真实加密 ZIP 验证 SSE 刷新、取消、密码恢复、完成清除和移动端布局；媒体查看器通过真实图片、WAV、WebM 和 VTT 验证图片缩放/缩略图/下载、目录移动/复制、音频章节、视频倍速与字幕；阅读器通过真实 TXT 和 EPUB 上传验证 flow chunk 首屏、CSS columns 翻页、触屏 pointer swipe、目录跳转、字号/行距/主题、进度重开和 `/read/{id}` 深链；`revaro_boot.js`、品牌图标资源均为 200 |
+| reader 验证 | 真实 `revaro` 进程通过登录、TXT/EPUB 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈；`tests/e2e/rust-reader-ui.spec.ts` 通过真实浏览器验证 TXT 分页和深链，以及 EPUB 章节清洗、两条目录、第二章定位和进度恢复 |
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
@@ -424,6 +424,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8c EPUB DOM 深度安全边界 | ✅ | `security(reader): 限制 EPUB DOM 遍历深度` |
 | 8d Rust 镜像构建与容器行为验收 | ✅ | `build(deploy): 控制检查层产物体积并验收 Rust 镜像` |
 | 8e Compose 部署基址与 CI 配置校验 | ✅ | `fix(deploy): 让 Compose 基址跟随映射端口` |
+| 8f EPUB 实际浏览器验收 | ✅ | `test(e2e): 验证 Rust EPUB 阅读器流程` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -624,15 +625,22 @@ target，解决 Buildah 提交约 4 GiB 中间层时的空间失败；release �
 构建 `localhost/revaro:8c-image-host`；在同一镜像内以非 root `revaro` 用户启动
 后，`/healthz` 与 `/readyz` 返回 200，`/read/not-a-uuid` 和未知静态资源正确
 返回 SPA，真实 Chromium 的媒体和 TXT reader 两个用例均通过（2 passed）。
-随后由阶段 8e 固定了 Compose 的默认同源基址行为。本阶段的下一步入口是 CI
-Docker runner 的正式构建/发布观察，以及在目标部署环境确认镜像 registry、卷
-权限和反向代理的 `APP_BASE_URL` 配置。
+随后由阶段 8e 固定了 Compose 的默认同源基址行为，阶段 8f 补齐了真实 EPUB
+浏览器验收。本阶段的下一步入口是 CI Docker runner 的正式构建/发布观察，以及
+在目标部署环境确认镜像 registry、卷权限和反向代理的 `APP_BASE_URL` 配置。
 
 阶段 8e 验收：`compose.yml` 在 `APP_BASE_URL` 为空且 `APP_PORT=18081` 时解析为
 `http://localhost:18081`，显式设置 `https://files.example.test` 时保持该公网
 地址；`.env.example` 允许留空以使用同一推导规则。CI 在镜像构建前用
 `docker compose config --format json` 对两种情况做断言。配置修改后重新通过
 `cargo xtask check`（407 个测试、fmt、clippy、wasm32），工作区仍为 Rust-only。
+
+阶段 8f 验收：`tests/e2e/rust-reader-ui.spec.ts` 新增真实 EPUB fixture 和浏览器
+场景，使用标准无压缩 ZIP 的 `mimetype`、container、OPF、EPUB3 nav 和两个章节，
+从真实上传一路验证服务端解析/清洗、reader flow 首屏、两条目录、第二章定位、
+进度 PUT 和重新打开后的活动目录项；媒体、TXT 和 EPUB 三条 Chromium 场景全部
+通过（3 passed）。下一轮继续从 CI Docker runner 的正式构建/发布观察和目标部署
+环境验收进入。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
