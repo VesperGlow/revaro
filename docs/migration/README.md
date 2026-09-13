@@ -264,7 +264,8 @@ cargo xtask web-build                  # 产出 dist/web
 Dockerfile 的构建检查使用与运行层匹配的 FFmpeg 前缀，并在镜像依赖链执行
 workspace 的 fmt、clippy、全量测试、wasm 检查和 release 构建；Compose 显式将
 `APP_WEB_DIR` 指向 `/opt/revaro/web`，保持只读根文件系统、`/data` 持久卷和
-`/readyz` healthcheck。检查阶段成功后会执行 `cargo clean`，避免 debug/wasm
+`/readyz` healthcheck。Compose 在 `APP_BASE_URL` 为空时从 `APP_PORT` 推导同源
+地址；显式公网地址仍优先。检查阶段成功后会执行 `cargo clean`，避免 debug/wasm
 临时产物进入后续 release 层；release 阶段从已验证的源码重新生成最终二进制和
 前端资源。
 
@@ -295,7 +296,7 @@ TXT 阅读器）。Buildah 的 host-userns 是当前环境的验收手段；正�
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
-| 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过 |
+| 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过；Compose 默认基址随 `APP_PORT` 联动 |
 
 ### 剩余 0 条真实路由
 
@@ -422,6 +423,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8b 删除旧实现与 Vue/Vite 构建链 | ✅ | `cleanup(rust): 删除旧实现与构建链` |
 | 8c EPUB DOM 深度安全边界 | ✅ | `security(reader): 限制 EPUB DOM 遍历深度` |
 | 8d Rust 镜像构建与容器行为验收 | ✅ | `build(deploy): 控制检查层产物体积并验收 Rust 镜像` |
+| 8e Compose 部署基址与 CI 配置校验 | ✅ | `fix(deploy): 让 Compose 基址跟随映射端口` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -622,8 +624,15 @@ target，解决 Buildah 提交约 4 GiB 中间层时的空间失败；release �
 构建 `localhost/revaro:8c-image-host`；在同一镜像内以非 root `revaro` 用户启动
 后，`/healthz` 与 `/readyz` 返回 200，`/read/not-a-uuid` 和未知静态资源正确
 返回 SPA，真实 Chromium 的媒体和 TXT reader 两个用例均通过（2 passed）。
-本阶段的下一步入口是 CI Docker runner 的正式构建/发布观察，以及在目标部署环境
-确认镜像 registry、卷权限和反向代理的 `APP_BASE_URL` 配置。
+随后由阶段 8e 固定了 Compose 的默认同源基址行为。本阶段的下一步入口是 CI
+Docker runner 的正式构建/发布观察，以及在目标部署环境确认镜像 registry、卷
+权限和反向代理的 `APP_BASE_URL` 配置。
+
+阶段 8e 验收：`compose.yml` 在 `APP_BASE_URL` 为空且 `APP_PORT=18081` 时解析为
+`http://localhost:18081`，显式设置 `https://files.example.test` 时保持该公网
+地址；`.env.example` 允许留空以使用同一推导规则。CI 在镜像构建前用
+`docker compose config --format json` 对两种情况做断言。配置修改后重新通过
+`cargo xtask check`（407 个测试、fmt、clippy、wasm32），工作区仍为 Rust-only。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

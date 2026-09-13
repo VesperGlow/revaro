@@ -37,7 +37,7 @@ docker compose up -d
 | `APP_ADDR` | `:8080` | 应用监听地址 |
 | `APP_DATA_DIR` | `/data` | 数据库和本地对象根目录 |
 | `APP_WORK_DIR` | `/work`，镜像内为 `/data/work` | 临时工作目录 |
-| `APP_BASE_URL` | `http://localhost:8080` | 公网访问地址、同源检查和分享链接 |
+| `APP_BASE_URL` | `http://localhost:8080`（Compose 会随 `APP_PORT` 推导） | 公网访问地址、同源检查和分享链接 |
 | `COOKIE_SECURE` | 随 HTTPS 地址启用 | Cookie Secure |
 | `UPLOAD_EXPIRES` | `24h` | 上传会话有效期 |
 | `TRASH_RETENTION` | `720h` | 回收站保留时间 |
