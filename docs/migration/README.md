@@ -304,6 +304,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
 | 依赖审计 | `cargo audit --file Cargo.lock` 退出码 0、0 个漏洞；`quick-xml` 已从 0.38.4 升级到 0.41.0，消除 RUSTSEC-2026-0194/0195；仅保留来自 Leptos 传递依赖的 `paste` 与 `proc-macro-error2` 未维护警告 |
+| runtime 镜像边界 | CI 在容器 E2E 前检查默认 UID/GID 10001 的 `revaro` 用户，并确认最终运行层没有 Go、Node、npm；本地更新镜像执行同一检查通过 |
 | 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过；Compose 默认基址随 `APP_PORT` 联动 |
 
 ### 剩余 0 条真实路由
@@ -442,6 +443,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8h HTTPS Cookie 默认安全属性 | ✅ | `fix(deploy): 保持 HTTPS Cookie 自动安全属性` |
 | 8i 发布经过 E2E 的同一镜像 | ✅ | `ci(deploy): 发布已验收的镜像产物` |
 | 8j quick-xml 解析依赖安全升级 | ✅ | `security(deps): 升级 quick-xml 规避解析漏洞` |
+| 8k Rust-only 运行层边界门禁 | ✅ | `ci(deploy): 固定生产镜像 Rust-only 运行边界` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -691,6 +693,13 @@ CI Docker runner 的真实运行和目标部署环境验收。
 测试、`cargo xtask check`（workspace 407 个测试、fmt、clippy `-D warnings`、wasm32）、
 `cargo xtask build` 以及真实 release `revaro` 进程的媒体/TXT/EPUB 三条 Chromium
 场景（3 passed）全部通过。下一步仍是 CI Docker runner 的真实运行和目标部署环境验收。
+
+阶段 8k 验收：容器 job 在镜像构建后、启动 Compose E2E 前新增 Rust-only 运行层门禁，
+检查最终镜像默认用户为非 root `revaro`（UID/GID 10001），并确认 Go、Node、npm
+均不在运行层。CI YAML 和新增 shell 片段解析通过；用本地更新后的 Buildah 镜像执行
+同一检查退出码为 0，镜像内 `/healthz`、`/readyz` 返回 200，媒体/TXT/EPUB 三条
+Chromium 场景（3 passed）全部通过。下一步仍是 CI Docker runner 的真实运行和目标
+部署环境验收。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

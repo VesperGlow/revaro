@@ -23,3 +23,7 @@
 导出期间取消，PR 仍会取消过时运行。正式发布仍由 CI Docker runner 完成；当前
 开发环境的 Docker service 无法启动，但已用 Buildah 的 host-userns 路径完成等价
 镜像构建和容器 E2E。
+
+容器 job 在启动 E2E 前还会检查最终运行层的边界：镜像默认使用 UID/GID 10001
+的 `revaro` 用户，并在镜像内确认不存在 Go、Node 或 npm 可执行文件。这样旧实现
+或旧构建工具链若被意外复制进生产层，会在浏览器验收前直接失败。

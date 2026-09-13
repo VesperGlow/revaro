@@ -118,6 +118,16 @@ jobs:
           labels: ${{ steps.tested-meta.outputs.labels }}
           cache-from: type=gha,scope=revaro-image-amd64-v3
           cache-to: type=gha,scope=revaro-image-amd64-v3,mode=max,ignore-error=true,timeout=10m
+      - name: Assert Rust-only runtime boundary
+        run: |
+          test "$(docker image inspect revaro-e2e:local --format '{{.Config.User}}')" = "revaro"
+          if docker run --rm --entrypoint /bin/sh revaro-e2e:local \
+              -c 'test "$(id -u)" = 10001 && test "$(id -g)" = 10001 && ! command -v go && ! command -v node && ! command -v npm'; then
+            :
+          else
+            echo "legacy Go/Node/npm runtime toolchain found in the production image"
+            exit 1
+          fi
       - name: Build and start the real Revaro stack
         run: docker compose -f compose.e2e.yml up -d --no-build
       - name: Wait for readiness
