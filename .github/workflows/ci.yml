@@ -93,6 +93,18 @@ jobs:
           test -z "$compose_https_cookie_secure"
           example_cookie_secure="$(sed -n 's/^COOKIE_SECURE=//p' .env.example)"
           test -z "$example_cookie_secure"
+      - name: Validate production Compose hardening
+        run: |
+          compose_json="$(docker compose -f compose.yml config --format json)"
+          jq -e '.services.revaro.read_only == true' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.restart == "unless-stopped"' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.security_opt | index("no-new-privileges:true") != null' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.cap_drop | index("ALL") != null' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.tmpfs | any(.[]; startswith("/tmp:size=1g"))' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.volumes | any(.[]; .type == "volume" and .target == "/data")' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.environment.APP_DATA_DIR == "/data" and .services.revaro.environment.APP_WORK_DIR == "/data/work" and .services.revaro.environment.APP_WEB_DIR == "/opt/revaro/web"' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.healthcheck.test == ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.ports | length == 1 and .[0].host_ip == "127.0.0.1" and .[0].target == 8080 and .[0].protocol == "tcp"' <<<"$compose_json" >/dev/null
       - name: Generate tested image metadata
         id: tested-meta
         uses: docker/metadata-action@v6.2.0

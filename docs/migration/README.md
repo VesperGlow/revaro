@@ -444,6 +444,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8i 发布经过 E2E 的同一镜像 | ✅ | `ci(deploy): 发布已验收的镜像产物` |
 | 8j quick-xml 解析依赖安全升级 | ✅ | `security(deps): 升级 quick-xml 规避解析漏洞` |
 | 8k Rust-only 运行层边界门禁 | ✅ | `ci(deploy): 固定生产镜像 Rust-only 运行边界` |
+| 8l 生产 Compose 安全契约门禁 | ✅ | `ci(deploy): 固定生产 Compose 安全契约` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -700,6 +701,12 @@ CI Docker runner 的真实运行和目标部署环境验收。
 同一检查退出码为 0，镜像内 `/healthz`、`/readyz` 返回 200，媒体/TXT/EPUB 三条
 Chromium 场景（3 passed）全部通过。下一步仍是 CI Docker runner 的真实运行和目标
 部署环境验收。
+
+阶段 8l 验收：CI 在构建镜像前新增生产 Compose 安全契约检查，使用渲染后的 JSON
+固定回环端口绑定、`/data` 持久卷、只读根、tmpfs 工作目录、`no-new-privileges`、
+丢弃全部 capabilities、非缓存 `/readyz` healthcheck 以及三个运行目录路径；本地
+`docker compose config --format json` 和等价断言全部通过，CI YAML/shell 解析也通过。
+这一阶段没有改变应用行为；下一步仍是 CI Docker runner 的真实运行和目标部署环境验收。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
