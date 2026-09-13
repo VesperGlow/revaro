@@ -28,7 +28,8 @@
 //!    [`MAX_DECOMPRESSED_ENTRY`] per entry and [`MAX_DECOMPRESSED_TOTAL`] in
 //!    total, and the cleaned HTML is capped at [`MAX_RENDERED_HTML`]. Both the
 //!    declared and the actually-read sizes are checked, so a zip bomb is
-//!    rejected instead of allocated.
+//!    rejected instead of allocated. HTML trees are also capped at
+//!    [`MAX_HTML_TREE_DEPTH`] levels before any recursive compatibility walk.
 //!
 //! ## Determinism
 //!
@@ -96,6 +97,14 @@ pub const MAX_RENDERED_HTML: usize = 64 << 20;
 
 /// Largest number of zip entries (and of manifest/spine entries) accepted.
 pub const MAX_ARCHIVE_ENTRIES: usize = 10_000;
+
+/// Largest DOM depth accepted for an HTML document embedded in an EPUB.
+///
+/// The HTML5 parser builds a tree for attacker-controlled input. A bounded
+/// tree keeps the later sanitiser and navigation walks from consuming an
+/// unbounded amount of call-stack space while still allowing ordinary EPUB
+/// markup to nest well beyond normal document structure.
+pub const MAX_HTML_TREE_DEPTH: usize = 256;
 
 /// Failure modes of [`parse`].
 ///

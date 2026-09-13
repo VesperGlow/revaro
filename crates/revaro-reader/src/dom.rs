@@ -10,13 +10,41 @@ use html5ever::tendril::TendrilSink;
 use html5ever::{ParseOpts, parse_document};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
+use crate::MAX_HTML_TREE_DEPTH;
+
 /// Parse HTML bytes into a DOM, or `None` when the parser fails.
 pub(crate) fn parse_html(source: &[u8]) -> Option<RcDom> {
     let mut reader = source;
-    parse_document(RcDom::default(), ParseOpts::default())
+    let dom = parse_document(RcDom::default(), ParseOpts::default())
         .from_utf8()
         .read_from(&mut reader)
-        .ok()
+        .ok()?;
+    html_tree_within_depth(&dom.document).then_some(dom)
+}
+
+/// Check the parsed tree with an explicit stack before any compatibility walk.
+///
+/// The parser itself is iterative, but the sanitizer historically used a few
+/// recursive helpers. Rejecting an over-deep tree here gives all callers the
+/// same bound, including navigation and flow parsing, and makes that bound
+/// independent of which helper happens to visit the tree first.
+fn html_tree_within_depth(root: &Handle) -> bool {
+    let mut pending = vec![(root.clone(), 0usize)];
+    while let Some((node, depth)) = pending.pop() {
+        let descendants = children(&node);
+        if depth == MAX_HTML_TREE_DEPTH {
+            if !descendants.is_empty() {
+                return false;
+            }
+            continue;
+        }
+        pending.extend(
+            descendants
+                .into_iter()
+                .map(|child| (child, depth.saturating_add(1))),
+        );
+    }
+    true
 }
 
 /// Element children of `node`, cloned so the `RefCell` borrow is released
@@ -49,43 +77,83 @@ pub(crate) fn attr(node: &Handle, key: &str) -> Option<String> {
 /// Concatenated text of `node` and its descendants.
 pub(crate) fn text_content(node: &Handle) -> String {
     let mut out = String::new();
-    collect_text(node, &mut out);
+    let mut pending = vec![node.clone()];
+    while let Some(current) = pending.pop() {
+        if let NodeData::Text { contents } = &current.data {
+            out.push_str(&contents.borrow());
+        }
+        let mut descendants = children(&current);
+        descendants.reverse();
+        pending.extend(descendants);
+    }
     out
-}
-
-/// Recursively append text nodes to `out`.
-fn collect_text(node: &Handle, out: &mut String) {
-    if let NodeData::Text { contents } = &node.data {
-        out.push_str(&contents.borrow());
-    }
-    for child in children(node) {
-        collect_text(&child, out);
-    }
 }
 
 /// DFS for the first element with local name `tag`.
 pub(crate) fn find_element(node: &Handle, tag: &str) -> Option<Handle> {
-    if let NodeData::Element { name, .. } = &node.data
-        && &*name.local == tag
-    {
-        return Some(node.clone());
-    }
-    for child in children(node) {
-        if let Some(found) = find_element(&child, tag) {
-            return Some(found);
+    let mut pending = vec![node.clone()];
+    while let Some(current) = pending.pop() {
+        if let NodeData::Element { name, .. } = &current.data
+            && &*name.local == tag
+        {
+            return Some(current);
         }
+        let mut descendants = children(&current);
+        descendants.reverse();
+        pending.extend(descendants);
     }
     None
 }
 
 /// Collect descendant elements (and `node` itself) with the given local name.
 pub(crate) fn collect_elements(node: &Handle, tag: &str, out: &mut Vec<Handle>) {
-    if let Some(local) = tag_name(node)
-        && local == tag
-    {
-        out.push(node.clone());
+    let mut pending = vec![node.clone()];
+    while let Some(current) = pending.pop() {
+        if let Some(local) = tag_name(&current)
+            && local == tag
+        {
+            out.push(current.clone());
+        }
+        let mut descendants = children(&current);
+        descendants.reverse();
+        pending.extend(descendants);
     }
-    for child in children(node) {
-        collect_elements(&child, tag, out);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested_document(levels: usize) -> String {
+        let mut html = String::from("<html><body>");
+        for _ in 0..levels {
+            html.push_str("<div>");
+        }
+        html.push_str("text");
+        for _ in 0..levels {
+            html.push_str("</div>");
+        }
+        html.push_str("</body></html>");
+        html
+    }
+
+    #[test]
+    fn html_tree_depth_is_bounded_before_walks() {
+        assert!(
+            parse_html(nested_document(MAX_HTML_TREE_DEPTH.saturating_sub(8)).as_bytes()).is_some()
+        );
+        assert!(parse_html(nested_document(MAX_HTML_TREE_DEPTH + 8).as_bytes()).is_none());
+    }
+
+    #[test]
+    fn text_and_element_walks_preserve_document_order_without_recursion() {
+        let dom = parse_html(b"<html><body><p>a<span>b</span></p><p>c</p></body></html>").unwrap();
+        let body = find_element(&dom.document, "body").unwrap();
+        assert_eq!(text_content(&body), "abc");
+        let mut paragraphs = Vec::new();
+        collect_elements(&body, "p", &mut paragraphs);
+        assert_eq!(paragraphs.len(), 2);
+        assert_eq!(text_content(&paragraphs[0]), "ab");
+        assert_eq!(text_content(&paragraphs[1]), "c");
     }
 }

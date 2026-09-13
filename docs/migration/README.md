@@ -193,9 +193,10 @@ Node/npm 仅保留为 test-only Playwright 运行器，不属于生产构建或�
 
 * 前端 `reader-real-epub.spec.ts` 里有一条**故意失败**的断言
   （`windowSync` 不得把内容向后移动）。
-* **深层嵌套 HTML 的递归遍历**：`revaro-reader` 的白名单清洗按 DOM 树递归
-  下降，与 Go 的 `x/net/html` 行为一致。理论上的栈耗尽 DoS（不是脚本执行），
-  尚未加深度上限。若后续把上传来源视为不可信，应补一个显式深度限制。
+* ~~**深层嵌套 HTML 的递归遍历**~~：`revaro-reader` 现在在 HTML5 DOM 解析后用
+  显式栈检查 `MAX_HTML_TREE_DEPTH = 256`，超过上限的树不会进入清洗、导航或
+  flow 遍历；清洗器保留的兼容递归也带有同一深度防线。这样不可信 EPUB 不会用
+  深层结构耗尽 Rust 调用栈，正常 EPUB 的清洗输出保持不变。
 
 ## 4.5 接手指南：剩余工作与约定
 
@@ -269,9 +270,11 @@ workspace 的 fmt、clippy、全量测试、wasm 检查和 release 构建；Comp
 workspace、Rust 静态资源和 release 产物。根 workspace 已不再排除 sidecar，仓库中
 也不再有 Go、Vue/Vite 或独立 data-plane 源码；test-only npm 包不进入生产镜像。
 
-本环境无法验证容器构建：docker 守护进程不可用，podman 能启动但受
-user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
-本地等价命令（cargo build/test）间接验证。
+本环境无法验证容器构建：系统 Docker service 无法启动；临时手动启动的
+Docker daemon 又被当前沙箱禁止 BuildKit bind mount 和 `unshare`，podman
+则受 user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
+本地等价命令（cargo build/test）间接验证，镜像本身仍由 CI 的 Docker runner
+验收。
 
 ## 4.7 当前迁移状态（供接手者定位）
 
@@ -279,7 +282,7 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 | 项 | 值 |
 |---|---|
-| 测试 | **404 个**（core 109、media 21、reader 55 = 46 单元 + 9 集成、server 168 = 166 单元 + 2 集成、web 46、xtask 5） |
+| 测试 | **407 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 168 = 166 单元 + 2 集成、web 46、xtask 5） |
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
@@ -413,6 +416,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 7g Rust EPUB/TXT 阅读器视图 | ✅ | `feat(web): 接入 EPUB/TXT 阅读器视图` |
 | 8a Rust-only 生产镜像与 CI | ✅ | `build(rust): 切换生产构建与部署链` |
 | 8b 删除旧实现与 Vue/Vite 构建链 | ✅ | `cleanup(rust): 删除旧实现与构建链` |
+| 8c EPUB DOM 深度安全边界 | ✅ | `security(reader): 限制 EPUB DOM 遍历深度` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -596,6 +600,14 @@ podman 受 user-namespace / subuid 限制，因此未声称完成本地镜像构
 metadata 均只包含 `revaro-core`、`revaro-media`、`revaro-reader`、
 `revaro-server`、`revaro-web` 和 `xtask`；当前工作区检查、wasm 构建、release
 构建和真实进程 E2E 继续通过。
+
+阶段 8c 验收：`revaro-reader` 在 HTML5 DOM 解析后以显式栈检查
+`MAX_HTML_TREE_DEPTH = 256`，超深树不会进入清洗、导航或 flow 遍历；DOM
+文本、元素和媒体辅助遍历改为显式栈，清洗器的兼容递归带同一深度防线。单元
+测试覆盖深度边界与文档顺序，EPUB 集成测试覆盖真实超深章节；`cargo xtask check`
+通过 **407 个测试**，`cargo xtask build`、wasm32 检查和 release 进程的
+`/healthz`、`/readyz`、SPA 响应继续通过。下一步仍是 CI/发布环境的真实
+Rust 镜像构建和容器内 Chromium 验收。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

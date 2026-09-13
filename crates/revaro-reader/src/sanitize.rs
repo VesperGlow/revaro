@@ -21,6 +21,7 @@ use std::io::{Read, Seek};
 use markup5ever_rcdom::{Handle, NodeData};
 use zip::ZipArchive;
 
+use crate::MAX_HTML_TREE_DEPTH;
 use crate::archive::zip_bytes;
 use crate::budget::{Budget, RenderBudget};
 use crate::dom::{
@@ -104,11 +105,14 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
         let Some(body) = find_element(&dom.document, "body") else {
             return;
         };
-        self.walk(&body);
+        self.walk(&body, 0);
     }
 
     /// Recursively emit the children of `parent`.
-    fn walk(&mut self, parent: &Handle) {
+    fn walk(&mut self, parent: &Handle, depth: usize) {
+        if depth > MAX_HTML_TREE_DEPTH {
+            return;
+        }
         for child in children(parent) {
             match &child.data {
                 NodeData::Text { contents } => {
@@ -124,6 +128,7 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
                     self.push("</p>");
                 }
                 NodeData::Element { name, .. } => {
+                    let child_depth = depth.saturating_add(1);
                     let tag: &str = &name.local;
                     if is_disallowed_tag(tag) {
                         continue;
@@ -134,7 +139,7 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
                             || !text_content(&child).trim().is_empty()
                             || has_media(&child, true);
                         if keep {
-                            self.emit_element(&child, true);
+                            self.emit_element(&child, true, child_depth);
                         } else if !child_id.is_empty() {
                             self.pending.push(child_id);
                         }
@@ -142,9 +147,9 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
                         if !child_id.is_empty() {
                             self.pending.push(child_id);
                         }
-                        self.walk(&child);
+                        self.walk(&child, child_depth);
                     } else if !text_content(&child).trim().is_empty() || has_media(&child, false) {
-                        self.emit_element(&child, true);
+                        self.emit_element(&child, true, child_depth);
                     } else if !child_id.is_empty() {
                         self.pending.push(child_id);
                     }
@@ -155,7 +160,10 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
     }
 
     /// Emit one element and, when `with_extra` is set, its block bookkeeping.
-    fn emit_element(&mut self, node: &Handle, with_extra: bool) {
+    fn emit_element(&mut self, node: &Handle, with_extra: bool, depth: usize) {
+        if depth > MAX_HTML_TREE_DEPTH {
+            return;
+        }
         let NodeData::Element { name, attrs, .. } = &node.data else {
             return;
         };
@@ -218,7 +226,9 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
         self.push(">");
         for child in children(node) {
             match &child.data {
-                NodeData::Element { .. } => self.emit_element(&child, false),
+                NodeData::Element { .. } => {
+                    self.emit_element(&child, false, depth.saturating_add(1))
+                }
                 NodeData::Text { contents } => {
                     // Text content can never re-introduce markup once escaped.
                     let text = contents.borrow();
@@ -359,31 +369,29 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
 
 /// True when any descendant is a content block.
 fn has_block_descendant(node: &Handle) -> bool {
-    for child in children(node) {
+    let mut pending = children(node);
+    while let Some(child) = pending.pop() {
         if let Some(tag) = tag_name(&child)
             && is_block_tag(&tag)
         {
             return true;
         }
-        if has_block_descendant(&child) {
-            return true;
-        }
+        pending.extend(children(&child));
     }
     false
 }
 
 /// True when any descendant is an image (`image` only when already inside SVG).
 fn has_media(node: &Handle, include_image: bool) -> bool {
-    for child in children(node) {
+    let mut pending = children(node);
+    while let Some(child) = pending.pop() {
         let Some(tag) = tag_name(&child) else {
             continue;
         };
         if tag == "img" || tag == "svg" || (include_image && tag == "image") {
             return true;
         }
-        if has_media(&child, include_image) {
-            return true;
-        }
+        pending.extend(children(&child));
     }
     false
 }

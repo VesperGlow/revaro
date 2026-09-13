@@ -6,7 +6,7 @@
 
 use std::io::{Cursor, Write};
 
-use revaro_reader::{Book, Format, ReaderError, parse};
+use revaro_reader::{Book, Format, MAX_HTML_TREE_DEPTH, ReaderError, parse};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
@@ -167,6 +167,35 @@ fn epub_renders_nothing_when_there_is_no_readable_spine() {
     let bytes = epub.finish();
     let error = parse_epub(&bytes).unwrap_err();
     assert!(matches!(error, ReaderError::NoReadableContent), "{error}");
+}
+
+#[test]
+fn epub_over_deep_html_is_bounded_before_sanitising() {
+    let mut chapter = String::from("<html><body>");
+    for _ in 0..(MAX_HTML_TREE_DEPTH + 8) {
+        chapter.push_str("<div>");
+    }
+    chapter.push_str("<p>深层正文</p>");
+    for _ in 0..(MAX_HTML_TREE_DEPTH + 8) {
+        chapter.push_str("</div>");
+    }
+    chapter.push_str("</body></html>");
+
+    let mut epub = EpubBuilder::new();
+    epub.add_str("mimetype", "application/epub+zip");
+    epub.add_str(
+        "META-INF/container.xml",
+        r#"<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#,
+    );
+    epub.add_str(
+        "content.opf",
+        r#"<package><metadata><title>深度限制</title></metadata><manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>"#,
+    );
+    epub.add_str("ch1.xhtml", &chapter);
+
+    let book = parse_epub(&epub.finish()).unwrap();
+    assert_eq!(book.chapters.len(), 1);
+    assert!(book.chapters[0].html.is_empty());
 }
 
 #[test]
