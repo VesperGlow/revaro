@@ -100,7 +100,7 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
   栏号由 topAnchor 重对齐吸收）。
 - 窗口增删后当前 readingAnchor 的视觉页与后续 page boundary 不变；随机
   TOC seek、连续翻页、窗口滑动、横竖屏、字号变化均有回归测试
-  （`web/e2e/reader-flow.spec.ts`）。
+  （早期 Vue 工程中的 route-mock 用例已随旧工程删除；当前真实行为测试见下文）。
 - 后续如需更激进的虚拟化（不保留整个 spine 前缀），必须基于已测量并缓存
   的真实 page boundary，而不是字符 chunk 边界。
 
@@ -149,7 +149,7 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
   columns、窗口、导航、偏好和生命周期；`reader_cache.rs` 负责浏览器缓存。
 - 测试：`revaro-reader` 与 `revaro-server` 覆盖 flow 不变量、locator 往返、
   spine 边界、TXT 连续性、端点契约、并发幂等和 chunk 自愈；`revaro-web` 覆盖
-  纯逻辑与 manifest 校验；`web/e2e/rust-reader-ui.spec.ts` 覆盖真实上传、
+  纯逻辑与 manifest 校验；`tests/e2e/rust-reader-ui.spec.ts` 覆盖真实上传、
   首屏、翻页、目录、重排、进度重开、缓存和深链。
 
 已知取舍：

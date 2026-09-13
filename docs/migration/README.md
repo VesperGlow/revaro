@@ -79,7 +79,8 @@ xtask/                      # 构建编排（cargo xtask ...）
   `/api/*` JSON 404。
 * `revaro-web` 骨架：Leptos CSR wasm 入口、同源静态 loader 与严格 CSP 兼容的
   客户端挂载点；后续阶段在此基础上接入真实登录和文件浏览视图。
-* `data-plane/` 暂以 `workspace.exclude` 保持独立，Go 后端继续可用。
+* 阶段 1 时 `data-plane/` 暂以 `workspace.exclude` 保持独立，Go 后端继续可用；
+  该过渡设置已在阶段 8b 删除。
 
 验收：`cargo test`、`cargo clippy -D warnings`、`cargo fmt --check`、
 `cargo xtask web-build` 全绿；`revaro` 二进制可启动并正确响应上述路由。
@@ -161,10 +162,9 @@ ETag/完成事务、三文件并发、XHR 进度/取消、失败与取消重试�
 
 ### 阶段 8 — Rust-only 收尾
 阶段 8a 将生产 Dockerfile、Compose 和 CI 切到 Rust workspace：镜像只构建并运行
-单一 `revaro`，媒体和归档均在进程内完成；旧 Go/Vue/data-plane 树暂留在生产构建
-上下文之外的仓库中，供最终测试工具迁移和删除审计使用。
-阶段 8b 迁移剩余浏览器测试工具与 schema/文档引用后，删除 `web/`、`internal/`、
-`cmd/`、`go.mod`、`go.sum`、`data-plane/` 和不再使用的 Node/npm 配置。
+单一 `revaro`，媒体和归档均在进程内完成。阶段 8b 已把两条真实 Rust 浏览器测试
+移到独立的 `tests/e2e/` npm 包，删除旧 Go/Vue/data-plane 树和 Vue/Vite 构建配置；
+Node/npm 仅保留为 test-only Playwright 运行器，不属于生产构建或运行依赖。
 
 ## 4. 已记录的风险与遗留问题
 
@@ -219,7 +219,7 @@ ETag/完成事务、三文件并发、XHR 进度/取消、失败与取消重试�
 | ~~压缩包解压~~ | `archive.go` | ✅ 已完成：`revaro-media` + `archive_routes.rs`（`/files/{id}/extract`、归档任务输入与恢复） |
 | ~~阅读器 flow + reader 路由~~ | `internal/reader/flow/`、`internal/server/book.go`、`reader_flow.go` | ✅ 已完成：`revaro-reader::flow`、`reader_routes.rs` |
 | ~~前端各功能视图~~ | `web/src/components/` | ✅ 已完成：`crates/revaro-web/src/components/` 已接入登录、文件浏览、文件操作、回收站、上传队列、任务中心、媒体查看器、移动/复制目录选择器和 EPUB/TXT 阅读器视图 |
-| 删除旧实现与构建链 | `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、`data-plane/` | 进行中：生产 Docker/CI 已切到 Rust；待迁移 test-only 浏览器 harness 后删除 |
+| ~~删除旧实现与构建链~~ | `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、`data-plane/` | ✅ 已完成：Rust E2E 独立到 `tests/e2e/`；生产仅依赖 Cargo workspace，Node/npm 仅供测试 |
 
 ### 代码约定（新模块必须遵守）
 
@@ -265,9 +265,9 @@ workspace 的 fmt、clippy、全量测试、wasm 检查和 release 构建；Comp
 `APP_WEB_DIR` 指向 `/opt/revaro/web`，保持只读根文件系统、`/data` 持久卷和
 `/readyz` healthcheck。
 
-`data-plane/`、Go 源码和旧 `web/` 仍暂存在仓库中，但已由 `.dockerignore` 排除，
-Dockerfile 也不复制它们。阶段 8b 会在浏览器测试 harness 脱离旧 Vue 工程、schema
-不再引用旧树后删除这些目录和 Node/npm 配置。
+浏览器测试位于 `tests/e2e/`，并由 `.dockerignore` 排除；Dockerfile 只复制 Cargo
+workspace、Rust 静态资源和 release 产物。根 workspace 已不再排除 sidecar，仓库中
+也不再有 Go、Vue/Vite 或独立 data-plane 源码；test-only npm 包不进入生产镜像。
 
 本环境无法验证容器构建：docker 守护进程不可用，podman 能启动但受
 user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
@@ -284,7 +284,7 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
 | 前端行为 | Chromium 真实验证登录、认证后根目录、目录导航、面包屑返回、回收站、单文件上传、16 MiB+1 多分片上传、目录树上传、取消/重试和已完成会话恢复；任务中心通过真实加密 ZIP 验证 SSE 刷新、取消、密码恢复、完成清除和移动端布局；媒体查看器通过真实图片、WAV、WebM 和 VTT 验证图片缩放/缩略图/下载、目录移动/复制、音频章节、视频倍速与字幕；阅读器通过真实 TXT 上传验证 flow chunk 首屏、CSS columns 翻页、触屏 pointer swipe、目录跳转、字号/行距/主题、进度重开和 `/read/{id}` 深链；`revaro_boot.js`、品牌图标资源均为 200 |
-| reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈；`web/e2e/rust-reader-ui.spec.ts` 通过真实浏览器验证 reader 视图、缓存恢复、目录、重排、触屏翻页和深链 |
+| reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈；`tests/e2e/rust-reader-ui.spec.ts` 通过真实浏览器验证 reader 视图、缓存恢复、目录、重排、触屏翻页和深链 |
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
@@ -300,9 +300,8 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 - **前端功能视图**：登录、会话恢复、文件浏览、网格/列表切换、回收站、文件操作、
   上传队列、任务中心、媒体查看器、目录传输选择器和 EPUB/TXT reader 视图均已落地。
-- **删除旧实现与构建链**：`web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、
-  `data-plane/` 仍在；生产 Docker/CI 已不依赖它们，待 test-only 浏览器 harness
-  脱离旧工程后删除。
+- **旧实现与生产构建链**：已删除 `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、
+  `data-plane/`；`tests/e2e/` 只保留真实 Rust 浏览器行为测试及其 Playwright 依赖。
 
 ### 一条值得记住的框架差异（已由测试发现）
 
@@ -360,25 +359,25 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 
 样式表的加载顺序是**有语义的**：多个文件对同一选择器竞争，顺序决定胜出者
 （例如 `.app-shell` 的 grid 列宽由 shell.css 定义后又被覆盖）。权威顺序取自
-`web/src/main.ts` 与 `web/src/style.css` 的 import 序列：
+`crates/revaro-web/static/styles.css` 的 import 序列（最初根据旧 Vue 入口恢复）：
 
 | # | 文件 | 来源 |
 |---|---|---|
-| 1 | `styles/shell.css` | `style.css` 内 `@import` |
+| 1 | `styles/shell.css` | `styles.css` 内 `@import` |
 | 2 | `styles/browser.css` | 同上 |
 | 3 | `styles/uploads.css` | 同上 |
 | 4 | `styles/dialogs.css` | 同上 |
 | 5 | `styles/media.css` | 同上 |
 | 6 | `styles/responsive.css` | 同上 |
 | 7 | `styles/library.css` | 同上 |
-| 8 | `account.css` | `main.ts` |
-| 9 | `ui.css` | `main.ts`（`:root` 令牌的权威定义在这里，覆盖 responsive.css） |
-| 10 | `styles/selection-toolbar.css` | `main.ts` |
-| 11 | `styles/share-dialog.css` | `main.ts` |
-| 12 | `styles/document-editor.css` | `main.ts` |
-| 13 | `styles/reader-flow.css` | `main.ts` |
-| 14 | `styles/reader-chrome.css` | `main.ts` |
-| 15 | `styles/video-player.css` | `VideoPlayer.vue` 的 `<style src>`，随组件加载，故排在最后 |
+| 8 | `styles/account.css` | `styles.css` |
+| 9 | `styles/ui.css` | `styles.css`（`:root` 令牌的权威定义在这里，覆盖 responsive.css） |
+| 10 | `styles/selection-toolbar.css` | `styles.css` |
+| 11 | `styles/share-dialog.css` | `styles.css` |
+| 12 | `styles/document-editor.css` | `styles.css` |
+| 13 | `styles/reader-flow.css` | `styles.css` |
+| 14 | `styles/reader-chrome.css` | `styles.css` |
+| 15 | `styles/video-player.css` | `styles.css`（保留原 VideoPlayer 样式的最后优先级） |
 
 移植时必须以单个聚合文件（`@import` 或按序拼接）复现这 15 项顺序，并用测试
 固定，避免后续编辑悄悄改变级联结果。
@@ -413,6 +412,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 7f Rust 媒体查看器与目录传输 | ✅ | `feat(web): 接入媒体查看器与目录传输` |
 | 7g Rust EPUB/TXT 阅读器视图 | ✅ | `feat(web): 接入 EPUB/TXT 阅读器视图` |
 | 8a Rust-only 生产镜像与 CI | ✅ | `build(rust): 切换生产构建与部署链` |
+| 8b 删除旧实现与 Vue/Vite 构建链 | ✅ | `cleanup(rust): 删除旧实现与构建链` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -435,8 +435,8 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**从阶段 8a 继续的项目**：迁移 test-only 浏览器 harness，删除 Node/npm、Go
-和旧 data-plane 源码。
+**阶段 8b 已完成**：test-only 浏览器 harness 已独立，旧 Go、Vue/Vite 和 data-plane
+源码已删除；下一步是用 CI/发布环境完成一次真实 Rust 镜像构建验收。
 详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
@@ -543,12 +543,13 @@ Chromium 通过加密 ZIP 任务验证初始空态、SSE 出现等待密码任�
 缩略图切换和同源下载；音频支持原生加载、章节面板和 Escape 关闭；视频支持
 WebM 原生加载、1.5 倍速、VTT 字幕和播放设置。移动/复制通过真实目录元数据
 选择器提交，并验证了目标目录进入与返回。测试固化在
-`web/e2e/rust-media-ui.spec.ts`，使用临时数据目录和真实 `revaro` 进程运行：
+`tests/e2e/rust-media-ui.spec.ts`，使用临时数据目录和真实 `revaro` 进程运行：
 
 ```sh
+cd tests/e2e
 PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium \
 E2E_BASE_URL=http://127.0.0.1:18183 \
-npx playwright test e2e/rust-media-ui.spec.ts --config=playwright.config.ts
+npx playwright test rust-media-ui.spec.ts --config=playwright.config.ts
 ```
 
 该用例通过（1 passed）；视频缩略图在后台生成期间出现的单个 404 是预期的
@@ -562,13 +563,14 @@ npx playwright test e2e/rust-media-ui.spec.ts --config=playwright.config.ts
 `/read/{file_id}` 深链。manifest 使用 localStorage 快速恢复，chunk 使用带 flow
 版本、源指纹和布局指纹的 Cache Storage；不可信缓存或网络 manifest 在进入 DOM 前
 经过范围、总量、chunk 顺序和 TOC 目标校验，旧 generation 的异步请求不会写入当前
-阅读窗口。测试固化在 `web/e2e/rust-reader-ui.spec.ts`，使用临时数据目录和真实
+阅读窗口。测试固化在 `tests/e2e/rust-reader-ui.spec.ts`，使用临时数据目录和真实
 `revaro` 进程运行：
 
 ```sh
+cd tests/e2e
 PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium \
 E2E_BASE_URL=http://127.0.0.1:18184 \
-npx playwright test e2e/rust-reader-ui.spec.ts --config=playwright.config.ts
+npx playwright test rust-reader-ui.spec.ts --config=playwright.config.ts
 ```
 
 该用例通过（1 passed）；`cargo xtask check` 共 **404 个测试**通过，`cargo
@@ -586,6 +588,14 @@ wasm32 检查）、`cargo xtask build`、Rust-only source context metadata、Com
 配置解析，以及 release `revaro` 进程的 `/healthz`、`/readyz`、SPA 首页和两个
 Chromium 媒体/reader E2E 用例（2 passed）。当前环境没有 Docker daemon，且
 podman 受 user-namespace / subuid 限制，因此未声称完成本地镜像构建。
+
+阶段 8b 验收：两条 Rust Chromium E2E、Playwright 配置和视频 fixture 已移至
+`tests/e2e/`；该包只有 `@playwright/test` 一个开发依赖，`npm ci` 审计通过。
+旧 `web/`、Go `internal/`/`cmd/`、`go.mod`/`go.sum` 和独立 `data-plane/` 已删除，
+根 Cargo workspace 不再使用 `exclude`。删除前后的 Rust-only source context
+metadata 均只包含 `revaro-core`、`revaro-media`、`revaro-reader`、
+`revaro-server`、`revaro-web` 和 `xtask`；当前工作区检查、wasm 构建、release
+构建和真实进程 E2E 继续通过。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

@@ -73,11 +73,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: tests/e2e/package-lock.json
       - name: Install browser test dependencies
-        working-directory: web
-        # The legacy web tree is used here only as a temporary Playwright test
-        # harness; it is excluded from the production Docker build context.
+        working-directory: tests/e2e
+        # Browser E2E is a separate test package. It has no Vue, Vite or
+        # production application dependency.
         run: |
           npm ci --ignore-scripts
           npx playwright install --with-deps chromium
@@ -102,8 +102,8 @@ jobs:
           docker compose -f compose.e2e.yml logs
           exit 1
       - name: Run Rust browser E2E
-        working-directory: web
-        run: npx playwright test e2e/rust-media-ui.spec.ts e2e/rust-reader-ui.spec.ts --config=playwright.config.ts
+        working-directory: tests/e2e
+        run: npx playwright test rust-media-ui.spec.ts rust-reader-ui.spec.ts --config=playwright.config.ts
       - name: Collect container logs
         if: failure()
         run: docker compose -f compose.e2e.yml logs --no-color > e2e-container.log
@@ -114,8 +114,8 @@ jobs:
           name: playwright-e2e-diagnostics
           if-no-files-found: ignore
           path: |
-            web/playwright-report/
-            web/test-results/
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
             e2e-container.log
       - name: Stop E2E stack
         if: always()

@@ -10,15 +10,9 @@ coverage.out
 /dist/
 /data/
 
-# The production image copies only the Cargo workspace. These trees are legacy
-# sources and test tooling kept outside the image build context until their
-# deletion stage is complete.
-/web/
-/internal/
-/cmd/
-/data-plane/
-/go.mod
-/go.sum
+# The production image copies only the Cargo workspace. Browser tests stay
+# outside its context.
+/tests/
 
 # Local test output and demo material
 .demo-shots/

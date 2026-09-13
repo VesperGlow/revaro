@@ -50,8 +50,8 @@ docker compose up -d
 ## 开发与检查
 
 > **迁移收尾中**：生产镜像与运行时已经是单一 Rust Cargo workspace
->（Axum 后端 + Leptos 前端 + 共享 core crate）。旧 Go/Vue 树在最终清理前仍保留，
-> 旧 `web/` 中的 Playwright 只用于浏览器行为测试，不进入生产镜像。迁移计划、阶段划分与审计结论见
+>（Axum 后端 + Leptos 前端 + 共享 core crate）。浏览器行为测试位于独立的
+> `tests/e2e/` 包，不参与生产构建或运行。迁移计划、阶段划分与审计结论见
 > [docs/migration/README.md](docs/migration/README.md)。
 
 新的 Rust 工作区：
@@ -65,9 +65,9 @@ cargo xtask build         # release 服务端 + 前端产物
 `wasm-bindgen` CLI 版本必须与 workspace 固定的版本一致
 （`cargo install wasm-bindgen-cli --version 0.2.128`）。
 
-浏览器行为测试在旧树清理完成前仍使用 `web/` 中的 Playwright 依赖；它不参与
-生产构建或运行。CI 会对 Rust 镜像执行 `cargo xtask build`，并在真实容器中运行
-Rust 媒体与阅读器 E2E。
+浏览器行为测试使用 `tests/e2e/` 中仅包含 Playwright 的 npm 包；它不参与生产
+构建或运行。CI 会对 Rust 镜像执行 `cargo xtask build`，并在真实容器中运行 Rust
+媒体与阅读器 E2E。
 
 Rust 本地编译需要 FFmpeg 开发库、clang、cmake 和 libarchive 相关构建依赖；Dockerfile 包含完整构建环境。生产 FFmpeg 只保留媒体读取所需库，不包含转码命令或编码器。
 

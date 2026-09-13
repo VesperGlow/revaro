@@ -6,9 +6,8 @@
 版本相同的 CLI。
 
 `container` job 等待 Rust 质量门通过后构建同一个 Rust Dockerfile，并启动真实
-容器执行 Chromium 媒体和阅读器 E2E。浏览器测试目前暂放在旧 `web/` 目录，
-只作为 test-only Playwright harness；`.dockerignore` 和 Dockerfile 都保证它、
-Go 源码及旧 data-plane 不进入生产镜像。
+容器执行 Chromium 媒体和阅读器 E2E。浏览器测试位于独立的 `tests/e2e/` npm
+包，只包含 Playwright；`.dockerignore` 和 Dockerfile 都保证它不进入生产镜像。
 
 容器 job 是 `revaro-image-amd64-v3` BuildKit 缓存的唯一写入者；发布 job 只读取
 该缓存并推送经过验证的 GHCR 镜像。主分支不会在缓存导出期间取消，PR 仍会取消
