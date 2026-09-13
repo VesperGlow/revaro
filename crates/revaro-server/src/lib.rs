@@ -23,6 +23,7 @@ pub mod db;
 pub mod error;
 pub mod file_routes;
 pub mod ids;
+pub mod maintenance;
 pub mod media_routes;
 pub mod media_runtime;
 pub mod middleware;

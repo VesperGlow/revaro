@@ -169,7 +169,7 @@ Node/npm 仅保留为 test-only Playwright 运行器，不属于生产构建或�
 ### 阶段 9 — 迁移复核收尾
 阶段 9a 修复迁移复核发现的上传完整性缺口：单请求和多分片完成都以有界流式
 SHA-256 写入 `content_hash`，并按 upload id 串行化写入、分片确认、完成和中止；
-多分片完成还必须提供完整连续的分片列表。后台维护调度器仍保留为后续收尾项。
+多分片完成还必须提供完整连续的分片列表。
 
 阶段 9b 已完成全局 cache manager 接入：`reader/source` 使用受 64 MiB 单项上限
 约束的磁盘 L2，reader flow 的 manifest/chunk 使用带 TTL 的内存 L1，`media/subtitle`
@@ -178,6 +178,16 @@ SHA-256 写入 `content_hash`，并按 upload id 串行化写入、分片确认�
 `.meta` 精确格式、启动重建与孤儿清理、单飞加载、等待者取消和关闭时的加载取消；
 reader、字幕路由和 system status 已改为使用同一实例。路由测试验证 flow 缺失 chunk
 自愈、外置字幕源删除后的缓存响应、缓存命中计数和状态 class 列表。
+
+阶段 9c 已接入进程级 maintenance manager：所有维护任务由一个可关闭的顺序调度器
+管理，支持 run-now、显式 wake、单独超时、3 个 I/O permit、失败指数退避和关闭时等待
+进行中的 pass。已注册 cache prune、过期上传、object_cleanup、回收站保留期、临时上传、
+过期 session、归档密码等待和可选 orphan-objects/flow GC；上传、回收站清理会唤醒
+对象队列，避免同一启动周期留下刚刚产生的孤儿对象。对象队列按 generation 保护并重建
+所有文件引用及四类 thumbnail 派生键，blob 回收同步删除 flow 派生物；GC 按
+`upload_expires + 1h`、flow TTL 和容量上限执行，均限制单次批量大小。新增 7 个 scheduler、
+上传过期、回收站、对象队列和 orphan/flow GC 测试；release 进程实测启动时清理过期上传、
+回收站、session、对象队列、临时文件和孤儿 flow/blob，并以 0 退出响应 SIGTERM。
 
 ## 4. 已记录的风险与遗留问题
 
@@ -307,7 +317,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 
 | 项 | 值 |
 |---|---|
-| 测试 | **420 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 181 = 178 单元 + 3 集成、web 46、xtask 5） |
+| 测试 | **427 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 188 = 185 单元 + 3 集成、web 46、xtask 5） |
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
@@ -333,12 +343,11 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 - **旧实现与生产构建链**：已删除 `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、
   `data-plane/`；`tests/e2e/` 只保留真实 Rust 浏览器行为测试及其 Playwright 依赖。
 - **缓存与后台维护**：全局 L1/L2 cache manager 已接入 reader/source、flow、parsed
-  books 和 media/subtitle，状态接口会报告实际 class/counter/容量；后台定时 `prune`
-  调度、flow 对象 GC、object_cleanup、临时上传、session、trash 和孤儿 blob 的统一
-  maintenance manager 仍待接入。
+  books 和 media/subtitle，状态接口会报告实际 class/counter/容量；统一 maintenance
+  manager 已接入 cache prune、flow/object GC、object_cleanup、临时上传、session、trash
+  和归档密码等待，并在主进程启动与优雅关闭路径生效。
 
-当前没有待迁移的生产 HTTP 路由；上述缓存与后台维护仍是生产运行行为的收尾模块。剩余
-验收还包括外部环境：由 CI Docker runner
+当前没有待迁移的生产 HTTP 路由或未接入的后台维护模块。剩余验收包括外部环境：由 CI Docker runner
 实际执行主分支/版本标签的构建、容器 E2E、GHCR 推送并观察发布结果；再在目标部署环境
 确认 registry、`/data` 卷权限、反向代理的 `APP_BASE_URL` 和升级/回滚流程。当前开发
 环境没有可用的 Docker daemon，无法替代该外部验收。
@@ -733,7 +742,21 @@ Chromium 场景（3 passed）全部通过。下一步仍是 CI Docker runner 的
 新增存储哈希、锁等待和真实路由分片上传测试；后者上传 16 MiB+1、验证短完成列表
 被拒、再完成成功并核对最终哈希。`cargo xtask check` 通过 410 个测试、fmt、
 clippy `-D warnings` 和 wasm32 检查，`cargo xtask build` 及 release `revaro` 进程的
-curl 分片上传验证也通过。下一步进入全局 cache manager 与后台维护调度的复核。
+curl 分片上传验证也通过。
+
+阶段 9b 验收：全局 cache manager 的五个生产 class、磁盘 `.meta` 重建、优先级和
+软配额、singleflight、等待者取消、TTL、前缀失效、关闭等待与 system status 均有
+测试；reader/source、reader flow、parsed books 和 media/subtitle 路由均使用同一
+manager。`cargo xtask check` 通过 420 个测试，`cargo xtask build` 与 release 进程的
+status cache `ok`/五个 class 验证通过。
+
+阶段 9c 验收：统一 maintenance manager 的 run-now、wake 合并、失败退避、超时和
+关闭等待有测试；过期上传的数据库/对象清理、回收站树的叶到根删除、generation
+保护的 object_cleanup、四类 thumbnail 派生物、flow TTL/容量和 orphan GC 均有
+实际行为测试。`cargo xtask check` 通过 427 个测试，`cargo xtask build`、release
+进程启动时的过期 session/upload/trash/object/temp/orphan 清理和 SIGTERM 退出均通过。
+下一步只剩 CI Docker runner 的正式构建/发布观察，以及目标部署环境的卷权限、反向
+代理基址和升级/回滚确认。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

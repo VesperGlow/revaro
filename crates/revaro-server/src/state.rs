@@ -177,6 +177,8 @@ pub struct AppState {
     pub reader: ReaderRuntime,
     /// Serialized upload lifecycle operations.
     pub uploads: UploadRuntime,
+    /// Process-wide maintenance scheduler and durable cleanup passes.
+    pub maintenance: crate::maintenance::MaintenanceRuntime,
 }
 
 impl AppState {
@@ -194,7 +196,8 @@ impl AppState {
             config.media_cache_capacity,
             Arc::clone(&reader.books),
         );
-        Arc::new(Self {
+        let maintenance = crate::maintenance::MaintenanceRuntime::new();
+        let state = Arc::new(Self {
             config,
             db,
             store,
@@ -207,7 +210,12 @@ impl AppState {
             jobs: JobBus::new(256),
             reader,
             uploads: UploadRuntime::new(),
-        })
+            maintenance,
+        });
+        state
+            .maintenance
+            .register_production(Arc::downgrade(&state));
+        state
     }
 }
 

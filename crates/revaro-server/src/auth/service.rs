@@ -523,9 +523,8 @@ impl AuthService {
 
     /// Delete every expired session.
     ///
-    /// The Go server registered this as a 15-minute cleanup job; the Rust server
-    /// has no cleanup scheduler yet, so the caller must invoke it on a timer (or
-    /// opportunistically) at that interval.
+    /// The maintenance runtime invokes this as the 15-minute cleanup job used
+    /// by the Go server.
     ///
     /// # Errors
     /// Propagates database failures.

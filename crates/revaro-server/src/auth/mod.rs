@@ -11,9 +11,9 @@
 //!
 //! ## Deliberate differences from the Go implementation
 //!
-//! * There is no background cleanup goroutine. [`AuthService::cleanup_expired_sessions`]
-//!   is exposed instead, and the server's timer should call it every 15 minutes
-//!   (the Go server registered `auth.Cleanup` with that interval).
+//! * Session cleanup remains an explicit service method;
+//!   [`AuthService::cleanup_expired_sessions`] is called by the process-wide
+//!   maintenance scheduler every 15 minutes.
 //! * Errors are a typed [`AuthError`] rather than Go sentinel values compared
 //!   with `errors.Is`; the HTTP boundary maps them in one place.
 //! * Every Argon2id derivation is serialised through a process-global semaphore
