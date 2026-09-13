@@ -8,9 +8,9 @@
 //!   transaction,
 //! * the same file permissions (`0700` on the directory, `0600` on the file).
 //!
-//! The migration SQL is *included* from the existing Go tree rather than copied,
-//! so there is exactly one schema definition while both servers coexist. When
-//! the Go source is deleted the files move next to this module unchanged.
+//! The migration SQL lives next to this module and is included at compile time,
+//! so the Rust binary has one immutable schema source and does not depend on
+//! the retired Go tree.
 //!
 //! ## Concurrency
 //!
@@ -46,19 +46,18 @@ pub struct Migration {
 
 /// Every migration, in application order.
 ///
-/// The SQL is read from the Go source tree so the schema cannot drift between
-/// the two servers during the migration. The `version` values match the numeric
-/// prefix of each file name, which is how the Go server derived them.
+/// The `version` values match the numeric prefix of each file name, which is
+/// how the original server derived them.
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
         name: "001_local_product.sql",
-        sql: include_str!("../../../internal/database/migrations/001_local_product.sql"),
+        sql: include_str!("../migrations/001_local_product.sql"),
     },
     Migration {
         version: 2,
         name: "002_file_cleanup.sql",
-        sql: include_str!("../../../internal/database/migrations/002_file_cleanup.sql"),
+        sql: include_str!("../migrations/002_file_cleanup.sql"),
     },
 ];
 

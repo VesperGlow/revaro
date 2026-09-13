@@ -8,6 +8,7 @@ services:
       APP_ADDR: ":8080"
       APP_DATA_DIR: /data
       APP_WORK_DIR: /data/work
+      APP_WEB_DIR: /opt/revaro/web
       APP_BASE_URL: http://127.0.0.1:18080
       COOKIE_SECURE: "false"
       ADMIN_USERNAME: admin

@@ -15,61 +15,6 @@ permissions:
   contents: read
 
 jobs:
-  quality:
-    name: Deterministic checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Install web dependencies
-        working-directory: web
-        run: npm ci
-      - name: Test web UI
-        working-directory: web
-        run: npm test
-      - name: Build web UI
-        working-directory: web
-        run: npm run build
-      - name: Lint web UI
-        working-directory: web
-        run: npm run lint
-      - name: Audit production web dependencies
-        working-directory: web
-        run: npm audit --omit=dev --audit-level=moderate
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Test and vet
-        run: |
-          go test -race ./...
-          go vet ./...
-      - name: Scan Go dependencies
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
-      - name: Build binary
-        run: CGO_ENABLED=0 go build -trimpath ./cmd/server
-      - name: Restore cargo-audit
-        # cargo install 需要数分钟从源码编译；固定版本 + 缓存安装目录，
-        # 命中时直接复用二进制。
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo-audit
-          key: cargo-audit-0.22.2
-      - name: Audit Rust dependencies
-        working-directory: data-plane
-        # cargo-audit exits non-zero for vulnerabilities. Its default warning
-        # policy reports informational/unmaintained/unsound advisories without
-        # treating them as vulnerabilities; do not add `--deny warnings` here.
-        run: |
-          export PATH="$HOME/.cargo-audit/bin:$PATH"
-          command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked --version 0.22.2 --root "$HOME/.cargo-audit"
-          cargo audit --file Cargo.lock
-
   rust:
     name: Rust workspace
     runs-on: ubuntu-24.04
@@ -77,8 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install the pinned toolchain
-        # rust-toolchain.toml pins the channel, the components and the wasm32
-        # target, so rustup installs exactly what the workspace needs.
+        # rust-toolchain.toml pins the channel, components and wasm target.
         run: rustup show active-toolchain
       - name: Restore the cargo registry
         uses: actions/cache@v5
@@ -89,10 +33,7 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
       - name: Install wasm-bindgen CLI
-        # The CLI and the wasm-bindgen crate share a private ABI version and must
-        # match exactly. The prebuilt binary is used because compiling the CLI
-        # from source costs several minutes on every run; `cargo xtask check`
-        # fails loudly if this version drifts from the manifest pin.
+        # The CLI and wasm-bindgen crate share a private ABI version.
         run: |
           curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
             -o /tmp/wasm-bindgen.tar.gz \
@@ -101,19 +42,29 @@ jobs:
           install -m 0755 /tmp/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl/wasm-bindgen "$HOME/.cargo/bin/"
           wasm-bindgen --version
       - name: Install native build dependencies
-        # rusqlite bundles SQLite and therefore needs a C compiler; the media and
-        # reader crates add ffmpeg/libarchive/clang/cmake as the migration lands.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang cmake pkg-config \
             libbz2-dev liblzma-dev libzstd-dev liblz4-dev libssl-dev libxml2-dev libacl1-dev
       - name: Check the workspace
-        # fmt + clippy (-D warnings) + the full test suite + a wasm32 type-check
-        # of the browser client.
+        # fmt + clippy (-D warnings) + the full test suite + wasm32 type-check.
         run: cargo xtask check
+      - name: Audit Rust dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo-audit
+          key: cargo-audit-0.22.2
+      - name: Run cargo-audit
+        run: |
+          export PATH="$HOME/.cargo-audit/bin:$PATH"
+          command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked --version 0.22.2 --root "$HOME/.cargo-audit"
+          cargo audit --file Cargo.lock
+      - name: Build release artifacts
+        run: cargo xtask build
 
   container:
-    name: Build amd64 image and E2E
+    name: Build Rust image and Chromium E2E
+    needs: rust
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -123,28 +74,23 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Restore Playwright browsers
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ hashFiles('web/package-lock.json') }}
-      - name: Install web and Chromium dependencies
+      - name: Install browser test dependencies
         working-directory: web
+        # The legacy web tree is used here only as a temporary Playwright test
+        # harness; it is excluded from the production Docker build context.
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npx playwright install --with-deps chromium
       - uses: docker/setup-buildx-action@v4.1.0
       - name: Build checked amd64 image once
-        # Dockerfile 的生产依赖链内已包含 Rust fmt/clippy/test。这是唯一
-        # 完整编译和缓存写入路径；缓存服务偶发不可用不会让编译失败。
         uses: docker/build-push-action@v7.3.0
         with:
           context: .
           platforms: linux/amd64
           load: true
           tags: revaro-e2e:local
-          cache-from: type=gha,scope=revaro-image-amd64-v2
-          cache-to: type=gha,scope=revaro-image-amd64-v2,mode=max,ignore-error=true,timeout=10m
+          cache-from: type=gha,scope=revaro-image-amd64-v3
+          cache-to: type=gha,scope=revaro-image-amd64-v3,mode=max,ignore-error=true,timeout=10m
       - name: Build and start the real Revaro stack
         run: docker compose -f compose.e2e.yml up -d --no-build
       - name: Wait for readiness
@@ -155,9 +101,9 @@ jobs:
           done
           docker compose -f compose.e2e.yml logs
           exit 1
-      - name: Run Chromium E2E
+      - name: Run Rust browser E2E
         working-directory: web
-        run: npm run e2e
+        run: npx playwright test e2e/rust-media-ui.spec.ts e2e/rust-reader-ui.spec.ts --config=playwright.config.ts
       - name: Collect container logs
         if: failure()
         run: docker compose -f compose.e2e.yml logs --no-color > e2e-container.log
@@ -177,7 +123,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [quality, container]
+    needs: [rust, container]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -215,8 +161,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # container job 已编译并 E2E 验证同一提交的 amd64 层。
-          # 此处通常只组装镜像配置并推送，不再重复编译。
-          cache-from: type=gha,scope=revaro-image-amd64-v2
+          cache-from: type=gha,scope=revaro-image-amd64-v3
       - name: Record image digest
         run: echo "Published ghcr.io/vesperglow/revaro@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

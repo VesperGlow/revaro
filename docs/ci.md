@@ -1,12 +1,16 @@
-# CI and image builds
+# CI 与镜像构建
 
-Only `linux/amd64` is built. Quality checks and the real-container E2E job run in parallel; GHCR publication waits for both to succeed. Rust fmt, Clippy and tests remain in the Dockerfile dependency chain. No checks are skipped for speed.
+当前发布目标为 `linux/amd64`。`rust` job 运行 workspace 的格式检查、
+`clippy -D warnings`、完整测试、wasm32 类型检查、Rust 依赖审计和 release
+构建；所有 Rust 原生依赖由 runner 安装，wasm-bindgen 使用与 workspace 锁定
+版本相同的 CLI。
 
-- `.dockerignore` excludes Go and Web unit tests from production image inputs. The quality job still tests the full checkout. Rust inline tests are retained. Test-only edits no longer invalidate production source-copy layers.
-- The Go dependency layer also compiles the standard library with the final binary's `CGO_ENABLED=0`, Linux and `-trimpath` settings. Its filesystem build cache is exported with the layer, so fresh runners can reuse it after application source changes.
-- The container job is the sole writer of the `revaro-image-amd64-v2` BuildKit cache (`mode=max` preserves intermediate build stages). Publication reads it without exporting it a second time. Cache failures can cause rebuilding but never bypass checks.
-- Main builds are not cancelled midway through cache export. PR runs still cancel superseded work. Node, Go, Playwright and cargo-audit caches remain enabled.
+`container` job 等待 Rust 质量门通过后构建同一个 Rust Dockerfile，并启动真实
+容器执行 Chromium 媒体和阅读器 E2E。浏览器测试目前暂放在旧 `web/` 目录，
+只作为 test-only Playwright harness；`.dockerignore` 和 Dockerfile 都保证它、
+Go 源码及旧 data-plane 不进入生产镜像。
 
-The preceding successful main run, [34674782858](https://github.com/VesperGlow/revaro/actions/runs/34674782858), spent about 326 seconds building the checked image, 121 seconds running E2E and only 6 seconds publishing the cached image. This is why publication still uses BuildKit reuse instead of introducing a large cross-job image artifact. Timings depend on cache availability and runner load; the next build also pays for new cache layers.
-
-References: [Docker cache optimization](https://docs.docker.com/build/cache/optimize/) and [GitHub Actions cache backend](https://docs.docker.com/build/cache/backends/gha/).
+容器 job 是 `revaro-image-amd64-v3` BuildKit 缓存的唯一写入者；发布 job 只读取
+该缓存并推送经过验证的 GHCR 镜像。主分支不会在缓存导出期间取消，PR 仍会取消
+过时运行。Docker daemon 不可用的本地环境只能运行等价的 Cargo 检查和真实 Rust
+进程 E2E，不能声称本地完成镜像构建。

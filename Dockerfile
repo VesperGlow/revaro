@@ -1,30 +1,6 @@
 # syntax=docker/dockerfile:1.7
-FROM node:24-alpine AS web
-WORKDIR /src
-COPY web/package.json web/package-lock.json ./web/
-RUN cd web && npm ci
-# 精确复制源文件，绝不携带宿主 node_modules（平台相关原生绑定会覆盖
-# 上面 npm ci 安装的 Linux 版本，导致构建失败或产物损坏）
-COPY web/index.html web/vite.config.ts web/tsconfig.json ./web/
-COPY web/src ./web/src
-COPY web/public ./web/public
-COPY internal/webui ./internal/webui
-RUN cd web && npm run build
 
-FROM golang:1.26-alpine AS backend
-WORKDIR /src
-COPY go.mod go.sum ./
-# Persist the standard-library build cache in an exported layer, so Go source
-# changes do not recompile it on fresh CI runners. Flags match the final build.
-RUN go mod download && CGO_ENABLED=0 GOOS=linux go build -trimpath std
-# 仅复制 Go 源码：README / docs / workflow / data-plane 等与 Go 构建无关的
-# 改动不再使本层失效；前端产物由 web 阶段在下一步提供
-COPY cmd ./cmd
-COPY internal ./internal
-COPY --from=web /src/internal/webui/dist ./internal/webui/dist
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/revaro ./cmd/server
-
-# ---- FFmpeg libraries for metadata, thumbnails and subtitle extraction ----
+# ---- Minimal FFmpeg shared libraries for native media inspection ----
 FROM debian:bookworm-slim AS ffmpeg
 ARG FFMPEG_VERSION=5.1.10
 ARG FFMPEG_SHA256=392306d6fc45dab0e9e0ea55381e071842e83a2fb31d320aeda40477a7766293
@@ -48,71 +24,81 @@ RUN ./configure \
     && make -j"$(nproc)" && make install \
     && rm -rf /src
 
-# ---- Rust 数据平面（编译与测试都针对上面的精简 libav，与运行层一致）----
-FROM rust:1.98-bookworm AS dataplane-base
+# ---- Rust workspace build and verification ----
+FROM rust:1.98-bookworm AS rust-base
 RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    clang cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
+    ca-certificates curl clang cmake pkg-config \
+    zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
     libssl-dev libxml2-dev libacl1-dev \
-    && rm -rf /var/lib/apt/lists/*
-# rustfmt / clippy 组件预装进基础层：CI 检查阶段不再每次临时下载组件
-RUN rustup component add rustfmt clippy
-# 用 /opt 的 ffmpeg 前缀替换 Debian 完整 libav*-dev / ffmpeg 包
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add wasm32-unknown-unknown \
+    && rustup component add rustfmt clippy
+
+# Build and runtime use the same FFmpeg sonames. The image is intentionally
+# amd64-only, matching the supported publication target in CI.
 COPY --from=ffmpeg /opt/revaro/ffmpeg /opt/revaro/ffmpeg
 ENV PATH=/opt/revaro/ffmpeg/bin:$PATH \
     PKG_CONFIG_PATH=/opt/revaro/ffmpeg/lib/pkgconfig \
     LD_LIBRARY_PATH=/opt/revaro/ffmpeg/lib \
     CARGO_NET_RETRY=10 \
     CARGO_HTTP_TIMEOUT=120
-WORKDIR /src/data-plane
-COPY data-plane/Cargo.toml data-plane/Cargo.lock ./
-# 依赖桩编译层：用空 main 先把全部第三方依赖编译进 target/（release +
-# debug/测试 profile 含 dev-deps），随后删除 crate 自身的产物与指纹——
-# 下游只能依据真实源码重编 revaro crate，从结构上排除 cargo 依据 mtime
-# 把桩二进制误判为"已最新"的可能。Cargo.lock 与工具链不变时该层长期
-# 命中；同一 RUN 内清理 registry 解包内容，使该层只保留编译产物。
-FROM dataplane-base AS dataplane-src
-RUN mkdir src \
-    && echo 'fn main() {}' > src/main.rs \
-    && CARGO_INCREMENTAL=0 cargo build --locked --release \
-    && CARGO_INCREMENTAL=0 cargo test --locked --no-run \
-    && rm -rf src \
-        target/release/revaro-data-plane target/debug/revaro-data-plane \
-        target/release/.fingerprint/revaro-data-plane-* target/debug/.fingerprint/revaro-data-plane-* \
-        target/release/deps/revaro_data_plane-* target/debug/deps/revaro_data_plane-* \
-        "$CARGO_HOME/registry/src"
-COPY data-plane/src ./src
 
-# 把 Rust 的格式、lint 和测试放进生产镜像依赖链。CI 只构建一次完整镜像：
-# 检查通过后才会生成 release 二进制，且源码未变化时整层直接命中缓存。
-FROM dataplane-src AS dataplane-checked
-RUN cargo fmt --check \
-    && CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets -- -D warnings \
-    && CARGO_INCREMENTAL=0 cargo test --locked
+# xtask invokes wasm-bindgen after compiling the Leptos client. Download the
+# pinned static CLI instead of adding it to the workspace dependency graph.
+ARG WASM_BINDGEN_VERSION=0.2.128
+RUN curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
+      -o /tmp/wasm-bindgen.tar.gz \
+      "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp \
+    && install -m 0755 \
+      "/tmp/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" \
+      /usr/local/bin/wasm-bindgen \
+    && rm -rf /tmp/wasm-bindgen* \
+    && wasm-bindgen --version
 
-FROM dataplane-checked AS dataplane
-RUN CARGO_INCREMENTAL=0 cargo build --locked --release \
-    && cp target/release/revaro-data-plane /out-revaro-data-plane
+WORKDIR /src
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
+COPY crates ./crates
+COPY xtask ./xtask
 
+# Keep the image build itself a release gate. The same workspace check is also
+# run by the Rust CI job, while this layer guarantees that a publishable image
+# cannot be assembled from a source tree that fails its own checks.
+FROM rust-base AS rust-checked
+RUN CARGO_INCREMENTAL=0 cargo xtask check
+
+FROM rust-checked AS rust-build
+RUN CARGO_INCREMENTAL=0 cargo xtask build
+
+# ---- Runtime ----
 FROM debian:bookworm-slim
-# Runtime libraries for local media metadata and archive extraction.
+# libarchive2-sys links its bounded static archive engine against these system
+# libraries; FFmpeg itself is copied below as the only media-specific runtime.
 RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    ca-certificates tzdata libstdc++6 libgcc-s1 libxml2 wget \
+    ca-certificates tzdata wget libstdc++6 libgcc-s1 \
+    libxml2 libssl3 libacl1 zlib1g libbz2-1.0 liblzma5 libzstd1 liblz4-1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \
-    && mkdir -p /data/.cache /data/work && chown -R revaro:revaro /data
-COPY --from=backend /out/revaro /usr/local/bin/revaro
-COPY --from=dataplane /out-revaro-data-plane /usr/local/bin/revaro-data-plane
-# Shared media libraries only; no conversion binaries.
+    && mkdir -p /opt/revaro/web /data/.cache /data/work \
+    && chown -R revaro:revaro /data
+
+COPY --from=rust-build /src/target/release/revaro /usr/local/bin/revaro
+COPY --from=rust-build /src/dist/web /opt/revaro/web
+# Shared media libraries only; no conversion binaries or sidecar process.
 COPY --from=ffmpeg /opt/revaro/ffmpeg/lib/libav*.so* /usr/local/lib/
 COPY --from=ffmpeg /opt/revaro/ffmpeg/lib/libsw*.so* /usr/local/lib/
 RUN strip --strip-unneeded /usr/local/lib/libav*.so* /usr/local/lib/libsw*.so* 2>/dev/null || true \
     && ldconfig
+
 ENV HOME=/data \
     XDG_CACHE_HOME=/data/.cache \
-    APP_WORK_DIR=/data/work
+    APP_WORK_DIR=/data/work \
+    APP_WEB_DIR=/opt/revaro/web
+WORKDIR /data
 USER revaro
 VOLUME ["/data"]
 EXPOSE 8080

@@ -1,4 +1,4 @@
-# 版本控制与本地数据
+# Version control, local state and generated artifacts
 .git
 .gitignore
 .env
@@ -6,35 +6,19 @@
 *.db-shm
 *.db-wal
 coverage.out
-
-# 前端依赖与缓存（容器内由 npm ci 安装 Linux 版本，宿主机的
-# node_modules 含平台相关原生绑定，绝不能进入构建上下文）
-web/node_modules/
-web/.npm-cache/
-
-# 构建产物（web 阶段由 vite 生成，backend 阶段从 web 阶段复制）
-internal/webui/dist/
-data-plane/target/
-
-# Rust workspace 的构建产物与前端打包结果。宿主的 target/ 可达数 GB 且
-# 平台相关，进入构建上下文只会拖慢每一次构建。
 /target/
 /dist/
+/data/
 
-# 仓库文档、CI 与 Compose 配置：不进入任何构建阶段，
-# 这些文件改动不应使镜像层缓存失效
-.github/
-docs/
-README.md
-compose.yml
-compose.e2e.yml
+# The production image copies only the Cargo workspace. These trees are legacy
+# sources and test tooling kept outside the image build context until their
+# deletion stage is complete.
+/web/
+/internal/
+/cmd/
+/data-plane/
+/go.mod
+/go.sum
 
-# 本地 e2e / 测试产物
-web/e2e/
-web/test-results/
-web/playwright-report/
-
-# Go / Web tests run in quality and E2E jobs, not production compilation.
-# Rust inline tests remain in the image's checked dependency chain.
-**/*_test.go
-**/*.test.ts
+# Local test output and demo material
+.demo-shots/

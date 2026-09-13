@@ -159,9 +159,12 @@ ETag/完成事务、三文件并发、XHR 进度/取消、失败与取消重试�
 刷新、字号/行距重排、明暗主题、键盘翻页、触屏拖拽、焦点陷阱、`/read/{id}` 深链
 和移动端工具栏。
 
-### 阶段 8 — 收尾
-删除 `web/`（npm 链）、`internal/`、`cmd/`、`go.mod`；重写 Dockerfile 与
-CI；更新 README 与 docs。
+### 阶段 8 — Rust-only 收尾
+阶段 8a 将生产 Dockerfile、Compose 和 CI 切到 Rust workspace：镜像只构建并运行
+单一 `revaro`，媒体和归档均在进程内完成；旧 Go/Vue/data-plane 树暂留在生产构建
+上下文之外的仓库中，供最终测试工具迁移和删除审计使用。
+阶段 8b 迁移剩余浏览器测试工具与 schema/文档引用后，删除 `web/`、`internal/`、
+`cmd/`、`go.mod`、`go.sum`、`data-plane/` 和不再使用的 Node/npm 配置。
 
 ## 4. 已记录的风险与遗留问题
 
@@ -216,7 +219,7 @@ CI；更新 README 与 docs。
 | ~~压缩包解压~~ | `archive.go` | ✅ 已完成：`revaro-media` + `archive_routes.rs`（`/files/{id}/extract`、归档任务输入与恢复） |
 | ~~阅读器 flow + reader 路由~~ | `internal/reader/flow/`、`internal/server/book.go`、`reader_flow.go` | ✅ 已完成：`revaro-reader::flow`、`reader_routes.rs` |
 | ~~前端各功能视图~~ | `web/src/components/` | ✅ 已完成：`crates/revaro-web/src/components/` 已接入登录、文件浏览、文件操作、回收站、上传队列、任务中心、媒体查看器、移动/复制目录选择器和 EPUB/TXT 阅读器视图 |
-| 删除 Node/npm 与 Go 链 | `web/`、`internal/`、`cmd/`、`go.mod`、Dockerfile、CI | 最后一步 |
+| 删除旧实现与构建链 | `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、`data-plane/` | 进行中：生产 Docker/CI 已切到 Rust；待迁移 test-only 浏览器 harness 后删除 |
 
 ### 代码约定（新模块必须遵守）
 
@@ -250,23 +253,21 @@ cargo xtask web-build                  # 产出 dist/web
 再加上一次真实进程验证：启动 `revaro`，用 `curl` 走通该阶段新增的端点。
 仅在以上全部通过后才提交，并在本文件的进度日志里记录验收结果。
 
-## 4.6 部署现状（迁移期间）
+## 4.6 部署现状（Rust-only 镜像）
 
-根 `Cargo.toml` 用 `exclude = ["data-plane"]` 把既有的 data-plane 留在
-workspace 之外，Go 服务仍以同名二进制启动它。这一点已实测验证：
+阶段 8a 已把生产 Dockerfile、Compose 和 CI 切到根 Cargo workspace：
+`cargo xtask build` 生成 release `revaro` 与 `dist/web`，运行镜像只复制这两类
+产物及 `revaro-media` 需要的 native libraries。媒体、归档和阅读 flow 都在同一
+进程内运行，不再启动 data-plane、Go 服务或 Node/Vite 构建阶段。
 
-```sh
-cd data-plane && cargo check --locked   # 退出码 0
-```
+Dockerfile 的构建检查使用与运行层匹配的 FFmpeg 前缀，并在镜像依赖链执行
+workspace 的 fmt、clippy、全量测试、wasm 检查和 release 构建；Compose 显式将
+`APP_WEB_DIR` 指向 `/opt/revaro/web`，保持只读根文件系统、`/data` 持久卷和
+`/readyz` healthcheck。
 
-即根 workspace 的存在不会让 `data-plane/` 变成「认为自己在 workspace 里」
-而构建失败，Dockerfile 的 data-plane 阶段（`COPY data-plane/Cargo.*` +
-`cargo build --locked`）保持可用。
-
-**因此在本迁移完成前，部署路径不变**：Dockerfile 依旧构建 Go 服务 +
-data-plane，Rust 服务是并行推进的新实现，不参与镜像。等到 Rust 服务覆盖
-全部功能后，才把 Dockerfile 切到 `cargo xtask build` 并删除
-`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`。
+`data-plane/`、Go 源码和旧 `web/` 仍暂存在仓库中，但已由 `.dockerignore` 排除，
+Dockerfile 也不复制它们。阶段 8b 会在浏览器测试 harness 脱离旧 Vue 工程、schema
+不再引用旧树后删除这些目录和 Node/npm 配置。
 
 本环境无法验证容器构建：docker 守护进程不可用，podman 能启动但受
 user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
@@ -287,7 +288,7 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
-| 部署路径 | **未变**：镜像仍构建 Go 服务 + data-plane；Rust 服务并行推进、尚未接管镜像 |
+| 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像 |
 
 ### 剩余 0 条真实路由
 
@@ -299,8 +300,9 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 - **前端功能视图**：登录、会话恢复、文件浏览、网格/列表切换、回收站、文件操作、
   上传队列、任务中心、媒体查看器、目录传输选择器和 EPUB/TXT reader 视图均已落地。
-- **删除 Node/npm 与 Go 链**：`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`
-  仍在，且 Dockerfile/CI 仍以它们为准。必须等 Rust 服务覆盖全部功能后再切换。
+- **删除旧实现与构建链**：`web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、
+  `data-plane/` 仍在；生产 Docker/CI 已不依赖它们，待 test-only 浏览器 harness
+  脱离旧工程后删除。
 
 ### 一条值得记住的框架差异（已由测试发现）
 
@@ -339,19 +341,19 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 
 | 功能 | 迁移前是否存在 | 实现位置 |
 |---|---|---|
-| 文件管理（浏览/新建/重命名/移动/复制/删除/下载） | ✅ | `internal/server/server_files.go` |
-| 上传（单请求 + 分片续传 + 幂等完成） | ✅ | `server_uploads.go`、`upload_content.go` |
-| 回收站（列出/还原/清空/彻底删除/保留期） | ✅ | `server_files.go`，`TRASH_RETENTION` |
-| 任务系统（列表/取消/重试/输入 + SSE 事件） | ✅ | `tasks.go`、`task_manager.go`、`jobs.go` |
-| 分享链接（公开 `/s/{token}`） | ✅ | `server_stream_share.go` |
-| 文本编辑（≤1 MiB 白名单扩展名） | ✅ | `server_files.go` |
-| 阅读器（EPUB/TXT + reading flow） | ✅ | `internal/reader` |
-| 媒体播放（原文件 Range、字幕、进度） | ✅ | `server_stream_share.go`、`video_media.go`、`media_progress.go` |
-| 缩略图与音频封面 | ✅ | `thumb.go` |
-| 压缩包解压 | ✅ | `revaro-media` + `archive_routes.rs`；旧 data-plane 仍只供迁移期部署使用 |
+| 文件管理（浏览/新建/重命名/移动/复制/删除/下载） | ✅ | `crates/revaro-server/src/file_routes.rs` |
+| 上传（单请求 + 分片续传 + 幂等完成） | ✅ | `crates/revaro-server/src/upload_routes.rs` |
+| 回收站（列出/还原/清空/彻底删除/保留期） | ✅ | `crates/revaro-server/src/file_routes.rs`、`TRASH_RETENTION` |
+| 任务系统（列表/取消/重试/输入 + SSE 事件） | ✅ | `crates/revaro-server/src/file_routes.rs`、`archive_routes.rs`、`status_routes.rs` |
+| 分享链接（公开 `/s/{token}`） | ✅ | `crates/revaro-server/src/file_routes.rs` |
+| 文本编辑（≤1 MiB 白名单扩展名） | ✅ | `crates/revaro-server/src/file_routes.rs` |
+| 阅读器（EPUB/TXT + reading flow） | ✅ | `crates/revaro-reader`、`crates/revaro-server/src/reader_routes.rs` |
+| 媒体播放（原文件 Range、字幕、进度） | ✅ | `crates/revaro-server/src/file_routes.rs`、`media_routes.rs` |
+| 缩略图与音频封面 | ✅ | `crates/revaro-server/src/media_routes.rs`、`revaro-media` |
+| 压缩包解压 | ✅ | `revaro-media` + `archive_routes.rs`；旧 data-plane 不再参与生产部署 |
 | 批量下载（流式 ZIP） | ✅ | `batch_download.rs` |
 | 系统状态（含 SSE 流） | ✅ | `status_routes.rs` |
-| TOTP 两步验证与恢复码 | ✅ | `internal/auth/totp.go` |
+| TOTP 两步验证与恢复码 | ✅ | `crates/revaro-server/src/auth/totp.rs` |
 | **搜索** | ❌ **不存在** | 无端点、无 UI，仅在注释/定位逻辑中出现同名词 |
 
 ## 7. 前端 CSS 级联顺序（契约，勿凭猜测）
@@ -410,6 +412,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 7e Rust 任务中心与事件刷新 | ✅ | `feat(web): 接入任务中心` |
 | 7f Rust 媒体查看器与目录传输 | ✅ | `feat(web): 接入媒体查看器与目录传输` |
 | 7g Rust EPUB/TXT 阅读器视图 | ✅ | `feat(web): 接入 EPUB/TXT 阅读器视图` |
+| 8a Rust-only 生产镜像与 CI | ✅ | `build(rust): 切换生产构建与部署链` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -432,7 +435,8 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**从阶段 7g 继续的项目**：删除 Node/npm 与 Go 构建链。
+**从阶段 8a 继续的项目**：迁移 test-only 浏览器 harness，删除 Node/npm、Go
+和旧 data-plane 源码。
 详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
@@ -570,6 +574,18 @@ npx playwright test e2e/rust-reader-ui.spec.ts --config=playwright.config.ts
 该用例通过（1 passed）；`cargo xtask check` 共 **404 个测试**通过，`cargo
 xtask web-build`、`cargo xtask build`、wasm32 构建和真实 Rust 进程的 reader E2E
 均通过。
+
+阶段 8a 验收：数据库迁移 SQL 已从 `internal/database/migrations/` 移到
+`crates/revaro-server/migrations/`，Rust 二进制不再读取旧 Go 树。生产 Dockerfile
+只复制 Cargo workspace、Rust 静态资源和必要的 FFmpeg libraries，最终镜像只运行
+单一 `revaro`；Compose 设置 `/opt/revaro/web` 并保留只读根文件系统、非 root
+用户、tmpfs 工作目录和 readiness healthcheck。CI 已移除 Go/Vue 质量 job，改为
+Rust workspace 检查、cargo-audit、release 构建，并让容器 E2E 只验证 Rust 媒体和
+reader 视图。本轮实际验收为 `cargo xtask check`（404 个测试、fmt/clippy 和
+wasm32 检查）、`cargo xtask build`、Rust-only source context metadata、Compose
+配置解析，以及 release `revaro` 进程的 `/healthz`、`/readyz`、SPA 首页和两个
+Chromium 媒体/reader E2E 用例（2 passed）。当前环境没有 Docker daemon，且
+podman 受 user-namespace / subuid 限制，因此未声称完成本地镜像构建。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

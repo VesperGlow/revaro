@@ -1,6 +1,6 @@
 # Revaro
 
-轻量、自托管的本地文件管理器。Go 管理账户、文件目录和 SQLite 元数据，普通文件以 UUID blob 存储在服务器硬盘；Rust 提供媒体信息、缩略图、字幕提取和压缩包解压。
+轻量、自托管的本地文件管理器。Rust 管理账户、文件目录和 SQLite 元数据，普通文件以 UUID blob 存储在服务器硬盘；`revaro-media` 在进程内提供媒体信息、缩略图、字幕提取和压缩包解压。
 
 支持文件及文件夹上传、大文件分片续传、下载、分享、回收站、文本编辑、EPUB/TXT 阅读、原文件音视频播放、字幕和播放进度。侧边分类栏按类型聚合书架、图片、视频、音乐与文件：书架以封面展示并支持同系列折叠展开，图片与视频提供全部视图和图库分类，音乐与文件支持方块/列表切换。不提供离线下载、音频合并或音视频格式转换。
 
@@ -49,10 +49,10 @@ docker compose up -d
 
 ## 开发与检查
 
-> **迁移进行中**：本仓库正在从「Go 后端 + Vue 前端 + Rust data-plane」迁移为
-> 单一 Rust Cargo workspace（Axum 后端 + Leptos 前端 + 共享 core crate）。
-> 迁移计划、阶段划分与审计结论见 [docs/migration/README.md](docs/migration/README.md)。
-> 下面的 npm / Go 命令在迁移完成前仍然有效；新代码一律使用 Cargo。
+> **迁移收尾中**：生产镜像与运行时已经是单一 Rust Cargo workspace
+>（Axum 后端 + Leptos 前端 + 共享 core crate）。旧 Go/Vue 树在最终清理前仍保留，
+> 旧 `web/` 中的 Playwright 只用于浏览器行为测试，不进入生产镜像。迁移计划、阶段划分与审计结论见
+> [docs/migration/README.md](docs/migration/README.md)。
 
 新的 Rust 工作区：
 
@@ -65,25 +65,12 @@ cargo xtask build         # release 服务端 + 前端产物
 `wasm-bindgen` CLI 版本必须与 workspace 固定的版本一致
 （`cargo install wasm-bindgen-cli --version 0.2.128`）。
 
-迁移前的工具链（逐步下线）：
-
-```sh
-cd web
-npm ci
-npm test
-npm run build
-npm run lint
-cd ..
-go test -race ./...
-go vet ./...
-cd data-plane
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-```
+浏览器行为测试在旧树清理完成前仍使用 `web/` 中的 Playwright 依赖；它不参与
+生产构建或运行。CI 会对 Rust 镜像执行 `cargo xtask build`，并在真实容器中运行
+Rust 媒体与阅读器 E2E。
 
 Rust 本地编译需要 FFmpeg 开发库、clang、cmake 和 libarchive 相关构建依赖；Dockerfile 包含完整构建环境。生产 FFmpeg 只保留媒体读取所需库，不包含转码命令或编码器。
 
-`main` 推送会触发 GitHub Actions：前后端测试、依赖扫描、镜像构建和 Chromium E2E 通过后发布 GHCR 镜像。浏览器测试使用 `compose.e2e.yml` 启动全新本地存储服务。
+`main` 推送会触发 GitHub Actions：Rust workspace 检查、依赖扫描、镜像构建和 Chromium E2E 通过后发布 GHCR 镜像。浏览器测试使用 `compose.e2e.yml` 启动全新本地存储服务。
 
-架构细节见 [data-plane.md](docs/data-plane.md)。
+媒体与归档边界见 [data-plane.md](docs/data-plane.md)。

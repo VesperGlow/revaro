@@ -17,7 +17,7 @@
 
 | 层 | 职责 |
 |---|---|
-| **服务端（Go）** | EPUB 解包、spine/TOC 解析、XHTML 白名单清洗、图片固有尺寸/宽高比提取、资产分发、locator（readingAnchor）；把整本书拼成一条**连续、标准化、可缓存的 reading flow**，再按**自然 DOM 边界**切成适量 chunk（chunk 不是页面，不与 viewport/字号绑定） |
+| **服务端（Rust）** | EPUB 解包、spine/TOC 解析、XHTML 白名单清洗、图片固有尺寸/宽高比提取、资产分发、locator（readingAnchor）；把整本书拼成一条**连续、标准化、可缓存的 reading flow**，再按**自然 DOM 边界**切成适量 chunk（chunk 不是页面，不与 viewport/字号绑定） |
 | **客户端（浏览器）** | 只加载当前位置附近少量 chunk，在统一 DOM/样式环境下用**浏览器原生 CSS columns** 做最终分页；翻页热路径只做合成层 transform；字号/行距/旋转变化**只在客户端重新分页**，服务端零参与 |
 
 **明确不做**：服务端排版（Chromium/chromedp、layout profile、固定 Page
@@ -118,67 +118,39 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
   拖过 1/4 屏判定）；工具栏、目录抽屉、进度条（按全文 UTF-16 比例的 0–1000
   滑块）、字号 14–32 / 行距 / 明暗主题沿用旧骨架样式。
 
-## 7. 缓存架构（统一 Global CacheManager）
+## 7. 缓存架构（Rust 服务端 + 浏览器 Cache Storage）
 
-服务端（`internal/cache`）：
+服务端（`revaro-server`）：
 
-- 所有缓存的生命周期、容量、LRU、singleflight、统计与失效策略统一由
-  `cache.Manager` 管理；不同 cache class 允许不同 tier/策略。
-- managed cache 的读取路径为 **memory L1 → local-disk L2 → 回源**；flow
-  manifest/chunk 是 memory-only，miss 后直接回源 S3。所有回源仍由
-  singleflight 去重。
-- 全局容量为 byte-LRU，class 可声明 `priority`（大者晚淘汰）与
-  `soft quota`（超出者优先收缩），避免大型 video range/HLS 工作区把
-  reader 缓存全部挤掉。
-- class 一览：
-  | class | 内容 | tier | 策略 |
-  |---|---|---|---|
-  | `reader/flow-manifest` | flow manifest | memory | 高 priority，小 soft quota |
-  | `reader/flow-chunk` | flow chunks | memory | byte-LRU，受控 soft quota |
-  | `reader/source` | 书源 blob | disk | 内容寻址 immutable，无 TTL |
-  | `reader/books` | 解析后 Book | memory | 对象 LRU（external 注册） |
-  | `media/subtitle` | 字幕转换产物 | memory+disk | TTL（真正临时产物） |
-  | `media/hls` | 音视频 HLS 会话工作区 | disk | 会话自管（external 注册） |
-- **ensureFlow 幂等**：flow 产物内容随书内容与 flow 版本固定（内容寻址），
-  manifest 命中（memory 副本或对象存储 HEAD）即直接复用；只在缺失时单飞
-  构建，manifest 最后原子提交。第二次打开同一本书不重新 Build flow、不重新
-  写对象。chunk 对象被容量回收而 manifest 幸存时，chunk 请求触发一次自愈
-  重建。
-- 指标：hit/miss/load/eviction/bytes 按 class 暴露在 `/api/system/status`
-  的 `cache.classes`。
-- 缩略图与图片资产本身持久化在 S3（`thumbs/`、`blobs/`，immutable 长缓存
-  头）；音视频 Range 由 S3/数据平面直接承担，不经本地缓存层。
+- 解析后的书由 `ReaderRuntime` 的有界 LRU 保存；按对象键加锁，避免并发首次
+  打开重复解析。
+- flow manifest/chunk 以 `flows/{object_key}/f{version}/` 持久化到本地对象存储，
+  manifest 最后写入；缺失 chunk 会触发单飞重建。`FLOW_CACHE_TTL` 和
+  `FLOW_CACHE_CAPACITY` 由后台回收逻辑约束。
+- 媒体派生结果使用 `MediaRuntime` 的并发限制、按源版本的锁和有界字幕缓存；
+  原文件 Range 直接从本地对象读取，不经过远程对象服务或 HLS 工作区。
+- `LocalStore` 的临时文件、fsync、原子替换和只创建派生对象语义保证崩溃与并发
+  下不会暴露半成品。
 
-客户端（`web/src/reader/clientCache.ts`）：
+客户端（`crates/revaro-web/src/components/reader_cache.rs`）：
 
-- 内存 `PageCache` 仍是 L1；新增 **持久 `ClientCacheManager`（IndexedDB）**
-  作为 L2，缓存 reader manifest 与 chunks。
-- 键空间与统一缓存对齐：manifest `m:<fileId>`，chunk
-  `c:<bookKey>:v<version>:<index>`（`book_key` 为服务端注入的书内容指纹，
-  同 id 重传后旧缓存按前缀清除）。
-- 打开书籍：L2 manifest 命中 → 本地立即排版显示；网络 manifest（no-cache）
-  随后台校验，排版语义一致则零 chunk 重取，不一致（flow 版本升级/换书）才
-  丢弃本地重建。
-- 全局字节预算内 LRU 淘汰，暴露 hits/misses/puts/evictions/bytes 指标。
-  图片/缩略图/媒体 range 依赖 HTTP immutable 缓存与 S3 直链。
+- 内存 `ChunkCache` 是 L1；manifest 用 `localStorage` 快速恢复，HTML chunk
+  用 Cache Storage 作为 L2，避免把大段 HTML 放进同步存储。
+- chunk 键同时包含文件对象键、flow 版本、源指纹和布局/目录指纹；同一文件 ID
+  被替换或目录元数据改变时不会误读旧内容。
+- 浏览器端在把 manifest 或 chunk 放进 DOM 前验证版本、范围、总量、连续性和
+  TOC 目标；旧 generation 的异步请求不会写入当前窗口。
 
 ## 8. 实施状态
 
-- Go：`internal/reader/flow`（Anchor/Manifest/构建+chunk 纯函数、文本
-  locator、spine 起始边界注入、对象键）、`internal/cache`（统一缓存管理
-  器）；`internal/server/reader_flow.go`（manifest/chunk 端点、幂等构建、
-  缓存读取、GC）、`internal/server/cache.go`（class 装配）；config 保留
-  `FLOW_CACHE_TTL`/`FLOW_CACHE_CAPACITY`（flow 对象 GC）与
-  `MEDIA_CACHE_CAPACITY`（全局磁盘上限）。
-- Web：`web/src/reader/{types,api,flow,cache,clientCache,prefs}`；
-  `Reader.vue` 保留页面模板与 UI 编排，`useReaderFlow` 编排分页、导航、
-  L2 manifest 快开与生命周期，`useReaderWindow` 管理 chunk 的 L1/L2 读取与
-  稳定 spine DOM 窗口，`useReaderPositioning` 管理 DOM locator/readingAnchor 和
-  CSS columns 位置换算。
-- 测试：Go（flow 构建不变量、locator 往返、spine 边界注入、TXT 连续性、
-  服务端端点契约、幂等构建/自愈、缓存管理器单测）；Web vitest（纯 helper、
-  ClientCacheManager）；Playwright route-mock e2e（窗口预取、热路径零网络、
-  目录 locator、相位稳定、横竖屏/字号、L2 重开零请求）。
+- Rust：`crates/revaro-reader` 负责 EPUB/TXT 解析和 flow；
+  `crates/revaro-server/src/reader_routes.rs` 负责 manifest/chunk 端点、幂等
+  构建、自愈和进度；`crates/revaro-web/src/components/reader.rs` 负责 CSS
+  columns、窗口、导航、偏好和生命周期；`reader_cache.rs` 负责浏览器缓存。
+- 测试：`revaro-reader` 与 `revaro-server` 覆盖 flow 不变量、locator 往返、
+  spine 边界、TXT 连续性、端点契约、并发幂等和 chunk 自愈；`revaro-web` 覆盖
+  纯逻辑与 manifest 校验；`web/e2e/rust-reader-ui.spec.ts` 覆盖真实上传、
+  首屏、翻页、目录、重排、进度重开、缓存和深链。
 
 已知取舍：
 
@@ -187,11 +159,8 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
 - 恢复/重排定位以“anchor 所在栏”为粒度（栏界随布局变化，重排后可见栏顶
   内容块可前后移动数块，anchor 内容本身仍在当前栏内）；
 - 长 spine（单文件巨著）的排版前缀会随阅读位置线性增长，这是第一阶段的
-  明确取舍（见第 5 节）。可用 `cd web && npm run benchmark:reader`
-  重现深度 TOC 跳转基准；2026-09-05 在当前开发容器首轮串行路径观测
-  240/480/960 块分别为 651/1105/1676 ms，证实了实际延迟；限制并发
-  读取与批量 DOM 插入后，三次冷启动中位数为 627/774/852 ms。基准同时
-  断言完整 spine 前缀、TOC 目标可见性和延迟 window sync 后的位置稳定；
+  明确取舍（见第 5 节）；后续性能基准应迁到 Rust/独立浏览器测试 harness，
+  不得把旧 Vue 开发服务器作为生产依赖；
 - 旧格式进度只对 spine 0 精确迁移（spine > 0 时块号换算会偏到全书起点附近），
   由于旧格式仅存在于开发期，未做进一步兼容。
 
@@ -204,10 +173,7 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
   只 append 新 chunk、remove 已出窗口的最旧 chunk，保留 chunk 的子树不动
   （避免大规模 CSS columns reflow）。窗口常驻约 6 个 chunk
   （身后 2 + 前方 3），PageCache 容量 24 保持不变——翻页热路径仍零网络。
-- **精简镜像**：发布镜像不再安装 Debian 完整 ffmpeg（其依赖树含 Mesa/libLLVM/
-  libmfx/flite/codec2 等数百 MB）。Dockerfile 新增 multi-stage `ffmpeg`：自编译
-  FFmpeg 5.1.10（libavcodec.so.59 等，与 Rust 数据平面的 soname/ABI 一致），
-  唯一外部编码器 x264/x265 静态内链，其余 codec/format/filter/protocol 全用
-  FFmpeg 内建实现；运行层只 COPY `ffmpeg`/`ffprobe` 与少量 `.so`。
-  Rust 数据平面（`dataplane-base` 阶段）直接对这套前缀 libav 编译与跑媒体测试，
-  保证“测试即运行层”。
+- **精简镜像**：发布镜像不安装 Debian 完整 ffmpeg，而由 Dockerfile 的 multi-stage
+  `ffmpeg` 生成与 Rust `revaro-media` ABI 匹配的 shared libraries；运行层只
+  COPY `revaro`、Leptos bundle 和少量 `.so`，没有 `ffmpeg`/`ffprobe` 命令、
+  独立 data-plane 或 Go/Node 构建产物。
