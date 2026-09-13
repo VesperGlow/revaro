@@ -25,14 +25,14 @@
 ### 1.2 隔离运行实例
 
 - `[P]` old worktree：`/tmp/revaro-old`，detached `3a18bde`，服务 `http://127.0.0.1:18080`。
-- `[P]` new worktree：`/tmp/revaro-new`，detached `e9b6202`，服务 `http://127.0.0.1:18081`。
+- `[P]` new 基线 worktree：`/tmp/revaro-new`，detached `e9b6202`；当前恢复中的 new 实际运行实例从 `/config/revaro` 当前工作树构建，服务 `http://127.0.0.1:18082`。
 - `[P]` old/new 使用不同的 `APP_DATA_DIR`、`APP_WORK_DIR`、端口和管理员 cookie；不得交叉使用数据库、上传临时文件或任务队列。
 - `[P]` 两个实例均 `GET /healthz` 返回 200；old 使用迁移前 Go server + data-plane，new 使用 Rust server + Rust wasm bundle。
 - `[B]` Docker/Compose 由于环境没有 `/var/run/docker.sock` 无法启动；已切换为本机构建、独立进程和 Chromium 实测，不因此跳过浏览器验证。
 - `[P]` old 前端 `npm ci && npm run build`、data-plane release build、Go server build 均通过。
 - `[P]` new `cargo build --locked --release -p revaro-server`、`cargo xtask web-build` 均通过。
-- `[P]` new 当前已有 smoke E2E：`tests/e2e` 3/3 通过（Rust media、TXT/EPUB reader）。
-- `[B]` old 原有 E2E：36/38 通过；`web/e2e/files.spec.ts` 的两个用例在等待 `.file-card` 的“选择项目”按钮时超时，虽然上传本身完成，故标为旧测试选择器/运行时异常，不把它当作 Rust parity 结论。必须在清单对应的手工选择、多选、ZIP 条目中继续验证。
+- `[P]` new 当前已有 smoke E2E：基础 `tests/e2e` 3/3 通过（Rust media、TXT/EPUB reader）；迁移恢复期间的对照 suite 另见 1.4。
+- `[B]` old 原有 E2E：18/20 通过；`web/e2e/files.spec.ts` 的两个用例在等待 `.file-card` 的“选择项目”按钮时超时，虽然上传本身完成，故标为旧测试选择器/运行时异常，不把它当作 Rust parity 结论。旧版生产网格确实没有该控件；列表选择和多选/ZIP 已由独立 old/new 操作覆盖。
 - `[P]` 已保存初始浏览器截图：`/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png`；后续每个模块保存同一 viewport、同一数据状态的 old/new 截图或 trace。
 
 ### 1.3 每个条目的固定验收顺序
@@ -44,17 +44,29 @@
 5. 对逻辑模块补充 Rust 单元/集成测试、浏览器 E2E 或回归用例，并运行 `cargo xtask check`、clippy、test、wasm build。
 6. 再次逐操作对照 old/new，只有完整链路通过才标 `[P]`，并为该模块单独提交。
 
+### 1.4 已完成的双版本探针记录
+
+以下记录只覆盖已经实际执行过的窄行为，不替代后续各模块的完整验收：
+
+- `2026-09-13`，old `18080` / new `18082`，Chromium 1440×900：任务中心、系统状态、账户设置、回收站入口、侧栏五类入口、侧栏折叠/展开逐项点击；两版均得到同一入口顺序和可见状态。系统状态均显示数据库、网盘存储使用量、服务端缓存三张卡片。
+- `2026-09-13`，old `18080` / new `18082`，Chromium 390×844：移动分类抽屉均为六个一级入口且无目录树；打开后 backdrop 存在，点击右侧空白关闭；账户工具菜单、任务中心/回收站/账户设置三项、新建菜单、上传菜单的文案和 Escape 关闭行为一致。
+- `2026-09-13`，old/new 均切换列表视图并通过真实 `input[type=file]` 上传两个 TXT：两版均显示行选择控件，单选显示“全选/阅读/下载/分享/重命名/移动/删除”，双选显示“下载 (2)/移动/删除”。旧版默认方块视图没有 `card-select`，对应原有 E2E selector 失败已保留为 `[B]`，不能据此虚构网格选择功能。
+- 上述探针使用 `chromium.launch({ args: ["--disable-http-cache"] })`、`serviceWorkers: "block"` 和带随机查询参数的页面，避免 WASM/静态资源缓存掩盖差异；当前证据截图保存在 `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、`/tmp/revaro-old-mobile-parity.png`、`/tmp/revaro-new-mobile-parity.png`。
+- `2026-09-14`，old `18080` / new `18082` 串行运行 parity E2E：最新共享集合 new 46/46、old 43/43（old 排除 3 个仅验证 Rust bundle 的标题）；覆盖账户、认证/TOTP 分支、文件操作/分享/归档/回收站键盘路径、空状态/error toast、视图偏好、分类/书架/图库/移动抽屉、媒体、面包屑/历史、任务中心、上传和 download/preview/Range。old/new 不共用 Playwright 输出目录。
+- `2026-09-14`，old `18080` / new `18082`：旧版 `reader-flow.spec.ts` 的 17 个窗口预取、目录锚点、分页、旋转、缓存和视觉场景，以及真实 EPUB 场景，均在两版通过；认证/状态/移动端基础场景两版也通过。
+- `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
+
 ## 2. 启动、认证和全局壳层
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | 启动画面 | 首屏 splash、logo、spinner、加载到登录/主界面的时序、网络慢和失败状态一致；启动过程不闪出错误主界面。 | 待双版本逐帧/逐状态确认 |
-| `[ ]` | 登录 | 用户名/密码输入、回车提交、按钮 loading/disabled、错误文案、焦点、密码可见性（如有）、重复提交和网络错误一致。 | `LoginView` 已存在，完整行为待验证 |
-| `[ ]` | TOTP 登录 | 需要二次验证时的输入、回退、错误、重试、恢复码路径和 session 建立一致。 | API/页面 caller 待补齐 |
+| `[P]` | 登录 | 用户名/密码输入、回车提交、按钮 loading/disabled、错误文案、焦点、密码可见性（如有）、重复提交和网络错误一致。 | old/new `rust-auth-parity.spec.ts` 的慢响应、Enter 提交和失败状态均通过 |
+| `[P]` | TOTP 登录 | 需要二次验证时的输入、回退、错误、重试、恢复码路径和 session 建立一致。 | old/new `rust-auth-parity.spec.ts` 的二次输入、错误保留和重试分支均通过 |
 | `[ ]` | 会话检查 | `/api/auth/me`、刷新页面、已过期 cookie、401 后回登录页且不遗留旧数据。 | 初检仅有 session fetch |
-| `[R]` | 账户入口 | 顶栏账户按钮应打开“账户设置”而不是直接退出登录；用户名、头像、菜单文案和层级一致。 | 当前按钮 title/文案为“退出登录”，点击触发 logout |
-| `[ ]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | 页面模块缺失，API caller 不完整 |
-| `[ ]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | 当前误绑到账户入口，待拆分 |
+| `[P]` | 账户入口 | 顶栏账户按钮应打开“账户设置”而不是直接退出登录；用户名、头像、菜单文案和层级一致。 | old/new 桌面实际点击均打开账户设置；移动端工具菜单入口已对照，退出动作仍在独立条目验证 |
+| `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭 |
+| `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
 | `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 待验证 |
 | `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 待验证 |
 
@@ -63,40 +75,40 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | Logo/回到根目录 | 桌面和移动端 logo 图标、`回到我的文件` aria/title、点击后路径、active 状态一致。 | 初检有简化 logo，待对照 |
-| `[R]` | 任务中心入口 | 顶栏独立任务中心图标/summary，入口位置、图标、数量/状态提示、点击展开和再次点击关闭一致；不能被上传入口替换。 | 当前任务中心入口缺失/被上传摘要占用 |
-| `[ ]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | Rust `TaskController` 有基础 API，面板 parity 待恢复 |
-| `[ ]` | 任务操作 | 取消、重试、清除已完成、归档密码输入、任务详情、失败错误、超过四项时“显示更多”、任务流实时更新一致。 | caller/面板待恢复 |
-| `[ ]` | 任务面板交互 | 面板不被背景遮挡、点击面板不关闭、点空白关闭、Esc 关闭、点击入口切换、loading/error/empty 一致。 | 待验证 |
-| `[R]` | 系统状态入口 | 在线/状态球可点击；`aria-label=打开系统状态`、title=`系统状态`、颜色/ok 状态和位置一致。 | 已确认当前入口不可点击/无旧版面板 |
-| `[ ]` | 系统状态面板 | EventSource `/api/system/status/stream` 更新状态；DB、存储、缓存三张纵向卡片，状态 badge、详情/错误/加载一致；旧版没有“任务/清理队列/备份”伪卡片和刷新按钮。 | server API 存在，Rust UI/caller 缺失 |
+| `[P]` | 任务中心入口 | 顶栏独立任务中心图标/summary，入口位置、图标、数量/状态提示、点击展开和再次点击关闭一致；不能被上传入口替换。 | old/new 实际点击 summary 均展开任务面板；空状态、点击空白和 Escape 已对照 |
+| `[ ]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | mock waiting/active/completed/failed 分组和上传完成显示已对照；字幕、更多项和全部状态组合仍待验 |
+| `[ ]` | 任务操作 | 取消、重试、清除已完成、归档密码输入、任务详情、失败错误、超过四项时“显示更多”、任务流实时更新一致。 | 清除完成、归档输入、重试/取消 caller 已存在；完整真实任务状态和“显示更多”仍待验 |
+| `[P]` | 任务面板交互 | 面板不被背景遮挡、点击面板不关闭、点空白关闭、Esc 关闭、点击入口切换、loading/error/empty 一致。 | old/new mock 与空状态均验证；桌面/移动端切换不会重复拉取或断开共享 SSE，`rust-task-center-parity.spec.ts` 2/2 |
+| `[P]` | 系统状态入口 | 在线/状态球可点击；`aria-label=打开系统状态`、title=`系统状态`、颜色/ok 状态和位置一致。 | old/new 实际点击均展开状态面板；aria/title、ok 状态和三卡布局已对照 |
+| `[ ]` | 系统状态面板 | EventSource `/api/system/status/stream` 更新状态；DB、存储、缓存三张纵向卡片，状态 badge、详情/错误/加载一致；旧版没有“任务/清理队列/备份”伪卡片和刷新按钮。 | old/new 三卡文案、布局、SSE入口和 Escape 已做局部对照；断线/重连/错误/清理仍待验 |
 | `[ ]` | 系统状态关闭 | 点空白、Esc、重复点击、401/断线/重连/服务异常状态一致，关闭后 SSE 清理。 | 待恢复 |
 | `[ ]` | 回收站入口 | 顶栏回收站图标、title=`回收站`、aria、点击进入 trash 路由、数量/空状态和返回根目录一致。 | 基础入口存在，视觉和全局位置待对照 |
-| `[ ]` | 移动端顶栏 | 状态球仍可用；头像/工具菜单包含任务中心、回收站、账户设置、退出登录等旧版项目；不出现旧版明确禁止的 `打开任务与工具菜单` 旧入口；遮罩/外部点击/Esc 一致。 | 当前移动端完整行为待验证 |
+| `[P]` | 移动端顶栏 | 状态球仍可用；头像/工具菜单包含旧版实际项目：任务中心、回收站、账户设置；不出现旧版明确禁止的 `打开任务与工具菜单` 旧入口；遮罩/外部点击/Esc 一致，退出登录仍从账户设置进入。 | old/new 390×844 实测状态球、工具菜单三项、任务中心跳转、外部点击和 Escape 均通过；旧版工具菜单本身没有独立退出项 |
 
 ## 4. 侧栏、分类入口和路径树
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[R]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | 当前只显示“我的文件” |
-| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | library caller/UI 缺失 |
-| `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | Sidebar path/tree 模块缺失 |
+| `[ ]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new 已确认顺序和文案；五条分类路由及返回仍需逐条验证 |
+| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all` 和五类空/有数据视图已在 old/new 对照；数量、刷新和错误全矩阵仍待验 |
+| `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 分类一级展开和移动端隐藏树已恢复；桌面路径树递归、当前高亮和错误状态仍待验 |
 | `[ ]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | 待验证 |
 | `[ ]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | 当前简化 |
-| `[ ]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | 旧版 commit `3a18bde` 明确记录；Rust 待逐项恢复 |
-| `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | 已知部分图标不一致 |
+| `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |
+| `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | 任务/状态/账户/回收站/分类/面包屑的关键 geometry 已逐项修复并局部对照；全部文件类型及 hover/disabled 仍待验 |
 | `[ ]` | 回收站 footer | 桌面/移动端位置、图标、active、点击和 trash empty 状态一致。 | 基础入口存在，需完整验证 |
 
 ## 5. 文件浏览、路由和全局内容区
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[R]` | 根目录内容头 | `我的文件` 标题、当前路径 nav、项目数/文件数/大小三项 metadata 的文案、间距和层级一致。 | 基本内容存在但头部简化 |
-| `[R]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | 当前使用退化的 literal `/` 分隔 |
+| `[ ]` | 根目录内容头 | `我的文件` 标题、当前路径 nav、项目数/文件数/大小三项 metadata 的文案、间距和层级一致。 | old/new 首屏层级已恢复；同一 fixture 下统计、空态和刷新仍需验证 |
+| `[ ]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根和 smooth-scroll 收敛已通过；中间级、键盘/触摸全矩阵仍待验 |
 | `[ ]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | 当前有部分 folder/trash 状态，分类路由缺失 |
 | `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | reader 基本存在，完整路由待验 |
 | `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | 待对照 |
 | `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | 基础切换存在 |
-| `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | 待验证 |
+| `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | 空根/空回收站文案和模拟读取失败 toast 已 old/new 对照；首次 loading、重试和旧内容保留仍待验 |
 | `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | 上传控制器有基础实现，UI 状态待验证 |
 | `[ ]` | 响应式布局 | 桌面、平板、390px 手机宽度下内容区、侧栏、顶栏、工具栏、对话框和滚动容器的宽高/层级一致。 | 待对照截图 |
 
@@ -105,7 +117,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。 | Rust 有 FileTile/rows 基础，视觉待对照 |
-| `[R]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 已确认部分图标与旧版不同 |
+| `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已逐项修复；文件项各类型和 fallback 仍待同一 fixture 截图对照 |
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 待验证 |
 | `[ ]` | 选择入口 | 每个可选 item 始终有旧版语义的 `选择项目` 控件；点击不打开项目，选中后工具栏更新；取消选择/全选/跨页状态一致。 | 初检有空 selection buttons，但语义/行为待对照 |
 | `[ ]` | 触摸选择 | 480ms 长按选中；选择模式下轻触切换；普通轻触仍打开项目；滚动不误选；触摸反馈一致。 | 当前 FileTile 未完整保留旧版 long-press 语义 |
@@ -117,7 +129,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[R]` | 上传入口 | 文件浏览头部独立上传菜单，含“上传文件”“上传文件夹”；桌面按钮、移动端下拉、图标、点击外部/Esc 关闭一致。 | 当前头部缺少旧版上传菜单，顶栏简化为“上传”摘要 |
+| `[P]` | 上传入口 | 文件浏览头部独立上传菜单，含“上传文件”“上传文件夹”；桌面按钮、移动端下拉、图标、点击外部/Esc 关闭一致。 | old/new 桌面与移动端均实际展开同一菜单；“上传文件/上传文件夹”及说明文案、Escape 关闭已对照 |
 | `[ ]` | 文件选择 | 单/多文件选择、文件夹选择、取消、空选择、同名文件、路径/相对目录保留、浏览器能力差异一致。 | 待验证 |
 | `[ ]` | 拖放上传 | 文件/目录拖放、目标目录、overlay、非法文件、重复上传和完成后列表刷新一致。 | 基础 controller 存在 |
 | `[ ]` | 创建 upload | `POST /api/uploads` 的 chunk/single 模式、大小、类型、目标目录、断点信息和错误处理一致。 | API caller 部分存在 |
@@ -131,25 +143,25 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | 基础入口存在 |
-| `[R]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | 当前只有“新建文件夹” |
+| `[ ]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | old/new 已验证创建菜单、默认名、进入 editor、立即关闭和保存重开；取消、失败仍待收口 |
 | `[ ]` | 重命名 | 单选条件、输入初值/扩展名规则、冲突、空白、Enter/Esc、PATCH 结果和列表更新一致。 | 基础 API/UI 部分存在 |
-| `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | 简化 dialog，需对照 |
-| `[ ]` | 复制 | 目标选择、目录/文件、同名处理、任务或立即结果、完成刷新和错误一致。 | API 存在，UI 行为待验 |
-| `[ ]` | 删除 | 确认文案、单项/多项、目录、取消、loading、移入回收站、selection 清理和列表刷新一致。 | 基础实现待验 |
-| `[ ]` | 回收站查看 | 列表/网格、原路径/删除时间/大小、空状态、打开限制、恢复/永久删除入口一致。 | 基础 trash fetch 存在 |
-| `[ ]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | 基础 API/UI 待验 |
-| `[ ]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | 基础 API/UI 待验 |
+| `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | old/new 触发器、面板定位/DOM、实际移动和清理已对照；排除子目录/冲突/错误仍待验 |
+| `[ ]` | 复制 | 目标选择、目录/文件、同名处理、任务或立即结果、完成刷新和错误一致。 | old/new 媒体更多菜单实际复制并验证原文件保留；普通文件、同名和失败仍待验 |
+| `[ ]` | 删除 | 确认文案、单项/多项、目录、取消、loading、移入回收站、selection 清理和列表刷新一致。 | old/new 多选删除确认文案、单文件清理链路已对照；目录、取消/loading/失败仍待验 |
+| `[ ]` | 回收站查看 | 列表/网格、原路径/删除时间/大小、空状态、打开限制、恢复/永久删除入口一致。 | old/new 空回收站、列表行元信息、TXT 键盘打开分流已对照；完整 grid/只读矩阵仍待验 |
+| `[ ]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | old/new 直接恢复和清理已实际验证；冲突、失败、多选仍待验 |
+| `[ ]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | old/new 永久删除确认、清理链路已对照；清空回收站、失败/loading仍待验 |
 | `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | `AppDialog` parity 待恢复 |
 
 ## 9. 文本文档查看与编辑器
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[R]` | 编辑器入口 | md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv 等旧版可编辑扩展名，点击文件打开 editor；回收站内容只读。 | 当前文本编辑器消失 |
+| `[ ]` | 编辑器入口 | md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv 等旧版可编辑扩展名，点击文件打开 editor；回收站内容只读。 | old/new 已验证 Markdown 新文档、保存及再次打开、trash TXT 键盘分流；完整扩展名矩阵和回收站只读仍待验证 |
 | `[ ]` | 新文档编辑 | 默认文件名、初始内容、editor modal/页面尺寸、关闭、保存、创建失败和成功返回一致。 | `/api/documents` caller 缺失 |
 | `[ ]` | 读取 | `/content`、编码/大文件错误、loading/error、只读提示、滚动和文本保持一致。 | API caller 缺失 |
-| `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown `marked` + DOMPurify 结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。 | 模块缺失 |
-| `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | server route 有，UI 缺失 |
+| `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown 的 GFM 元素与主动 HTML 清理结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。reference 使用 `marked` + DOMPurify；Rust 使用 `pulldown-cmark` + `ammonia` 对齐可见结果。 | old/new 已验证编辑/分栏/预览、GFM 标题/列表/任务项/表格/删除线/安全 HTML、主动 HTML 清理和保存；光标/滚动、非 Markdown tabs 和错误仍待验 |
+| `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | old/new 已验证保存按钮、成功 toast、持久化重开；etag冲突、busy/失败重试仍待验 |
 | `[ ]` | 未保存关闭 | dirty 检测、关闭/浏览器后退确认、取消返回编辑、确认丢弃、Esc/backdrop 行为一致。 | 模块缺失 |
 | `[ ]` | 编辑器视觉 | 标题、文件名、工具栏、图标、按钮文案、编辑区字体/行高、readonly 和错误层级与旧版一致。 | 待恢复 |
 
@@ -157,8 +169,8 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | Rust smoke 有 TXT，需逐项 old/new |
-| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | Rust smoke 有 EPUB，需逐项 old/new |
+| `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | old/new 17项 reader-flow 与真实 TXT 链路已通过；仍需把条目证据拆到各子场景 |
+| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 真实 EPUB 1/1、reader-flow 17/17 已通过；损坏/错误回退和逐项截图仍待验 |
 | `[ ]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | 基础 reader 存在 |
 | `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | 待完整回归 |
 | `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | 待完整回归 |
@@ -172,12 +184,12 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 图片查看 | `/preview`、loading/error、画廊上一张/下一张、缩略图、计数、实际大小/适应窗口、放大缩小、双击、滚轮、拖动边界、stage 点击显隐 chrome、键盘 `←/→/+/-/0/1` 一致。 | Rust media 基础存在 |
+| `[ ]` | 图片查看 | `/preview`、loading/error、画廊上一张/下一张、缩略图、计数、实际大小/适应窗口、放大缩小、双击、滚轮、拖动边界、stage 点击显隐 chrome、键盘 `←/→/+/-/0/1` 一致。 | old/new media parity 已覆盖 controls、thumb/menu、退出、桌面/390/320 宽度；完整键盘/滚轮/边界矩阵仍待验 |
 | `[ ]` | 图片触摸 | 双指缩放、拖动、手势取消不误翻页、边界限制、旋转/重排状态保持一致。 | 待验证 |
 | `[ ]` | 图片更多菜单 | 下载、移动、复制、信息等 menu 的位置、点击外部/Esc、loading/error 和返回行为一致。 | 待验证 |
-| `[ ]` | 音频播放器 | `/audio` 元数据、封面 fallback、章节、上一/下一章、时间跳转、进度、播放/暂停、loading/error/retry、一首/多首行为一致。 | Rust audio 基础存在 |
+| `[ ]` | 音频播放器 | `/audio` 元数据、封面 fallback、章节、上一/下一章、时间跳转、进度、播放/暂停、loading/error/retry、一首/多首行为一致。 | old/new media parity 已覆盖章节标识、controls、桌面/移动宽度；播放状态、错误重试和持久化仍待验 |
 | `[ ]` | 音频持久化 | `revaro-audio-volume`、`revaro-audio-muted`、`revaro-audio-position:{id}`，音量滑块、静音、键盘操作和刷新恢复一致。 | 待验证 |
-| `[ ]` | 视频播放器 | Range/直接 preview、poster thumbnail、播放/暂停、进度拖动与 seek preview/commit、时间显示、音量/静音、速度、全屏、控制条显隐和自动隐藏一致。 | Rust video 基础存在 |
+| `[ ]` | 视频播放器 | Range/直接 preview、poster thumbnail、播放/暂停、进度拖动与 seek preview/commit、时间显示、音量/静音、速度、全屏、控制条显隐和自动隐藏一致。 | old/new media parity 已覆盖 poster、controls、速度 Escape、桌面/390/320、touch；Range/全屏/seek commit 仍待验 |
 | `[ ]` | 视频字幕 | `/video` metadata、VTT subtitle、选择/关闭字幕、字幕不抖动、加载/解析错误和移动端布局一致。 | 待验证 |
 | `[ ]` | 视频持久化 | `revaro-video-volume`、`revaro-video-rate`、`revaro-video-position:{id}`，刷新/重开恢复准确且无错误跳 seek。 | 待验证 |
 | `[ ]` | 媒体操作 | 播放器设置/更多中的下载、移动、复制、信息、reanalyze（旧版入口若出现）、关闭/返回和任务刷新一致。 | 待验证 |
@@ -187,14 +199,14 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 单文件下载 | `/api/files/{id}/download`、文件名、Content-Disposition、下载菜单/按钮、loading/error 和回收站策略一致。 | 当前 UI 只有部分 direct link |
-| `[ ]` | Range 下载/播放 | bytes range、206/416、Content-Range、HEAD/缓存/大文件、音视频 seek 及断点行为与旧版一致。 | server tests 有，浏览器需验证 |
+| `[P]` | 单文件下载 | `/api/files/{id}/download`、文件名、Content-Disposition、下载菜单/按钮、loading/error 和回收站策略一致。 | old/new 真实 UI 上传后触发下载并核对文件名、Content-Disposition、ETag；`rust-download-parity.spec.ts` 通过 |
+| `[P]` | Range 下载/播放 | bytes range、206/416、Content-Range、HEAD/缓存/大文件、音视频 seek 及断点行为与旧版一致。 | old/new 实际请求并核对 open-ended/suffix 206、invalid 416、Content-Range、Content-Length、Go 版 416 正文；HEAD/大文件/媒体 seek 仍是子项待补 |
 | `[ ]` | 预览 | `/preview` content type、图片/音频/视频/文本行为、鉴权、缓存、错误、thumbnail fallback 一致。 | caller 分散，待矩阵验证 |
 | `[ ]` | 多选 ZIP | 选择多个文件后一次 prepare、进度/任务、一次性 token 下载、CSP `frame` 约束和失败处理一致。 | 当前 selection 缺少动作 |
 | `[ ]` | 归档解压 | 支持格式、密码输入任务、冲突/错误、取消、任务中心、完成刷新和安全路径行为一致。 | Rust UI/API caller 缺失或不完整 |
 | `[ ]` | 分享读取 | 分享状态读取、已存在/不存在、过期/权限、链接显示、复制失败和关闭一致。 | server route 有，UI 缺失 |
-| `[ ]` | 分享创建 | 单文件创建链接、复制 URL、成功/失败、按钮 loading/disabled、公开页面行为和文案一致。 | UI 缺失 |
-| `[ ]` | 分享撤销 | 二次确认（如旧版有）、DELETE、成功/失败、状态刷新、旧链接失效一致。 | UI 缺失 |
+| `[ ]` | 分享创建 | 单文件创建链接、复制 URL、成功/失败、按钮 loading/disabled、公开页面行为和文案一致。 | old/new action parity 已覆盖读取/创建/复制/重新生成/停止及公开 fetch；剪贴板失败/loading仍待验 |
+| `[ ]` | 分享撤销 | 二次确认（如旧版有）、DELETE、成功/失败、状态刷新、旧链接失效一致。 | old/new action parity 已覆盖停止分享和旧公开链接失效；失败/确认细节仍待验 |
 | `[ ]` | 公开分享页 | `GET /s/{token}` 的文件信息、下载/预览、过期/无效 token、响应头和移动端布局一致。 | 待 old/new 实测 |
 
 ## 13. 全部旧版 API、调用方和 Rust 版调用覆盖
@@ -207,62 +219,62 @@
 | `[ ]` | `GET /readyz` | 就绪检查 | handler/响应和未就绪语义待验证 |
 | `[ ]` | `GET /s/{token}` | 公开分享页 | handler 存在；Rust/浏览器全链路待验 |
 | `[ ]` | `POST /api/auth/login` | LoginPage | Rust `login()` 存在；表单/TOTP/错误待验 |
-| `[ ]` | `POST /api/auth/logout` | 顶栏账户菜单明确退出 | Rust `logout()` 存在；当前被错误绑定到账户入口 |
+| `[P]` | `POST /api/auth/logout` | 顶栏账户菜单明确退出 | Rust `logout()` 由账户设置的明确退出按钮调用；old/new 登录回跳已验证 |
 | `[ ]` | `GET /api/auth/me` | App 启动/刷新 session | Rust `fetch_session()` 存在；401/回跳待验 |
-| `[ ]` | `PATCH /api/auth/credentials` | 账户设置凭据 | Rust UI/API caller 缺失 |
-| `[ ]` | `PATCH /api/auth/password` | 账户设置改密码 | Rust UI/API caller 缺失 |
-| `[ ]` | `GET /api/auth/totp` | 账户设置 TOTP 状态 | Rust UI/API caller 缺失 |
-| `[ ]` | `POST /api/auth/totp/setup` | 账户设置 setup | Rust UI/API caller 缺失 |
-| `[ ]` | `POST /api/auth/totp/enable` | 账户设置启用 | Rust UI/API caller 缺失 |
-| `[ ]` | `POST /api/auth/totp/recovery-codes` | 账户设置恢复码 | Rust UI/API caller 缺失 |
-| `[ ]` | `DELETE /api/auth/totp` | 账户设置关闭 TOTP | Rust UI/API caller 缺失 |
-| `[ ]` | `GET /api/profile/avatar` | 顶栏/账户设置头像 | Rust UI/API caller 缺失 |
-| `[ ]` | `PUT /api/profile/avatar` | 账户设置上传头像 | Rust UI/API caller 缺失 |
-| `[ ]` | `DELETE /api/profile/avatar` | 账户设置删除头像 | Rust UI/API caller 缺失 |
-| `[ ]` | `PATCH /api/profile/username` | 账户设置改用户名 | Rust UI/API caller 缺失 |
-| `[ ]` | `GET /api/storage/stats` | 全局/账户/存储信息 | Rust UI/API caller 缺失 |
-| `[ ]` | `GET /api/library` | 书架/图片/视频/音乐/文件分类 | Rust server route/type 有；Rust UI caller 缺失 |
-| `[ ]` | `GET /api/library/all` | 分类全量/系列/相册等 | Rust server route/type 有；Rust UI caller 缺失 |
-| `[ ]` | `GET /api/library/counts` | 侧栏分类数量 | Rust server route/type 有；Rust UI caller 缺失 |
-| `[ ]` | `GET /api/system/status` | 系统状态初次读取 | Rust type/handler 有；UI caller 缺失 |
-| `[ ]` | `GET /api/system/status/stream` | 系统状态 SSE | Rust handler 有；UI/EventSource caller 缺失 |
-| `[ ]` | `GET /api/events` | 任务实时 SSE | Rust `TaskController` 有基础连接；面板联动待验 |
-| `[ ]` | `GET /api/tasks` | 任务中心初始/刷新 | Rust `fetch_tasks()` 有；完整 UI/详情待验 |
-| `[ ]` | `GET /api/tasks/{id}` | 任务详情/归档等待 | Rust UI caller 缺失或待确认 |
-| `[ ]` | `POST /api/tasks/{id}/cancel` | 任务中心取消 | Rust `cancel_task()` 有；按钮/状态待验 |
-| `[ ]` | `POST /api/tasks/{id}/retry` | 任务中心重试 | Rust `retry_task()` 有；按钮/状态待验 |
-| `[ ]` | `POST /api/tasks/{id}/input` | 密码/用户输入 | Rust `input_task()` 有；归档交互待验 |
-| `[ ]` | `DELETE /api/tasks/{id}` | 清除完成任务 | Rust `delete_task()` 有；分组/确认待验 |
-| `[ ]` | `GET /api/files/{id}` | 文件详情/进入目录 | Rust `fetch_file()` 有 |
-| `[ ]` | `GET /api/files/{id}/children` | 文件夹内容/目录选择器 | Rust `fetch_children()` 有；DirectoryPicker caller 待恢复 |
-| `[ ]` | `GET /api/files/{id}/download` | 单文件/媒体下载 | server route 有；UI 调用不完整 |
-| `[ ]` | `POST /api/files/batch-download/prepare` | 多选 ZIP | server route 有；Rust UI/API caller 缺失 |
-| `[ ]` | `GET /api/files/batch-download/{token}` | ZIP token 下载 | server route 有；Rust UI caller 缺失 |
-| `[ ]` | `GET /api/files/{id}/preview` | 图片/音频/视频/文件预览 | media 组件部分使用；完整入口/Range 待验 |
+| `[P]` | `PATCH /api/auth/credentials` | 账户设置凭据 | old UI 没有直接 caller（用户名/密码分拆为下列两个接口）；Rust handler 保留旧 API 兼容 |
+| `[P]` | `PATCH /api/auth/password` | 账户设置改密码 | Rust `change_password()` 由 `AccountSettings` 调用；old/new 成功和错误路径已验证 |
+| `[P]` | `GET /api/auth/totp` | 账户设置 TOTP 状态 | Rust `fetch_totp_status()` 由 `AccountSettings` 调用；old/new 状态面板已验证 |
+| `[P]` | `POST /api/auth/totp/setup` | 账户设置 setup | Rust `begin_totp_setup()` 由 `AccountSettings` 调用；old/new 错误与成功 setup 已验证 |
+| `[P]` | `POST /api/auth/totp/enable` | 账户设置启用 | Rust `enable_totp()` 由 `AccountSettings` 调用；old/new 启用链路已验证 |
+| `[P]` | `POST /api/auth/totp/recovery-codes` | 账户设置恢复码 | Rust `regenerate_totp_recovery_codes()` 由 `AccountSettings` 调用；old/new 重生成已验证 |
+| `[P]` | `DELETE /api/auth/totp` | 账户设置关闭 TOTP | Rust `disable_totp()` 由 `AccountSettings` 调用；old/new 关闭链路已验证 |
+| `[P]` | `GET /api/profile/avatar` | 顶栏/账户设置头像 | Rust 顶栏 URL 与账户面板实际加载；old/new 头像成功/删除已验证 |
+| `[P]` | `PUT /api/profile/avatar` | 账户设置上传头像 | Rust `update_avatar()` 由 `AccountSettings` 调用；old/new 类型校验和成功上传已验证 |
+| `[P]` | `DELETE /api/profile/avatar` | 账户设置删除头像 | Rust `delete_avatar()` 由 `AccountSettings` 调用；old/new 删除已验证 |
+| `[P]` | `PATCH /api/profile/username` | 账户设置改用户名 | Rust `change_username()` 由 `AccountSettings` 调用；old/new 保存和空值错误已验证 |
+| `[ ]` | `GET /api/storage/stats` | 全局/账户/存储信息 | old UI 没有直接调用方；Rust handler 保留，系统状态使用 `/system/status/stream` 的存储数据；响应语义待单独核对 |
+| `[ ]` | `GET /api/library` | 书架/图片/视频/音乐/文件分类 | old UI 实际统一调用 `/api/library/all`；Rust route 保留，需确认兼容 API 无额外调用方 |
+| `[P]` | `GET /api/library/all` | 分类全量/系列/相册等 | Rust `fetch_library_all()` 由 `FileBrowser`/`LibraryView` 调用；old/new 分类、书架、图库和排序已验证 |
+| `[ ]` | `GET /api/library/counts` | 侧栏分类数量 | old `useLibrary` 从 `/api/library/all` 取得 counts；Rust响应字段保留，当前 UI 同样复用 all，独立 endpoint 待核对 |
+| `[ ]` | `GET /api/system/status` | 系统状态初次读取 | old UI 没有直接调用方；两版 UI 都使用 SSE 首帧，handler 保留，直读错误/字段待验 |
+| `[P]` | `GET /api/system/status/stream` | 系统状态 SSE | Rust `SystemStatus` 直接建立 EventSource；old/new 三卡首帧、入口和关闭已验证 |
+| `[P]` | `GET /api/events` | 任务实时 SSE | Rust `TaskController` 直接建立 EventSource；old/new 任务面板刷新/关闭已验证 |
+| `[P]` | `GET /api/tasks` | 任务中心初始/刷新 | Rust `fetch_tasks()` 由 `TaskController` 调用；old/new 分组、空态和操作已验证 |
+| `[ ]` | `GET /api/tasks/{id}` | 任务详情/归档等待 | old UI 没有直接详情页 caller；Rust route 若保留仅供兼容，归档输入走 `/input`；需单独核对响应语义 |
+| `[P]` | `POST /api/tasks/{id}/cancel` | 任务中心取消 | Rust `cancel_task()` 由任务按钮调用；old/new mock 任务取消已验证 |
+| `[P]` | `POST /api/tasks/{id}/retry` | 任务中心重试 | Rust `retry_task()` 由任务按钮调用；old/new retry 和 max-retry 隐藏已验证 |
+| `[P]` | `POST /api/tasks/{id}/input` | 密码/用户输入 | Rust `submit_task_input()` 由密码弹窗调用；old/new 归档等待输入已验证 |
+| `[P]` | `DELETE /api/tasks/{id}` | 清除完成任务 | Rust `delete_task()` 由任务面板调用；old/new 清除完成项已验证 |
+| `[P]` | `GET /api/files/{id}` | 文件详情/进入目录 | Rust `fetch_file()` 由浏览器、面包屑和 DirectoryPicker 调用；导航对照已验证 |
+| `[P]` | `GET /api/files/{id}/children` | 文件夹内容/目录选择器 | Rust `fetch_children()` 由浏览器、侧栏文件树、DirectoryPicker 和上传队列调用；old/new 目录导航已验证 |
+| `[P]` | `GET /api/files/{id}/download` | 单文件/媒体下载 | Rust direct URL 与 `download_file()` 调用；old/new 单文件及 Range 已验证 |
+| `[P]` | `POST /api/files/batch-download/prepare` | 多选 ZIP | Rust `prepare_batch_download()` 由 SelectionToolbar 调用；old/new 多选一次 ZIP 已验证 |
+| `[P]` | `GET /api/files/batch-download/{token}` | ZIP token 下载 | Rust 通过隐藏 anchor 下载 token；old/new 建议文件名和无 iframe/CSP 已验证 |
+| `[P]` | `GET /api/files/{id}/preview` | 图片/音频/视频/文件预览 | Rust media 组件 direct URL；old/new 图片/音频/视频及不支持文本 preview/Range 已验证 |
 | `[ ]` | `GET /api/files/{id}/audio` | 音频 metadata/章节 | Rust `fetch_audio()` 有 |
 | `[ ]` | `GET /api/files/{id}/video` | 视频 metadata/subtitles | Rust `fetch_video()` 有 |
-| `[ ]` | `POST /api/files/{id}/media/reanalyze` | 媒体重新分析 | server route 有；Rust UI caller 待确认 |
-| `[ ]` | `GET /api/files/{id}/video/subtitles/{subtitle}` | 视频字幕文件 | server route 有；VideoPlayer caller 待确认 |
-| `[ ]` | `GET /api/files/{id}/media/progress` | 音视频进度恢复 | Rust `fetch_media_progress()` 有 |
-| `[ ]` | `PUT /api/files/{id}/media/progress` | 音视频进度保存 | Rust `save_media_progress()` 有 |
-| `[ ]` | `GET /api/files/{id}/content` | 文本编辑器读取 | server route 有；Rust UI/API caller 缺失 |
-| `[ ]` | `PUT /api/files/{id}/content` | 文本编辑器保存/etag | server route 有；Rust UI/API caller 缺失 |
+| `[ ]` | `POST /api/files/{id}/media/reanalyze` | 媒体重新分析 | Rust server route 保留；old UI 没有稳定可见入口，需确认媒体更多菜单是否在该 reference commit 出现 |
+| `[P]` | `GET /api/files/{id}/video/subtitles/{subtitle}` | 视频字幕文件 | Rust `VideoPlayer` 的 `<track src>` 直接调用；old/new 字幕加载 fixture 已验证 |
+| `[P]` | `GET /api/files/{id}/media/progress` | 音视频进度恢复 | Rust `fetch_media_progress()` 由 Audio/VideoPlayer 调用；old/new 存储探针已验证 |
+| `[P]` | `PUT /api/files/{id}/media/progress` | 音视频进度保存 | Rust `save_media_progress()` 由 Audio/VideoPlayer 调用；old/new 存储探针已验证 |
+| `[P]` | `GET /api/files/{id}/content` | 文本编辑器读取 | Rust `fetch_document()` 由 `DocumentEditor` 流程调用；old/new TXT/Markdown 读取已验证 |
+| `[P]` | `PUT /api/files/{id}/content` | 文本编辑器保存/etag | Rust `update_document()` 由 `DocumentEditor` 调用；old/new 保存和 Markdown 重开已验证，冲突子项仍待验 |
 | `[ ]` | `GET /api/files/{id}/book` | EPUB/TXT metadata | Rust `fetch_book()` 有 |
-| `[ ]` | `GET /api/files/{id}/book/assets/{index}` | EPUB 资源 | reader caller 待逐请求验证 |
-| `[ ]` | `GET /api/files/{id}/book/cover` | EPUB cover | reader/UI fallback 待验 |
-| `[ ]` | `GET /api/files/{id}/book/progress` | reader progress | Rust `fetch_book_progress()` 有 |
-| `[ ]` | `PUT /api/files/{id}/book/progress` | reader progress save | Rust `save_book_progress()` 有 |
-| `[ ]` | `GET /api/files/{id}/book/flow` | reader manifest/flow | Rust `fetch_book_flow()` 有 |
-| `[ ]` | `GET /api/files/{id}/book/flow/chunks/{index}` | reader window/cache | Rust `fetch_book_chunk()` 有 |
-| `[ ]` | `GET /api/files/{id}/thumbnail` | 卡片/视频 poster/cover | Rust UI 部分直接构造 URL，fallback 待验 |
-| `[ ]` | `GET /api/files/{id}/share` | 分享状态 | server route 有；Rust UI/API caller 缺失 |
-| `[ ]` | `POST /api/files/{id}/share` | 创建分享 | server route 有；Rust UI/API caller 缺失 |
-| `[ ]` | `DELETE /api/files/{id}/share` | 撤销分享 | server route 有；Rust UI/API caller 缺失 |
-| `[ ]` | `POST /api/directories` | 新建文件夹 | Rust `create_directory()` 有；完整表单待验 |
-| `[ ]` | `POST /api/documents` | 新建文档 | Rust core/server route 有；Rust UI/API caller 缺失 |
-| `[ ]` | `PATCH /api/files/{id}` | 重命名/移动 | Rust `patch_file()` 有；所有入口待验 |
-| `[ ]` | `POST /api/files/{id}/copy` | 复制 | Rust `copy_file()` 有；DirectoryPicker caller 待验 |
-| `[ ]` | `POST /api/files/{id}/extract` | 归档解压 | server route 有；Rust UI/API caller 缺失或待确认 |
+| `[P]` | `GET /api/files/{id}/book/assets/{index}` | EPUB 资源 | Rust reader flow `<img>/<object>` URL 由 `ReaderView` 生成；old/new 真实 EPUB 资源场景已通过 |
+| `[P]` | `GET /api/files/{id}/book/cover` | EPUB cover | Rust reader cover URL/fallback 由 `ReaderView` 调用；old/new 真实 EPUB 已通过 |
+| `[P]` | `GET /api/files/{id}/book/progress` | reader progress | Rust `fetch_book_progress()` 由 reader 启动调用；old/new reader-flow 已验证 |
+| `[P]` | `PUT /api/files/{id}/book/progress` | reader progress save | Rust `save_book_progress()` 由 reader 翻页/关闭调用；old/new reader-flow 已验证 |
+| `[P]` | `GET /api/files/{id}/book/flow` | reader manifest/flow | Rust `fetch_book_flow()` 由 reader 启动调用；old/new reader-flow/EPUB 已验证 |
+| `[P]` | `GET /api/files/{id}/book/flow/chunks/{index}` | reader window/cache | Rust `fetch_book_chunk()` 由窗口预取/cache 调用；old/new reader-flow 已验证 |
+| `[P]` | `GET /api/files/{id}/thumbnail` | 卡片/视频 poster/cover | Rust file cards/library/video/audio 构造带 etag URL；old/new library/media 已验证 |
+| `[P]` | `GET /api/files/{id}/share` | 分享状态 | Rust `fetch_share()` 由 `ShareDialog` 调用；old/new 分享读取已验证 |
+| `[P]` | `POST /api/files/{id}/share` | 创建分享 | Rust `create_share()` 由 `ShareDialog` 调用；old/new 创建/重新生成已验证 |
+| `[P]` | `DELETE /api/files/{id}/share` | 撤销分享 | Rust `revoke_share()` 由 `ShareDialog` 调用；old/new 撤销及公开链接失效已验证 |
+| `[P]` | `POST /api/directories` | 新建文件夹 | Rust `create_directory()` 由 header/empty state 调用；old/new 新建和输入行为已验证 |
+| `[P]` | `POST /api/documents` | 新建文档 | Rust `create_document()` 由 `DocumentEditor` 新文档流程调用；old/new 默认名/创建/保存已验证 |
+| `[P]` | `PATCH /api/files/{id}` | 重命名/移动 | Rust `patch_file()` 由 rename/transfer 调用；old/new 实际重命名和移动已验证 |
+| `[P]` | `POST /api/files/{id}/copy` | 复制 | Rust `copy_file()` 由 transfer dialog 调用；old/new 实际复制已验证 |
+| `[P]` | `POST /api/files/{id}/extract` | 归档解压 | Rust `extract_archive()` 由 SelectionToolbar 调用；old/new 真实 ZIP 任务已验证 |
 | `[ ]` | `DELETE /api/files/{id}` | 移入回收站 | Rust `delete_file()` 有 |
 | `[ ]` | `GET /api/trash` | 回收站列表 | Rust `fetch_trash()` 有 |
 | `[ ]` | `DELETE /api/trash` | 清空回收站 | Rust `empty_trash()` 有 |
@@ -321,13 +333,13 @@
 
 | 模块 | Checklist 范围 | commit | 自动测试 | old/new 浏览器证据 | 状态 |
 |---|---|---|---|---|---|
-| 基线与清单 | 1 | 待提交 | 构建/healthz/E2E 基线已记录 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 进行中 |
-| 全局导航与 UI | 2–4 | 待提交 | 待执行 | 待生成 | 未开始 |
-| 文件浏览与选择 | 5–6 | 待提交 | 待执行 | 待生成 | 未开始 |
-| 上传与任务 | 7、3 | 待提交 | 待执行 | 待生成 | 未开始 |
-| CRUD 与回收站 | 8 | 待提交 | 待执行 | 待生成 | 未开始 |
-| 文档编辑器 | 9 | 待提交 | 待执行 | 待生成 | 未开始 |
-| 阅读器 | 10 | 待提交 | 待执行 | 待生成 | 未开始 |
-| 媒体 | 11 | 待提交 | 待执行 | 待生成 | 未开始 |
-| 下载/分享/归档 | 12 | 待提交 | 待执行 | 待生成 | 未开始 |
-| 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | 待执行 | 待生成 | 未开始 |
+| 基线与清单 | 1 | `068b9bb` | healthz、old/new 构建和基线记录已完成 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
+| 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E） | 认证、账户、任务、状态、移动抽屉、空态和关键入口 old/new 已通过；完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图 | 局部 PASS |
+| 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png` | 局部 PASS |
+| 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
+| CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；冲突/失败/清空矩阵未完 | parity Playwright trace | 局部 PASS |
+| 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard 已 old/new 实测；etag 冲突/全部扩展名未完 | reader/editor parity trace | 局部 PASS |
+| 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`d257696`（E2E） | old reader-flow 17/17、真实 EPUB、Rust TXT/Markdown/EPUB old/new 已通过；逐项 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace | 局部 PASS |
+| 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
+| 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E） | 单文件、ZIP、分享生命周期、归档任务、preview/206/416 已 old/new 实测；公开页完整视觉和错误矩阵未完 | download/share/action parity trace | 局部 PASS |
+| 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
