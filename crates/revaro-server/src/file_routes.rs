@@ -1153,10 +1153,17 @@ async fn cancel_task(
 ) -> Result<http::StatusCode, ApiError> {
     let task_id = id.clone();
     let jobs = state.jobs.clone();
-    state
+    let (_, source_type, source_id) = state
         .db
         .call_api(move |connection| {
             let now = Timestamp::now().to_rfc3339();
+            let (source_type, source_id) = connection
+                .query_row(
+                    "SELECT COALESCE(source_type,''),COALESCE(source_id,'') FROM tasks WHERE id = ?1",
+                    [&id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(|error| not_found_or(DbError::Query(error), "task not found"))?;
             // A task that has not started is cancelled outright; a running one
             // only has the request recorded, because the worker decides when it
             // can stop safely.
@@ -1188,10 +1195,14 @@ WHERE id = ?2 AND status NOT IN ('completed','failed','cancelled')",
                 });
             }
             jobs.changed();
-            Ok(http::StatusCode::NO_CONTENT)
+            Ok((http::StatusCode::NO_CONTENT, source_type, source_id))
         })
         .await?;
-    crate::archive_routes::cancel_task_runtime(&state, &task_id).await;
+    if source_type == "upload" {
+        crate::upload_routes::cancel_upload_task(&state, &source_id).await;
+    } else {
+        crate::archive_routes::cancel_task_runtime(&state, &task_id).await;
+    }
     Ok(http::StatusCode::NO_CONTENT)
 }
 
@@ -3261,6 +3272,12 @@ VALUES('doc1','00000000-0000-0000-0000-000000000000','a b&c.bin','file','blobs/d
         .await;
         assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
         assert_eq!(headers.get("content-range").unwrap(), "bytes */10");
+        assert_eq!(
+            headers.get("content-type").unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(headers.get("content-length").unwrap(), "33");
+        assert_eq!(body, b"invalid range: failed to overlap\n");
 
         // A multi-range request falls back to the whole representation rather
         // than emitting multipart.

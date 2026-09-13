@@ -301,6 +301,13 @@ VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,?10)",
         return Err(error);
     }
 
+    // Uploads are visible in the same background-task centre as archive jobs.
+    // Keep this separate from the metadata transaction: the reference server
+    // treats a task-row failure as non-fatal to an otherwise valid upload.
+    if let Err(error) = create_upload_task(&state, &upload_id, &file_id).await {
+        tracing::error!(%error, upload = %upload_id, "could not create upload task");
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(CreateUpload {
@@ -584,24 +591,47 @@ async fn complete_upload(
             .complete_multipart(&record.object_key, &multipart_id, &parts)
             .await
             .map_err(complete_error)?;
-        state
-            .store
-            .sha256_hex(&record.object_key)
-            .await
-            .map_err(complete_error)?
+        update_upload_task(&state, &record.id, "running", "verifying", 99.0, "").await;
+        match state.store.sha256_hex(&record.object_key).await {
+            Ok(hash) => hash,
+            Err(error) => {
+                let api_error = complete_error(error);
+                update_upload_task(
+                    &state,
+                    &record.id,
+                    "failed",
+                    "verifying",
+                    99.0,
+                    &api_error.message,
+                )
+                .await;
+                return Err(api_error);
+            }
+        }
     } else {
-        state
-            .store
-            .sha256_hex(&record.object_key)
-            .await
-            .map_err(complete_error)?
+        update_upload_task(&state, &record.id, "running", "verifying", 99.0, "").await;
+        match state.store.sha256_hex(&record.object_key).await {
+            Ok(hash) => hash,
+            Err(error) => {
+                let api_error = complete_error(error);
+                update_upload_task(
+                    &state,
+                    &record.id,
+                    "failed",
+                    "verifying",
+                    99.0,
+                    &api_error.message,
+                )
+                .await;
+                return Err(api_error);
+            }
+        }
     };
 
-    let _object_key = record.object_key.clone();
     let file_id = record.file_id.clone();
     let upload_id = record.id.clone();
     let expected_size = record.expected_size;
-    state
+    let result = state
         .db
         .call_api(move |connection| {
             let now = Timestamp::now().to_rfc3339();
@@ -645,8 +675,25 @@ WHERE id = ?3",
                 .map_err(|error| database_error(DbError::Query(error)))?;
             Ok(file)
         })
-        .await
-        .map(Json)
+        .await;
+    match result {
+        Ok(file) => {
+            update_upload_task(&state, &record.id, "completed", "completed", 100.0, "").await;
+            Ok(Json(file))
+        }
+        Err(error) => {
+            update_upload_task(
+                &state,
+                &record.id,
+                "retrying",
+                "committing",
+                99.0,
+                "文件已上传，正在等待元数据重试",
+            )
+            .await;
+            Err(error)
+        }
+    }
 }
 
 /// `DELETE /api/uploads/{id}`
@@ -655,65 +702,89 @@ async fn abort_upload(
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<StatusCode, ApiError> {
-    let _upload_guard = state.uploads.lock(&id).await;
+    let upload_id = id.clone();
     let record = state
         .db
-        .call_api(move |connection| load_upload_api(connection, &id))
+        .call_api(move |connection| load_upload_api(connection, &upload_id))
         .await?;
-
-    // A lost completion response can make the browser issue DELETE after the
-    // transaction has already made the file visible. Keep the abort endpoint
-    // idempotent without allowing that race to delete a committed object.
+    // A completion response can be lost after the metadata transaction wins.
+    // Retrying the browser's cleanup request must not turn that successful
+    // upload into a user-visible error or remove its committed object.
     if record.status == UploadStatus::Completed {
         return Ok(StatusCode::NO_CONTENT);
+    }
+    abort_pending_upload(&state, &id, false).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Abort a pending upload from the task centre runtime.
+pub(crate) async fn cancel_upload_task(state: &Arc<AppState>, upload_id: &str) {
+    if let Err(error) = abort_pending_upload(state, upload_id, false).await
+        && error.status != 404
+    {
+        tracing::warn!(%error, upload = %upload_id, "could not cancel upload task");
+    }
+}
+
+/// Mark a pending upload aborted, remove its invisible file row and clean its
+/// staged bytes. The status transition is committed before storage cleanup so
+/// a failed cleanup can be retried without reopening the upload session.
+async fn abort_pending_upload(
+    state: &Arc<AppState>,
+    id: &str,
+    expired_only: bool,
+) -> Result<(), ApiError> {
+    let _upload_guard = state.uploads.lock(id).await;
+    let upload_id = id.to_owned();
+    let record = state
+        .db
+        .call_api(move |connection| load_upload_api(connection, &upload_id))
+        .await?;
+    if record.status != UploadStatus::Pending
+        || (expired_only && !record.is_expired(Timestamp::now()))
+    {
+        return Err(pending_missing());
     }
 
     let file_id = record.file_id.clone();
     let upload_id = record.id.clone();
-    let removed = state
+    state
         .db
         .call_api(move |connection| {
             let transaction = connection
                 .transaction()
                 .map_err(|error| database_error(DbError::Query(error)))?;
-            let deleted_upload = transaction
+            let changed = transaction
                 .execute(
-                    "DELETE FROM uploads WHERE id = ?1 AND file_id = ?2 AND status <> 'completed' \
-AND EXISTS (SELECT 1 FROM files WHERE id = ?2 AND status = 'pending')",
+                    "UPDATE uploads SET status = 'aborted' WHERE id = ?1 AND file_id = ?2 AND status = 'pending' \
+                     AND EXISTS (SELECT 1 FROM files WHERE id = ?2 AND status = 'pending')",
                     rusqlite::params![upload_id, file_id],
                 )
                 .map_err(|error| database_error(DbError::Query(error)))?;
-            if deleted_upload != 1 {
-                transaction
-                    .rollback()
-                    .map_err(|error| database_error(DbError::Query(error)))?;
-                return Ok(false);
+            if changed != 1 {
+                return Err(pending_missing());
             }
-            // The pending file row is invisible to every listing, so removing it
-            // is what actually cancels the upload.
-            let deleted_file = transaction
+            transaction
                 .execute(
                     "DELETE FROM files WHERE id = ?1 AND status = 'pending'",
                     [&file_id],
                 )
                 .map_err(|error| database_error(DbError::Query(error)))?;
-            if deleted_file != 1 {
-                return Err(ApiError::conflict("upload state changed"));
-            }
             transaction
                 .commit()
                 .map_err(|error| database_error(DbError::Query(error)))?;
-            Ok(true)
+            Ok(())
         })
         .await?;
-    if !removed {
-        return Ok(StatusCode::NO_CONTENT);
-    }
 
-    // Claiming the pending rows before touching storage closes the race with
-    // completion: a completion that is already committed fails the conditional
-    // delete, while one that is still assembling can no longer publish a ready
-    // row after this cleanup wins.
+    let phase = if expired_only { "expired" } else { "cancelled" };
+    let message = if expired_only {
+        "upload session expired"
+    } else {
+        ""
+    };
+    update_upload_task(state, &record.id, "cancelled", phase, 0.0, message).await;
+
     if let Some(multipart_id) = &record.multipart_id
         && let Err(error) = state
             .store
@@ -725,8 +796,96 @@ AND EXISTS (SELECT 1 FROM files WHERE id = ?2 AND status = 'pending')",
     if let Err(error) = state.store.delete(&record.object_key).await {
         tracing::warn!(%error, upload = %record.id, "could not remove a partial object");
     }
+    Ok(())
+}
 
-    Ok(StatusCode::NO_CONTENT)
+/// Create the durable task row that the reference client shows in TaskCenter.
+async fn create_upload_task(
+    state: &Arc<AppState>,
+    upload_id: &str,
+    file_id: &str,
+) -> Result<(), ApiError> {
+    let task_id = crate::ids::new_id();
+    let upload_id = upload_id.to_owned();
+    let file_id = file_id.to_owned();
+    state
+        .db
+        .call_api(move |connection| {
+            let now = Timestamp::now().to_rfc3339();
+            let transaction = connection
+                .transaction()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .execute(
+                    "INSERT INTO tasks(id,type,status,phase,source_type,source_id,created_at,updated_at) \
+                     VALUES(?1,'upload','queued','uploading','upload',?2,?3,?3)",
+                    rusqlite::params![task_id, upload_id, now],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .execute(
+                    "INSERT INTO task_files(task_id,file_id,role) VALUES(?1,?2,'input')",
+                    rusqlite::params![task_id, file_id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            transaction
+                .commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(())
+        })
+        .await?;
+    state.jobs.changed();
+    Ok(())
+}
+
+/// Persist the same upload lifecycle fields used by the old task manager.
+async fn update_upload_task(
+    state: &Arc<AppState>,
+    upload_id: &str,
+    status: &str,
+    phase: &str,
+    progress: f64,
+    task_error: &str,
+) {
+    let upload_id = upload_id.to_owned();
+    let status = status.to_owned();
+    let phase = phase.to_owned();
+    let task_error = task_error.to_owned();
+    let upload_for_log = upload_id.clone();
+    let now = Timestamp::now().to_rfc3339();
+    let result = state
+        .db
+        .call_api(move |connection| {
+            connection
+                .execute(
+                    "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4, \
+                     started_at=CASE WHEN ?5='running' THEN COALESCE(started_at,?6) ELSE started_at END, \
+                     finished_at=CASE WHEN ?7 IN ('completed','failed','cancelled') THEN COALESCE(finished_at,?8) ELSE NULL END, \
+                     heartbeat_at=CASE WHEN ?9='running' THEN ?10 ELSE heartbeat_at END, \
+                     updated_at=?11 \
+                     WHERE source_type='upload' AND source_id=?12",
+                    rusqlite::params![
+                        status,
+                        phase,
+                        progress,
+                        task_error,
+                        status,
+                        now,
+                        status,
+                        now,
+                        status,
+                        now,
+                        now,
+                        upload_id,
+                    ],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))
+        })
+        .await;
+    if let Err(error) = result {
+        tracing::warn!(%error, upload = %upload_for_log, "could not update upload task");
+    }
+    state.jobs.changed();
 }
 
 fn etag_response(etag: &str) -> http::Response<Body> {
