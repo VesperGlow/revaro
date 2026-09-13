@@ -243,7 +243,7 @@ jobs:
             [ -n "$tag" ] || continue
             push_output="$(docker push "$tag" 2>&1)"
             printf '%s\n' "$push_output"
-            current_digest="$(printf '%s\n' "$push_output" | sed -n 's/^digest: //p' | tail -1)"
+            current_digest="$(printf '%s\n' "$push_output" | sed -nE 's/.*(sha256:[0-9a-fA-F]{64}).*/\1/p' | tail -1)"
             if [ -n "$current_digest" ]; then digest="$current_digest"; fi
           done <<< "$IMAGE_TAGS"
           test -n "$digest"
