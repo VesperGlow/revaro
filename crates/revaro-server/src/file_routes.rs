@@ -615,10 +615,9 @@ SELECT EXISTS(SELECT 1 FROM d WHERE id = ?2)",
 /// `DELETE /api/files/{id}` — move into the trash, or drop unfinished rows.
 ///
 /// A file that is still pending has no recoverable content, so Go removed it
-/// outright rather than trashing it. This port keeps that behaviour but not the
-/// pending-upload abort that precedes it in Go: aborting needs the upload
-/// module, and until it lands the cascade delete removes the `uploads` row while
-/// any multipart staging is reaped by the store's age-based cleanup.
+/// outright rather than trashing it. This route keeps that behavior: the
+/// pending metadata is removed transactionally, the blob key enters the durable
+/// object-cleanup queue, and multipart staging is reclaimed by age-based cleanup.
 async fn delete_file(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,

@@ -21,8 +21,8 @@
 //! ## Deliberate differences from the Go implementation
 //!
 //! * The Go type embedded a `*DataPlane` client for media and archive work. Media
-//!   decoding now lives in the `revaro-media` library; archive operations will
-//!   use the same boundary when that remaining migration stage is implemented.
+//!   decoding and archive extraction now run in the in-process `revaro-media`
+//!   library; this store remains responsible only for object bytes.
 //! * `walk_prefix` is gone. Go streamed batches to bound memory during garbage
 //!   collection; here [`LocalStore::list_prefix`] returns the full list and the
 //!   caller processes it in chunks. The store is single-user and local, so the
@@ -32,6 +32,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use revaro_core::hash::Sha256;
 use revaro_core::keys;
 use revaro_core::storage::{CompletedPart, ObjectInfo, ObjectRef};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
@@ -256,6 +257,39 @@ impl LocalStore {
         let mut buffer = Vec::with_capacity(object.size.max(0) as usize);
         object.file.read_to_end(&mut buffer).await?;
         Ok(buffer)
+    }
+
+    /// Hash an object without buffering its contents in memory.
+    ///
+    /// Upload completion uses this after a multipart assembly. The metadata
+    /// size is captured with the file handle and checked again after the read,
+    /// so a concurrent out-of-band replacement cannot silently produce a hash
+    /// for bytes different from the object that was opened.
+    ///
+    /// # Errors
+    /// Propagates [`StorageError::NotFound`] and I/O failures, and reports a
+    /// size change as [`StorageError::SizeMismatch`].
+    pub async fn sha256_hex(&self, key: &str) -> Result<String, StorageError> {
+        let mut object = self.open_object(key).await?;
+        let expected = object.size;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut read = 0i64;
+        loop {
+            let count = object.file.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+            read += count as i64;
+        }
+        if read != expected {
+            return Err(StorageError::SizeMismatch {
+                actual: read,
+                expected,
+            });
+        }
+        Ok(hex_digest(&hasher.finalize()))
     }
 
     /// Read a byte range, seeking first. Used by video and audio range requests.
@@ -806,6 +840,18 @@ impl LocalStore {
     }
 }
 
+/// Encode a SHA-256 digest without allocating a second copy of the object.
+fn hex_digest(digest: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        // Writing into a String cannot fail.
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
 /// True when `key` is a normalized relative path usable as an object key.
 ///
 /// Rejects empty keys, `.`/`..` components, repeated or trailing separators,
@@ -963,6 +1009,19 @@ mod tests {
         let stored = store.open_object(&keys::blob_key("f1")).await.unwrap();
         assert_eq!(stored.size, 5);
         assert_eq!(stored.etag, info.etag);
+    }
+
+    #[tokio::test]
+    async fn sha256_hex_streams_large_objects_without_changing_the_wire_hash() {
+        let (_root, store) = store().await;
+        let data: Vec<u8> = (0..=(u8::MAX)).cycle().take(128 * 1024 + 17).collect();
+        let key = keys::blob_key("hashed");
+        store.put(&key, &data).await.unwrap();
+
+        assert_eq!(
+            store.sha256_hex(&key).await.unwrap(),
+            keys::sha256_hex(&data)
+        );
     }
 
     #[tokio::test]

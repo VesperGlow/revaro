@@ -28,6 +28,38 @@ pub struct ReaderRuntime {
     flow_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
+/// Per-upload serialization state.
+///
+/// Upload bytes and their database acknowledgement are two halves of one
+/// lifecycle. A completion or abort that races a part write must wait for that
+/// write to settle before it inspects or removes the staging object. The map
+/// stores only the short-lived lock objects and prunes idle keys on lookup.
+#[derive(Debug, Default)]
+pub struct UploadRuntime {
+    locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl UploadRuntime {
+    /// Create an empty upload lock registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Serialize all mutable operations for one durable upload id.
+    pub async fn lock(&self, upload_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+            locks
+                .entry(upload_id.to_owned())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+}
+
 impl ReaderRuntime {
     /// Create the bounded reader runtime used by the server.
     #[must_use]
@@ -140,6 +172,8 @@ pub struct AppState {
     pub jobs: JobBus,
     /// Parsed books and serialized reader-flow builders.
     pub reader: ReaderRuntime,
+    /// Serialized upload lifecycle operations.
+    pub uploads: UploadRuntime,
 }
 
 impl AppState {
@@ -164,6 +198,7 @@ impl AppState {
             status: crate::status_routes::StatusRuntime::new(),
             jobs: JobBus::new(256),
             reader: ReaderRuntime::new(),
+            uploads: UploadRuntime::new(),
         })
     }
 }
@@ -185,5 +220,41 @@ mod tests {
             assert_eq!(locks.len(), 1);
             assert!(locks.contains_key("second"));
         }
+    }
+
+    #[tokio::test]
+    async fn upload_locks_prune_idle_keys() {
+        let runtime = UploadRuntime::new();
+        {
+            let _guard = runtime.lock("first").await;
+            assert_eq!(runtime.locks.lock().unwrap().len(), 1);
+        }
+        {
+            let _guard = runtime.lock("second").await;
+            let locks = runtime.locks.lock().unwrap();
+            assert_eq!(locks.len(), 1);
+            assert!(locks.contains_key("second"));
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_operations_for_one_upload_wait_for_each_other() {
+        let runtime = Arc::new(UploadRuntime::new());
+        let guard = runtime.lock("same-upload").await;
+        let (finished, mut finished_rx) = tokio::sync::oneshot::channel();
+        let waiting = Arc::clone(&runtime);
+        let task = tokio::spawn(async move {
+            let _guard = waiting.lock("same-upload").await;
+            let _ = finished.send(());
+        });
+
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            finished_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(guard);
+        finished_rx.await.expect("waiting operation completes");
+        task.await.expect("waiting task does not panic");
     }
 }

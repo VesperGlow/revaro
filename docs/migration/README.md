@@ -166,6 +166,12 @@ ETag/完成事务、三文件并发、XHR 进度/取消、失败与取消重试�
 移到独立的 `tests/e2e/` npm 包，删除旧 Go/Vue/data-plane 树和 Vue/Vite 构建配置；
 Node/npm 仅保留为 test-only Playwright 运行器，不属于生产构建或运行依赖。
 
+### 阶段 9 — 迁移复核收尾
+阶段 9a 修复迁移复核发现的上传完整性缺口：单请求和多分片完成都以有界流式
+SHA-256 写入 `content_hash`，并按 upload id 串行化写入、分片确认、完成和中止；
+多分片完成还必须提供完整连续的分片列表。全局 cache manager 与后台维护调度器
+仍保留为后续收尾项，当前状态接口会明确报告 cache 未接入，而不会伪报正常。
+
 ## 4. 已记录的风险与遗留问题
 
 来自两份审计，迁移时必须逐条处理：
@@ -209,7 +215,7 @@ Node/npm 仅保留为 test-only Playwright 运行器，不属于生产构建或�
 | ~~文件浏览/新建/改名/复制/删除~~ | `server_files.go` | ✅ 已完成：`file_routes.rs` |
 | ~~回收站列表/还原/清空/彻底删除~~ | `server_files.go` 540-760 | ✅ 已完成：`file_routes.rs` |
 | ~~文档读写（≤1 MiB）~~ | `server_files.go` 160-370 | ✅ 已完成：并入 `file_routes.rs`（`/files/{id}/content`） |
-| ~~上传（单请求 + 分片 + 幂等完成）~~ | `server_uploads.go`、`upload_content.go` | ✅ 已完成：`upload_routes.rs`（分片提交暂不写 `content_hash`） |
+| ~~上传（单请求 + 分片 + 幂等完成）~~ | `server_uploads.go`、`upload_content.go` | ✅ 已完成：`upload_routes.rs`（单请求与分片完成均写入流式 SHA-256） |
 | ~~上传/下载的流式与 Range~~ | `server_stream_share.go` | ✅ 已完成：`file_routes.rs`（下载/预览、Range）与上传路由 |
 | ~~批量下载 ZIP~~ | `download_batch.go` | ✅ 已完成：`batch_download.rs` |
 | ~~分享链接~~ | `server_stream_share.go` | ✅ 已完成：`file_routes.rs`（文件分享与公开 `/s/{token}`） |
@@ -294,7 +300,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 
 | 项 | 值 |
 |---|---|
-| 测试 | **407 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 168 = 166 单元 + 2 集成、web 46、xtask 5） |
+| 测试 | **410 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 172 = 169 单元 + 3 集成、web 46、xtask 5） |
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
@@ -319,8 +325,12 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
   上传队列、任务中心、媒体查看器、目录传输选择器和 EPUB/TXT reader 视图均已落地。
 - **旧实现与生产构建链**：已删除 `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、
   `data-plane/`；`tests/e2e/` 只保留真实 Rust 浏览器行为测试及其 Playwright 依赖。
+- **缓存与后台维护**：当前 `reader` 解析缓存和媒体字幕缓存仍是各自独立的局部缓存，
+  全局 L1/L2 cache manager、阅读源磁盘缓存、缓存统计及定时清理/回收调度尚未接入；
+  `GET /api/system/status` 会把这部分明确标为 `degraded`。
 
-当前没有待迁移的生产功能模块。剩余验收集中在外部环境：由 CI Docker runner
+当前没有待迁移的生产 HTTP 路由；上述缓存与后台维护仍是生产运行行为的收尾模块。剩余
+验收还包括外部环境：由 CI Docker runner
 实际执行主分支/版本标签的构建、容器 E2E、GHCR 推送并观察发布结果；再在目标部署环境
 确认 registry、`/data` 卷权限、反向代理的 `APP_BASE_URL` 和升级/回滚流程。当前开发
 环境没有可用的 Docker daemon，无法替代该外部验收。
@@ -445,6 +455,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8j quick-xml 解析依赖安全升级 | ✅ | `security(deps): 升级 quick-xml 规避解析漏洞` |
 | 8k Rust-only 运行层边界门禁 | ✅ | `ci(deploy): 固定生产镜像 Rust-only 运行边界` |
 | 8l 生产 Compose 安全契约门禁 | ✅ | `ci(deploy): 固定生产 Compose 安全契约` |
+| 9a 分片完整性哈希与上传并发互斥 | ✅ | `fix(upload): 完成分片内容哈希与生命周期串行化` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -707,6 +718,14 @@ Chromium 场景（3 passed）全部通过。下一步仍是 CI Docker runner 的
 丢弃全部 capabilities、非缓存 `/readyz` healthcheck 以及三个运行目录路径；本地
 `docker compose config --format json` 和等价断言全部通过，CI YAML/shell 解析也通过。
 这一阶段没有改变应用行为；下一步仍是 CI Docker runner 的真实运行和目标部署环境验收。
+
+阶段 9a 验收：`LocalStore::sha256_hex` 以固定 64 KiB 缓冲流式读取对象，并在元数据
+尺寸发生变化时拒绝返回哈希；上传完成统一写入 64 字符 SHA-256，分片完成缺少任一
+分片时在组装前返回 400。upload id 的写入、确认、完成和中止由可回收的异步锁串行化。
+新增存储哈希、锁等待和真实路由分片上传测试；后者上传 16 MiB+1、验证短完成列表
+被拒、再完成成功并核对最终哈希。`cargo xtask check` 通过 410 个测试、fmt、
+clippy `-D warnings` 和 wasm32 检查，`cargo xtask build` 及 release `revaro` 进程的
+curl 分片上传验证也通过。下一步进入全局 cache manager 与后台维护调度的复核。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

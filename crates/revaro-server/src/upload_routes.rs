@@ -17,15 +17,10 @@
 //! `files` row and the `uploads` row in one transaction, and completing twice
 //! returns the already-committed file instead of creating a second one.
 //!
-//! ## Known gap
-//!
-//! Go hashed the committed object and stored `content_hash`. For single mode
-//! (≤16 MiB) this port does the same by reading the object back after upload.
-//! For multipart it leaves `content_hash` empty: hashing a multi-gigabyte object
-//! requires an incremental hash computed while parts stream in, which the
-//! `upload_parts.content_hash` column exists to support but which is not wired
-//! up yet. Integrity is still enforced by per-part entity tags and the declared
-//! total size.
+//! Completion hashes the committed object with a bounded streaming SHA-256, so
+//! single and multipart uploads expose the same integrity metadata without
+//! buffering a multi-gigabyte object in memory. Mutable operations for one
+//! upload are serialized by [`crate::state::UploadRuntime`].
 
 use std::sync::Arc;
 
@@ -402,6 +397,7 @@ async fn upload_content(
     PathParam(id): PathParam<String>,
     request: axum::extract::Request,
 ) -> Result<http::Response<Body>, ApiError> {
+    let _upload_guard = state.uploads.lock(&id).await;
     let record = state
         .db
         .call_api(move |connection| require_pending(connection, &id))
@@ -429,6 +425,7 @@ async fn upload_content_part(
     PathParam((id, part)): PathParam<(String, i32)>,
     request: axum::extract::Request,
 ) -> Result<http::Response<Body>, ApiError> {
+    let _upload_guard = state.uploads.lock(&id).await;
     let record = state
         .db
         .call_api(move |connection| require_pending(connection, &id))
@@ -497,6 +494,7 @@ async fn record_upload_part(
     PathParam((id, part)): PathParam<(String, i32)>,
     Json(request): Json<RecordUploadPartRequest>,
 ) -> Result<StatusCode, ApiError> {
+    let _upload_guard = state.uploads.lock(&id).await;
     state
         .db
         .call_api(move |connection| {
@@ -537,6 +535,7 @@ async fn complete_upload(
     PathParam(id): PathParam<String>,
     Json(request): Json<CompleteUploadRequest>,
 ) -> Result<Json<revaro_core::model::File>, ApiError> {
+    let _upload_guard = state.uploads.lock(&id).await;
     let record = state
         .db
         .call_api(move |connection| load_upload_api(connection, &id))
@@ -573,21 +572,29 @@ async fn complete_upload(
                 etag: part.etag.clone(),
             })
             .collect();
+        let expected_parts = limits::multipart_part_count(record.expected_size, record.part_size)
+            .map_err(ApiError::bad_request)?;
+        if parts.len() != expected_parts {
+            return Err(ApiError::bad_request(
+                "multipart completion list is incomplete",
+            ));
+        }
         state
             .store
             .complete_multipart(&record.object_key, &multipart_id, &parts)
             .await
             .map_err(complete_error)?;
-        // See the module docs: hashing a multi-gigabyte object incrementally is
-        // not wired up yet, so multipart commits record no content hash.
-        String::new()
-    } else {
-        let bytes = state
+        state
             .store
-            .read(&record.object_key, record.expected_size.max(1) as usize)
+            .sha256_hex(&record.object_key)
             .await
-            .map_err(complete_error)?;
-        keys::sha256_hex(&bytes)
+            .map_err(complete_error)?
+    } else {
+        state
+            .store
+            .sha256_hex(&record.object_key)
+            .await
+            .map_err(complete_error)?
     };
 
     let _object_key = record.object_key.clone();
@@ -648,6 +655,7 @@ async fn abort_upload(
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<StatusCode, ApiError> {
+    let _upload_guard = state.uploads.lock(&id).await;
     let record = state
         .db
         .call_api(move |connection| load_upload_api(connection, &id))

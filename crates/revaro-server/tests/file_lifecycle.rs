@@ -123,6 +123,20 @@ impl Harness {
         body: Option<Vec<u8>>,
         content_type: Option<&str>,
     ) -> (StatusCode, serde_json::Value) {
+        let response = self.response(method, uri, body, content_type).await;
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    async fn response(
+        &self,
+        method: &str,
+        uri: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+    ) -> http::Response<Body> {
         let mut builder = Request::builder()
             .method(method)
             .uri(uri)
@@ -131,15 +145,10 @@ impl Harness {
         if let Some(content_type) = content_type {
             builder = builder.header("content-type", content_type);
         }
-        let response = self
-            .router()
+        self.router()
             .oneshot(builder.body(Body::from(body.unwrap_or_default())).unwrap())
             .await
-            .unwrap();
-        let status = response.status();
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-        (status, json)
+            .unwrap()
     }
 
     async fn json(
@@ -475,4 +484,98 @@ async fn unauthenticated_and_cross_origin_requests_are_refused() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn multipart_upload_commits_a_streamed_sha256_and_rejects_short_completion() {
+    let harness = Harness::start().await;
+    let size = revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1;
+    let payload: Vec<u8> = (0..=u8::MAX).cycle().take(size).collect();
+    let expected_hash = revaro_core::keys::sha256_hex(&payload);
+
+    let (status, upload) = harness
+        .json(
+            "POST",
+            "/api/uploads",
+            serde_json::json!({
+                "parent_id": ROOT_ID,
+                "name": "large.bin",
+                "size": size,
+                "mime_type": "application/octet-stream"
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(upload["mode"], "multipart");
+    assert_eq!(upload["part_count"], 2);
+    let upload_id = upload["upload_id"].as_str().unwrap().to_owned();
+    let part_size = upload["part_size"].as_i64().unwrap() as usize;
+
+    let mut parts = Vec::new();
+    for (index, part) in payload.chunks(part_size).enumerate() {
+        let part_number = index + 1;
+        let response = harness
+            .response(
+                "PUT",
+                &format!("/api/uploads/{upload_id}/data/{part_number}"),
+                Some(part.to_vec()),
+                Some("application/octet-stream"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let etag = response
+            .headers()
+            .get("etag")
+            .expect("each part has an etag")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (status, _) = harness
+            .json(
+                "PUT",
+                &format!("/api/uploads/{upload_id}/parts/{part_number}"),
+                serde_json::json!({
+                    "etag": etag,
+                    "size": part.len(),
+                    "content_hash": ""
+                }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        parts.push(serde_json::json!({
+            "part_number": part_number,
+            "etag": etag
+        }));
+    }
+
+    let (status, _) = harness
+        .json(
+            "POST",
+            &format!("/api/uploads/{upload_id}/complete"),
+            serde_json::json!({"parts": [parts[0].clone()]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, committed) = harness
+        .json(
+            "POST",
+            &format!("/api/uploads/{upload_id}/complete"),
+            serde_json::json!({"parts": parts}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(committed["status"], "ready");
+    assert_eq!(committed["content_hash"], expected_hash);
+    assert_eq!(committed["hash_algorithm"], "sha256");
+
+    let (status, upload_state) = harness
+        .json(
+            "GET",
+            &format!("/api/uploads/{upload_id}"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(upload_state["status"], "completed");
 }
