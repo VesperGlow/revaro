@@ -93,6 +93,20 @@ jobs:
           test -z "$compose_https_cookie_secure"
           example_cookie_secure="$(sed -n 's/^COOKIE_SECURE=//p' .env.example)"
           test -z "$example_cookie_secure"
+      - name: Generate tested image metadata
+        id: tested-meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ghcr.io/vesperglow/revaro
+          tags: |
+            type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          labels: |
+            org.opencontainers.image.title=revaro
+            org.opencontainers.image.description=Private local file manager with native media playback
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
       - uses: docker/setup-buildx-action@v4.1.0
       - name: Build checked amd64 image once
         uses: docker/build-push-action@v7.3.0
@@ -101,6 +115,7 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: revaro-e2e:local
+          labels: ${{ steps.tested-meta.outputs.labels }}
           cache-from: type=gha,scope=revaro-image-amd64-v3
           cache-to: type=gha,scope=revaro-image-amd64-v3,mode=max,ignore-error=true,timeout=10m
       - name: Build and start the real Revaro stack
@@ -116,6 +131,18 @@ jobs:
       - name: Run Rust browser E2E
         working-directory: tests/e2e
         run: npx playwright test rust-media-ui.spec.ts rust-reader-ui.spec.ts --config=playwright.config.ts
+      - name: Export the tested image
+        if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        run: docker save --output /tmp/revaro-e2e.tar revaro-e2e:local
+      - name: Upload the tested image
+        if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: actions/upload-artifact@v6
+        with:
+          name: revaro-tested-image
+          path: /tmp/revaro-e2e.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
       - name: Collect container logs
         if: failure()
         run: docker compose -f compose.e2e.yml logs --no-color > e2e-container.log
@@ -143,7 +170,13 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4.1.0
+      - name: Download the tested image
+        uses: actions/download-artifact@v6
+        with:
+          name: revaro-tested-image
+          path: /tmp/revaro-tested-image
+      - name: Load the tested image
+        run: docker load --input /tmp/revaro-tested-image/revaro-e2e.tar
       - name: Log in to GHCR
         uses: docker/login-action@v4.5.1
         with:
@@ -164,15 +197,30 @@ jobs:
             org.opencontainers.image.title=revaro
             org.opencontainers.image.description=Private local file manager with native media playback
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-      - name: Build and publish image
-        id: build
-        uses: docker/build-push-action@v7.3.0
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=revaro-image-amd64-v3
-      - name: Record image digest
-        run: echo "Published ghcr.io/vesperglow/revaro@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Tag the tested image
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          first_tag=
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag revaro-e2e:local "$tag"
+            if [ -z "$first_tag" ]; then first_tag="$tag"; fi
+          done <<< "$IMAGE_TAGS"
+          test -n "$first_tag"
+      - name: Push the tested image
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          digest=
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            push_output="$(docker push "$tag" 2>&1)"
+            printf '%s\n' "$push_output"
+            current_digest="$(printf '%s\n' "$push_output" | sed -n 's/^digest: //p' | tail -1)"
+            if [ -n "$current_digest" ]; then digest="$current_digest"; fi
+          done <<< "$IMAGE_TAGS"
+          test -n "$digest"
+          printf 'Published ghcr.io/vesperglow/revaro@%s\n' "$digest" >> "$GITHUB_STEP_SUMMARY"

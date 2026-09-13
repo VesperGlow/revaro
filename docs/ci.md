@@ -16,7 +16,10 @@
 基址和两种情况下的空 Cookie 覆盖值，防止宿主端口调整后 Origin 守卫拒绝登录，
 或示例配置意外关闭 HTTPS Cookie 安全属性。
 
-容器 job 是 `revaro-image-amd64-v3` BuildKit 缓存的唯一写入者；发布 job 只读取
-该缓存并推送经过验证的 GHCR 镜像。主分支不会在缓存导出期间取消，PR 仍会取消
-过时运行。正式发布仍由 CI Docker runner 完成；当前开发环境的 Docker service
-无法启动，但已用 Buildah 的 host-userns 路径完成等价镜像构建和容器 E2E。
+容器 job 是 `revaro-image-amd64-v3` BuildKit 缓存的唯一写入者。主分支和版本标签
+在 E2E 通过后还会把已加载的 amd64 镜像导出为保留 1 天的 artifact；发布 job 下载
+并加载这个 artifact，只重新打标签后推送 GHCR，因此发布的镜像就是刚刚通过容器
+验收的那一个。PR 不上传镜像 artifact，也不会进入发布 job。主分支不会在缓存
+导出期间取消，PR 仍会取消过时运行。正式发布仍由 CI Docker runner 完成；当前
+开发环境的 Docker service 无法启动，但已用 Buildah 的 host-userns 路径完成等价
+镜像构建和容器 E2E。

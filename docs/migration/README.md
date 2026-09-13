@@ -272,6 +272,9 @@ workspace 的 fmt、clippy、全量测试、wasm 检查和 release 构建；Comp
 `.env.example` 保持 `COOKIE_SECURE` 为空，让服务端根据 `APP_BASE_URL` 自动启用
 HTTPS Cookie 属性；只有确实需要覆盖默认行为时才显式设置它。
 
+CI 的容器 job 在 Chromium 验收通过后才导出主分支/版本标签的 amd64 镜像 artifact，
+发布 job 下载并推送同一个镜像，不再独立重建一个未经该 E2E 运行的发布产物。
+
 浏览器测试位于 `tests/e2e/`，并由 `.dockerignore` 排除；Dockerfile 只复制 Cargo
 workspace、Rust 静态资源和 release 产物。根 workspace 已不再排除 sidecar，仓库中
 也不再有 Go、Vue/Vite 或独立 data-plane 源码；test-only npm 包不进入生产镜像。
@@ -431,6 +434,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8f EPUB 实际浏览器验收 | ✅ | `test(e2e): 验证 Rust EPUB 阅读器流程` |
 | 8g 生产镜像 EPUB 容器行为验收 | ✅ | `test(deploy): 验收生产镜像阅读器流程` |
 | 8h HTTPS Cookie 默认安全属性 | ✅ | `fix(deploy): 保持 HTTPS Cookie 自动安全属性` |
+| 8i 发布经过 E2E 的同一镜像 | ✅ | `ci(deploy): 发布已验收的镜像产物` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -663,6 +667,13 @@ HTTP/HTTPS 两种 Compose 渲染断言，确保该变量留空并由 Rust 按基
 release `revaro`，带匹配 Origin 登录返回的 session Cookie 实际含 `Secure`。
 `cargo xtask check`（407 个测试、fmt、clippy、wasm32）仍通过；下一步进入 CI
 Docker runner 和目标部署环境验收。
+
+阶段 8i 验收：容器 job 现在在三条 Chromium E2E 通过后用 `docker save` 导出
+`revaro-e2e:local`，主分支/版本标签上传短期 artifact；publish job 下载、`docker load`
+后只为 metadata 生成的 GHCR tags 重新标记并逐一推送，移除了第二次
+`docker/build-push-action`。CI YAML 和所有内嵌 shell 片段解析通过，发布脚本的多标签
+推送与 digest 提取用 stub Docker 验证通过；PR 路径仍不上传 artifact。下一步进入
+CI Docker runner 的真实运行和目标部署环境验收。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、
