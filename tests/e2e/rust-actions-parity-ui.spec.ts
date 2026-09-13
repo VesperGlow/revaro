@@ -66,6 +66,26 @@ async function publicFetch(page: Parameters<typeof login>[0], url: string) {
   }, url)
 }
 
+async function publicResponse(page: Parameters<typeof login>[0], url: string, range?: string) {
+  return page.evaluate(async ({ target, rangeValue }) => {
+    const response = await fetch(target, {
+      credentials: 'omit',
+      headers: rangeValue ? { Range: rangeValue } : undefined,
+    })
+    const headers = Object.fromEntries([
+      'cache-control',
+      'content-disposition',
+      'content-length',
+      'content-range',
+      'content-security-policy',
+      'accept-ranges',
+      'referrer-policy',
+      'x-robots-tag',
+    ].map(name => [name, response.headers.get(name) || '']))
+    return { status: response.status, body: await response.text(), headers }
+  }, { target: url, rangeValue: range })
+}
+
 async function removeCreated(page: Parameters<typeof login>[0], names: string[]) {
   await page.evaluate(async wanted => {
     const headers = { 'Content-Type': 'application/json' }
@@ -112,6 +132,27 @@ test('单文件下载与分享链接生命周期保持 reference 行为', async 
     await expect.poll(() => link.inputValue()).toMatch(/\/s\/[A-Za-z0-9_-]{32,}/)
     const firstUrl = await link.inputValue()
     expect(await publicFetch(page, firstUrl)).toEqual({ status: 200, body: content })
+
+    const publicFile = await publicResponse(page, firstUrl)
+    expect(publicFile.status).toBe(200)
+    expect(publicFile.body).toBe(content)
+    expect(publicFile.headers['cache-control']).toBe('no-store')
+    expect(publicFile.headers['referrer-policy']).toBe('no-referrer')
+    expect(publicFile.headers['x-robots-tag']).toBe('noindex, nofollow, noarchive')
+    expect(publicFile.headers['content-security-policy']).toBe('sandbox; default-src \'none\'; base-uri \'none\'; form-action \'none\'')
+    expect(publicFile.headers['accept-ranges']).toBe('bytes')
+    // Text is intentionally downloaded by the reference server; only its
+    // previewable media types are served inline through a public link.
+    expect(publicFile.headers['content-disposition']).toContain(`attachment; filename*=UTF-8''${encodeURIComponent(name)}`)
+
+    const publicRange = await publicResponse(page, firstUrl, 'bytes=0-5')
+    expect(publicRange.status).toBe(206)
+    expect(publicRange.body).toBe(content.slice(0, 6))
+    expect(publicRange.headers['content-range']).toBe(`bytes 0-5/${Buffer.byteLength(content)}`)
+    expect(publicRange.headers['content-length']).toBe('6')
+
+    const malformed = await publicResponse(page, `${baseOrigin}/s/short`)
+    expect(malformed.status).toBe(404)
 
     await share.getByRole('button', { name: '复制链接' }).click()
     await expect(share.getByRole('button', { name: '已复制' })).toBeVisible()

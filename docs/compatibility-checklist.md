@@ -204,10 +204,10 @@
 | `[ ]` | 预览 | `/preview` content type、图片/音频/视频/文本行为、鉴权、缓存、错误、thumbnail fallback 一致。 | caller 分散，待矩阵验证 |
 | `[ ]` | 多选 ZIP | 选择多个文件后一次 prepare、进度/任务、一次性 token 下载、CSP `frame` 约束和失败处理一致。 | 当前 selection 缺少动作 |
 | `[ ]` | 归档解压 | 支持格式、密码输入任务、冲突/错误、取消、任务中心、完成刷新和安全路径行为一致。 | Rust UI/API caller 缺失或不完整 |
-| `[ ]` | 分享读取 | 分享状态读取、已存在/不存在、过期/权限、链接显示、复制失败和关闭一致。 | server route 有，UI 缺失 |
-| `[ ]` | 分享创建 | 单文件创建链接、复制 URL、成功/失败、按钮 loading/disabled、公开页面行为和文案一致。 | old/new action parity 已覆盖读取/创建/复制/重新生成/停止及公开 fetch；剪贴板失败/loading仍待验 |
-| `[ ]` | 分享撤销 | 二次确认（如旧版有）、DELETE、成功/失败、状态刷新、旧链接失效一致。 | old/new action parity 已覆盖停止分享和旧公开链接失效；失败/确认细节仍待验 |
-| `[ ]` | 公开分享页 | `GET /s/{token}` 的文件信息、下载/预览、过期/无效 token、响应头和移动端布局一致。 | 待 old/new 实测 |
+| `[P]` | 分享读取 | 分享状态读取、已存在/不存在、过期/权限、链接显示、复制失败和关闭一致。 | old/new action parity 实际打开 ShareDialog 并读取 inactive/active 状态；共享 test 通过 |
+| `[P]` | 分享创建 | 单文件创建链接、复制 URL、成功/失败、按钮 loading/disabled、公开页面行为和文案一致。 | old/new `rust-actions-parity-ui.spec.ts` 实测创建、复制、重生成和公开读取；两版通过 |
+| `[P]` | 分享撤销 | 二次确认（如旧版有）、DELETE、成功/失败、状态刷新、旧链接失效一致。 | old/new action parity 实测停止分享确认、DELETE、状态回到创建入口和旧链接 404 |
+| `[P]` | 公开分享页 | `GET /s/{token}` 的文件信息、下载/预览、过期/无效 token、响应头和移动端布局一致。 | 旧版实际行为是受安全响应头保护的原始文件流而非 HTML 页面；old/new 实测无 cookie 读取、文本 attachment、Range 206、`no-store`/CSP/robots/referrer headers、短 token 404；移动端无额外页面布局 |
 
 ## 13. 全部旧版 API、调用方和 Rust 版调用覆盖
 
@@ -341,5 +341,5 @@
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard 已 old/new 实测；etag 冲突/全部扩展名未完 | reader/editor parity trace | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`d257696`（E2E） | old reader-flow 17/17、真实 EPUB、Rust TXT/Markdown/EPUB old/new 已通过；逐项 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace | 局部 PASS |
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
-| 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E） | 单文件、ZIP、分享生命周期、归档任务、preview/206/416 已 old/new 实测；公开页完整视觉和错误矩阵未完 | download/share/action parity trace | 局部 PASS |
+| 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、待提交（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
