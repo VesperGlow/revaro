@@ -303,6 +303,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
+| 依赖审计 | `cargo audit --file Cargo.lock` 退出码 0、0 个漏洞；`quick-xml` 已从 0.38.4 升级到 0.41.0，消除 RUSTSEC-2026-0194/0195；仅保留来自 Leptos 传递依赖的 `paste` 与 `proc-macro-error2` 未维护警告 |
 | 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过；Compose 默认基址随 `APP_PORT` 联动 |
 
 ### 剩余 0 条真实路由
@@ -317,6 +318,11 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
   上传队列、任务中心、媒体查看器、目录传输选择器和 EPUB/TXT reader 视图均已落地。
 - **旧实现与生产构建链**：已删除 `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、
   `data-plane/`；`tests/e2e/` 只保留真实 Rust 浏览器行为测试及其 Playwright 依赖。
+
+当前没有待迁移的生产功能模块。剩余验收集中在外部环境：由 CI Docker runner
+实际执行主分支/版本标签的构建、容器 E2E、GHCR 推送并观察发布结果；再在目标部署环境
+确认 registry、`/data` 卷权限、反向代理的 `APP_BASE_URL` 和升级/回滚流程。当前开发
+环境没有可用的 Docker daemon，无法替代该外部验收。
 
 ### 一条值得记住的框架差异（已由测试发现）
 
@@ -435,6 +441,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 8g 生产镜像 EPUB 容器行为验收 | ✅ | `test(deploy): 验收生产镜像阅读器流程` |
 | 8h HTTPS Cookie 默认安全属性 | ✅ | `fix(deploy): 保持 HTTPS Cookie 自动安全属性` |
 | 8i 发布经过 E2E 的同一镜像 | ✅ | `ci(deploy): 发布已验收的镜像产物` |
+| 8j quick-xml 解析依赖安全升级 | ✅ | `security(deps): 升级 quick-xml 规避解析漏洞` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -674,6 +681,16 @@ Docker runner 和目标部署环境验收。
 `docker/build-push-action`。CI YAML 和所有内嵌 shell 片段解析通过，发布脚本的多标签
 推送与 digest 提取用 stub Docker 验证通过；PR 路径仍不上传 artifact。下一步进入
 CI Docker runner 的真实运行和目标部署环境验收。
+
+阶段 8j 验收：`quick-xml` 从 0.38.4 升级到 0.41.0，EPUB 容器、OPF 和 NCX
+解析改用 XML 1.0 的 `normalized_value` 接口；`cargo audit --file Cargo.lock`
+发现的 RUSTSEC-2026-0194（重复属性检查的二次复杂度）和 RUSTSEC-2026-0195
+（命名空间声明无界分配）均已消除，审计退出码为 0。审计仍报告两个允许的未维护
+警告：`paste` 和 `proc-macro-error2` 都是 Leptos 宏链的传递依赖，当前没有生产代码
+直接引入，待上游兼容升级时一并处理。reader 的 48 个单元测试和 10 个 EPUB 集成
+测试、`cargo xtask check`（workspace 407 个测试、fmt、clippy `-D warnings`、wasm32）、
+`cargo xtask build` 以及真实 release `revaro` 进程的媒体/TXT/EPUB 三条 Chromium
+场景（3 passed）全部通过。下一步仍是 CI Docker runner 的真实运行和目标部署环境验收。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

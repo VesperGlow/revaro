@@ -63,7 +63,7 @@ subtle = "2.6"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 libarchive2 = "0.2.1"
 ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "filter", "software-resampling", "software-scaling"] }
-quick-xml = "0.38"
+quick-xml = "0.41"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [profile.release]

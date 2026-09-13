@@ -20,6 +20,7 @@ use std::io::{Read, Seek};
 use std::sync::LazyLock;
 
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use quick_xml::escape::unescape;
 use quick_xml::events::{BytesCData, BytesEnd, BytesStart, BytesText, Event};
 use regex::Regex;
@@ -380,7 +381,7 @@ fn attribute(event: &BytesStart, key: &str) -> Option<String> {
     for attribute in event.attributes().flatten() {
         if attribute.key.local_name().as_ref() == key.as_bytes() {
             return attribute
-                .unescape_value()
+                .normalized_value(XmlVersion::Implicit1_0)
                 .ok()
                 .map(|value| value.into_owned());
         }
