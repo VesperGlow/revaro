@@ -17,6 +17,7 @@ pub mod archive_runtime;
 pub mod auth;
 pub mod auth_routes;
 pub mod batch_download;
+pub mod cache;
 pub mod config;
 pub mod db;
 pub mod error;

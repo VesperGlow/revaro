@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::auth::AuthService;
+use crate::cache::CacheManager;
 use crate::config::Config;
 use crate::db::Database;
 use crate::storage::LocalStore;
@@ -23,7 +24,7 @@ use revaro_reader::BookCache;
 #[derive(Debug)]
 pub struct ReaderRuntime {
     /// LRU of parsed EPUB/TXT books.
-    pub books: BookCache,
+    pub books: Arc<BookCache>,
     book_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     flow_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -65,7 +66,7 @@ impl ReaderRuntime {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            books: BookCache::new(4, 128 << 20),
+            books: Arc::new(BookCache::new(4, 128 << 20)),
             book_locks: Mutex::new(HashMap::new()),
             flow_locks: Mutex::new(HashMap::new()),
         }
@@ -160,6 +161,8 @@ pub struct AppState {
     pub store: LocalStore,
     /// Administrator credentials, sessions and second factor.
     pub auth: AuthService,
+    /// Process-wide L1/L2 cache policy and statistics.
+    pub cache: CacheManager,
     /// Native media probing, thumbnail and subtitle coordination.
     pub media: crate::media_runtime::MediaRuntime,
     /// Native archive extraction and task lifecycle coordination.
@@ -185,19 +188,24 @@ impl AppState {
         store: LocalStore,
         auth: AuthService,
     ) -> Arc<Self> {
-        let media_cache_capacity =
-            usize::try_from(config.media_cache_capacity.max(0)).unwrap_or(usize::MAX);
+        let reader = ReaderRuntime::new();
+        let cache = CacheManager::for_app(
+            &config.work_dir,
+            config.media_cache_capacity,
+            Arc::clone(&reader.books),
+        );
         Arc::new(Self {
             config,
             db,
             store,
             auth,
-            media: crate::media_runtime::MediaRuntime::with_cache_capacity(media_cache_capacity),
+            cache,
+            media: crate::media_runtime::MediaRuntime::new(),
             archive: crate::archive_runtime::ArchiveRuntime::new(),
             batch_download: crate::batch_download::BatchDownloadRuntime::new(),
             status: crate::status_routes::StatusRuntime::new(),
             jobs: JobBus::new(256),
-            reader: ReaderRuntime::new(),
+            reader,
             uploads: UploadRuntime::new(),
         })
     }

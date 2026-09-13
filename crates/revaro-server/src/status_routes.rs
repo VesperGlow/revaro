@@ -31,6 +31,7 @@ use tokio::time::{self, Instant, Interval};
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::extract::AuthUser;
+use crate::cache::CacheManager;
 use crate::db::Database;
 use crate::state::AppState;
 use crate::storage::LocalStore;
@@ -64,14 +65,14 @@ impl StatusRuntime {
     }
 
     /// Start the process-owned initial refresh and fifteen-second ticker.
-    pub fn start(&self, database: Database, store: LocalStore) {
+    pub fn start(&self, database: Database, store: LocalStore, cache: CacheManager) {
         if self.started.swap(true, Ordering::AcqRel) {
             return;
         }
         let runtime = self.clone();
         let shutdown = self.shutdown.clone();
         tokio::spawn(async move {
-            if let Err(error) = runtime.refresh_now(&database, &store).await {
+            if let Err(error) = runtime.refresh_now(&database, &store, &cache).await {
                 tracing::warn!(%error, "initial system status refresh failed");
             }
             let mut ticker = time::interval_at(
@@ -82,7 +83,7 @@ impl StatusRuntime {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
                     _ = ticker.tick() => {
-                        if let Err(error) = runtime.refresh_now(&database, &store).await {
+                        if let Err(error) = runtime.refresh_now(&database, &store, &cache).await {
                             tracing::warn!(%error, "system status refresh failed");
                         }
                     }
@@ -102,24 +103,26 @@ impl StatusRuntime {
         &self,
         database: &Database,
         store: &LocalStore,
+        cache: &CacheManager,
     ) -> Result<Status, ApiError> {
         if self.started.load(Ordering::Acquire) {
             if let Some(status) = self.current() {
                 return Ok(status);
             }
-            return self.ensure_snapshot(database, store).await;
+            return self.ensure_snapshot(database, store, cache).await;
         }
 
         // An AppState constructed directly by an embedded caller has no
         // background owner. Recompute on each request instead of returning a
         // stale test or library snapshot after the database changes.
-        self.refresh_now(database, store).await
+        self.refresh_now(database, store, cache).await
     }
 
     async fn ensure_snapshot(
         &self,
         database: &Database,
         store: &LocalStore,
+        cache: &CacheManager,
     ) -> Result<Status, ApiError> {
         if let Some(status) = self.current() {
             return Ok(status);
@@ -128,7 +131,7 @@ impl StatusRuntime {
         if let Some(status) = self.current() {
             return Ok(status);
         }
-        self.collect_and_publish(database, store).await
+        self.collect_and_publish(database, store, cache).await
     }
 
     /// Refresh now and publish the new value to every subscriber.
@@ -136,9 +139,10 @@ impl StatusRuntime {
         &self,
         database: &Database,
         store: &LocalStore,
+        cache: &CacheManager,
     ) -> Result<Status, ApiError> {
         let _guard = self.refresh_lock.lock().await;
-        self.collect_and_publish(database, store).await
+        self.collect_and_publish(database, store, cache).await
     }
 
     fn current(&self) -> Option<Status> {
@@ -149,8 +153,9 @@ impl StatusRuntime {
         &self,
         database: &Database,
         store: &LocalStore,
+        cache: &CacheManager,
     ) -> Result<Status, ApiError> {
-        let mut status = collect_system_status(database).await?;
+        let mut status = collect_system_status(database, cache).await?;
         // Probing the store is kept outside the SQLite worker. It exercises
         // the same write/delete check used during startup and makes a full
         // disk or permission failure visible as a degraded storage component.
@@ -188,7 +193,7 @@ async fn system_status(
     Ok(Json(
         state
             .status
-            .current_or_refresh(&state.db, &state.store)
+            .current_or_refresh(&state.db, &state.store, &state.cache)
             .await?,
     ))
 }
@@ -204,7 +209,7 @@ async fn system_status_stream(
     let mut receiver = state.status.subscribe();
     let initial = state
         .status
-        .current_or_refresh(&state.db, &state.store)
+        .current_or_refresh(&state.db, &state.store, &state.cache)
         .await?;
     let _ = receiver.borrow_and_update();
 
@@ -270,11 +275,20 @@ fn status_frame(status: &Status) -> Bytes {
     frame.into()
 }
 
-async fn collect_system_status(database: &Database) -> Result<Status, ApiError> {
+async fn collect_system_status(
+    database: &Database,
+    cache: &CacheManager,
+) -> Result<Status, ApiError> {
+    let cache_status = cache.system_status();
+    let cache_healthy = cache_status.status == "ok";
     database
-        .call_api(|connection| {
+        .call_api(move |connection| {
             let mut status = Status {
-                status: "ok".to_owned(),
+                status: if cache_healthy {
+                    "ok".to_owned()
+                } else {
+                    "degraded".to_owned()
+                },
                 database: revaro_core::api::system::Component {
                     status: "ok".to_owned(),
                     bytes: 0,
@@ -285,18 +299,8 @@ async fn collect_system_status(database: &Database) -> Result<Status, ApiError> 
                     trash_bytes: 0,
                     file_count: 0,
                 },
-                cache: revaro_core::api::system::Cache {
-                    // The global cache manager is a later migration slice. A
-                    // zeroed `ok` result would falsely claim it was measured.
-                    status: "degraded".to_owned(),
-                    memory_bytes: 0,
-                    disk_bytes: 0,
-                    memory_entries: 0,
-                    disk_entries: 0,
-                    classes: None,
-                },
+                cache: cache_status,
             };
-            status.status = "degraded".to_owned();
 
             let pages = connection.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0));
             let page_size =
@@ -350,17 +354,18 @@ mod tests {
     use tower::ServiceExt as _;
 
     async fn state() -> Arc<AppState> {
-        let config = crate::config::Config::from_lookup(&|name| match name {
-            "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
-            "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
-            _ => None,
-        })
-        .unwrap();
         let root = std::env::temp_dir().join(format!(
             "revaro-status-store-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
+        let config = crate::config::Config::from_lookup(&|name| match name {
+            "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
+            "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
+            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
+            _ => None,
+        })
+        .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         let store = LocalStore::open(&root).await.unwrap();
         let database = Database::open_in_memory().unwrap();
@@ -441,7 +446,10 @@ mod tests {
             .strip_suffix("\n\n")
             .unwrap();
         let status: Status = serde_json::from_str(json).unwrap();
-        assert_eq!(status.cache.status, "degraded");
+        assert_eq!(status.cache.status, "ok");
+        let classes = status.cache.classes.as_ref().unwrap();
+        assert!(classes.contains_key(crate::cache::READER_FLOW_MANIFEST));
+        assert!(classes.contains_key(crate::cache::MEDIA_SUBTITLE));
 
         state
             .db
@@ -458,7 +466,7 @@ mod tests {
             .unwrap();
         state
             .status
-            .refresh_now(&state.db, &state.store)
+            .refresh_now(&state.db, &state.store, &state.cache)
             .await
             .unwrap();
         let next = body.frame().await.unwrap().unwrap().into_data().unwrap();

@@ -169,8 +169,15 @@ Node/npm 仅保留为 test-only Playwright 运行器，不属于生产构建或�
 ### 阶段 9 — 迁移复核收尾
 阶段 9a 修复迁移复核发现的上传完整性缺口：单请求和多分片完成都以有界流式
 SHA-256 写入 `content_hash`，并按 upload id 串行化写入、分片确认、完成和中止；
-多分片完成还必须提供完整连续的分片列表。全局 cache manager 与后台维护调度器
-仍保留为后续收尾项，当前状态接口会明确报告 cache 未接入，而不会伪报正常。
+多分片完成还必须提供完整连续的分片列表。后台维护调度器仍保留为后续收尾项。
+
+阶段 9b 已完成全局 cache manager 接入：`reader/source` 使用受 64 MiB 单项上限
+约束的磁盘 L2，reader flow 的 manifest/chunk 使用带 TTL 的内存 L1，`media/subtitle`
+使用带 2 小时 TTL 的内存+磁盘两级缓存，解析后的 `reader/books` LRU 作为外部内存
+提供者纳入 96 MiB 全局预算和状态统计。manager 实现优先级/软配额淘汰、磁盘
+`.meta` 精确格式、启动重建与孤儿清理、单飞加载、等待者取消和关闭时的加载取消；
+reader、字幕路由和 system status 已改为使用同一实例。路由测试验证 flow 缺失 chunk
+自愈、外置字幕源删除后的缓存响应、缓存命中计数和状态 class 列表。
 
 ## 4. 已记录的风险与遗留问题
 
@@ -300,7 +307,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 
 | 项 | 值 |
 |---|---|
-| 测试 | **410 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 172 = 169 单元 + 3 集成、web 46、xtask 5） |
+| 测试 | **420 个**（core 109、media 21、reader 58 = 48 单元 + 10 集成、server 181 = 178 单元 + 3 集成、web 46、xtask 5） |
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
@@ -308,7 +315,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 | reader 验证 | 真实 `revaro` 进程通过登录、TXT/EPUB 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈；`tests/e2e/rust-reader-ui.spec.ts` 通过真实浏览器验证 TXT 分页和深链，以及 EPUB 章节清洗、两条目录、第二章定位和进度恢复 |
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
-| status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
+| status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、缓存 class 列表、精确 SSE 响应头、首帧、刷新帧；真实 release 进程通过登录、状态 JSON、未认证拒绝和 cache `ok`/五个 class |
 | 依赖审计 | `cargo audit --file Cargo.lock` 退出码 0、0 个漏洞；`quick-xml` 已从 0.38.4 升级到 0.41.0，消除 RUSTSEC-2026-0194/0195；仅保留来自 Leptos 传递依赖的 `paste` 与 `proc-macro-error2` 未维护警告 |
 | runtime 镜像边界 | CI 在容器 E2E 前检查默认 UID/GID 10001 的 `revaro` 用户，并确认最终运行层没有 Go、Node、npm；本地更新镜像执行同一检查通过 |
 | 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过；Compose 默认基址随 `APP_PORT` 联动 |
@@ -325,9 +332,10 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
   上传队列、任务中心、媒体查看器、目录传输选择器和 EPUB/TXT reader 视图均已落地。
 - **旧实现与生产构建链**：已删除 `web/`、`internal/`、`cmd/`、`go.mod`、`go.sum`、
   `data-plane/`；`tests/e2e/` 只保留真实 Rust 浏览器行为测试及其 Playwright 依赖。
-- **缓存与后台维护**：当前 `reader` 解析缓存和媒体字幕缓存仍是各自独立的局部缓存，
-  全局 L1/L2 cache manager、阅读源磁盘缓存、缓存统计及定时清理/回收调度尚未接入；
-  `GET /api/system/status` 会把这部分明确标为 `degraded`。
+- **缓存与后台维护**：全局 L1/L2 cache manager 已接入 reader/source、flow、parsed
+  books 和 media/subtitle，状态接口会报告实际 class/counter/容量；后台定时 `prune`
+  调度、flow 对象 GC、object_cleanup、临时上传、session、trash 和孤儿 blob 的统一
+  maintenance manager 仍待接入。
 
 当前没有待迁移的生产 HTTP 路由；上述缓存与后台维护仍是生产运行行为的收尾模块。剩余
 验收还包括外部环境：由 CI Docker runner

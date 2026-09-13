@@ -24,6 +24,7 @@ use rusqlite::OptionalExtension;
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::extract::AuthUser;
+use crate::cache::{CacheError, CacheLoadError, CacheLoadKind, MEDIA_SUBTITLE};
 use crate::file_routes;
 use crate::state::AppState;
 
@@ -647,40 +648,61 @@ async fn convert_cached_subtitle(
     format: Option<String>,
     stream_index: Option<usize>,
 ) -> Result<Vec<u8>, MediaError> {
-    if let Some(cached) = state.media.subtitle_cache_get(&cache_key) {
-        return Ok(cached);
-    }
-    // The owned lock and native operation live in a detached task. Dropping a
-    // disconnected HTTP request therefore does not cancel a conversion that
-    // can still be reused by the next track request.
-    let lock = state.media.thumbnail_lock(&cache_key).await;
     let task_state = Arc::clone(state);
     let task_file = file.clone();
-    let task_key = cache_key;
-    let task = tokio::spawn(async move {
-        let _lock = lock;
-        if let Some(cached) = task_state.media.subtitle_cache_get(&task_key) {
-            return Ok(cached);
-        }
-        let converted = run_engine(
-            &task_state,
-            &task_file,
-            Arc::clone(&task_state.media.light_slots),
-            move |engine, reader, cancel| {
-                engine.subtitle(reader, format.as_deref(), stream_index, cancel)
+    state
+        .cache
+        .load(
+            MEDIA_SUBTITLE,
+            &cache_key,
+            SUBTITLE_CACHE_TTL,
+            move || async move {
+                let converted = run_engine(
+                    &task_state,
+                    &task_file,
+                    Arc::clone(&task_state.media.light_slots),
+                    move |engine, reader, cancel| {
+                        engine.subtitle(reader, format.as_deref(), stream_index, cancel)
+                    },
+                )
+                .await
+                .map_err(subtitle_cache_load_error)?;
+                if converted.len() > MAX_SUBTITLE_BYTES.saturating_mul(2) {
+                    return Err(CacheLoadError::too_large(
+                        MediaError::ConvertedSubtitleTooLarge.to_string(),
+                    ));
+                }
+                Ok(converted)
             },
         )
-        .await?;
-        if converted.len() > MAX_SUBTITLE_BYTES.saturating_mul(2) {
-            return Err(MediaError::ConvertedSubtitleTooLarge);
+        .await
+        .map_err(subtitle_cache_error)
+}
+
+fn subtitle_cache_load_error(error: MediaError) -> CacheLoadError {
+    let kind = if matches!(
+        &error,
+        MediaError::SubtitleTooLarge | MediaError::ConvertedSubtitleTooLarge
+    ) {
+        CacheLoadKind::TooLarge
+    } else {
+        CacheLoadKind::Other
+    };
+    CacheLoadError::new(kind, error.to_string())
+}
+
+fn subtitle_cache_error(error: CacheError) -> MediaError {
+    match error {
+        CacheError::Loader(error) if error.kind() == CacheLoadKind::TooLarge => {
+            if error.message() == MediaError::SubtitleTooLarge.to_string() {
+                MediaError::SubtitleTooLarge
+            } else {
+                MediaError::ConvertedSubtitleTooLarge
+            }
         }
-        task_state
-            .media
-            .subtitle_cache_put(task_key, converted.clone(), SUBTITLE_CACHE_TTL);
-        Ok(converted)
-    });
-    task.await
-        .map_err(|error| MediaError::Input(format!("subtitle task failed: {error}")))?
+        CacheError::Loader(error) => MediaError::Input(error.to_string()),
+        error => MediaError::Input(error.to_string()),
+    }
 }
 
 fn subtitle_api_error(error: MediaError, embedded: bool) -> revaro_core::ApiError {
@@ -744,7 +766,14 @@ async fn reanalyze_media(
                 .map_err(file_routes::database_error)
         })
         .await?;
-    state.media.clear_subtitle_cache_for(&file.id);
+    state
+        .cache
+        .invalidate(&format!("{MEDIA_SUBTITLE}\0embedded-v2:{}:", file.id))
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, file = %file.id, "could not invalidate embedded subtitle cache");
+            revaro_core::ApiError::internal("could not invalidate subtitle cache")
+        })?;
     let probe = probe_file(&state, &file)
         .await
         .map_err(|_| revaro_core::ApiError::unprocessable("media re-analysis failed"))?;
@@ -974,14 +1003,15 @@ mod tests {
     use tower::ServiceExt as _;
 
     async fn state() -> Arc<AppState> {
+        let root =
+            std::env::temp_dir().join(format!("revaro-media-routes-{}", uuid::Uuid::new_v4()));
         let config = crate::config::Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
+            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
             _ => None,
         })
         .expect("test configuration is valid");
-        let root =
-            std::env::temp_dir().join(format!("revaro-media-routes-{}", uuid::Uuid::new_v4()));
         let store = crate::storage::LocalStore::open(root)
             .await
             .expect("object store opens");
@@ -1266,6 +1296,11 @@ mod tests {
         let (status, _, second) = request(&state, "GET", &uri).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(second, first, "the converted subtitle remains cached");
+        let stats = state.cache.stats();
+        let subtitle = &stats.classes[MEDIA_SUBTITLE];
+        assert_eq!(subtitle.loads, 1);
+        assert_eq!(subtitle.memory_entries, 1);
+        assert_eq!(subtitle.disk_entries, 1);
     }
 
     #[tokio::test]

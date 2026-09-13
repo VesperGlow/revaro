@@ -98,7 +98,9 @@ async fn main() -> ExitCode {
     // must not leave background extraction workers running in a process that
     // is about to exit.
     revaro_server::archive_routes::recover(state.clone()).await;
-    state.status.start(state.db.clone(), state.store.clone());
+    state
+        .status
+        .start(state.db.clone(), state.store.clone(), state.cache.clone());
 
     tracing::info!(
         addr = %addr,
@@ -116,6 +118,7 @@ async fn main() -> ExitCode {
     .await;
     state.status.shutdown();
     state.archive.shutdown();
+    state.cache.close().await;
     match result {
         Ok(()) => {
             tracing::info!("server stopped");

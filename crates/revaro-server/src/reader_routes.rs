@@ -9,6 +9,7 @@
 
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Path as PathParam, State};
 use axum::response::Response;
@@ -24,6 +25,10 @@ use rusqlite::OptionalExtension;
 
 use crate::auth::extract::AuthUser;
 use crate::auth_routes::JsonBody;
+use crate::cache::{
+    CacheError, CacheLoadError, CacheLoadKind, READER_FLOW_CHUNK, READER_FLOW_MANIFEST,
+    READER_SOURCE,
+};
 use crate::file_routes;
 use crate::state::AppState;
 use crate::storage::StorageError;
@@ -102,11 +107,24 @@ pub(crate) async fn load_book(
     } else {
         revaro_reader::MAX_TXT as usize
     };
+    let source_key = file.object_key.clone();
+    let source_key_for_load = source_key.clone();
+    let store = state.store.clone();
     let bytes = state
-        .store
-        .read(&file.object_key, limit)
+        .cache
+        .load(
+            READER_SOURCE,
+            &source_key,
+            Duration::ZERO,
+            move || async move {
+                store
+                    .read(&source_key_for_load, limit)
+                    .await
+                    .map_err(reader_cache_load_error)
+            },
+        )
         .await
-        .map_err(|error| reader_load_error(error, file))?;
+        .map_err(|error| reader_cache_error(error, file))?;
     let name = file.name.clone();
     let size = file.size;
     let asset_base = format!("/api/files/{}/book/assets", file.id);
@@ -122,17 +140,35 @@ pub(crate) async fn load_book(
     Ok(book)
 }
 
-fn reader_load_error(error: StorageError, file: &File) -> ApiError {
-    tracing::error!(%error, "could not read book source");
-    if matches!(error, StorageError::TooLarge { .. })
-        && !revaro_core::classify::is_epub_name(&file.name)
-    {
-        return reader_parse_error(format!(
-            "文本文件超过 {} MiB 限制，请下载后离线阅读",
-            revaro_reader::MAX_TXT >> 20
-        ));
+fn reader_cache_load_error(error: StorageError) -> CacheLoadError {
+    let kind = if error.is_not_found() {
+        CacheLoadKind::NotFound
+    } else if matches!(error, StorageError::TooLarge { .. }) {
+        CacheLoadKind::TooLarge
+    } else {
+        CacheLoadKind::Other
+    };
+    CacheLoadError::new(kind, error.to_string())
+}
+
+fn reader_cache_error(error: CacheError, file: &File) -> ApiError {
+    match error {
+        CacheError::Loader(error) if error.kind() == CacheLoadKind::TooLarge => {
+            if !revaro_core::classify::is_epub_name(&file.name) {
+                reader_parse_error(format!(
+                    "文本文件超过 {} MiB 限制，请下载后离线阅读",
+                    revaro_reader::MAX_TXT >> 20
+                ))
+            } else {
+                reader_parse_error(error.message())
+            }
+        }
+        CacheError::Loader(error) => reader_parse_error(error.message()),
+        error => {
+            tracing::error!(%error, "could not read cached book source");
+            reader_parse_error(error.to_string())
+        }
     }
-    reader_parse_error(error.to_string())
 }
 
 fn reader_parse_error(error: impl Into<String>) -> ApiError {
@@ -312,14 +348,9 @@ async fn book_flow(
     let file = reader_file(Arc::clone(&state), id).await?;
     ensure_flow(Arc::clone(&state), &file).await?;
     let manifest_key = keys::flow_manifest_key(&file.object_key, FLOW_VERSION);
-    let data = state
-        .store
-        .read(&manifest_key, revaro_reader::flow::MAX_FLOW_OBJECT)
+    let data = read_flow_object(&state, READER_FLOW_MANIFEST, &manifest_key)
         .await
-        .map_err(|error| {
-            tracing::error!(%error, "could not read flow manifest");
-            ApiError::internal("could not read flow manifest")
-        })?;
+        .map_err(flow_cache_api_error)?;
     serde_json::from_slice::<reader_model::FlowManifest>(&data).map_err(|error| {
         tracing::error!(%error, "flow manifest is invalid");
         ApiError::internal("could not read flow manifest")
@@ -355,17 +386,26 @@ async fn book_flow_chunk(
         FLOW_VERSION,
         u32::try_from(index).unwrap_or(u32::MAX),
     );
-    let data = match state
-        .store
-        .read(&key, revaro_reader::flow::MAX_FLOW_OBJECT)
-        .await
-    {
-        Ok(data) => data,
-        Err(error) if error.is_not_found() => {
+    if let Err(error) = state.store.head(&key).await {
+        if error.is_not_found() {
+            let _ = state
+                .cache
+                .delete(
+                    READER_FLOW_CHUNK,
+                    &flow_chunk_cache_key_from_object_key(&key),
+                )
+                .await;
             rebuild_flow(Arc::clone(&state), &file).await?;
-            state
-                .store
-                .read(&key, revaro_reader::flow::MAX_FLOW_OBJECT)
+        } else {
+            tracing::error!(%error, "could not stat flow chunk");
+            return Err(ApiError::internal("could not read flow chunk"));
+        }
+    }
+    let data = match read_flow_object(&state, READER_FLOW_CHUNK, &key).await {
+        Ok(data) => data,
+        Err(error) if error.is_loader_not_found() => {
+            rebuild_flow(Arc::clone(&state), &file).await?;
+            read_flow_object(&state, READER_FLOW_CHUNK, &key)
                 .await
                 .map_err(|_| ApiError::not_found("chunk not found"))?
         }
@@ -387,14 +427,9 @@ async fn read_manifest(
     file: &File,
 ) -> Result<reader_model::FlowManifest, ApiError> {
     let key = keys::flow_manifest_key(&file.object_key, FLOW_VERSION);
-    let data = state
-        .store
-        .read(&key, revaro_reader::flow::MAX_FLOW_OBJECT)
+    let data = read_flow_object(state, READER_FLOW_MANIFEST, &key)
         .await
-        .map_err(|error| {
-            tracing::error!(%error, "could not read flow manifest");
-            ApiError::internal("could not read flow manifest")
-        })?;
+        .map_err(flow_cache_api_error)?;
     serde_json::from_slice(&data).map_err(|error| {
         tracing::error!(%error, "flow manifest is invalid");
         ApiError::internal("could not read flow manifest")
@@ -415,7 +450,82 @@ async fn ensure_flow(state: Arc<AppState>, file: &File) -> Result<(), ApiError> 
 
 async fn rebuild_flow(state: Arc<AppState>, file: &File) -> Result<(), ApiError> {
     let _guard = state.reader.flow_lock(&file.object_key).await;
+    let _ = state
+        .cache
+        .invalidate(&format!(
+            "{READER_FLOW_MANIFEST}\0{}",
+            flow_manifest_cache_key(&file.object_key)
+        ))
+        .await;
+    let _ = state
+        .cache
+        .invalidate(&format!(
+            "{READER_FLOW_CHUNK}\0{}",
+            flow_chunk_cache_key_prefix(&file.object_key)
+        ))
+        .await;
     generate_flow(state, file).await
+}
+
+async fn read_flow_object(
+    state: &AppState,
+    class: &'static str,
+    object_key: &str,
+) -> Result<Vec<u8>, CacheError> {
+    let cache_key = if class == READER_FLOW_MANIFEST {
+        flow_manifest_cache_key_from_object_key(object_key)
+    } else {
+        flow_chunk_cache_key_from_object_key(object_key)
+    };
+    let store_key = object_key.to_owned();
+    let store = state.store.clone();
+    state
+        .cache
+        .load(
+            class,
+            &cache_key,
+            state.config.flow_cache_ttl,
+            move || async move {
+                store
+                    .read(&store_key, revaro_reader::flow::MAX_FLOW_OBJECT)
+                    .await
+                    .map_err(reader_cache_load_error)
+            },
+        )
+        .await
+}
+
+fn flow_manifest_cache_key(object_key: &str) -> String {
+    format!("manifest/{object_key}/f{FLOW_VERSION}")
+}
+
+fn flow_manifest_cache_key_from_object_key(object_key: &str) -> String {
+    let prefix = "flows/";
+    let Some(rest) = object_key.strip_prefix(prefix) else {
+        return object_key.to_owned();
+    };
+    let Some(book) = rest.strip_suffix("/manifest.json") else {
+        return object_key.to_owned();
+    };
+    format!("manifest/{book}")
+}
+
+fn flow_chunk_cache_key_prefix(object_key: &str) -> String {
+    format!("chunk/{object_key}/f{FLOW_VERSION}/")
+}
+
+fn flow_chunk_cache_key_from_object_key(object_key: &str) -> String {
+    let prefix = "flows/";
+    let Some(rest) = object_key.strip_prefix(prefix) else {
+        return object_key.to_owned();
+    };
+    let Some((book, index)) = rest.split_once("/chunks/") else {
+        return object_key.to_owned();
+    };
+    let Some(index) = index.strip_suffix(".html") else {
+        return object_key.to_owned();
+    };
+    format!("chunk/{book}/{index}")
 }
 
 async fn generate_flow(state: Arc<AppState>, file: &File) -> Result<(), ApiError> {
@@ -469,6 +579,11 @@ fn flow_build_error(error: impl Into<String>) -> ApiError {
     ApiError::unprocessable(format!("无法生成阅读流：{}", error.into()))
 }
 
+fn flow_cache_api_error(error: CacheError) -> ApiError {
+    tracing::error!(%error, "could not read cached flow object");
+    ApiError::internal("could not read flow object")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,14 +601,15 @@ mod tests {
     const SESSION: &str = "reader-route-session";
 
     async fn state() -> Arc<AppState> {
+        let root =
+            std::env::temp_dir().join(format!("revaro-reader-routes-{}", uuid::Uuid::new_v4()));
         let config = crate::config::Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
+            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
             _ => None,
         })
         .expect("test configuration is valid");
-        let root =
-            std::env::temp_dir().join(format!("revaro-reader-routes-{}", uuid::Uuid::new_v4()));
         let store = crate::storage::LocalStore::open(root)
             .await
             .expect("object store opens");
@@ -729,6 +845,10 @@ mod tests {
         assert!(html.contains(r#"data-block="0""#));
         assert!(html.contains("/api/files/reader-epub/book/assets/0?v="));
         assert!(!html.contains("<script"));
+        let stats = state.cache.stats();
+        assert_eq!(stats.classes[READER_SOURCE].loads, 1);
+        assert_eq!(stats.classes[READER_FLOW_MANIFEST].loads, 1);
+        assert_eq!(stats.classes[READER_FLOW_CHUNK].loads, 1);
     }
 
     #[tokio::test]

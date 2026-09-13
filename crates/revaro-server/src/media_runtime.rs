@@ -7,7 +7,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
 
 use revaro_media::MediaEngine;
 
@@ -24,19 +23,12 @@ pub struct MediaRuntime {
     thumbnail_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     video_thumbnail_jobs: Mutex<HashSet<String>>,
     analysis_jobs: Mutex<HashSet<String>>,
-    subtitle_cache: Mutex<SubtitleCache>,
 }
 
 impl MediaRuntime {
     /// Create the bounded media runtime used by a server process.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_cache_capacity(64 << 20)
-    }
-
-    /// Create the runtime with the configured converted-subtitle cache size.
-    #[must_use]
-    pub fn with_cache_capacity(capacity: usize) -> Self {
         Self {
             engine: MediaEngine,
             light_slots: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -45,7 +37,6 @@ impl MediaRuntime {
             thumbnail_locks: Mutex::new(HashMap::new()),
             video_thumbnail_jobs: Mutex::new(HashSet::new()),
             analysis_jobs: Mutex::new(HashSet::new()),
-            subtitle_cache: Mutex::new(SubtitleCache::new(capacity)),
         }
     }
 
@@ -94,43 +85,6 @@ impl MediaRuntime {
             .remove(key);
     }
 
-    /// Return a fresh converted subtitle from the bounded memory cache.
-    pub fn subtitle_cache_get(&self, key: &str) -> Option<Vec<u8>> {
-        self.subtitle_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(key)
-    }
-
-    /// Insert one converted subtitle. Values larger than the cache capacity
-    /// are intentionally left uncached rather than evicting every smaller
-    /// subtitle in the process.
-    pub fn subtitle_cache_put(&self, key: String, value: Vec<u8>, ttl: Duration) {
-        self.subtitle_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .put(key, value, ttl);
-    }
-
-    /// Drop all converted subtitles after a media source is re-analysed.
-    pub fn clear_subtitle_cache(&self) {
-        self.subtitle_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-    }
-
-    /// Drop embedded subtitles belonging to one media source after a forced
-    /// re-analysis. External subtitle values are keyed by their own file
-    /// version and remain valid when only the video metadata changes.
-    pub fn clear_subtitle_cache_for(&self, file_id: &str) {
-        let mut cache = self
-            .subtitle_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        cache.remove_prefix(&format!("embedded-v2:{file_id}:"));
-    }
-
     fn lock_for(
         &self,
         key: &str,
@@ -144,101 +98,6 @@ impl MediaRuntime {
             .entry(key.to_owned())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
-    }
-}
-
-#[derive(Debug)]
-struct SubtitleCache {
-    capacity: usize,
-    used: usize,
-    entries: HashMap<String, SubtitleCacheEntry>,
-}
-
-#[derive(Debug)]
-struct SubtitleCacheEntry {
-    value: Vec<u8>,
-    expires_at: Instant,
-    used_at: Instant,
-}
-
-impl SubtitleCache {
-    fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            used: 0,
-            entries: HashMap::new(),
-        }
-    }
-
-    fn get(&mut self, key: &str) -> Option<Vec<u8>> {
-        self.remove_expired();
-        let entry = self.entries.get_mut(key)?;
-        entry.used_at = Instant::now();
-        Some(entry.value.clone())
-    }
-
-    fn put(&mut self, key: String, value: Vec<u8>, ttl: Duration) {
-        self.remove_expired();
-        if value.len() > self.capacity {
-            return;
-        }
-        if let Some(previous) = self.entries.remove(&key) {
-            self.used = self.used.saturating_sub(previous.value.len());
-        }
-        while self.used.saturating_add(value.len()) > self.capacity {
-            let Some(oldest) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.used_at)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            if let Some(previous) = self.entries.remove(&oldest) {
-                self.used = self.used.saturating_sub(previous.value.len());
-            }
-        }
-        let now = Instant::now();
-        self.used += value.len();
-        self.entries.insert(
-            key,
-            SubtitleCacheEntry {
-                value,
-                expires_at: now + ttl,
-                used_at: now,
-            },
-        );
-    }
-
-    fn clear(&mut self) {
-        self.used = 0;
-        self.entries.clear();
-    }
-
-    fn remove_prefix(&mut self, prefix: &str) {
-        let keys: Vec<_> = self
-            .entries
-            .keys()
-            .filter(|key| key.starts_with(prefix))
-            .cloned()
-            .collect();
-        for key in keys {
-            if let Some(entry) = self.entries.remove(&key) {
-                self.used = self.used.saturating_sub(entry.value.len());
-            }
-        }
-    }
-
-    fn remove_expired(&mut self) {
-        let now = Instant::now();
-        self.entries.retain(|_, entry| {
-            if entry.expires_at > now {
-                true
-            } else {
-                self.used = self.used.saturating_sub(entry.value.len());
-                false
-            }
-        });
     }
 }
 
@@ -265,25 +124,5 @@ mod tests {
         assert!(!runtime.claim_video_thumbnail("video"));
         runtime.release_video_thumbnail("video");
         assert!(runtime.claim_video_thumbnail("video"));
-        runtime.subtitle_cache_put(
-            "subtitle".to_owned(),
-            b"WEBVTT".to_vec(),
-            Duration::from_secs(60),
-        );
-        runtime.subtitle_cache_put(
-            "embedded-v2:file-a:etag:time:1".to_owned(),
-            b"embedded".to_vec(),
-            Duration::from_secs(60),
-        );
-        assert_eq!(runtime.subtitle_cache_get("subtitle").unwrap(), b"WEBVTT");
-        runtime.clear_subtitle_cache_for("file-a");
-        assert!(
-            runtime
-                .subtitle_cache_get("embedded-v2:file-a:etag:time:1")
-                .is_none()
-        );
-        assert_eq!(runtime.subtitle_cache_get("subtitle").unwrap(), b"WEBVTT");
-        runtime.clear_subtitle_cache();
-        assert!(runtime.subtitle_cache_get("subtitle").is_none());
     }
 }
