@@ -25,7 +25,7 @@ jobs:
         # rust-toolchain.toml pins the channel, components and wasm target.
         run: rustup show active-toolchain
       - name: Restore the cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -50,7 +50,7 @@ jobs:
         # fmt + clippy (-D warnings) + the full test suite + wasm32 type-check.
         run: cargo xtask check
       - name: Audit Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo-audit
           key: cargo-audit-0.22.2
@@ -69,7 +69,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -119,7 +119,7 @@ jobs:
             org.opencontainers.image.title=revaro
             org.opencontainers.image.description=Private local file manager with native media playback
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-      - uses: docker/setup-buildx-action@v4.1.0
+      - uses: docker/setup-buildx-action@v4.3.0
       - name: Build checked amd64 image once
         uses: docker/build-push-action@v7.3.0
         with:
@@ -158,7 +158,7 @@ jobs:
         run: docker save --output /tmp/revaro-e2e.tar revaro-e2e:local
       - name: Upload the tested image
         if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: revaro-tested-image
           path: /tmp/revaro-e2e.tar
@@ -170,7 +170,7 @@ jobs:
         run: docker compose -f compose.e2e.yml logs --no-color > e2e-container.log
       - name: Upload E2E diagnostics
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-e2e-diagnostics
           if-no-files-found: ignore
@@ -193,14 +193,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Download the tested image
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: revaro-tested-image
           path: /tmp/revaro-tested-image
       - name: Load the tested image
         run: docker load --input /tmp/revaro-tested-image/revaro-e2e.tar
       - name: Log in to GHCR
-        uses: docker/login-action@v4.5.1
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
