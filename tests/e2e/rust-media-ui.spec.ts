@@ -84,9 +84,6 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   for (const name of [first, second, audio, video, subtitle]) {
     await page.locator('.file-card').filter({ hasText: name }).waitFor({ timeout: 20_000 })
   }
-  await page.getByRole('region', { name: '上传队列' }).getByRole('button', { name: '清除已完成' }).click()
-  await page.getByRole('region', { name: '上传队列' }).waitFor({ state: 'detached' })
-
   const firstCard = page.locator('.file-card').filter({ hasText: first })
   await firstCard.click()
   await page.locator('.preview-image').waitFor()

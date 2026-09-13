@@ -1,8 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { login } from './helpers'
 
-const ROOT_ID = '00000000-0000-0000-0000-000000000000'
-
 function crc32(data: Buffer) {
   let value = 0xffffffff
   for (const byte of data) {
@@ -91,15 +89,7 @@ function readerText() {
   return `${paragraphs.join('\n\n')}\n`
 }
 
-async function fileId(page: Parameters<typeof login>[0], name: string) {
-  return page.evaluate(async ({ root, target }) => {
-    const response = await fetch(`/api/files/${root}/children`)
-    const data = await response.json() as { items: Array<{ id: string; name: string }> }
-    return data.items.find(item => item.name === target)?.id ?? null
-  }, { root: ROOT_ID, target: name })
-}
-
-test('Rust bundle opens TXT reader, paginates, restores progress and handles deep links', async ({ page }) => {
+test('Rust bundle opens editable TXT files in the document editor', async ({ page }) => {
   const name = `rust-reader-${Date.now().toString(36)}.txt`
 
   await login(page)
@@ -110,66 +100,79 @@ test('Rust bundle opens TXT reader, paginates, restores progress and handles dee
   })
   const card = page.locator('.file-card').filter({ hasText: name })
   await card.waitFor({ timeout: 20_000 })
-  await page.getByRole('region', { name: '上传队列' }).getByRole('button', { name: '清除已完成' }).click()
-  await page.getByRole('region', { name: '上传队列' }).waitFor({ state: 'detached' })
-
   await card.click()
-  await expect(page.locator('#reader-view')).toBeVisible()
-  await expect(page.locator('#loading')).toBeHidden({ timeout: 20_000 })
-  await expect(page.locator('#flow .rf-chunk').first()).toBeAttached()
-  await expect(page.locator('#flow')).toContainText('第1章 初见')
-  await expect.poll(() => page.locator('#flow').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true)
-
-  await page.waitForTimeout(1_500)
-  const before = await page.locator('#flow').evaluate(element => (element as HTMLElement).style.transform)
-  const progressResponse = page.waitForResponse(response => response.url().endsWith('/book/progress') && response.request().method() === 'PUT')
-  await page.locator('#next-zone').click()
-  await progressResponse
-  await expect.poll(() => page.locator('#flow').evaluate(element => (element as HTMLElement).style.transform)).not.toBe(before)
-  const beforeSwipe = await page.locator('#flow').evaluate(element => (element as HTMLElement).style.transform)
-  const viewport = page.locator('#viewport')
-  await viewport.dispatchEvent('pointerdown', { pointerId: 7, pointerType: 'touch', button: 0, clientX: 120, clientY: 300 })
-  await viewport.dispatchEvent('pointermove', { pointerId: 7, pointerType: 'touch', button: 0, clientX: 300, clientY: 302 })
-  await viewport.dispatchEvent('pointerup', { pointerId: 7, pointerType: 'touch', button: 0, clientX: 300, clientY: 302 })
-  await expect.poll(() => page.locator('#flow').evaluate(element => (element as HTMLElement).style.transform)).not.toBe(beforeSwipe)
-
-  await page.locator('#font-button').click()
-  await expect(page.locator('#font-popover')).toBeVisible()
-  const slider = page.locator('#font-slider')
-  const originalFont = Number(await slider.inputValue())
-  await page.locator('#font-larger').click()
-  await expect(slider).toHaveValue(String(originalFont + 1))
-  await page.locator('.v2-lineheight .font-step').nth(2).click()
-  await expect(page.locator('.v2-lineheight .font-step').nth(2)).toHaveClass(/v2-active/)
-  await page.locator('#theme-button').click()
-  await expect(page.locator('#reader-view')).toHaveClass(/dark/)
-
-  await page.locator('#toc-button').click()
-  await expect(page.locator('#toc-drawer')).toHaveClass(/open/)
-  await expect(page.locator('#toc-list .toc-item')).toHaveCount(5)
-  await page.locator('#toc-list .toc-item').nth(1).click()
-  await expect(page.locator('#toc-drawer')).not.toHaveClass(/open/)
-  await expect(page.locator('#toc-list .toc-item').nth(1)).toHaveClass(/active/)
-  await page.waitForTimeout(1_500)
-
-  await page.locator('#reader-back').click()
-  await expect(page.locator('#reader-view')).toHaveCount(0)
+  const editor = page.locator('.document-editor')
+  await expect(editor).toBeVisible()
+  await expect(editor.locator('#editor-title')).toHaveText(name)
+  await expect(editor.locator('textarea')).toHaveValue(readerText())
+  await expect(editor.getByRole('button', { name: '保存' })).toBeDisabled()
+  await editor.getByRole('button', { name: '关闭编辑器' }).click()
+  await expect(editor).toHaveCount(0)
   await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+})
 
+test('文档编辑器按文件名和内容共同判断未保存状态，并格式化字节数', async ({ page }) => {
+  const name = `editor-bytes-${Date.now().toString(36)}.txt`
+
+  await login(page)
+  await page.locator('input[type=file]').first().setInputFiles({
+    name,
+    mimeType: 'text/plain',
+    buffer: Buffer.alloc(1234, 'x'),
+  })
+  const card = page.locator('.file-card').filter({ hasText: name })
+  await card.waitFor({ timeout: 20_000 })
   await card.click()
-  await expect(page.locator('#loading')).toBeHidden({ timeout: 20_000 })
-  await expect(page.locator('#toc-list .toc-item').nth(1)).toHaveClass(/active/)
-  const id = await fileId(page, name)
-  expect(id).toBeTruthy()
-  await page.locator('#reader-back').click()
-  await expect(page.locator('#reader-view')).toHaveCount(0)
 
-  await page.goto(`/read/${id}`)
-  await expect(page.locator('#reader-view')).toBeVisible({ timeout: 20_000 })
-  await expect(page.locator('#loading')).toBeHidden({ timeout: 20_000 })
-  await expect(page.locator('#reader-title')).toHaveText(name.replace(/\.txt$/i, ''))
-  await page.locator('#reader-back').click()
-  await expect(page.locator('#reader-view')).toHaveCount(0)
+  const editor = page.locator('.document-editor')
+  await expect(editor).toBeVisible()
+  await expect(editor.locator('.editor-meta b')).toHaveText('1,234 字节')
+  await editor.getByRole('button', { name: '关闭编辑器' }).click()
+
+  await page.getByRole('button', { name: '新建文档', exact: true }).first().click()
+  await expect(editor).toBeVisible()
+  const filename = editor.getByRole('textbox', { name: '文档文件名' })
+  await filename.fill('changed.md')
+  await editor.getByRole('button', { name: '关闭编辑器' }).click()
+  const discard = page.locator('.app-dialog')
+  await expect(discard).toContainText('放弃未保存的修改？')
+  await discard.getByRole('button', { name: '取消' }).click()
+  await expect(editor).toBeVisible()
+  await filename.fill('未命名文档.md')
+  await editor.getByRole('button', { name: '关闭编辑器' }).click()
+  await expect(editor).toHaveCount(0)
+})
+
+test('Markdown 预览保留 reference 的 GFM 元素并清理主动 HTML', async ({ page }) => {
+  const name = `editor-markdown-${Date.now().toString(36)}.md`
+  const content = '# Title\n\n#### Deep heading\n\n1. one\n2. two\n\n- [x] done\n- [ ] todo\n\n| a | b |\n| --- | :---: |\n| 1 | 2 |\n\n[link](https://example.com "T") and ![alt](cover.png)\n\n~~gone~~ and <u>under</u>\n\n<script>alert(1)</script>'
+
+  await login(page)
+  await page.locator('input[type=file]').first().setInputFiles({
+    name,
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(content),
+  })
+  const card = page.locator('.file-card').filter({ hasText: name })
+  await card.waitFor({ timeout: 20_000 })
+  await card.click()
+
+  const editor = page.locator('.document-editor')
+  await expect(editor).toBeVisible()
+  await editor.locator('textarea').fill(content)
+  await editor.getByRole('button', { name: '预览' }).click()
+  const preview = editor.locator('.markdown-preview')
+  await expect(preview.locator('h1')).toHaveText('Title')
+  await expect(preview.locator('h4')).toHaveText('Deep heading')
+  await expect(preview.locator('ol li')).toHaveCount(2)
+  await expect(preview.locator('input[type=checkbox]')).toHaveCount(2)
+  await expect(preview.locator('table th[align=center]')).toHaveText('b')
+  await expect(preview.locator('a[href="https://example.com"][title="T"]')).toHaveText('link')
+  await expect(preview.locator('img[src="cover.png"][alt="alt"]')).toHaveCount(1)
+  await expect(preview.locator('del')).toHaveText('gone')
+  await expect(preview.locator('u')).toHaveText('under')
+  await expect(preview.locator('script')).toHaveCount(0)
+  await expect(preview.locator('[onclick]')).toHaveCount(0)
 })
 
 test('Rust bundle opens an EPUB reader, follows its TOC and restores progress', async ({ page }) => {
@@ -183,9 +186,6 @@ test('Rust bundle opens an EPUB reader, follows its TOC and restores progress', 
   })
   const card = page.locator('.file-card').filter({ hasText: name })
   await card.waitFor({ timeout: 20_000 })
-  await page.getByRole('region', { name: '上传队列' }).getByRole('button', { name: '清除已完成' }).click()
-  await page.getByRole('region', { name: '上传队列' }).waitFor({ state: 'detached' })
-
   await card.click()
   await expect(page.locator('#reader-view')).toBeVisible()
   await expect(page.locator('#loading')).toBeHidden({ timeout: 20_000 })
