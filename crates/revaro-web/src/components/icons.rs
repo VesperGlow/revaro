@@ -385,6 +385,30 @@ pub fn list() -> impl IntoView {
     }
 }
 
+/// Typography settings.
+pub fn type_icon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7V4h16v3"></path>
+            <path d="M9 20h6"></path>
+            <path d="M12 4v16"></path>
+        </svg>
+    }
+}
+
+/// Switch the reading paper between light and dark.
+pub fn sun_moon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+            <path d="M19 3v4"></path>
+            <path d="M21 5h-4"></path>
+        </svg>
+    }
+}
+
 /// Lucide `volume-2` — audible playback.
 pub fn volume_2() -> impl IntoView {
     view! {

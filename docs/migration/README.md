@@ -109,7 +109,7 @@ xtask/                      # 构建编排（cargo xtask ...）
 （确定性 chunk、`data-block` 编号、UTF-16 偏移、TOC 目标）、flow 缓存。
 
 后端 flow 生成、对象持久化和 reader HTTP 端点已在阶段 5a 完成；前端阅读器
-视图仍属于阶段 7，尚未迁移。
+视图已在阶段 7g 接入。
 
 ### ✅ 阶段 6 — 媒体与压缩包（后端已完成）
 阶段 6a 已完成 `revaro-media` 的进程内媒体能力（probe、视频抽帧、音频封面、
@@ -150,8 +150,14 @@ ETag/完成事务、三文件并发、XHR 进度/取消、失败与取消重试�
 缩放、拖拽、触摸捏合和同目录缩略图切换；音频查看器支持章节、播放进度、音量、
 倍速、恢复位置和下载/移动/复制；视频查看器支持原生 Range 播放、进度、倍速、
 全屏、外置 WebVTT 字幕和字幕位置。图片、音频和视频都在认证文件浏览器的同一
-预览壳中打开，移动/复制通过真实目录元数据选择器提交，回收站中的媒体也可预览；
-阅读器视图仍待接入。
+预览壳中打开，移动/复制通过真实目录元数据选择器提交，回收站中的媒体也可预览。
+
+阶段 7g 已完成 Rust EPUB/TXT 阅读器视图：阅读流使用服务端清洗后的 HTML chunk，
+以共享 `Anchor` 保留跨 chunk、重排和重新打开的阅读位置；浏览器端维护稳定 spine
+窗口、L1 内存缓存和 Cache Storage 持久缓存，manifest 快速恢复会校验块/chunk/目录
+边界并用 flow 元数据指纹隔离旧内容。视图接入目录精确定位、进度防抖写回与离开时
+刷新、字号/行距重排、明暗主题、键盘翻页、触屏拖拽、焦点陷阱、`/read/{id}` 深链
+和移动端工具栏。
 
 ### 阶段 8 — 收尾
 删除 `web/`（npm 链）、`internal/`、`cmd/`、`go.mod`；重写 Dockerfile 与
@@ -209,7 +215,7 @@ CI；更新 README 与 docs。
 | ~~媒体探测/字幕~~ | `media_metadata.go`、`video_media.go` | ✅ 已完成：`media_routes.rs` + `revaro-media` |
 | ~~压缩包解压~~ | `archive.go` | ✅ 已完成：`revaro-media` + `archive_routes.rs`（`/files/{id}/extract`、归档任务输入与恢复） |
 | ~~阅读器 flow + reader 路由~~ | `internal/reader/flow/`、`internal/server/book.go`、`reader_flow.go` | ✅ 已完成：`revaro-reader::flow`、`reader_routes.rs` |
-| 前端各功能视图 | `web/src/components/` | 进行中：`crates/revaro-web/src/components/` 已完成登录、文件浏览、文件操作、回收站、上传队列、任务中心、媒体查看器和移动/复制目录选择器；EPUB/TXT 阅读器视图待接入 |
+| ~~前端各功能视图~~ | `web/src/components/` | ✅ 已完成：`crates/revaro-web/src/components/` 已接入登录、文件浏览、文件操作、回收站、上传队列、任务中心、媒体查看器、移动/复制目录选择器和 EPUB/TXT 阅读器视图 |
 | 删除 Node/npm 与 Go 链 | `web/`、`internal/`、`cmd/`、`go.mod`、Dockerfile、CI | 最后一步 |
 
 ### 代码约定（新模块必须遵守）
@@ -272,12 +278,12 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 | 项 | 值 |
 |---|---|
-| 测试 | **394 个**（core 109、media 21、reader 55 = 46 单元 + 9 集成、server 168 = 166 单元 + 2 集成、web 36、xtask 5） |
+| 测试 | **404 个**（core 109、media 21、reader 55 = 46 单元 + 9 集成、server 168 = 166 单元 + 2 集成、web 46、xtask 5） |
 | 路由覆盖 | **61 条 Go 路径模式中已实现 60 条**，无真实缺口（+1 条为核对脚本的正则噪声） |
 | fmt / clippy | 全绿（clippy 带 `-D warnings`） |
 | wasm32 / web bundle | `revaro-web` 可构建，`cargo xtask web-build` 已产出 `dist/web` |
-| 前端行为 | Chromium 真实验证登录、认证后根目录、目录导航、面包屑返回、回收站、单文件上传、16 MiB+1 多分片上传、目录树上传、取消/重试和已完成会话恢复；任务中心通过真实加密 ZIP 验证 SSE 刷新、取消、密码恢复、完成清除和移动端布局；媒体查看器通过真实图片、WAV、WebM 和 VTT 验证图片缩放/缩略图/下载、目录移动/复制、音频章节、视频倍速与字幕；`revaro_boot.js`、品牌图标资源均为 200 |
-| reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈 |
+| 前端行为 | Chromium 真实验证登录、认证后根目录、目录导航、面包屑返回、回收站、单文件上传、16 MiB+1 多分片上传、目录树上传、取消/重试和已完成会话恢复；任务中心通过真实加密 ZIP 验证 SSE 刷新、取消、密码恢复、完成清除和移动端布局；媒体查看器通过真实图片、WAV、WebM 和 VTT 验证图片缩放/缩略图/下载、目录移动/复制、音频章节、视频倍速与字幕；阅读器通过真实 TXT 上传验证 flow chunk 首屏、CSS columns 翻页、触屏 pointer swipe、目录跳转、字号/行距/主题、进度重开和 `/read/{id}` 深链；`revaro_boot.js`、品牌图标资源均为 200 |
+| reader 验证 | 真实 `revaro` 进程通过登录、TXT 上传、book info、flow manifest/chunk、进度读写和非法 chunk 索引 400；路由测试另覆盖 EPUB flow、并发首次请求只落一份 manifest/chunk，以及缺失 chunk 自愈；`web/e2e/rust-reader-ui.spec.ts` 通过真实浏览器验证 reader 视图、缓存恢复、目录、重排、触屏翻页和深链 |
 | media 验证 | `revaro-media` 真实探测 WAV、抽取视频帧、提取 MP3 内嵌封面、转换 Matroska 内嵌 SubRip；服务端路由测试覆盖图片缩略图持久化、外置 SRT 缓存、重新探测；真实进程通过缩略图 200、WAV 重新探测/音频信息、视频外置字幕和视频缩略图后台生成 |
 | archive / batch 验证 | `libarchive2` 真实 ZIP 解压、密码等待/错误/正确密码、路径穿越、展开大小、链接/特殊文件、取消与临时目录清理均有测试；批量下载覆盖用户绑定、票据过期/容量回收、一次性消费、ZIP 文件名净化、重复名处理、认证与状态码；真实进程通过登录、ZIP 上传、批量准备与流式下载、解压任务轮询及导入文件 MIME/SHA-256 核验 |
 | status 验证 | 状态 JSON 与 SSE 均验证认证 401、快照字段、回收站统计、精确 SSE 响应头、首帧、刷新帧；真实进程通过登录、状态 JSON、未认证拒绝和 15 秒刷新帧 |
@@ -291,9 +297,8 @@ user-namespace / subuid 限制无法解包镜像。Dockerfile 的改动只能靠
 
 ### 当前剩余的大块
 
-- **前端功能视图**：登录、会话恢复、文件浏览、网格/列表切换和回收站只读视图已落地；
-  文件选择与基础操作、上传队列、任务中心、媒体查看器和目录传输选择器已落地；
-  EPUB/TXT reader 视图仍待接入，后端 flow 与端点已可用。
+- **前端功能视图**：登录、会话恢复、文件浏览、网格/列表切换、回收站、文件操作、
+  上传队列、任务中心、媒体查看器、目录传输选择器和 EPUB/TXT reader 视图均已落地。
 - **删除 Node/npm 与 Go 链**：`web/`、`internal/`、`cmd/`、`go.mod`、`data-plane/`
   仍在，且 Dockerfile/CI 仍以它们为准。必须等 Rust 服务覆盖全部功能后再切换。
 
@@ -404,6 +409,7 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 7d Rust 上传队列与目录上传 | ✅ | `feat(web): 接入浏览器上传队列` |
 | 7e Rust 任务中心与事件刷新 | ✅ | `feat(web): 接入任务中心` |
 | 7f Rust 媒体查看器与目录传输 | ✅ | `feat(web): 接入媒体查看器与目录传输` |
+| 7g Rust EPUB/TXT 阅读器视图 | ✅ | `feat(web): 接入 EPUB/TXT 阅读器视图` |
 | CI 覆盖 | ✅ | `build(ci): 新增 Rust workspace 检查任务…` |
 
 **历史实现覆盖率记录**：按**去重后的路径模式**统计
@@ -426,8 +432,8 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 不同的数；上面的数字固定了扫描范围（三个路由模块 + `router.rs`）与去重口径
 （按路径模式而非「方法×路径」），后续比较请沿用。
 
-**从阶段 7f 继续的项目**：reader 前端视图、
-删除 Node/npm 与 Go 构建链。详见 §4.5 的剩余工作映射。
+**从阶段 7g 继续的项目**：删除 Node/npm 与 Go 构建链。
+详见 §4.5 的剩余工作映射。
 
 阶段 2c 验收：`crates/revaro-reader` 约 3,000 行，38 个单元测试 +
 9 个集成测试通过，fmt/clippy(-D warnings) 干净。审计发现的两个真实缺陷
@@ -545,6 +551,25 @@ npx playwright test e2e/rust-media-ui.spec.ts --config=playwright.config.ts
 异步 poster 请求，视频原文件加载和播放控制均通过。`cargo xtask check` 共
 394 个测试通过，`cargo xtask web-build`、wasm32 构建和 `/healthz`、`/readyz`
 真实进程检查均通过。
+
+阶段 7g 验收：Rust reader 视图接入认证文件浏览器，TXT 通过真实上传进入阅读器；
+真实 Chromium 验证首屏 chunk、连续 CSS columns 翻页、触屏 pointer swipe、目录
+抽屉与章节跳转、字号/行距重排、明暗主题、进度 PUT 后关闭重开恢复，以及登录后
+`/read/{file_id}` 深链。manifest 使用 localStorage 快速恢复，chunk 使用带 flow
+版本、源指纹和布局指纹的 Cache Storage；不可信缓存或网络 manifest 在进入 DOM 前
+经过范围、总量、chunk 顺序和 TOC 目标校验，旧 generation 的异步请求不会写入当前
+阅读窗口。测试固化在 `web/e2e/rust-reader-ui.spec.ts`，使用临时数据目录和真实
+`revaro` 进程运行：
+
+```sh
+PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium \
+E2E_BASE_URL=http://127.0.0.1:18184 \
+npx playwright test e2e/rust-reader-ui.spec.ts --config=playwright.config.ts
+```
+
+该用例通过（1 passed）；`cargo xtask check` 共 **404 个测试**通过，`cargo
+xtask web-build`、`cargo xtask build`、wasm32 构建和真实 Rust 进程的 reader E2E
+均通过。
 
 阶段 2b 验收：171 个测试通过（core 89 + server 82 + xtask 5）；实测启动
 自动创建 `objects/` 并在日志中确认就绪；对象存储测试覆盖原子写入无残留、

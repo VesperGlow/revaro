@@ -19,6 +19,7 @@
 
 use gloo_net::http::Request;
 use revaro_core::api::auth::{LoginRequest, Session};
+use revaro_core::api::book::{Info as BookInfo, Progress as BookProgress, SaveProgressRequest};
 use revaro_core::api::files::{
     Children, CopyFileRequest, CreateDirectoryRequest, FileDetail, PatchFileRequest, Trash,
 };
@@ -29,6 +30,7 @@ use revaro_core::api::uploads::{
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
 };
 use revaro_core::model::MediaProgress;
+use revaro_core::reader::FlowManifest;
 use revaro_core::{ErrorCode, ErrorEnvelope};
 
 /// A failed request to an authenticated JSON endpoint.
@@ -121,6 +123,47 @@ pub async fn fetch_audio_media(id: &str) -> Result<AudioMedia, RequestError> {
 /// Fetch the subtitle tracks advertised for a video file.
 pub async fn fetch_video_media(id: &str) -> Result<VideoMedia, RequestError> {
     get_json(&format!("/api/files/{id}/video")).await
+}
+
+/// Fetch the parsed title and table of contents for a book.
+pub async fn fetch_book(id: &str) -> Result<BookInfo, RequestError> {
+    get_json(&format!("/api/files/{id}/book")).await
+}
+
+/// Fetch the durable reading anchor, if one exists.
+pub async fn fetch_book_progress(id: &str) -> Result<BookProgress, RequestError> {
+    get_json(&format!("/api/files/{id}/book/progress")).await
+}
+
+/// Save a durable reading anchor.
+pub async fn save_book_progress(
+    id: &str,
+    progress: &SaveProgressRequest,
+) -> Result<(), RequestError> {
+    let request = Request::put(&format!("/api/files/{id}/book/progress"))
+        .json(progress)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
+/// Fetch the no-cache flow manifest used to lay out the book.
+pub async fn fetch_book_flow(id: &str) -> Result<FlowManifest, RequestError> {
+    get_json(&format!("/api/files/{id}/book/flow")).await
+}
+
+/// Fetch one sanitized flow chunk as HTML.
+pub async fn fetch_book_chunk(id: &str, index: i32) -> Result<String, RequestError> {
+    let response = Request::get(&format!("/api/files/{id}/book/flow/chunks/{index}"))
+        .send()
+        .await
+        .map_err(|error| request_transport(error.to_string()))?;
+    if response.ok() {
+        return response
+            .text()
+            .await
+            .map_err(|error| request_transport(error.to_string()));
+    }
+    Err(decode_request_error(response).await)
 }
 
 /// Fetch a saved playback position. The server returns zeroes for a first play.

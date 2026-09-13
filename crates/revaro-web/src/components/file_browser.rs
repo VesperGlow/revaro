@@ -19,11 +19,12 @@ use wasm_bindgen::{JsCast, JsValue};
 
 use crate::api;
 use crate::logic::format::format_size;
-use crate::logic::routing::{folder_id, folder_url};
+use crate::logic::routing::{folder_id, folder_url, reader_id};
 
 use super::dialogs::ActionDialog;
 use super::icons;
 use super::media::MediaPreview;
+use super::reader::ReaderView;
 use super::selection_toolbar::SelectionToolbar;
 use super::tasks::{TaskCenter, TaskController};
 use super::transfer::{TransferDialog, TransferMode};
@@ -73,6 +74,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
     let dialog_error = RwSignal::new(String::new());
     let feedback = RwSignal::new(String::new());
     let media_file = RwSignal::new(None::<File>);
+    let reader_file = RwSignal::new(None::<File>);
     let transfer_open = RwSignal::new(false);
     let transfer_targets = RwSignal::new(Vec::<File>::new());
     let transfer_mode = RwSignal::new(TransferMode::Move);
@@ -640,6 +642,7 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
         let load_folder = load_folder.clone();
         let trash_mode = trash_mode;
         let media_file = media_file;
+        let reader_file = reader_file;
         Callback::new(move |item: File| {
             if trash_mode.get_untracked() {
                 if item.kind == FileKind::File
@@ -653,6 +656,8 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
             }
             if item.kind == FileKind::Directory {
                 load_folder.run(item.id);
+            } else if classify::is_book(&item) {
+                reader_file.set(Some(item));
             } else if classify::is_image(&item)
                 || classify::is_audio(&item)
                 || classify::is_video(&item)
@@ -667,7 +672,37 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
     let pathname = web_sys::window()
         .and_then(|window| window.location().pathname().ok())
         .unwrap_or_default();
-    load_folder.run(folder_id(&pathname, ROOT_ID));
+    let initial_folder = folder_id(&pathname, ROOT_ID);
+    load_folder.run(initial_folder);
+    if let Some(file_id) = reader_id(&pathname) {
+        let reader_file = reader_file;
+        let load_folder = load_folder.clone();
+        let on_logout = on_logout.clone();
+        leptos::task::spawn_local(async move {
+            match api::fetch_file(&file_id).await {
+                Ok(detail) if classify::is_book(&detail.file) => {
+                    let parent_id = detail
+                        .file
+                        .parent_id
+                        .clone()
+                        .unwrap_or_else(|| ROOT_ID.to_owned());
+                    load_folder.run(parent_id.clone());
+                    if let Some(window) = web_sys::window()
+                        && let Ok(history) = window.history()
+                    {
+                        let _ = history.replace_state_with_url(
+                            &JsValue::NULL,
+                            "",
+                            Some(&folder_url(&parent_id, ROOT_ID)),
+                        );
+                    }
+                    reader_file.set(Some(detail.file));
+                }
+                Err(error) if error.is_unauthorized() => on_logout.run(()),
+                _ => {}
+            }
+        });
+    }
 
     let username = session.username.clone();
     let initial = username
@@ -701,6 +736,14 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
     let task_center_for_view = leptos::__reexports::send_wrapper::SendWrapper::new(task_center);
     let close_media = Callback::new(move |(): ()| media_file.set(None));
     let download_media = Callback::new(move |file: File| download_file(&file));
+    let close_reader = Callback::new(move |(): ()| reader_file.set(None));
+    let reader_unauthorized = {
+        let on_logout = on_logout.clone();
+        Callback::new(move |(): ()| {
+            reader_file.set(None);
+            on_logout.run(());
+        })
+    };
 
     view! {
         <div
@@ -1075,6 +1118,23 @@ pub fn FileBrowser(session: Session, on_logout: Callback<()>) -> impl IntoView {
                     } else {
                         ().into_any()
                     }
+                }}
+            </Show>
+            <Show when=move || reader_file.get().is_some() fallback=|| ()>
+                {move || {
+                    reader_file.get().map_or_else(
+                        || ().into_any(),
+                        |file| {
+                            view! {
+                                <ReaderView
+                                    file=file
+                                    on_close=close_reader
+                                    on_unauthorized=reader_unauthorized
+                                />
+                            }
+                            .into_any()
+                        },
+                    )
                 }}
             </Show>
             {move || {

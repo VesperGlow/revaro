@@ -12,6 +12,8 @@ mod directory_picker;
 mod file_browser;
 mod login;
 mod media;
+mod reader;
+mod reader_cache;
 mod selection_toolbar;
 mod tasks;
 mod transfer;
