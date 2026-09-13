@@ -192,6 +192,10 @@ fn is_zero_i32(value: &i32) -> bool {
     *value == 0
 }
 
+fn missing_chunk() -> i32 {
+    -1
+}
+
 /// A table-of-contents entry resolved onto the flow.
 ///
 /// The resolved target is stable across client pagination: a text target is
@@ -218,7 +222,9 @@ pub struct TocTarget {
     /// UTF-16 offset of the first visible character, omitted when zero.
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub text_offset: i32,
-    /// Chunk containing the target; always emitted, `0` is meaningful.
+    /// Chunk containing the target; `-1` means an older manifest omitted it.
+    /// `0` is meaningful for the first chunk.
+    #[serde(default = "missing_chunk")]
     pub chunk: i32,
     /// Original EPUB path, kept for debugging and client fallback.
     #[serde(default, skip_serializing_if = "String::is_empty")]

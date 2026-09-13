@@ -94,7 +94,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 /// Extensions treated as images regardless of the stored MIME type.
-pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp"];
+pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "avif"];
 
 /// Extensions the reader can open.
 pub const BOOK_EXTENSIONS: &[&str] = &["epub", "txt"];
@@ -410,6 +410,7 @@ mod tests {
         assert!(is_book(&file("novel.epub", "")));
         assert!(is_archive(&file("bundle.tar.gz", "")));
         assert!(!is_image(&file("notes.md", "")));
+        assert!(!is_image(&file("bitmap.bmp", "")));
     }
 
     #[test]

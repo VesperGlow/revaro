@@ -122,6 +122,7 @@ pub struct AudioMedia {
     #[serde(default)]
     pub chapters: Vec<AudioChapter>,
     /// Thumbnail URL for the embedded cover, empty when there is none.
+    #[serde(default)]
     pub cover_url: String,
     /// Whether an embedded cover exists.
     pub has_cover: bool,
