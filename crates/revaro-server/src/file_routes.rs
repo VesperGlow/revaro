@@ -1687,10 +1687,13 @@ pub(crate) async fn serve_file(
 
     // `Body::from_stream` cannot set a length, so it is tracked here and added
     // below; a `206` must advertise the range's length, not the object's.
+    const INVALID_RANGE_BODY: &str = "invalid range: failed to overlap\n";
+    let unsatisfiable = matches!(range, ByteRange::Unsatisfiable);
     let mut content_length: Option<u64> = None;
     let mut response = match range {
         ByteRange::Unsatisfiable => {
-            let mut response = axum::response::Response::new(axum::body::Body::empty());
+            let mut response =
+                axum::response::Response::new(axum::body::Body::from(INVALID_RANGE_BODY));
             *response.status_mut() = http::StatusCode::RANGE_NOT_SATISFIABLE;
             response.headers_mut().insert(
                 http::header::CONTENT_RANGE,
@@ -1732,11 +1735,17 @@ pub(crate) async fn serve_file(
     let headers = response.headers_mut();
     headers.insert(
         http::header::CONTENT_TYPE,
-        mime.parse().unwrap_or_else(|_| {
-            "application/octet-stream"
+        if unsatisfiable {
+            "text/plain; charset=utf-8"
                 .parse()
                 .expect("valid header value")
-        }),
+        } else {
+            mime.parse().unwrap_or_else(|_| {
+                "application/octet-stream"
+                    .parse()
+                    .expect("valid header value")
+            })
+        },
     );
     headers.insert(
         http::header::CONTENT_DISPOSITION,
@@ -1747,14 +1756,19 @@ pub(crate) async fn serve_file(
         .parse()
         .map_err(|_| ApiError::internal("could not build the download header"))?,
     );
-    headers.insert(
-        http::header::ETAG,
-        etag.parse().expect("quoted etag is a header value"),
-    );
-    headers.insert(
-        http::header::ACCEPT_RANGES,
-        "bytes".parse().expect("valid header value"),
-    );
+    if !unsatisfiable {
+        headers.insert(
+            http::header::ETAG,
+            etag.parse().expect("quoted etag is a header value"),
+        );
+        headers.insert(
+            http::header::ACCEPT_RANGES,
+            "bytes".parse().expect("valid header value"),
+        );
+    }
+    if unsatisfiable {
+        content_length = Some(INVALID_RANGE_BODY.len() as u64);
+    }
     if let Some(length) = content_length {
         headers.insert(
             http::header::CONTENT_LENGTH,
@@ -3239,7 +3253,7 @@ VALUES('doc1','00000000-0000-0000-0000-000000000000','a b&c.bin','file','blobs/d
         assert_eq!(body, b"789");
 
         // Past the end is unsatisfiable, and says so with the object's size.
-        let (status, headers, _) = raw(
+        let (status, headers, body) = raw(
             &state,
             "/api/files/doc1/download",
             &[("range", "bytes=99-200")],
