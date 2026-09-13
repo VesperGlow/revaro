@@ -216,6 +216,8 @@ digest，下一步是重新观察完整的镜像发布链。
 阶段 9f 修复 GHCR 发布后的 digest 校验：Docker CLI 的成功输出可能是
 `latest: digest: sha256:...`，不能只匹配行首的 `digest:`。workflow 现在从完整输出中提取
 64 位 SHA-256 digest，并保留空 digest 失败保护；本地已用成功输出样例验证解析规则。
+随后 `CI #272` 的 Rust workspace、release 构建、Rust-only 镜像、Compose E2E 和 GHCR
+publish 全部成功，阶段 9f 的 CI 验收完成。
 
 ## 4. 已记录的风险与遗留问题
 
@@ -358,7 +360,7 @@ TXT 阅读器）。阶段 8g 又在该镜像内补验了 EPUB 场景。Buildah �
 | 依赖审计 | `cargo audit --file Cargo.lock` 退出码 0、0 个漏洞；`quick-xml` 已从 0.38.4 升级到 0.41.0，消除 RUSTSEC-2026-0194/0195；仅保留来自 Leptos 传递依赖的 `paste` 与 `proc-macro-error2` 未维护警告 |
 | runtime 镜像边界 | CI 在容器 E2E 前检查默认 UID/GID 10001 的 `revaro` 用户，并确认最终运行层没有 Go、Node、npm；本地更新镜像执行同一检查通过 |
 | 部署路径 | **已切换**：镜像由 Rust workspace 构建并运行单一 `revaro`；旧 Go/Vue/data-plane 不进入镜像；本地 Buildah 镜像与容器 E2E 已通过；Compose 默认基址随 `APP_PORT` 联动 |
-| CI 复盘 | `CI #271` 的 Rust workspace、镜像构建、Compose E2E 均成功；GHCR 发布因 digest 解析规则失败，阶段 9f 已修复，新的完整运行尚未完成 |
+| CI 复盘 | `CI #272` 的 Rust workspace、镜像构建、Compose E2E 和 GHCR publish 全部成功；阶段 9e/9f 已完成主分支 CI 修复与复验 |
 
 ### 剩余 0 条真实路由
 
