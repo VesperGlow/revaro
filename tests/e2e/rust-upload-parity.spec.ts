@@ -192,6 +192,77 @@ test('old/new shell dragleave 保留 reference 的默认事件语义', async ({ 
   }
 })
 
+test('old/new 实际拖放文件按 reference 上传到当前目录并拒绝回收站目标', async ({ browser }) => {
+  const name = `drop-upload-reference-${crypto.randomUUID()}.txt`
+  const trashName = `drop-trash-reference-${crypto.randomUUID()}.txt`
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function dropFile(page: Parameters<typeof login>[0], baseUrl: string, fileName: string) {
+    const uploadResponses: number[] = []
+    page.on('response', response => {
+      const url = new URL(response.url())
+      if (url.pathname === '/api/uploads' && response.request().method() === 'POST') {
+        uploadResponses.push(response.status())
+      }
+    })
+    await loginAt(page, baseUrl)
+    const defaultPrevented = await page.locator('.app-shell').evaluate((element, droppedName) => {
+      const transfer = new DataTransfer()
+      transfer.items.add(new File(['drop upload reference\n'], droppedName, { type: 'text/plain' }))
+      const event = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+      element.dispatchEvent(event)
+      return event.defaultPrevented
+    }, fileName)
+    await expect.poll(() => uploadResponses.length, { timeout: 15_000 }).toBe(1)
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === wanted && item.status === 'ready')
+    }, fileName), { timeout: 20_000 }).toBe(true)
+
+    await page.getByRole('button', { name: '打开回收站' }).click()
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    const responseCountBeforeTrashDrop = uploadResponses.length
+    const trashDefaultPrevented = await page.locator('.app-shell').evaluate((element, droppedName) => {
+      const transfer = new DataTransfer()
+      transfer.items.add(new File(['must not upload'], droppedName, { type: 'text/plain' }))
+      const event = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+      element.dispatchEvent(event)
+      return event.defaultPrevented
+    }, trashName)
+    await page.waitForTimeout(300)
+    return {
+      defaultPrevented,
+      trashDefaultPrevented,
+      uploadResponses,
+      responseCountBeforeTrashDrop,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      dropFile(oldPage, oldUrl, name),
+      dropFile(newPage, newUrl, name),
+    ])
+    expect(oldResult).toEqual({
+      defaultPrevented: true,
+      trashDefaultPrevented: true,
+      uploadResponses: [201],
+      responseCountBeforeTrashDrop: 1,
+    })
+    expect(newResult, 'Rust 实际拖放上传与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeCreated(oldPage, [name]), removeCreated(newPage, [name])])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('文件夹上传在当前目录刷新完成后才显示成功反馈', async ({ page }, testInfo) => {
   const directory = testInfo.outputPath(`timing-${crypto.randomUUID()}`)
   const rootName = path.basename(directory)
