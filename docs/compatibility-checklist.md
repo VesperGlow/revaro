@@ -64,6 +64,7 @@
 - `2026-09-14`，old `18080` / new `18083`：无效 `/f/compatibility-folder-that-does-not-exist` 登录后均回到 `/`，加载“我的文件”，不留下错误状态；另以 mock API 实际打开 `/library/book`、`/library/image`、`/library/video`、`/library/audio/f/compatibility-route-folder`、`/library/file` 和 `/f/compatibility-route-folder`，两版页面与规范 URL 一致。
 - `2026-09-14`，old `18080` / new `18083`：实际创建目录并点击进入后，两版均将 `/` → `/f/{id}` 写入应用内 history；浏览器后退逐级回到根目录。再次前进时两版均只恢复 `/f/{id}` URL、不重放目录请求，这是 reference 的现运行时行为，已用同一用例明确记录而不把它误判为 Rust 差异。
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后浏览器后退，两版均先关闭账户弹层、保留“我的文件”页面和 `/` URL；弹层 history 语义已加入 parity 用例。
+- `2026-09-14`，old `18080` / new `18084`：同一 mock 根目录实际逐项点击目录、TXT、EPUB、图片、音频、视频和未知文件；目录进入、文本编辑器、阅读器、三类媒体预览及未知文件无动作的分流结果与 pathname 均对照一致，并逐项用浏览器后退关闭弹层。Rust 初始 Reader 清理时错误覆盖了 popstate 已恢复的根路径，已移除该路径恢复；`rust-open-item-reference-parity.spec.ts` old/new 1/1，修复提交 `4b5c1a0`，验证提交 `478969a`。
 - `2026-09-14`，old `18080` / new `18083`：将 `POST /api/directories` 同时模拟为 409，旧版关闭新建文件夹弹窗并显示错误 toast；Rust 初始行为把错误留在弹窗内，已恢复为关闭弹窗 + toast。两版回归均通过；分享二次确认错误仍按分享层单独验证。
 - `2026-09-14`，old `18080` / new `18083`：新建文件夹成功后再触发一次根目录刷新，两版均保留“文件夹已创建”成功 toast；Rust 初始目录/回收站刷新会清空全局反馈，已移除该非 reference 行为。old/new `rust-actions-parity-ui.spec.ts` 的目录刷新用例通过。
 - `2026-09-14`，old `18080` / new `18083`：列表选中一项后滚动到顶部并真实点击内容区左上空白，旧版和 Rust 版均清除选择工具栏（`rust-file-interaction-parity.spec.ts` 1/1 each）；文件行、按钮和工具栏仍由过滤规则排除，不会误清除。
@@ -208,7 +209,7 @@
 | `[P]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根、`scrollTo({behavior:"smooth"})`、DOM 层级和首末项 margin，以及中间级 click/Enter/tap 均已对照；`rust-breadcrumb-layout-reference-parity.spec.ts` 3/3 |
 | `[P]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | old/new 直达浏览器用例覆盖五类分类、分类路径、文件夹路径和无效 `/f/{id}`；无效地址均回根并加载默认页面 |
 | `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | old/new 真实 TXT `/read/{id}` 均实际回根且不打开阅读器，已确认是 reference 运行时缺陷；需单独决定是否恢复源码意图，当前不新增偏离旧版的行为 |
-| `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象、账户弹层后退关闭、分类筛选后的分类切换/后退/前进，以及慢/快目录响应竞态不覆盖最后一次导航；分类 history 已由 `rust-library-history-reference-parity.spec.ts` 补齐，完整 modal stack 和其它弹层组合仍待验证 |
+| `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分类筛选后的分类切换/后退/前进，以及慢/快目录响应竞态不覆盖最后一次导航；分类 history 已由 `rust-library-history-reference-parity.spec.ts` 补齐，完整 modal stack 和其它弹层组合仍待验证 |
 | `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 根目录实际切换并比较内容卡/行与按钮状态，列表偏好刷新后恢复；移动端内容布局、滚动和完整响应式矩阵仍待验 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
 | `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | 空根/空回收站文案、模拟读取失败 toast，以及失败导航中旧内容/选择工具栏保留策略已 old/new 对照；首次 loading、重试和完整旧内容保留矩阵仍待验 |
@@ -225,7 +226,7 @@
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
 | `[ ]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | old/new 文件卡右键均阻止原生菜单；图片预览 more 的锚点、菜单项、空白/Escape 关闭、hover 和焦点已对照；边缘翻转、disabled 及所有操作结果仍待验 |
-| `[ ]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | Rust 有部分 open logic，完整矩阵待验 |
+| `[ ]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | old/new 1440×900 同一 mock 根目录已实际覆盖目录、TXT、EPUB、图片、音频、视频、未知文件的点击分流、pathname 和浏览器后退关闭；`rust-open-item-reference-parity.spec.ts` 1/1；回收站只读、网格/列表键盘、损坏/不支持文件和完整媒体打开状态仍待验 |
 | `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | old/new 列表实际覆盖目录、TXT、EPUB、图片、ZIP、未知及 TXT+图片多选的按钮分流、摘要、文案和图标路径；390×844 移动端布局及回收站恢复/永久删除已对照；`.txt` 阅读分流及弹层隐藏已对照，disabled/完整状态矩阵仍待验 |
 
 ## 7. 上传入口、队列和任务联动
@@ -266,7 +267,7 @@
 | `[ ]` | 读取 | `/content`、编码/大文件错误、loading/error、只读提示、滚动和文本保持一致。 | Rust 已有 `/content` caller；old/new 已验证真实 TXT 读取、YAML/Markdown 只读内容和提示，并以延迟 `/content` 实际比较 loading；编码/大文件/error/滚动全矩阵仍待验 |
 | `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown 的 GFM 元素与主动 HTML 清理结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。reference 使用 `marked` + DOMPurify；Rust 使用 `pulldown-cmark` + `ammonia` 对齐可见结果。 | old/new 已逐个验证 11 个扩展名的 textarea 内容、Markdown tabs 和非 Markdown 隐藏 tabs；另有 GFM 标题/列表/任务项/表格/删除线/安全 HTML 清理证据；光标/滚动、复杂 Markdown 错误仍待验 |
 | `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | old/new 已以 Ctrl+S 实际触发保存、409 ETag 冲突后保留 editor/错误/可重试按钮，并验证成功 toast 必须等待目录刷新、持久化重开；busy/普通请求失败和 metadata 全矩阵仍待验 |
-| `[ ]` | 未保存关闭 | dirty 检测、关闭/浏览器后退确认、取消返回编辑、确认丢弃、Esc/backdrop 行为一致。 | old/new 已实际验证编辑后关闭弹出确认、取消返回编辑、冲突后仍可放弃；browser-back、Esc/backdrop 和 readonly 组合矩阵仍待验 |
+| `[ ]` | 未保存关闭 | dirty 检测、关闭/浏览器后退确认、取消返回编辑、确认丢弃、Esc/backdrop 行为一致。 | old/new 已实际验证编辑后关闭弹出确认、取消返回编辑、冲突后仍可放弃；干净编辑器的 browser-back 关闭已由 `rust-open-item-reference-parity.spec.ts` 对照，dirty browser-back、Esc/backdrop 和 readonly 组合矩阵仍待验 |
 | `[ ]` | 编辑器视觉 | 标题、文件名、工具栏、图标、按钮文案、编辑区字体/行高、readonly 和错误层级与旧版一致。 | 待恢复 |
 
 ## 10. EPUB/TXT 阅读器
@@ -274,7 +275,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | old/new 17项 reader-flow 与真实 TXT 链路已通过；仍需把条目证据拆到各子场景 |
-| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 真实 EPUB 1/1、reader-flow 17/17 已通过；损坏/错误回退和逐项截图仍待验 |
+| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 真实 EPUB 1/1、reader-flow 17/17 和普通文件打开分流/浏览器后退 1/1 已通过；损坏/错误回退和逐项截图仍待验 |
 | `[P]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | old/new reader-flow 的顶栏、标题截断、ring、沉浸式隐藏和恢复均通过；真实 EPUB 另验证页码及 `阅读进度 14.0%` |
 | `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；触摸翻页/取消、完整键盘状态仍待独立矩阵 |
 | `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | old/new reader-flow 已通过文本 locator、fragment、未加载 chunk、媒体 NavAnchor、无 fragment、父级/随机跳转和 Escape 焦点；空目录、复杂层级视觉和完整错误状态仍待验 |
@@ -463,6 +464,7 @@
 | 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba`、`1ffae0e`、`697239f`、`cf15e55` | `rust-library-ui.spec.ts` old/new 各 8/8；`rust-library-reference-parity.spec.ts` old/new 各 2/2；`rust-library-history-reference-parity.spec.ts` old/new 各 1/1 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；首次 503、重试 loading/恢复和请求次数、refresh 失败后继续切换仍复用旧快照；书架单本分组标题、图库模式跨图片/视频切换、媒体分类内容和右键默认事件、筛选后分类切换与浏览器返回/前进结果也已双版本对照；完整分类错误/数量矩阵未完 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
+| 普通文件打开分流与阅读器路由生命周期 | 5–6、9–11、15 | `4b5c1a0`（Reader 路径恢复）、`478969a`（双版本打开分流） | `rust-open-item-reference-parity.spec.ts` old/new 1/1 | 同一 mock 根目录实际点击目录、TXT、EPUB、图片、音频、视频和未知文件，比较 overlay、pathname、Reader 标题、编辑器内容，并用浏览器后退逐项关闭；修复 Rust Reader cleanup 覆盖文件夹 URL 的回退 | 局部 PASS |
 | 失败导航状态保留 | 5、6、15 | `db5b963`、`226daf1` | `rust-navigation-parity.spec.ts` old/new 定向用例各 1/1 | 列表已有选择时发起延迟 500 导航并返回 500，实际比较 loading/失败后的旧列表、选择工具栏和错误 toast；另以慢/快目录双击确认 stale response 不覆盖最后一次路径；成功导航清空选择，分类 history/完整状态矩阵仍未完 | old/new navigation parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E）、`0d9d993`（拖拽覆盖层）、`5eaa9da`（文件夹刷新时序）、`3d90ae5`（进度取整）、`255349d`（文件夹 old/new 双实例）、`cb277b7`（任务通知时机）、`b907728`（失败重试 parity）、`4910f65`（文件选择 parity）、`8172184`（时序测试稳定性） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；拖拽 `.self` 语义、文件夹刷新后成功反馈、旧版进度边界、同一文件夹的 old/new toast/嵌套目录结果、普通上传传输中隐藏/完成后通知、连续 503 的 5 次重试/任务中心不可见状态以及空选择/同名重复结果已追加；断点续传完整 UI、并发/取消矩阵未完 | parity Playwright trace、`rust-upload-parity.spec.ts` 8 tests（单页基础 4/4，old/new 双实例 4/4）；显式 `E2E_NEW_URL=18084` 的完整 `rust-*.spec.ts` 套件 143/143 通过 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、`f953af8`（移动失败反馈）、`a46b845`（删除/重命名 parity）、`f82e7f8`（CRUD conflict parity）、`8e72809`（purge error context）、`1abeb30`（empty trash parity）、`83f7738`（成功反馈时序） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast、空白输入不发请求、409 关闭确认框、移动 PATCH 失败数量与首项错误文案、删除多选继续处理/刷新清选择、重命名原始空白输入和 409 保留输入/可重试、回收站恢复/永久删除 409 的项目/选择/文件名错误上下文、清空回收站取消/500 后弹窗列表状态已追加；7 个成功分支已确认等待 reference 的目录/回收站刷新再反馈；目录/401/完整 loading 失败矩阵仍未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*`、`rust-transfer-dialog-reference-parity.spec.ts`、`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`（old/new 7/7） | 局部 PASS |
