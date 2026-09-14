@@ -238,8 +238,6 @@ fn open_icon(file: &File) -> AnyView {
             </svg>
         }
         .into_any()
-    } else if classify::is_editable(file) {
-        edit_icon().into_any()
     } else if classify::is_book(file) {
         view! {
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -247,6 +245,8 @@ fn open_icon(file: &File) -> AnyView {
             </svg>
         }
         .into_any()
+    } else if classify::is_editable(file) {
+        edit_icon().into_any()
     } else if classify::is_image(file) {
         view! {
             <svg viewBox="0 0 24 24" aria-hidden="true">

@@ -420,6 +420,7 @@ test('列表模式覆盖新建、重命名、移动、恢复和永久删除', as
     await selectRow(page, renamedFile)
     toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
     await toolbar.getByRole('button', { name: '移动' }).click()
+    await expect(page.locator('.selection-toolbar')).toHaveCount(0)
     await chooseDirectory(page, sourceFolder)
     await page.locator('.move-copy-dialog').getByRole('button', { name: '移动', exact: true }).click()
     await page.locator('.move-copy-dialog').waitFor({ state: 'detached' })

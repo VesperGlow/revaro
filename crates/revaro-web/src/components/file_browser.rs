@@ -2027,7 +2027,18 @@ pub fn FileBrowser(
                     on_empty_trash=show_empty_trash.clone()
                 />
 
-                <Show when=move || !selected_ids.get().is_empty() fallback=|| ()>
+                <Show
+                    when=move || {
+                        !selected_ids.get().is_empty()
+                            && media_file.get().is_none()
+                            && reader_file.get().is_none()
+                            && !editor_open.get()
+                            && !transfer_open.get()
+                            && share_file.get().is_none()
+                            && !account_open.get()
+                    }
+                    fallback=|| ()
+                >
                     <SelectionToolbar
                         items=items
                         selected_ids=selected_ids
