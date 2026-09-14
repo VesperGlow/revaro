@@ -17,6 +17,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Event, File as BrowserFile, FileReader, HtmlElement, HtmlInputElement};
 
 use super::dialogs::ActionDialog;
+use super::icons;
 use crate::api;
 use crate::logic::feedback::Feedback;
 
@@ -711,6 +712,7 @@ pub fn AccountSettings(
                                         fallback=move || view! {
                                             <strong>{move || account_username.get()}</strong>
                                             <button class="edit-username" type="button" aria-label="编辑用户名" on:click=move |_| start_username_edit.run(())>
+                                                {icons::edit()}
                                                 <span>"编辑"</span>
                                             </button>
                                         }

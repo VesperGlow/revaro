@@ -36,6 +36,16 @@ pub fn settings() -> impl IntoView {
     }
 }
 
+/// Lucide-style edit mark used by the account username action.
+pub fn edit() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m4 16-.8 4 4-.8L18.5 7.9l-3.2-3.2L4 16Z"></path>
+        </svg>
+    }
+}
+
 /// Lucide `trash-2` — the trash entry in the top bar and the sidebar footer.
 pub fn trash() -> impl IntoView {
     view! {
