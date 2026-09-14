@@ -457,6 +457,41 @@ test('old/new 视频字幕 cue 文本的实体解码与分行一致', async ({ b
   }
 })
 
+test('old/new 图片滚轮缩放保持鼠标锚点一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '群山.png')
+    const image = page.locator('.preview-image')
+    await expect(image).toBeVisible()
+    await page.getByRole('button', { name: '实际大小', exact: true }).click()
+    await page.mouse.move(280, 390)
+    await page.mouse.wheel(0, -100)
+    await page.waitForTimeout(50)
+    return image.evaluate(element => ({
+      transform: getComputedStyle(element).transform,
+      box: element.getBoundingClientRect().toJSON(),
+    }))
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.box.width).toBeGreaterThan(1800)
+    expect(newResult, 'Rust 图片滚轮缩放的鼠标锚点与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('视频全屏按钮和全屏状态同步，退出后恢复预览层', async ({ page }) => {
   await mockMedia(page)
   await open(page, '山间漫步.webm')

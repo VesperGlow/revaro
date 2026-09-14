@@ -589,14 +589,15 @@ pub fn MediaPreview(
             x: f64::from(event.client_x()),
             y: f64::from(event.client_y()),
         };
+        let local = local_point(stage, point);
         set_zoom(
             zoom,
             pan,
             natural,
             stage_size,
             zoom.get_untracked() * (-delta * 0.002).exp(),
-            local_point(stage, point),
-            Point { x: 0.0, y: 0.0 },
+            local,
+            local,
         );
     };
 
