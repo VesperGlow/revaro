@@ -46,7 +46,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let server_position = RwSignal::new(0.0_f64);
     let progress_loaded = RwSignal::new(false);
     let restored_position = RwSignal::new(false);
-    let user_seeked = RwSignal::new(false);
     let save_timer = RwSignal::new(None::<i32>);
     let remote_save_timer = RwSignal::new(None::<i32>);
     let mounted = RwSignal::new(false);
@@ -119,15 +118,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                     .unwrap_or(0.0)
             };
             if saved > 0.0 && saved < duration() - 5.0 {
-                seek_audio(
-                    audio,
-                    current_time,
-                    duration(),
-                    saved,
-                    false,
-                    user_seeked,
-                    false,
-                );
+                seek_audio(audio, current_time, duration(), saved, false);
             }
         }
     };
@@ -219,7 +210,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let on_time_update = {
         let schedule_local_save = schedule_local_save.clone();
         let schedule_remote_save = schedule_remote_save.clone();
-        let save_progress = save_progress.clone();
         move |_| {
             if let Some(element) = audio_element(audio) {
                 current_time.set(safe_time(element.current_time()));
@@ -227,9 +217,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
             update_buffer(audio, duration, buffered);
             schedule_local_save();
             schedule_remote_save();
-            if user_seeked.get_untracked() {
-                save_progress(false);
-            }
         }
     };
     let on_pause = {
@@ -275,15 +262,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let seek = {
         let restore_position = restore_position.clone();
         move |target: f64, play: bool| {
-            seek_audio(
-                audio,
-                current_time,
-                duration(),
-                target,
-                play,
-                user_seeked,
-                true,
-            );
+            seek_audio(audio, current_time, duration(), target, play);
             restore_position();
         }
     };
@@ -715,14 +694,9 @@ fn seek_audio(
     duration: f64,
     target: f64,
     play: bool,
-    user_seeked: RwSignal<bool>,
-    mark_user_seeked: bool,
 ) {
     if !target.is_finite() {
         return;
-    }
-    if mark_user_seeked {
-        user_seeked.set(true);
     }
     let target = target.max(0.0).min(if duration > 0.0 {
         duration
