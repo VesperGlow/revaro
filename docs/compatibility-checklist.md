@@ -71,6 +71,7 @@
 - `2026-09-14`，old `18080` / new `18083`，390×844：实际聚焦媒体库图片方块卡和音乐列表行按 Space，旧版均阻止页面滚动；Rust 初始 `LibraryCard`/`LibraryRow` 缺少对应键盘处理，已恢复无条件 `prevent_default`。old/new `rust-library-ui.spec.ts` 定向用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：实际对照 Logo 回根、系统状态面板点空白/Escape/重复点击关闭、桌面与移动端侧栏回收站 footer。Rust 初始移动 footer 点击时错误关闭抽屉，已移除额外关闭；尺寸、路径和其余状态均与 old 一致，`rust-navigation-parity.spec.ts` old/new 定向用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：模拟 `/api/library/all` 首次 503、再次刷新延迟返回合法图片条目，旧版错误态、重试 loading、恢复内容和刷新图标路径已逐项对照；Rust 初始 `RefreshCw` 几何不同，已恢复四段 reference path，`rust-library-ui.spec.ts` old/new 定向用例均 1/1。
+- `2026-09-14`，old `18080` / new `18083`：模拟四张图片分布在根目录、两级 `归档 / 旅行` 和 `归档 / 工作`，逐项点击分类路径树；根/节点计数、首层默认展开、子路径展开、过滤后的卡片数、active 行和回到“全部位置”均一致。空分类另验证“还没有图片内容”路径提示、空态文案和“上传文件”入口，old/new 各 1/1。文件目录树在媒体分类切换后的 old 运行中出现旧版自身异步加载竞态（old 未显示子目录、new 显示），未将其伪记为 Rust 已通过，仍需用稳定真实目录场景单独裁定。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -108,8 +109,8 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[P]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new `rust-library-ui.spec.ts` 与导航定向用例确认顺序、文案、active/current、点击切换和返回 |
-| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all` 和五类空/有数据视图已在 old/new 对照；分类 503 → 重试 loading → 恢复内容已验证，数量、空态和错误全矩阵仍待验 |
-| `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 分类一级展开和移动端隐藏树已恢复；桌面路径树递归、当前高亮和错误状态仍待验 |
+| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all`、五类有数据视图、分类 503 → 重试 loading → 恢复内容、空分类路径/空态已在 old/new 对照；各类数量、旧内容保留和完整错误矩阵仍待验 |
+| `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 多级媒体路径树计数、默认展开、展开/过滤、active 和空路径提示 old/new 各 1/1；文件目录树加载/递归及旧版切换竞态仍待稳定场景裁定 |
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
 | `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |
@@ -354,7 +355,7 @@
 | 基线与清单 | 1 | `068b9bb` | healthz、old/new 构建和基线记录已完成 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`待提交`（navigation global入口 parity） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；浏览器后退/弹层 history 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
-| 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`待提交`（file-card/library-card parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class 和视频 preview class 已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card parity trace | 局部 PASS |
+| 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、待提交 dialog failure parity | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast 已追加；冲突/失败/清空矩阵未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*` | 局部 PASS |
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard 已 old/new 实测；etag 冲突/全部扩展名未完 | reader/editor parity trace | 局部 PASS |

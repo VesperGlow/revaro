@@ -75,6 +75,60 @@ async function mockLibrary(page: Page, books = library.book) {
   })
 }
 
+async function mockNestedLibrary(page: Page) {
+  const nestedImages = [
+    base({ id: 'image-root', name: '根目录.png', mime_type: 'image/png', folder_path: [] }),
+    base({ id: 'image-travel-1', name: '旅行一.png', mime_type: 'image/png', folder_path: [folder('archive', '归档'), folder('travel', '旅行')] }),
+    base({ id: 'image-travel-2', name: '旅行二.png', mime_type: 'image/png', folder_path: [folder('archive', '归档'), folder('travel', '旅行')] }),
+    base({ id: 'image-work', name: '工作.png', mime_type: 'image/png', folder_path: [folder('archive', '归档'), folder('work', '工作')] }),
+  ]
+  const nestedCounts = { book: 0, image: 4, video: 0, audio: 0, file: 2 }
+  const directory = (id: string, name: string, parent_id: string) => base({
+    id,
+    name,
+    parent_id,
+    kind: 'directory',
+    size: 0,
+    mime_type: '',
+  })
+  const rootChildren = [
+    directory('dir-archive', '归档', ROOT),
+    directory('dir-empty', '空目录', ROOT),
+  ]
+  const archiveChildren = [
+    directory('dir-travel', '旅行', 'dir-archive'),
+    directory('dir-work', '工作', 'dir-archive'),
+  ]
+
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: nestedImages, video: [], audio: [] }, counts: nestedCounts })
+    }
+    if (path === '/api/library/counts') return json(nestedCounts)
+    if (path === `/api/files/${ROOT}`) {
+      return json({ file: base({ id: ROOT, name: '我的文件', kind: 'directory', parent_id: null, size: 0, mime_type: '' }), breadcrumbs: [] })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: rootChildren, total_bytes: 0, file_count: 0 })
+    if (path === '/api/files/dir-archive') {
+      return json({ file: directory('dir-archive', '归档', ROOT), breadcrumbs: [base({ id: ROOT, name: '我的文件', kind: 'directory', parent_id: null, mime_type: '' })] })
+    }
+    if (path === '/api/files/dir-archive/children') return json({ items: archiveChildren, total_bytes: 0, file_count: 0 })
+    if (path === '/api/files/dir-travel') {
+      return json({ file: directory('dir-travel', '旅行', 'dir-archive'), breadcrumbs: [base({ id: ROOT, name: '我的文件', kind: 'directory', parent_id: null, mime_type: '' }), directory('dir-archive', '归档', ROOT)] })
+    }
+    if (path === '/api/files/dir-travel/children') return json({ items: [], total_bytes: 0, file_count: 0 })
+    if (path.endsWith('/thumbnail')) return route.fulfill({ contentType: 'image/svg+xml', body: cover })
+    return json({ items: [] })
+  })
+}
+
 async function openApp(page: Page) {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
@@ -242,6 +296,77 @@ test('媒体库方块卡和音频列表行按 reference 阻止 Space 默认滚�
   const audioBefore = await page.evaluate(() => window.scrollY)
   await page.keyboard.press('Space')
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(audioBefore)
+})
+
+test('分类路径树保持 reference 的计数、展开、过滤与导航', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 950 })
+  await mockNestedLibrary(page)
+  await openApp(page)
+
+  const sidebar = page.locator('.app-sidebar')
+  await sidebar.locator('[data-category="image"]').click()
+  const libraryPaths = sidebar.locator('.category-paths')
+  await expect(libraryPaths.locator('.path-label')).toHaveCount(2)
+  await expect(libraryPaths.locator('.path-label').first()).toContainText('我的文件')
+  await expect(libraryPaths.locator('.path-label').first().locator('em')).toHaveText('4')
+  const archive = libraryPaths.locator('.path-label', { hasText: '归档' })
+  await expect(archive.locator('em')).toHaveText('3')
+  await expect(libraryPaths.locator('.path-label', { hasText: '旅行' })).toHaveCount(0)
+  await expect(libraryPaths.locator('.path-row').first()).toHaveClass(/active/)
+
+  await archive.click()
+  await expect(page.locator('.library-view .folder-meta')).toContainText('归档')
+  await expect(page.locator('.library-view .file-card')).toHaveCount(3)
+  await expect(archive.locator('..')).toHaveClass(/active/)
+  await archive.locator('..').locator('.path-toggle').click()
+  await expect(libraryPaths.locator('.path-label', { hasText: '旅行' })).toBeVisible()
+  await expect(libraryPaths.locator('.path-label', { hasText: '旅行' }).locator('em')).toHaveText('2')
+  await expect(libraryPaths.locator('.path-label', { hasText: '工作' }).locator('em')).toHaveText('1')
+
+  const travel = libraryPaths.locator('.path-label', { hasText: '旅行' })
+  await travel.click()
+  await expect(page.locator('.library-view .folder-meta')).toContainText('归档 / 旅行')
+  await expect(page.locator('.library-view .file-card')).toHaveCount(2)
+  await expect(travel.locator('..')).toHaveClass(/active/)
+  await libraryPaths.locator('.path-label').first().click()
+  await expect(page.locator('.library-view .folder-meta')).toContainText('全部位置')
+  await expect(page.locator('.library-view .file-card')).toHaveCount(4)
+  await expect(libraryPaths.locator('.path-row').first()).toHaveClass(/active/)
+
+})
+
+test('分类没有内容时保留 reference 的路径提示、空态文案与上传入口', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 950 })
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({ file: base({ id: ROOT, name: '我的文件', kind: 'directory', parent_id: null, size: 0, mime_type: '' }), breadcrumbs: [] })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+
+  await openApp(page)
+  const sidebar = page.locator('.app-sidebar')
+  await sidebar.locator('[data-category="image"]').click()
+  await expect(page.getByRole('heading', { name: '图片', exact: true })).toBeVisible()
+  await expect(sidebar.locator('.path-loading')).toHaveText('还没有图片内容')
+  const empty = page.locator('.library-view .state.empty')
+  await expect(empty.locator('.empty-icon')).toHaveText('⌁')
+  await expect(empty.locator('h3')).toHaveText('这里还没有图片内容')
+  await expect(empty.locator('p')).toHaveText('上传后会自动归类到这里。')
+  await expect(empty.getByRole('button', { name: '上传文件' })).toBeVisible()
+  await expect(sidebar.locator('[data-category="image"] .category-count')).toHaveCount(0)
 })
 
 test('分类读取失败、刷新 loading 和 RefreshCw 图标保持 reference 行为', async ({ page }) => {
