@@ -151,6 +151,10 @@ fn pending_missing() -> ApiError {
     ApiError::not_found("pending upload not found")
 }
 
+fn upload_missing() -> ApiError {
+    ApiError::not_found("upload not found")
+}
+
 /// [`load_upload`] adapted to the error type `call_api` expects.
 fn load_upload_api(connection: &Connection, id: &str) -> Result<UploadRecord, ApiError> {
     load_upload(connection, id).map_err(|error| {
@@ -337,7 +341,7 @@ async fn get_upload(
         .call_api(move |connection| {
             let record = load_upload(connection, &id).map_err(|error| {
                 if error.is_not_found() {
-                    pending_missing()
+                    upload_missing()
                 } else {
                     database_error(error)
                 }
@@ -938,5 +942,16 @@ fn conflict_or(error: DbError) -> ApiError {
         ApiError::conflict("an item with that name already exists")
     } else {
         database_error(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_and_pending_upload_errors_keep_distinct_messages() {
+        assert_eq!(upload_missing().message, "upload not found");
+        assert_eq!(pending_missing().message, "pending upload not found");
     }
 }
