@@ -167,6 +167,7 @@
 - `2026-09-14`，old `18080` / new `18084`：Toast 来源修复及 4 个新增来源用例后的显式双版本完整 `rust-*.spec.ts` suite，156/156 通过（约 6.0 分钟）。
 - `2026-09-14`，old `18080` / new `18084`：Reader 路径清理修复及普通文件打开分流用例后的显式双版本完整 `rust-*.spec.ts` suite，160/160 通过（约 6.3 分钟）；Reader/导航定向集合 18/18、`cargo xtask check` 通过。该结果只说明现有自动化集合无回归，不代表下方尚未收口的兼容性条目已完成。
 - `2026-09-15`，old `18080` / new `18084`：媒体双版本浏览器集合 14/14；实际验证图片首次打开不预加载相邻原图、切换时才预加载、缩略图 `?v=<etag>` 失败后只回退一次到绝对原图 URL、图片控制/手势、音频章节/持久化、视频字幕/全屏/自动隐藏和三种移动宽度。Rust 初始版的 effect 首次挂载误触发相邻预加载，且 fallback 地址比较/写入语义与旧版不一致，已按旧版 watch 与 `new URL(..., location.origin)` 恢复；old/new 同一 `rust-media-parity-ui.spec.ts` 均 14/14。
+- `2026-09-15`，old `18080` / new `18084`：给视频文件注入含空格和斜杠的 etag，实际打开预览并比较 `<video poster>`；旧版为 `/api/files/{id}/thumbnail?v=poster%20v%2F1`，Rust 初始版漏掉版本参数。已恢复与旧版 `thumbSRC` 相同的 URL 编码规则，`rust-video-poster-reference-parity.spec.ts` old/new 1/1，修复提交 `dcfc9c1`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -304,7 +305,7 @@
 | `[ ]` | 图片更多菜单 | 下载、移动、复制、信息等 menu 的位置、点击外部/Esc、loading/error 和返回行为一致。 | old/new 实际对照更多入口、下载/移动/复制/信息项、popover 几何与 hover、空白/Escape 和焦点恢复；点击各动作后的 loading/error/返回仍待验 |
 | `[ ]` | 音频播放器 | `/audio` 元数据、封面 fallback、章节、上一/下一章、时间跳转、进度、播放/暂停、loading/error/retry、一首/多首行为一致。 | old/new media parity 已覆盖章节标识、controls、桌面/移动宽度；播放状态、错误重试和持久化仍待验 |
 | `[ ]` | 音频持久化 | `revaro-audio-volume`、`revaro-audio-muted`、`revaro-audio-position:{id}`，音量滑块、静音、键盘操作和刷新恢复一致。 | 待验证 |
-| `[ ]` | 视频播放器 | Range/直接 preview、poster thumbnail、播放/暂停、进度拖动与 seek preview/commit、时间显示、音量/静音、速度、全屏、控制条显隐和自动隐藏一致。 | old/new media parity 已覆盖 poster、controls、速度 Escape、桌面/390/320、touch；Range/全屏/seek commit 仍待验 |
+| `[ ]` | 视频播放器 | Range/直接 preview、poster thumbnail、播放/暂停、进度拖动与 seek preview/commit、时间显示、音量/静音、速度、全屏、控制条显隐和自动隐藏一致。 | old/new media parity 已覆盖 poster、controls、速度 Escape、桌面/390/320、touch；poster 的 etag 版本参数和特殊字符编码另由 `rust-video-poster-reference-parity.spec.ts` old/new 1/1 验证；Range/全屏/seek commit 仍待验 |
 | `[ ]` | 视频字幕 | `/video` metadata、VTT subtitle、选择/关闭字幕、字幕不抖动、加载/解析错误和移动端布局一致。 | 待验证 |
 | `[ ]` | 视频持久化 | `revaro-video-volume`、`revaro-video-rate`、`revaro-video-position:{id}`，刷新/重开恢复准确且无错误跳 seek。 | 待验证 |
 | `[ ]` | 媒体操作 | 播放器设置/更多中的下载、移动、复制、信息、reanalyze（旧版入口若出现）、关闭/返回和任务刷新一致。 | 图片更多菜单的入口、项目和关闭语义已 old/new 对照；音频音量、视频字幕/播放设置及各动作结果、错误和任务刷新仍待验 |
@@ -481,7 +482,7 @@
 | CRUD/传输刷新—反馈时序 | 8、15 | `83f7738` | 同一 700ms 延迟 mock 实际覆盖新建、删除、移动、重命名、恢复、永久删除、清空回收站；old/new 在刷新完成前均无成功 Toast，完成后文案与列表状态一致。Rust 使用可完成的 folder/trash refresh request，并恢复 extract 只刷新任务中心；`cargo fmt --all -- --check`、`cargo xtask check`、`cargo xtask web-build` 与最新显式端口完整 suite 160/160 均通过 | `rust-mutation-feedback-order-reference-parity.spec.ts` old/new 7/7 | PASS |
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity）、`0027c57`（extension/conflict parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；新增 11 扩展名入口、延迟 loading、Ctrl+S、ETag 冲突和未保存取消；完整视觉、编码/大文件、browser-back 和失败矩阵未完 | `rust-editor-reference-parity.spec.ts` Rust 5/5；其中新增 old/new 双上下文 2/2，既有 Rust bundle 场景 3/3 | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
-| 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
+| 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity）、`dcfc9c1`（video poster etag parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；视频 poster 的 etag 编码已单独 old/new 1/1；损坏/seek 边界仍未完 | `rust-media-parity-ui.spec.ts`、`rust-video-poster-reference-parity.spec.ts` | 局部 PASS |
 | 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E）、`7b278b7`（归档入口双版本） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档入口/任务密码/状态刷新、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言；`rust-archive-reference-parity.spec.ts` old/new 1/1 | 局部 PASS |
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e`、`31ca8e5`、`25c966f`、`eb617a8` | `rust-feedback-reference-parity.spec.ts` old/new 来源用例 7/7；`rust-share-dialog-reference-parity.spec.ts` 重生成/停止分享 1/1；`rust-editor-reference-parity.spec.ts` 放弃编辑 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载、任务完成/失败、分享重生成/停止分享、放弃编辑保留已有 toast 均实际比较 old/new；Rust 初始重生成额外通知与 discard 清空通知已恢复；所有双版本 new fallback 已锁定当前 Rust 18084 | 局部 PASS |
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
