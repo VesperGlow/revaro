@@ -355,7 +355,6 @@ pub fn VideoPlayer(
         }
     };
     let seek_to = {
-        let save_progress = save_progress.clone();
         move |target: f64| {
             if !target.is_finite() {
                 return;
@@ -371,7 +370,6 @@ pub fn VideoPlayer(
             } else {
                 current_time.set(target);
             }
-            save_progress(false);
         }
     };
     let retry_playback = {

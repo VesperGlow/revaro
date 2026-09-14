@@ -320,6 +320,64 @@ test('old/new 音频用户 seek 与预览关闭的进度持久化时机一致', 
   }
 })
 
+test('old/new 视频用户 seek 与预览关闭的进度持久化时机一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间漫步.webm')
+    const video = page.locator('.video-player-shell video')
+    await expect(video).toHaveJSProperty('readyState', 4)
+    await video.evaluate((element: HTMLVideoElement) => element.pause())
+    await page.waitForTimeout(50)
+    await page.evaluate(() => localStorage.removeItem('revaro-video-position:video-1'))
+    const progressRequests: string[] = []
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/files/video-1/media/progress') {
+        progressRequests.push(request.method())
+      }
+    })
+    const timeUpdateCount = await video.evaluate((element: HTMLVideoElement) => {
+      const state = window as typeof window & { __videoParityTimeUpdates?: number }
+      state.__videoParityTimeUpdates = 0
+      element.addEventListener('timeupdate', () => {
+        state.__videoParityTimeUpdates = (state.__videoParityTimeUpdates ?? 0) + 1
+      })
+      return state.__videoParityTimeUpdates
+    })
+
+    const seek = page.locator('.video-seek')
+    await seek.fill('20')
+    await seek.dispatchEvent('change')
+    await expect.poll(() => page.evaluate(() => (window as typeof window & { __videoParityTimeUpdates?: number }).__videoParityTimeUpdates ?? 0)).toBeGreaterThan(timeUpdateCount)
+    const immediatelyAfterSeek = await page.evaluate(() => localStorage.getItem('revaro-video-position:video-1'))
+    await page.waitForTimeout(650)
+    const afterDebounce = await page.evaluate(() => localStorage.getItem('revaro-video-position:video-1'))
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    await page.waitForTimeout(100)
+    return { immediatelyAfterSeek, afterDebounce, methods: progressRequests }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.immediatelyAfterSeek).toBeNull()
+    expect(oldResult.afterDebounce).not.toBeNull()
+    expect(oldResult.methods).toEqual(['PUT'])
+    expect(newResult, 'Rust 视频 seek/关闭预览的进度持久化时序与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('视频全屏按钮和全屏状态同步，退出后恢复预览层', async ({ page }) => {
   await mockMedia(page)
   await open(page, '山间漫步.webm')
