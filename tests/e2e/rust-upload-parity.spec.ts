@@ -212,3 +212,83 @@ test('old/new 文件夹上传保留相同反馈与嵌套目录结果', async ({ 
     await newContext.close()
   }
 })
+
+test('old/new 普通文件上传按 reference 的时机进入任务中心', async ({ browser }) => {
+  const name = `upload-queue-reference-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload queue reference\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function delayByteRequest(page: Parameters<typeof login>[0]) {
+    await page.route(/\/api\/uploads\/[^/]+\/data$/, async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue()
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 5_000))
+      await route.continue()
+    })
+  }
+
+  async function waitForTask(page: Parameters<typeof login>[0]) {
+    await expect.poll(async () => page.evaluate(async fileName => {
+      const response = await fetch('/api/tasks')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status: string; source_type?: string }> }
+      return (payload.items ?? []).some(task => task.name === fileName && task.source_type === 'upload' && ['queued', 'running'].includes(task.status))
+    }, name), { timeout: 10_000 }).toBe(true)
+  }
+
+  async function waitForCompletedTask(page: Parameters<typeof login>[0]) {
+    await expect.poll(async () => page.evaluate(async fileName => {
+      const response = await fetch('/api/tasks')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status: string; source_type?: string }> }
+      return (payload.items ?? []).some(task => task.name === fileName && task.source_type === 'upload' && task.status === 'completed')
+    }, name), { timeout: 15_000 }).toBe(true)
+  }
+
+  async function taskSnapshot(page: Parameters<typeof login>[0]) {
+    const row = page.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name }).first()
+    await expect(row).toBeVisible()
+    return row.evaluate(element => ({
+      name: element.querySelector('strong')?.textContent?.trim(),
+      kind: element.querySelector('.kind')?.textContent?.trim(),
+      status: element.querySelector('small')?.textContent?.trim(),
+      progress: element.querySelector('b')?.className,
+      hasCancel: Boolean(element.querySelector('button[title="取消"]')),
+    }))
+  }
+
+  try {
+    await Promise.all([delayByteRequest(oldPage), delayByteRequest(newPage)])
+    await Promise.all([
+      loginAt(oldPage, oldUrl),
+      loginAt(newPage, newUrl),
+    ])
+    await Promise.all([
+      oldPage.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer }),
+      newPage.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer }),
+    ])
+    await Promise.all([waitForTask(oldPage), waitForTask(newPage)])
+    await Promise.all([
+      oldPage.getByTitle('任务中心').click(),
+      newPage.getByTitle('任务中心').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name })).toHaveCount(0),
+      expect(newPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name })).toHaveCount(0),
+    ])
+    await Promise.all([waitForCompletedTask(oldPage), waitForCompletedTask(newPage)])
+    const [oldTask, newTask] = await Promise.all([taskSnapshot(oldPage), taskSnapshot(newPage)])
+    expect(newTask, 'Rust 普通上传任务中心状态与 reference 不一致').toEqual(oldTask)
+  } finally {
+    await Promise.all([removeCreated(oldPage, [name]), removeCreated(newPage, [name])])
+    await oldContext.close()
+    await newContext.close()
+  }
+})
