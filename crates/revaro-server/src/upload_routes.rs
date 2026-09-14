@@ -516,7 +516,8 @@ async fn record_upload_part(
             let Some(expected) = record.expected_part_size(part) else {
                 return Err(ApiError::bad_request("invalid multipart part number"));
             };
-            if request.size != expected {
+            let etag = request.etag.trim();
+            if etag.is_empty() || request.size != expected || request.content_hash.len() > 128 {
                 return Err(ApiError::bad_request("invalid uploaded part acknowledgement"));
             }
             connection
@@ -528,7 +529,7 @@ size=excluded.size,etag=excluded.etag,content_hash=excluded.content_hash,complet
                         record.id,
                         part,
                         request.size,
-                        request.etag,
+                        etag,
                         request.content_hash,
                         Timestamp::now().to_rfc3339(),
                     ],
