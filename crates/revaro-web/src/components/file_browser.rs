@@ -225,6 +225,10 @@ pub fn FileBrowser(
     let history_suppressed = RwSignal::new(false);
     let initial_route_pending = RwSignal::new(false);
     let fallback_to_root = RwSignal::new(false);
+    // A document save resolves only after the reference controller's folder
+    // refresh resolves. The optional parent id lets that refresh deliver the
+    // success toast (or its error) without making every folder load awaitable.
+    let pending_editor_refresh = RwSignal::new(None::<String>);
 
     let load_folder = {
         let current_id = current_id;
@@ -245,6 +249,8 @@ pub fn FileBrowser(
         let history_suppressed = history_suppressed;
         let initial_route_pending = initial_route_pending;
         let fallback_to_root = fallback_to_root;
+        let pending_editor_refresh = pending_editor_refresh;
+        let editor_error = editor_error;
         let on_logout = on_logout.clone();
         Callback::new(move |id: String| {
             let sequence = request_sequence.get_untracked().wrapping_add(1);
@@ -253,6 +259,12 @@ pub fn FileBrowser(
             error.set(String::new());
             selected_ids.set(HashSet::new());
             let requested_id = id;
+            if pending_editor_refresh
+                .get_untracked()
+                .is_some_and(|expected_id| expected_id != requested_id)
+            {
+                pending_editor_refresh.set(None);
+            }
             let suppress_history = history_suppressed.get_untracked();
             let initial_request = initial_route_pending.get_untracked();
             initial_route_pending.set(false);
@@ -292,6 +304,12 @@ pub fn FileBrowser(
                         tree_token.update(|token| *token = token.wrapping_add(1));
                         replace_folder_url(&requested_id);
                         loading.set(false);
+                        if pending_editor_refresh.get_untracked().as_deref()
+                            == Some(requested_id.as_str())
+                        {
+                            pending_editor_refresh.set(None);
+                            notify.run(Feedback::success("文档已保存"));
+                        }
                     }
                     Err(request_error) if request_error.is_unauthorized() => {
                         loading.set(false);
@@ -299,7 +317,13 @@ pub fn FileBrowser(
                     }
                     Err(request_error) => {
                         loading.set(false);
-                        if initial_request && requested_id != ROOT_ID {
+                        let editor_refresh_failed =
+                            pending_editor_refresh.get_untracked().as_deref()
+                                == Some(requested_id.as_str());
+                        if editor_refresh_failed {
+                            pending_editor_refresh.set(None);
+                            editor_error.set(request_error.message);
+                        } else if initial_request && requested_id != ROOT_ID {
                             // The reference startup route treats an invalid
                             // `/f/{id}` bookmark as a stale URL: it returns to
                             // the root and loads that folder without leaving a
@@ -1398,7 +1422,7 @@ pub fn FileBrowser(
             editor_content.set(String::new());
             editor_original.set(String::new());
             editor_etag.set(file.etag.clone());
-            editor_mode.set(if readonly && classify::is_editable_name(&file.name) {
+            editor_mode.set(if readonly && is_markdown_name(&file.name) {
                 EditorMode::Preview
             } else {
                 EditorMode::Edit
@@ -1485,23 +1509,28 @@ pub fn FileBrowser(
         let editor_dirty = editor_dirty;
         let current_id = current_id;
         let load_folder = load_folder.clone();
-        let notify = notify.clone();
+        let pending_editor_refresh = pending_editor_refresh;
         let on_logout = on_logout.clone();
         Callback::new(move |(): ()| {
             if editor_readonly.get_untracked() || editor_busy.get_untracked() {
                 return;
             }
             editor_error.set(String::new());
-            let name = editor_name.get_untracked().trim().to_owned();
-            if name.is_empty() {
+            let raw_name = editor_name.get_untracked();
+            if raw_name.trim().is_empty() {
                 editor_error.set("请输入文件名".to_owned());
                 return;
             }
-            if !classify::is_editable_name(&name) {
+            // The reference validates the input before trimming it, then
+            // trims only the name sent to the create endpoint. Preserve that
+            // distinction: a trailing space after `.md` is rejected by the
+            // client instead of silently changing the requested filename.
+            if !classify::is_editable_name(&raw_name) {
                 editor_error
                     .set("支持 Markdown、TXT、YAML、JSON、TOML、INI、CONF、LOG 和 CSV".to_owned());
                 return;
             }
+            let name = raw_name.trim().to_owned();
             let content = editor_content.get_untracked();
             if content.len() > revaro_core::limits::MAX_DOCUMENT_BYTES {
                 editor_error.set("可编辑文档不能超过 1 MiB".to_owned());
@@ -1538,7 +1567,7 @@ pub fn FileBrowser(
                         editor_original.set(editor_content.get_untracked());
                         editor_dirty.set(false);
                         refresh.run(parent_id);
-                        notify.run(Feedback::success("文档已保存"));
+                        pending_editor_refresh.set(Some(current_id.get_untracked()));
                     }
                     Err(error) if error.is_unauthorized() => {
                         editor_open.set(false);
@@ -2743,6 +2772,11 @@ fn preview_title(file: &File, trash_mode: bool) -> String {
 
 fn non_negative(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
+}
+
+fn is_markdown_name(name: &str) -> bool {
+    let extension = classify::extension(name);
+    extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
 }
 
 pub(crate) fn file_preview(file: &File) -> AnyView {

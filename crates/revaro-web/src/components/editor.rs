@@ -70,15 +70,14 @@ pub fn DocumentEditor(
                     <Show
                         when=move || !error.get().is_empty()
                         fallback=move || view! {
-                            <Show when=move || readonly.get() fallback=move || view! {
-                                <Show when=move || is_new.get() || dirty.get() fallback=|| ()><span class="unsaved-dot">"未保存"</span></Show>
-                                <button class="primary" type="button" prop:disabled=move || busy.get() || (!is_new.get() && !dirty.get()) on:click=move |_| save.run(())>{move || if busy.get() { "保存中…" } else { "保存" }}</button>
-                            }>
-                                <span class="editor-header-message">"只读"</span>
-                            </Show>
+                            <Show when=move || readonly.get() fallback=|| ()><span class="editor-header-message">"只读"</span></Show>
                         }
                     >
                         <span class="editor-header-message error">{move || error.get()}</span>
+                    </Show>
+                    <Show when=move || !readonly.get() fallback=|| ()>
+                        <Show when=move || is_new.get() || dirty.get() fallback=|| ()><span class="unsaved-dot">"未保存"</span></Show>
+                        <button class="primary" type="button" prop:disabled=move || busy.get() || (!is_new.get() && !dirty.get()) on:click=move |_| save.run(())>{move || if busy.get() { "保存中…" } else { "保存" }}</button>
                     </Show>
                     <button class="editor-close" type="button" aria-label="关闭编辑器" on:click=move |_| close.run(())>"×"</button>
                 </div>
