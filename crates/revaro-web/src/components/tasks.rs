@@ -713,8 +713,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
     let password_value = controller.password;
     let password_error = controller.password_error;
     let password_busy = controller.password_busy;
-    let loading = controller.loading;
-    let panel_error = controller.error;
     let busy_ids = controller.busy_ids;
     let clearing = controller.clearing;
     let submit_password = {
@@ -771,14 +769,9 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                     </Show>
                 </header>
                 <Show
-                    when=move || !loading.get() && tasks.get().is_empty() && panel_error.get().is_empty()
-                    fallback=move || view! {
-                        <Show when=move || !panel_error.get().is_empty() fallback=|| ()>
-                            <p class="error" role="alert">{move || panel_error.get()}</p>
-                        </Show>
-                        <Show when=move || loading.get() && tasks.get().is_empty() fallback=|| ()>
-                            <p class="empty">"正在读取任务…"</p>
-                        </Show>
+                    when=move || !tasks.get().is_empty()
+                    fallback=|| view! { <p class="empty">"还没有后台任务"</p> }
+                >
                         <div class="task-list">
                             <Show when=move || active_count.get() != 0 fallback=|| ()>
                                 <section class="task-group active-group">
@@ -854,9 +847,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                 </section>
                             </Show>
                         </div>
-                    }
-                >
-                    <p class="empty">"还没有后台任务"</p>
                 </Show>
             </section>
         </details>

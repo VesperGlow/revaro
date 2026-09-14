@@ -209,3 +209,55 @@ test('任务中心活动进度汇总按 reference 使用原始值四舍五入', 
   await page.getByTitle('任务中心').click()
   await expect(page.locator('.task-panel > header small')).toHaveText('2 项进行中 · 2%')
 })
+
+async function mockDelayedEmptyTasks(page: Page) {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') {
+      await new Promise(resolve => setTimeout(resolve, 1_500))
+      return json({ items: [] })
+    }
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+}
+
+test('任务初次读取尚未返回时仍显示 reference 的空任务状态', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockDelayedEmptyTasks(oldPage), mockDelayedEmptyTasks(newPage)])
+    await Promise.all([
+      oldPage.goto(`${oldUrl}/`),
+      newPage.goto(`${newUrl}/`),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+      expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+    ])
+    await oldPage.getByTitle('任务中心').click()
+    await newPage.getByTitle('任务中心').click()
+    await expect(oldPage.locator('.task-panel .empty')).toHaveText('还没有后台任务')
+    await expect(newPage.locator('.task-panel .empty')).toHaveText('还没有后台任务')
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
