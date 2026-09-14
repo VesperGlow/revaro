@@ -439,11 +439,11 @@ pub fn FileBrowser(
         let library_loaded = library_loaded;
         let apply_library_view = apply_library_view.clone();
         let on_logout = on_logout.clone();
-        Callback::new(move |kind: LibraryKind| {
+        Callback::new(move |(kind, force): (LibraryKind, bool)| {
             if kind == LibraryKind::File {
                 return;
             }
-            if library_loaded.get_untracked() {
+            if library_loaded.get_untracked() && !force {
                 apply_library_view.run(kind);
                 return;
             }
@@ -583,11 +583,9 @@ pub fn FileBrowser(
     };
 
     let force_load_library = {
-        let library_loaded = library_loaded;
         let load_library = load_library.clone();
         Callback::new(move |kind: LibraryKind| {
-            library_loaded.set(false);
-            load_library.run(kind);
+            load_library.run((kind, true));
         })
     };
 
@@ -1758,7 +1756,7 @@ pub fn FileBrowser(
                 section.set(kind);
                 trash_mode.set(false);
                 replace_library_url(kind, None);
-                load_library.run(kind);
+                load_library.run((kind, false));
             }
         })
     };
@@ -1835,7 +1833,7 @@ pub fn FileBrowser(
     {
         library_folder_id.set(folder);
         section.set(kind);
-        load_library.run(kind);
+        load_library.run((kind, false));
     } else {
         let initial_folder = folder_id(&pathname, ROOT_ID);
         initial_route_pending.set(initial_folder != ROOT_ID && pathname.starts_with("/f/"));
@@ -1997,7 +1995,7 @@ pub fn FileBrowser(
                         load_folder.run(folder_id);
                     } else {
                         replace_library_url(previous, None);
-                        load_library.run(previous);
+                        load_library.run((previous, false));
                     }
                 }
             }
