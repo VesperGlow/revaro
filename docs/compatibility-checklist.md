@@ -92,6 +92,7 @@
 - `2026-09-15`，old `18080` / new `18084`：在 1440×900 与 390×844 实际打开音频和视频，比较音量、字幕、播放设置三个菜单的初始/展开/hover 计算样式、尺寸/定位、空白关闭、Escape 关闭与焦点回收，并实际修改音量与字幕/倍速选项；旧版字幕 `<option>` 使用轨道索引，Rust 初始版误用轨道 id，已恢复索引语义。`rust-media-menu-reference-parity.spec.ts` old/new 2/2；修复提交 `f20e033`。
 - `2026-09-14`，old `18080` / new `18083`：列表模式实际选择目录、TXT、EPUB、图片、ZIP、未知文件，逐项比较所选摘要、按钮出现条件/顺序、中文文案和 SVG 路径；再比较 TXT+图片多选。old/new 均一致，工具栏关闭后选择清理也一致；`rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1，提交 `6c9e46a`。移动端布局及回收站恢复/永久删除分支仍待验。
 - `2026-09-14`，old `18080` / new `18083`，390×844 触摸 viewport：实际进入列表、选择 TXT 并读取移动端工具栏布局，再打开账户工具菜单进入回收站，选择已删除 TXT；old/new 的移动工具栏几何和回收站“恢复/永久删除”分支一致。`rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1，提交 `e26855f`。
+- `2026-09-15`，old `18080` / new `18084`：反向核对选择状态计算发现旧版始终用当前列表中实际匹配的 `selectedItems` 计数，而 Rust 初始版直接使用 `selected_ids.len()`；列表内容变化后会使摘要、重命名条件和“全选/取消全选”偏离。已恢复可见条目语义，并实际点击全选再取消全选对照摘要、按钮分流和选择清理；`rust-selection-toolbar-reference-parity.spec.ts` old/new 3/3，提交 `e064296`。
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后比较用户名编辑入口和会话区；旧版入口为 `svg + span`，Rust 初始版只有 `span`，且对应 hover 图标未命中。已恢复旧版铅笔 path、14px 尺寸和统一 icon helper；old/new DOM、geometry、hover、编辑聚焦和 Escape 取消均 1/1，`rust-account-reference-parity.spec.ts`，提交 `a6ac08e`。
 - `2026-09-14`，old `18080` / new `18083`：用同一 mock TOTP 数据实际完成“账户设置 → 两步验证设置 → 启用 → 下载文本”，读取浏览器下载文件逐字比较文件名、时间行、恢复码顺序和换行；old 使用默认 `Date.toLocaleString()`，Rust 初始版使用 ISO 时间戳，已恢复浏览器本地化格式。`rust-account-download-reference-parity.spec.ts` old/new 1/1，账户相关两项合计 2/2，提交 `80cf6c3`。
 - `2026-09-14`，old `18080` / new `18084`：同一延迟 `POST /api/auth/totp/setup` 实际点击“开始设置”，在 loading 中点击 TOTP 子弹窗空白；old 会关闭子弹窗，Rust 初始版因 `totp_busy` 限制仍停留。已恢复遮罩关闭行为，`rust-account-reference-parity.spec.ts`（用户名入口 + TOTP loading）old/new 2/2，提交 `077e678`。
@@ -268,7 +269,7 @@
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
 | `[P]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | 旧版没有自定义文件右键菜单，文件/文件夹卡均按 reference 阻止原生菜单；图片、音频、视频的 more/设置菜单已在 1440×900 与 390×844 实际比较初始/展开/hover、尺寸/锚点、空白关闭、Escape 与 summary 焦点，且 reference 菜单本身没有动态边缘翻转或 disabled 项；`rust-preview-menu-reference-parity.spec.ts` 与 `rust-media-menu-reference-parity.spec.ts` 均通过，操作结果由下载/移动/复制/媒体动作矩阵覆盖 |
 | `[ ]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | old/new 1440×900 同一 mock 根目录已实际覆盖目录、TXT、EPUB、图片、音频、视频、未知文件的点击分流、pathname 和浏览器后退关闭；`rust-open-item-reference-parity.spec.ts` 1/1；回收站只读、网格/列表键盘、损坏/不支持文件和完整媒体打开状态仍待验 |
-| `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | old/new 列表实际覆盖目录、TXT、EPUB、图片、ZIP、未知及 TXT+图片多选的按钮分流、摘要、文案和图标路径；390×844 移动端布局及回收站恢复/永久删除已对照；`.txt` 阅读分流及弹层隐藏已对照，disabled/完整状态矩阵仍待验 |
+| `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | old/new 列表实际覆盖目录、TXT、EPUB、图片、ZIP、未知及 TXT+图片多选的按钮分流、摘要、文案和图标路径；390×844 移动端布局及回收站恢复/永久删除已对照；全选→取消全选实际往返并恢复当前列表可见条目计数，`.txt` 阅读分流及弹层隐藏已对照；`rust-selection-toolbar-reference-parity.spec.ts` old/new 3/3，修复提交 `e064296`，disabled/完整状态矩阵仍待验 |
 
 ## 7. 上传入口、队列和任务联动
 
@@ -518,7 +519,7 @@
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
 | 媒体预览更多菜单与右键语义 | 6、11、15 | `8f51320`、`f20e033` | `rust-preview-menu-reference-parity.spec.ts` old/new 各 1/1；`rust-media-menu-reference-parity.spec.ts` old/new 2/2 | 实际比较文件卡右键默认事件、图片 more、音频音量、视频字幕/播放设置的菜单项/几何/hover、空白与 Escape 关闭、summary 焦点恢复及桌面/移动定位；视频字幕索引 value 已恢复 reference 语义；reference 无动态边缘翻转/disabled 菜单项 | PASS |
 | 分享弹窗 loading/active/二级确认/复制状态 | 2、12、15 | `01c48cb`、`39b4055`、`94ad574`、`c1ce934`、`31ca8e5`、`4940aa2` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 5/5；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；二级确认取消/提交关闭/错误回显、复制成功/失败局部状态、active Escape、重生成成功不产生全局 toast、停止分享产生成功 toast 均已对照；分享非 trap 边界已补齐，完整视觉状态矩阵仍未完 | 局部 PASS |
-| 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；移动端与回收站分支仍待验 | 局部 PASS |
+| 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a`、`e064296` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 3/3 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；另实际往返全选/取消全选，确认只按当前列表可见项目计数；移动端与回收站恢复/永久删除分支另有独立对照 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
 | 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
 | 账户 TOTP loading 遮罩行为 | 2、8、15 | `077e678` | `rust-account-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟 setup 请求期间实际点击子弹窗空白，比较 old/new 的关闭结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义 | 局部 PASS |
