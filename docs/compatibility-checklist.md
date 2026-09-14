@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`50b8f3c`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`94ad574`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -127,7 +127,7 @@
 - `2026-09-14`，old `18080` / new `18083`，1440×1000：同一文件 fixture 实际读取方块卡的正常、图片预览 hover、键盘 focus/focus-visible 和 fallback 状态，以及列表行的正常、hover、focus、selected、selected-hover、pending、failed 状态；逐项比较状态 class、背景/边框/圆角/阴影/变换/透明度/光标、预览伪元素和行选择控件的 computed style，old/new `rust-file-card-state-reference-parity.spec.ts` 1/1，无差异。文件卡/行完整 loading、disabled 和触摸长按仍待验。
 - `2026-09-14`，old `18080` / new `18083`，1440×900：同一 mock 壳层让 Chromium 从页面起点连续按 Tab 24 次，实际比较顶栏、侧栏、路径树、文件浏览头和文件项的焦点落点；old/new `rust-global-focus-reference-parity.spec.ts` 1/1，未出现隐藏节点或焦点落回 body。Rust 额外的任务中心/账户/回收站 aria-label 不改变焦点顺序，保留为无障碍增强；弹窗、抽屉、编辑器、分享、媒体和阅读器内部的焦点边界仍待验。
 - `2026-09-14`，old `18080` / new `18084`：同一 mock 数据在 1440×900 实际打开根目录、切换列表/方块、进入回收站并返回；比较内容头标题、统计文案、按钮状态、卡片/行名称/元信息和回收站头部。390×844 另以空目录与 children 500 错误分别确认空态、错误 toast 和页面结构；两版均通过 `rust-file-browser-reference-parity.spec.ts` 2/2。
-- `2026-09-14`，old `18080` / new `18083`：将分享状态读取和创建请求分别延迟，实际比较 ShareDialog 的 loading 关闭按钮、遮罩关闭、重新打开、active 链接输入、按钮 disabled、尺寸和文案；旧版 loading 期间仍可关闭，Rust 初始版错误禁用关闭按钮并拦截遮罩，已恢复。`rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 1/1，提交 `01c48cb`；复制失败、分享请求错误和二次确认内部焦点仍待验。
+- `2026-09-14`，old `18080` / new `18084`：实际以同一 active 分享链接点击复制，旧版只将按钮改为“已复制”、不产生全局 toast；Rust 初始版额外显示“分享链接已复制”，已移除通知并保留复制状态/失败回显。`rust-share-dialog-reference-parity.spec.ts` 复制场景 old/new 1/1，修复提交 `94ad574`。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
@@ -444,7 +444,7 @@
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e` | `rust-feedback-reference-parity.spec.ts` old/new 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载实际比较“正在准备 N 个文件…”、success Toast 颜色/定位/命中区域；点击 Toast 不会清除多选 | 局部 PASS |
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
 | 媒体预览更多菜单与右键语义 | 6、11、15 | `8f51320` | `rust-preview-menu-reference-parity.spec.ts` old/new 各 1/1 | 实际比较文件卡右键默认事件、图片预览更多菜单项/几何/hover、空白与 Escape 关闭、summary 焦点恢复；音频/视频菜单全状态仍待验 | 局部 PASS |
-| 分享弹窗 loading/active/二级确认状态 | 2、12、15 | `01c48cb`、`39b4055` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；另以延迟 500 请求比较二级确认取消、确认后立即关闭和错误回显；Rust 初始 loading 关闭限制已恢复，复制失败和内部焦点仍未完 | 局部 PASS |
+| 分享弹窗 loading/active/二级确认/复制状态 | 2、12、15 | `01c48cb`、`39b4055`、`94ad574` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 3/3；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；另以延迟 500 请求比较二级确认取消、确认后立即关闭和错误回显；复制成功只更新“已复制”按钮且不新增 toast；复制失败和内部焦点仍未完 | 局部 PASS |
 | 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；移动端与回收站分支仍待验 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
 | 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
