@@ -378,6 +378,85 @@ test('old/new 视频用户 seek 与预览关闭的进度持久化时机一致', 
   }
 })
 
+test('old/new 视频 preview 慢响应期间的初始 loading 控件一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    const videoBody = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
+    await page.route('**/api/files/video-1/preview', async route => {
+      await new Promise(resolve => setTimeout(resolve, 700))
+      await route.fulfill({ contentType: 'video/webm', body: videoBody })
+    })
+    await page.locator('.file-card').filter({ hasText: '山间漫步.webm' }).click()
+    await expect(page.locator('.preview-modal')).toBeVisible()
+    await page.waitForTimeout(100)
+    return {
+      loadingText: await page.locator('.video-loading').count(),
+      centerPlay: await page.locator('.video-center-play').count(),
+      controlLabel: await page.locator('.video-controls .video-icon-button').first().getAttribute('aria-label'),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ loadingText: 0, centerPlay: 0, controlLabel: '暂停' })
+    expect(newResult, 'Rust 视频慢 preview 初始 loading/播放控件与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 视频字幕 cue 文本的实体解码与分行一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/subtitle.vtt', route => route.fulfill({
+      contentType: 'text/vtt',
+      body: 'WEBVTT\n\n00:00:00.000 --> 00:00:30.000 line:10%\n第一行 &nbsp; &amp; &#x2014; <b>加粗</b>\n第二行 &lt;标签&gt;\n',
+    }))
+    await open(page, '山间漫步.webm')
+    await expect(page.locator('.video-subtitle-overlay')).toBeVisible()
+    return page.locator('.video-subtitle-overlay').evaluate(element => ({
+      text: element.textContent,
+      lines: Array.from(element.querySelectorAll('span')).map(line => ({ text: line.textContent, className: line.className })),
+      className: element.className,
+    }))
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      text: '第一行   & — 加粗第二行 <标签>',
+      lines: [
+        { text: '第一行   & — 加粗', className: '' },
+        { text: '第二行 <标签>', className: 'video-subtitle-secondary-line' },
+      ],
+      className: 'video-subtitle-overlay top',
+    })
+    expect(newResult, 'Rust 视频字幕 cue 文本/实体/分行与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('视频全屏按钮和全屏状态同步，退出后恢复预览层', async ({ page }) => {
   await mockMedia(page)
   await open(page, '山间漫步.webm')

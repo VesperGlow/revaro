@@ -1030,24 +1030,18 @@ fn clean_cue_text(cue: &VttCue) -> Vec<String> {
 }
 
 fn strip_cue_markup(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut in_tag = false;
-    for character in value.chars() {
-        match character {
-            '<' => in_tag = true,
-            '>' if in_tag => in_tag = false,
-            _ if !in_tag => output.push(character),
-            _ => {}
-        }
-    }
-    output
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .trim()
-        .to_owned()
+    // The reference runs each cue line through DOMParser and reads
+    // `body.textContent`. That decodes the full HTML entity set (not just the
+    // five common entities) and removes cue markup before trimming it.
+    let decoded = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.create_element("div").ok())
+        .map(|container| {
+            container.set_inner_html(value);
+            container.text_content().unwrap_or_default()
+        })
+        .unwrap_or_else(|| value.to_owned());
+    decoded.trim().to_owned()
 }
 
 fn clear_timer(signal: RwSignal<Option<i32>>) {
