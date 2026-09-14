@@ -78,6 +78,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：反向对照 `SelectionToolbar.vue` 的打开按钮分流，旧版对同时满足 editable/book 的 `.txt` 显示书本“阅读”图标，Rust 初始版错误显示编辑图标；已按旧版条件顺序恢复，`rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1。另实际点击列表行“移动”后，旧版选择工具栏立即隐藏而 Rust 初始版仍显示；已让媒体预览、阅读器、编辑器、移动/复制、分享和账户弹层按旧版隐藏工具栏，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
+- `2026-09-14`，old `18080` / new `18083`：任务中心以两个活动任务的 1%/2% 原始进度实际对照，旧版先求平均再四舍五入为 2%，Rust 初始版逐项取整并整数除法显示 1%；已恢复 reference 聚合顺序，`rust-task-center-parity.spec.ts` old/new 各 4/4。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -101,7 +102,7 @@
 |---|---|---|---|
 | `[P]` | Logo/回到根目录 | 桌面和移动端 logo 图标、`回到我的文件` aria/title、点击后路径、active 状态一致。 | old/new 桌面、移动端从分类/回收站点击 Logo 均回根；按钮尺寸和 title/aria 已在 `rust-navigation-parity.spec.ts` 对照 |
 | `[P]` | 任务中心入口 | 顶栏独立任务中心图标/summary，入口位置、图标、数量/状态提示、点击展开和再次点击关闭一致；不能被上传入口替换。 | old/new 实际点击 summary 均展开任务面板；空状态、点击空白和 Escape 已对照 |
-| `[P]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | old/new `rust-task-center-parity.spec.ts` 覆盖 waiting/active/completed/cancelled/failed、不可重试、完成空态、上传/归档标签和显示更多 |
+| `[P]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | old/new `rust-task-center-parity.spec.ts` 覆盖 waiting/active/completed/cancelled/failed、不可重试、完成空态、上传/归档标签、显示更多及原始小数进度先平均再四舍五入 |
 | `[P]` | 任务操作 | 取消、重试、清除已完成、归档密码输入、任务详情、失败错误、超过四项时“显示更多”、任务流实时更新一致。 | old/new 定向 7/7：取消、重试、继续输入密码、清除完成、空白/Escape/入口关闭均通过；任务详情入口在 reference 无独立页面，归档行即输入入口 |
 | `[P]` | 任务面板交互 | 面板不被背景遮挡、点击面板不关闭、点空白关闭、Esc 关闭、点击入口切换、loading/error/empty 一致。 | old/new mock 与空状态均验证；桌面/移动端切换不会重复拉取或断开共享 SSE，`rust-task-center-parity.spec.ts` 2/2 |
 | `[P]` | 系统状态入口 | 在线/状态球可点击；`aria-label=打开系统状态`、title=`系统状态`、颜色/ok 状态和位置一致。 | old/new 实际点击均展开状态面板；aria/title、ok 状态和三卡布局已对照 |
@@ -366,6 +367,7 @@
 | 侧栏展开箭头状态 | 4、15 | `317d1bd` | `rust-icon-reference-parity.spec.ts` old/new 各 1/1 | 实际点击分类和路径树展开控件，比较 SVG transform；分类/路径箭头均与 old 的 90° 旋转一致 | 局部 PASS |
 | 通用确认弹窗时序 | 8、15 | `045247f` | `rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 延迟创建请求下实际点击确认，比较弹窗即时关闭和后台结果；重命名保存中语义单独保留 | 局部 PASS |
 | 选择工具栏分流与弹层可见性 | 6、8、15 | `f898067` | `rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1；`rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 实际选择 `.txt` 对照阅读图标几何；实际打开移动弹层对照选择工具栏立即隐藏；完整文件类型/disabled 矩阵未完 | 局部 PASS |
+| 任务中心平均进度 | 3、15 | `5c69720` | `rust-task-center-parity.spec.ts` old/new 各 4/4 | 两个活动任务原始进度实际比较 header 汇总，恢复旧版先平均再四舍五入；其它任务状态矩阵已有覆盖 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
