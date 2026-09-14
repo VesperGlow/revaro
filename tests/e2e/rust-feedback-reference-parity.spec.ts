@@ -106,6 +106,117 @@ async function clickToast(page: Page) {
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
 }
 
+const transitionTask = {
+  id: 'toast-transition-task',
+  type: 'upload',
+  status: 'running',
+  phase: '上传中',
+  progress: 42,
+  speed: 0,
+  retry_count: 0,
+  max_retries: 3,
+  error: '',
+  source_type: '',
+  source_id: '',
+  cancel_requested: false,
+  created_at: STAMP,
+  updated_at: STAMP,
+  finished_at: null,
+  name: '状态变化通知.txt',
+}
+
+async function mockTaskTransition(page: Page, terminal: 'completed' | 'failed') {
+  let terminalVisible = false
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events') {
+      await new Promise(resolve => setTimeout(resolve, 450))
+      terminalVisible = true
+      return route.fulfill({ contentType: 'text/event-stream', body: 'event: jobs\ndata: changed\n\n' })
+    }
+    if (path === '/api/system/status/stream') return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    if (path === '/api/tasks') {
+      const task = terminalVisible
+        ? {
+            ...transitionTask,
+            status: terminal,
+            phase: terminal,
+            progress: 100,
+            error: terminal === 'failed' ? '任务执行失败' : '',
+            finished_at: STAMP,
+          }
+        : transitionTask
+      return json({ items: [task] })
+    }
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+}
+
+async function observeTaskTransition(page: Page, baseUrl: string, terminal: 'completed' | 'failed') {
+  await page.goto(`${baseUrl}/?toast-task-transition=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.getByTitle('任务中心').click()
+  await expect(page.locator('.task-panel .active-group article')).toContainText('状态变化通知.txt')
+  const expected = terminal === 'completed' ? '「状态变化通知.txt」任务完成' : '任务执行失败'
+  const toast = page.locator('.toast')
+  await expect(toast).toHaveText(expected, { timeout: 10_000 })
+  await expect(toast).toHaveClass(terminal === 'completed' ? /success/ : /error/)
+  await expect(page.locator(terminal === 'completed' ? '.completed-group article' : '.failed-group article')).toContainText('状态变化通知.txt')
+  return toastMetrics(page)
+}
+
+test('后台任务完成通知的全局 toast 保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockTaskTransition(oldPage, 'completed'), mockTaskTransition(newPage, 'completed')])
+    const [oldToast, newToast] = await Promise.all([
+      observeTaskTransition(oldPage, oldUrl, 'completed'),
+      observeTaskTransition(newPage, newUrl, 'completed'),
+    ])
+    expect(newToast, 'Rust 后台任务完成 toast 与 reference 不一致').toEqual(oldToast)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('后台任务失败通知的全局 toast 保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockTaskTransition(oldPage, 'failed'), mockTaskTransition(newPage, 'failed')])
+    const [oldToast, newToast] = await Promise.all([
+      observeTaskTransition(oldPage, oldUrl, 'failed'),
+      observeTaskTransition(newPage, newUrl, 'failed'),
+    ])
+    expect(newToast, 'Rust 后台任务失败 toast 与 reference 不一致').toEqual(oldToast)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('全局 toast 的命中区域和最新通知交互保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'

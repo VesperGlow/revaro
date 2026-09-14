@@ -1082,6 +1082,7 @@ pub fn FileBrowser(
             let extract_archive = matches!(&state, DialogState::ExtractArchive { .. });
             let rename_action = matches!(&state, DialogState::Rename { .. });
             let delete_action = matches!(&state, DialogState::Delete);
+            let regenerate_share = matches!(&state, DialogState::RegenerateShare);
             let share_action = matches!(
                 &state,
                 DialogState::RegenerateShare | DialogState::RevokeShare
@@ -1277,7 +1278,13 @@ pub fn FileBrowser(
                             });
                             let _ = receiver.await;
                         }
-                        notify.run(Feedback::success(message));
+                        // The reference keeps share regeneration and editor
+                        // discard as local modal state transitions: neither
+                        // emits or clears the global toast. Revoke-share and
+                        // all ordinary successful mutations still do.
+                        if !regenerate_share && !discard_editor {
+                            notify.run(Feedback::success(message));
+                        }
                     }
                     Err(request_error) if request_error.is_unauthorized() => {
                         dialog.set(None);

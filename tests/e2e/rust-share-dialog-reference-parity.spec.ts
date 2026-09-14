@@ -195,6 +195,75 @@ async function openActiveShare(page: Page, baseUrl: string) {
   await expect(page.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/\/s\//)
 }
 
+async function mockShareRegenerate(page: Page) {
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [file], total_bytes: file.size, file_count: 1 })
+    if (path === `/api/files/${FILE_ID}/share` && request.method() === 'GET') {
+      return json({ active: true, url: 'http://127.0.0.1:18084/s/old-share-token', created_at: STAMP })
+    }
+    if (path === `/api/files/${FILE_ID}/share` && request.method() === 'POST') {
+      return json({ active: true, url: 'http://127.0.0.1:18084/s/new-share-token', created_at: STAMP })
+    }
+    return json({ items: [] })
+  })
+}
+
+test('分享链接重生成成功时不额外产生全局 toast', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockShareRegenerate(oldPage), mockShareRegenerate(newPage)])
+    await Promise.all([openActiveShare(oldPage, oldUrl), openActiveShare(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.share-modal').getByRole('button', { name: '重新生成链接' }).click(),
+      newPage.locator('.share-modal').getByRole('button', { name: '重新生成链接' }).click(),
+    ])
+    await Promise.all([
+      oldPage.locator('.app-dialog').getByRole('button', { name: '重新生成' }).click(),
+      newPage.locator('.app-dialog').getByRole('button', { name: '重新生成' }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/new-share-token/),
+      expect(newPage.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/new-share-token/),
+    ])
+    expect(await newPage.locator('.toast').count(), 'Rust 重生成成功不应新增 reference 没有的全局 toast').toBe(await oldPage.locator('.toast').count())
+    expect(await oldPage.locator('.toast').count()).toBe(0)
+
+    await Promise.all([
+      oldPage.locator('.share-modal').getByRole('button', { name: '停止分享' }).click(),
+      newPage.locator('.share-modal').getByRole('button', { name: '停止分享' }).click(),
+    ])
+    await Promise.all([
+      oldPage.locator('.app-dialog').getByRole('button', { name: '停止分享' }).click(),
+      newPage.locator('.app-dialog').getByRole('button', { name: '停止分享' }).click(),
+    ])
+    await expect(oldPage.locator('.toast')).toHaveText('分享已停止')
+    await expect(newPage.locator('.toast')).toHaveText('分享已停止')
+    expect(await newPage.locator('.toast').getAttribute('class')).toBe(await oldPage.locator('.toast').getAttribute('class'))
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('分享二级确认取消、提交关闭和错误回显保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
