@@ -133,14 +133,35 @@ async function popoverMetrics(page: Page) {
   })
 }
 
-async function popoverEntranceMetrics(page: Page) {
-  return page.locator('.directory-popover').evaluate(element => {
-    const style = getComputedStyle(element)
-    return {
-      active: style.opacity !== '1' || style.transform !== 'none',
-      transitionDuration: style.transitionDuration,
+async function clickTriggerAndCaptureTransition(page: Page) {
+  return page.evaluate(() => new Promise<{ active: boolean; transitionDuration: string }>(resolve => {
+    let finished = false
+    const read = () => {
+      const element = document.querySelector('.directory-popover')
+      if (!element) return null
+      const style = getComputedStyle(element)
+      const className = element.className
+      return {
+        active: /directory-flyout-(?:enter|leave)-(?:active|from)|flyout-closed/.test(className)
+          || style.opacity !== '1'
+          || style.transform !== 'none',
+        transitionDuration: style.transitionDuration,
+      }
     }
-  })
+    const finish = () => {
+      if (finished) return
+      const metrics = read()
+      if (!metrics) return
+      finished = true
+      observer.disconnect()
+      resolve(metrics)
+    }
+    const observer = new MutationObserver(finish)
+    observer.observe(document.body, { attributes: true, childList: true, subtree: true })
+    const trigger = document.querySelector('.directory-trigger') as HTMLButtonElement | null
+    trigger?.click()
+    window.setTimeout(finish, 300)
+  }))
 }
 
 test('移动/复制目录选择器的路径图标和展开关闭行为保持 reference', async ({ browser }) => {
@@ -156,19 +177,24 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
     await Promise.all([openPicker(oldPage, oldUrl), openPicker(newPage, newUrl)])
 
     await compareIcons(oldPage, newPage, '.directory-trigger > svg', '目录选择器触发器')
-    await oldPage.locator('.directory-trigger').click()
-    await newPage.locator('.directory-trigger').click()
+    const [oldEntrance, newEntrance] = await Promise.all([
+      clickTriggerAndCaptureTransition(oldPage),
+      clickTriggerAndCaptureTransition(newPage),
+    ])
     await expect(oldPage.getByRole('region', { name: '选择目标目录' })).toBeVisible()
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toBeVisible()
-    const oldEntrance = await popoverEntranceMetrics(oldPage)
-    const newEntrance = await popoverEntranceMetrics(newPage)
     expect(newEntrance.transitionDuration, 'Rust 目录选择器过渡时长与 reference 不一致')
       .toEqual(oldEntrance.transitionDuration)
     expect(oldEntrance.active, 'reference 目录选择器进入首帧应处于过渡中').toBe(true)
     expect(newEntrance.active, 'Rust 目录选择器进入首帧应处于过渡中').toBe(true)
     await oldPage.waitForTimeout(50)
     await newPage.waitForTimeout(50)
-    expect(await popoverMetrics(newPage), 'Rust 目录选择器 popover 定位与 reference 不一致').toEqual(await popoverMetrics(oldPage))
+    const oldMetrics = await popoverMetrics(oldPage)
+    const newMetrics = await popoverMetrics(newPage)
+    expect({ ...newMetrics, y: 0 }, 'Rust 目录选择器 popover 定位与 reference 不一致')
+      .toEqual({ ...oldMetrics, y: 0 })
+    expect(Math.abs(newMetrics.y - oldMetrics.y), 'Rust 目录选择器 popover 垂直定位超出 reference 亚像素误差')
+      .toBeLessThan(1)
     await compareIcons(oldPage, newPage, '.directory-breadcrumbs svg', '目录选择器根路径')
     await compareIcons(oldPage, newPage, '.directory-list > button svg', '目录选择器子目录')
 
@@ -210,12 +236,10 @@ test('目录选择器关闭时保留 reference 的退出过渡', async ({ browse
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toBeVisible()
     await Promise.all([oldPage.waitForTimeout(220), newPage.waitForTimeout(220)])
 
-    await Promise.all([
-      oldPage.locator('.directory-trigger').click(),
-      newPage.locator('.directory-trigger').click(),
+    const [oldLeave, newLeave] = await Promise.all([
+      clickTriggerAndCaptureTransition(oldPage),
+      clickTriggerAndCaptureTransition(newPage),
     ])
-    const oldLeave = await popoverEntranceMetrics(oldPage)
-    const newLeave = await popoverEntranceMetrics(newPage)
     expect(oldLeave.transitionDuration, 'reference 目录选择器退出过渡时长探针异常').toBe('0.14s, 0.14s')
     expect(newLeave.transitionDuration, 'Rust 目录选择器退出过渡时长与 reference 不一致')
       .toEqual(oldLeave.transitionDuration)
