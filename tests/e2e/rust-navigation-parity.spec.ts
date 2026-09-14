@@ -384,6 +384,27 @@ test('移动端分类抽屉隐藏桌面折叠与路径展开控件，并支持�
   await expect(page.locator('.app-sidebar')).not.toHaveClass(/mobile-open/)
 })
 
+test('移动端账户工具菜单 Escape 保留 reference 的默认事件与 summary 焦点行为', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await login(page)
+  const menu = page.locator('.mobile-account-menu')
+  const summary = menu.locator('summary')
+  await summary.click()
+  await expect(menu).toHaveAttribute('open', '')
+  await page.evaluate(() => {
+    ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = undefined
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = event.defaultPrevented
+      }
+    }, { once: true })
+  })
+  await page.keyboard.press('Escape')
+  await expect(menu).not.toHaveAttribute('open')
+  expect(await page.evaluate(() => (window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented)).toBe(false)
+  expect(await summary.evaluate(element => document.activeElement === element)).toBe(true)
+})
+
 test('认证壳层卸载时释放响应式媒体查询监听', async ({ page }) => {
   await page.addInitScript(() => {
     const state = { adds: 0, removes: 0 }

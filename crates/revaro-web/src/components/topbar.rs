@@ -70,7 +70,6 @@ pub fn AppTopbar(
             return;
         };
         if details.open() {
-            event.prevent_default();
             details.set_open(false);
             if let Ok(Some(summary)) = details.query_selector("summary")
                 && let Ok(summary) = summary.dyn_into::<web_sys::HtmlElement>()
