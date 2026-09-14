@@ -162,12 +162,27 @@ pub struct UploadController {
     file_input: NodeRef<leptos::html::Input>,
     folder_input: NodeRef<leptos::html::Input>,
     runtime: Rc<UploadRuntime>,
-    refresh_folder: Callback<String>,
+    refresh_folder: Callback<UploadRefresh>,
     feedback: Callback<Feedback>,
     on_logout: Callback<()>,
 }
 
 type UiUploadController = leptos::__reexports::send_wrapper::SendWrapper<UploadController>;
+
+/// A refresh request whose completion is observed by a folder upload before
+/// it emits its success feedback.
+pub(crate) struct UploadRefresh {
+    pub(crate) parent_id: String,
+    pub(crate) completion: Option<oneshot::Sender<()>>,
+}
+
+impl UploadRefresh {
+    pub(crate) fn finish(self) {
+        if let Some(sender) = self.completion {
+            let _ = sender.send(());
+        }
+    }
+}
 
 impl UploadController {
     /// Create a queue bound to the current file-browser signals.
@@ -177,7 +192,7 @@ impl UploadController {
         trash_mode: RwSignal<bool>,
         file_input: NodeRef<leptos::html::Input>,
         folder_input: NodeRef<leptos::html::Input>,
-        refresh_folder: Callback<String>,
+        refresh_folder: Callback<UploadRefresh>,
         feedback: Callback<Feedback>,
         on_logout: Callback<()>,
     ) -> Self {
@@ -299,7 +314,9 @@ impl UploadController {
                 queued.push((file, relative_path, parent_id));
             }
             controller.queue_files_with_parents(queued);
-            controller.refresh_if_current(destination);
+            let (sender, receiver) = oneshot::channel();
+            controller.refresh_if_current(destination, Some(sender));
+            let _ = receiver.await;
             controller.feedback.run(Feedback::success(format!(
                 "已保留目录结构，开始上传 {} 个文件",
                 paths.len()
@@ -1116,9 +1133,14 @@ impl UploadController {
         persist_saved_uploads(&saved);
     }
 
-    fn refresh_if_current(&self, parent_id: String) {
+    fn refresh_if_current(&self, parent_id: String, completion: Option<oneshot::Sender<()>>) {
         if !self.trash_mode.get_untracked() && self.current_id.get_untracked() == parent_id {
-            self.refresh_folder.run(parent_id);
+            self.refresh_folder.run(UploadRefresh {
+                parent_id,
+                completion,
+            });
+        } else if let Some(sender) = completion {
+            let _ = sender.send(());
         }
     }
 
@@ -1130,7 +1152,8 @@ impl UploadController {
             window.clear_timeout_with_handle(timer);
         }
         let controller = self.clone();
-        let callback = Closure::once_into_js(move || controller.refresh_if_current(parent_id));
+        let callback =
+            Closure::once_into_js(move || controller.refresh_if_current(parent_id, None));
         if let Ok(timer) = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 250)
         {

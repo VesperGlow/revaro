@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use futures_channel::oneshot;
 use futures_util::{StreamExt, stream};
 use leptos::prelude::*;
 use revaro_core::api::auth::Session;
@@ -40,7 +41,7 @@ use super::sidebar::{AppSidebar, LibraryTrees};
 use super::tasks::TaskController;
 use super::topbar::AppTopbar;
 use super::transfer::{TransferDialog, TransferMode};
-use super::uploads::{UploadController, UploadSurface};
+use super::uploads::{UploadController, UploadRefresh, UploadSurface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewMode {
@@ -81,6 +82,21 @@ enum NavAction {
 struct TransferRequest {
     mode: TransferMode,
     targets: Vec<File>,
+}
+
+/// A folder load optionally used as an awaitable refresh by another shell
+/// operation. Ordinary navigation does not need the completion sender, but
+/// folder uploads must preserve the reference ordering: refresh first, then
+/// show the success feedback.
+struct FolderLoadRequest {
+    id: String,
+    completion: Option<oneshot::Sender<()>>,
+}
+
+fn finish_folder_load(completion: &mut Option<oneshot::Sender<()>>) {
+    if let Some(sender) = completion.take() {
+        let _ = sender.send(());
+    }
 }
 
 /// The authenticated file browser.
@@ -231,7 +247,7 @@ pub fn FileBrowser(
     // success toast (or its error) without making every folder load awaitable.
     let pending_editor_refresh = RwSignal::new(None::<String>);
 
-    let load_folder = {
+    let load_folder_request = {
         let current_id = current_id;
         let current = current;
         let breadcrumbs = breadcrumbs;
@@ -253,12 +269,15 @@ pub fn FileBrowser(
         let pending_editor_refresh = pending_editor_refresh;
         let editor_error = editor_error;
         let on_logout = on_logout.clone();
-        Callback::new(move |id: String| {
+        Callback::new(move |request: FolderLoadRequest| {
+            let FolderLoadRequest {
+                id: requested_id,
+                completion,
+            } = request;
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
-            let requested_id = id;
             if pending_editor_refresh
                 .get_untracked()
                 .is_some_and(|expected_id| expected_id != requested_id)
@@ -270,6 +289,7 @@ pub fn FileBrowser(
             initial_route_pending.set(false);
             let logout = on_logout.clone();
 
+            let mut completion = completion;
             leptos::task::spawn_local(async move {
                 let result = async {
                     let detail = api::fetch_file(&requested_id).await?;
@@ -279,6 +299,7 @@ pub fn FileBrowser(
                 .await;
 
                 if request_sequence.get_untracked() != sequence {
+                    finish_folder_load(&mut completion);
                     return;
                 }
 
@@ -337,6 +358,17 @@ pub fn FileBrowser(
                         }
                     }
                 }
+                finish_folder_load(&mut completion);
+            });
+        })
+    };
+
+    let load_folder = {
+        let load_folder_request = load_folder_request.clone();
+        Callback::new(move |id: String| {
+            load_folder_request.run(FolderLoadRequest {
+                id,
+                completion: None,
             });
         })
     };
@@ -594,20 +626,24 @@ pub fn FileBrowser(
     let upload_refresh = {
         let current_id = current_id;
         let trash_mode = trash_mode;
-        let load_folder = load_folder.clone();
+        let load_folder_request = load_folder_request.clone();
         let section = section;
         let force_load_library = force_load_library.clone();
-        Callback::new(move |parent_id: String| {
-            if trash_mode.get_untracked() {
+        Callback::new(move |request: UploadRefresh| {
+            let current_file_folder = !trash_mode.get_untracked()
+                && section.get_untracked() == LibraryKind::File
+                && current_id.get_untracked() == request.parent_id;
+            if current_file_folder {
+                load_folder_request.run(FolderLoadRequest {
+                    id: request.parent_id,
+                    completion: request.completion,
+                });
                 return;
             }
-            if section.get_untracked() == LibraryKind::File {
-                if current_id.get_untracked() == parent_id {
-                    load_folder.run(parent_id);
-                }
-            } else {
+            if !trash_mode.get_untracked() && section.get_untracked() != LibraryKind::File {
                 force_load_library.run(section.get_untracked());
             }
+            request.finish();
         })
     };
     let upload_feedback = notify.clone();
