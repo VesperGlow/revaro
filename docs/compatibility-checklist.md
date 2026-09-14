@@ -32,7 +32,7 @@
 - `[P]` old 前端 `npm ci && npm run build`、data-plane release build、Go server build 均通过。
 - `[P]` new `cargo build --locked --release -p revaro-server`、`cargo xtask web-build` 均通过。
 - `[P]` new 当前已有 smoke E2E：基础 `tests/e2e` 3/3 通过（Rust media、TXT/EPUB reader）；迁移恢复期间的对照 suite 另见 1.4。
-- `[B]` old 原有 E2E：非真实 EPUB 场景已修正选择前置条件并 37/37 通过；真实 EPUB 综合场景在旧版 runner 中超过 1 分钟未结束，需单独稳定 runner 后再解除此基础设施标记。旧版生产网格确实没有选择控件；列表选择和多选/ZIP 已由独立 old/new 操作覆盖。
+- `[B]` old/new 原有 E2E：非真实 EPUB 场景已修正选择前置条件并各 37/37 通过；真实 EPUB 综合场景在旧版 runner 中超过 1 分钟未结束，需单独稳定 runner 后再解除此基础设施标记。旧版生产网格确实没有选择控件；列表选择和多选/ZIP 已由独立 old/new 操作覆盖。
 - `[P]` 已保存初始浏览器截图：`/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png`；后续每个模块保存同一 viewport、同一数据状态的 old/new 截图或 trace。
 
 ### 1.3 每个条目的固定验收顺序
@@ -50,7 +50,7 @@
 
 - `2026-09-13`，old `18080` / new `18082`，Chromium 1440×900：任务中心、系统状态、账户设置、回收站入口、侧栏五类入口、侧栏折叠/展开逐项点击；两版均得到同一入口顺序和可见状态。系统状态均显示数据库、网盘存储使用量、服务端缓存三张卡片。
 - `2026-09-13`，old `18080` / new `18082`，Chromium 390×844：移动分类抽屉均为六个一级入口且无目录树；打开后 backdrop 存在，点击右侧空白关闭；账户工具菜单、任务中心/回收站/账户设置三项、新建菜单、上传菜单的文案和 Escape 关闭行为一致。
-- `2026-09-13`，old/new 均切换列表视图并通过真实 `input[type=file]` 上传两个 TXT：两版均显示行选择控件，单选显示“全选/阅读/下载/分享/重命名/移动/删除”，双选显示“下载 (2)/移动/删除”。旧版默认方块视图没有 `card-select`，对应原有 E2E selector 失败已保留为 `[B]`，不能据此虚构网格选择功能。
+- `2026-09-13`，old/new 均切换列表视图并通过真实 `input[type=file]` 上传两个 TXT：两版均显示行选择控件，单选显示“全选/阅读/下载/分享/重命名/移动/删除”，双选显示“下载 (2)/移动/删除”。旧版默认方块视图没有 `card-select`；列表选择和多选/ZIP 已按 reference 的实际入口验证，不能据此虚构网格选择功能。
 - 上述探针使用 `chromium.launch({ args: ["--disable-http-cache"] })`、`serviceWorkers: "block"` 和带随机查询参数的页面，避免 WASM/静态资源缓存掩盖差异；当前证据截图保存在 `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、`/tmp/revaro-old-mobile-parity.png`、`/tmp/revaro-new-mobile-parity.png`。
 - `2026-09-14`，old `18080` / new `18082` 串行运行 parity E2E：最新共享集合 new 46/46、old 43/43（old 排除 3 个仅验证 Rust bundle 的标题）；覆盖账户、认证/TOTP 分支、文件操作/分享/归档/回收站键盘路径、空状态/error toast、视图偏好、分类/书架/图库/移动抽屉、媒体、面包屑/历史、任务中心、上传和 download/preview/Range。old/new 不共用 Playwright 输出目录。
 - `2026-09-14`，old `18080` / new `18082`：旧版 `reader-flow.spec.ts` 的 17 个窗口预取、目录锚点、分页、旋转、缓存和视觉场景，以及真实 EPUB 场景，均在两版通过；认证/状态/移动端基础场景两版也通过。
@@ -59,7 +59,7 @@
 - `2026-09-14`，old `18080` / new `18082`：旧版 `e2e/auth-status.spec.ts` 两项均通过，状态 SSE 三卡、纵向布局、无伪卡片、Esc/空白关闭和未登录 401 响应一致。
 - `2026-09-14`，old `18080` / new `18082`：真实 TXT 深链接 `/read/{id}` 均回到根目录且不打开阅读器；这是 reference 运行时现状（旧源码虽有 `openDeepLink` 意图），当前 Rust 未引入额外差异，暂不把旧版自身缺陷冒充 Rust 回退。
 - `2026-09-14`，old `18080` / new `18082`：已登录页面中途把目录 children 请求改为 401 时，old 保留壳层并显示 `session expired` toast，new 回到登录页；Rust 保留这一安全边界，避免过期 session 下继续展示旧数据，属于允许的安全强化，正常成功路径不变。
-- `2026-09-14`，old `18080`：修正 reference E2E 的选择前置条件后，原始 `e2e` 集合中非真实 EPUB 的 37/37 项通过；剩余真实 EPUB 综合场景在旧版测试 runner 中超过 1 分钟未结束，单独保留为 runner/场景稳定性问题，不作为 Rust 差异结论。
+- `2026-09-14`，old `18080` / new `18082`：修正 reference E2E 的选择前置条件后，原始 `e2e` 集合中非真实 EPUB 两版各 37/37 项通过；剩余真实 EPUB 综合场景在旧版测试 runner 中超过 1 分钟未结束，单独保留为 runner/场景稳定性问题，不作为 Rust 差异结论。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
@@ -341,7 +341,7 @@
 |---|---|---|---|---|---|
 | 基线与清单 | 1 | `068b9bb` | healthz、old/new 构建和基线记录已完成 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E） | 认证、账户、任务、状态、移动抽屉、空态和关键入口 old/new 已通过；完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图 | 局部 PASS |
-| 就绪探针 | 1、13 | 当前提交（`/readyz`） | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
+| 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png` | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；冲突/失败/清空矩阵未完 | parity Playwright trace | 局部 PASS |
