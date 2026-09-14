@@ -186,7 +186,6 @@ pub fn SystemStatus() -> impl IntoView {
             return;
         };
         if details.open() {
-            event.prevent_default();
             details.set_open(false);
             if let Ok(Some(summary)) = details.query_selector("summary")
                 && let Ok(summary) = summary.dyn_into::<web_sys::HtmlElement>()
@@ -202,10 +201,11 @@ pub fn SystemStatus() -> impl IntoView {
         cleanup_runtime.take().dispose();
     });
 
-    let overall_class = Signal::derive_local(move || match status.get() {
-        Some(ref value) if value.status == "degraded" => "degraded",
-        Some(_) => "ok",
-        None => "pending",
+    let overall_class = Signal::derive_local(move || {
+        status
+            .get()
+            .map(|value| value.status)
+            .unwrap_or_else(|| "pending".to_owned())
     });
 
     view! {

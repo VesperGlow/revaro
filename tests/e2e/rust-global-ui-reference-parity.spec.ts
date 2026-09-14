@@ -36,7 +36,7 @@ const status = {
   },
 }
 
-async function mockShell(page: Page) {
+async function mockShell(page: Page, statusValue = status) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -45,7 +45,7 @@ async function mockShell(page: Page) {
     if (path === '/api/system/status/stream') {
       return route.fulfill({
         contentType: 'text/event-stream',
-        body: `event: status\ndata: ${JSON.stringify(status)}\n\n`,
+        body: `event: status\ndata: ${JSON.stringify(statusValue)}\n\n`,
       })
     }
     if (path === '/api/tasks') return json({ items: [task] })
@@ -62,6 +62,38 @@ async function mockShell(page: Page) {
     if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
     return json({ items: [] })
   })
+}
+
+async function mockShellWithReconnect(page: Page) {
+  let streamRequests = 0
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events') return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    if (path === '/api/system/status/stream') {
+      streamRequests += 1
+      const statusValue = streamRequests === 1 ? status : { ...status, status: 'ok' }
+      return route.fulfill({
+        contentType: 'text/event-stream',
+        body: `event: status\ndata: ${JSON.stringify(statusValue)}\n\n`,
+      })
+    }
+    if (path === '/api/tasks') return json({ items: [task] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+  return () => streamRequests
 }
 
 async function openShell(page: Page, baseUrl: string) {
@@ -117,4 +149,51 @@ test('任务中心和系统状态 badge 保持 reference 尺寸与视觉层级',
     await oldContext.close()
     await newContext.close()
   }
+})
+
+test('系统状态保留 reference 的未知/critical 顶层状态 class', async ({ page }) => {
+  await mockShell(page, { ...status, status: 'critical' })
+  await openShell(page, process.env.E2E_BASE_URL || 'http://127.0.0.1:18080')
+  await expect(page.locator('.system-status')).toHaveClass(/system-status critical/)
+})
+
+test('系统状态 Escape 保留 reference 的默认事件与 summary 焦点行为', async ({ page }) => {
+  await mockShell(page)
+  await openShell(page, process.env.E2E_BASE_URL || 'http://127.0.0.1:18080')
+  await page.locator('.system-status > summary').click()
+  await page.evaluate(() => {
+    ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = undefined
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = event.defaultPrevented
+      }
+    }, { once: true })
+  })
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.system-status')).not.toHaveAttribute('open')
+  expect(await page.evaluate(() => (window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented)).toBe(false)
+  expect(await page.locator('.system-status > summary').evaluate(element => document.activeElement === element)).toBe(true)
+})
+
+test('系统状态 SSE 断线按 reference 重连并更新顶层状态', async ({ page }) => {
+  const streamRequests = await mockShellWithReconnect(page)
+  await openShell(page, process.env.E2E_BASE_URL || 'http://127.0.0.1:18080')
+  await expect(page.locator('.system-status')).toHaveClass(/system-status degraded/)
+  await expect.poll(streamRequests, { timeout: 5_000 }).toBeGreaterThan(1)
+  await expect(page.locator('.system-status')).toHaveClass(/system-status ok/)
+  await expect(page.locator('.system-status')).toContainText('所有服务正常')
+})
+
+test('系统状态在退出登录时清理 EventSource 与重连定时器', async ({ page }) => {
+  const streamRequests = await mockShellWithReconnect(page)
+  await openShell(page, process.env.E2E_BASE_URL || 'http://127.0.0.1:18080')
+  await expect(page.locator('.system-status')).toHaveClass(/system-status degraded/)
+  await page.locator('button[title="打开账户设置"]').click()
+  const account = page.locator('.account-modal')
+  await expect(account).toBeVisible()
+  await account.getByRole('button', { name: '退出登录', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '登录私人空间' })).toBeVisible()
+  const requestsAfterLogout = streamRequests()
+  await page.waitForTimeout(1_300)
+  expect(streamRequests()).toBe(requestsAfterLogout)
 })
