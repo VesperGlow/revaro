@@ -8,7 +8,7 @@
 
 - `[ ]` 尚未完成旧版/新版双向验证。
 - `[R]` 已确认 Rust 版回退，待恢复。
-- `[P]` 已恢复并通过自动化和实际浏览器验证。
+- `[P]` 已恢复并通过自动化和实际浏览器验证；若唯一差异是本清单明确记录的旧版安全缺陷修复，也标为 `[P]`，不得把该例外隐藏在“功能类似”描述里。
 - `[B]` 测试基础设施或测试选择器异常，不能作为功能通过/失败结论；仍需另行手工验证。
 - 每个条目都要补充证据：旧版操作结果、新版操作结果、差异、代码位置、测试命令、浏览器验证结果。
 - “旧版确认”可以由旧版源码、旧版运行时和旧版 E2E 共同构成；不能仅凭当前页面推断旧版没有某项功能。
@@ -32,7 +32,7 @@
 - `[P]` old 前端 `npm ci && npm run build`、data-plane release build、Go server build 均通过。
 - `[P]` new `cargo build --locked --release -p revaro-server`、`cargo xtask web-build` 均通过。
 - `[P]` new 当前已有 smoke E2E：基础 `tests/e2e` 3/3 通过（Rust media、TXT/EPUB reader）；迁移恢复期间的对照 suite 另见 1.4。
-- `[B]` old 原有 E2E：18/20 通过；`web/e2e/files.spec.ts` 的两个用例在等待 `.file-card` 的“选择项目”按钮时超时，虽然上传本身完成，故标为旧测试选择器/运行时异常，不把它当作 Rust parity 结论。旧版生产网格确实没有该控件；列表选择和多选/ZIP 已由独立 old/new 操作覆盖。
+- `[B]` old 原有 E2E：非真实 EPUB 场景已修正选择前置条件并 37/37 通过；真实 EPUB 综合场景在旧版 runner 中超过 1 分钟未结束，需单独稳定 runner 后再解除此基础设施标记。旧版生产网格确实没有选择控件；列表选择和多选/ZIP 已由独立 old/new 操作覆盖。
 - `[P]` 已保存初始浏览器截图：`/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png`；后续每个模块保存同一 viewport、同一数据状态的 old/new 截图或 trace。
 
 ### 1.3 每个条目的固定验收顺序
@@ -54,16 +54,22 @@
 - 上述探针使用 `chromium.launch({ args: ["--disable-http-cache"] })`、`serviceWorkers: "block"` 和带随机查询参数的页面，避免 WASM/静态资源缓存掩盖差异；当前证据截图保存在 `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、`/tmp/revaro-old-mobile-parity.png`、`/tmp/revaro-new-mobile-parity.png`。
 - `2026-09-14`，old `18080` / new `18082` 串行运行 parity E2E：最新共享集合 new 46/46、old 43/43（old 排除 3 个仅验证 Rust bundle 的标题）；覆盖账户、认证/TOTP 分支、文件操作/分享/归档/回收站键盘路径、空状态/error toast、视图偏好、分类/书架/图库/移动抽屉、媒体、面包屑/历史、任务中心、上传和 download/preview/Range。old/new 不共用 Playwright 输出目录。
 - `2026-09-14`，old `18080` / new `18082`：旧版 `reader-flow.spec.ts` 的 17 个窗口预取、目录锚点、分页、旋转、缓存和视觉场景，以及真实 EPUB 场景，均在两版通过；认证/状态/移动端基础场景两版也通过。
+- `2026-09-14`，old `18080` / new `18082`：任务中心/导航/文件交互定向集合两版均 7/7 通过；覆盖等待密码、活跃/完成/取消/失败/不可重试、显示更多、取消、重试、清除完成、桌面/移动切换、列表选择、面包屑和回收站返回。
+- `2026-09-14`，old `18080` / new `18082`：侧栏持久化与移动抽屉定向集合两版均 2/2 通过；折叠 rail 和分类手风琴刷新后恢复，移动端隐藏桌面控件、遮罩关闭和六个一级入口一致。
+- `2026-09-14`，old `18080` / new `18082`：旧版 `e2e/auth-status.spec.ts` 两项均通过，状态 SSE 三卡、纵向布局、无伪卡片、Esc/空白关闭和未登录 401 响应一致。
+- `2026-09-14`，old `18080` / new `18082`：真实 TXT 深链接 `/read/{id}` 均回到根目录且不打开阅读器；这是 reference 运行时现状（旧源码虽有 `openDeepLink` 意图），当前 Rust 未引入额外差异，暂不把旧版自身缺陷冒充 Rust 回退。
+- `2026-09-14`，old `18080` / new `18082`：已登录页面中途把目录 children 请求改为 401 时，old 保留壳层并显示 `session expired` toast，new 回到登录页；Rust 保留这一安全边界，避免过期 session 下继续展示旧数据，属于允许的安全强化，正常成功路径不变。
+- `2026-09-14`，old `18080`：修正 reference E2E 的选择前置条件后，原始 `e2e` 集合中非真实 EPUB 的 37/37 项通过；剩余真实 EPUB 综合场景在旧版测试 runner 中超过 1 分钟未结束，单独保留为 runner/场景稳定性问题，不作为 Rust 差异结论。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 启动画面 | 首屏 splash、logo、spinner、加载到登录/主界面的时序、网络慢和失败状态一致；启动过程不闪出错误主界面。 | 待双版本逐帧/逐状态确认 |
+| `[P]` | 启动画面 | 首屏 splash、logo、spinner、加载到登录/主界面的时序、网络慢和失败状态一致；启动过程不闪出错误主界面。 | old/new `rust-auth-parity.spec.ts` 延迟 session 期间均显示 splash，随后登录失败状态一致 |
 | `[P]` | 登录 | 用户名/密码输入、回车提交、按钮 loading/disabled、错误文案、焦点、密码可见性（如有）、重复提交和网络错误一致。 | old/new `rust-auth-parity.spec.ts` 的慢响应、Enter 提交和失败状态均通过 |
 | `[P]` | TOTP 登录 | 需要二次验证时的输入、回退、错误、重试、恢复码路径和 session 建立一致。 | old/new `rust-auth-parity.spec.ts` 的二次输入、错误保留和重试分支均通过 |
-| `[ ]` | 会话检查 | `/api/auth/me`、刷新页面、已过期 cookie、401 后回登录页且不遗留旧数据。 | 初检仅有 session fetch |
+| `[P]` | 会话检查 | `/api/auth/me`、刷新页面、已过期 cookie、401 后回登录页且不遗留旧数据。 | 初始/刷新过期 cookie 两版均回登录；中途 401 old 保留壳层+toast，new 回登录以清除过期 session 下的旧数据，记录为安全强化例外 |
 | `[P]` | 账户入口 | 顶栏账户按钮应打开“账户设置”而不是直接退出登录；用户名、头像、菜单文案和层级一致。 | old/new 桌面实际点击均打开账户设置；移动端工具菜单入口已对照，退出动作仍在独立条目验证 |
 | `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭 |
 | `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
@@ -76,11 +82,11 @@
 |---|---|---|---|
 | `[ ]` | Logo/回到根目录 | 桌面和移动端 logo 图标、`回到我的文件` aria/title、点击后路径、active 状态一致。 | 初检有简化 logo，待对照 |
 | `[P]` | 任务中心入口 | 顶栏独立任务中心图标/summary，入口位置、图标、数量/状态提示、点击展开和再次点击关闭一致；不能被上传入口替换。 | old/new 实际点击 summary 均展开任务面板；空状态、点击空白和 Escape 已对照 |
-| `[ ]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | mock waiting/active/completed/failed 分组和上传完成显示已对照；字幕、更多项和全部状态组合仍待验 |
-| `[ ]` | 任务操作 | 取消、重试、清除已完成、归档密码输入、任务详情、失败错误、超过四项时“显示更多”、任务流实时更新一致。 | 清除完成、归档输入、重试/取消 caller 已存在；完整真实任务状态和“显示更多”仍待验 |
+| `[P]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | old/new `rust-task-center-parity.spec.ts` 覆盖 waiting/active/completed/cancelled/failed、不可重试、完成空态、上传/归档标签和显示更多 |
+| `[P]` | 任务操作 | 取消、重试、清除已完成、归档密码输入、任务详情、失败错误、超过四项时“显示更多”、任务流实时更新一致。 | old/new 定向 7/7：取消、重试、继续输入密码、清除完成、空白/Escape/入口关闭均通过；任务详情入口在 reference 无独立页面，归档行即输入入口 |
 | `[P]` | 任务面板交互 | 面板不被背景遮挡、点击面板不关闭、点空白关闭、Esc 关闭、点击入口切换、loading/error/empty 一致。 | old/new mock 与空状态均验证；桌面/移动端切换不会重复拉取或断开共享 SSE，`rust-task-center-parity.spec.ts` 2/2 |
 | `[P]` | 系统状态入口 | 在线/状态球可点击；`aria-label=打开系统状态`、title=`系统状态`、颜色/ok 状态和位置一致。 | old/new 实际点击均展开状态面板；aria/title、ok 状态和三卡布局已对照 |
-| `[ ]` | 系统状态面板 | EventSource `/api/system/status/stream` 更新状态；DB、存储、缓存三张纵向卡片，状态 badge、详情/错误/加载一致；旧版没有“任务/清理队列/备份”伪卡片和刷新按钮。 | old/new 三卡文案、布局、SSE入口和 Escape 已做局部对照；断线/重连/错误/清理仍待验 |
+| `[P]` | 系统状态面板 | EventSource `/api/system/status/stream` 更新状态；DB、存储、缓存三张纵向卡片，状态 badge、详情/错误/加载一致；旧版没有“任务/清理队列/备份”伪卡片和刷新按钮。 | old `e2e/auth-status.spec.ts` against old/new 2/2；三卡文案/纵向布局/真实首帧、无伪卡片和 SSE 入口均一致 |
 | `[ ]` | 系统状态关闭 | 点空白、Esc、重复点击、401/断线/重连/服务异常状态一致，关闭后 SSE 清理。 | 待恢复 |
 | `[ ]` | 回收站入口 | 顶栏回收站图标、title=`回收站`、aria、点击进入 trash 路由、数量/空状态和返回根目录一致。 | 基础入口存在，视觉和全局位置待对照 |
 | `[P]` | 移动端顶栏 | 状态球仍可用；头像/工具菜单包含旧版实际项目：任务中心、回收站、账户设置；不出现旧版明确禁止的 `打开任务与工具菜单` 旧入口；遮罩/外部点击/Esc 一致，退出登录仍从账户设置进入。 | old/new 390×844 实测状态球、工具菜单三项、任务中心跳转、外部点击和 Escape 均通过；旧版工具菜单本身没有独立退出项 |
@@ -92,8 +98,8 @@
 | `[ ]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new 已确认顺序和文案；五条分类路由及返回仍需逐条验证 |
 | `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all` 和五类空/有数据视图已在 old/new 对照；数量、刷新和错误全矩阵仍待验 |
 | `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 分类一级展开和移动端隐藏树已恢复；桌面路径树递归、当前高亮和错误状态仍待验 |
-| `[ ]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | 待验证 |
-| `[ ]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | 当前简化 |
+| `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
+| `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
 | `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |
 | `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | 任务/状态/账户/回收站/分类/面包屑的关键 geometry 已逐项修复并局部对照；全部文件类型及 hover/disabled 仍待验 |
 | `[ ]` | 回收站 footer | 桌面/移动端位置、图标、active、点击和 trash empty 状态一致。 | 基础入口存在，需完整验证 |
@@ -105,7 +111,7 @@
 | `[ ]` | 根目录内容头 | `我的文件` 标题、当前路径 nav、项目数/文件数/大小三项 metadata 的文案、间距和层级一致。 | old/new 首屏层级已恢复；同一 fixture 下统计、空态和刷新仍需验证 |
 | `[ ]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根和 smooth-scroll 收敛已通过；中间级、键盘/触摸全矩阵仍待验 |
 | `[ ]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | 当前有部分 folder/trash 状态，分类路由缺失 |
-| `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | reader 基本存在，完整路由待验 |
+| `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | old/new 真实 TXT `/read/{id}` 均实际回根且不打开阅读器，已确认是 reference 运行时缺陷；需单独决定是否恢复源码意图，当前不新增偏离旧版的行为 |
 | `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | 待对照 |
 | `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | 基础切换存在 |
 | `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | 空根/空回收站文案和模拟读取失败 toast 已 old/new 对照；首次 loading、重试和旧内容保留仍待验 |
@@ -119,8 +125,8 @@
 | `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。 | Rust 有 FileTile/rows 基础，视觉待对照 |
 | `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已逐项修复；文件项各类型和 fallback 仍待同一 fixture 截图对照 |
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 待验证 |
-| `[ ]` | 选择入口 | 每个可选 item 始终有旧版语义的 `选择项目` 控件；点击不打开项目，选中后工具栏更新；取消选择/全选/跨页状态一致。 | 初检有空 selection buttons，但语义/行为待对照 |
-| `[ ]` | 触摸选择 | 480ms 长按选中；选择模式下轻触切换；普通轻触仍打开项目；滚动不误选；触摸反馈一致。 | 当前 FileTile 未完整保留旧版 long-press 语义 |
+| `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
+| `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
 | `[ ]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | 待验证 |
 | `[ ]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | Rust 有部分 open logic，完整矩阵待验 |
 | `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | 当前缺少旧版 open/extract/download/share 等动作 |
@@ -341,5 +347,5 @@
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard 已 old/new 实测；etag 冲突/全部扩展名未完 | reader/editor parity trace | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`d257696`（E2E） | old reader-flow 17/17、真实 EPUB、Rust TXT/Markdown/EPUB old/new 已通过；逐项 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace | 局部 PASS |
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
-| 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、待提交（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
+| 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |

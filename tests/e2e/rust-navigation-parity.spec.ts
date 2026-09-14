@@ -120,3 +120,62 @@ test('从嵌套目录进入回收站后点击文件分类返回原目录', async
     }, { folderId })
   }
 })
+
+test('桌面侧栏折叠与分类路径手风琴在刷新后保持 reference 状态', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem('compat-sidebar-reset')) {
+      localStorage.removeItem('revaro:sidebar:collapsed')
+      localStorage.removeItem('revaro:sidebar:expanded')
+      sessionStorage.setItem('compat-sidebar-reset', '1')
+    }
+  })
+  await login(page)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+
+  const sidebar = page.locator('.app-sidebar')
+  const collapse = page.locator('.sidebar-collapse')
+  await expect(sidebar).not.toHaveClass(/collapsed/)
+  await expect(collapse).toHaveAttribute('aria-expanded', 'true')
+
+  await collapse.click()
+  await expect(sidebar).toHaveClass(/collapsed/)
+  await expect(collapse).toHaveAttribute('aria-expanded', 'false')
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await expect(sidebar).toHaveClass(/collapsed/)
+  await collapse.click()
+  await expect(sidebar).not.toHaveClass(/collapsed/)
+
+  const book = page.locator('.sidebar-category').filter({ has: page.locator('[data-category="book"]') })
+  const bookExpand = book.locator('.category-expand')
+  await expect(bookExpand).toHaveAttribute('aria-expanded', 'false')
+  await bookExpand.click()
+  await expect(bookExpand).toHaveAttribute('aria-expanded', 'true')
+  await expect(book.locator('.category-paths')).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await expect(page.locator('.sidebar-category').filter({ has: page.locator('[data-category="book"]') }).locator('.category-paths')).toBeVisible()
+})
+
+test('移动端分类抽屉隐藏桌面折叠与路径展开控件，并支持遮罩关闭', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem('compat-mobile-sidebar-reset')) {
+      localStorage.removeItem('revaro:sidebar:collapsed')
+      localStorage.removeItem('revaro:sidebar:expanded')
+      sessionStorage.setItem('compat-mobile-sidebar-reset', '1')
+    }
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await login(page)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+
+  await expect(page.locator('.sidebar-collapse')).toBeHidden()
+  await expect(page.locator('.category-expand')).toHaveCount(0)
+  await expect(page.locator('.sidebar-handle')).toHaveAttribute('aria-expanded', 'false')
+  await page.locator('.sidebar-handle').click()
+  await expect(page.locator('.app-sidebar')).toHaveClass(/mobile-open/)
+  await expect(page.locator('.sidebar-backdrop')).toHaveClass(/open/)
+  await expect(page.locator('.category-label')).toHaveCount(6)
+  await page.locator('.sidebar-backdrop').click({ position: { x: 380, y: 400 } })
+  await expect(page.locator('.app-sidebar')).not.toHaveClass(/mobile-open/)
+})
