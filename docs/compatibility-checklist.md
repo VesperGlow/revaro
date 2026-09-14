@@ -96,6 +96,8 @@
 - `2026-09-15`，old `18080` / new `18084`：实际展开媒体分类路径树的二级目录后点击“刷新”，旧版保留节点展开状态，Rust 初始版因重建 `PathTree` 折叠了子树；又实际收起/展开桌面侧栏，确认旧版卸载树后回到根层级。Rust 已按“分类 + 文件夹 ID”恢复刷新期间的展开状态，并在分类切换、侧栏收起/响应式切换时清理；`rust-sidebar-tree-reference-parity.spec.ts` old/new 4/4，提交 `5f58fd9`。
 - `2026-09-15`，old `18080` / new `18084`：以受控 `/api/files/{root}/children` 响应实际验证文件树根节点的 loading、空数组、500 失败回退；两版均保持根节点展开，显示“读取中…”或“还没有子文件夹”，失败不产生额外错误卡。再让首次文件树请求延迟、导航触发 `reloadToken` 后先返回新结果再释放旧请求，两版均按 reference 让旧响应最后覆盖；`rust-sidebar-tree-reference-parity.spec.ts` 现 old/new 6/6，测试提交 `331ded1`。
 - `2026-09-15`，将旧版原始 E2E 原样作为逆向回归入口分别在 old/new 实例执行：`library-ui.spec.ts` 4/4、`media-ui.spec.ts` 10/10、`auth-status.spec.ts` 2/2、`files.spec.ts` 3/3、`reader-flow.spec.ts` 17/17、`reader-real-epub.spec.ts` 1/1；覆盖五类分类/移动抽屉、媒体控件与触摸、认证/状态、文件 CRUD/ZIP、reader 全流程及三本真实 EPUB，未发现新 Rust 差异。
+- `2026-09-15`，以旧版原始 `mobile.spec.ts` 在 390×844、`isMobile=true`、触摸上下文中分别运行 old/new：两版均 1/1；状态球展开/关闭、账户工具菜单中的任务中心/回收站/账户设置、任务面板命中区域、Esc 和账户设置打开行为一致，未发现 Rust 差异。
+- `2026-09-15`，old `18080` / new `18084`：API 实际创建并移入回收站同名文档后执行 `DELETE /api/trash`，两版均 204 且目标从回收站消失；另创建未传输的 pending upload，执行 `DELETE /api/uploads/{id}`，两版均 204，随后 upload session 和 pending file 均返回同样 404。`rust-api-reference-parity.spec.ts` 新增清空/取消两项各 1/1；通用 cleanup 未调用全局清空回收站。
 - `2026-09-15`，old `18080` / new `18084`：反向审计文件卡的视频缩略图重试 URL，向同一视频注入包含空格、`&`、`/`、`?` 的 ETag；old 使用编码后的查询值，Rust 初始版直接拼接导致 query 被截断。已恢复 `encodeURIComponent` 语义，`rust-file-card-reference-parity.spec.ts` old/new 1/1，提交 `5b7451a`。
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后比较用户名编辑入口和会话区；旧版入口为 `svg + span`，Rust 初始版只有 `span`，且对应 hover 图标未命中。已恢复旧版铅笔 path、14px 尺寸和统一 icon helper；old/new DOM、geometry、hover、编辑聚焦和 Escape 取消均 1/1，`rust-account-reference-parity.spec.ts`，提交 `a6ac08e`。
 - `2026-09-14`，old `18080` / new `18083`：用同一 mock TOTP 数据实际完成“账户设置 → 两步验证设置 → 启用 → 下载文本”，读取浏览器下载文件逐字比较文件名、时间行、恢复码顺序和换行；old 使用默认 `Date.toLocaleString()`，Rust 初始版使用 ISO 时间戳，已恢复浏览器本地化格式。`rust-account-download-reference-parity.spec.ts` old/new 1/1，账户相关两项合计 2/2，提交 `80cf6c3`。
@@ -428,7 +430,7 @@
 | `[P]` | `POST /api/files/{id}/extract` | 归档解压 | Rust `extract_archive()` 由 SelectionToolbar 调用；old/new 实际确认请求入口、即时反馈和任务中心后续状态，真实 ZIP 任务也已有验证 |
 | `[P]` | `DELETE /api/files/{id}` | 移入回收站 | Rust `delete_file()` 有；API 文档生命周期 old/new 均实际验证删除后入 trash |
 | `[P]` | `GET /api/trash` | 回收站列表 | Rust `fetch_trash()` 有；API 文档生命周期 old/new 均实际验证列表包含目标项 |
-| `[ ]` | `DELETE /api/trash` | 清空回收站 | Rust `empty_trash()` 有；清空的反馈/错误链路另由 UI parity 覆盖，实际 API 成功/失败矩阵仍未完 |
+| `[P]` | `DELETE /api/trash` | 清空回收站 | Rust `empty_trash()` 有；old/new 实际创建并删除受控文档后执行清空，两版均 204 且目标从 trash 消失；`rust-api-reference-parity.spec.ts` 清空场景 old/new 1/1，通用 cleanup 不调用该全局操作 |
 | `[P]` | `POST /api/trash/{id}/restore` | 恢复 | Rust `restore_file()` 有；API 文档生命周期 old/new 均实际验证恢复 |
 | `[P]` | `DELETE /api/trash/{id}` | 永久删除 | Rust `purge_file()` 有；API 文档生命周期 old/new 均实际验证 purge |
 | `[P]` | `POST /api/uploads` | 创建上传 | old/new 实际创建同一 WAV/WebM/EPUB 的 single session，模式、part size/count、目标 URL 和 expiry 字段一致；Rust `create_upload()` 有；`rust-specialized-api-reference-parity.spec.ts` |
@@ -438,7 +440,7 @@
 | `[P]` | `POST /api/uploads/{id}/parts` | 获取分片 URL | old/new 实际请求 `[1,2]` 批次，返回的 part 编号和 URL 尾段一致；Rust `request_upload_parts()` 有；`rust-multipart-upload-reference-parity.spec.ts` |
 | `[P]` | `PUT /api/uploads/{id}/parts/{part}` | 记录分片 | old/new 实际接受带空白的有效 ETag 并 trim；空 ETag 均返回 400，size/content-hash 校验分支一致；Rust `record_upload_part()` 有；`rust-multipart-upload-reference-parity.spec.ts` |
 | `[P]` | `POST /api/uploads/{id}/complete` | 完成上传 | old/new 实际完成三类文件，ready 文件对象、content hash 和 ETag 一致；此前 Rust 漏写 ETag 已恢复；`rust-specialized-api-reference-parity.spec.ts` |
-| `[ ]` | `DELETE /api/uploads/{id}` | 取消/中止上传 | Rust `abort_upload()` 有 |
+| `[P]` | `DELETE /api/uploads/{id}` | 取消/中止上传 | Rust `abort_upload()` 有；old/new 实际取消 pending session 均 204，upload session 与 pending file 随后同样 404；`rust-api-reference-parity.spec.ts` old/new 1/1 |
 
 ## 14. 旧版页面/组件反向清点
 
