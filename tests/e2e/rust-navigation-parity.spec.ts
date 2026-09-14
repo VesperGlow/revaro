@@ -549,3 +549,88 @@ test('目录读取中或失败时保留 reference 的当前选择状态', async 
   await expect(page.locator('.selection-toolbar')).toBeVisible()
   await expect(page.locator('.file-row').filter({ hasText: selectedFile.name })).toBeVisible()
 })
+
+test('old/new 目录导航丢弃迟到响应并保留最后一次点击结果', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const stamp = '2026-01-01T00:00:00Z'
+  const root = { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: stamp, updated_at: stamp, mime_type: '' }
+  const slow = { id: 'compat-stale-slow', parent_id: ROOT, name: '慢目录', kind: 'directory', size: 0, status: 'ready', created_at: stamp, updated_at: stamp, mime_type: '' }
+  const fast = { id: 'compat-stale-fast', parent_id: ROOT, name: '快目录', kind: 'directory', size: 0, status: 'ready', created_at: stamp, updated_at: stamp, mime_type: '' }
+
+  async function mock(page: Parameters<typeof login>[0]) {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') {
+        return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 2 } })
+      }
+      if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 2 })
+      if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
+      if (path === `/api/files/${ROOT}/children`) return json({ items: [slow, fast], total_bytes: 0, file_count: 2 })
+      if (path === `/api/files/${slow.id}` || path === `/api/files/${slow.id}/children`) {
+        await new Promise(resolve => setTimeout(resolve, 700))
+        return json({
+          ...(path.endsWith('/children') ? { items: [], total_bytes: 0, file_count: 0 } : {
+            file: slow,
+            breadcrumbs: [root, slow],
+          }),
+        })
+      }
+      if (path === `/api/files/${fast.id}` || path === `/api/files/${fast.id}/children`) {
+        await new Promise(resolve => setTimeout(resolve, 30))
+        return json({
+          ...(path.endsWith('/children') ? { items: [], total_bytes: 0, file_count: 0 } : {
+            file: fast,
+            breadcrumbs: [root, fast],
+          }),
+        })
+      }
+      return json({ items: [] })
+    })
+  }
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await mock(page)
+    await page.goto(`${baseUrl}/?stale-navigation-reference=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    // Dispatch both clicks in one task. The first navigation may immediately
+    // render its loading state and remove the root rows before Playwright can
+    // perform a second action; the reference test is about the request race,
+    // so both user click events must enter the controller before that render.
+    await page.evaluate(({ slowName, fastName }) => {
+      const find = (name: string) => [...document.querySelectorAll<HTMLElement>('.file-card, .file-row')]
+        .find(element => element.textContent?.includes(name))
+      find(slowName)?.click()
+      find(fastName)?.click()
+    }, { slowName: slow.name, fastName: fast.name })
+    await expect(page.getByRole('heading', { name: fast.name, exact: true })).toBeVisible()
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/f/${fast.id}`)
+    await page.waitForTimeout(900)
+    return {
+      heading: await page.getByRole('heading', { name: fast.name, exact: true }).count(),
+      path: new URL(page.url()).pathname,
+      slowHeading: await page.getByRole('heading', { name: slow.name, exact: true }).count(),
+    }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldState).toEqual({ heading: 1, path: `/f/${fast.id}`, slowHeading: 0 })
+    expect(newState, 'Rust 迟到目录响应覆盖了 reference 的最后一次导航').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
