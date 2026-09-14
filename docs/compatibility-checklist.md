@@ -65,6 +65,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际创建目录并点击进入后，两版均将 `/` → `/f/{id}` 写入应用内 history；浏览器后退逐级回到根目录。再次前进时两版均只恢复 `/f/{id}` URL、不重放目录请求，这是 reference 的现运行时行为，已用同一用例明确记录而不把它误判为 Rust 差异。
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后浏览器后退，两版均先关闭账户弹层、保留“我的文件”页面和 `/` URL；弹层 history 语义已加入 parity 用例。
 - `2026-09-14`，old `18080` / new `18084`：同一 mock 根目录实际逐项点击目录、TXT、EPUB、图片、音频、视频和未知文件；目录进入、文本编辑器、阅读器、三类媒体预览及未知文件无动作的分流结果与 pathname 均对照一致，并逐项用浏览器后退关闭弹层。Rust 初始 Reader 清理时错误覆盖了 popstate 已恢复的根路径，已移除该路径恢复；`rust-open-item-reference-parity.spec.ts` old/new 1/1，修复提交 `4b5c1a0`，验证提交 `478969a`。
+- `2026-09-14`，old `18080` / new `18084`：分享弹层上打开停止分享确认框后实际按浏览器后退；reference 会关闭 share modal、保留外置 `AppDialog`，Rust 初始 popstate 额外清除了该 dialog。已恢复 reference 的外置弹层生命周期，`rust-modal-history-reference-parity.spec.ts` old/new 1/1，修复提交 `55ef117`，验证提交 `a7c669e`。
 - `2026-09-14`，old `18080` / new `18083`：将 `POST /api/directories` 同时模拟为 409，旧版关闭新建文件夹弹窗并显示错误 toast；Rust 初始行为把错误留在弹窗内，已恢复为关闭弹窗 + toast。两版回归均通过；分享二次确认错误仍按分享层单独验证。
 - `2026-09-14`，old `18080` / new `18083`：新建文件夹成功后再触发一次根目录刷新，两版均保留“文件夹已创建”成功 toast；Rust 初始目录/回收站刷新会清空全局反馈，已移除该非 reference 行为。old/new `rust-actions-parity-ui.spec.ts` 的目录刷新用例通过。
 - `2026-09-14`，old `18080` / new `18083`：列表选中一项后滚动到顶部并真实点击内容区左上空白，旧版和 Rust 版均清除选择工具栏（`rust-file-interaction-parity.spec.ts` 1/1 each）；文件行、按钮和工具栏仍由过滤规则排除，不会误清除。
@@ -210,7 +211,7 @@
 | `[P]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根、`scrollTo({behavior:"smooth"})`、DOM 层级和首末项 margin，以及中间级 click/Enter/tap 均已对照；`rust-breadcrumb-layout-reference-parity.spec.ts` 3/3 |
 | `[P]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | old/new 直达浏览器用例覆盖五类分类、分类路径、文件夹路径和无效 `/f/{id}`；无效地址均回根并加载默认页面 |
 | `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | old/new 真实 TXT `/read/{id}` 均实际回根且不打开阅读器，已确认是 reference 运行时缺陷；需单独决定是否恢复源码意图，当前不新增偏离旧版的行为 |
-| `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分类筛选后的分类切换/后退/前进，以及慢/快目录响应竞态不覆盖最后一次导航；分类 history 已由 `rust-library-history-reference-parity.spec.ts` 补齐，完整 modal stack 和其它弹层组合仍待验证 |
+| `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分享确认框叠加时关闭外层 modal 但保留 reference 外置 dialog、分类筛选后的分类切换/后退/前进，以及慢/快目录响应竞态不覆盖最后一次导航；分类 history 已由 `rust-library-history-reference-parity.spec.ts` 补齐，其它弹层组合仍待验证 |
 | `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 根目录实际切换并比较内容卡/行与按钮状态，列表偏好刷新后恢复；移动端内容布局、滚动和完整响应式矩阵仍待验 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
 | `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | 空根/空回收站文案、模拟读取失败 toast，以及失败导航中旧内容/选择工具栏保留策略已 old/new 对照；首次 loading、重试和完整旧内容保留矩阵仍待验 |
@@ -257,7 +258,7 @@
 | `[ ]` | 回收站查看 | 列表/网格、原路径/删除时间/大小、空状态、打开限制、恢复/永久删除入口一致。 | old/new 空回收站、列表行元信息、TXT 键盘打开分流已对照；完整 grid/只读矩阵仍待验 |
 | `[ ]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | old/new 直接恢复和清理已实际验证；单项 409 冲突保留项目/选择并显示文件名错误；延迟回收站刷新完成后才显示成功反馈；多选、原位置冲突和完整失败矩阵仍待验 |
 | `[ ]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | old/new 永久删除确认、清理链路和 409 失败文件名文案，以及清空回收站取消/500 后弹窗、列表和按钮状态已对照；延迟回收站刷新完成后才显示永久删除/清空成功反馈；loading 和多项/401 矩阵仍待验 |
-| `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退、分享二级确认取消/提交关闭/错误回显、传输 PATCH pending 时遮罩关闭、账户密码 pending 时关闭子弹窗后外层遮罩关闭已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误和焦点回收仍待验 |
+| `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退、分享二级确认取消/提交关闭/错误回显、传输 PATCH pending 时遮罩关闭、账户密码 pending 时关闭子弹窗后外层遮罩关闭已对照；浏览器后退时分享外层 modal 关闭而外置确认框保留也已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误和焦点回收仍待验 |
 
 ## 9. 文本文档查看与编辑器
 
@@ -489,5 +490,6 @@
 | 全局 Toast 严重级别与时序 | 2、15 | `253e92d`、`c1ce934`、`3657c79`、`83f7738`、`31ca8e5`、`25c966f`、`eb617a8` | `rust-feedback-reference-parity.spec.ts` old/new 7/7；分享/TOTP 剪贴板失败 old/new 各 1/1；分享重生成/停止分享 old/new 1/1；放弃编辑保留 toast old/new 1/1；CRUD/回收站/移动成功反馈 old/new 7/7；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；局部剪贴板失败不会误发全局 toast；断网/403/连续不同错误、后台任务完成/失败、分享重生成/停止分享和 editor discard 保留语义均已对照；初始 Rust 的 error class/额外 role/transport `TypeError:`/重生成额外 toast/discard 清空 toast 已恢复，401 会话安全边界、完整逐调用点状态矩阵仍未完 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996`、`65ead82` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1；`rust-sidebar-tree-reference-parity.spec.ts` old/new 2/2 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照；分类树递归展开/计数/过滤/active/根路径已双版本对照；文件树实际暴露 reference 未注册 `SidebarDirectoryNode`，Rust 保留可用递归导航 | 局部 PASS |
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
+| 弹层 history 与外置确认框生命周期 | 5、8、15 | `55ef117`、`a7c669e` | `rust-modal-history-reference-parity.spec.ts` old/new 1/1 | 实际在分享弹层上打开停止分享确认框后按浏览器后退，比较 share modal 与外置 AppDialog 的卸载/保留结果和 pathname；Rust 初始额外清除 dialog，已恢复 reference 行为 | 局部 PASS |
 | 分类媒体视图与文件项交互 | 4–6、15 | `1ffae0e` | old 原始 `library-ui.spec.ts` 4/4；Rust `rust-library-ui.spec.ts` 8/8；双版本 `rust-library-reference-parity.spec.ts` 1/1；`cargo xtask check` | 同一 fixture 实际比较书架/图库/音乐标题、分组、卡片/行、视图切换、图片到视频的会话状态延续及分类卡/音频行 `contextmenu.prevent`；Rust 初始三处差异均已恢复 | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
