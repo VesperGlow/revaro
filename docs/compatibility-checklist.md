@@ -26,7 +26,7 @@
 ### 1.2 隔离运行实例
 
 - `[P]` old worktree：`/tmp/revaro-old`，detached `3a18bde`，服务 `http://127.0.0.1:18080`。
-- `[P]` new 基线 worktree：`/tmp/revaro-new`，detached `e9b6202`；当前恢复中的 new 实际运行实例从 `/config/revaro` 当前工作树构建，服务 `http://127.0.0.1:18084`（`18082`、`18083` 仅保留早期对照记录；本轮双版本套件显式使用 `E2E_NEW_URL=http://127.0.0.1:18084`）。
+- `[P]` new 基线 worktree：`/tmp/revaro-new`，detached `e9b6202`；当前恢复中的 new 实际运行实例从 `/config/revaro` 当前工作树构建，服务 `http://127.0.0.1:18084`（`18082`、`18083` 仅保留早期对照记录；Playwright 已在 `821769c` 将未显式传入的双版本 `E2E_NEW_URL` 默认固定到 `18084`，本轮全套仍显式使用该地址）。
 - `[P]` old/new 使用不同的 `APP_DATA_DIR`、`APP_WORK_DIR`、端口和管理员 cookie；不得交叉使用数据库、上传临时文件或任务队列。
 - `[P]` 两个实例均 `GET /healthz` 返回 200；old 使用迁移前 Go server + data-plane，new 使用 Rust server + Rust wasm bundle。
 - `[B]` Docker/Compose 由于环境没有 `/var/run/docker.sock` 无法启动；已切换为本机构建、独立进程和 Chromium 实测，不因此跳过浏览器验证。
@@ -144,6 +144,7 @@
 - `2026-09-14`，old `18080` / new `18084`：普通文件上传时序用例首轮完整套件在慢的初始 `/api/tasks` 快照下出现一次非确定性可见任务，单独重跑未复现；已让 old/new 先完成初始任务快照再开始上传，避免把合法快照竞态误报为通知事件。修正后的定向用例通过，提交 `8172184`；随后显式指定 new 端口的完整套件已 142/142 通过。
 - `2026-09-14`，old `18080` / new `18084`：逐个实际打开旧版全部 11 个可编辑扩展名 `md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv`，比较内容、文本编辑器标签、Markdown 分栏入口和保存禁用状态；另以延迟 `/content`、未保存关闭取消、Ctrl+S 和 409 ETag 冲突比较 loading、重试入口与错误文案。新增 old/new 双上下文场景 2/2，提交 `0027c57`；编辑器完整视觉、编码/大文件和 browser-back 矩阵仍未完成。
 - `2026-09-14`，new Rust parity 全套首轮 140 项为 139 通过、1 项失败；该命令漏传 `E2E_NEW_URL`，上传用例实际访问了陈旧的 `18083` 实例，失败不是当前 Rust 业务结论。另一次未显式指定端口的 142 项运行还受到同一实例及过渡首帧取样影响，均不作为最终结果。
+- `2026-09-14`，为避免上述误连陈旧实例，`tests/e2e/playwright.config.ts` 已将未设置 `E2E_NEW_URL` 时的默认值统一设为当前 Rust `18084`；未传环境变量的分类 history 双版本用例已实际验证 1/1，提交 `821769c`。完整 suite 仍要求在清单中显式记录 old/new 端口。
 - `2026-09-14`，old `18080` / new `18084`：目录选择器 parity 用例改为在两个实际页面监听 DOM 过渡 class 后采样进入/退出首帧，并对浏览器 fixed 定位的亚像素垂直差异使用 `<1px` 容差；没有修改产品实现。定向 3/3 通过，提交 `82cd1b3`。
 - `2026-09-14`，old `18080` / new `18084`：显式设置 `E2E_BASE_URL`、`E2E_REFERENCE_URL`、`E2E_NEW_URL`，串行运行 `rust-*.spec.ts` 完整双版本 parity suite，142/142 通过（约 5.9 分钟）；这是加入分类 history 用例前的全套结果，后续 143/143 见下一条。不等同于清单所有条目已完成，未覆盖的条目仍按下方状态继续收口。
 - `2026-09-14`，old `18080` / new `18084`：在同一 mock 数据下实际执行“图片分类 → 照片路径筛选 → 书架 → 浏览器后退 → 再后退 → 前进”，比较 URL、标题、筛选文案、卡片和普通目录内容；old/new `rust-library-history-reference-parity.spec.ts` 通过。旧版前进后的结果是 URL 回到 `/library/image`，内容仍停留在“我的文件”根目录（history action 已耗尽）；Rust 保持该 reference 现行为，不擅自引入新的前进栈模型。新增后显式端口完整 suite 为 143/143 通过，提交 `697239f`。
@@ -429,7 +430,7 @@
 
 | 模块 | Checklist 范围 | commit | 自动测试 | old/new 浏览器证据 | 状态 |
 |---|---|---|---|---|---|
-| 基线与清单 | 1 | `068b9bb` | healthz、old/new 构建和基线记录已完成 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
+| 基线与清单 | 1 | `068b9bb`、`821769c`（E2E new 默认端口） | healthz、old/new 构建和基线记录已完成；双版本测试未显式传 URL 时默认命中当前 Rust `18084` | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip）、`226daf1`（stale navigation parity）、`697239f`（分类 history parity） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；浏览器后退/弹层 history、失败导航保留旧内容/选择、根节点 tooltip、慢/快目录响应竞态及筛选后分类 history 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
 | 目录选择器图标、展开控件、Escape、disabled 与 flyout 语义 | 8、15 | `d528aed`、`9ff563b`、`d0421c5`、`3198ff8`、`82cd1b3` | `rust-directory-picker-reference-parity.spec.ts` old/new 各 3/3；`rust-actions-parity-ui.spec.ts` old/new 各 9/9 | old/new 实际打开移动目标选择器，比较触发器、面包屑、子目录、深层路径、空目录图标、目标点击/Escape 默认事件、传输中 disabled class/opacity/按钮状态、进入/退出过渡和卸载时序；首帧探针监听真实 DOM 过渡 class，定位比较容忍 `<1px` 浏览器亚像素误差 | 局部 PASS |
