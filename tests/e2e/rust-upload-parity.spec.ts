@@ -66,3 +66,25 @@ test('拖放文件时显示并关闭旧版上传覆盖层，回收站中不接�
   })
   await expect(page.locator('.drop-zone')).toHaveCount(0)
 })
+
+test('拖入内容子元素时保留 reference 的上传覆盖层', async ({ page }) => {
+  await login(page)
+  const shell = page.locator('.app-shell')
+  const content = page.locator('.content-head')
+
+  await shell.evaluate(element => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['child dragleave parity'], 'child-dragleave.txt', { type: 'text/plain' }))
+    element.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+  })
+  await expect(page.locator('.drop-zone')).toBeVisible()
+
+  await content.evaluate(element => {
+    const transfer = new DataTransfer()
+    element.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+  })
+  await expect(page.locator('.drop-zone')).toBeVisible()
+
+  await shell.evaluate(element => element.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true })))
+  await expect(page.locator('.drop-zone')).toHaveCount(0)
+})

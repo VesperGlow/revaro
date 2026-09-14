@@ -328,6 +328,15 @@ impl UploadController {
 
     /// Hide the drop surface when the pointer leaves the shell.
     pub fn on_drag_leave(&self, event: DragEvent) {
+        // The reference listener uses Vue's `.self` modifier: crossing a
+        // child while dragging must not hide the shell-wide drop surface.
+        let same_target = match (event.target(), event.current_target()) {
+            (Some(target), Some(current)) => js_sys::Object::is(target.as_ref(), current.as_ref()),
+            _ => false,
+        };
+        if !same_target {
+            return;
+        }
         event.prevent_default();
         self.drag_active.set(false);
     }
