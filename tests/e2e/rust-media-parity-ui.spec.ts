@@ -750,3 +750,152 @@ test('old/new 不支持媒体保留原文件错误分流且不请求转码入口
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+test('old/new 损坏图片与视频重试保持错误层级、禁用状态和请求时序', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const validVideo = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let imagePreviewRequests = 0
+    let videoPreviewRequests = 0
+    let allowVideoRetry = false
+    await page.route('**/api/files/image-1/preview', route => {
+      imagePreviewRequests += 1
+      return route.fulfill({ status: 500, body: 'damaged image' })
+    })
+    await page.route('**/api/files/video-1/preview', route => {
+      videoPreviewRequests += 1
+      if (!allowVideoRetry) {
+        return route.fulfill({ contentType: 'application/octet-stream', body: 'damaged video' })
+      }
+      return route.fulfill({ contentType: 'video/webm', body: validVideo })
+    })
+
+    await open(page, '群山.png')
+    await expect(page.getByRole('alert')).toHaveText(/图片暂时无法加载/)
+    const failedImage = await page.evaluate(() => {
+      const image = document.querySelector<HTMLImageElement>('.preview-image')
+      const tools = Array.from(document.querySelectorAll<HTMLButtonElement>('.preview-image-tools button'))
+      return {
+        display: image ? getComputedStyle(image).display : null,
+        toolsDisabled: tools.map(button => button.disabled),
+        navCount: document.querySelectorAll('.preview-nav').length,
+      }
+    })
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: '下载原图', exact: true }).click()
+    const imageDownload = await downloadPromise
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+
+    await open(page, '山间漫步.webm')
+    await expect(page.getByRole('alert')).toContainText('浏览器无法播放此原始格式')
+    await expect(page.getByRole('button', { name: '重新尝试', exact: true })).toBeVisible()
+    const initialVideoRequests = videoPreviewRequests
+    allowVideoRetry = true
+    await page.getByRole('button', { name: '重新尝试', exact: true }).click()
+    await expect.poll(() => page.locator('.video-player-shell video').evaluate(element => element.readyState)).toBeGreaterThan(0)
+    await expect(page.locator('.video-error')).toHaveCount(0)
+    const retriedVideo = {
+      requests: videoPreviewRequests,
+      initialRequests: initialVideoRequests,
+      paused: await page.locator('.video-player-shell video').evaluate(element => element.paused),
+    }
+    await page.getByRole('button', { name: '退出播放', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    return { failedImage, imagePreviewRequests, imageDownloadFilename: imageDownload.suggestedFilename(), retriedVideo }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.failedImage).toEqual({ display: 'none', toolsDisabled: [true, true, true, true, false], navCount: 2 })
+    expect(oldResult.imagePreviewRequests).toBe(1)
+    expect(oldResult.imageDownloadFilename).toBe('群山.png')
+    expect(oldResult.retriedVideo.initialRequests).toBeGreaterThanOrEqual(1)
+    expect(oldResult.retriedVideo.requests).toBeGreaterThan(oldResult.retriedVideo.initialRequests)
+    expect(oldResult.retriedVideo.paused).toBe(false)
+    expect(newResult, 'Rust 损坏媒体错误/重试行为与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 音视频 seek 边界都钳制在媒体时长内', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect(audio).toHaveJSProperty('readyState', 4)
+    await audio.evaluate((element: HTMLAudioElement) => {
+      element.pause()
+      element.currentTime = 0
+      element.dispatchEvent(new Event('timeupdate'))
+    })
+    await page.getByRole('button', { name: '后退15秒', exact: true }).click()
+    const audioAtStart = await audio.evaluate((element: HTMLAudioElement) => element.currentTime)
+    await audio.evaluate((element: HTMLAudioElement) => {
+      element.currentTime = element.duration - 1
+      element.dispatchEvent(new Event('timeupdate'))
+    })
+    await page.getByRole('button', { name: '前进30秒', exact: true }).click()
+    const audioAtEnd = await audio.evaluate((element: HTMLAudioElement) => element.currentTime)
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+
+    await open(page, '山间漫步.webm')
+    const video = page.locator('.video-player-shell video')
+    await expect(video).toHaveJSProperty('readyState', 4)
+    await video.evaluate((element: HTMLVideoElement) => {
+      element.pause()
+      element.currentTime = 0
+      element.dispatchEvent(new Event('timeupdate'))
+    })
+    await page.locator('.video-player-shell').focus()
+    await page.keyboard.press('ArrowLeft')
+    const videoAtStart = await video.evaluate((element: HTMLVideoElement) => element.currentTime)
+    await video.evaluate((element: HTMLVideoElement) => {
+      element.currentTime = element.duration - 1
+      element.dispatchEvent(new Event('timeupdate'))
+    })
+    await page.keyboard.press('ArrowRight')
+    const videoAtEnd = await video.evaluate((element: HTMLVideoElement) => element.currentTime)
+    await page.getByRole('button', { name: '退出播放', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    return {
+      audioAtStart: Math.round(audioAtStart * 100) / 100,
+      audioAtEnd: Math.round(audioAtEnd * 100) / 100,
+      videoAtStart: Math.round(videoAtStart * 100) / 100,
+      videoAtEnd: Math.round(videoAtEnd * 100) / 100,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.audioAtStart).toBe(0)
+    expect(oldResult.audioAtEnd).toBe(120)
+    expect(oldResult.videoAtStart).toBe(0)
+    expect(oldResult.videoAtEnd).toBe(30)
+    expect(newResult, 'Rust 音视频 seek 边界与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})

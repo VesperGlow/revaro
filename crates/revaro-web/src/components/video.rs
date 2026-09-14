@@ -682,6 +682,7 @@ pub fn VideoPlayer(
     }
     {
         let id = item.id.clone();
+        let video_for_start = video;
         leptos::task::spawn_local(async move {
             if let Ok(value) = api::fetch_video_media(&id).await {
                 let defaults: Vec<_> = value
@@ -692,11 +693,12 @@ pub fn VideoPlayer(
                 active_subtitle.set(initial_subtitle_index(&defaults));
                 subtitles.set(value.subtitles);
             }
-        });
-    }
-    {
-        Effect::new(move |_| {
-            if let Some(video) = video_element(video) {
+
+            // The Vue reference lets the element's initial `src` load first,
+            // then explicitly starts it after subtitle discovery completes.
+            // Keeping this second load in the same async lifecycle preserves
+            // the reference retry/error timing for native media failures.
+            if let Some(video) = video_element(video_for_start) {
                 video.set_volume(volume.get_untracked());
                 video.set_muted(muted.get_untracked());
                 video.set_playback_rate(rate.get_untracked());
