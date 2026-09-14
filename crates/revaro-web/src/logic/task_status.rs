@@ -82,6 +82,25 @@ pub fn task_type_label(value: &str) -> String {
     }
 }
 
+/// Render the task name using the reference fallback chain.
+///
+/// Known task types have a translated label. Unknown task types deliberately
+/// fall back to the durable task id, while the caller keeps the raw `name` for
+/// the tooltip (the old template bound that attribute before applying this
+/// visible-name fallback).
+#[must_use]
+pub fn task_display_name(name: &str, kind: &str, id: &str) -> String {
+    if !name.is_empty() {
+        return name.to_owned();
+    }
+    match kind {
+        task_type::UPLOAD | task_type::ARCHIVE_EXTRACT | task_type::SUBTITLE => {
+            task_type_label(kind)
+        }
+        _ => id.to_owned(),
+    }
+}
+
 /// The Chinese status line for a task row.
 ///
 /// Faithful port of `TaskCenter.vue`'s `status(task)` helper: `running` shows
@@ -124,6 +143,20 @@ pub fn task_progress_percent(progress: f64) -> u8 {
         progress.clamp(0.0, 100.0).round() as u8
     } else {
         0
+    }
+}
+
+/// Preserve the reference client's fractional width for a live task's bar.
+///
+/// The text beside the bar is rounded, but the old Vue template passed the
+/// server's finite progress value straight through to `style.width`. Keeping
+/// those two representations separate matters for smooth progress updates.
+#[must_use]
+pub fn task_progress_width(progress: f64) -> String {
+    if progress.is_finite() {
+        progress.to_string()
+    } else {
+        "0".to_owned()
     }
 }
 
@@ -188,6 +221,17 @@ mod tests {
     }
 
     #[test]
+    fn uses_reference_name_fallbacks() {
+        assert_eq!(
+            task_display_name("报告.txt", "future_type", "id-1"),
+            "报告.txt"
+        );
+        assert_eq!(task_display_name("", "upload", "id-2"), "上传");
+        assert_eq!(task_display_name("", "archive_extract", "id-3"), "解压");
+        assert_eq!(task_display_name("", "future_type", "id-4"), "id-4");
+    }
+
+    #[test]
     fn renders_status_lines_like_the_task_center() {
         assert_eq!(
             task_status_label(TaskStatus::WaitingInput, "archive_extract", "", ""),
@@ -235,5 +279,13 @@ mod tests {
         assert_eq!(task_progress_percent(-10.0), 0);
         assert_eq!(task_progress_percent(12.5), 13);
         assert_eq!(task_progress_percent(150.0), 100);
+    }
+
+    #[test]
+    fn preserves_fractional_progress_for_live_bar_widths() {
+        assert_eq!(task_progress_width(12.5), "12.5");
+        assert_eq!(task_progress_width(1.0), "1");
+        assert_eq!(task_progress_width(f64::NAN), "0");
+        assert_eq!(task_progress_width(f64::INFINITY), "0");
     }
 }

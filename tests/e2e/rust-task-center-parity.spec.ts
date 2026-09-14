@@ -86,6 +86,11 @@ test('任务中心保留等待输入、分组、展开和关闭行为', async ({
   await expect(panel).toBeVisible()
   await page.getByRole('heading', { name: '我的文件' }).click()
   await expect(panel).toBeHidden()
+
+  await page.getByTitle('任务中心').click()
+  await page.keyboard.press('Escape')
+  await expect(panel).toBeHidden()
+  await expect(page.getByTitle('任务中心')).toBeFocused()
 })
 
 test('桌面与移动任务中心切换不重置共享任务流', async ({ page }) => {
@@ -208,6 +213,170 @@ test('任务中心活动进度汇总按 reference 使用原始值四舍五入', 
   await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
   await page.getByTitle('任务中心').click()
   await expect(page.locator('.task-panel > header small')).toHaveText('2 项进行中 · 2%')
+})
+
+test('任务中心进度条保留 reference 的小数宽度和终态满格', async ({ page }) => {
+  const tasks = [
+    task({ id: 'fractional-progress', status: 'running', phase: '上传中', progress: 12.5, name: '小数进度.bin' }),
+    task({ id: 'failed-progress', status: 'failed', phase: 'failed', progress: 42, error: '失败任务', name: '失败进度.zip' }),
+  ]
+
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: tasks })
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+  await page.getByTitle('任务中心').click()
+
+  const runningBar = page.locator('.active-group article').filter({ hasText: '小数进度.bin' }).locator('b')
+  await expect(runningBar).toHaveClass(/running/)
+  await expect.poll(() => runningBar.evaluate(element => (element as HTMLElement).style.width)).toBe('12.5%')
+
+  const failedBar = page.locator('.failed-group article').filter({ hasText: '失败进度.zip' }).locator('b')
+  await expect(failedBar).toHaveClass(/failed/)
+  await expect.poll(() => failedBar.evaluate(element => (element as HTMLElement).style.width)).toBe('100%')
+})
+
+test('任务中心空名称沿用 reference 的已知类型与未知类型回退', async ({ page }) => {
+  const tasks = [
+    task({ id: 'known-empty', type: 'upload', name: '' }),
+    task({ id: 'unknown-empty', type: 'future_task', name: '' }),
+  ]
+
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: tasks })
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+  await page.getByTitle('任务中心').click()
+
+  const known = page.locator('.completed-group article').filter({ hasText: '上传' }).locator('strong')
+  await expect(known).toHaveText('上传')
+  await expect(known).toHaveAttribute('title', '')
+  const unknown = page.locator('.completed-group article').filter({ hasText: 'unknown-empty' }).locator('strong')
+  await expect(unknown).toHaveText('unknown-empty')
+  await expect(unknown).toHaveAttribute('title', '')
+})
+
+test('任务中心动作等待期间保留 reference 的按钮状态', async ({ page }) => {
+  const tasks = [
+    task({ id: 'cancel-action', status: 'running', phase: '上传中', progress: 42, name: '取消.bin' }),
+    task({ id: 'password-action', type: 'archive_extract', status: 'waiting_input', phase: 'waiting_input', progress: 42, name: '密码.zip', finished_at: null }),
+    task({ id: 'clear-action', name: '完成.txt' }),
+  ]
+
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    const delay = async () => new Promise(resolve => setTimeout(resolve, 800))
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks' && request.method() === 'GET') return json({ items: tasks })
+    if (path === '/api/tasks/cancel-action/cancel' || path === '/api/tasks/password-action/input' || (path === '/api/tasks/clear-action' && request.method() === 'DELETE')) {
+      await delay()
+      return route.fulfill({ status: 204, body: '' })
+    }
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+  await page.getByTitle('任务中心').click()
+
+  const cancel = page.locator('.active-group article').filter({ hasText: '取消.bin' }).locator('button[title="取消"]')
+  await cancel.click()
+  await page.waitForTimeout(100)
+  await expect(cancel).toBeEnabled()
+
+  const waiting = page.locator('.active-group article').filter({ hasText: '密码.zip' })
+  await waiting.click()
+  const dialog = page.locator('.input-dialog')
+  await dialog.locator('input').fill('password')
+  await dialog.getByRole('button', { name: '继续任务' }).click()
+  await page.waitForTimeout(100)
+  await expect(dialog.getByRole('button', { name: '取消' })).toBeEnabled()
+  await expect(dialog.getByRole('button', { name: '继续任务' })).toBeEnabled()
+  await expect(dialog.getByRole('button', { name: '继续任务' })).toHaveText('继续任务')
+
+  await page.keyboard.press('Escape')
+  await page.getByTitle('任务中心').click()
+  const clear = page.getByRole('button', { name: '清除完成' })
+  await clear.click()
+  await page.waitForTimeout(100)
+  await expect(clear).toBeEnabled()
+  await expect(clear).toHaveText('清除完成')
+})
+
+test('任务中心清除完成沿用 reference 的并发删除时序', async ({ page }) => {
+  const tasks = [
+    task({ id: 'clear-one', name: '完成一.txt' }),
+    task({ id: 'clear-two', name: '完成二.txt' }),
+  ]
+  let inFlight = 0
+  let maxConcurrent = 0
+  let deleteRequests = 0
+
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks' && request.method() === 'GET') return json({ items: tasks })
+    if (path === '/api/tasks/clear-one' || path === '/api/tasks/clear-two') {
+      deleteRequests += 1
+      inFlight += 1
+      maxConcurrent = Math.max(maxConcurrent, inFlight)
+      await new Promise(resolve => setTimeout(resolve, 300))
+      inFlight -= 1
+      return route.fulfill({ status: 204, body: '' })
+    }
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+  await page.getByTitle('任务中心').click()
+  await page.getByRole('button', { name: '清除完成' }).click()
+  await expect.poll(() => deleteRequests).toBe(2)
+  await expect.poll(() => maxConcurrent).toBe(2)
 })
 
 async function mockDelayedEmptyTasks(page: Page) {

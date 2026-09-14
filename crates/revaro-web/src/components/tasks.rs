@@ -8,9 +8,10 @@
 //! cancellation are browser-local.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use futures_util::future::join_all;
 use leptos::prelude::*;
 use revaro_core::api::tasks::TaskInputRequest;
 use revaro_core::model::{Task, TaskStatus, task_type};
@@ -23,7 +24,8 @@ use crate::browser;
 use crate::logic::feedback::Feedback;
 use crate::logic::format::format_size;
 use crate::logic::task_status::{
-    is_active_task_status, task_progress_percent, task_status_label, task_type_label,
+    is_active_task_status, task_display_name, task_progress_percent, task_progress_width,
+    task_status_label, task_type_label,
 };
 
 const FALLBACK_INTERVAL_MS: i32 = 30_000;
@@ -78,12 +80,9 @@ pub struct TaskController {
     tasks: RwSignal<Vec<Task>>,
     loading: RwSignal<bool>,
     error: RwSignal<String>,
-    busy_ids: RwSignal<HashSet<String>>,
-    clearing: RwSignal<bool>,
     password_task: RwSignal<Option<Task>>,
     password: RwSignal<String>,
     password_error: RwSignal<String>,
-    password_busy: RwSignal<bool>,
     show_all_completed: RwSignal<bool>,
     center: NodeRef<leptos::html::Details>,
     runtime: Rc<TaskRuntime>,
@@ -133,12 +132,9 @@ impl TaskController {
             tasks: RwSignal::new(Vec::new()),
             loading: RwSignal::new(true),
             error: RwSignal::new(String::new()),
-            busy_ids: RwSignal::new(HashSet::new()),
-            clearing: RwSignal::new(false),
             password_task: RwSignal::new(None),
             password: RwSignal::new(String::new()),
             password_error: RwSignal::new(String::new()),
-            password_busy: RwSignal::new(false),
             show_all_completed: RwSignal::new(false),
             center: NodeRef::new(),
             runtime: Rc::new(TaskRuntime::new()),
@@ -193,10 +189,11 @@ impl TaskController {
                 return;
             }
             if escape_controller.close_password() {
-                event.prevent_default();
-            } else if escape_controller.is_center_open() {
-                event.prevent_default();
+                return;
+            }
+            if escape_controller.is_center_open() {
                 escape_controller.close_center();
+                escape_controller.focus_center_summary();
             }
         });
 
@@ -207,6 +204,17 @@ impl TaskController {
     pub fn close_center(&self) {
         if let Some(details) = self.center.get() {
             details.set_open(false);
+        }
+    }
+
+    fn focus_center_summary(&self) {
+        let Some(details) = self.center.get() else {
+            return;
+        };
+        if let Ok(Some(summary)) = details.query_selector("summary")
+            && let Ok(summary) = summary.dyn_into::<web_sys::HtmlElement>()
+        {
+            let _ = summary.focus();
         }
     }
 
@@ -253,21 +261,13 @@ impl TaskController {
             && task.source_type == "upload"
             && let Some(callback) = self.on_upload_cancel
         {
-            if !self.begin_action(&id) {
-                return;
-            }
             callback.run(task.source_id);
-            self.finish_action(&id);
             self.refresh_coalesced();
-            return;
-        }
-        if !self.begin_action(&id) {
             return;
         }
         let controller = self.clone();
         leptos::task::spawn_local(async move {
             let result = api::cancel_task(&id).await;
-            controller.finish_action(&id);
             match result {
                 Ok(()) => controller.refresh_coalesced(),
                 Err(error) => controller.handle_action_error(&error),
@@ -283,30 +283,16 @@ impl TaskController {
         if task.status != TaskStatus::Failed || task.retry_count >= task.max_retries {
             return;
         }
-        let upload_action_started = if task.source_type == "upload" {
-            if let Some(callback) = self.on_upload_retry {
-                if !self.begin_action(&id) {
-                    return;
-                }
-                if callback.run(task.source_id.clone()) {
-                    self.finish_action(&id);
-                    self.refresh_coalesced();
-                    return;
-                }
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if !upload_action_started && !self.begin_action(&id) {
+        if task.source_type == "upload"
+            && let Some(callback) = self.on_upload_retry
+            && callback.run(task.source_id.clone())
+        {
+            self.refresh_coalesced();
             return;
         }
         let controller = self.clone();
         leptos::task::spawn_local(async move {
             let result = api::retry_task(&id).await;
-            controller.finish_action(&id);
             match result {
                 Ok(()) => controller.refresh_coalesced(),
                 Err(error) => controller.handle_action_error(&error),
@@ -316,9 +302,6 @@ impl TaskController {
 
     /// Remove all visible completed and cancelled task notifications.
     pub fn clear_finished(&self) {
-        if self.clearing.get_untracked() {
-            return;
-        }
         let ids: Vec<String> = self
             .tasks
             .get_untracked()
@@ -330,20 +313,22 @@ impl TaskController {
             return;
         }
 
-        self.clearing.set(true);
         let controller = self.clone();
         leptos::task::spawn_local(async move {
-            let mut first_error = None;
-            for id in ids {
-                if let Err(error) = api::delete_task(&id).await
-                    && first_error.is_none()
-                {
-                    first_error = Some(error);
-                }
-            }
-            controller.clearing.set(false);
-            if let Some(error) = first_error {
-                controller.handle_action_error(&error);
+            // The reference fires all terminal-row deletes together and does
+            // not turn an individual delete failure into a toast. Preserve
+            // the concurrent request timing while retaining the Rust shell's
+            // existing expired-session hardening.
+            let results = join_all(
+                ids.into_iter()
+                    .map(|id| async move { api::delete_task(&id).await }),
+            )
+            .await;
+            if results
+                .iter()
+                .any(|result| result.as_ref().is_err_and(|error| error.is_unauthorized()))
+            {
+                controller.on_logout.run(());
             }
             controller.refresh_coalesced();
         });
@@ -372,9 +357,6 @@ impl TaskController {
 
     /// Submit the password currently shown in the dialog.
     pub fn submit_password(&self) {
-        if self.password_busy.get_untracked() {
-            return;
-        }
         let Some(task) = self.password_task.get_untracked() else {
             return;
         };
@@ -383,12 +365,10 @@ impl TaskController {
             return;
         }
 
-        self.password_busy.set(true);
         self.password_error.set(String::new());
         let controller = self.clone();
         leptos::task::spawn_local(async move {
             let result = api::submit_task_input(&task.id, &TaskInputRequest { password }).await;
-            controller.password_busy.set(false);
             match result {
                 Ok(()) => {
                     controller.password_task.set(None);
@@ -400,22 +380,6 @@ impl TaskController {
                 }
                 Err(error) => controller.password_error.set(error.message),
             }
-        });
-    }
-
-    fn begin_action(&self, id: &str) -> bool {
-        if self.busy_ids.get_untracked().contains(id) {
-            return false;
-        }
-        self.busy_ids.update(|ids| {
-            ids.insert(id.to_owned());
-        });
-        true
-    }
-
-    fn finish_action(&self, id: &str) {
-        self.busy_ids.update(|ids| {
-            ids.remove(id);
         });
     }
 
@@ -712,9 +676,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
     let password_task = controller.password_task;
     let password_value = controller.password;
     let password_error = controller.password_error;
-    let password_busy = controller.password_busy;
-    let busy_ids = controller.busy_ids;
-    let clearing = controller.clearing;
     let submit_password = {
         let controller = controller.clone();
         Callback::new(move |_: ()| controller.submit_password())
@@ -780,7 +741,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                         <TaskRow
                                             task=task
                                             tasks=tasks
-                                            busy_ids=busy_ids
                                             group=TaskGroup::Active
                                             on_cancel=cancel
                                             on_retry=retry
@@ -796,10 +756,9 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                         <button
                                             class="clear-completed"
                                             type="button"
-                                            prop:disabled=move || clearing.get()
                                             on:click=move |_| clear.run(())
                                         >
-                                            {move || if clearing.get() { "清除中…" } else { "清除完成" }}
+                                            "清除完成"
                                         </button>
                                     </h3>
                                     <For
@@ -813,7 +772,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                         <TaskRow
                                             task=task
                                             tasks=tasks
-                                            busy_ids=busy_ids
                                             group=TaskGroup::Completed
                                             on_cancel=cancel
                                             on_retry=retry
@@ -837,7 +795,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                         <TaskRow
                                             task=task
                                             tasks=tasks
-                                            busy_ids=busy_ids
                                             group=TaskGroup::Failed
                                             on_cancel=cancel
                                             on_retry=retry
@@ -880,11 +837,11 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                         <p role="alert">{move || password_error.get()}</p>
                     </Show>
                     <footer>
-                        <button type="button" prop:disabled=move || password_busy.get() on:click=move |_| close_password.run(())>
+                        <button type="button" on:click=move |_| close_password.run(())>
                             "取消"
                         </button>
-                        <button type="submit" prop:disabled=move || password_busy.get() || password_value.get().is_empty()>
-                            {move || if password_busy.get() { "继续中…" } else { "继续任务" }}
+                        <button type="submit" prop:disabled=move || password_value.get().is_empty()>
+                            "继续任务"
                         </button>
                     </footer>
                 </form>
@@ -897,18 +854,14 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
 fn TaskRow(
     task: Task,
     tasks: RwSignal<Vec<Task>>,
-    busy_ids: RwSignal<HashSet<String>>,
     group: TaskGroup,
     on_cancel: Callback<String>,
     on_retry: Callback<String>,
     on_password: Callback<Task>,
 ) -> impl IntoView {
     let id = task.id.clone();
-    let name = if task.name.is_empty() {
-        task_type_label(&task.task_type)
-    } else {
-        task.name.clone()
-    };
+    let name = task_display_name(&task.name, &task.task_type, &task.id);
+    let title = task.name.clone();
     let kind = task_type_label(&task.task_type);
     let task_id = id.clone();
     let current_status = Signal::derive_local({
@@ -918,6 +871,10 @@ fn TaskRow(
     let current_progress = Signal::derive_local({
         let id = id.clone();
         move || task_progress_percent(current_task(tasks, &id).progress)
+    });
+    let current_progress_width = Signal::derive_local({
+        let id = id.clone();
+        move || task_progress_width(current_task(tasks, &id).progress)
     });
     let current_retry = Signal::derive_local({
         let id = id.clone();
@@ -956,10 +913,6 @@ fn TaskRow(
         let password_task = password_task.clone();
         Callback::new(move |_: ()| on_password.run(password_task.clone()))
     };
-    let busy = Signal::derive_local({
-        let id = task_id.clone();
-        move || busy_ids.get().contains(&id)
-    });
     let row_class = match group {
         TaskGroup::Active => "task-group-row active-task-row",
         TaskGroup::Completed => "task-group-row completed-task-row",
@@ -968,7 +921,14 @@ fn TaskRow(
     let progress_class = Signal::derive_local(move || match current_status.get() {
         TaskStatus::Completed => "completed",
         TaskStatus::Failed => "failed",
-        _ => "",
+        status => status.as_str(),
+    });
+    let progress_width = Signal::derive_local(move || {
+        if matches!(group, TaskGroup::Completed | TaskGroup::Failed) {
+            "100".to_owned()
+        } else {
+            current_progress_width.get()
+        }
     });
     let show_cancel = group == TaskGroup::Active;
     let show_retry = group == TaskGroup::Failed;
@@ -994,12 +954,12 @@ fn TaskRow(
         <article class=row_class on:click=move |_| open_row()>
             <span class="kind">{kind}</span>
             <div>
-                <strong title=name.clone()>{name.clone()}</strong>
+                <strong title=title>{name.clone()}</strong>
                 <small>{move || current_label.get()}</small>
                 <i>
                     <b
                         class=move || progress_class.get()
-                        style=move || format!("width: {}%", if group == TaskGroup::Completed { 100 } else { current_progress.get() })
+                        style=move || format!("width: {}%", progress_width.get())
                     ></b>
                 </i>
             </div>
@@ -1010,7 +970,6 @@ fn TaskRow(
                         type="button"
                         title="取消"
                         aria-label="取消任务"
-                        prop:disabled=move || busy.get()
                         on:click=move |event: web_sys::MouseEvent| {
                             event.stop_propagation();
                             cancel.run(())
@@ -1023,7 +982,6 @@ fn TaskRow(
                             type="button"
                             title="输入密码"
                             aria-label="输入压缩包密码"
-                            prop:disabled=move || busy.get()
                             on:click=move |event: web_sys::MouseEvent| {
                                 event.stop_propagation();
                                 password.run(())
@@ -1044,7 +1002,6 @@ fn TaskRow(
                         type="button"
                         title="重试"
                         aria-label="重试任务"
-                        prop:disabled=move || busy.get()
                         on:click=move |event: web_sys::MouseEvent| {
                             event.stop_propagation();
                             retry.run(())
