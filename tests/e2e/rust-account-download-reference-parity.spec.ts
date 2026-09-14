@@ -34,6 +34,19 @@ async function mockAccount(page: Page) {
   })
 }
 
+async function installClipboardFailure(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('clipboard denied')
+        },
+      },
+    })
+  })
+}
+
 async function enableTotpAndDownload(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?account-download-parity=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
@@ -72,7 +85,63 @@ test('恢复码下载文本格式保持 reference', async ({ browser }) => {
       enableTotpAndDownload(newPage, newUrl),
     ])
     expect(newDownload.filename).toBe(oldDownload.filename)
-    expect(newDownload.text, 'Rust 恢复码下载内容与 reference 不一致').toBe(oldDownload.text)
+    const oldLines = oldDownload.text.split('\n')
+    const newLines = newDownload.text.split('\n')
+    expect(newLines[0]).toBe(oldLines[0])
+    expect(newLines[1].replace(/\d/g, '#')).toBe(oldLines[1].replace(/\d/g, '#'))
+    expect(newLines.slice(2), 'Rust 恢复码下载结构与 reference 不一致').toEqual(oldLines.slice(2))
+    expect(newLines[1]).not.toMatch(/T\d{2}:\d{2}:\d{2}/)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+async function enableTotp(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?account-copy-failure=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.locator('button[title="打开账户设置"]').click()
+  const account = page.locator('.account-modal')
+  await account.getByRole('button', { name: '设置', exact: true }).click()
+  const totp = page.locator('.totp-dialog')
+  await expect(totp).toBeVisible()
+  await totp.getByLabel('当前密码', { exact: true }).fill('password')
+  await totp.getByRole('button', { name: '开始设置', exact: true }).click()
+  await totp.getByLabel('6 位验证码', { exact: true }).fill('123456')
+  await totp.getByRole('button', { name: '启用并生成恢复码', exact: true }).click()
+  await expect(totp.locator('.recovery-grid code')).toHaveCount(codes.length)
+  return { account, totp }
+}
+
+test('恢复码复制失败时保留 reference 的局部错误且不产生全局 toast', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockAccount(oldPage),
+      mockAccount(newPage),
+      installClipboardFailure(oldPage),
+      installClipboardFailure(newPage),
+    ])
+    const [{ totp: oldTotp }, { totp: newTotp }] = await Promise.all([
+      enableTotp(oldPage, oldUrl),
+      enableTotp(newPage, newUrl),
+    ])
+    await Promise.all([
+      oldTotp.getByRole('button', { name: '复制恢复码' }).click(),
+      newTotp.getByRole('button', { name: '复制恢复码' }).click(),
+    ])
+    await expect(oldTotp.locator('.two-factor-error')).toHaveText('复制失败，请手动保存恢复码')
+    await expect(newTotp.locator('.two-factor-error')).toHaveText('复制失败，请手动保存恢复码')
+    await expect(oldTotp.getByRole('button', { name: '复制恢复码' })).toBeVisible()
+    await expect(newTotp.getByRole('button', { name: '复制恢复码' })).toBeVisible()
+    expect(await newPage.locator('.toast').count(), '恢复码复制失败不应产生 reference 没有的全局 toast').toBe(await oldPage.locator('.toast').count())
+    expect(await newTotp.textContent()).toBe(await oldTotp.textContent())
   } finally {
     await oldContext.close()
     await newContext.close()

@@ -268,6 +268,19 @@ async function installClipboard(page: Page) {
   })
 }
 
+async function installClipboardFailure(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('clipboard denied')
+        },
+      },
+    })
+  })
+}
+
 test('复制分享链接只更新弹窗状态，不额外产生全局 toast', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
@@ -294,6 +307,39 @@ test('复制分享链接只更新弹窗状态，不额外产生全局 toast', as
     expect(await newPage.locator('.toast').count(), 'Rust 复制成功不应新增 reference 没有的 toast').toBe(await oldPage.locator('.toast').count())
     expect(await newPage.evaluate(() => (window as Window & { __copiedShare?: string }).__copiedShare))
       .toBe(await newPage.locator('.share-modal input[aria-label="分享链接"]').inputValue())
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('复制分享链接失败时保留 reference 的弹窗错误且不产生全局 toast', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockShareConfirmation(oldPage),
+      mockShareConfirmation(newPage),
+      installClipboardFailure(oldPage),
+      installClipboardFailure(newPage),
+    ])
+    await Promise.all([openActiveShare(oldPage, oldUrl), openActiveShare(newPage, newUrl)])
+
+    await Promise.all([
+      oldPage.locator('.share-modal').getByRole('button', { name: '复制链接' }).click(),
+      newPage.locator('.share-modal').getByRole('button', { name: '复制链接' }).click(),
+    ])
+    await expect(oldPage.locator('.share-modal .form-error')).toHaveText('复制失败，请手动选择链接复制')
+    await expect(newPage.locator('.share-modal .form-error')).toHaveText('复制失败，请手动选择链接复制')
+    await expect(oldPage.locator('.share-modal').getByRole('button', { name: '复制链接' })).toBeVisible()
+    await expect(newPage.locator('.share-modal').getByRole('button', { name: '复制链接' })).toBeVisible()
+    expect(await newPage.locator('.share-modal').textContent()).toBe(await oldPage.locator('.share-modal').textContent())
+    expect(await newPage.locator('.toast').count(), '复制失败不应冒出 reference 没有的全局 toast').toBe(await oldPage.locator('.toast').count())
   } finally {
     await oldContext.close()
     await newContext.close()
