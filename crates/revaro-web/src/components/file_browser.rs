@@ -830,7 +830,6 @@ pub fn FileBrowser(
         let share_url = share_url;
         let share_copied = share_copied;
         let share_error = share_error;
-        let notify = notify.clone();
         Callback::new(move |(): ()| {
             let value = share_url.get_untracked();
             if value.is_empty() {
@@ -845,7 +844,6 @@ pub fn FileBrowser(
             leptos::task::spawn_local(async move {
                 if wasm_bindgen_futures::JsFuture::from(promise).await.is_ok() {
                     share_copied.set(true);
-                    notify.run(Feedback::success("分享链接已复制"));
                 } else {
                     share_error.set("复制失败，请手动选择链接复制".to_owned());
                 }

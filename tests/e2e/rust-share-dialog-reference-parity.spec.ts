@@ -254,3 +254,48 @@ test('分享二级确认取消、提交关闭和错误回显保持 reference', a
     await newContext.close()
   }
 })
+
+async function installClipboard(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          ;(window as Window & { __copiedShare?: string }).__copiedShare = value
+        },
+      },
+    })
+  })
+}
+
+test('复制分享链接只更新弹窗状态，不额外产生全局 toast', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockShareConfirmation(oldPage),
+      mockShareConfirmation(newPage),
+      installClipboard(oldPage),
+      installClipboard(newPage),
+    ])
+    await Promise.all([openActiveShare(oldPage, oldUrl), openActiveShare(newPage, newUrl)])
+
+    await Promise.all([
+      oldPage.locator('.share-modal').getByRole('button', { name: '复制链接' }).click(),
+      newPage.locator('.share-modal').getByRole('button', { name: '复制链接' }).click(),
+    ])
+    await expect(oldPage.locator('.share-modal').getByRole('button', { name: '已复制' })).toBeVisible()
+    await expect(newPage.locator('.share-modal').getByRole('button', { name: '已复制' })).toBeVisible()
+    expect(await newPage.locator('.toast').count(), 'Rust 复制成功不应新增 reference 没有的 toast').toBe(await oldPage.locator('.toast').count())
+    expect(await newPage.evaluate(() => (window as Window & { __copiedShare?: string }).__copiedShare))
+      .toBe(await newPage.locator('.share-modal input[aria-label="分享链接"]').inputValue())
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
