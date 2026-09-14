@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`6828692`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`8f51320`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -82,6 +82,7 @@
 - `2026-09-14`，old `18080` / new `18083`：桌面与 390×844 实际读取侧栏所有分类行的初始/active/hover computed style、计数、路径展开箭头、折叠 rail、移动抽屉和过渡完成后的几何；两版一致。Rust 额外提供回收站 `aria-label`，属于不改变用户路径的无障碍增强；`rust-sidebar-state-reference-parity.spec.ts` old/new 1/1，提交 `6710996`。文件树竞态、完整路径树和全文件类型图标仍待验。
 - `2026-09-14`，old `18080` / new `18083`：实际打开“新建文件夹”通用确认弹窗，聚焦输入框后按 Escape，并在 window bubble 读取默认事件；old 关闭弹窗且 `defaultPrevented=false`，Rust 初始版虽关闭但错误为 `true`。已移除 `ActionDialog` 多余的 `prevent_default`；`rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1，提交 `c0a5fd9`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：实际打开文件头的新建/上传下拉，逐项比较初始/展开 DOM、summary/popover/首项尺寸与视觉层级、首项 hover、点击空白关闭，以及点击“新建文档”后的 editor 入口和菜单关闭；old/new `rust-file-header-menu-reference-parity.spec.ts` 各 1/1，未发现 Rust 行为差异，提交 `6828692`。
+- `2026-09-14`，old `18080` / new `18083`：实际对文件卡执行右键并读取冒泡事件的 `defaultPrevented`，两版均阻止浏览器原生菜单；随后实际打开图片预览“更多操作”，比较菜单初始/展开尺寸、定位、层级、hover、空白关闭、Escape 关闭和 summary 焦点恢复，两版均一致。`rust-preview-menu-reference-parity.spec.ts` old/new 1/1，提交 `8f51320`；音频音量/视频字幕与播放设置菜单仍待完整状态矩阵。
 - `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，并追加中间级点击、Enter、触摸点击三条导航结果对照，整组现为 3/3。导航全套仍保留在 `[ ]` 直到 stale request/完整键盘状态矩阵完成。
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
@@ -180,7 +181,7 @@
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 待验证 |
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
-| `[ ]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | 待验证 |
+| `[ ]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | old/new 文件卡右键均阻止原生菜单；图片预览 more 的锚点、菜单项、空白/Escape 关闭、hover 和焦点已对照；边缘翻转、disabled 及所有操作结果仍待验 |
 | `[ ]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | Rust 有部分 open logic，完整矩阵待验 |
 | `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | `.txt` 同时 editable/book 时的阅读图标、打开移动/复制/预览/阅读器/编辑器/分享/账户弹层时隐藏工具栏已 old/new 对照；完整出现条件、disabled、计数/总大小和所有文件类型矩阵仍待验证 |
 
@@ -246,13 +247,13 @@
 |---|---|---|---|
 | `[ ]` | 图片查看 | `/preview`、loading/error、画廊上一张/下一张、缩略图、计数、实际大小/适应窗口、放大缩小、双击、滚轮、拖动边界、stage 点击显隐 chrome、键盘 `←/→/+/-/0/1` 一致。 | old/new media parity 已覆盖 controls、带 `etag` 版本参数的 thumb、从根节点 Tab 进入菜单、thumb/menu、退出、桌面/390/320 宽度；完整键盘/滚轮/边界矩阵仍待验 |
 | `[ ]` | 图片触摸 | 双指缩放、拖动、手势取消不误翻页、边界限制、旋转/重排状态保持一致。 | 待验证 |
-| `[ ]` | 图片更多菜单 | 下载、移动、复制、信息等 menu 的位置、点击外部/Esc、loading/error 和返回行为一致。 | 待验证 |
+| `[ ]` | 图片更多菜单 | 下载、移动、复制、信息等 menu 的位置、点击外部/Esc、loading/error 和返回行为一致。 | old/new 实际对照更多入口、下载/移动/复制/信息项、popover 几何与 hover、空白/Escape 和焦点恢复；点击各动作后的 loading/error/返回仍待验 |
 | `[ ]` | 音频播放器 | `/audio` 元数据、封面 fallback、章节、上一/下一章、时间跳转、进度、播放/暂停、loading/error/retry、一首/多首行为一致。 | old/new media parity 已覆盖章节标识、controls、桌面/移动宽度；播放状态、错误重试和持久化仍待验 |
 | `[ ]` | 音频持久化 | `revaro-audio-volume`、`revaro-audio-muted`、`revaro-audio-position:{id}`，音量滑块、静音、键盘操作和刷新恢复一致。 | 待验证 |
 | `[ ]` | 视频播放器 | Range/直接 preview、poster thumbnail、播放/暂停、进度拖动与 seek preview/commit、时间显示、音量/静音、速度、全屏、控制条显隐和自动隐藏一致。 | old/new media parity 已覆盖 poster、controls、速度 Escape、桌面/390/320、touch；Range/全屏/seek commit 仍待验 |
 | `[ ]` | 视频字幕 | `/video` metadata、VTT subtitle、选择/关闭字幕、字幕不抖动、加载/解析错误和移动端布局一致。 | 待验证 |
 | `[ ]` | 视频持久化 | `revaro-video-volume`、`revaro-video-rate`、`revaro-video-position:{id}`，刷新/重开恢复准确且无错误跳 seek。 | 待验证 |
-| `[ ]` | 媒体操作 | 播放器设置/更多中的下载、移动、复制、信息、reanalyze（旧版入口若出现）、关闭/返回和任务刷新一致。 | 待验证 |
+| `[ ]` | 媒体操作 | 播放器设置/更多中的下载、移动、复制、信息、reanalyze（旧版入口若出现）、关闭/返回和任务刷新一致。 | 图片更多菜单的入口、项目和关闭语义已 old/new 对照；音频音量、视频字幕/播放设置及各动作结果、错误和任务刷新仍待验 |
 | `[ ]` | 不支持/损坏媒体 | unsupported 原文件直接显示旧版错误而不是空白；重试、返回、控制条、错误文案/图标一致。 | 待验证 |
 
 ## 12. 下载、Range、预览、分享和归档任务
@@ -422,6 +423,7 @@
 | 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e` | `rust-feedback-reference-parity.spec.ts` old/new 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载实际比较“正在准备 N 个文件…”、success Toast 颜色/定位/命中区域；点击 Toast 不会清除多选 | 局部 PASS |
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
+| 媒体预览更多菜单与右键语义 | 6、11、15 | `8f51320` | `rust-preview-menu-reference-parity.spec.ts` old/new 各 1/1 | 实际比较文件卡右键默认事件、图片预览更多菜单项/几何/hover、空白与 Escape 关闭、summary 焦点恢复；音频/视频菜单全状态仍待验 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
