@@ -167,18 +167,16 @@ pub fn FileBrowserHeader(
                                 let label = if crumb.name.is_empty() { "我的文件".to_owned() } else { crumb.name };
                                 let open = on_open_folder.clone();
                                 view! {
-                                    <span class="breadcrumb-item">
-                                        <Show when=move || { index > 0 } fallback=|| ()>
-                                            {icons::breadcrumb_separator()}
-                                        </Show>
-                                        <button
-                                            type="button"
-                                            class:current=index == last
-                                            title=label.clone()
-                                            aria-current=if index == last { Some("page") } else { None }
-                                            on:click=move |_| open.run(id.clone())
-                                        >{label.clone()}</button>
-                                    </span>
+                                    <Show when=move || { index > 0 } fallback=|| ()>
+                                        {icons::breadcrumb_separator()}
+                                    </Show>
+                                    <button
+                                        type="button"
+                                        class:current=index == last
+                                        title=label.clone()
+                                        aria-current=if index == last { Some("page") } else { None }
+                                        on:click=move |_| open.run(id.clone())
+                                    >{label.clone()}</button>
                                 }
                             }).collect_view()
                         }}
