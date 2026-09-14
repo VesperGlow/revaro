@@ -1127,8 +1127,26 @@ pub fn FileBrowser(
                     Err(request_error) => {
                         if rename_action {
                             notify.run(Feedback::error(request_error.message));
+                        } else if share_action {
+                            // The reference confirm helper closes its own
+                            // confirmation before the share request runs.
+                            // Share failures are then rendered by the still
+                            // open share dialog, rather than keeping the
+                            // confirmation dialog on screen.
+                            dialog.set(None);
+                            dialog_value.set(String::new());
+                            dialog_error.set(String::new());
+                            share_error.set(request_error.message);
                         } else {
-                            dialog_error.set(request_error.message);
+                            // `confirmDialog`/`promptDialog` resolve and
+                            // close before the asynchronous mutation. Keep
+                            // that old interaction: failures are a toast,
+                            // not an inline error that traps the user in the
+                            // action dialog.
+                            dialog.set(None);
+                            dialog_value.set(String::new());
+                            dialog_error.set(String::new());
+                            notify.run(Feedback::error(request_error.message));
                         }
                     }
                 }

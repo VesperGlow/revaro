@@ -300,6 +300,23 @@ test('新建文件夹弹窗保留空值禁用、Enter、Escape 和点击空白�
   }
 })
 
+test('通用确认/输入操作失败时按 reference 关闭弹窗并显示错误 toast', async ({ page }) => {
+  await login(page)
+  await page.route('**/api/directories', route => route.fulfill({
+    status: 409,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { status: 409, message: 'folder already exists' } }),
+  }))
+
+  await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
+  const dialog = page.locator('.app-dialog')
+  await dialog.locator('input').fill(`compat-dialog-error-${crypto.randomUUID()}`)
+  await dialog.getByRole('button', { name: '创建', exact: true }).click()
+
+  await expect(dialog).toHaveCount(0)
+  await expect(page.locator('.toast')).toHaveText('folder already exists')
+})
+
 async function createFolder(page: Parameters<typeof login>[0], name: string) {
   await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
   const dialog = page.locator('.app-dialog')
