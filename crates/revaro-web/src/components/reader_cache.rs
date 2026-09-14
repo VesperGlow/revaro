@@ -24,11 +24,27 @@ pub fn load_manifest(file_id: &str) -> Option<FlowManifest> {
 }
 
 /// Store a manifest as a best-effort fast-open hint.
+///
+/// The reference client invalidates a book's persisted chunks whenever the
+/// manifest version or content fingerprint changes. The URL key already keeps
+/// versions separate, but removing the old entries is still part of the
+/// observable cache lifecycle: a later downgrade or test/open of the same file
+/// must not reuse chunks left by an earlier version.
 pub fn store_manifest(file_id: &str, manifest: &FlowManifest) {
+    let previous = load_manifest(file_id);
     let Ok(raw) = serde_json::to_string(manifest) else {
         return;
     };
     browser::local_storage_set(&format!("{MANIFEST_PREFIX}{file_id}"), &raw);
+    let changed = previous.as_ref().is_none_or(|previous| {
+        previous.book_key != manifest.book_key || previous.version != manifest.version
+    });
+    if changed {
+        let file_id = file_id.to_owned();
+        wasm_bindgen_futures::spawn_local(async move {
+            purge_file_chunks(&file_id).await;
+        });
+    }
 }
 
 /// Build a cache key that isolates file ids, flow versions and source keys.
@@ -68,6 +84,27 @@ pub async fn put_chunk(key: &str, html: &str) {
         return;
     };
     let _ = JsFuture::from(cache.put_with_str(key, &response)).await;
+}
+
+async fn purge_file_chunks(file_id: &str) {
+    let Some(cache) = open_cache().await else {
+        return;
+    };
+    let Ok(value) = JsFuture::from(cache.keys()).await else {
+        return;
+    };
+    let Ok(requests) = value.dyn_into::<js_sys::Array>() else {
+        return;
+    };
+    let path = format!("/api/files/{file_id}/book/flow/chunks/");
+    for value in requests.iter() {
+        let Ok(request) = value.dyn_into::<web_sys::Request>() else {
+            continue;
+        };
+        if request.url().contains(&path) {
+            let _ = JsFuture::from(cache.delete_with_str(&request.url())).await;
+        }
+    }
 }
 
 async fn open_cache() -> Option<web_sys::Cache> {

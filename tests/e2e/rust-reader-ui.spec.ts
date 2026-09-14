@@ -193,6 +193,17 @@ test('Rust bundle opens an EPUB reader, follows its TOC and restores progress', 
   await expect(page.locator('#flow .rf-chunk').first()).toBeAttached()
   await expect(page.locator('#flow')).toContainText('第一章 · 起点')
   await expect(page.locator('#flow')).toContainText('EPUB chapter one marker')
+  await expect.poll(() => page.locator('#flow [data-block]').count()).toBe(38)
+  expect(await page.locator('#flow [data-block]').evaluateAll(elements => elements.map(element => Number(element.getAttribute('data-block'))))).toEqual(
+    Array.from({ length: 38 }, (_, index) => index),
+  )
+  await page.locator('#next-zone').click()
+  await page.waitForTimeout(350)
+  await expect(page.locator('#page-label')).toHaveText('14')
+  await expect(page.locator('#page-label')).toHaveAttribute('aria-label', '阅读进度 14.0%')
+  await page.waitForTimeout(1200)
+  await expect(page.locator('#page-label')).toHaveText('14')
+  await expect(page.locator('#page-label')).toHaveAttribute('aria-label', '阅读进度 14.0%')
 
   await page.locator('#toc-button').click()
   await expect(page.locator('#toc-drawer')).toHaveClass(/open/)
@@ -200,6 +211,11 @@ test('Rust bundle opens an EPUB reader, follows its TOC and restores progress', 
   await expect(tocItems).toHaveCount(2)
   await expect(tocItems.nth(0)).toHaveText('第一章 · 起点')
   await expect(tocItems.nth(1)).toHaveText('第二章 · 继续')
+
+  await page.keyboard.press('Escape')
+  await expect(page.locator('#toc-drawer')).not.toHaveClass(/open/)
+  await expect(page.locator('#toc-button')).toBeFocused()
+  await page.locator('#toc-button').click()
 
   const progressResponse = page.waitForResponse(
     response => response.url().endsWith('/book/progress') && response.request().method() === 'PUT',

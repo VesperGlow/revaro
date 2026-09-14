@@ -136,6 +136,7 @@ struct ReaderRuntime {
     pending_turns: i32,
     turn_busy: bool,
     syncing: bool,
+    nav_depth: u32,
     closing: bool,
     progress_timer: Option<i32>,
     sync_timer: Option<i32>,
@@ -160,12 +161,22 @@ impl Default for ReaderRuntime {
             pending_turns: 0,
             turn_busy: false,
             syncing: false,
+            nav_depth: 0,
             closing: false,
             progress_timer: None,
             sync_timer: None,
             relayout_timer: None,
             resize_timer: None,
         }
+    }
+}
+
+struct NavGuard(Rc<RefCell<ReaderRuntime>>);
+
+impl Drop for NavGuard {
+    fn drop(&mut self) {
+        let mut state = self.0.borrow_mut();
+        state.nav_depth = state.nav_depth.saturating_sub(1);
     }
 }
 
@@ -234,7 +245,6 @@ pub fn ReaderView(
         let stage = stage;
         let toc_open = toc_open;
         let font_open = font_open;
-        let tools_visible = tools_visible;
         let close_view = on_close.clone();
         browser::on_keydown(move |event| {
             if event.default_prevented() {
@@ -254,6 +264,7 @@ pub fn ReaderView(
                 if toc_open.get_untracked() {
                     event.prevent_default();
                     toc_open.set(false);
+                    focus_element_by_id("toc-button");
                 } else if font_open.get_untracked() {
                     event.prevent_default();
                     font_open.set(false);
@@ -284,8 +295,6 @@ pub fn ReaderView(
                     percent,
                     direction,
                 );
-            } else if event.key() == "Enter" && !tools_visible.get_untracked() {
-                tools_visible.set(true);
             }
         })
     };
@@ -587,9 +596,16 @@ pub fn ReaderView(
                     return;
                 }
                 let runtime = (*runtime).clone();
-                leptos::task::spawn_local(async move {
-                    move_to_column(&runtime, flow, current, true).await;
-                });
+                spawn_snap_to_column(
+                    runtime,
+                    viewport,
+                    flow,
+                    file_id.clone(),
+                    stage,
+                    toc_active,
+                    percent,
+                    current,
+                );
                 return;
             }
             set_promote(flow, false);
@@ -600,11 +616,30 @@ pub fn ReaderView(
             let direction = if dx < 0.0 { 1 } else { -1 };
             let target = current + direction;
             if target < 0 || target >= cols {
-                let runtime = (*runtime).clone();
-                leptos::task::spawn_local(async move {
-                    move_to_column(&runtime, flow, current, true).await;
-                });
-                return;
+                let can_extend = {
+                    let state = runtime.borrow();
+                    if direction > 0 {
+                        state.manifest.as_ref().is_some_and(|manifest| {
+                            state.last_chunk < manifest.chunks.len() as i32 - 1
+                        })
+                    } else {
+                        state.first_chunk > 0
+                    }
+                };
+                if !can_extend {
+                    let runtime = (*runtime).clone();
+                    spawn_snap_to_column(
+                        runtime,
+                        viewport,
+                        flow,
+                        file_id.clone(),
+                        stage,
+                        toc_active,
+                        percent,
+                        current,
+                    );
+                    return;
+                }
             }
             spawn_turn(
                 (*runtime).clone(),
@@ -706,7 +741,7 @@ pub fn ReaderView(
                     id="page-label"
                     class="reader-progress-ring"
                     role="img"
-                    aria-label=move || format!("阅读进度 {}%", percent.get().round())
+                    aria-label=move || format!("阅读进度 {}", progress_label(percent.get()))
                 >
                     <svg viewBox="0 0 40 40" aria-hidden="true">
                         <circle class="reader-progress-ring-track" cx="20" cy="20" r="17.5" pathLength="100"></circle>
@@ -1202,7 +1237,7 @@ async fn setup_view(
     if let Some(captured) = capture_top_anchor(&runtime, viewport, flow) {
         runtime.borrow_mut().top_anchor = Some(captured);
     }
-    refresh_ui(&runtime, toc_active, percent);
+    refresh_ui(&runtime, flow, toc_active, percent);
     schedule_progress_save(runtime.clone(), file_id.clone());
     prefetch_chunks(runtime, file_id, value, anchor.block);
     Ok(())
@@ -1631,7 +1666,7 @@ fn collapsed_range_rect(node: &Node, offset: i32) -> Option<DomRect> {
     let offset = offset.clamp(0, i32::try_from(length).unwrap_or(i32::MAX)) as u32;
     range.set_start(node, offset).ok()?;
     range.collapse();
-    Some(range.get_bounding_client_rect())
+    first_rect_of_range(&range).or_else(|| Some(range.get_bounding_client_rect()))
 }
 
 fn find_block(flow: &Element, block: i32) -> Option<Element> {
@@ -1737,6 +1772,145 @@ fn rect_in_current_column(
         && rect.top() < viewport_rect.bottom() - state.metrics.bottom
 }
 
+fn first_rect_of_range(range: &web_sys::Range) -> Option<DomRect> {
+    range.get_client_rects().and_then(|rects| rects.item(0))
+}
+
+#[derive(Clone)]
+struct VisualStart {
+    rect: DomRect,
+    node: Option<Node>,
+    offset: i32,
+}
+
+fn first_text_visual(node: &Node, depth: usize) -> Option<VisualStart> {
+    if depth > MAX_TEXT_WALK_DEPTH {
+        return None;
+    }
+    if node.node_type() == Node::TEXT_NODE {
+        let text = node.text_content().unwrap_or_default();
+        let (character_index, _) = text
+            .char_indices()
+            .find(|(_, value)| !value.is_whitespace())?;
+        let offset = text[..character_index].encode_utf16().count() as i32;
+        let rect = collapsed_range_rect(node, offset)?;
+        return rect_has_box(&rect).then(|| VisualStart {
+            rect,
+            node: Some(node.clone()),
+            offset,
+        });
+    }
+    let children = node.child_nodes();
+    for index in 0..children.length() {
+        let Some(child) = children.item(index) else {
+            continue;
+        };
+        if let Some(start) = first_text_visual(&child, depth + 1) {
+            return Some(start);
+        }
+    }
+    None
+}
+
+fn first_media_visual(element: &Element) -> Option<VisualStart> {
+    let nodes = element
+        .query_selector_all("img,svg,video,canvas,iframe,embed,object,table")
+        .ok()?;
+    for index in 0..nodes.length() {
+        let node = nodes.item(index)?;
+        let element = node.dyn_into::<Element>().ok()?;
+        let rect = element.get_bounding_client_rect();
+        if rect_has_box(&rect) {
+            return Some(VisualStart {
+                rect,
+                node: Some(element.unchecked_into()),
+                offset: Anchor::BOUNDARY_OFFSET,
+            });
+        }
+    }
+    None
+}
+
+/// Find the first actual visual content of an element. A block's own first
+/// fragment is not sufficient in CSS columns: a break-inside-avoid image can
+/// move the content into a later column while the container fragment stays in
+/// the previous one.
+fn visual_start(element: &Element) -> Option<VisualStart> {
+    let root: Node = element.clone().unchecked_into();
+    let text = first_text_visual(&root, 0);
+    let media = first_media_visual(element);
+    let content = match (text, media) {
+        (Some(text), Some(media)) => {
+            let text_before_media =
+                text.node
+                    .as_ref()
+                    .zip(media.node.as_ref())
+                    .is_some_and(|(text, media)| {
+                        text.compare_document_position(media) & Node::DOCUMENT_POSITION_FOLLOWING
+                            != 0
+                    });
+            if text_before_media { text } else { media }
+        }
+        (Some(text), None) => text,
+        (None, Some(media)) => media,
+        (None, None) => {
+            let rect = element
+                .get_client_rects()
+                .item(0)
+                .unwrap_or_else(|| element.get_bounding_client_rect());
+            if !rect_has_box(&rect) && rect.left() == 0.0 && rect.top() == 0.0 {
+                return None;
+            }
+            VisualStart {
+                rect,
+                node: None,
+                offset: Anchor::BOUNDARY_OFFSET,
+            }
+        }
+    };
+    Some(content)
+}
+
+fn anchor_at_text_fragment(
+    runtime: &Rc<RefCell<ReaderRuntime>>,
+    manifest: &FlowManifest,
+    flow: &Element,
+    viewport: &Element,
+    block: &Element,
+    node: &Node,
+    first_offset: i32,
+) -> Option<Anchor> {
+    let length = node
+        .text_content()
+        .map_or(0, |value| value.encode_utf16().count());
+    let length = i32::try_from(length).unwrap_or(i32::MAX);
+    let current_col = runtime.borrow().current_col;
+    let mut low = first_offset.clamp(0, length);
+    let mut high = length;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let Some(rect) = collapsed_range_rect(node, middle) else {
+            low = middle.saturating_add(1);
+            continue;
+        };
+        if col_from_rect(runtime, flow, &rect) >= current_col {
+            high = middle;
+        } else {
+            low = middle.saturating_add(1);
+        }
+    }
+    let start = low.saturating_sub(2).max(first_offset);
+    let end = (low.saturating_add(2)).min(length);
+    for offset in start..=end {
+        if let Some(rect) = collapsed_range_rect(node, offset)
+            && rect_in_current_column(runtime, flow, viewport, &rect)
+        {
+            return Some(anchor_from_node(manifest, block, node, offset));
+        }
+    }
+    None
+}
+
 fn first_text_anchor(
     runtime: &Rc<RefCell<ReaderRuntime>>,
     manifest: &FlowManifest,
@@ -1744,7 +1918,6 @@ fn first_text_anchor(
     viewport: &Element,
     block: &Element,
     node: &Node,
-    path: &mut Vec<i32>,
     depth: usize,
 ) -> Option<Anchor> {
     if depth > MAX_TEXT_WALK_DEPTH {
@@ -1759,12 +1932,7 @@ fn first_text_anchor(
             return None;
         };
         let offset = text[..character_index].encode_utf16().count() as i32;
-        if let Some(rect) = collapsed_range_rect(node, offset)
-            && rect_in_current_column(runtime, flow, viewport, &rect)
-        {
-            return Some(anchor_from_node(manifest, block, node, offset));
-        }
-        return None;
+        return anchor_at_text_fragment(runtime, manifest, flow, viewport, block, node, offset);
     }
 
     let children = node.child_nodes();
@@ -1772,25 +1940,146 @@ fn first_text_anchor(
         let Some(child) = children.item(index) else {
             continue;
         };
-        let Ok(index) = i32::try_from(index) else {
-            continue;
-        };
-        path.push(index);
-        if let Some(anchor) = first_text_anchor(
-            runtime,
-            manifest,
-            flow,
-            viewport,
-            block,
-            &child,
-            path,
-            depth + 1,
-        ) {
+        if let Some(anchor) =
+            first_text_anchor(runtime, manifest, flow, viewport, block, &child, depth + 1)
+        {
             return Some(anchor);
         }
-        path.pop();
     }
     None
+}
+
+fn anchor_from_visible_block(
+    runtime: &Rc<RefCell<ReaderRuntime>>,
+    manifest: &FlowManifest,
+    flow: &Element,
+    viewport: &Element,
+    block: &Element,
+) -> Option<Anchor> {
+    let rects = block.get_client_rects();
+    let visible = (0..rects.length()).any(|position| {
+        rects
+            .item(position)
+            .is_some_and(|rect| rect_in_current_column(runtime, flow, viewport, &rect))
+    });
+    if !visible {
+        return None;
+    }
+
+    if let Some(start) = visual_start(block)
+        && rect_in_current_column(runtime, flow, viewport, &start.rect)
+    {
+        let block_node: Node = block.clone().unchecked_into();
+        if let Some(node) = start.node {
+            return Some(anchor_from_node(manifest, block, &node, start.offset));
+        }
+        return Some(anchor_from_node(
+            manifest,
+            block,
+            &block_node,
+            Anchor::BOUNDARY_OFFSET,
+        ));
+    }
+
+    let text = first_text_anchor(
+        runtime,
+        manifest,
+        flow,
+        viewport,
+        block,
+        &{
+            let node: Node = block.clone().unchecked_into();
+            node
+        },
+        0,
+    )
+    .map(|anchor| {
+        let node =
+            resolve_path(block, &anchor.path).unwrap_or_else(|| block.clone().unchecked_into());
+        (node, anchor)
+    });
+    let media = first_media_in_current_column(runtime, flow, viewport, block);
+    match (text, media) {
+        (Some((text_node, text_anchor)), Some((media_node, media_anchor))) => {
+            if text_node.compare_document_position(&media_node) & Node::DOCUMENT_POSITION_FOLLOWING
+                != 0
+            {
+                Some(text_anchor)
+            } else {
+                Some(media_anchor)
+            }
+        }
+        (Some((_, anchor)), None) | (None, Some((_, anchor))) => Some(anchor),
+        (None, None) => {
+            let block_node: Node = block.clone().unchecked_into();
+            Some(anchor_from_node(
+                manifest,
+                block,
+                &block_node,
+                Anchor::BOUNDARY_OFFSET,
+            ))
+        }
+    }
+}
+
+fn first_media_in_current_column(
+    runtime: &Rc<RefCell<ReaderRuntime>>,
+    flow: &Element,
+    viewport: &Element,
+    block: &Element,
+) -> Option<(Node, Anchor)> {
+    let manifest = runtime.borrow().manifest.clone()?;
+    let nodes = block
+        .query_selector_all("img,svg,video,canvas,iframe,embed,object,table")
+        .ok()?;
+    for index in 0..nodes.length() {
+        let node = nodes.item(index)?;
+        let element = node.clone().dyn_into::<Element>().ok()?;
+        let rect = element.get_bounding_client_rect();
+        if rect_in_current_column(runtime, flow, viewport, &rect) {
+            return Some((
+                node.clone(),
+                anchor_from_node(&manifest, block, &node, Anchor::BOUNDARY_OFFSET),
+            ));
+        }
+    }
+    None
+}
+
+fn block_at_point(x: f64, y: f64) -> Option<Element> {
+    let document = web_sys::window()?.document()?;
+    let elements = document.elements_from_point(x as f32, y as f32);
+    for value in elements.iter() {
+        let element = value.dyn_into::<Element>().ok()?;
+        if element.has_attribute("data-block") {
+            return Some(element);
+        }
+        if let Ok(Some(block)) = element.closest("[data-block]") {
+            return Some(block);
+        }
+    }
+    None
+}
+
+fn block_for_node(node: &Node) -> Option<Element> {
+    let mut current = node.clone();
+    loop {
+        if let Some(element) = current.dyn_ref::<Element>()
+            && element.has_attribute("data-block")
+        {
+            return Some(element.clone());
+        }
+        current = current.parent_node()?;
+    }
+}
+
+fn content_origin(runtime: &Rc<RefCell<ReaderRuntime>>, viewport: &Element) -> (f64, f64) {
+    let state = runtime.borrow();
+    let rect = viewport.get_bounding_client_rect();
+    (
+        rect.left() + state.metrics.side + 2.0,
+        rect.top() + state.metrics.top + 2.0,
+    )
 }
 
 fn capture_top_anchor(
@@ -1801,38 +2090,43 @@ fn capture_top_anchor(
     let viewport = viewport_element(viewport)?;
     let flow = flow_element(flow)?;
     let manifest = runtime.borrow().manifest.clone()?;
-    let blocks = flow.query_selector_all("[data-block]").ok()?;
-    for index in 0..blocks.length() {
-        let block = blocks.item(index)?.dyn_into::<Element>().ok()?;
-        let rects = block.get_client_rects();
-        let visible = (0..rects.length()).any(|position| {
-            rects
-                .item(position)
-                .is_some_and(|rect| rect_in_current_column(runtime, &flow, &viewport, &rect))
-        });
-        if !visible {
-            continue;
-        }
-        let block_node: Node = block.clone().unchecked_into();
-        let mut path = Vec::new();
-        if let Some(anchor) = first_text_anchor(
-            runtime,
-            &manifest,
-            &flow,
-            &viewport,
-            &block,
-            &block_node,
-            &mut path,
-            0,
-        ) {
+    let (x, y) = content_origin(runtime, &viewport);
+    if let Some(document) = web_sys::window().and_then(|window| window.document())
+        && let Some(caret) = document.caret_position_from_point(x as f32, y as f32)
+        && let Some(node) = caret.offset_node()
+        && node.node_type() == Node::TEXT_NODE
+        && let Some(block) = block_for_node(&node)
+    {
+        let offset = i32::try_from(caret.offset()).unwrap_or(i32::MAX);
+        let anchor = anchor_from_node(&manifest, &block, &node, offset);
+        if collapsed_range_rect(&node, offset)
+            .is_some_and(|rect| rect_in_current_column(runtime, &flow, &viewport, &rect))
+        {
             return Some(anchor);
         }
-        return Some(anchor_from_node(
-            &manifest,
-            &block,
-            &block_node,
-            Anchor::BOUNDARY_OFFSET,
-        ));
+        if let Some(block) = block_at_point(x, y)
+            && let Some(anchor) =
+                anchor_from_visible_block(runtime, &manifest, &flow, &viewport, &block)
+        {
+            return Some(anchor);
+        }
+    }
+    if let Some(block) = block_at_point(x, y)
+        && let Some(anchor) =
+            anchor_from_visible_block(runtime, &manifest, &flow, &viewport, &block)
+    {
+        return Some(anchor);
+    }
+    let blocks = flow.query_selector_all("[data-block]").ok()?;
+    for index in 0..blocks.length() {
+        let Some(block) = blocks.item(index)?.dyn_into::<Element>().ok() else {
+            continue;
+        };
+        if let Some(anchor) =
+            anchor_from_visible_block(runtime, &manifest, &flow, &viewport, &block)
+        {
+            return Some(anchor);
+        }
     }
     None
 }
@@ -1845,6 +2139,7 @@ fn viewport_element(viewport: DivRef) -> Option<Element> {
 
 fn refresh_ui(
     runtime: &Rc<RefCell<ReaderRuntime>>,
+    flow: DivRef,
     toc_active: RwSignal<i32>,
     percent: RwSignal<f64>,
 ) {
@@ -1860,26 +2155,70 @@ fn refresh_ui(
         return;
     };
     toc_active.set(toc_active_index(manifest, anchor.block));
-    percent.set(percent_for_anchor(manifest, anchor));
+    percent.set(percent_for_anchor(manifest, flow, anchor));
 }
 
-fn percent_for_anchor(manifest: &FlowManifest, anchor: &Anchor) -> f64 {
+fn percent_for_anchor(manifest: &FlowManifest, flow: DivRef, anchor: &Anchor) -> f64 {
     if manifest.total_chars <= 0 {
         return 0.0;
     }
     let Some(chunk) = manifest.chunk_for_block(anchor.block) else {
         return 0.0;
     };
-    let chunk_meta = &manifest.chunks[chunk as usize];
-    let blocks_before = i64::from((anchor.block - chunk_meta.block_start).max(0));
-    let block_fraction = if chunk_meta.block_count > 0 {
-        blocks_before as f64 / f64::from(chunk_meta.block_count)
+    let mut chars = chunk_prefix(manifest, chunk);
+    if let Some(flow) = flow_element(flow)
+        && let Ok(chunks) = flow.query_selector_all(".rf-chunk")
+    {
+        for index in 0..chunks.length() {
+            let Some(node) = chunks.item(index) else {
+                continue;
+            };
+            let Ok(element) = node.dyn_into::<Element>() else {
+                continue;
+            };
+            if element
+                .get_attribute("data-chunk")
+                .and_then(|value| value.parse::<i32>().ok())
+                != Some(chunk)
+            {
+                continue;
+            }
+            let children = element.child_nodes();
+            for child_index in 0..children.length() {
+                let Some(child) = children.item(child_index) else {
+                    continue;
+                };
+                let Ok(child) = child.dyn_into::<Element>() else {
+                    continue;
+                };
+                let Some(block) = child
+                    .get_attribute("data-block")
+                    .and_then(|value| value.parse::<i32>().ok())
+                else {
+                    continue;
+                };
+                if block >= anchor.block {
+                    break;
+                }
+                chars = chars.saturating_add(
+                    child
+                        .text_content()
+                        .map_or(0, |value| value.encode_utf16().count()) as i64,
+                );
+            }
+            break;
+        }
+    }
+    (chars as f64 / manifest.total_chars as f64 * 100.0).clamp(0.0, 100.0)
+}
+
+fn progress_label(percent: f64) -> String {
+    let value = percent.clamp(0.0, 100.0);
+    if value.fract() == 0.0 {
+        format!("{value:.0}%")
     } else {
-        0.0
-    };
-    let chars =
-        chunk_prefix(manifest, chunk) as f64 + (chunk_meta.chars.max(0) as f64 * block_fraction);
-    (chars / manifest.total_chars as f64 * 100.0).clamp(0.0, 100.0)
+        format!("{value:.1}%")
+    }
 }
 
 fn resolve_text_target(
@@ -2019,6 +2358,11 @@ async fn jump_to_toc(
     if stage.get_untracked() != ReaderStage::Reading {
         return;
     }
+    let old_timer = runtime.borrow_mut().sync_timer.take();
+    clear_timer_value(old_timer);
+    let depth = runtime.borrow().nav_depth;
+    runtime.borrow_mut().nav_depth = depth.saturating_add(1);
+    let _nav_guard = NavGuard(runtime.clone());
     let Some(manifest) = runtime.borrow().manifest.clone() else {
         return;
     };
@@ -2046,8 +2390,9 @@ async fn jump_to_toc(
         let column = col_from_rect(&runtime, &flow_element, &rect);
         move_to_column(&runtime, flow, column, false).await;
         runtime.borrow_mut().top_anchor = Some(anchor);
-        refresh_ui(&runtime, toc_active, percent);
-        schedule_progress_save(runtime, file_id);
+        refresh_ui(&runtime, flow, toc_active, percent);
+        schedule_progress_save(runtime.clone(), file_id.clone());
+        schedule_window_sync(runtime, viewport, flow, file_id, stage, toc_active, percent);
         return;
     }
     jump_to_block(
@@ -2091,8 +2436,9 @@ async fn jump_to_block(
     let column = col_for_anchor(&runtime, flow, &anchor).unwrap_or(0);
     move_to_column(&runtime, flow, column, false).await;
     runtime.borrow_mut().top_anchor = Some(anchor);
-    refresh_ui(&runtime, toc_active, percent);
-    schedule_progress_save(runtime, file_id);
+    refresh_ui(&runtime, flow, toc_active, percent);
+    schedule_progress_save(runtime.clone(), file_id.clone());
+    schedule_window_sync(runtime, viewport, flow, file_id, stage, toc_active, percent);
     let _ = viewport;
 }
 
@@ -2119,6 +2465,27 @@ async fn move_to_column(
     }
 }
 
+fn spawn_snap_to_column(
+    runtime: Rc<RefCell<ReaderRuntime>>,
+    viewport: DivRef,
+    flow: DivRef,
+    file_id: String,
+    stage: RwSignal<ReaderStage>,
+    toc_active: RwSignal<i32>,
+    percent: RwSignal<f64>,
+    column: i32,
+) {
+    leptos::task::spawn_local(async move {
+        move_to_column(&runtime, flow, column, true).await;
+        if runtime.borrow().closing {
+            return;
+        }
+        capture_and_refresh(&runtime, viewport, flow, toc_active, percent);
+        schedule_progress_save(runtime.clone(), file_id.clone());
+        schedule_window_sync(runtime, viewport, flow, file_id, stage, toc_active, percent);
+    });
+}
+
 fn capture_and_refresh(
     runtime: &Rc<RefCell<ReaderRuntime>>,
     viewport: DivRef,
@@ -2129,7 +2496,7 @@ fn capture_and_refresh(
     if let Some(anchor) = capture_top_anchor(runtime, viewport, flow) {
         runtime.borrow_mut().top_anchor = Some(anchor);
     }
-    refresh_ui(runtime, toc_active, percent);
+    refresh_ui(runtime, flow, toc_active, percent);
 }
 
 fn schedule_progress_save(runtime: Rc<RefCell<ReaderRuntime>>, file_id: String) {
@@ -2252,7 +2619,7 @@ async fn window_sync(
     }
     {
         let mut state = runtime.borrow_mut();
-        if state.closing || state.syncing || state.turn_busy {
+        if state.closing || state.syncing || state.turn_busy || state.nav_depth > 0 {
             return;
         }
         state.syncing = true;
@@ -2267,12 +2634,18 @@ async fn window_sync(
         };
         let (first, last) = stable_window_range(&manifest, anchor.block, AHEAD_MARGIN);
         let changed = ensure_window(&runtime, &file_id, &manifest, flow, first, last).await?;
+        if runtime.borrow().closing || runtime.borrow().nav_depth > 0 {
+            return Ok(());
+        }
         if changed {
             measure_cols(&runtime, flow);
             let column = col_for_anchor(&runtime, flow, &anchor).unwrap_or(0);
             move_to_column(&runtime, flow, column, false).await;
         }
-        refresh_ui(&runtime, toc_active, percent);
+        if runtime.borrow().closing || runtime.borrow().nav_depth > 0 {
+            return Ok(());
+        }
+        refresh_ui(&runtime, flow, toc_active, percent);
         Ok(())
     }
     .await;
@@ -2283,7 +2656,7 @@ async fn window_sync(
     let pending = {
         let mut state = runtime.borrow_mut();
         state.syncing = false;
-        if state.closing {
+        if state.closing || state.nav_depth > 0 {
             0
         } else {
             state.pending_turns
@@ -2552,7 +2925,7 @@ fn trap_focus(root: SectionRef, event: &web_sys::KeyboardEvent) {
         })
         .unwrap_or_else(|| root.clone().unchecked_into());
     let Ok(nodes) = scope.query_selector_all(
-        r#"button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])"#,
+        r#"button:not([disabled]), summary, input:not([disabled]), select:not([disabled]), [tabindex="0"]"#,
     ) else {
         return;
     };
