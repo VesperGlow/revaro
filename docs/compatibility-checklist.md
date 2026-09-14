@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`255349d`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`50b8f3c`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -126,6 +126,7 @@
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 文件矩阵在 1440×1000 实际切换方块/列表视图；旧版列表更新时间按浏览器本地时区显示（`1月1日 08:00`），Rust 初始 formatter 固定 UTC（`1月1日 00:00`）。已让 wasm formatter 使用 browser `Date` 本地 getters，保留 native UTC 单测；目录、目录 `.epub`、TXT、EPUB、图片、音频（带/不带封面）、视频、归档、未知、pending/failed 共 12 类的卡片/行矩阵 old/new 1/1，提交 `33a4052`。
 - `2026-09-14`，old `18080` / new `18083`，1440×1000：同一文件 fixture 实际读取方块卡的正常、图片预览 hover、键盘 focus/focus-visible 和 fallback 状态，以及列表行的正常、hover、focus、selected、selected-hover、pending、failed 状态；逐项比较状态 class、背景/边框/圆角/阴影/变换/透明度/光标、预览伪元素和行选择控件的 computed style，old/new `rust-file-card-state-reference-parity.spec.ts` 1/1，无差异。文件卡/行完整 loading、disabled 和触摸长按仍待验。
 - `2026-09-14`，old `18080` / new `18083`，1440×900：同一 mock 壳层让 Chromium 从页面起点连续按 Tab 24 次，实际比较顶栏、侧栏、路径树、文件浏览头和文件项的焦点落点；old/new `rust-global-focus-reference-parity.spec.ts` 1/1，未出现隐藏节点或焦点落回 body。Rust 额外的任务中心/账户/回收站 aria-label 不改变焦点顺序，保留为无障碍增强；弹窗、抽屉、编辑器、分享、媒体和阅读器内部的焦点边界仍待验。
+- `2026-09-14`，old `18080` / new `18084`：同一 mock 数据在 1440×900 实际打开根目录、切换列表/方块、进入回收站并返回；比较内容头标题、统计文案、按钮状态、卡片/行名称/元信息和回收站头部。390×844 另以空目录与 children 500 错误分别确认空态、错误 toast 和页面结构；两版均通过 `rust-file-browser-reference-parity.spec.ts` 2/2。
 - `2026-09-14`，old `18080` / new `18083`：将分享状态读取和创建请求分别延迟，实际比较 ShareDialog 的 loading 关闭按钮、遮罩关闭、重新打开、active 链接输入、按钮 disabled、尺寸和文案；旧版 loading 期间仍可关闭，Rust 初始版错误禁用关闭按钮并拦截遮罩，已恢复。`rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 1/1，提交 `01c48cb`；复制失败、分享请求错误和二次确认内部焦点仍待验。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -176,12 +177,12 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 根目录内容头 | `我的文件` 标题、当前路径 nav、项目数/文件数/大小三项 metadata 的文案、间距和层级一致。 | old/new 首屏层级已恢复；同一 fixture 下统计、空态和刷新仍需验证 |
-| `[ ]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根、`scrollTo({behavior:"smooth"})`、DOM 层级和首末项 margin 已对照；中间级、键盘/触摸全矩阵仍待验 |
+| `[P]` | 根目录内容头 | `我的文件` 标题、当前路径 nav、项目数/文件数/大小三项 metadata 的文案、间距和层级一致。 | old/new 1440×900 实际比较根目录与回收站内容头、统计文案、动作按钮和返回路径；390×844 空态/错误态结构也逐项比较，`rust-file-browser-reference-parity.spec.ts` 2/2 |
+| `[P]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根、`scrollTo({behavior:"smooth"})`、DOM 层级和首末项 margin，以及中间级 click/Enter/tap 均已对照；`rust-breadcrumb-layout-reference-parity.spec.ts` 3/3 |
 | `[P]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | old/new 直达浏览器用例覆盖五类分类、分类路径、文件夹路径和无效 `/f/{id}`；无效地址均回根并加载默认页面 |
 | `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | old/new 真实 TXT `/read/{id}` 均实际回根且不打开阅读器，已确认是 reference 运行时缺陷；需单独决定是否恢复源码意图，当前不新增偏离旧版的行为 |
 | `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象和账户弹层后退关闭；分类历史、stale request 和完整 modal stack 仍待验证 |
-| `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | 基础切换存在 |
+| `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 根目录实际切换并比较内容卡/行与按钮状态，列表偏好刷新后恢复；移动端内容布局、滚动和完整响应式矩阵仍待验 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
 | `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | 空根/空回收站文案、模拟读取失败 toast，以及失败导航中旧内容/选择工具栏保留策略已 old/new 对照；首次 loading、重试和完整旧内容保留矩阵仍待验 |
 | `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | 上传控制器有基础实现，UI 状态待验证 |
@@ -427,6 +428,7 @@
 | 文件浏览头下拉键盘语义 | 5、7、15 | `75426a5` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际分别打开新建/上传菜单，比较 Escape 关闭结果与 window 阶段 `defaultPrevented=false` | 局部 PASS |
 | 顶栏/状态 badge 与命中率 | 3、4、15 | `8f5356f`、`1108947` | `rust-global-ui-reference-parity.spec.ts` old/new 各 1/1；聚合导航/任务/图标集合 old/new 各 15/15 | 同一 mock 数据逐项比较任务 header、服务卡 badge 的 class/尺寸/padding/文字，并用 2/3 fixture 验证 67% 四舍五入；系统状态异常 class/重连已由独立模块覆盖 | 局部 PASS |
 | 文件浏览头视图与断点状态 | 5、15 | `93ae4cf` | `rust-global-ui-reference-parity.spec.ts` old/new 双上下文 6/6；`rust-file-view-preference.spec.ts` old/new 各 1/1 | 1440/390px 实际比较标题/统计、方块/列表 active、`aria-pressed`、断点可见性和布局，并验证列表偏好刷新后恢复 | 局部 PASS |
+| 根目录/回收站内容头与空错误态 | 5、15 | `50b8f3c` | `rust-file-browser-reference-parity.spec.ts` old/new 2/2 | 1440×900 实际比较根目录卡片、列表行、统计和回收站返回；390×844 比较空目录与 children 500 的空/错误结构及 toast | 局部 PASS |
 | 文件项键盘、类型边界与日期格式 | 6、15 | `31a8ce7`、`3d50af0`、`33a4052` | `rust-file-interaction-parity.spec.ts` old/new 定向各 2/2；`rust-file-card-reference-parity.spec.ts` old/new 矩阵 1/1；`cargo test -p revaro-web` 51/51；WASM/web build | 实际验证回收站目录 Enter、目录名 `.epub` 的 thumbnail/fallback、12 类卡/行节点及浏览器本地时区日期 | 局部 PASS |
 | 文件卡/行状态视觉 | 6、15 | `aa96e6a` | `rust-file-card-state-reference-parity.spec.ts` old/new 双上下文 1/1 | 1440×1000 实际比较方块正常/hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的状态 class、computed style、预览伪元素和选择控件；完整 loading/disabled/触摸状态未完 | 局部 PASS |
 | 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba`、`1ffae0e` | `rust-library-ui.spec.ts` old/new 各 8/8；`rust-library-reference-parity.spec.ts` old/new 各 1/1 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；refresh 失败后继续切换仍复用旧快照；书架单本分组标题、图库模式跨图片/视频切换、媒体分类内容和右键默认事件也已双版本对照；完整分类错误/数量矩阵未完 | 局部 PASS |
