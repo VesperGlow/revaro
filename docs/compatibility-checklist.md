@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`f953af8`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`c1ce934`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -129,6 +129,7 @@
 - `2026-09-14`，old `18080` / new `18084`：同一 mock 数据在 1440×900 实际打开根目录、切换列表/方块、进入回收站并返回；比较内容头标题、统计文案、按钮状态、卡片/行名称/元信息和回收站头部。390×844 另以空目录与 children 500 错误分别确认空态、错误 toast 和页面结构；两版均通过 `rust-file-browser-reference-parity.spec.ts` 2/2。
 - `2026-09-14`，old `18080` / new `18084`：实际以同一 active 分享链接点击复制，旧版只将按钮改为“已复制”、不产生全局 toast；Rust 初始版额外显示“分享链接已复制”，已移除通知并保留复制状态/失败回显。`rust-share-dialog-reference-parity.spec.ts` 复制场景 old/new 1/1，修复提交 `94ad574`。
 - `2026-09-14`，old `18080` / new `18084`：对移动请求注入同一 `PATCH /api/files/{id}` 500（`move failed`），旧版全局反馈为“已移动 0 项，1 项失败：传输中的文件.txt：move failed”，Rust 初始版为“部分项目失败”。已恢复失败数量和首项错误的 reference 文案，`rust-transfer-dialog-reference-parity.spec.ts` old/new 2/2，修复提交 `f953af8`。
+- `2026-09-14`，old `18080` / new `18084`：分别让分享链接和 TOTP 恢复码的 `navigator.clipboard.writeText` 失败；两版均不产生全局 toast，只在各自弹窗保留“复制失败，请手动…”错误，按钮仍可用。`rust-share-dialog-reference-parity.spec.ts` 4/4、`rust-account-download-reference-parity.spec.ts` 2/2；账户下载断言同时修正为比较本地化时间格式和静态内容，排除并行生成时刻秒数的偶然差异，测试提交 `c1ce934`。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
@@ -140,9 +141,9 @@
 | `[P]` | TOTP 登录 | 需要二次验证时的输入、回退、错误、重试、恢复码路径和 session 建立一致。 | old/new `rust-auth-parity.spec.ts` 的二次输入、错误保留和重试分支均通过 |
 | `[P]` | 会话检查 | `/api/auth/me`、刷新页面、已过期 cookie、401 后回登录页且不遗留旧数据。 | 初始/刷新过期 cookie 两版均回登录；中途 401 old 保留壳层+toast，new 回登录以清除过期 session 下的旧数据，记录为安全强化例外 |
 | `[P]` | 账户入口 | 顶栏账户按钮应打开“账户设置”而不是直接退出登录；用户名、头像、菜单文案和层级一致。 | old/new 桌面实际点击均打开账户设置；移动端工具菜单入口已对照，退出动作仍在独立条目验证 |
-| `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；`rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover，补齐 TOTP setup loading 时点击子弹窗空白关闭，以及密码提交 pending 时关闭子弹窗后点击账户外层遮罩；`rust-account-download-reference-parity.spec.ts` 逐字验证恢复码下载格式 |
+| `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；`rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover，补齐 TOTP setup loading 时点击子弹窗空白关闭，以及密码提交 pending 时关闭子弹窗后点击账户外层遮罩；`rust-account-download-reference-parity.spec.ts` 对照恢复码下载本地化时间格式/静态内容，并验证复制失败局部错误与无 toast |
 | `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
-| `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 成功/409 错误文案、`toast success/error` class、无额外 role、CSS、命中区域、批量下载数量文案和 3.6 秒时限已 old/new 对照；权限过期、断线、剪贴板失败及堆叠顺序仍待验证 |
+| `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 成功/409 错误文案、`toast success/error` class、无额外 role、CSS、命中区域、批量下载数量文案和 3.6 秒时限已 old/new 对照；分享/TOTP 剪贴板失败已确认是局部错误且无 toast；权限过期、断线及堆叠顺序仍待验证 |
 | `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；桌面壳层连续 24 次 Tab 焦点落点已一致，账户/编辑器/分享/媒体/阅读器嵌套边界仍待验 |
 
 ## 3. 顶栏、任务中心和系统状态
@@ -445,15 +446,15 @@
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e` | `rust-feedback-reference-parity.spec.ts` old/new 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载实际比较“正在准备 N 个文件…”、success Toast 颜色/定位/命中区域；点击 Toast 不会清除多选 | 局部 PASS |
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
 | 媒体预览更多菜单与右键语义 | 6、11、15 | `8f51320` | `rust-preview-menu-reference-parity.spec.ts` old/new 各 1/1 | 实际比较文件卡右键默认事件、图片预览更多菜单项/几何/hover、空白与 Escape 关闭、summary 焦点恢复；音频/视频菜单全状态仍待验 | 局部 PASS |
-| 分享弹窗 loading/active/二级确认/复制状态 | 2、12、15 | `01c48cb`、`39b4055`、`94ad574` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 3/3；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；另以延迟 500 请求比较二级确认取消、确认后立即关闭和错误回显；复制成功只更新“已复制”按钮且不新增 toast；复制失败和内部焦点仍未完 | 局部 PASS |
+| 分享弹窗 loading/active/二级确认/复制状态 | 2、12、15 | `01c48cb`、`39b4055`、`94ad574`、`c1ce934` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 4/4；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；另以延迟 500 请求比较二级确认取消、确认后立即关闭和错误回显；复制成功只更新“已复制”按钮且不新增 toast，剪贴板失败保留局部错误且不产生全局 toast；内部焦点仍未完 | 局部 PASS |
 | 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；移动端与回收站分支仍待验 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
 | 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
 | 账户 TOTP loading 遮罩行为 | 2、8、15 | `077e678` | `rust-account-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟 setup 请求期间实际点击子弹窗空白，比较 old/new 的关闭结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义 | 局部 PASS |
 | 账户密码 loading 外层遮罩行为 | 2、8、15 | `1acb307` | `rust-account-reference-parity.spec.ts` old/new 双上下文 3/3；`cargo xtask check` 通过 | 延迟密码 PATCH 期间实际提交、关闭子弹窗并点击账户外层遮罩，比较账户弹层卸载；Rust 初始外层 busy 限制已移除，按钮 disabled/loading 仍保留 | 局部 PASS |
 | 移动/复制 loading 与失败反馈 | 8、15 | `8bbbd22`、`f953af8` | `rust-transfer-dialog-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟移动 PATCH 请求期间实际点击 old/new 遮罩，比较弹窗卸载结果；另以同一 500 响应比较“已移动 0 项，1 项失败：文件：move failed”文案；Rust 初始 busy 限制和“部分项目失败”文案均已恢复；目标排除、冲突和成功刷新仍未完 | 局部 PASS |
-| 账户设置恢复码下载 | 2、15 | `80cf6c3` | `rust-account-download-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际完成 TOTP 启用并读取下载文件；文件名、浏览器本地化时间格式、恢复码顺序和换行与 reference 完全一致；初始 Rust ISO 时间格式已恢复 | 局部 PASS |
-| 全局 Toast 严重级别与时序 | 2、15 | `253e92d` | `rust-feedback-reference-parity.spec.ts` old/new 各 2/2；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；初始 Rust 的 error class/额外 role 已恢复 | 局部 PASS |
+| 账户设置恢复码下载与剪贴板错误 | 2、15 | `80cf6c3`、`c1ce934` | `rust-account-download-reference-parity.spec.ts` old/new 各 2/2；`cargo xtask check` 通过 | 实际完成 TOTP 启用并读取下载文件；文件名、本地化时间格式、恢复码顺序和换行与 reference 一致；另注入剪贴板失败，比较局部错误、按钮状态和无全局 toast；初始 Rust ISO 时间格式已恢复 | 局部 PASS |
+| 全局 Toast 严重级别与时序 | 2、15 | `253e92d`、`c1ce934` | `rust-feedback-reference-parity.spec.ts` old/new 各 2/2；分享/TOTP 剪贴板失败 old/new 各 1/1；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；局部剪贴板失败也确认不会误发全局 toast；初始 Rust 的 error class/额外 role 已恢复，权限过期/断线/堆叠仍未完 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
 | 分类媒体视图与文件项交互 | 4–6、15 | `1ffae0e` | old 原始 `library-ui.spec.ts` 4/4；Rust `rust-library-ui.spec.ts` 8/8；双版本 `rust-library-reference-parity.spec.ts` 1/1；`cargo xtask check` | 同一 fixture 实际比较书架/图库/音乐标题、分组、卡片/行、视图切换、图片到视频的会话状态延续及分类卡/音频行 `contextmenu.prevent`；Rust 初始三处差异均已恢复 | 局部 PASS |
