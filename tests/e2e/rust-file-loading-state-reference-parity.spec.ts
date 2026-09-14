@@ -205,3 +205,74 @@ test('回收站读取失败保留当前目录并只显示 reference Toast', asyn
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+test('进入目录时详情和子目录请求保持 reference 的并发语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  let oldDetailStarted = false
+  let newDetailStarted = false
+  let oldChildrenStarted = false
+  let newChildrenStarted = false
+  let releaseOld!: () => void
+  let releaseNew!: () => void
+  const install = async (page: Page, setDetailStarted: () => void, setChildrenStarted: () => void, setRelease: (release: () => void) => void) => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    setRelease(release)
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') {
+        return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+      }
+      if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+      if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
+      if (path === `/api/files/${ROOT}/children`) return json({ items: [folder], total_bytes: 0, file_count: 0 })
+      if (path === `/api/files/${FOLDER}`) {
+        setDetailStarted()
+        await gate
+        return json({ file: folder, breadcrumbs: [root] })
+      }
+      if (path === `/api/files/${FOLDER}/children`) {
+        setChildrenStarted()
+        return json({ items: [], total_bytes: 0, file_count: 0 })
+      }
+      return json({ items: [] })
+    })
+  }
+
+  try {
+    await Promise.all([
+      install(oldPage, () => { oldDetailStarted = true }, () => { oldChildrenStarted = true }, release => { releaseOld = release }),
+      install(newPage, () => { newDetailStarted = true }, () => { newChildrenStarted = true }, release => { releaseNew = release }),
+    ])
+    await Promise.all([openRoot(oldPage, oldUrl), openRoot(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.file-card').filter({ hasText: folder.name }).click(),
+      newPage.locator('.file-card').filter({ hasText: folder.name }).click(),
+    ])
+    await expect.poll(() => oldDetailStarted).toBe(true)
+    await expect.poll(() => newDetailStarted).toBe(true)
+    await oldPage.waitForTimeout(120)
+    await newPage.waitForTimeout(120)
+    expect(oldChildrenStarted, 'reference 目录详情请求期间应已启动 children 请求').toBe(true)
+    expect(newChildrenStarted, 'Rust 进入目录应与 reference 并发请求详情和 children').toBe(true)
+    releaseOld()
+    releaseNew()
+    await Promise.all([
+      expect(oldPage.locator('.state.empty')).toBeVisible(),
+      expect(newPage.locator('.state.empty')).toBeVisible(),
+    ])
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})

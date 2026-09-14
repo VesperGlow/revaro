@@ -308,8 +308,17 @@ pub fn FileBrowser(
             let mut completion = completion;
             leptos::task::spawn_local(async move {
                 let result = async {
-                    let detail = api::fetch_file(&requested_id).await?;
-                    let children = api::fetch_children(&requested_id).await?;
+                    // The reference `openFolder` starts metadata and children
+                    // with `Promise.all`. Keep navigation latency and the
+                    // observable request ordering equivalent instead of
+                    // waiting for the detail response before asking for the
+                    // listing.
+                    let (detail, children) = futures_util::join!(
+                        api::fetch_file(&requested_id),
+                        api::fetch_children(&requested_id),
+                    );
+                    let detail = detail?;
+                    let children = children?;
                     Ok::<(FileDetail, Children), api::RequestError>((detail, children))
                 }
                 .await;
