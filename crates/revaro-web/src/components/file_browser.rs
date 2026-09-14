@@ -126,17 +126,27 @@ pub fn FileBrowser(
             _ => ViewMode::Grid,
         },
     );
+    let view_mode_initialized = RwSignal::new(false);
     {
         let view_mode = view_mode;
+        let view_mode_initialized = view_mode_initialized;
         Effect::new(move |_| {
-            browser::local_storage_set(
-                FILE_VIEW_MODE_KEY,
-                if view_mode.get() == ViewMode::List {
-                    "list"
-                } else {
-                    "grid"
-                },
-            );
+            let mode = view_mode.get();
+            // Vue's persistent-mode watcher is not immediate: a missing or
+            // invalid stored value selects the default without rewriting it
+            // until the user actually changes the view.
+            if view_mode_initialized.get_untracked() {
+                browser::local_storage_set(
+                    FILE_VIEW_MODE_KEY,
+                    if mode == ViewMode::List {
+                        "list"
+                    } else {
+                        "grid"
+                    },
+                );
+            } else {
+                view_mode_initialized.set(true);
+            }
         });
     }
     let section = RwSignal::new(LibraryKind::File);
