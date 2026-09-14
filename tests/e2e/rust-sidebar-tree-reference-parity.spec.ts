@@ -228,3 +228,86 @@ test('文件目录树反向审计记录 reference 的组件注册缺陷并保护
     await newContext.close()
   }
 })
+
+test('分类路径树刷新后保留 reference 的展开状态', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockSidebarTree(oldPage), mockSidebarTree(newPage)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([selectCategory(oldPage), selectCategory(newPage)])
+
+    await Promise.all([
+      oldPage.locator('.category-paths .path-label', { hasText: '归档' }).locator('..').locator('.path-toggle').click(),
+      newPage.locator('.category-paths .path-label', { hasText: '归档' }).locator('..').locator('.path-toggle').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.category-paths .path-label', { hasText: '旅行' })).toBeVisible(),
+      expect(newPage.locator('.category-paths .path-label', { hasText: '旅行' })).toBeVisible(),
+    ])
+
+    await Promise.all([
+      oldPage.getByRole('button', { name: '刷新', exact: true }).click(),
+      newPage.getByRole('button', { name: '刷新', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.category-paths .path-label', { hasText: '旅行' })).toBeVisible(),
+      expect(newPage.locator('.category-paths .path-label', { hasText: '旅行' })).toBeVisible(),
+    ])
+    expect(await pathSnapshot(newPage), 'Rust 分类路径树刷新后展开状态与 reference 不一致')
+      .toEqual(await pathSnapshot(oldPage))
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('桌面侧栏折叠再展开时重置路径树到 reference 初始层级', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockSidebarTree(oldPage), mockSidebarTree(newPage)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([selectCategory(oldPage), selectCategory(newPage)])
+    await Promise.all([
+      oldPage.locator('.category-paths .path-label', { hasText: '归档' }).locator('..').locator('.path-toggle').click(),
+      newPage.locator('.category-paths .path-label', { hasText: '归档' }).locator('..').locator('.path-toggle').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.category-paths .path-label', { hasText: '旅行' })).toBeVisible(),
+      expect(newPage.locator('.category-paths .path-label', { hasText: '旅行' })).toBeVisible(),
+    ])
+
+    await Promise.all([
+      oldPage.locator('.sidebar-collapse').click(),
+      newPage.locator('.sidebar-collapse').click(),
+    ])
+    await Promise.all([
+      oldPage.locator('.sidebar-collapse').click(),
+      newPage.locator('.sidebar-collapse').click(),
+    ])
+    await expect(oldPage.locator('.category-paths .path-label', { hasText: '归档' })).toBeVisible()
+    await expect(newPage.locator('.category-paths .path-label', { hasText: '归档' })).toBeVisible()
+    expect(await pathSnapshot(newPage), 'Rust 侧栏折叠再展开后的路径树状态与 reference 不一致')
+      .toEqual(await pathSnapshot(oldPage))
+    await expect(oldPage.locator('.category-paths .path-label', { hasText: '旅行' })).toHaveCount(0)
+    await expect(newPage.locator('.category-paths .path-label', { hasText: '旅行' })).toHaveCount(0)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})

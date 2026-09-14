@@ -44,6 +44,17 @@ pub fn AppSidebar(
     let mobile = browser::media_query_signal("(max-width: 850px)");
     let rail = Signal::derive(move || collapsed.get() && !mobile.get());
     let expanded = RwSignal::new(read_expanded_category());
+    let path_expansions = RwSignal::new(HashMap::<String, bool>::new());
+    let previous_mobile = RwSignal::new(mobile.get_untracked());
+
+    let responsive_expansion_effect = path_expansions;
+    Effect::new(move |_| {
+        let current_mobile = mobile.get();
+        if current_mobile != previous_mobile.get_untracked() {
+            clear_all_path_expansions(responsive_expansion_effect);
+            previous_mobile.set(current_mobile);
+        }
+    });
 
     let expanded_effect = expanded;
     Effect::new(move |_| match expanded_effect.get() {
@@ -60,14 +71,21 @@ pub fn AppSidebar(
 
     let toggle_category = {
         let expanded = expanded;
+        let path_expansions = path_expansions;
         Callback::new(move |kind: LibraryKind| {
-            expanded.update(|current| {
-                if *current == Some(kind) {
-                    *current = None;
-                } else {
-                    *current = Some(kind);
+            let previous = expanded.get_untracked();
+            let next = if previous == Some(kind) {
+                None
+            } else {
+                Some(kind)
+            };
+            if previous != next {
+                if let Some(previous) = previous {
+                    clear_path_expansions(path_expansions, previous);
                 }
-            });
+                clear_path_expansions(path_expansions, kind);
+            }
+            expanded.set(next);
         })
     };
     let close_mobile = Callback::new(move |(): ()| mobile_open.set(false));
@@ -110,7 +128,12 @@ pub fn AppSidebar(
                     title=move || if rail.get() { "展开分类栏" } else { "收起分类栏" }
                     aria-label=move || if rail.get() { "展开分类栏" } else { "收起分类栏" }
                     aria-expanded=move || if rail.get() { "false" } else { "true" }
-                    on:click=move |_| on_toggle_collapse.run(())
+                    on:click=move |_| {
+                        if !mobile.get_untracked() {
+                            clear_all_path_expansions(path_expansions);
+                        }
+                        on_toggle_collapse.run(());
+                    }
                 >
                     {move || if rail.get() {
                         icons::panel_left_open().into_any()
@@ -144,6 +167,7 @@ pub fn AppSidebar(
                         on_select_folder,
                         on_navigate_directory,
                         toggle_category,
+                        path_expansions,
                         close_mobile,
                     )}
                 </For>
@@ -184,6 +208,7 @@ fn render_category(
     on_select_folder: Callback<Option<String>>,
     on_navigate_directory: Callback<String>,
     toggle_category: Callback<LibraryKind>,
+    path_expansions: RwSignal<HashMap<String, bool>>,
     close_mobile: Callback<()>,
 ) -> AnyView {
     let label = category_label(kind);
@@ -212,6 +237,12 @@ fn render_category(
                         // The old sidebar expands the selected category's path
                         // tree as part of the row click. The separate chevron
                         // remains the only control that collapses it again.
+                        if expand.get_untracked() != Some(kind) {
+                            if let Some(previous) = expand.get_untracked() {
+                                clear_path_expansions(path_expansions, previous);
+                            }
+                            clear_path_expansions(path_expansions, kind);
+                        }
                         expand.set(Some(kind));
                         select.run(kind);
                         close.run(());
@@ -259,8 +290,10 @@ fn render_category(
                         <div class="category-paths">
                             <PathTree
                                 node=node
+                                kind=kind
                                 depth=0
                                 active_folder_id=active_folder_id
+                                expansions=path_expansions
                                 on_select=select_folder.clone()
                             />
                         </div>
@@ -283,11 +316,20 @@ fn render_category(
 #[component]
 fn PathTree(
     node: LibraryFolderNode,
+    kind: LibraryKind,
     depth: usize,
     active_folder_id: RwSignal<Option<String>>,
+    expansions: RwSignal<HashMap<String, bool>>,
     on_select: Callback<Option<String>>,
 ) -> AnyView {
-    let expanded = RwSignal::new(depth < 1);
+    let expansion_key = format!("{}:{}", kind.as_str(), node.id);
+    let expanded = RwSignal::new(
+        expansions
+            .get_untracked()
+            .get(&expansion_key)
+            .copied()
+            .unwrap_or(depth < 1),
+    );
     let has_children = !node.children.is_empty();
     let node_id = node.id.clone();
     let node_name = node.name.clone();
@@ -300,7 +342,14 @@ fn PathTree(
     let select_id = node.id.clone();
     let node_children = RwSignal::new(node.children);
     let node_count = node.count;
-    let toggle = move |_| expanded.update(|value| *value = !*value);
+    let key_for_toggle = expansion_key.clone();
+    let toggle = Callback::new(move |(): ()| {
+        expanded.update(|value| *value = !*value);
+        let value = expanded.get_untracked();
+        expansions.update(|states| {
+            states.insert(key_for_toggle.clone(), value);
+        });
+    });
     let select = move |_| {
         if select_id == ROOT_ID {
             active_folder_id.set(None);
@@ -330,7 +379,7 @@ fn PathTree(
                         class="path-toggle"
                         aria-expanded=move || if expanded.get() { "true" } else { "false" }
                         aria-label=move || if expanded.get() { "收起子路径" } else { "展开子路径" }
-                        on:click=toggle
+                        on:click=move |_| toggle.run(())
                     >
                         <span class:open=move || expanded.get()>{icons::chevron_right()}</span>
                     </button>
@@ -355,8 +404,10 @@ fn PathTree(
                     >
                         <PathTree
                             node=child
+                            kind=kind
                             depth=depth + 1
                             active_folder_id=active_folder_id
+                            expansions=expansions
                             on_select=on_select.clone()
                         />
                     </For>
@@ -365,6 +416,17 @@ fn PathTree(
         </div>
     }
     .into_any()
+}
+
+fn clear_path_expansions(expansions: RwSignal<HashMap<String, bool>>, kind: LibraryKind) {
+    let prefix = format!("{}:", kind.as_str());
+    expansions.update(|states| {
+        states.retain(|key, _| !key.starts_with(&prefix));
+    });
+}
+
+fn clear_all_path_expansions(expansions: RwSignal<HashMap<String, bool>>) {
+    expansions.set(HashMap::new());
 }
 
 #[component]
