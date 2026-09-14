@@ -186,3 +186,83 @@ test('TOTP 设置请求进行中点击子弹窗空白仍关闭面板', async ({ 
     await newContext.close()
   }
 })
+
+async function mockPasswordLoading(page: Page) {
+  const passwordGate = deferred()
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/auth/totp' && request.method() === 'GET') {
+      return json({ enabled: false, recovery_codes: 0 })
+    }
+    if (path === '/api/auth/password' && request.method() === 'PATCH') {
+      await passwordGate.promise
+      return json({})
+    }
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+  return { passwordGate }
+}
+
+async function startPasswordChange(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?account-password-loading=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.locator('button[title="打开账户设置"]').click()
+  const account = page.locator('.account-modal')
+  await account.getByRole('button', { name: '修改密码', exact: true }).click()
+  const password = page.locator('.password-dialog')
+  await expect(password).toBeVisible()
+  await password.getByLabel('当前密码', { exact: true }).fill('current-password')
+  await password.getByLabel('新密码', { exact: true }).fill('new-password-123')
+  await password.getByLabel('确认新密码', { exact: true }).fill('new-password-123')
+  await password.getByRole('button', { name: '修改密码', exact: true }).click()
+  await expect(password.locator('button.primary')).toBeDisabled()
+}
+
+test('密码修改请求进行中点击账户外层遮罩仍关闭账户弹层', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([mockPasswordLoading(oldPage), mockPasswordLoading(newPage)])
+    await Promise.all([startPasswordChange(oldPage, oldUrl), startPasswordChange(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.password-dialog header button').click(),
+      newPage.locator('.password-dialog header button').click(),
+    ])
+    await expect(oldPage.locator('.password-dialog')).toHaveCount(0)
+    await expect(newPage.locator('.password-dialog')).toHaveCount(0)
+    await Promise.all([
+      oldPage.locator('.modal-backdrop.accounting').click({ position: { x: 8, y: 8 } }),
+      newPage.locator('.modal-backdrop.accounting').click({ position: { x: 8, y: 8 } }),
+    ])
+    await expect(oldPage.locator('.account-modal')).toHaveCount(0)
+    await expect(newPage.locator('.account-modal'), 'Rust 密码请求中外层遮罩关闭与 reference 不一致').toHaveCount(0)
+    oldMock.passwordGate.resolve()
+    newMock.passwordGate.resolve()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})

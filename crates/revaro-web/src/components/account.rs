@@ -675,7 +675,7 @@ pub fn AccountSettings(
             class="modal-backdrop accounting"
             role="presentation"
             on:click=move |event: MouseEvent| {
-                if event.target() == event.current_target() && !password_busy.get_untracked() && !totp_busy.get_untracked() {
+                if event.target() == event.current_target() {
                     close.run(());
                 }
             }
