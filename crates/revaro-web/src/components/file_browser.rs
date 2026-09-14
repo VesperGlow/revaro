@@ -93,6 +93,10 @@ struct FolderLoadRequest {
     completion: Option<oneshot::Sender<()>>,
 }
 
+struct TrashLoadRequest {
+    completion: Option<oneshot::Sender<()>>,
+}
+
 fn finish_folder_load(completion: &mut Option<oneshot::Sender<()>>) {
     if let Some(sender) = completion.take() {
         let _ = sender.send(());
@@ -383,7 +387,7 @@ pub fn FileBrowser(
         }
     });
 
-    let load_trash = {
+    let load_trash_request = {
         let current = current;
         let breadcrumbs = breadcrumbs;
         let items = items;
@@ -399,7 +403,8 @@ pub fn FileBrowser(
         let library_folder_id = library_folder_id;
         let preview_items = preview_items;
         let on_logout = on_logout.clone();
-        Callback::new(move |(): ()| {
+        Callback::new(move |request: TrashLoadRequest| {
+            let mut completion = request.completion;
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
             loading.set(true);
@@ -434,7 +439,14 @@ pub fn FileBrowser(
                     }
                     Ok(_) | Err(_) => {}
                 }
+                finish_folder_load(&mut completion);
             });
+        })
+    };
+    let load_trash = {
+        let load_trash_request = load_trash_request.clone();
+        Callback::new(move |(): ()| {
+            load_trash_request.run(TrashLoadRequest { completion: None });
         })
     };
 
@@ -964,7 +976,7 @@ pub fn FileBrowser(
     let restore_selected = {
         let selected_ids = selected_ids;
         let items = items;
-        let load_trash = load_trash.clone();
+        let load_trash_request = load_trash_request.clone();
         let notify = notify.clone();
         let on_logout = on_logout.clone();
         Callback::new(move |(): ()| {
@@ -993,7 +1005,11 @@ pub fn FileBrowser(
                     }
                 }
                 selected_ids.set(HashSet::new());
-                load_trash.run(());
+                let (sender, receiver) = oneshot::channel();
+                load_trash_request.run(TrashLoadRequest {
+                    completion: Some(sender),
+                });
+                let _ = receiver.await;
                 notify.run(Feedback::success("所选项目已恢复"));
             });
         })
@@ -1038,8 +1054,7 @@ pub fn FileBrowser(
         let current_id = current_id;
         let trash_mode = trash_mode;
         let notify = notify.clone();
-        let load_folder = load_folder.clone();
-        let load_trash = load_trash.clone();
+        let load_trash_request = load_trash_request.clone();
         let on_logout = on_logout.clone();
         let editor_open = editor_open;
         let archive_target = archive_target;
@@ -1081,8 +1096,6 @@ pub fn FileBrowser(
             let parent_id = current_id.get_untracked();
             let refresh_parent_id = parent_id.clone();
             let in_trash = trash_mode.get_untracked();
-            let refresh_folder = load_folder.clone();
-            let refresh_trash = load_trash.clone();
             let logout = on_logout.clone();
             let task_center = task_center.clone();
 
@@ -1245,17 +1258,26 @@ pub fn FileBrowser(
                             if !request_overlay_close(nav_actions, history_suppressed) {
                                 editor_open.set(false);
                             }
+                        } else if extract_archive {
+                            selected_ids.set(HashSet::new());
+                            task_center.refresh_now();
                         } else if in_trash {
                             selected_ids.set(HashSet::new());
-                            refresh_trash.run(());
+                            let (sender, receiver) = oneshot::channel();
+                            load_trash_request.run(TrashLoadRequest {
+                                completion: Some(sender),
+                            });
+                            let _ = receiver.await;
                         } else {
                             selected_ids.set(HashSet::new());
-                            refresh_folder.run(refresh_parent_id);
+                            let (sender, receiver) = oneshot::channel();
+                            load_folder_request.run(FolderLoadRequest {
+                                id: refresh_parent_id,
+                                completion: Some(sender),
+                            });
+                            let _ = receiver.await;
                         }
                         notify.run(Feedback::success(message));
-                        if extract_archive {
-                            task_center.refresh_now();
-                        }
                     }
                     Err(request_error) if request_error.is_unauthorized() => {
                         dialog.set(None);
@@ -1382,7 +1404,7 @@ pub fn FileBrowser(
         let transfer_error = transfer_error;
         let selected_ids = selected_ids;
         let current_id = current_id;
-        let load_folder = load_folder.clone();
+        let load_folder_request = load_folder_request.clone();
         let notify = notify.clone();
         let on_logout = on_logout.clone();
         Callback::new(move |parent_id: String| {
@@ -1397,7 +1419,6 @@ pub fn FileBrowser(
             transfer_error.set(String::new());
             let mode = transfer_mode.get_untracked();
             let refresh_id = current_id.get_untracked();
-            let refresh = load_folder.clone();
             let logout = on_logout.clone();
             leptos::task::spawn_local(async move {
                 let mut completed = 0_usize;
@@ -1447,7 +1468,12 @@ pub fn FileBrowser(
                 transfer_open.set(false);
                 transfer_targets.set(Vec::new());
                 selected_ids.set(HashSet::new());
-                refresh.run(refresh_id);
+                let (sender, receiver) = oneshot::channel();
+                load_folder_request.run(FolderLoadRequest {
+                    id: refresh_id,
+                    completion: Some(sender),
+                });
+                let _ = receiver.await;
                 let verb = if mode == TransferMode::Copy {
                     "复制"
                 } else {
