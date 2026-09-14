@@ -100,6 +100,7 @@
 - `2026-09-15`，old `18080` / new `18084`：API 实际创建并移入回收站同名文档后执行 `DELETE /api/trash`，两版均 204 且目标从回收站消失；另创建未传输的 pending upload，执行 `DELETE /api/uploads/{id}`，两版均 204，随后 upload session 和 pending file 均返回同样 404。`rust-api-reference-parity.spec.ts` 新增清空/取消两项各 1/1；通用 cleanup 未调用全局清空回收站。
 - `2026-09-15`，old `18080` / new `18084`：反向审计文件卡的视频缩略图重试 URL，向同一视频注入包含空格、`&`、`/`、`?` 的 ETag；old 使用编码后的查询值，Rust 初始版直接拼接导致 query 被截断。已恢复 `encodeURIComponent` 语义，`rust-file-card-reference-parity.spec.ts` old/new 1/1，提交 `5b7451a`。
 - `2026-09-15`，在同一 12 类文件项 fixture 上将 card/row 的 SVG computed style（颜色、fill/stroke、stroke width、尺寸、透明度、子图形 linecap/linejoin）纳入 old/new 实际比较；再在正常、hover、focus、selected、pending、failed 状态读取文件图标样式，两个用例均通过。`rust-file-card-reference-parity.spec.ts`、`rust-file-card-state-reference-parity.spec.ts` old/new 2/2，未发现图标样式或状态叠加差异。
+- `2026-09-15`，old `18080` / new `18084`：实际向两个 shell 派发含 File 的 `drop`，两版均阻止默认事件、创建 upload、完成后在根目录出现 ready 文件；再进入回收站派发另一个 drop，两版均阻止默认事件且不产生新的 upload 请求。`rust-upload-parity.spec.ts` 实际拖放场景 old/new 1/1；文件夹拖放的浏览器目录项、取消/重试和完整失败状态仍待验。
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后比较用户名编辑入口和会话区；旧版入口为 `svg + span`，Rust 初始版只有 `span`，且对应 hover 图标未命中。已恢复旧版铅笔 path、14px 尺寸和统一 icon helper；old/new DOM、geometry、hover、编辑聚焦和 Escape 取消均 1/1，`rust-account-reference-parity.spec.ts`，提交 `a6ac08e`。
 - `2026-09-14`，old `18080` / new `18083`：用同一 mock TOTP 数据实际完成“账户设置 → 两步验证设置 → 启用 → 下载文本”，读取浏览器下载文件逐字比较文件名、时间行、恢复码顺序和换行；old 使用默认 `Date.toLocaleString()`，Rust 初始版使用 ISO 时间戳，已恢复浏览器本地化格式。`rust-account-download-reference-parity.spec.ts` old/new 1/1，账户相关两项合计 2/2，提交 `80cf6c3`。
 - `2026-09-14`，old `18080` / new `18084`：同一延迟 `POST /api/auth/totp/setup` 实际点击“开始设置”，在 loading 中点击 TOTP 子弹窗空白；old 会关闭子弹窗，Rust 初始版因 `totp_busy` 限制仍停留。已恢复遮罩关闭行为，`rust-account-reference-parity.spec.ts`（用户名入口 + TOTP loading）old/new 2/2，提交 `077e678`。
@@ -262,7 +263,7 @@
 | `[P]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 1440×900 以 40 个实际 mock 文件比较两种布局的 active/`aria-pressed`/tooltip/icon、可见项、长页面滚动位置、切换后的 localStorage 和非法偏好回退；`rust-file-view-state-reference-parity.spec.ts` old/new 1/1。已有 390×844 切换/刷新/切回和六档断点布局用例继续覆盖移动端 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
 | `[P]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | old/new 390×844 实际对照根目录 loading、空根、目录 loading→完成、目录失败、回收站失败；普通文件/回收站失败保留旧内容并只显示 Toast、不出现错误卡/重试按钮；分类 503→重试→恢复由 `rust-library-reference-parity.spec.ts` 覆盖；`rust-file-loading-state-reference-parity.spec.ts` 2 tests、`rust-file-browser-reference-parity.spec.ts`、`rust-navigation-parity.spec.ts` 均通过 |
-| `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | 上传控制器有基础实现，UI 状态待验证 |
+| `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | old/new 已实际验证含 File 的 drop 默认事件、overlay 显示/关闭、子元素 dragleave 保持 overlay、回收站拒绝 drop、根目录实际上传并完成 ready 文件；文件夹拖放的浏览器目录项、重复/取消/重试和完整失败状态仍待验 |
 | `[ ]` | 响应式布局 | 桌面、平板、390px 手机宽度下内容区、侧栏、顶栏、工具栏、对话框和滚动容器的宽高/层级一致。 | old/new `rust-responsive-layout-reference-parity.spec.ts` 已在 1440/1024/851/850/390/320px 对照基础壳层几何、断点入口可见性、网格列和 body 横向溢出，1/1 通过；对话框、上传/选择工具栏、媒体/阅读器和滚动容器完整矩阵仍待验 |
 
 ## 6. 文件项、图标和选择/操作菜单
