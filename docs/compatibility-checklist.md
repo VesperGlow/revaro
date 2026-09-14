@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`0e90830`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`39b4055`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -82,6 +82,7 @@
 - `2026-09-14`，old `18080` / new `18083`：桌面与 390×844 实际读取侧栏所有分类行的初始/active/hover computed style、计数、路径展开箭头、折叠 rail、移动抽屉和过渡完成后的几何；两版一致。Rust 额外提供回收站 `aria-label`，属于不改变用户路径的无障碍增强；`rust-sidebar-state-reference-parity.spec.ts` old/new 1/1，提交 `6710996`。文件树竞态、完整路径树和全文件类型图标仍待验。
 - `2026-09-14`，old `18080` / new `18083`：实际打开“新建文件夹”通用确认弹窗，聚焦输入框后按 Escape，并在 window bubble 读取默认事件；old 关闭弹窗且 `defaultPrevented=false`，Rust 初始版虽关闭但错误为 `true`。已移除 `ActionDialog` 多余的 `prevent_default`；`rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1，提交 `c0a5fd9`。
 - `2026-09-14`，old `18080` / new `18084`：同一 mock 文件实际打开“重命名”，比较初始名称、输入/按钮状态、弹窗文案和焦点；old 打开后因选择工具栏卸载而焦点回到 `body`，Rust 初始版因保留工具栏并自动聚焦而落在输入框/操作按钮。已让通用 dialog 出现时卸载选择工具栏，并移除 Rust 重命名专属 autofocus；旧版语义上缺少的 `role=dialog` 与显式 `button type` 作为无障碍/防误提交增强保留。`rust-rename-dialog-reference-parity.spec.ts` old/new 1/1，提交 `0e90830`。
+- `2026-09-14`，old `18080` / new `18084`：实际打开已有分享链接，分别取消和确认“重新生成链接”，并让 POST 延迟后返回 500；两版取消均保留 active 分享层，确认后子弹窗立即关闭，失败回到分享层显示同一错误。`rust-share-dialog-reference-parity.spec.ts` 二级确认场景 old/new 1/1，提交 `39b4055`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：实际打开文件头的新建/上传下拉，逐项比较初始/展开 DOM、summary/popover/首项尺寸与视觉层级、首项 hover、点击空白关闭，以及点击“新建文档”后的 editor 入口和菜单关闭；old/new `rust-file-header-menu-reference-parity.spec.ts` 各 1/1，未发现 Rust 行为差异，提交 `6828692`。
 - `2026-09-14`，old `18080` / new `18083`：实际对文件卡执行右键并读取冒泡事件的 `defaultPrevented`，两版均阻止浏览器原生菜单；随后实际打开图片预览“更多操作”，比较菜单初始/展开尺寸、定位、层级、hover、空白关闭、Escape 关闭和 summary 焦点恢复，两版均一致。`rust-preview-menu-reference-parity.spec.ts` old/new 1/1，提交 `8f51320`；音频音量/视频字幕与播放设置菜单仍待完整状态矩阵。
 - `2026-09-14`，old `18080` / new `18083`：列表模式实际选择目录、TXT、EPUB、图片、ZIP、未知文件，逐项比较所选摘要、按钮出现条件/顺序、中文文案和 SVG 路径；再比较 TXT+图片多选。old/new 均一致，工具栏关闭后选择清理也一致；`rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1，提交 `6c9e46a`。移动端布局及回收站恢复/永久删除分支仍待验。
@@ -222,7 +223,7 @@
 | `[ ]` | 回收站查看 | 列表/网格、原路径/删除时间/大小、空状态、打开限制、恢复/永久删除入口一致。 | old/new 空回收站、列表行元信息、TXT 键盘打开分流已对照；完整 grid/只读矩阵仍待验 |
 | `[ ]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | old/new 直接恢复和清理已实际验证；冲突、失败、多选仍待验 |
 | `[ ]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | old/new 永久删除确认、清理链路已对照；清空回收站、失败/loading仍待验 |
-| `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误、焦点回收和分享子确认仍待验 |
+| `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退、分享二级确认取消/提交关闭/错误回显已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误和焦点回收仍待验 |
 
 ## 9. 文本文档查看与编辑器
 
@@ -437,7 +438,7 @@
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e` | `rust-feedback-reference-parity.spec.ts` old/new 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载实际比较“正在准备 N 个文件…”、success Toast 颜色/定位/命中区域；点击 Toast 不会清除多选 | 局部 PASS |
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
 | 媒体预览更多菜单与右键语义 | 6、11、15 | `8f51320` | `rust-preview-menu-reference-parity.spec.ts` old/new 各 1/1 | 实际比较文件卡右键默认事件、图片预览更多菜单项/几何/hover、空白与 Escape 关闭、summary 焦点恢复；音频/视频菜单全状态仍待验 | 局部 PASS |
-| 分享弹窗 loading/active 状态 | 2、12、15 | `01c48cb` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 1/1；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；Rust 初始 loading 关闭限制已恢复，复制失败/错误和内部焦点仍未完 | 局部 PASS |
+| 分享弹窗 loading/active/二级确认状态 | 2、12、15 | `01c48cb`、`39b4055` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；另以延迟 500 请求比较二级确认取消、确认后立即关闭和错误回显；Rust 初始 loading 关闭限制已恢复，复制失败和内部焦点仍未完 | 局部 PASS |
 | 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；移动端与回收站分支仍待验 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
 | 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
