@@ -24,7 +24,7 @@ const items = [
   base({ id: 'image', name: '图片.png', mime_type: 'image/png' }),
   base({ id: 'audio-cover', name: '带封面.mp3', mime_type: 'audio/mpeg', has_cover: true }),
   base({ id: 'audio', name: '无封面.mp3', mime_type: 'audio/mpeg' }),
-  base({ id: 'video', name: '视频.webm', mime_type: 'video/webm' }),
+  base({ id: 'video', name: '视频.webm', mime_type: 'video/webm', etag: 'etag video&/?' }),
   base({ id: 'archive', name: '归档.zip', mime_type: 'application/zip' }),
   base({ id: 'unknown', name: '未知.pdf', mime_type: 'application/pdf' }),
   base({ id: 'pending-epub', name: '处理中.epub', status: 'pending', mime_type: 'application/epub+zip' }),

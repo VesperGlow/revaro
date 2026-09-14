@@ -3010,7 +3010,11 @@ fn VideoThumbnail(file: File) -> impl IntoView {
     let failed = RwSignal::new(false);
     let timer = RwSignal::new(None::<i32>);
     let id = StoredValue::new(file.id.clone());
-    let etag = StoredValue::new(file.etag.clone());
+    let etag = StoredValue::new(
+        js_sys::encode_uri_component(&file.etag)
+            .as_string()
+            .unwrap_or_default(),
+    );
     let on_error = move |_| {
         let current = attempt.get_untracked();
         if current >= RETRY_DELAYS.len() {
