@@ -383,3 +383,34 @@ test('移动端分类抽屉隐藏桌面折叠与路径展开控件，并支持�
   await page.locator('.sidebar-backdrop').click({ position: { x: 380, y: 400 } })
   await expect(page.locator('.app-sidebar')).not.toHaveClass(/mobile-open/)
 })
+
+test('认证壳层卸载时释放响应式媒体查询监听', async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = { adds: 0, removes: 0 }
+    ;(window as Window & { __compatMediaQuery?: typeof state }).__compatMediaQuery = state
+    const prototype = MediaQueryList.prototype as MediaQueryList & {
+      addEventListener: typeof MediaQueryList.prototype.addEventListener
+      removeEventListener: typeof MediaQueryList.prototype.removeEventListener
+    }
+    const add = prototype.addEventListener
+    const remove = prototype.removeEventListener
+    prototype.addEventListener = function (...args) {
+      if (args[0] === 'change') state.adds += 1
+      return add.apply(this, args)
+    }
+    prototype.removeEventListener = function (...args) {
+      if (args[0] === 'change') state.removes += 1
+      return remove.apply(this, args)
+    }
+  })
+
+  await login(page)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  const counts = await page.evaluate(() => window.__compatMediaQuery)
+  expect(counts?.adds).toBeGreaterThan(0)
+
+  await page.locator('button[title="打开账户设置"]').click()
+  await page.locator('.account-modal').getByRole('button', { name: '退出登录', exact: true }).click()
+  await expect(page.getByLabel('用户名')).toBeVisible()
+  await expect.poll(async () => page.evaluate(() => window.__compatMediaQuery?.removes ?? 0)).toBe(counts?.adds)
+})

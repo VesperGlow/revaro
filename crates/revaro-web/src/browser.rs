@@ -18,9 +18,8 @@ use web_sys::MediaQueryListEvent;
 /// `AppSidebar` and `AppTopbar` both switch layout at 850 px by reading
 /// `window.matchMedia`, and both must react when the window crosses the
 /// breakpoint rather than only at startup. The listener is installed once and
-/// kept alive for the page's lifetime, matching the Vue components'
-/// `onMounted`/`onBeforeUnmount` pair; the shell never unmounts, so the closure
-/// is intentionally forgotten instead of stored.
+/// released with the component that owns the signal, matching the Vue
+/// components' `onMounted`/`onBeforeUnmount` pair.
 #[allow(dead_code)]
 pub fn media_query_signal(query: &str) -> RwSignal<bool> {
     let signal = RwSignal::new(media_query_matches(query));
@@ -35,7 +34,12 @@ pub fn media_query_signal(query: &str) -> RwSignal<bool> {
             signal.set(event.matches());
         });
     let _ = list.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
-    listener.forget();
+    let cleanup = leptos::__reexports::send_wrapper::SendWrapper::new((list, listener));
+    on_cleanup(move || {
+        let (list, listener) = cleanup.take();
+        let _ =
+            list.remove_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
+    });
     signal
 }
 
