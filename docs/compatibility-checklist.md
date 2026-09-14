@@ -173,6 +173,7 @@
 - `2026-09-15`，old `18080` / new `18084`：实际延迟视频 preview 请求并采样初始状态（两版均无 loading 遮罩、中心播放按钮隐藏、控制按钮为“暂停”），再注入含 `&nbsp;`、十六进制 entity、标签和换行的 VTT cue；Rust 初始版保留 entity 字面量，已按旧版 DOM `textContent` 解码，慢响应与字幕用例 old/new 均 1/1，修复提交 `22f320e`。
 - `2026-09-15`，old `18080` / new `18084`：实际在图片“实际大小”后于同一鼠标坐标滚轮放大并比较 computed transform/图像边界；旧版缩放后仍以鼠标位置为锚点，Rust 初始版把目标点误设为原点。已恢复 pointer-preserving wheel zoom，`rust-media-parity-ui.spec.ts` old/new 1/1，修复提交 `7119137`。
 - `2026-09-15`，old `18080` / new `18084`：实际暂停音频和视频、清理暂停产生的普通进度请求后关闭预览，并在浏览器 `fetch` 层读取最终 `PUT /media/progress` 的 Request；旧版卸载路径使用 `credentials: same-origin`、JSON header 和 `keepalive: true`，Rust 初始版由普通 gloo 请求发送 `keepalive: false`。已恢复旧版的“先本地保存、再 fire-and-forget keepalive 保存最终位置”语义，音频/视频双版本结果均为 `[true]`，`rust-media-parity-ui.spec.ts` 完整 20/20，修复提交 `25a2194`。
+- `2026-09-15`，old `18080` / new `18084`：向书架 `/api/library/all` 注入 `紧凑系列1.epub`、`紧凑系列2.epub`。旧版实际将两项分别渲染为单本书卡；Rust 初始版在书名分组探测中对中文前缀做非字符边界切片并触发 WASM panic，页面进入读取失败态。已改用边界安全的关键字匹配并保留旧版要求分隔符的分组规则；`rust-library-reference-parity.spec.ts` old/new 4/4，`cargo xtask check`、clippy、workspace test、WASM build 均通过，修复提交 `38ca433`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -208,7 +209,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[P]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new `rust-library-ui.spec.ts` 与导航定向用例确认顺序、文案、active/current、点击切换和返回 |
-| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all`、五类有数据视图、分类 503 → 重试 loading → 恢复内容、缺失或 null bucket → 正常空态、空分类路径/空态、首次快照缓存与显式刷新、非法音乐视图偏好回退已在 old/new 对照；书架标题分组、图库/音乐视图和分类卡右键语义另由 `1ffae0e` 双版本用例覆盖；各类数量、旧内容保留和完整错误矩阵仍待验 |
+| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all`、五类有数据视图、分类 503 → 重试 loading → 恢复内容、缺失或 null bucket → 正常空态、空分类路径/空态、首次快照缓存与显式刷新、非法音乐视图偏好回退已在 old/new 对照；书架标题分组、图库/音乐视图和分类卡右键语义另由 `1ffae0e`、`38ca433` 双版本用例覆盖，书架中文前缀的分组解析 panic 已修复；各类数量、旧内容保留和完整错误矩阵仍待验 |
 | `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 多级媒体路径树计数、默认展开、展开/过滤、active、展开箭头旋转、根节点 tooltip、空路径提示和分类失败/重试 loading old/new 已由 `rust-sidebar-tree-reference-parity.spec.ts`、`rust-library-reference-parity.spec.ts` 对照；文件目录树已实际记录 old 未注册组件、new 有效递归导航，切换竞态仍待稳定场景裁定 |
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
@@ -477,7 +478,7 @@
 | 根目录/回收站内容头与空错误态 | 5、15 | `50b8f3c` | `rust-file-browser-reference-parity.spec.ts` old/new 2/2 | 1440×900 实际比较根目录卡片、列表行、统计和回收站返回；390×844 比较空目录与 children 500 的空/错误结构及 toast | 局部 PASS |
 | 文件项键盘、类型边界与日期格式 | 6、15 | `31a8ce7`、`3d50af0`、`33a4052` | `rust-file-interaction-parity.spec.ts` old/new 定向各 2/2；`rust-file-card-reference-parity.spec.ts` old/new 矩阵 1/1；`cargo test -p revaro-web` 51/51；WASM/web build | 实际验证回收站目录 Enter、目录名 `.epub` 的 thumbnail/fallback、12 类卡/行节点及浏览器本地时区日期 | 局部 PASS |
 | 文件卡/行状态视觉 | 6、15 | `aa96e6a` | `rust-file-card-state-reference-parity.spec.ts` old/new 双上下文 1/1 | 1440×1000 实际比较方块正常/hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的状态 class、computed style、预览伪元素和选择控件；完整 loading/disabled/触摸状态未完 | 局部 PASS |
-| 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba`、`1ffae0e`、`697239f`、`cf15e55`、`46daf7e`、`b79879d` | `rust-library-ui.spec.ts` old/new 各 8/8；`rust-library-reference-parity.spec.ts` old/new 各 4/4；`rust-library-history-reference-parity.spec.ts` old/new 各 1/1；`revaro-core` 111/111 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；首次 503、重试 loading/恢复和请求次数、refresh 失败后继续切换仍复用旧快照；书架单本分组标题、图库模式跨图片/视频切换、媒体分类内容和右键默认事件、筛选后分类切换与浏览器返回/前进结果、非法音乐视图偏好回退、缺失或 null bucket 的正常空态也已双版本对照；完整分类错误/数量矩阵未完 | 局部 PASS |
+| 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba`、`1ffae0e`、`697239f`、`cf15e55`、`46daf7e`、`b79879d`、`38ca433` | `rust-library-ui.spec.ts` old/new 各 8/8；`rust-library-reference-parity.spec.ts` old/new 各 4/4；`rust-library-history-reference-parity.spec.ts` old/new 各 1/1；书架中文前缀回归 fixture old/new 4/4；`revaro-core` 111/111 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；首次 503、重试 loading/恢复和请求次数、refresh 失败后继续切换仍复用旧快照；书架单本分组标题、中文前缀书名安全解析、图库模式跨图片/视频切换、媒体分类内容和右键默认事件、筛选后分类切换与浏览器返回/前进结果、非法音乐视图偏好回退、缺失或 null bucket 的正常空态也已双版本对照；完整分类错误/数量矩阵未完 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 普通文件打开分流与阅读器路由生命周期 | 5–6、9–11、15 | `4b5c1a0`（Reader 路径恢复）、`478969a`（双版本打开分流） | `rust-open-item-reference-parity.spec.ts` old/new 1/1 | 同一 mock 根目录实际点击目录、TXT、EPUB、图片、音频、视频和未知文件，比较 overlay、pathname、Reader 标题、编辑器内容，并用浏览器后退逐项关闭；修复 Rust Reader cleanup 覆盖文件夹 URL 的回退 | 局部 PASS |
