@@ -234,6 +234,20 @@ test('old/new 普通文件上传按 reference 的时机进入任务中心', asyn
     })
   }
 
+  async function loginAndAwaitInitialTaskSnapshot(page: Parameters<typeof login>[0], baseUrl: string) {
+    const initialTasks = page.waitForResponse(response => {
+      const url = new URL(response.url())
+      return url.pathname === '/api/tasks' && response.request().method() === 'GET' && response.ok()
+    })
+    await loginAt(page, baseUrl)
+    const response = await initialTasks
+    await response.finished()
+    // Let TaskCenter consume the completed response before the upload starts;
+    // otherwise a slow initial snapshot can legitimately include the newly
+    // created server row and make the event-timing assertion flaky.
+    await page.waitForTimeout(50)
+  }
+
   async function waitForTask(page: Parameters<typeof login>[0]) {
     await expect.poll(async () => page.evaluate(async fileName => {
       const response = await fetch('/api/tasks')
@@ -267,8 +281,8 @@ test('old/new 普通文件上传按 reference 的时机进入任务中心', asyn
   try {
     await Promise.all([delayByteRequest(oldPage), delayByteRequest(newPage)])
     await Promise.all([
-      loginAt(oldPage, oldUrl),
-      loginAt(newPage, newUrl),
+      loginAndAwaitInitialTaskSnapshot(oldPage, oldUrl),
+      loginAndAwaitInitialTaskSnapshot(newPage, newUrl),
     ])
     await Promise.all([
       oldPage.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer }),
