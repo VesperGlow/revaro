@@ -191,7 +191,8 @@
   stroke-linejoin: round;
   transition: transform 0.18s ease;
 }
-.category-expand svg.open {
+.category-expand svg.open,
+.category-expand > span.open > svg {
   transform: rotate(90deg);
 }
 .category-paths {
@@ -246,7 +247,8 @@
   stroke-linejoin: round;
   transition: transform 0.16s ease;
 }
-.path-toggle svg.open {
+.path-toggle svg.open,
+.path-toggle > span.open > svg {
   transform: rotate(90deg);
 }
 .path-label {

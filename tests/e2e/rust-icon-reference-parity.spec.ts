@@ -129,6 +129,10 @@ async function compareIcons(oldPage: Page, newPage: Page, selector: string, labe
   expect(newGeometry, `${label} 的 Rust SVG 几何应保持 reference`).toEqual(oldGeometry)
 }
 
+async function cssTransform(page: Page, selector: string) {
+  return page.locator(selector).first().evaluate(element => getComputedStyle(element).transform)
+}
+
 test('旧版与 Rust 版全局入口、任务中心和文件操作图标保持 reference 几何', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
@@ -167,6 +171,24 @@ test('旧版与 Rust 版全局入口、任务中心和文件操作图标保持 r
     const newImagePaths = newPage.locator('.sidebar-category:has([data-category="image"]) .category-paths .path-label')
     await expect(oldImagePaths).toHaveCount(2)
     await expect(newImagePaths).toHaveCount(2)
+    await oldPage.waitForTimeout(250)
+    await newPage.waitForTimeout(250)
+    expect(
+      await cssTransform(oldPage, '.sidebar-nav [data-category="image"] ~ .category-expand svg'),
+      'reference 分类展开箭头应旋转',
+    ).not.toBe('none')
+    expect(
+      await cssTransform(newPage, '.sidebar-nav [data-category="image"] ~ .category-expand svg'),
+      'Rust 分类展开箭头应保持 reference 旋转状态',
+    ).toBe(await cssTransform(oldPage, '.sidebar-nav [data-category="image"] ~ .category-expand svg'))
+    expect(
+      await cssTransform(oldPage, '.sidebar-category:has([data-category="image"]) .category-paths button.path-toggle svg'),
+      'reference 路径树根箭头应旋转',
+    ).not.toBe('none')
+    expect(
+      await cssTransform(newPage, '.sidebar-category:has([data-category="image"]) .category-paths button.path-toggle svg'),
+      'Rust 路径树根箭头应保持 reference 旋转状态',
+    ).toBe(await cssTransform(oldPage, '.sidebar-category:has([data-category="image"]) .category-paths button.path-toggle svg'))
     await compareIcons(oldPage, newPage, '.sidebar-category:has([data-category="image"]) .category-paths .path-label svg', '媒体路径文件夹')
 
     await oldPage.locator('.task-center > summary[title="任务中心"]').click()
