@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`077e678`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`8bbbd22`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -90,6 +90,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后比较用户名编辑入口和会话区；旧版入口为 `svg + span`，Rust 初始版只有 `span`，且对应 hover 图标未命中。已恢复旧版铅笔 path、14px 尺寸和统一 icon helper；old/new DOM、geometry、hover、编辑聚焦和 Escape 取消均 1/1，`rust-account-reference-parity.spec.ts`，提交 `a6ac08e`。
 - `2026-09-14`，old `18080` / new `18083`：用同一 mock TOTP 数据实际完成“账户设置 → 两步验证设置 → 启用 → 下载文本”，读取浏览器下载文件逐字比较文件名、时间行、恢复码顺序和换行；old 使用默认 `Date.toLocaleString()`，Rust 初始版使用 ISO 时间戳，已恢复浏览器本地化格式。`rust-account-download-reference-parity.spec.ts` old/new 1/1，账户相关两项合计 2/2，提交 `80cf6c3`。
 - `2026-09-14`，old `18080` / new `18084`：同一延迟 `POST /api/auth/totp/setup` 实际点击“开始设置”，在 loading 中点击 TOTP 子弹窗空白；old 会关闭子弹窗，Rust 初始版因 `totp_busy` 限制仍停留。已恢复遮罩关闭行为，`rust-account-reference-parity.spec.ts`（用户名入口 + TOTP loading）old/new 2/2，提交 `077e678`。
+- `2026-09-14`，old `18080` / new `18084`：同一延迟移动 `PATCH /api/files/{id}` 实际点击“移动”后，在请求 pending 中点击遮罩；old 会立即关闭外层传输弹窗，Rust 初始版因 `transfer_busy` 限制仍停留。已移除传输遮罩和外层关闭回调的 busy 阻断；`rust-transfer-dialog-reference-parity.spec.ts` old/new 1/1，提交 `8bbbd22`。
 - `2026-09-14`，old `18080` / new `18083`：实际触发成功和 409 错误 Toast，比较文案、`toast success/error` class、无额外 role、定位/颜色/padding/命中区域、最新通知交互及 3.6 秒消失；Rust 初始版缺少 error class 且额外带 `role=status`，已按 reference 恢复。`rust-feedback-reference-parity.spec.ts` old/new 各 2/2，提交 `253e92d`；断线、剪贴板失败、堆叠等业务来源仍待验。
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 媒体库逐项切换书架、图片/视频图库、音乐方块/列表；双页面对照实际暴露 Rust 单本 EPUB 标题仍带“第1卷”、图片切到视频时图库模式被重置、分类卡/音频行缺少旧版 `contextmenu.prevent` 三处差异。已改为使用分组标题、父级共享首个图库模式和持久化 key，并恢复分类卡/行右键默认事件语义。旧版原始 `library-ui.spec.ts` 4/4、Rust `rust-library-ui.spec.ts` 8/8、`rust-library-reference-parity.spec.ts` old/new 双上下文 1/1，`cargo xtask check` 通过；提交 `1ffae0e`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，并追加中间级点击、Enter、触摸点击三条导航结果对照，整组现为 3/3。导航全套仍保留在 `[ ]` 直到 stale request/完整键盘状态矩阵完成。
@@ -217,14 +218,14 @@
 | `[ ]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | 基础入口存在 |
 | `[ ]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | old/new 已验证创建菜单实际动作、默认名、进入 editor、菜单立即关闭和保存重开；取消、失败仍待收口 |
 | `[ ]` | 重命名 | 单选条件、输入初值/扩展名规则、冲突、空白、Enter/Esc、PATCH 结果和列表更新一致。 | old/new 已实际对照初始名称、输入/按钮状态、文案、焦点及弹窗时选择工具栏卸载；冲突/空白/Enter/Esc、保存中和 PATCH 结果矩阵仍待收口 |
-| `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | old/new 触发器、面板定位/DOM、140ms 进入/退出过渡、路径图标几何、实际移动和清理已对照；排除子目录/冲突/错误仍待验 |
+| `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | old/new 触发器、面板定位/DOM、140ms 进入/退出过渡、路径图标几何、实际移动和清理、PATCH pending 时点击遮罩关闭已对照；排除子目录/冲突/错误仍待验 |
 | `[P]` | 目录选择器浮层定位与过渡 | 打开后 nextTick 定位；popover 在窗口边缘的 fixed/top-bottom/max-height 选择一致；进入/退出 opacity、transform、140ms 时序和关闭后的卸载一致。 | old/new 实际比较进入首帧、50ms 定位、独立退出首帧及 140ms 后卸载；`rust-directory-picker-reference-parity.spec.ts` old/new 3/3，提交 `3198ff8` |
 | `[ ]` | 复制 | 目标选择、目录/文件、同名处理、任务或立即结果、完成刷新和错误一致。 | old/new 媒体更多菜单实际复制并验证原文件保留；普通文件、同名和失败仍待验 |
 | `[ ]` | 删除 | 确认文案、单项/多项、目录、取消、loading、移入回收站、selection 清理和列表刷新一致。 | old/new 多选删除确认文案、单文件清理链路已对照；目录、取消/loading/失败仍待验 |
 | `[ ]` | 回收站查看 | 列表/网格、原路径/删除时间/大小、空状态、打开限制、恢复/永久删除入口一致。 | old/new 空回收站、列表行元信息、TXT 键盘打开分流已对照；完整 grid/只读矩阵仍待验 |
 | `[ ]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | old/new 直接恢复和清理已实际验证；冲突、失败、多选仍待验 |
 | `[ ]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | old/new 永久删除确认、清理链路已对照；清空回收站、失败/loading仍待验 |
-| `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退、分享二级确认取消/提交关闭/错误回显已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误和焦点回收仍待验 |
+| `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退、分享二级确认取消/提交关闭/错误回显、传输 PATCH pending 时遮罩关闭已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误和焦点回收仍待验 |
 
 ## 9. 文本文档查看与编辑器
 
@@ -444,6 +445,7 @@
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
 | 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
 | 账户 TOTP loading 遮罩行为 | 2、8、15 | `077e678` | `rust-account-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟 setup 请求期间实际点击子弹窗空白，比较 old/new 的关闭结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义 | 局部 PASS |
+| 移动/复制 loading 遮罩行为 | 8、15 | `8bbbd22` | `rust-transfer-dialog-reference-parity.spec.ts` old/new 双上下文 1/1；`cargo xtask check` 通过 | 延迟移动 PATCH 请求期间实际点击 old/new 遮罩，比较弹窗卸载结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义；目标排除、冲突、错误和成功刷新仍未完 | 局部 PASS |
 | 账户设置恢复码下载 | 2、15 | `80cf6c3` | `rust-account-download-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际完成 TOTP 启用并读取下载文件；文件名、浏览器本地化时间格式、恢复码顺序和换行与 reference 完全一致；初始 Rust ISO 时间格式已恢复 | 局部 PASS |
 | 全局 Toast 严重级别与时序 | 2、15 | `253e92d` | `rust-feedback-reference-parity.spec.ts` old/new 各 2/2；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；初始 Rust 的 error class/额外 role 已恢复 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
