@@ -2043,7 +2043,6 @@ pub fn FileBrowser(
         let share_error = share_error;
         let share_copied = share_copied;
         let account_open = account_open;
-        let dialog = dialog;
         let section = section;
         let trash_mode = trash_mode;
         let library_folder_id = library_folder_id;
@@ -2070,7 +2069,6 @@ pub fn FileBrowser(
                     share_error.set(String::new());
                     share_copied.set(false);
                     account_open.set(false);
-                    dialog.set(None);
                     if section.get_untracked() == LibraryKind::File {
                         replace_folder_url(&current_id.get_untracked());
                     } else {
