@@ -179,6 +179,7 @@
 - `2026-09-15`，old `18080` / new `18084`，390×844 触摸上下文：实际完成视频点按、保持播放、退出，再对图片做双指放大、单指取消和完整横向手势；两版均保持同一控制条/播放状态、缩放增量、取消不切图和完成手势切到下一张。`rust-media-parity-ui.spec.ts` old/new 1/1，测试提交 `df134c1`。
 - `2026-09-15`，old `18080` / new `18084`：分别让音频和视频原文件 preview 返回不可解码的 `application/octet-stream`；两版均使用“浏览器无法播放此原始格式，请下载后使用本地播放器打开”及视频“重新尝试”入口，并且不请求 HLS/fMP4/transcode/audio-stream。`rust-media-parity-ui.spec.ts` old/new 1/1，测试提交 `710e434`。
 - `2026-09-15`，old `18080` / new `18084`：桌面和 390×844 移动端逐项实际点击顶栏任务中心、在线状态、账户设置、回收站，以及移动账户/工具菜单中的任务、账户、回收站；两版均按 reference 打开/关闭对应面板，账户入口不误触发退出，移动菜单点击后正确关闭并完成目标跳转。`rust-global-ui-reference-parity.spec.ts` old/new 完整分流 1/1，测试提交 `f752758`。
+- `2026-09-15`，old `18080` / new `18084`：按旧 server route registry、old `web/src` 调用点和 Rust route/caller 逐项反向清点；未发现旧版主 UI 调用方在 Rust 端无对应实现。新增 API 双实例探针比较认证、存储、library、状态、任务、根目录/children、回收站、分享及所有专用缺失分流；另以同名同内容文档实际完成创建、读取、保存、完整/Range 下载、preview、分享/撤销、重命名、复制、删除、恢复和 purge 生命周期，均 old/new 1/1。探针发现并恢复 `GET /api/uploads/{id}` 缺失时 old 的 `upload not found`（Rust 原为 `pending upload not found`），上传其他操作仍保留 pending 文案；服务端单测通过，修复提交 `da88991`，API E2E 提交 `eac64a8`。live 数据中历史文件可能省略可选 `etag`，对照只忽略该字段，其余契约字段仍严格比较。
 
 ## 2. 启动、认证和全局壳层
 
@@ -402,11 +403,11 @@
 | `[P]` | `PATCH /api/files/{id}` | 重命名/移动 | Rust `patch_file()` 由 rename/transfer 调用；old/new 实际重命名和移动已验证 |
 | `[P]` | `POST /api/files/{id}/copy` | 复制 | Rust `copy_file()` 由 transfer dialog 调用；old/new 实际复制已验证 |
 | `[P]` | `POST /api/files/{id}/extract` | 归档解压 | Rust `extract_archive()` 由 SelectionToolbar 调用；old/new 实际确认请求入口、即时反馈和任务中心后续状态，真实 ZIP 任务也已有验证 |
-| `[ ]` | `DELETE /api/files/{id}` | 移入回收站 | Rust `delete_file()` 有 |
-| `[ ]` | `GET /api/trash` | 回收站列表 | Rust `fetch_trash()` 有 |
-| `[ ]` | `DELETE /api/trash` | 清空回收站 | Rust `empty_trash()` 有 |
-| `[ ]` | `POST /api/trash/{id}/restore` | 恢复 | Rust `restore_file()` 有 |
-| `[ ]` | `DELETE /api/trash/{id}` | 永久删除 | Rust `purge_file()` 有 |
+| `[P]` | `DELETE /api/files/{id}` | 移入回收站 | Rust `delete_file()` 有；API 文档生命周期 old/new 均实际验证删除后入 trash |
+| `[P]` | `GET /api/trash` | 回收站列表 | Rust `fetch_trash()` 有；API 文档生命周期 old/new 均实际验证列表包含目标项 |
+| `[ ]` | `DELETE /api/trash` | 清空回收站 | Rust `empty_trash()` 有；清空的反馈/错误链路另由 UI parity 覆盖，实际 API 成功/失败矩阵仍未完 |
+| `[P]` | `POST /api/trash/{id}/restore` | 恢复 | Rust `restore_file()` 有；API 文档生命周期 old/new 均实际验证恢复 |
+| `[P]` | `DELETE /api/trash/{id}` | 永久删除 | Rust `purge_file()` 有；API 文档生命周期 old/new 均实际验证 purge |
 | `[ ]` | `POST /api/uploads` | 创建上传 | Rust `create_upload()` 有 |
 | `[ ]` | `GET /api/uploads/{id}` | 上传状态/断点恢复 | Rust `fetch_upload()` 有 |
 | `[ ]` | `PUT /api/uploads/{id}/data` | 单请求上传 | Rust API/controller caller 待验 |
@@ -512,4 +513,5 @@
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
 | 弹层 history 与外置确认框生命周期 | 5、8、15 | `55ef117`、`a7c669e` | `rust-modal-history-reference-parity.spec.ts` old/new 1/1 | 实际在分享弹层上打开停止分享确认框后按浏览器后退，比较 share modal 与外置 AppDialog 的卸载/保留结果和 pathname；Rust 初始额外清除 dialog，已恢复 reference 行为 | 局部 PASS |
 | 分类媒体视图与文件项交互 | 4–6、15 | `1ffae0e` | old 原始 `library-ui.spec.ts` 4/4；Rust `rust-library-ui.spec.ts` 8/8；双版本 `rust-library-reference-parity.spec.ts` 1/1；`cargo xtask check` | 同一 fixture 实际比较书架/图库/音乐标题、分组、卡片/行、视图切换、图片到视频的会话状态延续及分类卡/音频行 `contextmenu.prevent`；Rust 初始三处差异均已恢复 | 局部 PASS |
-| 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
+| API 路由与文档生命周期 | 13、15–16 | `da88991`、`eac64a8` | `rust-api-reference-parity.spec.ts` old/new 2/2；服务端 upload error 单测 1/1；`cargo fmt`、`cargo xtask check` 已通过 | 旧 route registry、old/new caller 反向清点；认证/存储/library/status/tasks/文件/回收站/分享缺失矩阵及文档创建→回收生命周期实际双实例对照；`GET /api/uploads/{id}` 查询缺失文案已恢复 | 局部 PASS |
+| 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已完成第一轮 route/caller 反向登记并新增双实例探针；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
