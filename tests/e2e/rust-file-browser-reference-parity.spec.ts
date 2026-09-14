@@ -24,7 +24,11 @@ const trashItems = [
   file({ id: 'deleted-note', name: '已删除.txt', deleted_at: STAMP, size: 512 }),
 ]
 
-async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error') {
+async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error', childrenDelayMs = 0) {
+  let releaseChildren = () => {}
+  const childrenGate = childrenDelayMs
+    ? new Promise<void>(resolve => { releaseChildren = resolve })
+    : null
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -45,12 +49,60 @@ async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error') {
       const items = mode === 'empty' ? [] : rootItems
       return json({ items, total_bytes: mode === 'empty' ? 0 : 3072, file_count: mode === 'empty' ? 0 : 1 })
     }
+    if (path === '/api/files/folder') return json({ file: rootItems[0], breadcrumbs: [root] })
+    if (path === '/api/files/folder/children') {
+      if (childrenGate) await childrenGate
+      return json({ items: [], total_bytes: 0, file_count: 0 })
+    }
     if (path === '/api/trash') {
       return json({ items: mode === 'empty' ? [] : trashItems, total_bytes: mode === 'empty' ? 0 : 512, file_count: mode === 'empty' ? 0 : 1 })
     }
     return json({ items: [] })
   })
+  return childrenDelayMs ? releaseChildren : undefined
 }
+
+test('目录切换期间的 loading 文案和完成后的内容保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [releaseOld, releaseNew] = await Promise.all([
+      mockBrowser(oldPage, 'normal', 2_000),
+      mockBrowser(newPage, 'normal', 2_000),
+    ])
+    await Promise.all([openRoot(oldPage, oldUrl), openRoot(newPage, newUrl)])
+    const oldChildrenRequest = oldPage.waitForRequest(request => request.url().includes('/api/files/folder/children'))
+    const newChildrenRequest = newPage.waitForRequest(request => request.url().includes('/api/files/folder/children'))
+    await Promise.all([
+      oldPage.locator('.file-card').filter({ hasText: '资料' }).click(),
+      newPage.locator('.file-card').filter({ hasText: '资料' }).click(),
+    ])
+    await Promise.all([oldChildrenRequest, newChildrenRequest])
+    await Promise.all([
+      expect(oldPage.locator('.content .state')).toContainText('正在读取文件…'),
+      expect(newPage.locator('.content .state')).toContainText('正在读取文件…'),
+    ])
+    expect(await contentSnapshot(newPage), 'Rust 首次目录 loading 与 reference 不一致')
+      .toEqual(await contentSnapshot(oldPage))
+
+    releaseOld?.()
+    releaseNew?.()
+    await Promise.all([
+      expect(oldPage.locator('.state.empty')).toBeVisible(),
+      expect(newPage.locator('.state.empty')).toBeVisible(),
+    ])
+    expect(await contentSnapshot(newPage), 'Rust 首次目录完成态与 reference 不一致')
+      .toEqual(await contentSnapshot(oldPage))
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
 
 async function clearPreferences(context: BrowserContext) {
   await context.addInitScript(() => localStorage.removeItem('revaro:library:media:file'))
