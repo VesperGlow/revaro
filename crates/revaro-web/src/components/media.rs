@@ -824,7 +824,7 @@ fn FilmstripItem(
             on:click=move |_| on_select.run(file.clone())
         >
             <img
-                src=format!("/api/files/{}/thumbnail", file.id)
+                src=thumbnail_url(&file)
                 alt=file.name.clone()
                 loading="lazy"
                 draggable="false"
@@ -892,6 +892,16 @@ fn change_gallery(
 
 fn non_negative(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
+}
+
+fn thumbnail_url(file: &File) -> String {
+    format!(
+        "/api/files/{}/thumbnail?v={}",
+        file.id,
+        js_sys::encode_uri_component(&file.etag)
+            .as_string()
+            .unwrap_or_default()
+    )
 }
 
 fn actual_zoom(natural: Size, stage: Size) -> f64 {
@@ -1098,7 +1108,7 @@ fn trap_focus(root: NodeRef<leptos::html::Section>, event: &KeyboardEvent) {
         })
         .unwrap_or_else(|| root.clone().unchecked_into());
     let Ok(nodes) = scope.query_selector_all(
-        "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex=\"-1\"])"
+        "button:not([disabled]), summary, input:not([disabled]), select:not([disabled]), [tabindex=\"0\"]"
     ) else {
         return;
     };

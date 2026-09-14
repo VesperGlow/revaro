@@ -162,6 +162,10 @@ test('图片：实际大小、拖动边界、缩略图、菜单和逐层退出',
   expect(fitted!.width).toBeLessThan(1440)
   await page.getByRole('button', { name: '缩略图', exact: true }).click()
   await expect(page.locator('.preview-filmstrip button')).toHaveCount(2)
+  await expect(page.locator('.preview-filmstrip img').first()).toHaveAttribute(
+    'src',
+    '/api/files/image-1/thumbnail?v=',
+  )
   await page.getByRole('button', { name: '查看 远山.png' }).click()
   await expect(page.locator('.preview-file-meta')).toHaveText('远山.png')
   await page.getByRole('button', { name: '实际大小', exact: true }).click()
@@ -180,6 +184,14 @@ test('图片：实际大小、拖动边界、缩略图、菜单和逐层退出',
   await expect(page.locator('.preview-commandbar')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.locator('.preview-modal')).toHaveCount(0)
+})
+
+test('图片预览：从根节点按 Tab 首先进入更多操作菜单', async ({ page }) => {
+  await mockMedia(page)
+  await open(page, '群山.png')
+  await page.locator('.preview-modal').focus()
+  await page.keyboard.press('Tab')
+  await expect(page.locator('.preview-commandbar summary')).toBeFocused()
 })
 
 test('音频和视频恢复旧版各自的音量、倍速与位置存储，不共享错误的倍速设置', async ({ page }) => {
