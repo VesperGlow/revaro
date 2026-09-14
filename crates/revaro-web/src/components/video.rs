@@ -749,6 +749,7 @@ pub fn VideoPlayer(
             .enumerate()
             .collect::<Vec<_>>()
     };
+    let subtitle_options = move || subtitles.get().into_iter().enumerate().collect::<Vec<_>>();
 
     view! {
         <div
@@ -839,15 +840,14 @@ pub fn VideoPlayer(
                     <span class="video-control-spacer"></span>
                     <Show when=move || !subtitles.get().is_empty() fallback=|| ()>
                         <PreviewMenu label="字幕".to_owned() icon=MenuIcon::Captions>
-                            <label class="video-setting"><span>"字幕"</span><select aria-label="字幕轨道" prop:value=move || active_subtitle.get().and_then(|index| subtitles.get().get(index).map(|track| track.id.clone())).unwrap_or_else(|| "-1".to_owned()) on:change={move |event: Event| {
+                            <label class="video-setting"><span>"字幕"</span><select aria-label="字幕轨道" prop:value=move || active_subtitle.get().map_or_else(|| "-1".to_owned(), |index| index.to_string()) on:change={move |event: Event| {
                                 let Some(select) = event.target().and_then(|target| target.dyn_into::<HtmlSelectElement>().ok()) else { return; };
-                                let value = select.value();
-                                active_subtitle.set(subtitles.get_untracked().iter().position(|track| track.id == value));
+                                active_subtitle.set(select.value().parse::<usize>().ok().filter(|index| *index < subtitles.get_untracked().len()));
                             }}>
                                 <option value="-1">"关闭字幕"</option>
-                                <For each=move || subtitles.get() key=|track| track.id.clone() let:track>
-                                    <option value=track.id.clone()>
-                                        {track.label.clone()}
+                                <For each=subtitle_options key=|entry| entry.1.id.clone() let:entry>
+                                    <option value=entry.0.to_string()>
+                                        {entry.1.label.clone()}
                                     </option>
                                 </For>
                             </select></label>
