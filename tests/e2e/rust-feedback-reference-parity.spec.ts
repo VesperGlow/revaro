@@ -303,3 +303,74 @@ test('连续通知只保留最新内容并从替换时刻重新计时', async ({
     await newContext.close()
   }
 })
+
+test('401 会话过期保留 reference 结果并明确记录 Rust 安全强化', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const folder = {
+    id: 'feedback-expired-folder',
+    parent_id: ROOT,
+    name: '会话过期目录',
+    kind: 'directory',
+    size: 0,
+    status: 'ready',
+    created_at: STAMP,
+    updated_at: STAMP,
+    mime_type: '',
+  }
+
+  async function mockExpired(page: Page) {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') {
+        return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+      }
+      if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+      if (path === `/api/files/${ROOT}`) {
+        return json({
+          file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+          breadcrumbs: [],
+        })
+      }
+      if (path === `/api/files/${ROOT}/children`) return json({ items: [folder], total_bytes: 0, file_count: 1 })
+      if (path === `/api/files/${folder.id}` || path === `/api/files/${folder.id}/children`) {
+        return route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { status: 401, message: 'session expired' } }),
+        })
+      }
+      return json({ items: [] })
+    })
+  }
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockExpired(page)
+    await page.goto(`${baseUrl}/?toast-session-expired=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.locator('.file-card, .file-row').filter({ hasText: folder.name }).click()
+  }
+
+  try {
+    await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    await expect(oldPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await expect(oldPage.locator('.toast')).toHaveText('session expired')
+    await expect(newPage.getByLabel('用户名')).toBeVisible()
+    await expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toHaveCount(0)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
