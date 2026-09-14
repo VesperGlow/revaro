@@ -30,8 +30,20 @@ test('上传文件夹保留旧版的相对目录结构并通过任务状态完�
 
   try {
     await login(page)
+    await page.evaluate(() => {
+      const marks: string[] = []
+      const record = () => {
+        const text = document.querySelector('.toast')?.textContent?.trim() ?? ''
+        if (text && marks.at(-1) !== text) marks.push(text)
+      }
+      new MutationObserver(record).observe(document.body, { subtree: true, childList: true, characterData: true })
+      ;(window as typeof window & { __folderUploadToastMarks?: string[] }).__folderUploadToastMarks = marks
+    })
     await page.locator('input[webkitdirectory]').setInputFiles(directory)
-    await expect(page.getByText('已保留目录结构，开始上传 2 个文件')).toBeVisible()
+    await expect.poll(
+      () => page.evaluate(() => (window as typeof window & { __folderUploadToastMarks?: string[] }).__folderUploadToastMarks?.includes('已保留目录结构，开始上传 2 个文件') ?? false),
+      { timeout: 15_000 },
+    ).toBe(true)
     await expect(page.locator('.file-card, .file-row').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 })
 
     await page.locator('.file-card, .file-row').filter({ hasText: rootName }).click()
@@ -135,5 +147,68 @@ test('文件夹上传在当前目录刷新完成后才显示成功反馈', async
     expect(success!.at).toBeGreaterThanOrEqual(refreshFinishedAt)
   } finally {
     await removeCreated(page, [rootName])
+  }
+})
+
+async function loginAt(page: Parameters<typeof login>[0], baseUrl: string) {
+  await page.goto(`${baseUrl}/?folder-upload-reference=${Date.now()}`)
+  await page.getByLabel('用户名').fill(process.env.E2E_USERNAME || 'admin')
+  await page.getByLabel('密码').fill(process.env.E2E_PASSWORD || 'revaro-e2e-password')
+  await page.getByRole('button', { name: '进入我的网盘' }).click()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+}
+
+async function watchFolderUploadFeedback(page: Parameters<typeof login>[0]) {
+  await page.evaluate(() => {
+    const marks: string[] = []
+    const record = () => {
+      const text = document.querySelector('.toast')?.textContent?.trim() ?? ''
+      if (text && marks.at(-1) !== text) marks.push(text)
+    }
+    new MutationObserver(record).observe(document.body, { subtree: true, childList: true, characterData: true })
+    ;(window as typeof window & { __folderUploadToastMarks?: string[] }).__folderUploadToastMarks = marks
+  })
+}
+
+test('old/new 文件夹上传保留相同反馈与嵌套目录结果', async ({ browser }, testInfo) => {
+  const directory = testInfo.outputPath(`folder-reference-${crypto.randomUUID()}`)
+  const rootName = path.basename(directory)
+  await mkdir(path.join(directory, 'nested'), { recursive: true })
+  await writeFile(path.join(directory, 'nested', 'first.txt'), 'folder upload reference first\n')
+  await writeFile(path.join(directory, 'nested', 'second.txt'), 'folder upload reference second\n')
+
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([loginAt(oldPage, oldUrl), loginAt(newPage, newUrl)])
+    await Promise.all([watchFolderUploadFeedback(oldPage), watchFolderUploadFeedback(newPage)])
+    await Promise.all([
+      oldPage.locator('input[webkitdirectory]').setInputFiles(directory),
+      newPage.locator('input[webkitdirectory]').setInputFiles(directory),
+    ])
+    await Promise.all([
+      expect.poll(() => oldPage.evaluate(() => (window as typeof window & { __folderUploadToastMarks?: string[] }).__folderUploadToastMarks?.includes('已保留目录结构，开始上传 2 个文件') ?? false), { timeout: 15_000 }).toBe(true),
+      expect.poll(() => newPage.evaluate(() => (window as typeof window & { __folderUploadToastMarks?: string[] }).__folderUploadToastMarks?.includes('已保留目录结构，开始上传 2 个文件') ?? false), { timeout: 15_000 }).toBe(true),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.file-card, .file-row').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
+      expect(newPage.locator('.file-card, .file-row').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
+    ])
+    for (const page of [oldPage, newPage]) {
+      await page.locator('.file-card, .file-row').filter({ hasText: rootName }).click()
+      await expect(page.locator('.file-card, .file-row').filter({ hasText: 'nested' })).toBeVisible({ timeout: 20_000 })
+      await page.locator('.file-card, .file-row').filter({ hasText: 'nested' }).click()
+      await expect(page.locator('.file-card, .file-row').filter({ hasText: 'first.txt' })).toBeVisible({ timeout: 20_000 })
+      await expect(page.locator('.file-card, .file-row').filter({ hasText: 'second.txt' })).toBeVisible({ timeout: 20_000 })
+    }
+  } finally {
+    await Promise.all([removeCreated(oldPage, [rootName]), removeCreated(newPage, [rootName])])
+    await oldContext.close()
+    await newContext.close()
   }
 })
