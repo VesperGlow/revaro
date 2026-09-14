@@ -283,7 +283,7 @@ fn ServiceCard(
         <article class=format!("service-card tone-{tone}")>
             <div class="service-card-head">
                 <span class="service-icon" aria-hidden="true">{service_icon(icon)}</span>
-                <span class=format!("status-badge tone-{tone}")>{badge}</span>
+                <span class=format!("status-badge tone-{tone} size-sm")>{badge}</span>
             </div>
             <div class="service-copy">
                 <b>{title}</b>

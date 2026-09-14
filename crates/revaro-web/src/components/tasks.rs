@@ -759,13 +759,13 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                         when=move || failed_count.get() != 0
                         fallback=move || view! {
                             <Show when=move || active_count.get() != 0 fallback=|| ()>
-                                <span class="status-badge size-md tone-info">
+                                <span class="status-badge tone-info size-sm">
                                     {move || format!("{} 项活动", active_count.get())}
                                 </span>
                             </Show>
                         }
                     >
-                        <span class="status-badge size-md tone-danger">
+                        <span class="status-badge tone-danger size-sm">
                             {move || format!("{} 项失败", failed_count.get())}
                         </span>
                     </Show>
