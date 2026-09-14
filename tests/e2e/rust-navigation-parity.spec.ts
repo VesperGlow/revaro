@@ -405,6 +405,25 @@ test('移动端账户工具菜单 Escape 保留 reference 的默认事件与 sum
   expect(await summary.evaluate(element => document.activeElement === element)).toBe(true)
 })
 
+test('移动端侧栏 Escape 保留 reference 的默认事件和关闭行为', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await login(page)
+  const sidebar = page.locator('.app-sidebar')
+  await page.locator('.sidebar-handle').click()
+  await expect(sidebar).toHaveClass(/mobile-open/)
+  await page.evaluate(() => {
+    ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = undefined
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = event.defaultPrevented
+      }
+    }, { once: true })
+  })
+  await page.keyboard.press('Escape')
+  await expect(sidebar).not.toHaveClass(/mobile-open/)
+  expect(await page.evaluate(() => (window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented)).toBe(false)
+})
+
 test('认证壳层卸载时释放响应式媒体查询监听', async ({ page }) => {
   await page.addInitScript(() => {
     const state = { adds: 0, removes: 0 }

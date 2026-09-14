@@ -53,7 +53,6 @@ pub fn AppSidebar(
 
     let mut escape_listener = browser::on_keydown(move |event| {
         if event.key() == "Escape" && mobile_open.get_untracked() {
-            event.prevent_default();
             mobile_open.set(false);
         }
     });
