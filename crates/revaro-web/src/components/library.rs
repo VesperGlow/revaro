@@ -517,8 +517,11 @@ pub fn LibraryView(
         gallery_mode.set(Some(mode));
     }
     let media_key = "revaro:library:media:audio".to_owned();
-    let media_mode =
-        RwSignal::new(browser::local_storage_get(&media_key).unwrap_or_else(|| "grid".to_owned()));
+    let media_mode = RwSignal::new(
+        browser::local_storage_get(&media_key)
+            .filter(|value| value == "grid" || value == "list")
+            .unwrap_or_else(|| "grid".to_owned()),
+    );
     let title = category_title(kind);
     let eyebrow = category_eyebrow(kind);
 

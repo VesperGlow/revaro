@@ -249,3 +249,38 @@ test('旧版与 Rust 版分类读取失败、重试 loading 与恢复快照一�
     await newContext.close()
   }
 })
+
+test('旧版与 Rust 版音乐视图非法偏好均回退到方块并标记 active', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  await oldContext.addInitScript(() => localStorage.setItem('revaro:library:media:audio', 'corrupted'))
+  await newContext.addInitScript(() => localStorage.setItem('revaro:library:media:audio', 'corrupted'))
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockLibrary(oldPage), mockLibrary(newPage)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('[data-category="audio"]').click(),
+      newPage.locator('[data-category="audio"]').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.library-view')).toBeVisible(),
+      expect(newPage.locator('.library-view')).toBeVisible(),
+    ])
+    expect(await headerSnapshot(newPage), 'Rust 非法音乐视图偏好应按 reference 回退并标记方块 active')
+      .toEqual(await headerSnapshot(oldPage))
+    expect(await itemSnapshot(newPage), 'Rust 非法音乐视图偏好回退后的内容应保持 reference')
+      .toEqual(await itemSnapshot(oldPage))
+    await expect(oldPage.getByRole('button', { name: '方块' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(newPage.getByRole('button', { name: '方块' })).toHaveAttribute('aria-pressed', 'true')
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
