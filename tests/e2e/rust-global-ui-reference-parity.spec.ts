@@ -116,6 +116,29 @@ async function badgeMetrics(page: Page, selector: string) {
   }))
 }
 
+async function fileHeaderMetrics(page: Page) {
+  return page.locator('.content-head').evaluate(element => {
+    const styleOf = (selector: string) => getComputedStyle(element.querySelector(selector) as Element).display
+    return {
+      title: element.querySelector('h1')?.textContent?.trim(),
+      meta: element.querySelector('.folder-meta')?.textContent?.replace(/\s+/g, ' ').trim(),
+      viewButtons: Array.from(element.querySelectorAll('.file-view-switch button')).map(button => ({
+        text: button.textContent?.replace(/\s+/g, ' ').trim(),
+        className: button.className,
+        pressed: button.getAttribute('aria-pressed'),
+        title: button.getAttribute('title'),
+      })),
+      desktopCreateActions: styleOf('.desktop-create-actions'),
+      createMenu: styleOf('.create-menu'),
+      uploadMenu: styleOf('.upload-menu'),
+      titleRect: (() => {
+        const rect = element.querySelector('h1')!.getBoundingClientRect()
+        return { width: rect.width, height: rect.height }
+      })(),
+    }
+  })
+}
+
 test('任务中心和系统状态 badge 保持 reference 尺寸与视觉层级', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
@@ -145,6 +168,37 @@ test('任务中心和系统状态 badge 保持 reference 尺寸与视觉层级',
     expect(await badgeMetrics(newPage, serviceSelector)).toEqual(await badgeMetrics(oldPage, serviceSelector))
     expect(await newPage.locator('.status-grid .service-card').nth(2).innerText())
       .toBe(await oldPage.locator('.status-grid .service-card').nth(2).innerText())
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('文件浏览头视图切换与断点布局保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockShell(oldPage), mockShell(newPage)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+      await Promise.all([oldPage.setViewportSize(viewport), newPage.setViewportSize(viewport)])
+      await expect(oldPage.locator('.content-head')).toBeVisible()
+      await expect(newPage.locator('.content-head')).toBeVisible()
+      expect(await fileHeaderMetrics(newPage)).toEqual(await fileHeaderMetrics(oldPage))
+
+      for (const mode of ['列表', '方块']) {
+        const title = mode === '列表' ? '列表视图' : '方块视图'
+        await oldPage.getByTitle(title).click()
+        await newPage.getByTitle(title).click()
+        expect(await fileHeaderMetrics(newPage)).toEqual(await fileHeaderMetrics(oldPage))
+      }
+    }
   } finally {
     await oldContext.close()
     await newContext.close()
