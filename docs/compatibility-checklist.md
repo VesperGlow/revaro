@@ -183,6 +183,7 @@
 - `2026-09-15`，old `18080` / new `18084`：重建 new 后串行复跑全局键盘/弹层集合 27/27，以及账户、确认操作、传输、编辑器、分享和操作菜单集合 28/28；实际覆盖桌面 24 步 Tab 顺序、媒体/阅读器焦点陷阱与恢复、顶栏/状态/任务/侧栏/下拉/确认/账户/传输/编辑器/分享的 Escape、主要表单 Enter、空白关闭和浏览器后退。old/new 均通过，未把 401 安全强化差异当作兼容通过依据。
 - `2026-09-15`，old `18080` / new `18084`：重建 new 后串行复跑分类/侧栏集合 16/16；五类分类实际切换到书架、图片、视频、音乐、文件，比较数量、标题、路径树、卡片/行、系列/图库/音乐视图、空态、503→重试 loading→恢复、缺失/null bucket、非法视图偏好、分类 history 和路径过滤；old/new 均通过。文件目录树仍保留 reference 未注册组件的已知运行时差异，不把该条目提前标 PASS。
 - `2026-09-15`，old `18080` / new `18084`：在同一 mock 根目录实际进入子目录，并延迟两版的 `/api/files/{id}/children` 响应；两版在目录切换期间都显示“正在读取文件…”，响应放行后都进入相同空目录完成态。根目录、列表/方块、回收站、空目录和读取失败结构的文件浏览集合 `rust-file-browser-reference-parity.spec.ts` old/new 3/3 通过，测试提交 `6cdeec9`。
+- `2026-09-15`，old `18080` / new `18084`：重建 new 后实际复跑文件项双版本集合 7/7（类型/状态、头部菜单、更多菜单与右键、选择工具栏）；另分别在 old 与 new 运行 `rust-file-interaction-parity.spec.ts` 8/8，选择模式、空白清选、TXT/EPUB/视频图标、回收站目录 Enter 和目录 `.epub` 边界均通过，未发现新的 Rust 差异。
 
 ## 2. 启动、认证和全局壳层
 
@@ -246,9 +247,9 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；Enter、`.epub` 目录边界、日期时区、12 类卡/行矩阵以及正常/hover/focus/selected/pending/failed 状态已 old/new 实测，完整 loading/disabled/触摸状态仍待验 |
+| `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；old/new 已实际通过类型/状态 7/7 双版本集合及 old/new 各 8/8 交互集合，覆盖 Enter、`.epub` 目录边界、日期时区、12 类卡/行矩阵以及正常/hover/focus/selected/pending/failed 状态；完整 loading/disabled/触摸状态仍待验 |
 | `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；账户用户名编辑铅笔已恢复；文件项 12 类 preview/fallback 图标路径和节点已矩阵对照，颜色/状态叠加和截图级视觉仍待验 |
-| `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 方块正常/预览 hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的 computed style、伪元素和选择控件已 old/new 1/1；完整 loading/disabled、pointer/长按及任务覆盖层仍待验 |
+| `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 方块正常/预览 hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的 computed style、伪元素和选择控件已 old/new 1/1；文件项双版本 7/7、交互 old/new 各 8/8 另确认 Space/Enter、右键和选择 pointer；完整 loading/disabled、长按及任务覆盖层仍待验 |
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
 | `[ ]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | old/new 文件卡右键均阻止原生菜单；图片预览 more 的锚点、菜单项、空白/Escape 关闭、hover 和焦点已对照；边缘翻转、disabled 及所有操作结果仍待验 |
