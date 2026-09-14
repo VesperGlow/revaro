@@ -177,6 +177,43 @@ test('文档保存在 reference 的目录刷新完成后才显示成功反馈', 
   }
 })
 
+test('old/new 新建空文档保留未保存标记但关闭不触发放弃确认', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await page.getByRole('button', { name: '新建文档', exact: true }).first().click()
+    const editor = page.locator('.document-editor')
+    await expect(editor).toBeVisible()
+    const initial = {
+      unsaved: await editor.locator('.unsaved-dot').count(),
+      saveDisabled: await editor.getByRole('button', { name: '保存', exact: true }).isDisabled(),
+    }
+    await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click()
+    return {
+      initial,
+      editor: await editor.count(),
+      discard: await page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' }).count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ initial: { unsaved: 1, saveDisabled: false }, editor: 0, discard: 0 })
+    expect(newResult, 'Rust 新建空文档的未保存标记/关闭语义与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 全部旧版可编辑扩展名都从文件入口进入相同 editor', async ({ browser }) => {
   const suffix = crypto.randomUUID()
   const extensions = ['md', 'markdown', 'txt', 'yaml', 'yml', 'json', 'toml', 'ini', 'conf', 'log', 'csv']
