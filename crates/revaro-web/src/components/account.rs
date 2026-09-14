@@ -11,8 +11,8 @@ use revaro_core::api::auth::{
     AvatarRequest, ChangePasswordRequest, ChangeUsernameRequest, PasswordCodeRequest,
     PasswordRequest,
 };
-use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Event, File as BrowserFile, FileReader, HtmlElement, HtmlInputElement};
 
@@ -620,9 +620,17 @@ pub fn AccountSettings(
     let download_recovery = {
         let recovery_codes = recovery_codes;
         Callback::new(move |(): ()| {
+            let date = js_sys::Date::new_0();
+            let localized_time =
+                js_sys::Reflect::get(date.as_ref(), &JsValue::from_str("toLocaleString"))
+                    .ok()
+                    .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+                    .and_then(|function| function.call0(date.as_ref()).ok())
+                    .and_then(|value| value.as_string())
+                    .unwrap_or_else(|| date.to_iso_string().into());
             let text = format!(
                 "revaro 恢复码\n生成时间：{}\n\n{}\n",
-                js_sys::Date::new_0().to_iso_string(),
+                localized_time,
                 recovery_codes.get_untracked().join("\n")
             );
             let encoded = js_sys::encode_uri_component(&text)
