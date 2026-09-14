@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`aa96e6a`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`2451445`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -119,6 +119,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际创建名为 `compat-folder-<uuid>.epub` 的目录并读取文件卡；旧版目标目录不请求 thumbnail、使用 `folder-tile fallback-tile` 和文件夹 SVG，Rust 初始版误请求该目录 thumbnail。已将主文件浏览的 EPUB 预览、class 和 icon 谓词收紧为 `kind=file`，并保留非 ready EPUB 的旧版类型语义；old/new 定向用例各 1/1，Rust `cargo test -p revaro-web` 51/51、WASM check 通过，提交 `3d50af0`。
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 文件矩阵在 1440×1000 实际切换方块/列表视图；旧版列表更新时间按浏览器本地时区显示（`1月1日 08:00`），Rust 初始 formatter 固定 UTC（`1月1日 00:00`）。已让 wasm formatter 使用 browser `Date` 本地 getters，保留 native UTC 单测；目录、目录 `.epub`、TXT、EPUB、图片、音频（带/不带封面）、视频、归档、未知、pending/failed 共 12 类的卡片/行矩阵 old/new 1/1，提交 `33a4052`。
 - `2026-09-14`，old `18080` / new `18083`，1440×1000：同一文件 fixture 实际读取方块卡的正常、图片预览 hover、键盘 focus/focus-visible 和 fallback 状态，以及列表行的正常、hover、focus、selected、selected-hover、pending、failed 状态；逐项比较状态 class、背景/边框/圆角/阴影/变换/透明度/光标、预览伪元素和行选择控件的 computed style，old/new `rust-file-card-state-reference-parity.spec.ts` 1/1，无差异。文件卡/行完整 loading、disabled 和触摸长按仍待验。
+- `2026-09-14`，old `18080` / new `18083`，1440×900：同一 mock 壳层让 Chromium 从页面起点连续按 Tab 24 次，实际比较顶栏、侧栏、路径树、文件浏览头和文件项的焦点落点；old/new `rust-global-focus-reference-parity.spec.ts` 1/1，未出现隐藏节点或焦点落回 body。Rust 额外的任务中心/账户/回收站 aria-label 不改变焦点顺序，保留为无障碍增强；弹窗、抽屉、编辑器、分享、媒体和阅读器内部的焦点边界仍待验。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
@@ -133,7 +134,7 @@
 | `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；`rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover，`rust-account-download-reference-parity.spec.ts` 逐字验证恢复码下载格式 |
 | `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
 | `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 成功/409 错误文案、`toast success/error` class、无额外 role、CSS、命中区域、批量下载数量文案和 3.6 秒时限已 old/new 对照；权限过期、断线、剪贴板失败及堆叠顺序仍待验证 |
-| `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；Tab 焦点边界、账户/编辑器/分享/媒体/阅读器嵌套顺序仍待验 |
+| `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；桌面壳层连续 24 次 Tab 焦点落点已一致，账户/编辑器/分享/媒体/阅读器嵌套边界仍待验 |
 
 ## 3. 顶栏、任务中心和系统状态
 
@@ -407,6 +408,7 @@
 | 目录选择器图标、展开控件、Escape、disabled 与 flyout 语义 | 8、15 | `d528aed`、`9ff563b`、`d0421c5`、`3198ff8` | `rust-directory-picker-reference-parity.spec.ts` old/new 各 3/3；`rust-actions-parity-ui.spec.ts` old/new 各 9/9 | old/new 实际打开移动目标选择器，比较触发器、面包屑、子目录、深层路径、空目录图标、目标点击/Escape 默认事件、传输中 disabled class/opacity/按钮状态、进入/退出过渡和卸载时序 | 局部 PASS |
 | 面包屑 DOM、平滑显露与移动端布局 | 5、15 | `2e2221d`、`3040995`、`da5321c` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 3/3；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、横向位置、`scrollTo` smooth options、中间级点击/Enter/触摸、点击根和浏览器后退 | 局部 PASS |
 | 壳层响应式监听生命周期 | 2、15 | `9dc5204` | `rust-navigation-parity.spec.ts` old/new 各 10/10 | 实际注销卸载认证壳层，拦截 `MediaQueryList` add/remove，确认顶栏/侧栏监听均被释放；完整断线/重连清理仍未完 | 局部 PASS |
+| 桌面全局 Tab 焦点顺序 | 2–6、15 | `2451445` | `rust-global-focus-reference-parity.spec.ts` old/new 双上下文 1/1 | 1440×900 实际连续按 Tab 24 次，比较顶栏、侧栏、路径树、文件头和文件项焦点落点；额外 aria-label 只作为无障碍增强保留，嵌套弹层焦点边界仍未完 | 局部 PASS |
 | 侧栏展开箭头状态 | 4、15 | `317d1bd` | `rust-icon-reference-parity.spec.ts` old/new 各 1/1 | 实际点击分类和路径树展开控件，比较 SVG transform；分类/路径箭头均与 old 的 90° 旋转一致 | 局部 PASS |
 | 通用确认弹窗时序 | 8、15 | `045247f` | `rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 延迟创建请求下实际点击确认，比较弹窗即时关闭和后台结果；重命名保存中语义单独保留 | 局部 PASS |
 | 选择工具栏分流与弹层可见性 | 6、8、15 | `f898067` | `rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1；`rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 实际选择 `.txt` 对照阅读图标几何；实际打开移动弹层对照选择工具栏立即隐藏；完整文件类型/disabled 矩阵未完 | 局部 PASS |
