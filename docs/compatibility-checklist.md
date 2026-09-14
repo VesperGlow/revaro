@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`5dd791a`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`3657c79`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -131,6 +131,7 @@
 - `2026-09-14`，old `18080` / new `18084`：对移动请求注入同一 `PATCH /api/files/{id}` 500（`move failed`），旧版全局反馈为“已移动 0 项，1 项失败：传输中的文件.txt：move failed”，Rust 初始版为“部分项目失败”。已恢复失败数量和首项错误的 reference 文案，`rust-transfer-dialog-reference-parity.spec.ts` old/new 2/2，修复提交 `f953af8`。
 - `2026-09-14`，old `18080` / new `18084`：分别让分享链接和 TOTP 恢复码的 `navigator.clipboard.writeText` 失败；两版均不产生全局 toast，只在各自弹窗保留“复制失败，请手动…”错误，按钮仍可用。`rust-share-dialog-reference-parity.spec.ts` 4/4、`rust-account-download-reference-parity.spec.ts` 2/2；账户下载断言同时修正为比较本地化时间格式和静态内容，排除并行生成时刻秒数的偶然差异，测试提交 `c1ce934`。
 - `2026-09-14`，old `18080` / new `18084`：深层面包屑布局用例曾在平滑滚动尚未结束时读取位置，重复运行出现 0/1/6px 瞬时偏移；两版父容器和最终计算样式一致。测试现等待两版均到达 `scrollWidth - clientWidth` 的最终位置后再比较，390×844 深层 DOM/首末 margin/横向位置、smooth 显露、中间级 click/Enter/tap 稳定 old/new 各 3/3，布局首项另重复 5 次全通过；测试稳定性提交 `5dd791a`。
+- `2026-09-14`，old `18080` / new `18084`：实际让新建目录请求分别断网、返回 403 和连续返回两条不同 409；old/new 的 transport 文案（`Failed to fetch`）、403 错误 class/CSS/时限、单槽位最新通知和从替换时刻重新计时均一致，`rust-feedback-reference-parity.spec.ts` old/new 5/5。Rust 初始 transport toast 多展示 `TypeError: ` 前缀，已在 API 边界恢复旧版可见文案，提交 `3657c79`；401 会话边界的安全强化另见前述记录。
 - `2026-09-14`，old `18080` / new `18084`：同一双选删除 fixture 让首项 DELETE 返回 500、后项成功；旧版仍尝试后项，刷新列表并显示“已移入 1 项，1 项失败：删除失败.txt：delete failed”，Rust 初始版首错即停且只显示 `delete failed`。已恢复继续处理、刷新/清选择和精确反馈；同一用例另验证重命名尾随空格原样送入 PATCH，`rust-crud-reference-parity.spec.ts` old/new 2/2，修复提交 `a46b845`。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -457,7 +458,7 @@
 | 移动/复制 loading 与失败反馈 | 8、15 | `8bbbd22`、`f953af8` | `rust-transfer-dialog-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟移动 PATCH 请求期间实际点击 old/new 遮罩，比较弹窗卸载结果；另以同一 500 响应比较“已移动 0 项，1 项失败：文件：move failed”文案；Rust 初始 busy 限制和“部分项目失败”文案均已恢复；目标排除、冲突和成功刷新仍未完 | 局部 PASS |
 | 删除多选与重命名输入边界 | 8、15 | `a46b845` | `rust-crud-reference-parity.spec.ts` old/new 2/2；`cargo xtask check` 通过 | 同一双选首项失败/后项成功 fixture 实测继续 DELETE、刷新列表、清选择并显示精确失败数量；同一 rename fixture 实测尾随空格原样进入 PATCH；目录/取消/401/冲突/空名等矩阵仍未完 | 局部 PASS |
 | 账户设置恢复码下载与剪贴板错误 | 2、15 | `80cf6c3`、`c1ce934` | `rust-account-download-reference-parity.spec.ts` old/new 各 2/2；`cargo xtask check` 通过 | 实际完成 TOTP 启用并读取下载文件；文件名、本地化时间格式、恢复码顺序和换行与 reference 一致；另注入剪贴板失败，比较局部错误、按钮状态和无全局 toast；初始 Rust ISO 时间格式已恢复 | 局部 PASS |
-| 全局 Toast 严重级别与时序 | 2、15 | `253e92d`、`c1ce934` | `rust-feedback-reference-parity.spec.ts` old/new 各 2/2；分享/TOTP 剪贴板失败 old/new 各 1/1；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；局部剪贴板失败也确认不会误发全局 toast；初始 Rust 的 error class/额外 role 已恢复，权限过期/断线/堆叠仍未完 | 局部 PASS |
+| 全局 Toast 严重级别与时序 | 2、15 | `253e92d`、`c1ce934`、`3657c79` | `rust-feedback-reference-parity.spec.ts` old/new 各 5/5；分享/TOTP 剪贴板失败 old/new 各 1/1；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；局部剪贴板失败也确认不会误发全局 toast；另以断网/403/连续不同错误验证 transport 文案、权限错误和单槽位重计时；初始 Rust 的 error class/额外 role/transport `TypeError:` 前缀已恢复，401 会话安全边界、完整来源矩阵和嵌套弹层焦点仍未完 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
 | 分类媒体视图与文件项交互 | 4–6、15 | `1ffae0e` | old 原始 `library-ui.spec.ts` 4/4；Rust `rust-library-ui.spec.ts` 8/8；双版本 `rust-library-reference-parity.spec.ts` 1/1；`cargo xtask check` | 同一 fixture 实际比较书架/图库/音乐标题、分组、卡片/行、视图切换、图片到视频的会话状态延续及分类卡/音频行 `contextmenu.prevent`；Rust 初始三处差异均已恢复 | 局部 PASS |
