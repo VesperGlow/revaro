@@ -179,9 +179,8 @@ pub fn DirectoryPicker(
             }
         })
     };
-    let mut escape_listener = browser::on_keydown(move |event| {
+    let mut escape_listener = browser::on_document_keydown_capture(move |event| {
         if event.key() == "Escape" && expanded.get_untracked() {
-            event.prevent_default();
             event.stop_propagation();
             expanded.set(false);
         }

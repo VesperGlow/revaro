@@ -89,6 +89,19 @@ async function compareIcons(oldPage: Page, newPage: Page, selector: string, labe
   expect(newGeometry, `${label} 的 Rust SVG 几何应保持 reference`).toEqual(oldGeometry)
 }
 
+async function installEscapeProbe(page: Page) {
+  await page.evaluate(() => {
+    ;(window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented = undefined
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        window.setTimeout(() => {
+          ;(window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented = event.defaultPrevented
+        }, 0)
+      }
+    }, { capture: true, once: true })
+  })
+}
+
 test('移动/复制目录选择器的路径图标和展开关闭行为保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
@@ -116,10 +129,13 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
     await compareIcons(oldPage, newPage, '.directory-breadcrumbs svg', '目录选择器深层路径')
     await compareIcons(oldPage, newPage, '.directory-state svg', '目录选择器空目录')
 
+    await Promise.all([installEscapeProbe(oldPage), installEscapeProbe(newPage)])
     await oldPage.keyboard.press('Escape')
     await newPage.keyboard.press('Escape')
     await expect(oldPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
+    await expect.poll(() => oldPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
+    await expect.poll(() => newPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
   } finally {
     await oldContext.close()
     await newContext.close()

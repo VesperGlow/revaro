@@ -96,33 +96,81 @@ pub fn local_storage_remove(key: &str) {
 /// needs. The caller owns the returned handle and should release it through
 /// [`OwnedListener::release`] in an `on_cleanup`.
 pub fn on_keydown(callback: impl Fn(web_sys::KeyboardEvent) + 'static) -> OwnedListener {
-    OwnedListener(Some(window_event_listener(ev::keydown, callback)))
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::keydown,
+        callback,
+    ))))
+}
+
+/// Listen for a key press during document capture.
+///
+/// The directory picker in the reference attaches its Escape handler to the
+/// document with `capture: true`, so it stops the event before the focused
+/// control or other bubbling handlers see it. Keep that phase available for
+/// transient controls whose default-event semantics depend on it.
+pub fn on_document_keydown_capture(
+    callback: impl Fn(web_sys::KeyboardEvent) + 'static,
+) -> OwnedListener {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return OwnedListener(None);
+    };
+    let listener = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(callback);
+    let listener = listener.into_js_value();
+    let _ = document.add_event_listener_with_callback_and_bool(
+        "keydown",
+        listener.unchecked_ref(),
+        true,
+    );
+    let cleanup = leptos::__reexports::send_wrapper::SendWrapper::new((document, listener));
+    OwnedListener(Some(ListenerHandle::Raw(Box::new(move || {
+        let (document, listener) = cleanup.take();
+        let _ = document.remove_event_listener_with_callback_and_bool(
+            "keydown",
+            listener.unchecked_ref(),
+            true,
+        );
+    }))))
 }
 
 /// Listen for a pointer press anywhere in the window.
 pub fn on_pointerdown(callback: impl Fn(web_sys::PointerEvent) + 'static) -> OwnedListener {
-    OwnedListener(Some(window_event_listener(ev::pointerdown, callback)))
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::pointerdown,
+        callback,
+    ))))
 }
 
 /// Listen for viewport changes while a transient browser view is mounted.
 pub fn on_resize(callback: impl Fn(leptos::ev::UiEvent) + 'static) -> OwnedListener {
-    OwnedListener(Some(window_event_listener(ev::resize, callback)))
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::resize,
+        callback,
+    ))))
 }
 
 /// Listen for viewport or scroll-container movement while a positioned
 /// transient view is mounted.
 pub fn on_scroll(callback: impl Fn(leptos::ev::Event) + 'static) -> OwnedListener {
-    OwnedListener(Some(window_event_listener(ev::scroll, callback)))
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::scroll,
+        callback,
+    ))))
 }
 
 /// Listen for changes to the document's fullscreen element.
 pub fn on_fullscreenchange(callback: impl Fn(leptos::ev::Event) + 'static) -> OwnedListener {
-    OwnedListener(Some(window_event_listener(ev::fullscreenchange, callback)))
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::fullscreenchange,
+        callback,
+    ))))
 }
 
 /// Listen for browser history navigation.
 pub fn on_popstate(callback: impl Fn(web_sys::PopStateEvent) + 'static) -> OwnedListener {
-    OwnedListener(Some(window_event_listener(ev::popstate, callback)))
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::popstate,
+        callback,
+    ))))
 }
 
 /// A document/window listener that unregisters when dropped or released.
@@ -130,13 +178,21 @@ pub fn on_popstate(callback: impl Fn(web_sys::PopStateEvent) + 'static) -> Owned
 /// Leptos's raw [`WindowListenerHandle`] is a remove-only handle; wrapping it
 /// lets a component keep it in a `StoredValue` and release it from
 /// `on_cleanup` without leaking the closure for the page's lifetime.
-pub struct OwnedListener(Option<WindowListenerHandle>);
+enum ListenerHandle {
+    Window(WindowListenerHandle),
+    Raw(Box<dyn FnOnce() + Send + Sync>),
+}
+
+pub struct OwnedListener(Option<ListenerHandle>);
 
 impl OwnedListener {
     /// Unregister the listener. Calling this twice is a no-op.
     pub fn release(&mut self) {
         if let Some(handle) = self.0.take() {
-            handle.remove();
+            match handle {
+                ListenerHandle::Window(handle) => handle.remove(),
+                ListenerHandle::Raw(handle) => handle(),
+            }
         }
     }
 }
