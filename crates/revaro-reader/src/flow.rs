@@ -716,7 +716,12 @@ fn assemble(
             } else {
                 block.html.clone()
             };
-            block.html = inject_data_attributes(&html, all_blocks.len(), block.spine_start)?;
+            // `all_blocks` is appended only after the current spine has been
+            // prepared. Use the spine's already-known global origin here so
+            // every block receives the same continuous number as its manifest
+            // and TOC entry (the pre-Rust builder did this in one final pass).
+            let global_block = spine.start_global.saturating_add(block_index);
+            block.html = inject_data_attributes(&html, global_block, block.spine_start)?;
         }
         manifest.spines.push(SpineMeta {
             block_start: i32::try_from(spine.start_global).unwrap_or(i32::MAX),
@@ -1049,6 +1054,39 @@ mod tests {
                 .contains(r#"data-rv-anchor="rvn-0""#)
         );
         assert!(built.manifest.spines[1].block_start > 0);
+    }
+
+    #[test]
+    fn epub_blocks_keep_continuous_global_numbers_across_spines() {
+        let book = Book {
+            format: Format::Epub,
+            chapters: vec![
+                Chapter {
+                    source_path: "ch1.xhtml".into(),
+                    html: "<h1>第一章</h1><p>正文一</p>".into(),
+                },
+                Chapter {
+                    source_path: "ch2.xhtml".into(),
+                    html: "<h1>第二章</h1><p>正文二</p>".into(),
+                },
+            ],
+            ..Book::default()
+        };
+        let built = build(&book).unwrap();
+        let html = built
+            .chunks
+            .iter()
+            .map(|chunk| chunk.html.as_str())
+            .collect::<String>();
+        for block in 0..4 {
+            assert_eq!(
+                html.matches(&format!("data-block=\"{block}\"")).count(),
+                1,
+                "global block {block} must occur exactly once: {html}"
+            );
+        }
+        assert_eq!(built.manifest.spines[0].block_start, 0);
+        assert_eq!(built.manifest.spines[1].block_start, 2);
     }
 
     #[test]
