@@ -110,6 +110,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-15`，old `18080` / new `18084`：实际向两版预置非法 `revaro:library:media:audio=corrupted`，旧版按 `usePersistentMode` 回退到方块并令“方块” `active/aria-pressed=true`；Rust 初始版只渲染方块内容但两个按钮均未 active，已增加允许值过滤恢复默认状态。`rust-library-reference-parity.spec.ts` 分类集合 old/new 3/3，修复提交 `46daf7e`。
 - `2026-09-15`，old `18080` / new `18084`：实际让 `/api/library/all` 缺失 `audio` bucket；旧版因 `data.items[type] || []` 进入正常“这里还没有音乐内容”空态，Rust 初始版因强制反序列化进入“读取失败”。现已让四个 bucket 对缺失或 `null` 均按空数组解析，并以 old/new 双版本用例确认空态一致；核心测试覆盖两种 JSON 形态，修复提交 `b79879d`。
+- `2026-09-15`，old `18080` / new `18084`：实际以同一 mock 走“列表选择归档 → 在线解压确认 → POST extract → 任务中心等待密码 → 提交密码”，确认两版确认框 DOM/class、即时关闭、队列 toast、任务分组、密码输入和 running 状态刷新一致；期间暴露 Rust 默认确认按钮漏掉旧版 `default` class，已恢复。`rust-archive-reference-parity.spec.ts` old/new 1/1，修复提交 `7b278b7`。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：反向对照 `SelectionToolbar.vue` 的打开按钮分流，旧版对同时满足 editable/book 的 `.txt` 显示书本“阅读”图标，Rust 初始版错误显示编辑图标；已按旧版条件顺序恢复，`rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1。另实际点击列表行“移动”后，旧版选择工具栏立即隐藏而 Rust 初始版仍显示；已让媒体预览、阅读器、编辑器、移动/复制、分享和账户弹层按旧版隐藏工具栏，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：任务中心以两个活动任务的 1%/2% 原始进度实际对照，旧版先求平均再四舍五入为 2%，Rust 初始版逐项取整并整数除法显示 1%；已恢复 reference 聚合顺序。随后以 12.5%/失败 42% fixture 对照进度条 raw width、终态满格和 status class，`rust-task-center-parity.spec.ts` old/new 各 9/9。
@@ -317,7 +318,7 @@
 | `[P]` | Range 下载/播放 | bytes range、206/416、Content-Range、HEAD/缓存/大文件、音视频 seek 及断点行为与旧版一致。 | old/new 实际请求并核对 open-ended/suffix 206、invalid 416、Content-Range、Content-Length、Go 版 416 正文；HEAD/大文件/媒体 seek 仍是子项待补 |
 | `[ ]` | 预览 | `/preview` content type、图片/音频/视频/文本行为、鉴权、缓存、错误、thumbnail fallback 一致。 | caller 分散，待矩阵验证 |
 | `[ ]` | 多选 ZIP | 选择多个文件后一次 prepare、进度/任务、一次性 token 下载、CSP `frame` 约束和失败处理一致。 | old/new 已验证列表多选、一次 prepare、ZIP 下载和 frame CSP；任务/进度、一次性 token 重放和失败处理仍待验 |
-| `[ ]` | 归档解压 | 支持格式、密码输入任务、冲突/错误、取消、任务中心、完成刷新和安全路径行为一致。 | Rust UI/API caller 缺失或不完整 |
+| `[ ]` | 归档解压 | 支持格式、密码输入任务、冲突/错误、取消、任务中心、完成刷新和安全路径行为一致。 | old/new 已实际走列表选择、在线解压确认、任务中心等待密码和输入后状态刷新；Rust 真实 ZIP 完成链路与 server 安全路径测试已有；冲突/错误/取消和完整完成矩阵仍待验，`rust-archive-reference-parity.spec.ts` old/new 1/1 |
 | `[P]` | 分享读取 | 分享状态读取、已存在/不存在、过期/权限、链接显示、复制失败和关闭一致。 | old/new action parity 实际打开 ShareDialog 并读取 inactive/active 状态；共享 test 通过 |
 | `[P]` | 分享创建 | 单文件创建链接、复制 URL、成功/失败、按钮 loading/disabled、公开页面行为和文案一致。 | old/new `rust-actions-parity-ui.spec.ts` 实测创建、复制、重生成和公开读取；两版通过 |
 | `[P]` | 分享撤销 | 二次确认（如旧版有）、DELETE、成功/失败、状态刷新、旧链接失效一致。 | old/new action parity 实测停止分享确认、DELETE、状态回到创建入口和旧链接 404 |
@@ -388,7 +389,7 @@
 | `[P]` | `POST /api/documents` | 新建文档 | Rust `create_document()` 由 `DocumentEditor` 新文档流程调用；old/new 默认名/创建/保存已验证 |
 | `[P]` | `PATCH /api/files/{id}` | 重命名/移动 | Rust `patch_file()` 由 rename/transfer 调用；old/new 实际重命名和移动已验证 |
 | `[P]` | `POST /api/files/{id}/copy` | 复制 | Rust `copy_file()` 由 transfer dialog 调用；old/new 实际复制已验证 |
-| `[P]` | `POST /api/files/{id}/extract` | 归档解压 | Rust `extract_archive()` 由 SelectionToolbar 调用；old/new 真实 ZIP 任务已验证 |
+| `[P]` | `POST /api/files/{id}/extract` | 归档解压 | Rust `extract_archive()` 由 SelectionToolbar 调用；old/new 实际确认请求入口、即时反馈和任务中心后续状态，真实 ZIP 任务也已有验证 |
 | `[ ]` | `DELETE /api/files/{id}` | 移入回收站 | Rust `delete_file()` 有 |
 | `[ ]` | `GET /api/trash` | 回收站列表 | Rust `fetch_trash()` 有 |
 | `[ ]` | `DELETE /api/trash` | 清空回收站 | Rust `empty_trash()` 有 |
@@ -481,7 +482,7 @@
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity）、`0027c57`（extension/conflict parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；新增 11 扩展名入口、延迟 loading、Ctrl+S、ETag 冲突和未保存取消；完整视觉、编码/大文件、browser-back 和失败矩阵未完 | `rust-editor-reference-parity.spec.ts` Rust 5/5；其中新增 old/new 双上下文 2/2，既有 Rust bundle 场景 3/3 | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
-| 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
+| 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E）、`7b278b7`（归档入口双版本） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档入口/任务密码/状态刷新、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言；`rust-archive-reference-parity.spec.ts` old/new 1/1 | 局部 PASS |
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e`、`31ca8e5`、`25c966f`、`eb617a8` | `rust-feedback-reference-parity.spec.ts` old/new 来源用例 7/7；`rust-share-dialog-reference-parity.spec.ts` 重生成/停止分享 1/1；`rust-editor-reference-parity.spec.ts` 放弃编辑 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载、任务完成/失败、分享重生成/停止分享、放弃编辑保留已有 toast 均实际比较 old/new；Rust 初始重生成额外通知与 discard 清空通知已恢复；所有双版本 new fallback 已锁定当前 Rust 18084 | 局部 PASS |
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
 | 媒体预览更多菜单与右键语义 | 6、11、15 | `8f51320` | `rust-preview-menu-reference-parity.spec.ts` old/new 各 1/1 | 实际比较文件卡右键默认事件、图片预览更多菜单项/几何/hover、空白与 Escape 关闭、summary 焦点恢复；音频/视频菜单全状态仍待验 | 局部 PASS |
