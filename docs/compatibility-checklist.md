@@ -191,6 +191,7 @@
 - `2026-09-15`，old `18080` / new `18084`：以当前重建后的 Rust bundle 重新串行执行完整上传对照集合；old 15/15、new 15/15。实际覆盖普通/文件夹选择、空选择、同名冲突、相对路径和同层创建顺序、拖放 overlay/非法回收站目标/`dragleave` 默认事件、刷新完成后的成功反馈、传输中任务中心隐藏、503/409 五次重试、单文件无 ETag、multipart 分片与 `revaro.uploads.v1` 缺失分片恢复、刷新后任务取消入口；未把独立本地队列不可见的内部取消/并发/过期清理误记为已覆盖。
 - `2026-09-15`，当前 Rust URL `18084`、reference URL `18080`：以当前 Rust URL 运行 `tests/e2e` 全部 191 项、1 worker，191/191 通过（约 7.2 分钟）；其中双版本用例仍在同一测试中分别操作 old/new。将同一集合错误地以 old 作为全局 `E2E_BASE_URL` 运行时，两个名称为 “Rust bundle” 的 smoke 用例命中的是旧版 DOM selector（旧版输入没有显式 `type=text`、旧版编辑器标题没有 `#editor-title`），以及一个并发上传全量运行时序 flake；三项分别在 new URL（5/5）和上传双版本单独运行（1/1）通过，不作为 Rust 回退。
 - `2026-09-15`，old `18080` / new `18084`：新增公开分享/API 探针，实际比较 `/healthz`、`/readyz`、无效 token，随后在两实例创建同名同内容 TXT，使用无 cookie 客户端读取公开链接、Range 206，并在撤销后确认链接立即 404；逐项核对安全响应头和内容。发现 Rust 通用文件流额外发送 `ETag`，而 reference 公开分享查询未填该字段，已仅在 `/s/{token}` 兼容性分支移除；old/new 2/2，测试仍保留 Rust shell CSP 所需的 `wasm-unsafe-eval` 例外。
+- `2026-09-15`，old `18080` / new `18084`：以同名同内容 TXT 在两实例实际比较 `/api/storage/stats` 的 bytes/file 增量，并逐项请求 `/api/library` 五种 type、`/api/library/counts`、`/api/system/status`，核对顶层/嵌套字段和类型；old/new 只读 API schema 与增量一致，`rust-readonly-api-reference-parity.spec.ts` 1/1。
 
 ## 2. 启动、认证和全局壳层
 
@@ -357,9 +358,9 @@
 | `[P]` | `GET /healthz` | 启动/监控 | old/new 实例均实际请求并返回相同 `200 {"status":"ok"}`；`rust-public-share-reference-parity.spec.ts` |
 | `[P]` | `GET /readyz` | 就绪检查 | Rust 现已同时 ping SQLite 与本地对象存储；old/new 实例均返回 `{"status":"ready"}`，存储根缺失单测返回 503 `object storage unavailable` |
 | `[P]` | `GET /s/{token}` | 公开分享页 | old/new 创建同名同内容文档并生成分享；无 cookie 读取完整流、Range、响应安全头和撤销后的 404 均实际对照；公开流 `ETag` 与 reference 同为缺省；`rust-public-share-reference-parity.spec.ts` 2/2 |
-| `[ ]` | `POST /api/auth/login` | LoginPage | Rust `login()` 存在；表单/TOTP/错误待验 |
+| `[P]` | `POST /api/auth/login` | LoginPage | Rust `login()` 由登录页调用；old/new 实际登录、TOTP、Enter、loading/错误和 API 登录探针均通过 |
 | `[P]` | `POST /api/auth/logout` | 顶栏账户菜单明确退出 | Rust `logout()` 由账户设置的明确退出按钮调用；old/new 登录回跳已验证 |
-| `[ ]` | `GET /api/auth/me` | App 启动/刷新 session | Rust `fetch_session()` 存在；401/回跳待验 |
+| `[P]` | `GET /api/auth/me` | App 启动/刷新 session | Rust `fetch_session()` 由启动壳层调用；old/new 刷新/过期 cookie/中途 401 分流已对照，API 会话字段也已核对 |
 | `[P]` | `PATCH /api/auth/credentials` | 账户设置凭据 | old UI 没有直接 caller（用户名/密码分拆为下列两个接口）；Rust handler 保留旧 API 兼容 |
 | `[P]` | `PATCH /api/auth/password` | 账户设置改密码 | Rust `change_password()` 由 `AccountSettings` 调用；old/new 成功和错误路径已验证 |
 | `[P]` | `GET /api/auth/totp` | 账户设置 TOTP 状态 | Rust `fetch_totp_status()` 由 `AccountSettings` 调用；old/new 状态面板已验证 |
@@ -371,11 +372,11 @@
 | `[P]` | `PUT /api/profile/avatar` | 账户设置上传头像 | Rust `update_avatar()` 由 `AccountSettings` 调用；old/new 类型校验和成功上传已验证 |
 | `[P]` | `DELETE /api/profile/avatar` | 账户设置删除头像 | Rust `delete_avatar()` 由 `AccountSettings` 调用；old/new 删除已验证 |
 | `[P]` | `PATCH /api/profile/username` | 账户设置改用户名 | Rust `change_username()` 由 `AccountSettings` 调用；old/new 保存和空值错误已验证 |
-| `[ ]` | `GET /api/storage/stats` | 全局/账户/存储信息 | old UI 没有直接调用方；Rust handler 保留，系统状态使用 `/system/status/stream` 的存储数据；响应语义待单独核对 |
-| `[ ]` | `GET /api/library` | 书架/图片/视频/音乐/文件分类 | old UI 实际统一调用 `/api/library/all`；Rust route 保留，需确认兼容 API 无额外调用方 |
+| `[P]` | `GET /api/storage/stats` | 全局/账户/存储信息 | old UI 没有直接调用方；Rust handler 保留，系统状态使用 `/system/status/stream` 的存储数据；old/new 同名文档前后统计增量及字段/类型均一致，`rust-readonly-api-reference-parity.spec.ts` |
+| `[P]` | `GET /api/library` | 书架/图片/视频/音乐/文件分类 | old UI 实际统一调用 `/api/library/all`；Rust route 保留，old/new 五种 `type` 均实际请求并核对顶层、counts 和非空 item schema；`rust-readonly-api-reference-parity.spec.ts` |
 | `[P]` | `GET /api/library/all` | 分类全量/系列/相册等 | Rust `fetch_library_all()` 由 `FileBrowser`/`LibraryView` 调用；old/new 分类、书架、图库和排序已验证 |
-| `[ ]` | `GET /api/library/counts` | 侧栏分类数量 | old `useLibrary` 从 `/api/library/all` 取得 counts；Rust响应字段保留，当前 UI 同样复用 all，独立 endpoint 待核对 |
-| `[ ]` | `GET /api/system/status` | 系统状态初次读取 | old UI 没有直接调用方；两版 UI 都使用 SSE 首帧，handler 保留，直读错误/字段待验 |
+| `[P]` | `GET /api/library/counts` | 侧栏分类数量 | old `useLibrary` 从 `/api/library/all` 取得 counts；Rust UI 同样复用 all，old/new 独立 endpoint 字段和数值类型已实际核对 |
+| `[P]` | `GET /api/system/status` | 系统状态初次读取 | old UI 没有直接调用方；两版 UI 都使用 SSE 首帧，handler 保留；old/new 直读响应及 database/storage/cache 嵌套 schema 已实际核对 |
 | `[P]` | `GET /api/system/status/stream` | 系统状态 SSE | Rust `SystemStatus` 直接建立 EventSource；old/new 三卡首帧、非法数据、critical/异常状态透传、断线重连和卸载清理已验证 |
 | `[P]` | `GET /api/events` | 任务实时 SSE | Rust `TaskController` 直接建立 EventSource；old/new 任务面板刷新/关闭已验证 |
 | `[P]` | `GET /api/tasks` | 任务中心初始/刷新 | Rust `fetch_tasks()` 由 `TaskController` 调用；old/new 分组、空态和操作已验证 |
