@@ -251,7 +251,6 @@ pub fn FileBrowser(
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
-            notify.run(Feedback::error(String::new()));
             selected_ids.set(HashSet::new());
             let requested_id = id;
             let suppress_history = history_suppressed.get_untracked();
@@ -346,7 +345,6 @@ pub fn FileBrowser(
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
-            notify.run(Feedback::error(String::new()));
             selected_ids.set(HashSet::new());
             let logout = on_logout.clone();
 

@@ -63,6 +63,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际创建目录并点击进入后，两版均将 `/` → `/f/{id}` 写入应用内 history；浏览器后退逐级回到根目录。再次前进时两版均只恢复 `/f/{id}` URL、不重放目录请求，这是 reference 的现运行时行为，已用同一用例明确记录而不把它误判为 Rust 差异。
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后浏览器后退，两版均先关闭账户弹层、保留“我的文件”页面和 `/` URL；弹层 history 语义已加入 parity 用例。
 - `2026-09-14`，old `18080` / new `18083`：将 `POST /api/directories` 同时模拟为 409，旧版关闭新建文件夹弹窗并显示错误 toast；Rust 初始行为把错误留在弹窗内，已恢复为关闭弹窗 + toast。两版回归均通过；分享二次确认错误仍按分享层单独验证。
+- `2026-09-14`，old `18080` / new `18083`：新建文件夹成功后再触发一次根目录刷新，两版均保留“文件夹已创建”成功 toast；Rust 初始目录/回收站刷新会清空全局反馈，已移除该非 reference 行为。old/new `rust-actions-parity-ui.spec.ts` 的目录刷新用例通过。
 - `2026-09-14`，old `18080` / new `18082`：修正 reference E2E 的选择前置条件后，原始 `e2e` 集合中非真实 EPUB 两版各 37/37 项通过；剩余真实 EPUB 综合场景在旧版测试 runner 中超过 1 分钟未结束，单独保留为 runner/场景稳定性问题，不作为 Rust 差异结论。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 

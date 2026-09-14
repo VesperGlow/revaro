@@ -269,6 +269,26 @@ test('成功 toast 使用 reference 的颜色并在固定时限后消失', async
   }
 })
 
+test('目录刷新不会清除刚显示的成功 toast', async ({ page }) => {
+  const name = `parity-toast-navigation-${crypto.randomUUID()}`
+
+  try {
+    await login(page)
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
+    const dialog = page.locator('.app-dialog')
+    await dialog.locator('input').fill(name)
+    await dialog.getByRole('button', { name: '创建', exact: true }).click()
+
+    const toast = page.locator('.toast')
+    await expect(toast).toHaveText('文件夹已创建')
+    await page.getByTitle('回到我的文件').click()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await expect(toast).toHaveText('文件夹已创建')
+  } finally {
+    await removeCreated(page, [name])
+  }
+})
+
 test('新建文件夹弹窗保留空值禁用、Enter、Escape 和点击空白关闭行为', async ({ page }) => {
   const name = `parity-dialog-${crypto.randomUUID()}`
 
