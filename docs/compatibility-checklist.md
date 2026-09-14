@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`8e72809`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前已验证的兼容恢复代码 HEAD：`0027c57`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -141,6 +141,9 @@
 - `2026-09-14`，old `18080` / new `18084`：新建文件夹实际输入空格并按 Enter，old/new 均保持弹窗、禁用创建且不发 POST；取消后重新提交同一 409，均立即关闭确认框并显示 `folder already exists`。重命名同一 409 时两版均保留原输入、弹窗和可重试的保存按钮；`rust-crud-reference-parity.spec.ts` old/new 4/4，测试提交 `f82e7f8`。
 - `2026-09-14`，old `18080` / new `18084`：回收站恢复 409 两版均保留项目、选择和文件名错误；永久删除 409 时旧版文案为 `回收站失败.txt：purge conflict`，Rust 初始版丢失文件名。已恢复逐项永久删除失败上下文，回收站冲突用例 old/new 2/2，`cargo xtask check` 通过，修复提交 `8e72809`。
 - `2026-09-14`，old `18080` / new `18084`：真实打开非空回收站，清空确认先取消再重新确认；两版取消均不发 DELETE，模拟 500 后均立即关闭确认框、显示 `empty trash failed`、保留项目且按钮仍可用。`rust-crud-reference-parity.spec.ts` old/new 1/1，提交 `1abeb30`。
+- `2026-09-14`，old `18080` / new `18084`：普通文件上传时序用例首轮完整套件在慢的初始 `/api/tasks` 快照下出现一次非确定性可见任务，单独重跑未复现；已让 old/new 先完成初始任务快照再开始上传，避免把合法快照竞态误报为通知事件。修正后的定向用例通过，提交 `8172184`；完整套件需重新执行确认。
+- `2026-09-14`，old `18080` / new `18084`：逐个实际打开旧版全部 11 个可编辑扩展名 `md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv`，比较内容、文本编辑器标签、Markdown 分栏入口和保存禁用状态；另以延迟 `/content`、未保存关闭取消、Ctrl+S 和 409 ETag 冲突比较 loading、重试入口与错误文案。新增 old/new 双上下文场景 2/2，提交 `0027c57`；编辑器完整视觉、编码/大文件和 browser-back 矩阵仍未完成。
+- `2026-09-14`，new Rust parity 全套首轮 140 项为 139 通过、1 项失败；失败已定位为上述初始任务快照时序而非业务结果，编辑器新增双版本用例 2/2 已单独通过。该次结果不得视为最终全套通过，待修正后重跑。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
@@ -247,12 +250,12 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 编辑器入口 | md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv 等旧版可编辑扩展名，点击文件打开 editor；回收站内容只读。 | old/new 已验证 Markdown 新文档、保存及再次打开、回收站 YAML/Markdown 只读分流和 trash TXT 键盘进入 reader；全部扩展名、网格/列表和回收站完整矩阵仍待验 |
+| `[ ]` | 编辑器入口 | md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv 等旧版可编辑扩展名，点击文件打开 editor；回收站内容只读。 | old/new 已逐个验证 11 个扩展名从列表文件行进入 editor，并验证内容、Markdown tabs、保存禁用；回收站 YAML/Markdown 只读分流和 trash TXT 键盘进入 reader 也已验证；网格/完整回收站矩阵仍待验 |
 | `[ ]` | 新文档编辑 | 默认文件名、初始内容、editor modal/页面尺寸、关闭、保存、创建失败和成功返回一致。 | old/new 已验证默认名、编辑、保存、重开、尾随空格扩展名错误和错误后保存按钮保留；创建取消/冲突/失败全矩阵仍待收口 |
-| `[ ]` | 读取 | `/content`、编码/大文件错误、loading/error、只读提示、滚动和文本保持一致。 | Rust 已有 `/content` caller；old/new 已验证真实 TXT 读取、YAML/Markdown 只读内容和提示，编码/大文件/loading/error/滚动全矩阵仍待验 |
-| `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown 的 GFM 元素与主动 HTML 清理结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。reference 使用 `marked` + DOMPurify；Rust 使用 `pulldown-cmark` + `ammonia` 对齐可见结果。 | old/new 已验证编辑/分栏/预览、GFM 标题/列表/任务项/表格/删除线/安全 HTML、主动 HTML 清理、非 Markdown 无 tabs 和错误后仍可保存；光标/滚动、复杂 Markdown 错误仍待验 |
-| `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | old/new 已验证保存按钮、错误后重试入口、成功 toast 必须等待目录刷新、持久化重开；etag 冲突、busy/请求失败和 metadata 全矩阵仍待验 |
-| `[ ]` | 未保存关闭 | dirty 检测、关闭/浏览器后退确认、取消返回编辑、确认丢弃、Esc/backdrop 行为一致。 | Rust 已有 dirty、确认对话框和 backdrop/Esc 路径；browser-back、取消后继续编辑和 readonly 矩阵仍待验 |
+| `[ ]` | 读取 | `/content`、编码/大文件错误、loading/error、只读提示、滚动和文本保持一致。 | Rust 已有 `/content` caller；old/new 已验证真实 TXT 读取、YAML/Markdown 只读内容和提示，并以延迟 `/content` 实际比较 loading；编码/大文件/error/滚动全矩阵仍待验 |
+| `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown 的 GFM 元素与主动 HTML 清理结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。reference 使用 `marked` + DOMPurify；Rust 使用 `pulldown-cmark` + `ammonia` 对齐可见结果。 | old/new 已逐个验证 11 个扩展名的 textarea 内容、Markdown tabs 和非 Markdown 隐藏 tabs；另有 GFM 标题/列表/任务项/表格/删除线/安全 HTML 清理证据；光标/滚动、复杂 Markdown 错误仍待验 |
+| `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | old/new 已以 Ctrl+S 实际触发保存、409 ETag 冲突后保留 editor/错误/可重试按钮，并验证成功 toast 必须等待目录刷新、持久化重开；busy/普通请求失败和 metadata 全矩阵仍待验 |
+| `[ ]` | 未保存关闭 | dirty 检测、关闭/浏览器后退确认、取消返回编辑、确认丢弃、Esc/backdrop 行为一致。 | old/new 已实际验证编辑后关闭弹出确认、取消返回编辑、冲突后仍可放弃；browser-back、Esc/backdrop 和 readonly 组合矩阵仍待验 |
 | `[ ]` | 编辑器视觉 | 标题、文件名、工具栏、图标、按钮文案、编辑区字体/行高、readonly 和错误层级与旧版一致。 | 待恢复 |
 
 ## 10. EPUB/TXT 阅读器
@@ -448,9 +451,9 @@
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 失败导航状态保留 | 5、6、15 | `db5b963`、`226daf1` | `rust-navigation-parity.spec.ts` old/new 定向用例各 1/1 | 列表已有选择时发起延迟 500 导航并返回 500，实际比较 loading/失败后的旧列表、选择工具栏和错误 toast；另以慢/快目录双击确认 stale response 不覆盖最后一次路径；成功导航清空选择，分类 history/完整状态矩阵仍未完 | old/new navigation parity trace | 局部 PASS |
-| 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E）、`0d9d993`（拖拽覆盖层）、`5eaa9da`（文件夹刷新时序）、`3d90ae5`（进度取整）、`255349d`（文件夹 old/new 双实例）、`cb277b7`（任务通知时机）、`b907728`（失败重试 parity）、`4910f65`（文件选择 parity） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；拖拽 `.self` 语义、文件夹刷新后成功反馈、旧版进度边界、同一文件夹的 old/new toast/嵌套目录结果、普通上传传输中隐藏/完成后通知、连续 503 的 5 次重试/任务中心不可见状态以及空选择/同名重复结果已追加；断点续传完整 UI、并发/取消矩阵未完 | parity Playwright trace、`rust-upload-parity.spec.ts` 8 tests（单页基础 4/4，old/new 双实例 4/4）、`cargo xtask check` 最近一次通过 | 局部 PASS |
+| 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E）、`0d9d993`（拖拽覆盖层）、`5eaa9da`（文件夹刷新时序）、`3d90ae5`（进度取整）、`255349d`（文件夹 old/new 双实例）、`cb277b7`（任务通知时机）、`b907728`（失败重试 parity）、`4910f65`（文件选择 parity）、`8172184`（时序测试稳定性） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；拖拽 `.self` 语义、文件夹刷新后成功反馈、旧版进度边界、同一文件夹的 old/new toast/嵌套目录结果、普通上传传输中隐藏/完成后通知、连续 503 的 5 次重试/任务中心不可见状态以及空选择/同名重复结果已追加；断点续传完整 UI、并发/取消矩阵未完 | parity Playwright trace、`rust-upload-parity.spec.ts` 8 tests（单页基础 4/4，old/new 双实例 4/4）；时序修正定向通过，完整套件待重跑 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、`f953af8`（移动失败反馈）、`a46b845`（删除/重命名 parity）、`f82e7f8`（CRUD conflict parity）、`8e72809`（purge error context）、`1abeb30`（empty trash parity） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast、空白输入不发请求、409 关闭确认框、移动 PATCH 失败数量与首项错误文案、删除多选继续处理/刷新清选择、重命名原始空白输入和 409 保留输入/可重试、回收站恢复/永久删除 409 的项目/选择/文件名错误上下文、清空回收站取消/500 后弹窗列表状态已追加；目录/401/完整 loading 失败矩阵仍未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*`、`rust-transfer-dialog-reference-parity.spec.ts`、`rust-crud-reference-parity.spec.ts`（7 tests，新增场景定向通过） | 局部 PASS |
-| 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；etag 冲突/全部扩展名/完整 loading 与视觉矩阵未完 | `rust-editor-reference-parity.spec.ts` old/new 各 3/3、reader/editor parity trace | 局部 PASS |
+| 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity）、`0027c57`（extension/conflict parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；新增 11 扩展名入口、延迟 loading、Ctrl+S、ETag 冲突和未保存取消；完整视觉、编码/大文件、browser-back 和失败矩阵未完 | `rust-editor-reference-parity.spec.ts` Rust 5/5；其中新增 old/new 双上下文 2/2，既有 Rust bundle 场景 3/3 | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
 | 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
