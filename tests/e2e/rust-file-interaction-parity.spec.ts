@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { readFileSync } from 'node:fs'
 import { login } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -200,10 +201,46 @@ test('EPUB 文件卡使用旧版书籍图标几何', async ({ page }) => {
     const card = page.locator('.file-card').filter({ hasText: name })
     await expect(card).toBeVisible({ timeout: 20_000 })
     await expect(card.locator('.book-type-icon')).toHaveCount(1)
+    await expect(card).toHaveClass(/fallback-tile/)
+    await expect(card).not.toHaveClass(/preview-tile/)
     await expect(card.locator('.book-type-icon .icon-detail')).toHaveAttribute(
       'd',
       'M48 24v57M23 31c7 0 13 1 18 4M23 44c7 0 13 1 18 4M73 31c-7 0-13 1-18 4M73 44c-7 0-13 1-18 4',
     )
+
+    id = await page.evaluate(async ({ name, root }) => {
+      const response = await fetch(`/api/files/${root}/children`)
+      if (!response.ok) throw new Error(`刷新文件列表失败：${response.status}`)
+      const data = await response.json() as { items?: Array<{ id: string; name: string }> }
+      return data.items?.find(item => item.name === name)?.id ?? ''
+    }, { name, root: ROOT })
+  } finally {
+    if (id) {
+      await page.evaluate(async ({ id }) => {
+        await fetch(`/api/files/${id}`, { method: 'DELETE' })
+        await fetch(`/api/trash/${id}`, { method: 'DELETE' })
+      }, { id })
+    }
+  }
+})
+
+test('视频文件卡使用旧版 preview 状态 class', async ({ page }) => {
+  const name = `compat-video-tile-${crypto.randomUUID()}.webm`
+  let id = ''
+
+  try {
+    await login(page)
+    await page.locator('input[type=file]').first().setInputFiles({
+      name,
+      mimeType: 'video/webm',
+      buffer: readFileSync(new URL('./fixtures/preview.webm', import.meta.url)),
+    })
+
+    const card = page.locator('.file-card').filter({ hasText: name })
+    await expect(card).toBeVisible({ timeout: 20_000 })
+    await expect(card).toHaveClass(/preview-tile/)
+    await expect(card).not.toHaveClass(/fallback-tile/)
+    await expect(card.locator('.video-thumb')).toHaveCount(1)
 
     id = await page.evaluate(async ({ name, root }) => {
       const response = await fetch(`/api/files/${root}/children`)

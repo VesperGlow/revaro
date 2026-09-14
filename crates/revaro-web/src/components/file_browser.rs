@@ -2445,7 +2445,8 @@ fn FileTile(
     let item_id_for_label = item.id.clone();
     let item_id_for_pressed = item.id.clone();
     let item_id_for_active = item.id.clone();
-    let class = tile_class(&item);
+    let preview_available = RwSignal::new(initial_preview_available(&item));
+    let class_item = item.clone();
     let on_select_click = on_select.clone();
     let on_open_click = on_open.clone();
     let on_open_key = on_open;
@@ -2476,7 +2477,7 @@ fn FileTile(
 
     view! {
         <article
-            class=class
+            class=move || tile_class(&class_item, preview_available.get())
             class:selected=move || selected_ids.get().contains(&item_id_for_class)
             role="button"
             tabindex="0"
@@ -2512,7 +2513,7 @@ fn FileTile(
                 }
                 title=move || preview_title(&item_for_title, trash_mode.get())
             >
-                {file_preview(&item)}
+                {file_preview_with_state(&item, Some(preview_available))}
             </div>
             <div class="card-info">
                 <strong title=name.clone()>{name.clone()}</strong>
@@ -2613,8 +2614,8 @@ fn FileRow(
     }
 }
 
-fn tile_class(file: &File) -> String {
-    let mut class = String::from("file-card fallback-tile");
+fn tile_class(file: &File, preview_available: bool) -> String {
+    let mut class = String::from("file-card");
     if file.kind == FileKind::Directory {
         class.push_str(" folder-tile");
     } else if classify::is_editable(file) {
@@ -2624,16 +2625,22 @@ fn tile_class(file: &File) -> String {
     } else if classify::is_audio(file) {
         class.push_str(" audio-tile");
     }
-    if classify::is_image(file)
-        || (classify::is_audio(file) && file.has_cover)
-        || classify::is_epub_name(&file.name)
-    {
+    if preview_available {
         class.push_str(" preview-tile");
+    } else {
+        class.push_str(" fallback-tile");
     }
     if file.status != FileStatus::Ready {
         class.push_str(" mutedrow");
     }
     class
+}
+
+fn initial_preview_available(file: &File) -> bool {
+    classify::is_image(file)
+        || (classify::is_audio(file) && file.has_cover)
+        || classify::is_video(file)
+        || classify::is_epub_name(&file.name)
 }
 
 fn row_class(file: &File) -> String {
@@ -2718,7 +2725,14 @@ fn non_negative(value: i64) -> u64 {
 }
 
 pub(crate) fn file_preview(file: &File) -> AnyView {
-    view! { <FilePreview file=file.clone() /> }.into_any()
+    file_preview_with_state(file, None)
+}
+
+pub(crate) fn file_preview_with_state(
+    file: &File,
+    preview_available: Option<RwSignal<bool>>,
+) -> AnyView {
+    view! { <FilePreview file=file.clone() preview_available=preview_available /> }.into_any()
 }
 
 /// Card/row thumbnails follow the old two-step fallback policy: images try a
@@ -2726,7 +2740,7 @@ pub(crate) fn file_preview(file: &File) -> AnyView {
 /// audio covers fall back directly to their type icon when the thumbnail is
 /// unavailable.
 #[component]
-fn FilePreview(file: File) -> impl IntoView {
+fn FilePreview(file: File, preview_available: Option<RwSignal<bool>>) -> impl IntoView {
     let is_image = classify::is_image(&file);
     let is_audio_cover = classify::is_audio(&file) && file.has_cover;
     let is_epub = classify::is_epub_name(&file.name);
@@ -2737,12 +2751,19 @@ fn FilePreview(file: File) -> impl IntoView {
     let thumbnail_for_src = thumbnail.clone();
     let fallback_to_preview = RwSignal::new(false);
     let broken = RwSignal::new(false);
+    let preview_available_for_error = preview_available;
     let file_for_error = file.clone();
     let on_image_error = move |_| {
         if is_audio_cover || is_epub {
             broken.set(true);
+            if let Some(preview_available) = preview_available_for_error {
+                preview_available.set(false);
+            }
         } else if fallback_to_preview.get_untracked() {
             broken.set(true);
+            if let Some(preview_available) = preview_available_for_error {
+                preview_available.set(false);
+            }
         } else {
             fallback_to_preview.set(true);
         }

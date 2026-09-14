@@ -18,7 +18,7 @@ use wasm_bindgen::JsValue;
 use crate::browser;
 use crate::logic::format::format_size;
 
-use super::file_browser::file_preview;
+use super::file_browser::{file_preview, file_preview_with_state};
 use super::icons;
 
 /// A merged folder node used by the sidebar path accordion.
@@ -844,7 +844,8 @@ fn fan_cover_style(index: usize, count: usize) -> String {
 fn LibraryCard(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
     let file = item.file.clone();
     let file_for_key = file.clone();
-    let class = library_tile_class(&file);
+    let preview_available = RwSignal::new(initial_library_preview_available(&file));
+    let class_file = file.clone();
     let label = file.name.clone();
     let label_for_title = label.clone();
     let preview_title = library_preview_title(&file);
@@ -852,7 +853,7 @@ fn LibraryCard(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
     let open_file = file.clone();
     view! {
         <article
-            class=class
+            class=move || library_tile_class(&class_file, preview_available.get())
             role="button"
             tabindex="0"
             aria-label=format!("{}，未选择", label)
@@ -864,7 +865,7 @@ fn LibraryCard(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
                 }
             }
         >
-            <div class="card-preview" title=preview_title>{library_preview(&item.file)}</div>
+            <div class="card-preview" title=preview_title>{file_preview_with_state(&item.file, Some(preview_available))}</div>
             <div class="card-info">
                 <strong title=label_for_title>{label.clone()}</strong>
                 <small>{format_size(non_negative(item.file.size))}</small>
@@ -962,7 +963,7 @@ fn book_cover(file: &File, show_title: bool) -> AnyView {
     .into_any()
 }
 
-fn library_tile_class(file: &File) -> String {
+fn library_tile_class(file: &File, preview_available: bool) -> String {
     let mut class = String::from("file-card");
     if file.kind == FileKind::Directory {
         class.push_str(" folder-tile");
@@ -971,14 +972,19 @@ fn library_tile_class(file: &File) -> String {
     } else if revaro_core::classify::is_audio(file) {
         class.push_str(" audio-tile");
     }
-    if revaro_core::classify::is_image(file)
-        || (revaro_core::classify::is_audio(file) && file.has_cover)
-    {
+    if preview_available {
         class.push_str(" preview-tile");
     } else {
         class.push_str(" fallback-tile");
     }
     class
+}
+
+fn initial_library_preview_available(file: &File) -> bool {
+    revaro_core::classify::is_image(file)
+        || (revaro_core::classify::is_audio(file) && file.has_cover)
+        || revaro_core::classify::is_video(file)
+        || revaro_core::classify::is_epub_name(&file.name)
 }
 
 fn category_title(kind: LibraryKind) -> &'static str {
