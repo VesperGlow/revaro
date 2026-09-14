@@ -103,6 +103,17 @@ async function contextMenuIsPrevented(page: Page, selector: string) {
   })
 }
 
+async function libraryStateSnapshot(page: Page) {
+  return page.evaluate(() => ({
+    heading: document.querySelector('.library-head h1')?.textContent?.trim(),
+    stateClass: document.querySelector('.library-view .state')?.className,
+    stateText: document.querySelector('.library-view .state')?.textContent?.replace(/\s+/g, ' ').trim(),
+    stateButtons: Array.from(document.querySelectorAll('.library-view .state button')).map(button => button.textContent?.replace(/\s+/g, ' ').trim()),
+    pathText: document.querySelector('.sidebar-category:has([data-category="image"]) .category-paths')?.textContent?.replace(/\s+/g, ' ').trim(),
+    categoryCount: document.querySelector('.sidebar-category:has([data-category="image"]) .category-count')?.textContent?.trim() ?? null,
+  }))
+}
+
 async function compareCategory(oldPage: Page, newPage: Page, category: string) {
   await Promise.all([
     oldPage.locator(`[data-category="${category}"]`).click(),
@@ -147,6 +158,92 @@ test('旧版与 Rust 版分类页保留相同内容视图与右键交互', async
     )
 
     await compareCategory(oldPage, newPage, 'video')
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('旧版与 Rust 版分类读取失败、重试 loading 与恢复快照一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  let oldLibraryRequests = 0
+  let newLibraryRequests = 0
+
+  const mockRetry = async (page: Page, count: () => number, setCount: (value: number) => void) => {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') {
+        const request = count() + 1
+        setCount(request)
+        if (request === 1) {
+          return route.fulfill({ status: 503, json: { error: { status: 503, message: '分类读取失败' } } })
+        }
+        await new Promise(resolve => setTimeout(resolve, 250))
+        return json({ items: library, counts })
+      }
+      if (path === '/api/library/counts') return json(counts)
+      if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
+      if (path === `/api/files/${ROOT}/children`) return json({ items: rootChildren, total_bytes: 1000, file_count: 1 })
+      if (path.endsWith('/thumbnail') || path.endsWith('/preview') || path.endsWith('/cover')) {
+        return route.fulfill({ contentType: 'image/svg+xml', body: thumbnail })
+      }
+      return json({ items: [] })
+    })
+  }
+
+  try {
+    await Promise.all([
+      mockRetry(oldPage, () => oldLibraryRequests, value => { oldLibraryRequests = value }),
+      mockRetry(newPage, () => newLibraryRequests, value => { newLibraryRequests = value }),
+    ])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('[data-category="image"]').click(),
+      newPage.locator('[data-category="image"]').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.library-view .state')).toContainText('分类读取失败'),
+      expect(newPage.locator('.library-view .state')).toContainText('分类读取失败'),
+    ])
+    expect(await libraryStateSnapshot(newPage), 'Rust 分类失败态与 reference 不一致')
+      .toEqual(await libraryStateSnapshot(oldPage))
+    expect(oldLibraryRequests).toBe(1)
+    expect(newLibraryRequests).toBe(1)
+
+    await Promise.all([
+      oldPage.getByRole('button', { name: '刷新', exact: true }).click(),
+      newPage.getByRole('button', { name: '刷新', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.library-view .state')).toContainText('正在整理图片…'),
+      expect(newPage.locator('.library-view .state')).toContainText('正在整理图片…'),
+    ])
+    expect(await libraryStateSnapshot(newPage), 'Rust 分类重试 loading 与 reference 不一致')
+      .toEqual(await libraryStateSnapshot(oldPage))
+
+    await Promise.all([
+      expect(oldPage.locator('.library-view .file-card')).toHaveCount(1),
+      expect(newPage.locator('.library-view .file-card')).toHaveCount(1),
+    ])
+    expect(await headerSnapshot(newPage), 'Rust 分类恢复头部与 reference 不一致')
+      .toEqual(await headerSnapshot(oldPage))
+    expect(await itemSnapshot(newPage), 'Rust 分类恢复内容与 reference 不一致')
+      .toEqual(await itemSnapshot(oldPage))
+    expect(oldLibraryRequests).toBe(2)
+    expect(newLibraryRequests).toBe(2)
   } finally {
     await oldContext.close()
     await newContext.close()
