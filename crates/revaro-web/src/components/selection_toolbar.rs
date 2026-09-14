@@ -26,7 +26,6 @@ pub fn SelectionToolbar(
     on_download: Callback<()>,
     on_share: Callback<File>,
 ) -> impl IntoView {
-    let selected_count = move || selected_ids.get().len();
     let selected_items = move || {
         let ids = selected_ids.get();
         items
@@ -34,6 +33,14 @@ pub fn SelectionToolbar(
             .into_iter()
             .filter(|item| ids.contains(&item.id))
             .collect::<Vec<_>>()
+    };
+    let selected_count = move || {
+        let ids = selected_ids.get();
+        items
+            .get()
+            .iter()
+            .filter(|item| ids.contains(&item.id))
+            .count()
     };
     let selected_bytes = move || {
         selected_items()
@@ -55,7 +62,8 @@ pub fn SelectionToolbar(
     };
     let all_selected = move || {
         let entries = items.get();
-        !entries.is_empty() && selected_ids.get().len() == entries.len()
+        let ids = selected_ids.get();
+        entries.iter().filter(|item| ids.contains(&item.id)).count() == entries.len()
     };
     let rename = on_rename;
     let move_items = on_move;

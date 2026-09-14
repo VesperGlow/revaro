@@ -172,3 +172,39 @@ test('移动端和回收站选择工具栏保持 reference 的布局与操作分
     await newContext.close()
   }
 })
+
+test('全选与取消全选按 reference 只计算当前列表中的项目', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockToolbar(oldPage), mockToolbar(newPage)])
+    await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
+    await Promise.all([select(oldPage, '笔记.txt'), select(newPage, '笔记.txt')])
+
+    await Promise.all([
+      oldPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '全选', exact: true }).click(),
+      newPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '全选', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toContainText(`${items.length} 项`),
+      expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toContainText(`${items.length} 项`),
+    ])
+    expect(await toolbarMetrics(newPage), 'Rust 全选后的工具栏与 reference 不一致')
+      .toEqual(await toolbarMetrics(oldPage))
+
+    await Promise.all([
+      oldPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '取消全选', exact: true }).click(),
+      newPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '取消全选', exact: true }).click(),
+    ])
+    await expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
+    await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})

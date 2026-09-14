@@ -932,7 +932,9 @@ pub fn FileBrowser(
         let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             let entries = items.get_untracked();
-            if selected_ids.get_untracked().len() == entries.len() {
+            let selected = selected_ids.get_untracked();
+            let all_selected = entries.iter().all(|item| selected.contains(&item.id));
+            if all_selected {
                 selected_ids.set(HashSet::new());
             } else {
                 selected_ids.set(entries.into_iter().map(|item| item.id).collect());
