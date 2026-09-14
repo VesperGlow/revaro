@@ -99,6 +99,7 @@
 - `2026-09-14`，old `18080` / new `18084`：对同一普通 TXT 上传的真实 PUT 请求延迟 5 秒，确认旧版在字节传输期间任务中心仍不显示该 upload 任务（服务端创建记录但不发 jobs 事件），完成后才显示“上传 / 已完成 / 100%”；Rust 初始版创建任务时额外发事件，错误显示“排队中”并暴露取消按钮。已移除创建阶段事件，恢复旧版通知时机；`rust-upload-parity.spec.ts` old/new 双上下文用例通过，上传模块现 6/6，修复提交 `cb277b7`。
 - `2026-09-14`，old `18080` / new `18084`：同一普通 TXT 的真实 PUT 请求连续返回 503，old/new 均重试恰好 5 次；上传会话仍为 `pending`、持久化任务仍为 `queued/uploading/0%`，任务中心仍不出现该文件，清理 DELETE 后无残留。该“失败但无可见本地队列”的结果是旧版实际行为，不虚构新队列 UI；`rust-upload-parity.spec.ts` old/new 1/1，提交 `b907728`。
 - `2026-09-14`，old `18080` / new `18084`：真实 `input[type=file]` 先提交空 FileList，再一次选择两个同名 TXT；两版空选择均不发 `POST /api/uploads`，重复选择均得到 `[201,409]`，目录最终只保留一个 ready 文件。`rust-upload-parity.spec.ts` old/new 1/1，提交 `4910f65`。
+- `2026-09-15`，old `18080` / new `18084`：实际从 shell 派发可取消的 `dragleave`，old 的 `@dragleave.self` 冒泡到 window 时 `defaultPrevented=false`；Rust 初始版额外调用 `prevent_default()`，已移除。随后以同一真实上传去掉单文件 PUT 响应的 `ETag`，old 仍完成并生成 ready 文件，Rust 初始版在前端拒绝空 ETag；已恢复旧版“单文件不要求 ETag、multipart 分片仍要求校验”的分流。`rust-upload-parity.spec.ts` 上传集合 10/10，提交待本模块提交。
 - `2026-09-14`，old `18080` / new `18084`：同一延迟密码 `PATCH /api/auth/password` 实际提交修改，先关闭密码子弹窗，再点击账户外层遮罩；old 会关闭账户弹层，Rust 初始版因外层 `password_busy/totp_busy` 限制仍停留。已移除账户外层 busy 阻断，保留提交按钮 disabled/loading；`rust-account-reference-parity.spec.ts` old/new 3/3，新增场景提交 `1acb307`。
 - `2026-09-14`，old `18080` / new `18083`：实际触发成功和 409 错误 Toast，比较文案、`toast success/error` class、无额外 role、定位/颜色/padding/命中区域、最新通知交互及 3.6 秒消失；Rust 初始版缺少 error class 且额外带 `role=status`，已按 reference 恢复。`rust-feedback-reference-parity.spec.ts` old/new 各 2/2，提交 `253e92d`；断线、剪贴板失败、堆叠等业务来源仍待验。
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 媒体库逐项切换书架、图片/视频图库、音乐方块/列表；双页面对照实际暴露 Rust 单本 EPUB 标题仍带“第1卷”、图片切到视频时图库模式被重置、分类卡/音频行缺少旧版 `contextmenu.prevent` 三处差异。已改为使用分组标题、父级共享首个图库模式和持久化 key，并恢复分类卡/行右键默认事件语义。旧版原始 `library-ui.spec.ts` 4/4、Rust `rust-library-ui.spec.ts` 8/8、`rust-library-reference-parity.spec.ts` old/new 双上下文 1/1，`cargo xtask check` 通过；提交 `1ffae0e`。
@@ -237,7 +238,7 @@
 |---|---|---|---|
 | `[P]` | 上传入口 | 文件浏览头部独立上传菜单，含“上传文件”“上传文件夹”；桌面按钮、移动端下拉、图标、popover 层级、hover、点击外部/Esc 关闭和菜单动作一致。 | old/new 桌面与移动端均实际展开同一菜单；文案、说明、图标/层级、首项 hover、外部关闭、Escape 和菜单动作已对照；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1 |
 | `[ ]` | 文件选择 | 单/多文件选择、文件夹选择、取消、空选择、同名文件、路径/相对目录保留、浏览器能力差异一致。 | old/new 已实际验证空选择无请求、同名双选 `[201,409]` 和最终单文件；文件夹路径另有双版本用例，取消选择/浏览器能力差异仍待验 |
-| `[ ]` | 拖放上传 | 文件/目录拖放、目标目录、overlay、非法文件、重复上传和完成后列表刷新一致。 | 单页基础场景 4/4；old/new 双上下文 3/3 已覆盖文件夹相对路径、shell/子元素 `dragleave` 覆盖层、回收站禁止拖放、刷新后反馈时序、普通上传通知时机和连续 503 失败重试；非法文件、重复上传、完整进度/取消矩阵仍待验 |
+| `[ ]` | 拖放上传 | 文件/目录拖放、目标目录、overlay、非法文件、重复上传和完成后列表刷新一致。 | 单页基础场景与 old/new 双上下文共 10/10；已覆盖文件夹相对路径、shell/子元素 `dragleave` 覆盖层、回收站禁止拖放、shell `dragleave` 的默认事件语义、刷新后反馈时序、普通上传通知时机、连续 503 失败重试和单文件无 ETag 完成；非法文件、重复上传、完整进度/取消矩阵仍待验 |
 | `[ ]` | 创建 upload | `POST /api/uploads` 的 chunk/single 模式、大小、类型、目标目录、断点信息和错误处理一致。 | API caller 部分存在 |
 | `[ ]` | 上传进度 | 单文件/多文件进度、速度、剩余时间、并发、pending/uploading/completing/completed/failed/cancelled 状态和文案一致。 | 旧版进度公式已与 Rust 对齐并有边界单测；本地队列进度未独立渲染，连续 503 失败的 5 次重试与服务端任务状态已 old/new 对照；并发、完整进度/取消状态矩阵仍待验 |
 | `[ ]` | 上传队列 | 队列面板的展开/收起、排序、显示更多、取消、重试、失败原因、完成清理和与任务中心的分工一致。 | 已确认 reference 的可见分工：上传进行中和连续失败的本地任务均不出现在任务中心，完成后才进入完成通知；old/new 延迟真实上传与 503 失败各 1/1。独立本地队列无可见面板；并发、断点、失败/重试和取消内部状态矩阵仍待验 |

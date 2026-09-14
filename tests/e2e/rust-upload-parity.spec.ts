@@ -101,6 +101,36 @@ test('拖入内容子元素时保留 reference 的上传覆盖层', async ({ pag
   await expect(page.locator('.drop-zone')).toHaveCount(0)
 })
 
+test('old/new shell dragleave 保留 reference 的默认事件语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function dragLeaveDefaultPrevented(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    return page.evaluate(() => new Promise<boolean>(resolve => {
+      window.addEventListener('dragleave', event => resolve(event.defaultPrevented), { once: true })
+      const shell = document.querySelector('.app-shell')
+      if (!shell) throw new Error('app shell is missing')
+      shell.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }))
+    }))
+  }
+
+  try {
+    const [oldPrevented, newPrevented] = await Promise.all([
+      dragLeaveDefaultPrevented(oldPage, oldUrl),
+      dragLeaveDefaultPrevented(newPage, newUrl),
+    ])
+    expect(oldPrevented).toBe(false)
+    expect(newPrevented, 'Rust shell dragleave 不应额外阻止默认事件').toBe(oldPrevented)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('文件夹上传在当前目录刷新完成后才显示成功反馈', async ({ page }, testInfo) => {
   const directory = testInfo.outputPath(`timing-${crypto.randomUUID()}`)
   const rootName = path.basename(directory)
@@ -447,6 +477,73 @@ test('old/new 文件选择的空输入与同名重复结果保持 reference 行�
     expect(newResponses, 'Rust 重复文件上传响应与 reference 不一致').toEqual(oldResponses)
   } finally {
     await Promise.all([removeCreated(oldPage, [name]), removeCreated(newPage, [name])])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 单文件上传没有 ETag 时保留 reference 的完成行为', async ({ browser }) => {
+  const name = `upload-no-etag-reference-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload without etag reference\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const oldState = { uploadId: '' }
+  const newState = { uploadId: '' }
+
+  async function removeUpload(page: Parameters<typeof login>[0], uploadId: string) {
+    if (uploadId) await page.evaluate(async id => { await fetch(`/api/uploads/${id}`, { method: 'DELETE' }) }, uploadId)
+  }
+
+  async function stripEtag(page: Parameters<typeof login>[0], state: typeof oldState) {
+    await page.route(/\/api\/uploads$/, async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
+      const response = await route.fetch()
+      const payload = await response.json() as { upload_id?: string }
+      state.uploadId = payload.upload_id || ''
+      await route.fulfill({ response })
+    })
+    await page.route(/\/api\/uploads\/[^/]+\/data$/, async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue()
+        return
+      }
+      const response = await route.fetch()
+      const headers = Object.fromEntries(Object.entries(response.headers()).filter(([key]) => key.toLowerCase() !== 'etag'))
+      await route.fulfill({ status: response.status(), headers, body: await response.body() })
+    })
+  }
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer })
+    await expect.poll(() => page.evaluate(async fileName => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === fileName && item.status === 'ready')
+    }, name), { timeout: 20_000 }).toBe(true)
+  }
+
+  try {
+    await Promise.all([
+      stripEtag(oldPage, oldState),
+      stripEtag(newPage, newState),
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+  } finally {
+    await Promise.all([
+      removeUpload(oldPage, oldState.uploadId),
+      removeUpload(newPage, newState.uploadId),
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+    ])
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })

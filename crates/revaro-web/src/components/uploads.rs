@@ -354,7 +354,6 @@ impl UploadController {
         if !same_target {
             return;
         }
-        event.prevent_default();
         self.drag_active.set(false);
     }
 
@@ -742,13 +741,7 @@ impl UploadController {
                     let url = resolved.url.clone();
                     let progress = Rc::clone(&progress);
                     let mime_type = file_mime(&task.file);
-                    async move {
-                        let etag = xhr_put(active, url, body, mime_type, progress).await?;
-                        if etag.trim().is_empty() {
-                            return Err(local_error("服务器没有返回上传校验信息"));
-                        }
-                        Ok(etag)
-                    }
+                    async move { xhr_put(active, url, body, mime_type, progress).await }
                 })
                 .await?;
                 Vec::new()
