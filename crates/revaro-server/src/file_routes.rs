@@ -1917,6 +1917,11 @@ async fn public_share(
     let inline = revaro_core::classify::is_previewable(&file);
     let mut response = serve_file(state, file, inline, headers).await?;
     let response_headers = response.headers_mut();
+    // The reference public-share query did not hydrate File.ETag before it
+    // called serveFileContent, so bearer-link responses deliberately omitted
+    // ETag even though authenticated download/preview responses included it.
+    // Keep that externally visible distinction for compatibility.
+    response_headers.remove(http::header::ETAG);
     response_headers.insert(
         http::header::CACHE_CONTROL,
         "no-store".parse().expect("valid"),

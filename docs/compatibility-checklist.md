@@ -190,6 +190,7 @@
 - `2026-09-15`，old `18080` / new `18084`：在 390×844 同时切换方块→列表、刷新恢复偏好、再切回方块，逐次比较实际行/卡数量、壳层几何、入口可见性和横向溢出；`rust-responsive-layout-reference-parity.spec.ts` 第二项 old/new 1/1，测试提交 `120ad12`。
 - `2026-09-15`，old `18080` / new `18084`：以当前重建后的 Rust bundle 重新串行执行完整上传对照集合；old 15/15、new 15/15。实际覆盖普通/文件夹选择、空选择、同名冲突、相对路径和同层创建顺序、拖放 overlay/非法回收站目标/`dragleave` 默认事件、刷新完成后的成功反馈、传输中任务中心隐藏、503/409 五次重试、单文件无 ETag、multipart 分片与 `revaro.uploads.v1` 缺失分片恢复、刷新后任务取消入口；未把独立本地队列不可见的内部取消/并发/过期清理误记为已覆盖。
 - `2026-09-15`，当前 Rust URL `18084`、reference URL `18080`：以当前 Rust URL 运行 `tests/e2e` 全部 191 项、1 worker，191/191 通过（约 7.2 分钟）；其中双版本用例仍在同一测试中分别操作 old/new。将同一集合错误地以 old 作为全局 `E2E_BASE_URL` 运行时，两个名称为 “Rust bundle” 的 smoke 用例命中的是旧版 DOM selector（旧版输入没有显式 `type=text`、旧版编辑器标题没有 `#editor-title`），以及一个并发上传全量运行时序 flake；三项分别在 new URL（5/5）和上传双版本单独运行（1/1）通过，不作为 Rust 回退。
+- `2026-09-15`，old `18080` / new `18084`：新增公开分享/API 探针，实际比较 `/healthz`、`/readyz`、无效 token，随后在两实例创建同名同内容 TXT，使用无 cookie 客户端读取公开链接、Range 206，并在撤销后确认链接立即 404；逐项核对安全响应头和内容。发现 Rust 通用文件流额外发送 `ETag`，而 reference 公开分享查询未填该字段，已仅在 `/s/{token}` 兼容性分支移除；old/new 2/2，测试仍保留 Rust shell CSP 所需的 `wasm-unsafe-eval` 例外。
 
 ## 2. 启动、认证和全局壳层
 
@@ -345,7 +346,7 @@
 | `[P]` | 分享读取 | 分享状态读取、已存在/不存在、过期/权限、链接显示、复制失败和关闭一致。 | old/new action parity 实际打开 ShareDialog 并读取 inactive/active 状态；共享 test 通过 |
 | `[P]` | 分享创建 | 单文件创建链接、复制 URL、成功/失败、按钮 loading/disabled、公开页面行为和文案一致。 | old/new `rust-actions-parity-ui.spec.ts` 实测创建、复制、重生成和公开读取；两版通过 |
 | `[P]` | 分享撤销 | 二次确认（如旧版有）、DELETE、成功/失败、状态刷新、旧链接失效一致。 | old/new action parity 实测停止分享确认、DELETE、状态回到创建入口和旧链接 404 |
-| `[P]` | 公开分享页 | `GET /s/{token}` 的文件信息、下载/预览、过期/无效 token、响应头和移动端布局一致。 | 旧版实际行为是受安全响应头保护的原始文件流而非 HTML 页面；old/new 实测无 cookie 读取、文本 attachment、Range 206、`no-store`/CSP/robots/referrer headers、短 token 404；移动端无额外页面布局 |
+| `[P]` | 公开分享页 | `GET /s/{token}` 的文件信息、下载/预览、过期/无效 token、响应头和移动端布局一致。 | 旧版实际行为是受安全响应头保护的原始文件流而非 HTML 页面；old/new 实测无 cookie 读取、文本 attachment、Range 206、`no-store`/CSP/robots/referrer headers、短 token 404；公开流按 reference 不发送 `ETag`，移动端无额外页面布局（`rust-public-share-reference-parity.spec.ts` 2/2） |
 
 ## 13. 全部旧版 API、调用方和 Rust 版调用覆盖
 
@@ -353,9 +354,9 @@
 
 | 状态 | 旧版 API | 旧版调用方/用途 | Rust handler/API 与当前 caller 初检 |
 |---|---|---|---|
-| `[ ]` | `GET /healthz` | 启动/监控 | handler 存在；两实例 200，需纳入部署验收 |
+| `[P]` | `GET /healthz` | 启动/监控 | old/new 实例均实际请求并返回相同 `200 {"status":"ok"}`；`rust-public-share-reference-parity.spec.ts` |
 | `[P]` | `GET /readyz` | 就绪检查 | Rust 现已同时 ping SQLite 与本地对象存储；old/new 实例均返回 `{"status":"ready"}`，存储根缺失单测返回 503 `object storage unavailable` |
-| `[ ]` | `GET /s/{token}` | 公开分享页 | handler 存在；Rust/浏览器全链路待验 |
+| `[P]` | `GET /s/{token}` | 公开分享页 | old/new 创建同名同内容文档并生成分享；无 cookie 读取完整流、Range、响应安全头和撤销后的 404 均实际对照；公开流 `ETag` 与 reference 同为缺省；`rust-public-share-reference-parity.spec.ts` 2/2 |
 | `[ ]` | `POST /api/auth/login` | LoginPage | Rust `login()` 存在；表单/TOTP/错误待验 |
 | `[P]` | `POST /api/auth/logout` | 顶栏账户菜单明确退出 | Rust `logout()` 由账户设置的明确退出按钮调用；old/new 登录回跳已验证 |
 | `[ ]` | `GET /api/auth/me` | App 启动/刷新 session | Rust `fetch_session()` 存在；401/回跳待验 |
