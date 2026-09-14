@@ -181,6 +181,7 @@
 - `2026-09-15`，old `18080` / new `18084`：桌面和 390×844 移动端逐项实际点击顶栏任务中心、在线状态、账户设置、回收站，以及移动账户/工具菜单中的任务、账户、回收站；两版均按 reference 打开/关闭对应面板，账户入口不误触发退出，移动菜单点击后正确关闭并完成目标跳转。`rust-global-ui-reference-parity.spec.ts` old/new 完整分流 1/1，测试提交 `f752758`。
 - `2026-09-15`，old `18080` / new `18084`：按旧 server route registry、old `web/src` 调用点和 Rust route/caller 逐项反向清点；未发现旧版主 UI 调用方在 Rust 端无对应实现。新增 API 双实例探针比较认证、存储、library、状态、任务、根目录/children、回收站、分享及所有专用缺失分流；另以同名同内容文档实际完成创建、读取、保存、完整/Range 下载、preview、分享/撤销、重命名、复制、删除、恢复和 purge 生命周期，均 old/new 1/1。探针发现并恢复 `GET /api/uploads/{id}` 缺失时 old 的 `upload not found`（Rust 原为 `pending upload not found`），上传其他操作仍保留 pending 文案；服务端单测通过，修复提交 `da88991`，API E2E 提交 `eac64a8`。live 数据中历史文件可能省略可选 `etag`，对照只忽略该字段，其余契约字段仍严格比较。
 - `2026-09-15`，old `18080` / new `18084`：重建 new 后串行复跑全局键盘/弹层集合 27/27，以及账户、确认操作、传输、编辑器、分享和操作菜单集合 28/28；实际覆盖桌面 24 步 Tab 顺序、媒体/阅读器焦点陷阱与恢复、顶栏/状态/任务/侧栏/下拉/确认/账户/传输/编辑器/分享的 Escape、主要表单 Enter、空白关闭和浏览器后退。old/new 均通过，未把 401 安全强化差异当作兼容通过依据。
+- `2026-09-15`，old `18080` / new `18084`：重建 new 后串行复跑分类/侧栏集合 16/16；五类分类实际切换到书架、图片、视频、音乐、文件，比较数量、标题、路径树、卡片/行、系列/图库/音乐视图、空态、503→重试 loading→恢复、缺失/null bucket、非法视图偏好、分类 history 和路径过滤；old/new 均通过。文件目录树仍保留 reference 未注册组件的已知运行时差异，不把该条目提前标 PASS。
 
 ## 2. 启动、认证和全局壳层
 
@@ -216,7 +217,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[P]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new `rust-library-ui.spec.ts` 与导航定向用例确认顺序、文案、active/current、点击切换和返回 |
-| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all`、五类有数据视图、分类 503 → 重试 loading → 恢复内容、缺失或 null bucket → 正常空态、空分类路径/空态、首次快照缓存与显式刷新、非法音乐视图偏好回退已在 old/new 对照；书架标题分组、图库/音乐视图和分类卡右键语义另由 `1ffae0e`、`38ca433` 双版本用例覆盖，书架中文前缀的分组解析 panic 已修复；各类数量、旧内容保留和完整错误矩阵仍待验 |
+| `[P]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | old/new 分类/侧栏集合 16/16；实际切换五类并比较数量、标题、路径树、卡片/行、系列/图库/音乐视图、空态、503→重试 loading→恢复、缺失/null bucket、非法音乐视图偏好和分类 history；API `/api/library`、`/api/library/all`、`/api/library/counts` 的传输/顶层字段也已双实例核对 |
 | `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 多级媒体路径树计数、默认展开、展开/过滤、active、展开箭头旋转、根节点 tooltip、空路径提示和分类失败/重试 loading old/new 已由 `rust-sidebar-tree-reference-parity.spec.ts`、`rust-library-reference-parity.spec.ts` 对照；文件目录树已实际记录 old 未注册组件、new 有效递归导航，切换竞态仍待稳定场景裁定 |
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
