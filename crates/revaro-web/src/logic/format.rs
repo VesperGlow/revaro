@@ -9,10 +9,9 @@
 //! * [`format_media_time`] mirrors `formatMediaTime` — `0:00`, `1:05` or
 //!   `1:01:01`, with every invalid timeline value normalised to `0:00`.
 //! * [`format_date`] mirrors `formatDate`'s zh-CN rendering
-//!   (`月`/`日` plus a 24-hour clock), but see the note on it below: it is the
-//!   one function here whose exact output depends on browser-local time, which
-//!   a target-independent module cannot know.
+//!   (`月`/`日` plus a 24-hour clock), including the browser-local time zone.
 
+#[cfg(not(target_arch = "wasm32"))]
 use revaro_core::Timestamp;
 
 /// Format a byte count the way `formatSize` does.
@@ -42,16 +41,30 @@ pub fn format_size(bytes: u64) -> String {
 /// The TypeScript original delegates to
 /// `Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour:
 /// '2-digit', minute: '2-digit' })`. The month and day are not zero-padded but
-/// the clock is, so this reproduces that shape from the shared
-/// [`Timestamp`], which normalises to UTC.
-///
-/// **Known deviation:** the browser's `Intl` renders in the *local* time zone,
-/// while this target-independent function renders UTC. Local-time rendering
-/// needs `js-sys`/`Date` and will be added in the wasm-only layer once other
-/// features depend on it; keeping the pure function deterministic is what lets
-/// it be unit-tested natively. An unparseable value yields `—`, exactly as the
-/// original's `Number.isNaN` branch does.
+/// the clock is. The wasm implementation deliberately uses the browser's
+/// local `Date` getters so the output remains in the same time zone as the
+/// reference page. The native implementation keeps the UTC fallback
+/// deterministic for unit tests and server-side tooling. An unparseable value
+/// yields `—`, exactly as the original's `Number.isNaN` branch does.
 #[must_use]
+#[cfg(target_arch = "wasm32")]
+pub fn format_date(value: &str) -> String {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_str(value));
+    if !date.get_time().is_finite() {
+        return "—".to_owned();
+    }
+    format!(
+        "{}月{}日 {:02}:{:02}",
+        date.get_month() + 1,
+        date.get_date(),
+        date.get_hours(),
+        date.get_minutes()
+    )
+}
+
+/// Native deterministic counterpart of the browser-local formatter.
+#[must_use]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn format_date(value: &str) -> String {
     let Ok(stamp) = Timestamp::parse(value) else {
         return "—".to_owned();
