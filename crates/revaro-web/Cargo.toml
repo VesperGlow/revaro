@@ -78,6 +78,8 @@ web-sys = { workspace = true, features = [
     "ProgressEvent",
     "Range",
     "Response",
+    "Request",
+    "RequestInit",
     "ScrollBehavior",
     "ScrollToOptions",
     "RequestCredentials",

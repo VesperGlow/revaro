@@ -492,6 +492,60 @@ test('old/new 图片滚轮缩放保持鼠标锚点一致', async ({ browser }) =
   }
 })
 
+test('old/new 媒体关闭预览的最终进度保存使用相同的 keepalive 语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => {
+      const state = window as typeof window & { __mediaParityKeepalive?: Array<boolean | null> }
+      state.__mediaParityKeepalive = []
+      const original = window.fetch
+      window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString()
+        const request = input instanceof Request ? input : null
+        if (url.includes('/media/progress') && (init?.method ?? request?.method) === 'PUT') {
+          state.__mediaParityKeepalive?.push(init?.keepalive ?? request?.keepalive ?? null)
+        }
+        return original(input, init)
+      }
+    })
+    await mockMedia(page, baseUrl)
+    async function closePreview(name: string, selector: 'audio' | 'video') {
+      await open(page, name)
+      const media = page.locator(selector)
+      await expect(media).toHaveJSProperty('readyState', 4)
+      await media.evaluate((element: HTMLMediaElement) => element.pause())
+      await page.waitForTimeout(100)
+      await page.evaluate(() => {
+        (window as typeof window & { __mediaParityKeepalive?: Array<boolean | null> }).__mediaParityKeepalive = []
+      })
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.preview-modal')).toHaveCount(0)
+      return page.evaluate(() => (window as typeof window & { __mediaParityKeepalive?: Array<boolean | null> }).__mediaParityKeepalive ?? [])
+    }
+    return {
+      audio: await closePreview('山间来信.m4a', 'audio'),
+      video: await closePreview('山间漫步.webm', 'video'),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ audio: [true], video: [true] })
+    expect(newResult, 'Rust 媒体关闭预览未保留 reference 的 keepalive 最终保存').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('视频全屏按钮和全屏状态同步，退出后恢复预览层', async ({ page }) => {
   await mockMedia(page)
   await open(page, '山间漫步.webm')

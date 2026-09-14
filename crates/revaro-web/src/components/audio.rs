@@ -490,10 +490,25 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     }
 
     let cleanup_save = save_progress.clone();
+    let cleanup_item_id = item_id.clone();
     on_cleanup(move || {
         clear_timer(save_timer);
         clear_timer(remote_save_timer);
-        cleanup_save(true);
+        cleanup_save(false);
+        let position = current_time.get_untracked().max(0.0);
+        if position > 0.0 {
+            api::save_media_progress_keepalive(
+                &cleanup_item_id,
+                &MediaProgress {
+                    position,
+                    duration: audio_duration(
+                        media.get_untracked(),
+                        native_duration.get_untracked(),
+                    ),
+                    updated_at: None,
+                },
+            );
+        }
         if let Some(element) = audio_element(audio) {
             let _ = element.pause();
             element.set_src("");

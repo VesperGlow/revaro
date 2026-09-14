@@ -707,6 +707,7 @@ pub fn VideoPlayer(
     }
 
     let cleanup_save = save_progress.clone();
+    let cleanup_item_id = item_id.clone();
     on_cleanup(move || {
         clear_timer(click_timer);
         clear_timer(controls_timer);
@@ -715,7 +716,18 @@ pub fn VideoPlayer(
         clear_timer(remote_save_timer);
         resize_listener.release();
         fullscreen_listener.release();
-        cleanup_save(true);
+        cleanup_save(false);
+        let position = current_time.get_untracked().max(0.0);
+        if position > 0.0 {
+            api::save_media_progress_keepalive(
+                &cleanup_item_id,
+                &MediaProgress {
+                    position,
+                    duration: duration.get_untracked(),
+                    updated_at: None,
+                },
+            );
+        }
         if let Some(track) = cue_track.get_untracked() {
             track.set_oncuechange(None);
             track.set_mode(TextTrackMode::Disabled);

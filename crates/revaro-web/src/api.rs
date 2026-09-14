@@ -18,6 +18,7 @@
 //! for wasm; the pure parts of the client live in `crate::logic`.
 
 use gloo_net::http::{Request, RequestBuilder};
+use js_sys::{Object, Reflect};
 use revaro_core::api::auth::{
     AvatarRequest, ChangePasswordRequest, ChangeUsernameRequest, LoginRequest, PasswordCodeRequest,
     PasswordRequest, Session, TotpRecovery, TotpSetup, TotpStatus,
@@ -39,7 +40,8 @@ use revaro_core::api::{ArchiveJob, BatchDownloadRequest, BatchDownloadTicket};
 use revaro_core::model::MediaProgress;
 use revaro_core::reader::FlowManifest;
 use revaro_core::{ErrorCode, ErrorEnvelope};
-use web_sys::{AbortSignal, RequestCredentials};
+use wasm_bindgen::JsValue;
+use web_sys::{AbortSignal, Request as BrowserRequest, RequestCredentials, RequestInit};
 
 const API_TIMEOUT_MS: u32 = 60_000;
 const READER_FLOW_TIMEOUT_MS: u32 = 120_000;
@@ -232,6 +234,47 @@ pub async fn save_media_progress(
         .json(progress)
         .map_err(|error| request_transport(error.to_string()))?;
     send_json(request).await
+}
+
+/// Save the final playback position while a media preview is being removed.
+///
+/// The reference Vue player deliberately used a fire-and-forget same-origin
+/// `fetch` with `keepalive: true` during unmount so the browser can finish the
+/// small request while the preview and its ordinary request timers disappear.
+/// `web-sys` does not expose that dictionary member in the pinned version, so
+/// set it through the DOM dictionary object before constructing the request.
+pub fn save_media_progress_keepalive(id: &str, progress: &MediaProgress) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(body) = serde_json::to_string(progress) else {
+        return;
+    };
+
+    let init = RequestInit::new();
+    init.set_method("PUT");
+    init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_body(&JsValue::from_str(&body));
+    let _ = Reflect::set(
+        init.as_ref(),
+        &JsValue::from_str("keepalive"),
+        &JsValue::TRUE,
+    );
+
+    let headers = Object::new();
+    let _ = Reflect::set(
+        headers.as_ref(),
+        &JsValue::from_str("Content-Type"),
+        &JsValue::from_str("application/json"),
+    );
+    init.set_headers(headers.as_ref());
+
+    let Ok(request) =
+        BrowserRequest::new_with_str_and_init(&format!("/api/files/{id}/media/progress"), &init)
+    else {
+        return;
+    };
+    let _ = window.fetch_with_request(&request);
 }
 
 /// Fetch the durable tasks shown by the task centre.
