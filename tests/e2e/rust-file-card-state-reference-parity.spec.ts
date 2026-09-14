@@ -85,6 +85,7 @@ async function cardState(page: Page, name: string) {
     return {
       card: read(card),
       preview: read(card.querySelector('.card-preview')),
+      icon: read(card.querySelector('.card-preview svg')),
       info: read(card.querySelector('.card-info')),
     }
   })
@@ -117,6 +118,7 @@ async function rowState(page: Page, name: string) {
     return {
       row: read(row),
       preview: read(row.querySelector('.row-preview')),
+      icon: read(row.querySelector('.row-preview svg')),
       select: read(row.querySelector('.row-select')),
     }
   })

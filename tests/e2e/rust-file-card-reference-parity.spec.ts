@@ -70,6 +70,21 @@ async function cardMetrics(page: Page) {
     const preview = card.querySelector('.card-preview')
     const icon = preview?.querySelector('svg')
     const image = preview?.querySelector('img')
+    const iconStyle = icon ? getComputedStyle(icon) : null
+    const iconChildStyles = icon
+      ? Array.from(icon.querySelectorAll('path, ellipse, circle')).map(element => {
+        const style = getComputedStyle(element)
+        return {
+          className: element.getAttribute('class'),
+          fill: style.fill,
+          stroke: style.stroke,
+          strokeWidth: style.strokeWidth,
+          lineCap: style.strokeLinecap,
+          lineJoin: style.strokeLinejoin,
+          opacity: style.opacity,
+        }
+      })
+      : []
     return {
       name: card.querySelector('.card-info strong')?.textContent?.trim(),
       classes: Array.from(card.classList).sort(),
@@ -78,6 +93,16 @@ async function cardMetrics(page: Page) {
       previewClass: preview?.firstElementChild?.getAttribute('class'),
       imageSrc: image?.getAttribute('src'),
       iconClass: icon?.getAttribute('class'),
+      iconStyle: iconStyle && {
+        color: iconStyle.color,
+        fill: iconStyle.fill,
+        stroke: iconStyle.stroke,
+        strokeWidth: iconStyle.strokeWidth,
+        width: iconStyle.width,
+        height: iconStyle.height,
+        opacity: iconStyle.opacity,
+      },
+      iconChildStyles,
       iconPaths: Array.from(preview?.querySelectorAll('path, ellipse, circle') ?? []).map(element => ({
         tag: element.tagName.toLowerCase(),
         className: element.getAttribute('class'),
@@ -93,6 +118,21 @@ async function rowMetrics(page: Page) {
     const preview = row.querySelector('.row-preview')
     const icon = preview?.querySelector('svg')
     const image = preview?.querySelector('img')
+    const iconStyle = icon ? getComputedStyle(icon) : null
+    const iconChildStyles = icon
+      ? Array.from(icon.querySelectorAll('path, ellipse, circle')).map(element => {
+        const style = getComputedStyle(element)
+        return {
+          className: element.getAttribute('class'),
+          fill: style.fill,
+          stroke: style.stroke,
+          strokeWidth: style.strokeWidth,
+          lineCap: style.strokeLinecap,
+          lineJoin: style.strokeLinejoin,
+          opacity: style.opacity,
+        }
+      })
+      : []
     return {
       name: row.querySelector('.row-info strong')?.textContent?.trim(),
       classes: Array.from(row.classList).sort(),
@@ -101,6 +141,16 @@ async function rowMetrics(page: Page) {
       previewClass: preview?.firstElementChild?.getAttribute('class'),
       imageSrc: image?.getAttribute('src'),
       iconClass: icon?.getAttribute('class'),
+      iconStyle: iconStyle && {
+        color: iconStyle.color,
+        fill: iconStyle.fill,
+        stroke: iconStyle.stroke,
+        strokeWidth: iconStyle.strokeWidth,
+        width: iconStyle.width,
+        height: iconStyle.height,
+        opacity: iconStyle.opacity,
+      },
+      iconChildStyles,
       iconPaths: Array.from(preview?.querySelectorAll('path, ellipse, circle') ?? []).map(element => ({
         tag: element.tagName.toLowerCase(),
         className: element.getAttribute('class'),
