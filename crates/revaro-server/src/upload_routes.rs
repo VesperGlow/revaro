@@ -571,7 +571,11 @@ async fn complete_upload(
         return Err(pending_missing());
     }
 
-    let content_hash = if record.is_multipart() {
+    // Go's completion path received the object metadata from Stat/CompleteMultipart
+    // and persisted its ETag together with the ready file row. The Rust port only
+    // retained the content hash, which made a freshly uploaded file lose the
+    // validator used by previews, thumbnails, and editor conflict checks.
+    let (etag, content_hash) = if record.is_multipart() {
         let Some(multipart_id) = record.multipart_id.clone() else {
             return Err(pending_missing());
         };
@@ -596,8 +600,18 @@ async fn complete_upload(
             .complete_multipart(&record.object_key, &multipart_id, &parts)
             .await
             .map_err(complete_error)?;
+        let stored = state
+            .store
+            .head(&record.object_key)
+            .await
+            .map_err(complete_error)?;
+        if stored.size != record.expected_size {
+            return Err(ApiError::bad_request(
+                "uploaded object size does not match the declared size",
+            ));
+        }
         update_upload_task(&state, &record.id, "running", "verifying", 99.0, "").await;
-        match state.store.sha256_hex(&record.object_key).await {
+        let content_hash = match state.store.sha256_hex(&record.object_key).await {
             Ok(hash) => hash,
             Err(error) => {
                 let api_error = complete_error(error);
@@ -612,10 +626,21 @@ async fn complete_upload(
                 .await;
                 return Err(api_error);
             }
-        }
+        };
+        (stored.etag, content_hash)
     } else {
+        let stored = state
+            .store
+            .head(&record.object_key)
+            .await
+            .map_err(complete_error)?;
+        if stored.size != record.expected_size {
+            return Err(ApiError::bad_request(
+                "uploaded object size does not match the declared size",
+            ));
+        }
         update_upload_task(&state, &record.id, "running", "verifying", 99.0, "").await;
-        match state.store.sha256_hex(&record.object_key).await {
+        let content_hash = match state.store.sha256_hex(&record.object_key).await {
             Ok(hash) => hash,
             Err(error) => {
                 let api_error = complete_error(error);
@@ -630,7 +655,8 @@ async fn complete_upload(
                 .await;
                 return Err(api_error);
             }
-        }
+        };
+        (stored.etag, content_hash)
     };
 
     let file_id = record.file_id.clone();
@@ -645,9 +671,10 @@ async fn complete_upload(
                 .map_err(|error| database_error(DbError::Query(error)))?;
             let committed = transaction
                 .execute(
-                    "UPDATE files SET status = 'ready', content_hash = ?1, hash_algorithm = ?2, \
-updated_at = ?3 WHERE id = ?4 AND status = 'pending' AND size = ?5 AND deleted_at IS NULL",
+                    "UPDATE files SET status = 'ready', etag = ?1, content_hash = ?2, hash_algorithm = ?3, \
+                         updated_at = ?4 WHERE id = ?5 AND status = 'pending' AND size = ?6 AND deleted_at IS NULL",
                     rusqlite::params![
+                        etag,
                         content_hash,
                         if content_hash.is_empty() {
                             ""

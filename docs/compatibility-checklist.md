@@ -111,6 +111,7 @@
 - `2026-09-15`，old `18080` / new `18084`：实际向两版预置非法 `revaro:library:media:audio=corrupted`，旧版按 `usePersistentMode` 回退到方块并令“方块” `active/aria-pressed=true`；Rust 初始版只渲染方块内容但两个按钮均未 active，已增加允许值过滤恢复默认状态。`rust-library-reference-parity.spec.ts` 分类集合 old/new 3/3，修复提交 `46daf7e`。
 - `2026-09-15`，old `18080` / new `18084`：实际让 `/api/library/all` 缺失 `audio` bucket；旧版因 `data.items[type] || []` 进入正常“这里还没有音乐内容”空态，Rust 初始版因强制反序列化进入“读取失败”。现已让四个 bucket 对缺失或 `null` 均按空数组解析，并以 old/new 双版本用例确认空态一致；核心测试覆盖两种 JSON 形态，修复提交 `b79879d`。
 - `2026-09-15`，old `18080` / new `18084`：实际以同一 mock 走“列表选择归档 → 在线解压确认 → POST extract → 任务中心等待密码 → 提交密码”，确认两版确认框 DOM/class、即时关闭、队列 toast、任务分组、密码输入和 running 状态刷新一致；期间暴露 Rust 默认确认按钮漏掉旧版 `default` class，已恢复。`rust-archive-reference-parity.spec.ts` old/new 1/1，修复提交 `7b278b7`。
+- `2026-09-15`，old `18080` / new `18084`：以同一实际 WAV、WebM、EPUB 分别走 upload session 创建、pending 查询、字节 PUT、complete，再查询 audio/video/book metadata、reanalyze 和完成 upload task 详情；old/new 成功状态与响应字段一致。探针发现 Rust complete 返回 ready 文件时漏掉 `etag`，已在 single/multipart 共用事务中恢复写入；修复后 `rust-specialized-api-reference-parity.spec.ts` old/new 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：反向对照 `SelectionToolbar.vue` 的打开按钮分流，旧版对同时满足 editable/book 的 `.txt` 显示书本“阅读”图标，Rust 初始版错误显示编辑图标；已按旧版条件顺序恢复，`rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1。另实际点击列表行“移动”后，旧版选择工具栏立即隐藏而 Rust 初始版仍显示；已让媒体预览、阅读器、编辑器、移动/复制、分享和账户弹层按旧版隐藏工具栏，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：任务中心以两个活动任务的 1%/2% 原始进度实际对照，旧版先求平均再四舍五入为 2%，Rust 初始版逐项取整并整数除法显示 1%；已恢复 reference 聚合顺序。随后以 12.5%/失败 42% fixture 对照进度条 raw width、终态满格和 status class，`rust-task-center-parity.spec.ts` old/new 各 9/9。
@@ -380,7 +381,7 @@
 | `[P]` | `GET /api/system/status/stream` | 系统状态 SSE | Rust `SystemStatus` 直接建立 EventSource；old/new 三卡首帧、非法数据、critical/异常状态透传、断线重连和卸载清理已验证 |
 | `[P]` | `GET /api/events` | 任务实时 SSE | Rust `TaskController` 直接建立 EventSource；old/new 任务面板刷新/关闭已验证 |
 | `[P]` | `GET /api/tasks` | 任务中心初始/刷新 | Rust `fetch_tasks()` 由 `TaskController` 调用；old/new 分组、空态和操作已验证 |
-| `[ ]` | `GET /api/tasks/{id}` | 任务详情/归档等待 | old UI 没有直接详情页 caller；Rust route 若保留仅供兼容，归档输入走 `/input`；需单独核对响应语义 |
+| `[P]` | `GET /api/tasks/{id}` | 任务详情/归档等待 | old UI 没有直接详情页 caller；old/new 以实际完成的 upload task 查询详情，状态、类型、进度、错误和 source 字段一致；归档输入仍走 `/input`，`rust-specialized-api-reference-parity.spec.ts` |
 | `[P]` | `POST /api/tasks/{id}/cancel` | 任务中心取消 | Rust `cancel_task()` 由任务按钮调用；old/new mock 任务取消已验证 |
 | `[P]` | `POST /api/tasks/{id}/retry` | 任务中心重试 | Rust `retry_task()` 由任务按钮调用；old/new retry 和 max-retry 隐藏已验证 |
 | `[P]` | `POST /api/tasks/{id}/input` | 密码/用户输入 | Rust `submit_task_input()` 由密码弹窗调用；old/new 归档等待输入已验证 |
@@ -391,15 +392,15 @@
 | `[P]` | `POST /api/files/batch-download/prepare` | 多选 ZIP | Rust `prepare_batch_download()` 由 SelectionToolbar 调用；old/new 多选一次 ZIP 已验证 |
 | `[P]` | `GET /api/files/batch-download/{token}` | ZIP token 下载 | Rust 通过隐藏 anchor 下载 token；old/new 建议文件名和无 iframe/CSP 已验证 |
 | `[P]` | `GET /api/files/{id}/preview` | 图片/音频/视频/文件预览 | Rust media 组件 direct URL；old/new 图片/音频/视频及不支持文本 preview/Range 已验证 |
-| `[ ]` | `GET /api/files/{id}/audio` | 音频 metadata/章节 | Rust `fetch_audio()` 有 |
-| `[ ]` | `GET /api/files/{id}/video` | 视频 metadata/subtitles | Rust `fetch_video()` 有 |
-| `[ ]` | `POST /api/files/{id}/media/reanalyze` | 媒体重新分析 | Rust server route 保留；old UI 没有稳定可见入口，需确认媒体更多菜单是否在该 reference commit 出现 |
+| `[P]` | `GET /api/files/{id}/audio` | 音频 metadata/章节 | old/new 实际上传同一 WAV 后查询成功响应，duration、cover、章节和 JSON 传输一致；Rust `fetch_audio()` 有；`rust-specialized-api-reference-parity.spec.ts` |
+| `[P]` | `GET /api/files/{id}/video` | 视频 metadata/subtitles | old/new 实际上传同一 WebM 后查询成功响应，字幕数组和 JSON 传输一致；Rust `fetch_video()` 有；`rust-specialized-api-reference-parity.spec.ts` |
+| `[P]` | `POST /api/files/{id}/media/reanalyze` | 媒体重新分析 | old UI 没有稳定可见入口，但 old/new 对同一实际 WAV 执行 reanalyze，均返回 ready/字幕数量；Rust route 保留；`rust-specialized-api-reference-parity.spec.ts` |
 | `[P]` | `GET /api/files/{id}/video/subtitles/{subtitle}` | 视频字幕文件 | Rust `VideoPlayer` 的 `<track src>` 直接调用；old/new 字幕加载 fixture 已验证 |
 | `[P]` | `GET /api/files/{id}/media/progress` | 音视频进度恢复 | Rust `fetch_media_progress()` 由 Audio/VideoPlayer 调用；old/new 存储探针已验证 |
 | `[P]` | `PUT /api/files/{id}/media/progress` | 音视频进度保存 | Rust 普通定时路径由 `save_media_progress()` 调用，预览卸载路径由 `save_media_progress_keepalive()` 直接构造同源 keepalive 请求；old/new 存储探针与 Request.keepalive 已验证 |
 | `[P]` | `GET /api/files/{id}/content` | 文本编辑器读取 | Rust `fetch_document()` 由 `DocumentEditor` 流程调用；old/new TXT/Markdown 读取已验证 |
 | `[P]` | `PUT /api/files/{id}/content` | 文本编辑器保存/etag | Rust `update_document()` 由 `DocumentEditor` 调用；old/new 保存和 Markdown 重开已验证，冲突子项仍待验 |
-| `[ ]` | `GET /api/files/{id}/book` | EPUB/TXT metadata | Rust `fetch_book()` 有 |
+| `[P]` | `GET /api/files/{id}/book` | EPUB/TXT metadata | old/new 实际上传同一 EPUB 后查询成功响应，format/title/name/cover/TOC 一致；Rust `fetch_book()` 有；`rust-specialized-api-reference-parity.spec.ts` |
 | `[P]` | `GET /api/files/{id}/book/assets/{index}` | EPUB 资源 | Rust reader flow `<img>/<object>` URL 由 `ReaderView` 生成；old/new 真实 EPUB 资源场景已通过 |
 | `[P]` | `GET /api/files/{id}/book/cover` | EPUB cover | Rust reader cover URL/fallback 由 `ReaderView` 调用；old/new 真实 EPUB 已通过 |
 | `[P]` | `GET /api/files/{id}/book/progress` | reader progress | Rust `fetch_book_progress()` 由 reader 启动调用；old/new reader-flow 已验证 |
@@ -420,13 +421,13 @@
 | `[ ]` | `DELETE /api/trash` | 清空回收站 | Rust `empty_trash()` 有；清空的反馈/错误链路另由 UI parity 覆盖，实际 API 成功/失败矩阵仍未完 |
 | `[P]` | `POST /api/trash/{id}/restore` | 恢复 | Rust `restore_file()` 有；API 文档生命周期 old/new 均实际验证恢复 |
 | `[P]` | `DELETE /api/trash/{id}` | 永久删除 | Rust `purge_file()` 有；API 文档生命周期 old/new 均实际验证 purge |
-| `[ ]` | `POST /api/uploads` | 创建上传 | Rust `create_upload()` 有 |
-| `[ ]` | `GET /api/uploads/{id}` | 上传状态/断点恢复 | Rust `fetch_upload()` 有 |
-| `[ ]` | `PUT /api/uploads/{id}/data` | 单请求上传 | Rust API/controller caller 待验 |
+| `[P]` | `POST /api/uploads` | 创建上传 | old/new 实际创建同一 WAV/WebM/EPUB 的 single session，模式、part size/count、目标 URL 和 expiry 字段一致；Rust `create_upload()` 有；`rust-specialized-api-reference-parity.spec.ts` |
+| `[P]` | `GET /api/uploads/{id}` | 上传状态/断点恢复 | old/new 实际读取 pending session，file/upload/size/MIME/status/parts 字段一致；Rust `fetch_upload()` 有；`rust-specialized-api-reference-parity.spec.ts` |
+| `[P]` | `PUT /api/uploads/{id}/data` | 单请求上传 | old/new 实际 PUT 同一媒体字节，均返回 204 + ETag；Rust upload controller caller 已实际跑通；`rust-specialized-api-reference-parity.spec.ts` |
 | `[ ]` | `PUT /api/uploads/{id}/data/{part}` | 分片上传 | Rust `upload_part()` 有 |
 | `[ ]` | `POST /api/uploads/{id}/parts` | 获取分片 URL | Rust `request_upload_parts()` 有 |
 | `[ ]` | `PUT /api/uploads/{id}/parts/{part}` | 记录分片 | Rust `record_upload_part()` 有 |
-| `[ ]` | `POST /api/uploads/{id}/complete` | 完成上传 | Rust `complete_upload()` 有 |
+| `[P]` | `POST /api/uploads/{id}/complete` | 完成上传 | old/new 实际完成三类文件，ready 文件对象、content hash 和 ETag 一致；此前 Rust 漏写 ETag 已恢复；`rust-specialized-api-reference-parity.spec.ts` |
 | `[ ]` | `DELETE /api/uploads/{id}` | 取消/中止上传 | Rust `abort_upload()` 有 |
 
 ## 14. 旧版页面/组件反向清点
@@ -525,5 +526,5 @@
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
 | 弹层 history 与外置确认框生命周期 | 5、8、15 | `55ef117`、`a7c669e` | `rust-modal-history-reference-parity.spec.ts` old/new 1/1 | 实际在分享弹层上打开停止分享确认框后按浏览器后退，比较 share modal 与外置 AppDialog 的卸载/保留结果和 pathname；Rust 初始额外清除 dialog，已恢复 reference 行为 | 局部 PASS |
 | 分类媒体视图与文件项交互 | 4–6、15 | `1ffae0e` | old 原始 `library-ui.spec.ts` 4/4；Rust `rust-library-ui.spec.ts` 8/8；双版本 `rust-library-reference-parity.spec.ts` 1/1；`cargo xtask check` | 同一 fixture 实际比较书架/图库/音乐标题、分组、卡片/行、视图切换、图片到视频的会话状态延续及分类卡/音频行 `contextmenu.prevent`；Rust 初始三处差异均已恢复 | 局部 PASS |
-| API 路由与文档生命周期 | 13、15–16 | `da88991`、`eac64a8` | `rust-api-reference-parity.spec.ts` old/new 2/2；服务端 upload error 单测 1/1；`cargo fmt`、`cargo xtask check` 已通过 | 旧 route registry、old/new caller 反向清点；认证/存储/library/status/tasks/文件/回收站/分享缺失矩阵及文档创建→回收生命周期实际双实例对照；`GET /api/uploads/{id}` 查询缺失文案已恢复 | 局部 PASS |
+| API 路由与文档生命周期 | 13、15–16 | `da88991`、`eac64a8` | `rust-api-reference-parity.spec.ts` old/new 2/2；`rust-specialized-api-reference-parity.spec.ts` old/new 1/1；服务端 upload error 单测 1/1；`cargo fmt`、workspace check 已通过 | 旧 route registry、old/new caller 反向清点；认证/存储/library/status/tasks/文件/回收站/分享缺失矩阵及文档创建→回收生命周期实际双实例对照；专用媒体/阅读器成功 API、upload session 和任务详情实际对照；Rust upload complete 漏写 ETag 已恢复 | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已完成第一轮 route/caller 反向登记并新增双实例探针；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
