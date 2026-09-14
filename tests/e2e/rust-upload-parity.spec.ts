@@ -391,3 +391,48 @@ test('old/new 字节上传连续失败时保留相同的任务中心可见状态
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+test('old/new 文件选择的空输入与同名重复结果保持 reference 行为', async ({ browser }) => {
+  const name = `upload-duplicate-reference-${crypto.randomUUID()}.txt`
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    const uploadResponses: number[] = []
+    page.on('response', response => {
+      if (new URL(response.url()).pathname === '/api/uploads' && response.request().method() === 'POST') {
+        uploadResponses.push(response.status())
+      }
+    })
+    await loginAt(page, baseUrl)
+    const input = page.locator('input[type=file]').first()
+    await input.setInputFiles([])
+    await new Promise(resolve => setTimeout(resolve, 250))
+    expect(uploadResponses, '空文件选择不应创建 upload session').toEqual([])
+    await input.setInputFiles([
+      { name, mimeType: 'text/plain', buffer: Buffer.from('first duplicate\n') },
+      { name, mimeType: 'text/plain', buffer: Buffer.from('second duplicate\n') },
+    ])
+    await expect.poll(() => uploadResponses.length, { timeout: 15_000 }).toBe(2)
+    await expect.poll(() => page.evaluate(async fileName => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return -1
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).filter(item => item.name === fileName).length
+    }, name), { timeout: 20_000 }).toBe(1)
+    return [...uploadResponses].sort((a, b) => a - b)
+  }
+
+  try {
+    const [oldResponses, newResponses] = await Promise.all([exercise(oldPage, oldUrl), exercise(newPage, newUrl)])
+    expect(oldResponses).toEqual([201, 409])
+    expect(newResponses, 'Rust 重复文件上传响应与 reference 不一致').toEqual(oldResponses)
+  } finally {
+    await Promise.all([removeCreated(oldPage, [name]), removeCreated(newPage, [name])])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
