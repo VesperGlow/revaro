@@ -66,4 +66,5 @@
 .task-center .completed-group>.expand:hover{border-color:#bfdbfe;background:#eff6ff;color:#2563eb}
 .task-center .completed-group>.expand:focus-visible{outline:2px solid #60a5fa;outline-offset:1px}
 .task-center .completed-group>.expand svg{width:15px;height:15px;transition:transform .18s}
-.task-center .completed-group>.expand svg.up{transform:rotate(180deg)}
+.task-center .completed-group>.expand .expand-chevron{display:inline-flex;transition:transform .18s}
+.task-center .completed-group>.expand .expand-chevron.up{transform:rotate(180deg)}

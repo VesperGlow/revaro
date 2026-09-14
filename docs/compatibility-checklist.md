@@ -72,6 +72,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际对照 Logo 回根、系统状态面板点空白/Escape/重复点击关闭、桌面与移动端侧栏回收站 footer。Rust 初始移动 footer 点击时错误关闭抽屉，已移除额外关闭；尺寸、路径和其余状态均与 old 一致，`rust-navigation-parity.spec.ts` old/new 定向用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：模拟 `/api/library/all` 首次 503、再次刷新延迟返回合法图片条目，旧版错误态、重试 loading、恢复内容和刷新图标路径已逐项对照；Rust 初始 `RefreshCw` 几何不同，已恢复四段 reference path，`rust-library-ui.spec.ts` old/new 定向用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：模拟四张图片分布在根目录、两级 `归档 / 旅行` 和 `归档 / 工作`，逐项点击分类路径树；根/节点计数、首层默认展开、子路径展开、过滤后的卡片数、active 行和回到“全部位置”均一致。空分类另验证“还没有图片内容”路径提示、空态文案和“上传文件”入口，old/new 各 1/1。文件目录树在媒体分类切换后的 old 运行中出现旧版自身异步加载竞态（old 未显示子目录、new 显示），未将其伪记为 Rust 已通过，仍需用稳定真实目录场景单独裁定。
+- `2026-09-14`，old `18080` / new `18083`：`rust-icon-reference-parity.spec.ts` 在两个独立浏览器上下文中用同一 mock 数据逐项读取实际 DOM；顶栏任务、系统状态三张服务卡、五类侧栏/路径树、回收站、折叠、文件视图、新建/上传、任务取消/密码/重试/完成展开，以及移动端抽屉和账户工具入口的 SVG 几何均一致。Rust 初始版本中任务取消、密码、重试、媒体控制、状态卡、文件操作等多个 Lucide 几何差异已按 old `@lucide/vue` 1.41.0 恢复；任务中心“展开其余/收起”箭头也恢复，媒体/文件项全类型图标仍待继续覆盖。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -114,7 +115,7 @@
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
 | `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |
-| `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | 任务/状态/账户/回收站/分类/面包屑的关键 geometry 已逐项修复并局部对照；全部文件类型及 hover/disabled 仍待验 |
+| `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | `rust-icon-reference-parity.spec.ts` 已在 old/new 浏览器逐项比对侧栏、路径、折叠、回收站和移动抽屉 geometry；active/hover/disabled 全状态及全部文件类型仍待验 |
 | `[P]` | 回收站 footer | 桌面/移动端位置、图标、active、点击和 trash empty 状态一致。 | old/new 桌面尺寸、移动端 footer 点击、回收站空态和移动抽屉保持打开的 reference 语义已实测 |
 
 ## 5. 文件浏览、路由和全局内容区
@@ -136,7 +137,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。 | Rust 有 FileTile/rows 基础，视觉待对照 |
-| `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已逐项修复；文件项各类型和 fallback 仍待同一 fixture 截图对照 |
+| `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；文件项各类型、fallback、颜色和状态叠加仍待同一 fixture 截图对照 |
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 待验证 |
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
@@ -354,6 +355,7 @@
 |---|---|---|---|---|---|
 | 基线与清单 | 1 | `068b9bb` | healthz、old/new 构建和基线记录已完成 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`待提交`（navigation global入口 parity） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；浏览器后退/弹层 history 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
+| 全局图标与任务中心控件 | 3–4、6、11、15 | 待提交（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |

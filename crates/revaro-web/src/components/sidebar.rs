@@ -337,7 +337,7 @@ fn PathTree(
                     title=node_path
                     on:click=select
                 >
-                    {icons::folder_closed()}
+                    {icons::folder()}
                     <span>{node_name}</span>
                     <em>{node_count}</em>
                 </button>
@@ -423,7 +423,7 @@ fn FileTree(
                     title="我的文件"
                     on:click=move |_| on_navigate.run(ROOT_ID.to_owned())
                 >
-                    {icons::folder_closed()}
+                    {icons::folder()}
                     <span>"我的文件"</span>
                 </button>
             </div>
@@ -525,7 +525,7 @@ fn DirectoryNode(
                     title=name_for_title.clone()
                     on:click=move |_| on_navigate.run(id_for_click.clone())
                 >
-                    {icons::folder_closed()}
+                    {icons::folder()}
                     <span>{name.clone()}</span>
                 </button>
             </div>

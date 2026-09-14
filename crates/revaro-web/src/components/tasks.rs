@@ -823,7 +823,10 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                     </For>
                                     <Show when=move || { completed_count.get() > MAX_COMPLETED_DISPLAY } fallback=|| ()>
                                         <button class="expand" type="button" on:click=move |_| show_all.update(|value| *value = !*value)>
-                                            {move || if show_all.get() { "收起".to_owned() } else { format!("展开其余 {} 项", completed_count.get() - MAX_COMPLETED_DISPLAY) }}
+                                            <span>{move || if show_all.get() { "收起".to_owned() } else { format!("展开其余 {} 项", completed_count.get() - MAX_COMPLETED_DISPLAY) }}</span>
+                                            <span class="expand-chevron" class:up=move || show_all.get()>
+                                                {crate::components::icons::chevron_down()}
+                                            </span>
                                         </button>
                                     </Show>
                                 </section>

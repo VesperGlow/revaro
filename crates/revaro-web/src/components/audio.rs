@@ -535,7 +535,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                             if cover.is_some() && !cover_failed.get() {
                                 view! { <img src=cover.unwrap_or_default() alt=format!("{} 封面", cover_name) on:error=move |_| cover_failed.set(true) /> }.into_any()
                             } else {
-                                view! { {icons::music()} }.into_any()
+                                view! { {icons::music_2()} }.into_any()
                             }
                         }}
                     </div>

@@ -50,14 +50,13 @@ pub fn trash() -> impl IntoView {
     }
 }
 
-/// Lucide `square-x` — cancel a background task.
+/// Lucide `x` — cancel a background task.
 pub fn close_square() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="18" height="18" x="3" y="3" rx="2"></rect>
-            <path d="m9 9 6 6"></path>
-            <path d="m15 9-6 6"></path>
+            <path d="M18 6 6 18"></path>
+            <path d="m6 6 12 12"></path>
         </svg>
     }
 }
@@ -67,7 +66,8 @@ pub fn key_round() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777Zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+            <path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"></path>
+            <circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle>
         </svg>
     }
 }
@@ -77,7 +77,7 @@ pub fn rotate_ccw() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path>
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
             <path d="M3 3v5h5"></path>
         </svg>
     }
@@ -135,6 +135,27 @@ pub fn music() -> impl IntoView {
     }
 }
 
+/// Lucide `music-2` — the audio-player fallback artwork.
+pub fn music_2() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="8" cy="18" r="4"></circle>
+            <path d="M12 18V2l7 4"></path>
+        </svg>
+    }
+}
+
+/// Lucide `folder` — a folder in a path tree.
+pub fn folder() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+        </svg>
+    }
+}
+
 /// Lucide `folder-closed` — the 文件 category.
 pub fn folder_closed() -> impl IntoView {
     view! {
@@ -151,11 +172,11 @@ pub fn file_text() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
-            <path d="M14 2v6h6"></path>
-            <path d="M8 13h8"></path>
-            <path d="M8 17h8"></path>
-            <path d="M8 9h2"></path>
+            <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"></path>
+            <path d="M14 2v5a1 1 0 0 0 1 1h5"></path>
+            <path d="M10 9H8"></path>
+            <path d="M16 13H8"></path>
+            <path d="M16 17H8"></path>
         </svg>
     }
 }
@@ -165,8 +186,8 @@ pub fn file() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
-            <path d="M14 2v6h6"></path>
+            <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"></path>
+            <path d="M14 2v5a1 1 0 0 0 1 1h5"></path>
         </svg>
     }
 }
@@ -231,9 +252,9 @@ pub fn more_horizontal() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="5" cy="12" r="1"></circle>
             <circle cx="12" cy="12" r="1"></circle>
             <circle cx="19" cy="12" r="1"></circle>
+            <circle cx="5" cy="12" r="1"></circle>
         </svg>
     }
 }
@@ -255,9 +276,9 @@ pub fn zoom_in() -> impl IntoView {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="11" cy="11" r="8"></circle>
-            <path d="m21 21-4.3-4.3"></path>
-            <path d="M11 8v6"></path>
-            <path d="M8 11h6"></path>
+            <line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+            <line x1="11" x2="11" y1="8" y2="14"></line>
+            <line x1="8" x2="14" y1="11" y2="11"></line>
         </svg>
     }
 }
@@ -268,8 +289,8 @@ pub fn zoom_out() -> impl IntoView {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="11" cy="11" r="8"></circle>
-            <path d="m21 21-4.3-4.3"></path>
-            <path d="M8 11h6"></path>
+            <line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+            <line x1="8" x2="14" y1="11" y2="11"></line>
         </svg>
     }
 }
@@ -292,9 +313,9 @@ pub fn gallery_horizontal_end() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2 3v18"></path>
-            <rect width="12" height="18" x="6" y="3" rx="2"></rect>
-            <path d="M22 15V9"></path>
+            <path d="M2 7v10"></path>
+            <path d="M6 5v14"></path>
+            <rect width="12" height="18" x="10" y="3" rx="2"></rect>
         </svg>
     }
 }
@@ -304,9 +325,9 @@ pub fn download() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 3v12"></path>
+            <path d="M12 15V3"></path>
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
             <path d="m7 10 5 5 5-5"></path>
-            <path d="M5 21h14"></path>
         </svg>
     }
 }
@@ -316,12 +337,12 @@ pub fn move_icon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M5 9 2 12l3 3"></path>
-            <path d="m9 5 3-3 3 3"></path>
+            <path d="M12 2v20"></path>
             <path d="m15 19-3 3-3-3"></path>
             <path d="m19 9 3 3-3 3"></path>
             <path d="M2 12h20"></path>
-            <path d="M12 2v20"></path>
+            <path d="m5 9-3 3 3 3"></path>
+            <path d="m9 5 3-3 3 3"></path>
         </svg>
     }
 }
@@ -331,7 +352,7 @@ pub fn copy() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="14" height="14" x="8" y="8" rx="2"></rect>
+            <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
             <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
         </svg>
     }
@@ -366,7 +387,7 @@ pub fn play() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m6 3 14 9-14 9Z"></path>
+            <path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"></path>
         </svg>
     }
 }
@@ -376,8 +397,8 @@ pub fn pause() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="4" height="16" x="6" y="4" rx="1"></rect>
-            <rect width="4" height="16" x="14" y="4" rx="1"></rect>
+            <rect x="14" y="3" width="5" height="18" rx="1"></rect>
+            <rect x="5" y="3" width="5" height="18" rx="1"></rect>
         </svg>
     }
 }
@@ -387,7 +408,7 @@ pub fn rotate_cw() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-3-6.7L21 8"></path>
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
             <path d="M21 3v5h-5"></path>
         </svg>
     }
@@ -460,9 +481,9 @@ pub fn type_icon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 7V4h16v3"></path>
-            <path d="M9 20h6"></path>
             <path d="M12 4v16"></path>
+            <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"></path>
+            <path d="M9 20h6"></path>
         </svg>
     }
 }
@@ -472,9 +493,11 @@ pub fn sun_moon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
-            <path d="M19 3v4"></path>
-            <path d="M21 5h-4"></path>
+            <path d="M12 2v2"></path>
+            <path d="M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715"></path>
+            <path d="M16 12a4 4 0 0 0-4-4"></path>
+            <path d="m19 5-1.256 1.256"></path>
+            <path d="M20 12h2"></path>
         </svg>
     }
 }
@@ -484,9 +507,9 @@ pub fn volume_2() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
-            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"></path>
+            <path d="M16 9a5 5 0 0 1 0 6"></path>
+            <path d="M19.364 18.364a9 9 0 0 0 0-12.728"></path>
         </svg>
     }
 }
@@ -496,8 +519,8 @@ pub fn volume_1() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"></path>
+            <path d="M16 9a5 5 0 0 1 0 6"></path>
         </svg>
     }
 }
@@ -507,9 +530,9 @@ pub fn volume_x() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-            <line x1="23" y1="9" x2="17" y2="15"></line>
-            <line x1="17" y1="9" x2="23" y2="15"></line>
+            <path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"></path>
+            <path d="m16.5 14.5 5-5"></path>
+            <path d="m16.5 9.5 5 5"></path>
         </svg>
     }
 }
@@ -519,8 +542,8 @@ pub fn skip_back() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polygon points="19 20 9 12 19 4 19 20"></polygon>
-            <line x1="5" y1="19" x2="5" y2="5"></line>
+            <path d="M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"></path>
+            <path d="M3 20V4"></path>
         </svg>
     }
 }
@@ -530,8 +553,8 @@ pub fn skip_forward() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polygon points="5 4 15 12 5 20 5 4"></polygon>
-            <line x1="19" y1="5" x2="19" y2="19"></line>
+            <path d="M21 4v16"></path>
+            <path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"></path>
         </svg>
     }
 }
@@ -541,11 +564,8 @@ pub fn captions() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="20" height="14" x="2" y="5" rx="2"></rect>
-            <path d="M7 15h4"></path>
-            <path d="M13 15h4"></path>
-            <path d="M7 11h2"></path>
-            <path d="M13 11h2"></path>
+            <rect width="18" height="14" x="3" y="5" rx="2" ry="2"></rect>
+            <path d="M7 15h4M15 15h2M7 11h2M13 11h4"></path>
         </svg>
     }
 }
@@ -555,8 +575,8 @@ pub fn settings_2() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20 7h-9"></path>
             <path d="M14 17H5"></path>
+            <path d="M19 7h-9"></path>
             <circle cx="17" cy="17" r="3"></circle>
             <circle cx="7" cy="7" r="3"></circle>
         </svg>
@@ -595,8 +615,8 @@ pub fn database() -> impl IntoView {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-            <path d="M3 5v14c0 1.657 4.03 3 9 3s9-1.343 9-3V5"></path>
-            <path d="M3 12c0 1.657 4.03 3 9 3s9-1.343 9-3"></path>
+            <path d="M3 5V19A9 3 0 0 0 21 19V5"></path>
+            <path d="M3 12A9 3 0 0 0 21 12"></path>
         </svg>
     }
 }
@@ -642,10 +662,10 @@ pub fn images() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m2 16 4.5-4.5a2.12 2.12 0 0 1 3 0L14 16"></path>
-            <path d="m14 14 1.5-1.5a2.12 2.12 0 0 1 3 0L22 16"></path>
-            <path d="M4 19h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z"></path>
-            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <path d="m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16"></path>
+            <path d="M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2"></path>
+            <circle cx="13" cy="7" r="1" fill="currentColor"></circle>
+            <rect x="8" y="2" width="14" height="14" rx="2"></rect>
         </svg>
     }
 }
