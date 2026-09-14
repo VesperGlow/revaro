@@ -635,3 +635,70 @@ test('触屏：视频点按只切换控制条，图片双指缩放和取消手�
     await context.close()
   }
 })
+
+test('old/new 触屏媒体手势链保持视频点按、图片缩放与取消语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间漫步.webm')
+    const video = page.locator('.video-player-shell video')
+    await expect(video).toHaveJSProperty('paused', false)
+    await page.touchscreen.tap(195, 400)
+    const hiddenAfterFirstTap = await page.locator('.video-controls').isHidden()
+    const playingAfterFirstTap = !(await video.evaluate((element: HTMLVideoElement) => element.paused))
+    await page.touchscreen.tap(195, 400)
+    const visibleAfterSecondTap = await page.locator('.video-controls').isVisible()
+    const playingAfterSecondTap = !(await video.evaluate((element: HTMLVideoElement) => element.paused))
+    await page.getByRole('button', { name: '退出播放' }).tap()
+
+    await open(page, '群山.png')
+    const beforeZoom = Number.parseInt((await page.locator('.preview-actual-size').textContent()) ?? '0', 10)
+    const session = await page.context().newCDPSession(page)
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 120, y: 400, id: 1 }, { x: 270, y: 400, id: 2 }] })
+    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 70, y: 400, id: 1 }, { x: 320, y: 400, id: 2 }] })
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    const afterZoom = Number.parseInt((await page.locator('.preview-actual-size').textContent()) ?? '0', 10)
+
+    await page.getByRole('button', { name: '适应窗口' }).tap()
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 300, y: 400, id: 1 }] })
+    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 100, y: 400, id: 1 }] })
+    await session.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] })
+    const afterCancel = await page.locator('.preview-file-meta').innerText()
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 300, y: 400, id: 1 }] })
+    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 100, y: 400, id: 1 }] })
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    const afterSwipe = await page.locator('.preview-file-meta').innerText()
+
+    return {
+      hiddenAfterFirstTap,
+      playingAfterFirstTap,
+      visibleAfterSecondTap,
+      playingAfterSecondTap,
+      beforeZoom,
+      afterZoom,
+      afterCancel,
+      afterSwipe,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.playingAfterFirstTap).toBe(true)
+    expect(oldResult.playingAfterSecondTap).toBe(true)
+    expect(oldResult.afterZoom).toBeGreaterThan(oldResult.beforeZoom)
+    expect(oldResult.afterCancel).toBe('群山.png')
+    expect(oldResult.afterSwipe).toBe('远山.png')
+    expect(newResult, 'Rust 触屏媒体手势与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
