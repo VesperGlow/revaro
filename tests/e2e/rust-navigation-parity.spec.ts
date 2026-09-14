@@ -121,6 +121,103 @@ test('从嵌套目录进入回收站后点击文件分类返回原目录', async
   }
 })
 
+test('无效文件夹深链回到根目录并加载 reference 的默认页面', async ({ page }) => {
+  await page.goto('/f/compatibility-folder-that-does-not-exist')
+  await page.getByLabel('用户名').fill(process.env.E2E_USERNAME || 'admin')
+  await page.getByLabel('密码').fill(process.env.E2E_PASSWORD || 'revaro-e2e-password')
+  await page.getByRole('button', { name: '进入我的网盘' }).click()
+
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/')
+  await expect(page.locator('.state[role="alert"]')).toHaveCount(0)
+})
+
+test('直接打开五类分类和文件夹地址时恢复 reference 页面与规范 URL', async ({ page }) => {
+  const stamp = '2026-01-01T00:00:00Z'
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/library/all') {
+      return json({
+        items: { book: [], image: [], video: [], audio: [] },
+        counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 },
+      })
+    }
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: {
+          id: ROOT,
+          parent_id: null,
+          name: '我的文件',
+          kind: 'directory',
+          size: 0,
+          mime_type: '',
+          etag: '',
+          status: 'ready',
+          created_at: stamp,
+          updated_at: stamp,
+        },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) {
+      return json({ items: [], total_bytes: 0, file_count: 0 })
+    }
+    if (path === '/api/files/compatibility-route-folder') {
+      return json({
+        file: {
+          id: 'compatibility-route-folder',
+          parent_id: ROOT,
+          name: '测试目录',
+          kind: 'directory',
+          size: 0,
+          mime_type: '',
+          etag: '',
+          status: 'ready',
+          created_at: stamp,
+          updated_at: stamp,
+        },
+        breadcrumbs: [
+          { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: stamp, updated_at: stamp },
+          { id: 'compatibility-route-folder', parent_id: ROOT, name: '测试目录', kind: 'directory', size: 0, status: 'ready', created_at: stamp, updated_at: stamp },
+        ],
+      })
+    }
+    if (path === '/api/files/compatibility-route-folder/children') {
+      return json({ items: [], total_bytes: 0, file_count: 0 })
+    }
+    return json({ items: [] })
+  })
+
+  await page.goto('/library/book')
+  await expect(page.getByRole('heading', { name: '书架', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/library/book')
+
+  await page.goto('/library/image')
+  await expect(page.getByRole('heading', { name: '图片', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/library/image')
+
+  await page.goto('/library/video')
+  await expect(page.getByRole('heading', { name: '视频', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/library/video')
+
+  await page.goto('/library/audio/f/compatibility-route-folder')
+  await expect(page.getByRole('heading', { name: '音乐', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/library/audio/f/compatibility-route-folder')
+
+  await page.goto('/f/compatibility-route-folder')
+  await expect(page.getByRole('heading', { name: '测试目录', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/f/compatibility-route-folder')
+
+  await page.goto('/library/file')
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/')
+})
+
 test('桌面侧栏折叠与分类路径手风琴在刷新后保持 reference 状态', async ({ page }) => {
   await page.addInitScript(() => {
     if (!sessionStorage.getItem('compat-sidebar-reset')) {

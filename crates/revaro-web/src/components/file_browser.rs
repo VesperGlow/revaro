@@ -223,6 +223,8 @@ pub fn FileBrowser(
     let account_open = RwSignal::new(false);
     let nav_actions = RwSignal::new(Vec::<NavAction>::new());
     let history_suppressed = RwSignal::new(false);
+    let initial_route_pending = RwSignal::new(false);
+    let fallback_to_root = RwSignal::new(false);
 
     let load_folder = {
         let current_id = current_id;
@@ -241,6 +243,8 @@ pub fn FileBrowser(
         let tree_token = tree_token;
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
+        let initial_route_pending = initial_route_pending;
+        let fallback_to_root = fallback_to_root;
         let on_logout = on_logout.clone();
         Callback::new(move |id: String| {
             let sequence = request_sequence.get_untracked().wrapping_add(1);
@@ -251,6 +255,8 @@ pub fn FileBrowser(
             selected_ids.set(HashSet::new());
             let requested_id = id;
             let suppress_history = history_suppressed.get_untracked();
+            let initial_request = initial_route_pending.get_untracked();
+            initial_route_pending.set(false);
             let logout = on_logout.clone();
 
             leptos::task::spawn_local(async move {
@@ -294,12 +300,30 @@ pub fn FileBrowser(
                     }
                     Err(request_error) => {
                         loading.set(false);
-                        notify.run(Feedback::error(request_error.message));
+                        if initial_request && requested_id != ROOT_ID {
+                            // The reference startup route treats an invalid
+                            // `/f/{id}` bookmark as a stale URL: it returns to
+                            // the root and loads that folder without leaving a
+                            // transient error screen behind. Ordinary in-app
+                            // navigation still reports its error below.
+                            replace_folder_url(ROOT_ID);
+                            fallback_to_root.set(true);
+                        } else {
+                            notify.run(Feedback::error(request_error.message));
+                        }
                     }
                 }
             });
         })
     };
+
+    let fallback_loader = load_folder.clone();
+    Effect::new(move |_| {
+        if fallback_to_root.get() {
+            fallback_to_root.set(false);
+            fallback_loader.run(ROOT_ID.to_owned());
+        }
+    });
 
     let load_trash = {
         let current = current;
@@ -1710,6 +1734,7 @@ pub fn FileBrowser(
         load_library.run(kind);
     } else {
         let initial_folder = folder_id(&pathname, ROOT_ID);
+        initial_route_pending.set(initial_folder != ROOT_ID && pathname.starts_with("/f/"));
         if initial_folder == ROOT_ID && pathname != "/" {
             replace_folder_url(&initial_folder);
         }
