@@ -415,3 +415,125 @@ test('旧版文档 API 的创建、读取、保存、下载、分享和回收生
     await Promise.all(clients.map(client => client.dispose()))
   }
 })
+
+test('旧版清空回收站 API 的全量删除行为在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const name = `api-empty-trash-${suffix}.txt`
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const ids: string[][] = [[], []]
+
+  try {
+    const created = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/documents',
+      'POST',
+      { parent_id: ROOT, name, content: `empty trash ${suffix}\n` },
+    )))
+    for (const [index, result] of created.entries()) {
+      expect(result.response.status()).toBe(201)
+      ids[index].push(String(objectValue(result.json, 'id')))
+    }
+
+    await Promise.all(clients.map((client, index) => client.delete(
+      `/api/files/${ids[index][0]}`,
+      { headers: headers(index === 0 ? oldUrl : newUrl) },
+    )))
+
+    const before = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/trash',
+    )))
+    for (const [index, result] of before.entries()) {
+      const items = objectValue(result.json, 'items') as Array<Record<string, unknown>>
+      expect(items.some(item => item.id === ids[index][0] && item.name === name)).toBe(true)
+    }
+
+    const emptied = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/trash',
+      'DELETE',
+    )))
+    await compareTransport(emptied[0], emptied[1])
+    expect(emptied[0].response.status()).toBe(204)
+
+    const after = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/trash',
+    )))
+    for (const [index, result] of after.entries()) {
+      const items = objectValue(result.json, 'items') as Array<Record<string, unknown>>
+      expect(items.some(item => item.id === ids[index][0])).toBe(false)
+    }
+  } finally {
+    await Promise.all(clients.map((client, index) => cleanup(client, index === 0 ? oldUrl : newUrl, ids[index])))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
+test('旧版取消未完成上传 API 的状态和可见文件清理在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const name = `api-abort-upload-${suffix}.bin`
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const uploadIds: string[][] = [[], []]
+  const fileIds: string[][] = [[], []]
+
+  try {
+    const created = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/uploads',
+      'POST',
+      { parent_id: ROOT, name, size: 32, mime_type: 'application/octet-stream' },
+    )))
+    for (const [index, result] of created.entries()) {
+      expect(result.response.status()).toBe(201)
+      uploadIds[index].push(String(objectValue(result.json, 'upload_id')))
+      fileIds[index].push(String(objectValue(result.json, 'file_id')))
+    }
+
+    const aborted = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      `/api/uploads/${uploadIds[index][0]}`,
+      'DELETE',
+    )))
+    await compareTransport(aborted[0], aborted[1])
+    expect(aborted[0].response.status()).toBe(204)
+
+    const uploadAfter = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      `/api/uploads/${uploadIds[index][0]}`,
+    )))
+    await compareTransport(uploadAfter[0], uploadAfter[1])
+    expect(uploadAfter[0].response.status()).toBe(404)
+    expect(objectKeys(uploadAfter[0].json)).toEqual(['error'])
+    expect(objectValue(uploadAfter[0].json, 'error')).toEqual(objectValue(uploadAfter[1].json, 'error'))
+
+    const fileAfter = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      `/api/files/${fileIds[index][0]}`,
+    )))
+    await compareTransport(fileAfter[0], fileAfter[1])
+    expect(fileAfter[0].response.status()).toBe(404)
+    expect(objectKeys(fileAfter[0].json)).toEqual(['error'])
+    expect(objectValue(fileAfter[0].json, 'error')).toEqual(objectValue(fileAfter[1].json, 'error'))
+  } finally {
+    await Promise.all(clients.map((client, index) => {
+      return Promise.all([
+        ...uploadIds[index].map(uploadId => client.delete(`/api/uploads/${uploadId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)),
+        ...fileIds[index].map(fileId => client.delete(`/api/files/${fileId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)),
+      ])
+    }))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
