@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`a0e7f8e`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`6710996`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -79,6 +79,7 @@
 - `2026-09-14`，old `18080` / new `18083`：传输请求延迟期间实际点击“移动”并读取 picker；old 外层为 `class="directory-picker disabled"`、opacity `0.65`，触发器自身 opacity `1`，Rust 初始版缺少外层 class 且把 opacity 放在按钮上。已恢复外层 disabled class/opacity 与 cursor，picker 两个 old/new 场景各 2/2，提交 `d0421c5`。
 - `2026-09-14`，old `18080` / new `18083`：实际打开目录选择器后读取进入首帧、固定定位和关闭首帧；old 的 `.directory-flyout-enter/leave-*` 为 `opacity/transform` 过渡 140ms，Rust 初始版直接挂载到最终态并即时卸载。已接入等价的 `flyout-closed` class、DOM 挂载后的定位和延迟卸载/定时器清理；进入/定位、独立退出、传输 disabled 三个场景 old/new 共 3/3，提交 `3198ff8`。
 - `2026-09-14`，old `18080` / new `18083`：保留两个列表选择后延迟 `/api/files/batch-download/prepare`，实际读取通知文案、Toast CSS 和点击命中结果；old 文案为“正在准备 2 个文件…”，Rust 初始版为“正在准备批量下载…”，且 Rust `pointer-events:none` 会让点击 Toast 穿透并清空选择。已恢复数量文案和 old 的自身命中区域，`rust-feedback-reference-parity.spec.ts` old/new 1/1，提交 `a0e7f8e`；断线、剪贴板失败、堆叠和完整时限矩阵仍待验。
+- `2026-09-14`，old `18080` / new `18083`：桌面与 390×844 实际读取侧栏所有分类行的初始/active/hover computed style、计数、路径展开箭头、折叠 rail、移动抽屉和过渡完成后的几何；两版一致。Rust 额外提供回收站 `aria-label`，属于不改变用户路径的无障碍增强；`rust-sidebar-state-reference-parity.spec.ts` old/new 1/1，提交 `6710996`。文件树竞态、完整路径树和全文件类型图标仍待验。
 - `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，并追加中间级点击、Enter、触摸点击三条导航结果对照，整组现为 3/3。导航全套仍保留在 `[ ]` 直到 stale request/完整键盘状态矩阵完成。
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
@@ -149,7 +150,8 @@
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
 | `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |
-| `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | `rust-icon-reference-parity.spec.ts` 已在 old/new 浏览器逐项比对侧栏、路径、折叠、回收站和移动抽屉 geometry；active/hover/disabled 全状态及全部文件类型仍待验 |
+| `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | `rust-icon-reference-parity.spec.ts` 与 `rust-sidebar-state-reference-parity.spec.ts` 已在 old/new 浏览器逐项比对侧栏、路径、折叠、回收站和移动抽屉 geometry/active/hover；disabled、完整文件类型图标和路径树竞态仍待验 |
+| `[P]` | 侧栏 active/hover/折叠/移动状态 | 分类行 active/hover、计数、展开箭头、桌面 rail 与 390×844 抽屉的布局、动画完成后的尺寸和点击状态一致。 | old/new `rust-sidebar-state-reference-parity.spec.ts` 各 1/1；保留 Rust 额外回收站 `aria-label` 作为无障碍增强 |
 | `[P]` | 回收站 footer | 桌面/移动端位置、图标、active、点击和 trash empty 状态一致。 | old/new 桌面尺寸、移动端 footer 点击、回收站空态和移动抽屉保持打开的 reference 语义已实测 |
 
 ## 5. 文件浏览、路由和全局内容区
@@ -416,4 +418,5 @@
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
 | 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e` | `rust-feedback-reference-parity.spec.ts` old/new 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载实际比较“正在准备 N 个文件…”、success Toast 颜色/定位/命中区域；点击 Toast 不会清除多选 | 局部 PASS |
+| 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
