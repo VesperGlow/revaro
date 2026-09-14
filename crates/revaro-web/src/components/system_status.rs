@@ -343,7 +343,7 @@ fn cache_hit_label(status: &Status) -> String {
     if total > 0 {
         format!(
             "命中 {}%（{total} 次读取）",
-            (hits * 100 / total).clamp(0, 100)
+            (hits as f64 * 100.0 / total as f64).round() as i64
         )
     } else {
         "暂无读取".to_owned()

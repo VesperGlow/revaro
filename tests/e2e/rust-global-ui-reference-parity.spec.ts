@@ -32,7 +32,7 @@ const status = {
     disk_bytes: 2048,
     memory_entries: 1,
     disk_entries: 2,
-    classes: { default: { hits: 3, misses: 1, loads: 1, load_errors: 0, evictions: 0 } },
+    classes: { default: { hits: 2, misses: 1, loads: 1, load_errors: 0, evictions: 0 } },
   },
 }
 
@@ -111,6 +111,8 @@ test('任务中心和系统状态 badge 保持 reference 尺寸与视觉层级',
     await expect(oldPage.locator(serviceSelector)).toHaveCount(3)
     await expect(newPage.locator(serviceSelector)).toHaveCount(3)
     expect(await badgeMetrics(newPage, serviceSelector)).toEqual(await badgeMetrics(oldPage, serviceSelector))
+    expect(await newPage.locator('.status-grid .service-card').nth(2).innerText())
+      .toBe(await oldPage.locator('.status-grid .service-card').nth(2).innerText())
   } finally {
     await oldContext.close()
     await newContext.close()
