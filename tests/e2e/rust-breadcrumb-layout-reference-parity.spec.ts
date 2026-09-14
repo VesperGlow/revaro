@@ -98,6 +98,13 @@ async function breadcrumbScrollCalls(page: Page) {
   )
 }
 
+async function waitForBreadcrumbScrollSettled(page: Page) {
+  await expect.poll(
+    () => page.locator('nav.breadcrumbs').evaluate(nav => nav.scrollLeft >= nav.scrollWidth - nav.clientWidth - 1),
+    { timeout: 2000, intervals: [50, 100, 200] },
+  ).toBe(true)
+}
+
 async function breadcrumbLayout(page: Page) {
   return page.locator('nav.breadcrumbs').evaluate(nav => ({
     childTags: Array.from(nav.children).map(child => child.tagName.toLowerCase()),
@@ -126,6 +133,7 @@ test('移动端深层面包屑的 DOM 层级和首末边距保持 reference', as
   try {
     await Promise.all([mockNavigation(oldPage), mockNavigation(newPage)])
     await Promise.all([openDeepPath(oldPage, oldUrl), openDeepPath(newPage, newUrl)])
+    await Promise.all([waitForBreadcrumbScrollSettled(oldPage), waitForBreadcrumbScrollSettled(newPage)])
     const oldLayout = await breadcrumbLayout(oldPage)
     const newLayout = await breadcrumbLayout(newPage)
     expect(newLayout, 'Rust 面包屑不应改变 reference 的子节点层级或移动端边距').toEqual(oldLayout)
