@@ -81,6 +81,9 @@
 - `2026-09-14`，old `18080` / new `18083`：任务中心以两个活动任务的 1%/2% 原始进度实际对照，旧版先求平均再四舍五入为 2%，Rust 初始版逐项取整并整数除法显示 1%；已恢复 reference 聚合顺序，`rust-task-center-parity.spec.ts` old/new 各 4/4。
 - `2026-09-14`，old `18080` / new `18083`：实际登录后注销并卸载认证壳层，旧版会移除顶栏/侧栏各自注册的两个 `matchMedia` change 监听，Rust 初始 helper 永久保留、移除数为 0；已恢复组件生命周期清理，`rust-navigation-parity.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：媒体预览实际打开图片并展开胶卷，旧版缩略图地址始终为 `/thumbnail?v=<etag>`，Rust 初始版漏掉版本参数；同时从预览根节点按 Tab，旧版先聚焦“更多操作”原生 `summary`，Rust 初始焦点循环漏选该节点。已恢复带编码 etag 的缩略图 URL 和旧版焦点候选规则；`rust-media-parity-ui.spec.ts` old/new 全部 13/13，新增焦点与 URL 断言，代码提交 `b84ce18`。
+- `2026-09-14`，old `18080` / new `18083`：按旧版 reader-flow reference 逐页、逐目录项、逐次翻页运行 17 项；两版均 17/17 通过。覆盖稳定窗口、热路径零重复请求、字号/行距客户端重排、跨 spine、父级/随机 TOC、未加载 chunk、连续翻页、旋转、图片 NavAnchor、无 fragment 回退、L2 重开/版本变化和阅读器视觉覆盖层。L2 用例仅在每次测试开头清理浏览器 Cache Storage，并等待异步请求完成，确保共享 Chromium 进程不会把上一次测试的缓存当作 reference 初始设备状态。
+- `2026-09-14`，old `18080` / new `18083`：真实上传 EPUB old/new 各 1/1；DOM 中全书 `data-block` 均为连续唯一的 `0…37`，翻页后的页码和无障碍文案均为 `14` / `阅读进度 14.0%`，TOC Escape 关闭后焦点回到 `#toc-button`。Rust 曾在每个 spine 内重复注入 global block 编号，已由 `ed13571` 恢复旧版全书编号后通过。
+- `2026-09-14`，old `18080` / new `18083`：反向对照 reader 的文本 fragment 二分定位、媒体 visual start、点击点/可见块回退、DOM 文本进度计算、TOC 导航深度保护、windowSync 取消/恢复、Tab 候选和键盘 Enter 行为；Rust reader/cache 与真实 EPUB 验收代码提交 `a47dc50`，old/new reader-flow 各 17/17，真实 EPUB 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -199,12 +202,12 @@
 |---|---|---|---|
 | `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | old/new 17项 reader-flow 与真实 TXT 链路已通过；仍需把条目证据拆到各子场景 |
 | `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 真实 EPUB 1/1、reader-flow 17/17 已通过；损坏/错误回退和逐项截图仍待验 |
-| `[ ]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | 基础 reader 存在 |
-| `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | 待完整回归 |
-| `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | 待完整回归 |
-| `[ ]` | 阅读设置 | 字号、行距、主题、背景、沉浸式模式、弹层覆盖正文、图标居中、纯客户端重排零 chunk 请求一致。 | 待完整回归 |
-| `[ ]` | 进度和缓存 | `revaro-reader-prefs`、服务端 `/book/progress`、anchor、manifest/chunk L2 cache、重开零重复请求、版本变化重取一致。 | Rust reader/cache 存在，待对照 |
-| `[ ]` | 阅读器响应式 | 桌面/窄屏/触摸、手势与滚动冲突、旋转、空白点击和 drawer 关闭一致。 | 待验证 |
+| `[P]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | old/new reader-flow 的顶栏、标题截断、ring、沉浸式隐藏和恢复均通过；真实 EPUB 另验证页码及 `阅读进度 14.0%` |
+| `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；触摸翻页/取消、完整键盘状态仍待独立矩阵 |
+| `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | old/new reader-flow 已通过文本 locator、fragment、未加载 chunk、媒体 NavAnchor、无 fragment、父级/随机跳转和 Escape 焦点；空目录、复杂层级视觉和完整错误状态仍待验 |
+| `[ ]` | 阅读设置 | 字号、行距、主题、背景、沉浸式模式、弹层覆盖正文、图标居中、纯客户端重排零 chunk 请求一致。 | old/new reader-flow 已通过字号/行距零 chunk、主题、覆盖层几何和工具显隐；偏好跨刷新、边界 disabled、触摸/键盘完整状态仍待验 |
+| `[ ]` | 进度和缓存 | `revaro-reader-prefs`、服务端 `/book/progress`、anchor、manifest/chunk L2 cache、重开零重复请求、版本变化重取一致。 | old/new reader-flow 17/17、真实 EPUB 1/1；Rust 已恢复全局 `data-block`、14/14.0% 标签、版本/指纹变更清理和重开零 chunk，偏好/断网/失败/并发保存矩阵仍待验 |
+| `[ ]` | 阅读器响应式 | 桌面/窄屏/触摸、手势与滚动冲突、旋转、空白点击和 drawer 关闭一致。 | old/new 已通过 390×844 视觉、旋转重排、drawer/scrim/Escape；实际触摸手势、pointer cancel、safe-area 和滚动冲突仍待验 |
 
 旧版 `web/e2e/reader-flow.spec.ts` 和 `reader-real-epub.spec.ts` 的全部行为场景都属于本节，不得只以当前 3 个 smoke case 通过代替：包括窗口预取、目录锚点、回退到开头、跨 spine、父级目录不回弹、随机 seek 稳定、页边界、旋转、图片章节定位、缓存复开和视觉覆盖层。
 
@@ -376,7 +379,7 @@
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、待提交 dialog failure parity | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast 已追加；冲突/失败/清空矩阵未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*` | 局部 PASS |
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard 已 old/new 实测；etag 冲突/全部扩展名未完 | reader/editor parity trace | 局部 PASS |
-| 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`d257696`（E2E） | old reader-flow 17/17、真实 EPUB、Rust TXT/Markdown/EPUB old/new 已通过；逐项 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace | 局部 PASS |
+| 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
 | 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
