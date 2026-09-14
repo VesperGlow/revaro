@@ -182,3 +182,30 @@ test('任务中心的取消、重试、密码输入和清除完成操作保持�
   expect(requests).toContain('DELETE /api/tasks/completed-action')
   expect(requests).toContain('DELETE /api/tasks/active-task')
 })
+
+test('任务中心活动进度汇总按 reference 使用原始值四舍五入', async ({ page }) => {
+  const tasks = [
+    task({ id: 'progress-one', status: 'running', phase: '上传中', progress: 1, name: '低进度一' }),
+    task({ id: 'progress-two', status: 'running', phase: '上传中', progress: 2, name: '低进度二' }),
+  ]
+
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: tasks })
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+  await page.getByTitle('任务中心').click()
+  await expect(page.locator('.task-panel > header small')).toHaveText('2 项进行中 · 2%')
+})

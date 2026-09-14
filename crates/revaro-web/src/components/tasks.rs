@@ -679,9 +679,15 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
         } else {
             let total = active
                 .iter()
-                .map(|task| task_progress_percent(task.progress) as usize)
-                .sum::<usize>();
-            (total / active.len()).min(100) as u8
+                .map(|task| {
+                    if task.progress.is_finite() {
+                        task.progress.clamp(0.0, 100.0)
+                    } else {
+                        0.0
+                    }
+                })
+                .sum::<f64>();
+            (total / active.len() as f64).round().clamp(0.0, 100.0) as u8
         }
     });
 
