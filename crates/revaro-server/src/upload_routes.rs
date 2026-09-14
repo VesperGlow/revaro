@@ -577,6 +577,7 @@ async fn complete_upload(
             .map(|part| revaro_core::storage::CompletedPart {
                 part_number: part.part_number,
                 etag: part.etag.clone(),
+                ..Default::default()
             })
             .collect();
         let expected_parts = limits::multipart_part_count(record.expected_size, record.part_size)

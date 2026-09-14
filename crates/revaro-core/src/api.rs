@@ -346,7 +346,7 @@ pub mod uploads {
         /// Part size in bytes.
         pub size: i64,
         /// Optional per-part integrity hash.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         pub content_hash: String,
     }
 

@@ -89,7 +89,7 @@ pub struct TaskController {
     on_logout: Callback<()>,
     on_refresh_folder: Callback<()>,
     feedback: Callback<Feedback>,
-    on_upload_cancel: Option<Callback<String>>,
+    on_upload_cancel: Option<Callback<String, bool>>,
     on_upload_retry: Option<Callback<String, bool>>,
 }
 
@@ -151,7 +151,7 @@ impl TaskController {
     /// aborted before the remote session is removed.
     pub fn set_upload_actions(
         &mut self,
-        on_cancel: Callback<String>,
+        on_cancel: Callback<String, bool>,
         on_retry: Callback<String, bool>,
     ) {
         self.on_upload_cancel = Some(on_cancel);
@@ -260,9 +260,8 @@ impl TaskController {
         if let Some(task) = self.find_task(&id)
             && task.source_type == "upload"
             && let Some(callback) = self.on_upload_cancel
+            && callback.run(task.source_id)
         {
-            callback.run(task.source_id);
-            self.refresh_coalesced();
             return;
         }
         let controller = self.clone();

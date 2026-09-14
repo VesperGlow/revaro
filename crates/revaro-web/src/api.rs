@@ -309,16 +309,17 @@ pub async fn record_upload_part(
     send_empty(request).await
 }
 
-/// Commit the upload transaction. The signal is deliberately supplied by the
-/// caller so cancelling a slow commit does not leave a request running after
-/// the task has already been removed from the queue.
+/// Commit the upload transaction. The historical client disabled its generic
+/// 60-second timeout for this verification call and relied on the caller's
+/// abort signal instead, so a large local-disk hash is not cut off early.
 pub async fn complete_upload(
     id: &str,
     request: &CompleteUploadRequest,
     signal: Option<&web_sys::AbortSignal>,
 ) -> Result<revaro_core::model::File, RequestError> {
-    let request = api_request_with_signal(
+    let request = api_request_timeout(
         Request::post(&format!("/api/uploads/{id}/complete")),
+        0,
         signal,
     )
     .json(request)
@@ -664,8 +665,9 @@ fn request_transport(message: String) -> RequestError {
     }
 }
 
-/// Apply the old Vue client's same-origin cookie policy and 60-second
-/// cancellation boundary to every JSON request.
+/// Apply the old Vue client's same-origin cookie policy and cancellation
+/// boundary to every JSON request. A zero timeout intentionally means
+/// "caller-controlled/no timeout", as used by upload verification.
 ///
 /// `AbortSignal::any` preserves the upload controller's explicit cancellation
 /// while still preventing a hung commit from remaining pending forever. The
@@ -673,13 +675,6 @@ fn request_transport(message: String) -> RequestError {
 /// consumed, so it is safe for the local Rust value to be dropped here.
 fn api_request(builder: RequestBuilder) -> RequestBuilder {
     api_request_with_timeout(builder, API_TIMEOUT_MS, None)
-}
-
-fn api_request_with_signal(
-    builder: RequestBuilder,
-    caller_signal: Option<&AbortSignal>,
-) -> RequestBuilder {
-    api_request_with_timeout(builder, API_TIMEOUT_MS, caller_signal)
 }
 
 fn api_request_timeout(
@@ -695,6 +690,14 @@ fn api_request_with_timeout(
     timeout_ms: u32,
     caller_signal: Option<&AbortSignal>,
 ) -> RequestBuilder {
+    let builder = builder.credentials(RequestCredentials::SameOrigin);
+    if timeout_ms == 0 {
+        return if let Some(signal) = caller_signal {
+            builder.abort_signal(Some(signal))
+        } else {
+            builder
+        };
+    }
     let timeout_signal = AbortSignal::timeout_with_u32(timeout_ms);
     let signal = if let Some(caller_signal) = caller_signal {
         let signals = js_sys::Array::new();
@@ -704,7 +707,5 @@ fn api_request_with_timeout(
     } else {
         timeout_signal
     };
-    builder
-        .credentials(RequestCredentials::SameOrigin)
-        .abort_signal(Some(&signal))
+    builder.abort_signal(Some(&signal))
 }

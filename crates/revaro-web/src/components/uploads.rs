@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use futures_channel::oneshot;
 use futures_util::future::join_all;
+use js_sys::Math;
 use leptos::prelude::*;
 use revaro_core::api::files::CreateDirectoryRequest;
 use revaro_core::api::uploads::{
@@ -77,10 +78,13 @@ struct ResolvedUpload {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SavedUpload {
+    #[serde(rename = "uploadId")]
     upload_id: String,
+    #[serde(rename = "parentId")]
     parent_id: String,
     name: String,
     size: i64,
+    #[serde(rename = "lastModified")]
     last_modified: f64,
 }
 
@@ -495,7 +499,7 @@ impl UploadController {
 
     /// Route a task-centre action to the local upload task that owns the
     /// server-side upload session.
-    pub fn cancel_by_upload_id(&self, upload_id: String) {
+    pub fn cancel_by_upload_id(&self, upload_id: String) -> bool {
         let task_id = self
             .tasks
             .get_untracked()
@@ -504,16 +508,14 @@ impl UploadController {
             .map(|task| task.id);
         if let Some(task_id) = task_id {
             self.cancel(task_id);
-            return;
+            return true;
         }
-        let controller = self.clone();
-        leptos::task::spawn_local(async move {
-            if let Err(error) = api::abort_upload(&upload_id).await
-                && error.status != 404
-            {
-                controller.handle_request_error(&error);
-            }
-        });
+        // The reference falls back to `/api/tasks/{id}/cancel` when the
+        // browser no longer owns a File handle. The task controller performs
+        // that fallback with the durable task id; returning false here keeps
+        // the two paths distinct.
+        let _ = upload_id;
+        false
     }
 
     /// Retry a task-centre upload through the browser queue when its file
@@ -740,7 +742,7 @@ impl UploadController {
                     let body = body.clone();
                     let url = resolved.url.clone();
                     let progress = Rc::clone(&progress);
-                    let mime_type = file_mime(&task.file);
+                    let mime_type = Some(file_mime(&task.file));
                     async move { xhr_put(active, url, body, mime_type, progress).await }
                 })
                 .await?;
@@ -892,15 +894,11 @@ impl UploadController {
                 completed[index] = Some(revaro_core::storage::CompletedPart {
                     part_number: part.part_number,
                     etag: part.etag,
+                    size: Some(part.size),
+                    content_hash: Some(part.content_hash),
                 });
             }
         }
-        self.set_task_progress(
-            task_id,
-            run_id,
-            transfer_progress(sent.iter().sum(), total_size),
-        );
-
         let missing: Vec<i32> = completed
             .iter()
             .enumerate()
@@ -939,7 +937,6 @@ impl UploadController {
                 let urls = response.parts.clone();
                 let cursor = Rc::clone(&cursor);
                 let sent_for_progress = Rc::clone(&sent);
-                let sent_for_retry = Rc::clone(&sent);
                 let completed = Rc::clone(&completed);
                 futures.push(async move {
                     loop {
@@ -982,24 +979,23 @@ impl UploadController {
                                 );
                             })
                         };
-                        let mime_type = file_mime(&file);
                         let etag = controller
                             .retrying(Rc::clone(&active), || {
                                 let active = Rc::clone(&active);
                                 let body = body.clone();
                                 let url = part.url.clone();
-                                let sent = Rc::clone(&sent_for_retry);
                                 let progress = Rc::clone(&progress);
-                                let mime_type = mime_type.clone();
-                                async move {
-                                    sent.borrow_mut()[index] = 0;
-                                    xhr_put(active, url, body, mime_type, progress).await
-                                }
+                                async move { xhr_put(active, url, body, None, progress).await }
                             })
                             .await?;
                         if etag.trim().is_empty() {
                             return Err(local_error("服务器没有返回分片校验信息"));
                         }
+                        completed.borrow_mut()[index] = Some(revaro_core::storage::CompletedPart {
+                            part_number: part.part_number,
+                            etag: etag.clone(),
+                            ..Default::default()
+                        });
                         controller
                             .retrying(Rc::clone(&active), || {
                                 let upload_id = upload_id.clone();
@@ -1014,10 +1010,6 @@ impl UploadController {
                                 }
                             })
                             .await?;
-                        completed.borrow_mut()[index] = Some(revaro_core::storage::CompletedPart {
-                            part_number: part.part_number,
-                            etag,
-                        });
                     }
                 });
             }
@@ -1077,7 +1069,9 @@ impl UploadController {
                             return Err(error);
                         }
                         last = error;
-                        sleep_ms(500_u32.saturating_mul(1_u32 << attempt.min(4))).await?;
+                        let base = 500_u32.saturating_mul(1_u32 << attempt.min(4)).min(8_000);
+                        let jitter = (Math::random() * 250.0) as u32;
+                        sleep_ms(base.saturating_add(jitter)).await?;
                     }
                 }
             }
@@ -1324,15 +1318,41 @@ fn saved_uploads() -> Vec<SavedUpload> {
     let Some(raw) = storage.get_item(RESUME_KEY).ok().flatten() else {
         return Vec::new();
     };
-    serde_json::from_str::<Vec<SavedUpload>>(&raw)
-        .unwrap_or_default()
+    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str(&raw) else {
+        return Vec::new();
+    };
+    entries
         .into_iter()
-        .filter(|entry| {
-            !entry.upload_id.is_empty()
-                && !entry.parent_id.is_empty()
-                && !entry.name.is_empty()
-                && entry.size >= 0
-                && entry.last_modified.is_finite()
+        .filter_map(|entry| {
+            let serde_json::Value::Object(entry) = entry else {
+                return None;
+            };
+            let upload_id = entry.get("uploadId")?.as_str()?;
+            let parent_id = entry.get("parentId")?.as_str()?;
+            let name = entry.get("name")?.as_str()?;
+            let size = entry.get("size")?.as_f64()?;
+            let last_modified = entry.get("lastModified")?.as_f64()?;
+            // Match the reference's Number.isSafeInteger/Number.isFinite
+            // guards per entry; one malformed record must not discard valid
+            // resume records beside it.
+            if upload_id.is_empty()
+                || parent_id.is_empty()
+                || name.is_empty()
+                || !size.is_finite()
+                || size < 0.0
+                || size.fract() != 0.0
+                || size > 9_007_199_254_740_991.0
+                || !last_modified.is_finite()
+            {
+                return None;
+            }
+            Some(SavedUpload {
+                upload_id: upload_id.to_owned(),
+                parent_id: parent_id.to_owned(),
+                name: name.to_owned(),
+                size: size as i64,
+                last_modified,
+            })
         })
         .collect()
 }
@@ -1362,8 +1382,11 @@ fn ensure_not_cancelled(active: &ActiveUpload) -> Result<(), RequestError> {
     }
 }
 
-fn retryable(error: &RequestError) -> bool {
-    error.status == 0 || error.status == 408 || error.status == 429 || error.status >= 500
+fn retryable(_error: &RequestError) -> bool {
+    // The reference queue retries every failed XHR/API operation up to five
+    // times, including ordinary HTTP errors. Keep that broad contract here;
+    // callers decide separately whether a final 401 should end the session.
+    true
 }
 
 fn cancelled_error() -> RequestError {
@@ -1412,15 +1435,17 @@ async fn xhr_put(
     active: Rc<ActiveUpload>,
     url: String,
     body: Blob,
-    content_type: String,
+    content_type: Option<String>,
     on_progress: Rc<dyn Fn(u64)>,
 ) -> Result<String, RequestError> {
     let xhr = XmlHttpRequest::new().map_err(|error| js_error("无法创建上传请求", error))?;
     xhr.open_with_async("PUT", &url, true)
         .map_err(|error| js_error("无法打开上传请求", error))?;
     xhr.set_with_credentials(true);
-    xhr.set_request_header("Content-Type", &content_type)
-        .map_err(|error| js_error("无法设置上传请求头", error))?;
+    if let Some(content_type) = content_type.as_deref() {
+        xhr.set_request_header("Content-Type", content_type)
+            .map_err(|error| js_error("无法设置上传请求头", error))?;
+    }
     let upload = xhr
         .upload()
         .map_err(|error| js_error("无法监听上传进度", error))?;
@@ -1499,15 +1524,10 @@ fn finish_xhr(
     }
 }
 
-fn xhr_error(xhr: &XmlHttpRequest, status: u16) -> RequestError {
-    let body = xhr.response_text().ok().flatten().unwrap_or_default();
-    if let Ok(envelope) = serde_json::from_str::<revaro_core::ErrorEnvelope>(&body) {
-        return RequestError {
-            status,
-            code: envelope.error.code,
-            message: envelope.error.message,
-        };
-    }
+fn xhr_error(_xhr: &XmlHttpRequest, status: u16) -> RequestError {
+    // The historical XHR wrapper did not decode the JSON error envelope for
+    // raw byte requests; it exposed the status-shaped message to the local
+    // upload task and retried that error in the same way as any other failure.
     RequestError {
         status,
         code: None,

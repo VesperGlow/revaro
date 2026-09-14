@@ -26,6 +26,12 @@ pub struct CompletedPart {
     pub part_number: i32,
     /// Entity tag the server returned when the part was stored.
     pub etag: String,
+    /// Optional size echoed by the historical browser resume client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+    /// Optional content hash echoed by the historical browser resume client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 /// A stored object discovered by a prefix scan.
@@ -60,10 +66,25 @@ mod tests {
         let part = CompletedPart {
             part_number: 3,
             etag: "etag-3".into(),
+            ..Default::default()
         };
         assert_eq!(
             serde_json::to_value(&part).unwrap(),
             serde_json::json!({"part_number": 3, "etag": "etag-3"})
+        );
+    }
+
+    #[test]
+    fn completed_parts_preserve_resume_metadata_when_present() {
+        let part = CompletedPart {
+            part_number: 1,
+            etag: "etag-1".into(),
+            size: Some(4),
+            content_hash: Some(String::new()),
+        };
+        assert_eq!(
+            serde_json::to_value(part).unwrap(),
+            serde_json::json!({"part_number": 1, "etag": "etag-1", "size": 4, "content_hash": ""})
         );
     }
 }

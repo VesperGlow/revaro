@@ -5,7 +5,7 @@
 //! particular, a browser supplied relative path is treated as untrusted input
 //! before it is used to create any server-side directory.
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 use revaro_core::limits;
 
@@ -39,19 +39,23 @@ pub fn relative_path_parts(raw: &str) -> Result<Vec<String>, &'static str> {
 
 /// Return the directory paths required by a set of relative file paths.
 ///
-/// Paths are sorted parent-first and then lexicographically. That makes the
-/// directory creation order deterministic and means a later file can only be
-/// queued after its complete parent chain exists.
+/// Paths are sorted parent-first while preserving the browser's insertion
+/// order for siblings. The reference used JavaScript's stable sort with a
+/// depth-only comparator, so changing that tie-breaker changes the observable
+/// sequence of directory-creation requests.
 pub fn directory_paths(paths: &[Vec<String>]) -> Vec<String> {
-    let mut unique = BTreeSet::new();
+    let mut seen = HashSet::new();
+    let mut paths_in_order = Vec::new();
     for parts in paths {
         for depth in 1..parts.len() {
-            unique.insert(parts[..depth].join("/"));
+            let path = parts[..depth].join("/");
+            if seen.insert(path.clone()) {
+                paths_in_order.push(path);
+            }
         }
     }
-    let mut paths: Vec<String> = unique.into_iter().collect();
-    paths.sort_by_key(|path| (path.matches('/').count(), path.clone()));
-    paths
+    paths_in_order.sort_by_key(|path| path.matches('/').count());
+    paths_in_order
 }
 
 /// Progress while bytes are being transferred, leaving the reference's
@@ -116,13 +120,18 @@ mod tests {
     #[test]
     fn directory_paths_are_unique_and_parent_first() {
         let paths = vec![
-            vec!["books".into(), "fiction".into(), "a.epub".into()],
-            vec!["books".into(), "nonfiction".into(), "b.txt".into()],
+            vec!["books".into(), "z-fiction".into(), "a.epub".into()],
+            vec!["books".into(), "a-nonfiction".into(), "b.txt".into()],
             vec!["books".into(), "fiction".into(), "c.epub".into()],
         ];
         assert_eq!(
             directory_paths(&paths),
-            ["books", "books/fiction", "books/nonfiction"]
+            [
+                "books",
+                "books/z-fiction",
+                "books/a-nonfiction",
+                "books/fiction"
+            ]
         );
     }
 

@@ -687,8 +687,8 @@ pub fn FileBrowser(
         leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
     let uploads_for_task_retry = uploads_for_task_cancel.clone();
     task_center.set_upload_actions(
-        Callback::new(move |upload_id: String| {
-            uploads_for_task_cancel.cancel_by_upload_id(upload_id);
+        Callback::new(move |upload_id: String| -> bool {
+            uploads_for_task_cancel.cancel_by_upload_id(upload_id)
         }),
         Callback::new(move |upload_id: String| {
             uploads_for_task_retry.retry_by_upload_id(upload_id)

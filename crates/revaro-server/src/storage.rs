@@ -1244,6 +1244,7 @@ mod tests {
             CompletedPart {
                 part_number: 1,
                 etag: head.etag.clone(),
+                ..Default::default()
             },
             CompletedPart {
                 part_number: 2,
@@ -1252,6 +1253,7 @@ mod tests {
                     .await
                     .unwrap()
                     .etag,
+                ..Default::default()
             },
         ];
         let info = store
@@ -1300,7 +1302,8 @@ mod tests {
                     &upload_id,
                     &[CompletedPart {
                         part_number: 2,
-                        etag: etag.clone()
+                        etag: etag.clone(),
+                        ..Default::default()
                     }]
                 )
                 .await
@@ -1314,7 +1317,8 @@ mod tests {
                     &upload_id,
                     &[CompletedPart {
                         part_number: 1,
-                        etag: "wrong".into()
+                        etag: "wrong".into(),
+                        ..Default::default()
                     }]
                 )
                 .await
@@ -1329,6 +1333,7 @@ mod tests {
                 &[CompletedPart {
                     part_number: 1,
                     etag: format!("\"{etag}\""),
+                    ..Default::default()
                 }],
             )
             .await
@@ -1347,6 +1352,7 @@ mod tests {
                 &[CompletedPart {
                     part_number: 1,
                     etag: "x".into(),
+                    ..Default::default()
                 }],
             )
             .await
