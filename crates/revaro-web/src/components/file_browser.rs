@@ -2291,7 +2291,9 @@ pub fn FileBrowser(
                     class:success=move || feedback
                         .get()
                         .is_some_and(|value| value.kind == FeedbackKind::Success)
-                    role="status"
+                    class:error=move || feedback
+                        .get()
+                        .is_some_and(|value| value.kind == FeedbackKind::Error)
                 >
                     {move || feedback.get().map(|value| value.message).unwrap_or_default()}
                 </div>

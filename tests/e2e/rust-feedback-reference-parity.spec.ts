@@ -16,7 +16,7 @@ const files = ['toast-one.txt', 'toast-two.txt'].map((name, index) => ({
   etag: `etag-${index + 1}`,
 }))
 
-async function mockFeedback(page: Page) {
+async function mockFeedback(page: Page, options: { directoryError?: boolean } = {}) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -26,6 +26,13 @@ async function mockFeedback(page: Page) {
       return route.fulfill({ contentType: 'text/event-stream', body: '' })
     }
     if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/directories' && options.directoryError) {
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { status: 409, message: 'folder already exists' } }),
+      })
+    }
     if (path === '/api/library/all') {
       return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: files.length } })
     }
@@ -70,6 +77,8 @@ async function toastMetrics(page: Page) {
       padding: style.padding,
       borderRadius: style.borderRadius,
       fontSize: style.fontSize,
+      className: element.getAttribute('class'),
+      role: element.getAttribute('role'),
     }
   })
 }
@@ -106,6 +115,47 @@ test('全局 toast 的命中区域和最新通知交互保持 reference', async 
     await Promise.all([clickToast(oldPage), clickToast(newPage)])
     await expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
     await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('错误 toast 的 class、文案和关闭时限保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function trigger(page: Page, baseUrl: string) {
+    await page.goto(`${baseUrl}/?toast-error-parity=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
+    const dialog = page.locator('.app-dialog')
+    await dialog.locator('input').fill(`toast-error-${Date.now()}`)
+    await dialog.getByRole('button', { name: '创建', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    const toast = page.locator('.toast')
+    await expect(toast).toHaveText('folder already exists')
+    return toastMetrics(page)
+  }
+
+  try {
+    await Promise.all([
+      mockFeedback(oldPage, { directoryError: true }),
+      mockFeedback(newPage, { directoryError: true }),
+    ])
+    const [oldToast, newToast] = await Promise.all([
+      trigger(oldPage, oldUrl),
+      trigger(newPage, newUrl),
+    ])
+    expect(newToast, 'Rust error toast 的 DOM/CSS 语义与 reference 不一致').toEqual(oldToast)
+    await Promise.all([
+      expect(oldPage.locator('.toast')).toHaveCount(0, { timeout: 5_000 }),
+      expect(newPage.locator('.toast')).toHaveCount(0, { timeout: 5_000 }),
+    ])
   } finally {
     await oldContext.close()
     await newContext.close()
