@@ -1053,6 +1053,7 @@ pub fn FileBrowser(
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
         let task_center = leptos::__reexports::send_wrapper::SendWrapper::new(task_center.clone());
+        let load_folder_request = load_folder_request.clone();
         Callback::new(move |value: String| {
             let Some(state) = dialog.get_untracked() else {
                 return;
@@ -1065,6 +1066,7 @@ pub fn FileBrowser(
             let discard_editor = matches!(&state, DialogState::DiscardEditor);
             let extract_archive = matches!(&state, DialogState::ExtractArchive { .. });
             let rename_action = matches!(&state, DialogState::Rename { .. });
+            let delete_action = matches!(&state, DialogState::Delete);
             let share_action = matches!(
                 &state,
                 DialogState::RegenerateShare | DialogState::RevokeShare
@@ -1076,6 +1078,12 @@ pub fn FileBrowser(
                 .filter(|item| selected.contains(&item.id))
                 .map(|item| item.id)
                 .collect();
+            let delete_targets = items
+                .get_untracked()
+                .into_iter()
+                .filter(|item| selected.contains(&item.id))
+                .map(|item| (item.id, item.name))
+                .collect::<Vec<_>>();
             let parent_id = current_id.get_untracked();
             let refresh_parent_id = parent_id.clone();
             let in_trash = trash_mode.get_untracked();
@@ -1167,31 +1175,41 @@ pub fn FileBrowser(
                             Ok("分享已停止".to_owned())
                         }
                         DialogState::Rename { id } => {
-                            let name = value.trim().to_owned();
-                            if name.is_empty() {
-                                Err(api::RequestError {
-                                    status: 0,
-                                    code: None,
-                                    message: "名称不能为空".to_owned(),
-                                })
-                            } else {
-                                api::patch_file(
-                                    &id,
-                                    &PatchFileRequest {
-                                        name: Some(name),
-                                        parent_id: None,
-                                    },
-                                )
-                                .await
-                                .map(|_| "已重命名".to_owned())
-                            }
+                            // RenameDialog in the reference forwards the
+                            // original input verbatim. Server-side name
+                            // validation remains authoritative, including
+                            // leading/trailing whitespace and empty names.
+                            api::patch_file(
+                                &id,
+                                &PatchFileRequest {
+                                    name: Some(value),
+                                    parent_id: None,
+                                },
+                            )
+                            .await
+                            .map(|_| "已重命名".to_owned())
                         }
                         DialogState::Delete => {
-                            let count = ids.len();
-                            for id in ids {
-                                api::delete_file(&id).await?;
+                            let mut removed = 0_usize;
+                            let mut errors = Vec::new();
+                            for (id, name) in delete_targets {
+                                match api::delete_file(&id).await {
+                                    Ok(()) => removed += 1,
+                                    Err(error) if error.is_unauthorized() => return Err(error),
+                                    Err(error) => errors.push(format!("{name}：{}", error.message)),
+                                }
                             }
-                            Ok(format!("已将 {count} 项移入回收站"))
+                            if let Some(first_error) = errors.first() {
+                                return Err(api::RequestError {
+                                    status: 500,
+                                    code: None,
+                                    message: format!(
+                                        "已移入 {removed} 项，{} 项失败：{first_error}",
+                                        errors.len()
+                                    ),
+                                });
+                            }
+                            Ok(format!("已将 {removed} 项移入回收站"))
                         }
                         DialogState::Purge => {
                             for id in ids {
@@ -1261,6 +1279,15 @@ pub fn FileBrowser(
                             dialog.set(None);
                             dialog_value.set(String::new());
                             dialog_error.set(String::new());
+                            if delete_action {
+                                selected_ids.set(HashSet::new());
+                                let (sender, receiver) = oneshot::channel();
+                                load_folder_request.run(FolderLoadRequest {
+                                    id: refresh_parent_id,
+                                    completion: Some(sender),
+                                });
+                                let _ = receiver.await;
+                            }
                             notify.run(Feedback::error(request_error.message));
                         }
                     }
