@@ -38,7 +38,11 @@ pub fn ShareDialog(
             class="modal-backdrop"
             role="presentation"
             on:click=move |event: MouseEvent| {
-                if event.target() == event.current_target() && !busy.get_untracked() {
+                // The reference modal remains dismissible while its initial
+                // read or a create/revoke request is in flight. The request
+                // may finish after the overlay has been removed; keeping the
+                // close path independent of `busy` preserves that behavior.
+                if event.target() == event.current_target() {
                     close_backdrop.run(());
                 }
             }
@@ -52,7 +56,7 @@ pub fn ShareDialog(
                             <p title=file_title>{file_name}</p>
                         </div>
                     </div>
-                    <button type="button" aria-label="关闭" prop:disabled=move || busy.get() on:click=move |_| close_header.run(())>"×"</button>
+                    <button type="button" aria-label="关闭" on:click=move |_| close_header.run(())>"×"</button>
                 </header>
                 <Show
                     when=move || !busy.get()
