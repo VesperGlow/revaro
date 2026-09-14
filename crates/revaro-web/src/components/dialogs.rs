@@ -112,6 +112,7 @@ pub fn ActionDialog(
                     </button>
                     <button
                         class="dialog-confirm"
+                        class:default=move || !danger
                         class:danger=danger
                         type="submit"
                         prop:disabled=move || busy.get() || (input && value.get().trim().is_empty())
