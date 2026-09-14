@@ -185,6 +185,7 @@
 - `2026-09-15`，old `18080` / new `18084`：在同一 mock 根目录实际进入子目录，并延迟两版的 `/api/files/{id}/children` 响应；两版在目录切换期间都显示“正在读取文件…”，响应放行后都进入相同空目录完成态。根目录、列表/方块、回收站、空目录和读取失败结构的文件浏览集合 `rust-file-browser-reference-parity.spec.ts` old/new 3/3 通过，测试提交 `6cdeec9`。
 - `2026-09-15`，old `18080` / new `18084`：重建 new 后实际复跑文件项双版本集合 7/7（类型/状态、头部菜单、更多菜单与右键、选择工具栏）；另分别在 old 与 new 运行 `rust-file-interaction-parity.spec.ts` 8/8，选择模式、空白清选、TXT/EPUB/视频图标、回收站目录 Enter 和目录 `.epub` 边界均通过，未发现新的 Rust 差异。
 - `2026-09-15`，old `18080` / new `18084`：在 1440、1024、851、850、390、320px 六个 viewport 用同一 mock 根目录逐项读取实际布局；断点可见性、侧栏/内容区/顶栏/文件头/网格几何、桌面/移动入口和 body 横向溢出均一致，`rust-responsive-layout-reference-parity.spec.ts` old/new 1/1，测试提交 `2714f85`。弹窗、上传队列、选择工具栏和媒体/阅读器的响应式子项仍按各自条目验收。
+- `2026-09-15`，old `18080` / new `18084`：在 390×844 同时切换方块→列表、刷新恢复偏好、再切回方块，逐次比较实际行/卡数量、壳层几何、入口可见性和横向溢出；`rust-responsive-layout-reference-parity.spec.ts` 第二项 old/new 1/1，测试提交 `120ad12`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -238,7 +239,7 @@
 | `[P]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | old/new 直达浏览器用例覆盖五类分类、分类路径、文件夹路径和无效 `/f/{id}`；无效地址均回根并加载默认页面 |
 | `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | old/new 真实 TXT `/read/{id}` 均实际回根且不打开阅读器，已确认是 reference 运行时缺陷；需单独决定是否恢复源码意图，当前不新增偏离旧版的行为 |
 | `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分享确认框叠加时关闭外层 modal 但保留 reference 外置 dialog、分类筛选后的分类切换/后退/前进，以及慢/快目录响应竞态不覆盖最后一次导航；分类 history 已由 `rust-library-history-reference-parity.spec.ts` 补齐，其它弹层组合仍待验证 |
-| `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 根目录实际切换并比较内容卡/行与按钮状态，列表偏好刷新后恢复；移动端内容布局、滚动和完整响应式矩阵仍待验 |
+| `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 根目录实际切换并比较内容卡/行与按钮状态，列表偏好刷新后恢复；390×844 另实际切换、刷新、切回并比较壳层几何和溢出；完整滚动位置、按钮 disabled/active 状态矩阵仍待验 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
 | `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | old/new 已实际对照目录切换 loading→完成、空根/空回收站文案、模拟读取失败 toast、分类 503→重试 loading→恢复，以及失败导航中旧内容/选择工具栏保留策略；`rust-file-browser-reference-parity.spec.ts` 3/3、`rust-library-reference-parity.spec.ts` 2/2、`rust-navigation-parity.spec.ts` 定向通过；完整回收站失败、各路径重试和旧内容矩阵仍待验 |
 | `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | 上传控制器有基础实现，UI 状态待验证 |
