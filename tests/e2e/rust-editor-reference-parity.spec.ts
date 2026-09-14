@@ -214,6 +214,46 @@ test('old/new 新建空文档保留未保存标记但关闭不触发放弃确认
   }
 })
 
+test('old/new 新文档创建失败保留编辑器、错误和可重试保存', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await page.route('**/api/documents', route => route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: { status: 409, message: 'document already exists' } }),
+    }))
+    await page.getByRole('button', { name: '新建文档', exact: true }).first().click()
+    const editor = page.locator('.document-editor')
+    await editor.locator('textarea').fill('创建失败后仍可重试')
+    await editor.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(editor.locator('.editor-header-message.error')).toHaveText('document already exists')
+    return {
+      editor: await editor.count(),
+      error: await editor.locator('.editor-header-message.error').textContent(),
+      unsaved: await editor.locator('.unsaved-dot').count(),
+      saveEnabled: await editor.getByRole('button', { name: '保存', exact: true }).isEnabled(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ editor: 1, error: 'document already exists', unsaved: 1, saveEnabled: true })
+    expect(newResult, 'Rust 新文档创建失败后的编辑器/错误/重试状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 全部旧版可编辑扩展名都从文件入口进入相同 editor', async ({ browser }) => {
   const suffix = crypto.randomUUID()
   const extensions = ['md', 'markdown', 'txt', 'yaml', 'yml', 'json', 'toml', 'ini', 'conf', 'log', 'csv']
