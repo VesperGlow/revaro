@@ -512,3 +512,95 @@ test('放弃未保存编辑不会清除已有的 reference 全局 toast', async 
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+const DIRTY_ROOT = '00000000-0000-0000-0000-000000000000'
+const DIRTY_STAMP = '2026-01-01T00:00:00Z'
+const DIRTY_FILE = {
+  id: 'editor-dirty-reference',
+  parent_id: DIRTY_ROOT,
+  name: 'dirty-reference.md',
+  kind: 'file',
+  size: 32,
+  status: 'ready',
+  created_at: DIRTY_STAMP,
+  updated_at: DIRTY_STAMP,
+  mime_type: 'text/markdown',
+  etag: 'dirty-reference-etag',
+}
+
+async function mockDirtyEditor(page: Parameters<typeof login>[0]) {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+    if (path === `/api/files/${DIRTY_ROOT}`) {
+      return json({ file: { ...DIRTY_FILE, id: DIRTY_ROOT, name: '我的文件', kind: 'directory', parent_id: null, size: 0, mime_type: '' }, breadcrumbs: [] })
+    }
+    if (path === `/api/files/${DIRTY_ROOT}/children`) {
+      return json({ items: [DIRTY_FILE], total_bytes: DIRTY_FILE.size, file_count: 1 })
+    }
+    if (path === `/api/files/${DIRTY_FILE.id}/content`) {
+      return json({ content: '# 原始内容\n', etag: DIRTY_FILE.etag, updated_at: DIRTY_STAMP })
+    }
+    return json({ items: [] })
+  })
+}
+
+async function openDirtyEditor(page: Parameters<typeof login>[0], baseUrl: string) {
+  await page.goto(`${baseUrl}/?editor-dirty-reference=${crypto.randomUUID()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.locator('.file-card').filter({ hasText: DIRTY_FILE.name }).click()
+  const editor = page.locator('.document-editor')
+  await expect(editor.locator('textarea')).toHaveValue('# 原始内容\n')
+  await editor.locator('textarea').fill('# 修改后的内容\n')
+  await expect(editor.locator('.unsaved-dot')).toHaveText('未保存')
+  return editor
+}
+
+test('dirty 编辑器的遮罩关闭与浏览器后退保持 reference 语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await mockDirtyEditor(page)
+    let editor = await openDirtyEditor(page, baseUrl)
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
+    const discard = page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' })
+    await expect(discard).toBeVisible()
+    await discard.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(editor).toBeVisible()
+
+    await page.locator('.modal-backdrop.editing').click({ position: { x: 8, y: 8 } })
+    await expect(discard).toBeVisible()
+    await discard.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(editor).toBeVisible()
+
+    await page.goBack()
+    await expect(editor).toHaveCount(0)
+    await expect(page.locator('.app-dialog')).toHaveCount(0)
+    return { path: new URL(page.url()).pathname, editor: await editor.count(), discard: await discard.count() }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ path: '/', editor: 0, discard: 0 })
+    expect(newResult, 'Rust dirty 编辑器关闭/后退与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
