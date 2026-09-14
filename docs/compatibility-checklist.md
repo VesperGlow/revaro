@@ -178,6 +178,7 @@
 - `2026-09-15`，old `18080` / new `18084`：实际在同一份 Markdown 上切换编辑、分栏和预览三种模式，比较 active tab、textarea/预览可见性、Unicode UTF-8 字节数、GFM 标题/列表/任务项/表格/链接/图片/删除线/下划线，以及主动清理的 HTML；两版结果一致且均不生成 `script`/`onclick` 节点。`rust-editor-reference-parity.spec.ts` old/new 1/1，测试提交 `65fa5c1`。
 - `2026-09-15`，old `18080` / new `18084`，390×844 触摸上下文：实际完成视频点按、保持播放、退出，再对图片做双指放大、单指取消和完整横向手势；两版均保持同一控制条/播放状态、缩放增量、取消不切图和完成手势切到下一张。`rust-media-parity-ui.spec.ts` old/new 1/1，测试提交 `df134c1`。
 - `2026-09-15`，old `18080` / new `18084`：分别让音频和视频原文件 preview 返回不可解码的 `application/octet-stream`；两版均使用“浏览器无法播放此原始格式，请下载后使用本地播放器打开”及视频“重新尝试”入口，并且不请求 HLS/fMP4/transcode/audio-stream。`rust-media-parity-ui.spec.ts` old/new 1/1，测试提交 `710e434`。
+- `2026-09-15`，old `18080` / new `18084`：桌面和 390×844 移动端逐项实际点击顶栏任务中心、在线状态、账户设置、回收站，以及移动账户/工具菜单中的任务、账户、回收站；两版均按 reference 打开/关闭对应面板，账户入口不误触发退出，移动菜单点击后正确关闭并完成目标跳转。`rust-global-ui-reference-parity.spec.ts` old/new 完整分流 1/1，测试提交 `f752758`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -460,7 +461,7 @@
 | 模块 | Checklist 范围 | commit | 自动测试 | old/new 浏览器证据 | 状态 |
 |---|---|---|---|---|---|
 | 基线与清单 | 1 | `068b9bb`、`821769c`（E2E new 默认端口） | healthz、old/new 构建和基线记录已完成；双版本测试未显式传 URL 时默认命中当前 Rust `18084` | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
-| 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip）、`226daf1`（stale navigation parity）、`697239f`（分类 history parity） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；浏览器后退/弹层 history、失败导航保留旧内容/选择、根节点 tooltip、慢/快目录响应竞态及筛选后分类 history 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
+| 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip）、`226daf1`（stale navigation parity）、`697239f`（分类 history parity）、`f752758`（顶栏入口完整分流） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；桌面/390×844 顶栏任务、在线状态、账户设置、回收站及移动工具菜单三项均逐项实际打开目标并关闭中间菜单，账户入口不会误登出；浏览器后退/弹层 history、失败导航保留旧内容/选择、根节点 tooltip、慢/快目录响应竞态及筛选后分类 history 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 媒体/阅读器焦点生命周期 | 10–11、15 | `c238c02` | `rust-overlay-focus-reference-parity.spec.ts` old/new 各 2/2 | 实际比较图片预览、EPUB 阅读器的初始焦点、Tab/Shift+Tab 环绕、菜单/目录 Escape、二次 Escape 关闭、文件卡焦点恢复和 body overflow；仅确认 old 同样启用 trap 的媒体/阅读器，账户/编辑器/分享/普通弹窗仍待完整键盘矩阵 | 局部 PASS |
 | 通用弹层嵌套键盘边界 | 1.4、2、5–7、10–11 | `4940aa2` | `rust-account-reference-parity.spec.ts`、`rust-editor-reference-parity.spec.ts`、`rust-share-dialog-reference-parity.spec.ts` 定向 12/12 | old/new 实际比较账户外层/密码子面板 Escape 与焦点、编辑器未保存确认 Escape、分享 active Escape；保留 reference 的非 trap 和默认事件语义 | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
