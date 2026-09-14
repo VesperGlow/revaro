@@ -229,7 +229,12 @@ pub fn DirectoryPicker(
     };
 
     view! {
-        <div node_ref=root class="directory-picker" class:expanded=move || expanded.get()>
+        <div
+            node_ref=root
+            class="directory-picker"
+            class:expanded=move || expanded.get()
+            class:disabled=move || disabled.get()
+        >
             <button
                 node_ref=trigger
                 type="button"

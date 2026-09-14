@@ -38,7 +38,7 @@ const destination = {
   mime_type: '',
 }
 
-async function mockPicker(page: Page) {
+async function mockPicker(page: Page, delayTransfer = false) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -56,6 +56,10 @@ async function mockPicker(page: Page) {
     if (path === `/api/files/${ROOT}/children`) return json({ items: [source, destination], total_bytes: source.size, file_count: 1 })
     if (path === '/api/files/compat-destination') return json({ file: destination, breadcrumbs: [root] })
     if (path === '/api/files/compat-destination/children') return json({ items: [], total_bytes: 0, file_count: 0 })
+    if (delayTransfer && path === '/api/files/compat-source' && route.request().method() === 'PATCH') {
+      await new Promise(resolve => setTimeout(resolve, 800))
+      return json({})
+    }
     return json({ items: [] })
   })
 }
@@ -102,6 +106,15 @@ async function installEscapeProbe(page: Page) {
   })
 }
 
+async function pickerDisabledMetrics(page: Page) {
+  return page.locator('.directory-picker').evaluate(element => ({
+    className: element.className,
+    opacity: getComputedStyle(element).opacity,
+    triggerOpacity: getComputedStyle(element.querySelector('.directory-trigger') as Element).opacity,
+    triggerDisabled: (element.querySelector('.directory-trigger') as HTMLButtonElement).disabled,
+  }))
+}
+
 test('移动/复制目录选择器的路径图标和展开关闭行为保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
@@ -136,6 +149,31 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
     await expect.poll(() => oldPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
     await expect.poll(() => newPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('传输处理中目录选择器保持 reference 的 disabled 外观和控件状态', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockPicker(oldPage, true), mockPicker(newPage, true)])
+    await Promise.all([openPicker(oldPage, oldUrl), openPicker(newPage, newUrl)])
+    await Promise.all([
+      oldPage.getByRole('button', { name: '移动', exact: true }).click(),
+      newPage.getByRole('button', { name: '移动', exact: true }).click(),
+    ])
+    await expect(oldPage.getByRole('button', { name: '正在处理…', exact: true })).toBeVisible()
+    await expect(newPage.getByRole('button', { name: '正在处理…', exact: true })).toBeVisible()
+    expect(await pickerDisabledMetrics(newPage), 'Rust 传输中的目录选择器外观/disabled 状态与 reference 不一致')
+      .toEqual(await pickerDisabledMetrics(oldPage))
   } finally {
     await oldContext.close()
     await newContext.close()
