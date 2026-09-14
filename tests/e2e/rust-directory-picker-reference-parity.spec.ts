@@ -166,7 +166,7 @@ async function clickTriggerAndCaptureTransition(page: Page) {
 
 test('移动/复制目录选择器的路径图标和展开关闭行为保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -219,7 +219,7 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
 
 test('目录选择器关闭时保留 reference 的退出过渡', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -255,7 +255,7 @@ test('目录选择器关闭时保留 reference 的退出过渡', async ({ browse
 
 test('传输处理中目录选择器保持 reference 的 disabled 外观和控件状态', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()

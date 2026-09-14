@@ -114,7 +114,7 @@ async function rowMetrics(page: Page) {
 
 test('文件卡与列表行全类型、状态和预览节点保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
   const oldPage = await oldContext.newPage()

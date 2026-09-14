@@ -116,7 +116,7 @@ async function hoverMetrics(page: Page, selector: string) {
 
 test('侧栏 active/hover/折叠与移动抽屉状态保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   await oldContext.addInitScript(() => {

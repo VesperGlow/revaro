@@ -135,7 +135,7 @@ async function cssTransform(page: Page, selector: string) {
 
 test('旧版与 Rust 版全局入口、任务中心和文件操作图标保持 reference 几何', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
   await oldContext.addInitScript(() => {

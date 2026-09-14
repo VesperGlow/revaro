@@ -99,7 +99,7 @@ async function select(page: Page, name: string) {
 
 test('列表选择工具栏按文件类型保持 reference 的完整按钮分流', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -137,7 +137,7 @@ test('列表选择工具栏按文件类型保持 reference 的完整按钮分流
 
 test('移动端和回收站选择工具栏保持 reference 的布局与操作分支', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
   const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
   const oldPage = await oldContext.newPage()

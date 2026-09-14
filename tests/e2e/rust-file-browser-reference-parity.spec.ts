@@ -103,7 +103,7 @@ async function toastSnapshot(page: Page) {
 
 test('根目录、列表/方块和回收站内容头保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   await clearPreferences(oldContext)
@@ -144,7 +144,7 @@ test('根目录、列表/方块和回收站内容头保持 reference', async ({ 
 
 test('空目录与目录读取失败保留 reference 的页面结构和反馈', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const cases: Array<'empty' | 'error'> = ['empty', 'error']
 
   for (const mode of cases) {

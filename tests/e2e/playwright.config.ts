@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test'
 const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH
 
 // Dual-version parity specs read E2E_NEW_URL directly and historically used
-// 18083 as their fallback. Keep that fallback on the current Rust instance so
+// 18084 as their fallback. Keep that fallback on the current Rust instance so
 // an omitted shell variable cannot silently exercise a stale build.
 process.env.E2E_NEW_URL ||= 'http://127.0.0.1:18084'
 

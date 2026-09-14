@@ -74,7 +74,7 @@ async function iconGeometry(button: Page['locator']) {
 
 test('文本既可编辑又可阅读时，选择工具栏保持 reference 的书本图标', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
   const oldPage = await oldContext.newPage()

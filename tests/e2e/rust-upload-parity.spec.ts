@@ -178,7 +178,7 @@ test('old/new 文件夹上传保留相同反馈与嵌套目录结果', async ({ 
   await writeFile(path.join(directory, 'nested', 'second.txt'), 'folder upload reference second\n')
 
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -217,7 +217,7 @@ test('old/new 普通文件上传按 reference 的时机进入任务中心', asyn
   const name = `upload-queue-reference-${crypto.randomUUID()}.txt`
   const buffer = Buffer.from('upload queue reference\n')
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()

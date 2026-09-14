@@ -81,7 +81,7 @@ async function snapshot(page: Page) {
 
 test('重命名弹窗的初始控件状态与 reference 一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()

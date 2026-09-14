@@ -85,7 +85,7 @@ async function openDeleteFixture(page: Page, baseUrl: string) {
 
 test('多选删除部分失败时继续处理并保留 reference 反馈', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -182,7 +182,7 @@ async function openRenameFixture(page: Page, baseUrl: string) {
 
 test('重命名保留 reference 的原始空白输入', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -263,7 +263,7 @@ async function openCreateFolderFixture(page: Page, baseUrl: string) {
 
 test('新建文件夹空输入、取消和冲突失败保持 reference 交互', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -308,7 +308,7 @@ test('新建文件夹空输入、取消和冲突失败保持 reference 交互', 
 
 test('重命名冲突保留输入弹窗并恢复可重试状态', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -412,7 +412,7 @@ async function openTrashFailureFixture(page: Page, baseUrl: string) {
 
 test('回收站恢复冲突保留项目与选择状态', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -443,7 +443,7 @@ test('回收站恢复冲突保留项目与选择状态', async ({ browser }) => 
 
 test('回收站永久删除冲突关闭确认框并保留项目', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const oldPage = await oldContext.newPage()

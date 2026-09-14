@@ -219,7 +219,7 @@ test('后台任务失败通知的全局 toast 保持 reference', async ({ browse
 
 test('全局 toast 的命中区域和最新通知交互保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -251,7 +251,7 @@ test('全局 toast 的命中区域和最新通知交互保持 reference', async 
 
 test('错误 toast 的 class、文案和关闭时限保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -292,7 +292,7 @@ test('错误 toast 的 class、文案和关闭时限保持 reference', async ({ 
 
 test('网络失败 toast 的 transport 文案和视觉语义保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -329,7 +329,7 @@ test('网络失败 toast 的 transport 文案和视觉语义保持 reference', a
 
 test('403 权限错误 toast 的文案、class 和时限保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -370,7 +370,7 @@ test('403 权限错误 toast 的文案、class 和时限保持 reference', async
 
 test('连续通知只保留最新内容并从替换时刻重新计时', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()

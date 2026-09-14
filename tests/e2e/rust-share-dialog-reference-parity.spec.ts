@@ -56,7 +56,7 @@ async function mockShare(page: Page) {
     }
     if (path === `/api/files/${FILE_ID}/share` && request.method() === 'POST') {
       await createGate.promise
-      return json({ active: true, url: 'http://127.0.0.1:18083/s/share-dialog-token', created_at: STAMP })
+      return json({ active: true, url: 'http://127.0.0.1:18084/s/share-dialog-token', created_at: STAMP })
     }
     return json({ items: [] })
   })
@@ -94,7 +94,7 @@ async function dialogSnapshot(page: Page) {
 
 test('分享弹窗 loading 与 active 状态保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -170,7 +170,7 @@ async function mockShareConfirmation(page: Page) {
     }
     if (path === `/api/files/${ROOT}/children`) return json({ items: [file], total_bytes: file.size, file_count: 1 })
     if (path === `/api/files/${FILE_ID}/share` && request.method() === 'GET') {
-      return json({ active: true, url: 'http://127.0.0.1:18083/s/confirmation-token', created_at: STAMP })
+      return json({ active: true, url: 'http://127.0.0.1:18084/s/confirmation-token', created_at: STAMP })
     }
     if (path === `/api/files/${FILE_ID}/share` && request.method() === 'POST') {
       await postGate.promise
@@ -266,7 +266,7 @@ test('分享链接重生成成功时不额外产生全局 toast', async ({ brows
 
 test('分享二级确认取消、提交关闭和错误回显保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -356,7 +356,7 @@ async function installClipboardFailure(page: Page) {
 
 test('复制分享链接只更新弹窗状态，不额外产生全局 toast', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()
@@ -388,7 +388,7 @@ test('复制分享链接只更新弹窗状态，不额外产生全局 toast', as
 
 test('复制分享链接失败时保留 reference 的弹窗错误且不产生全局 toast', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const oldPage = await oldContext.newPage()

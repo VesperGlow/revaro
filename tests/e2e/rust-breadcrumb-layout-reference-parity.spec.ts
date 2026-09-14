@@ -124,7 +124,7 @@ async function breadcrumbLayout(page: Page) {
 
 test('移动端深层面包屑的 DOM 层级和首末边距保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
   const newContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
   const oldPage = await oldContext.newPage()
@@ -145,7 +145,7 @@ test('移动端深层面包屑的 DOM 层级和首末边距保持 reference', as
 
 test('深层面包屑沿用 reference 的平滑自动显露行为', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
   const newContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
   const oldPage = await oldContext.newPage()
@@ -172,7 +172,7 @@ test('深层面包屑沿用 reference 的平滑自动显露行为', async ({ bro
 
 test('深层面包屑中间级保留 reference 的点击、Enter 和触摸导航行为', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
   const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
   const oldPage = await oldContext.newPage()
