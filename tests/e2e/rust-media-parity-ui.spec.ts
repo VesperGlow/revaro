@@ -34,7 +34,7 @@ function wav() {
   return buffer
 }
 
-async function mockMedia(page: Page) {
+async function mockMedia(page: Page, baseUrl?: string) {
   const sound = wav()
   const video = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
   await page.route('**/api/**', async route => {
@@ -94,7 +94,7 @@ async function mockMedia(page: Page) {
     }
     return json({ items: [] })
   })
-  await page.goto('/')
+  await page.goto(baseUrl ? `${baseUrl}/` : '/')
   await expect(page.locator('.file-card')).toHaveCount(4)
 }
 
@@ -192,6 +192,53 @@ test('图片预览：从根节点按 Tab 首先进入更多操作菜单', async 
   await page.locator('.preview-modal').focus()
   await page.keyboard.press('Tab')
   await expect(page.locator('.preview-commandbar summary')).toBeFocused()
+})
+
+test('old/new 图片缩略图失败时只回退一次到原图地址', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let thumbnailFailures = 0
+    let previewFallbacks = 0
+    await page.route('**/api/files/image-2/thumbnail*', async route => {
+      thumbnailFailures += 1
+      await route.fulfill({ status: 500, body: 'thumbnail unavailable' })
+    })
+    await page.route('**/api/files/image-2/preview', async route => {
+      previewFallbacks += 1
+      await route.fallback()
+    })
+    await open(page, '群山.png')
+    await page.getByRole('button', { name: '缩略图', exact: true }).click()
+    const thumbnail = page.getByRole('button', { name: '查看 远山.png' }).locator('img')
+    await expect.poll(() => thumbnail.getAttribute('src'), { timeout: 10_000 }).toContain('/api/files/image-2/preview')
+    await page.waitForTimeout(300)
+    const src = await thumbnail.getAttribute('src')
+    return {
+      thumbnailFailures,
+      previewFallbacks,
+      absolute: !!src && /^https?:\/\//.test(src),
+      srcPath: src ? new URL(src, baseUrl).pathname : null,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.thumbnailFailures).toBe(1)
+    expect(oldResult.previewFallbacks).toBe(1)
+    expect(newResult, 'Rust 缩略图失败回退与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
 })
 
 test('音频和视频恢复旧版各自的音量、倍速与位置存储，不共享错误的倍速设置', async ({ page }) => {

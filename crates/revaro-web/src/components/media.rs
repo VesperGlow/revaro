@@ -160,7 +160,8 @@ pub fn MediaPreview(
             let Some(file) = selected.get() else {
                 return;
             };
-            if last_selected_id.get_value() == file.id {
+            let previous_id = last_selected_id.get_value();
+            if previous_id == file.id {
                 return;
             }
             last_selected_id.set_value(file.id.clone());
@@ -176,7 +177,7 @@ pub fn MediaPreview(
             pan.set(Point { x: 0.0, y: 0.0 });
             pointers.set(HashMap::new());
             drag.set(DragState::default());
-            if classify::is_image(&file) {
+            if classify::is_image(&file) && !previous_id.is_empty() {
                 preload_adjacent(&file, &items.get_untracked());
             }
         });
@@ -1070,8 +1071,14 @@ fn thumbnail_fallback(event: leptos::ev::ErrorEvent, file: &File) {
         return;
     };
     let source = format!("/api/files/{}/preview", file.id);
-    if image.src() != source {
-        image.set_src(&source);
+    let absolute = web_sys::window()
+        .map(|window| window.location().origin())
+        .and_then(|origin| origin.ok())
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| format!("{origin}{source}"))
+        .unwrap_or_else(|| source.clone());
+    if image.src() != absolute {
+        image.set_src(&absolute);
     }
 }
 
