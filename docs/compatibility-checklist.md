@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`39b4055`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`077e678`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -89,6 +89,7 @@
 - `2026-09-14`，old `18080` / new `18083`，390×844 触摸 viewport：实际进入列表、选择 TXT 并读取移动端工具栏布局，再打开账户工具菜单进入回收站，选择已删除 TXT；old/new 的移动工具栏几何和回收站“恢复/永久删除”分支一致。`rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1，提交 `e26855f`。
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后比较用户名编辑入口和会话区；旧版入口为 `svg + span`，Rust 初始版只有 `span`，且对应 hover 图标未命中。已恢复旧版铅笔 path、14px 尺寸和统一 icon helper；old/new DOM、geometry、hover、编辑聚焦和 Escape 取消均 1/1，`rust-account-reference-parity.spec.ts`，提交 `a6ac08e`。
 - `2026-09-14`，old `18080` / new `18083`：用同一 mock TOTP 数据实际完成“账户设置 → 两步验证设置 → 启用 → 下载文本”，读取浏览器下载文件逐字比较文件名、时间行、恢复码顺序和换行；old 使用默认 `Date.toLocaleString()`，Rust 初始版使用 ISO 时间戳，已恢复浏览器本地化格式。`rust-account-download-reference-parity.spec.ts` old/new 1/1，账户相关两项合计 2/2，提交 `80cf6c3`。
+- `2026-09-14`，old `18080` / new `18084`：同一延迟 `POST /api/auth/totp/setup` 实际点击“开始设置”，在 loading 中点击 TOTP 子弹窗空白；old 会关闭子弹窗，Rust 初始版因 `totp_busy` 限制仍停留。已恢复遮罩关闭行为，`rust-account-reference-parity.spec.ts`（用户名入口 + TOTP loading）old/new 2/2，提交 `077e678`。
 - `2026-09-14`，old `18080` / new `18083`：实际触发成功和 409 错误 Toast，比较文案、`toast success/error` class、无额外 role、定位/颜色/padding/命中区域、最新通知交互及 3.6 秒消失；Rust 初始版缺少 error class 且额外带 `role=status`，已按 reference 恢复。`rust-feedback-reference-parity.spec.ts` old/new 各 2/2，提交 `253e92d`；断线、剪贴板失败、堆叠等业务来源仍待验。
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 媒体库逐项切换书架、图片/视频图库、音乐方块/列表；双页面对照实际暴露 Rust 单本 EPUB 标题仍带“第1卷”、图片切到视频时图库模式被重置、分类卡/音频行缺少旧版 `contextmenu.prevent` 三处差异。已改为使用分组标题、父级共享首个图库模式和持久化 key，并恢复分类卡/行右键默认事件语义。旧版原始 `library-ui.spec.ts` 4/4、Rust `rust-library-ui.spec.ts` 8/8、`rust-library-reference-parity.spec.ts` old/new 双上下文 1/1，`cargo xtask check` 通过；提交 `1ffae0e`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，并追加中间级点击、Enter、触摸点击三条导航结果对照，整组现为 3/3。导航全套仍保留在 `[ ]` 直到 stale request/完整键盘状态矩阵完成。
@@ -134,7 +135,7 @@
 | `[P]` | TOTP 登录 | 需要二次验证时的输入、回退、错误、重试、恢复码路径和 session 建立一致。 | old/new `rust-auth-parity.spec.ts` 的二次输入、错误保留和重试分支均通过 |
 | `[P]` | 会话检查 | `/api/auth/me`、刷新页面、已过期 cookie、401 后回登录页且不遗留旧数据。 | 初始/刷新过期 cookie 两版均回登录；中途 401 old 保留壳层+toast，new 回登录以清除过期 session 下的旧数据，记录为安全强化例外 |
 | `[P]` | 账户入口 | 顶栏账户按钮应打开“账户设置”而不是直接退出登录；用户名、头像、菜单文案和层级一致。 | old/new 桌面实际点击均打开账户设置；移动端工具菜单入口已对照，退出动作仍在独立条目验证 |
-| `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；`rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover，`rust-account-download-reference-parity.spec.ts` 逐字验证恢复码下载格式 |
+| `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；`rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover，并补齐 TOTP setup loading 时点击子弹窗空白关闭；`rust-account-download-reference-parity.spec.ts` 逐字验证恢复码下载格式 |
 | `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
 | `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 成功/409 错误文案、`toast success/error` class、无额外 role、CSS、命中区域、批量下载数量文案和 3.6 秒时限已 old/new 对照；权限过期、断线、剪贴板失败及堆叠顺序仍待验证 |
 | `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；桌面壳层连续 24 次 Tab 焦点落点已一致，账户/编辑器/分享/媒体/阅读器嵌套边界仍待验 |
@@ -442,6 +443,7 @@
 | 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；移动端与回收站分支仍待验 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
 | 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
+| 账户 TOTP loading 遮罩行为 | 2、8、15 | `077e678` | `rust-account-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟 setup 请求期间实际点击子弹窗空白，比较 old/new 的关闭结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义 | 局部 PASS |
 | 账户设置恢复码下载 | 2、15 | `80cf6c3` | `rust-account-download-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际完成 TOTP 启用并读取下载文件；文件名、浏览器本地化时间格式、恢复码顺序和换行与 reference 完全一致；初始 Rust ISO 时间格式已恢复 | 局部 PASS |
 | 全局 Toast 严重级别与时序 | 2、15 | `253e92d` | `rust-feedback-reference-parity.spec.ts` old/new 各 2/2；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；初始 Rust 的 error class/额外 role 已恢复 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
