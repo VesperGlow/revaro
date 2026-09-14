@@ -16,7 +16,11 @@ const file = (value: Record<string, unknown>) => ({
 })
 
 const library = {
-  book: [file({ id: 'book-1', name: '星海拾遗 第1卷.epub', mime_type: 'application/epub+zip', folder_path: [folder('books', '书籍')] })],
+  book: [
+    file({ id: 'book-1', name: '星海拾遗 第1卷.epub', mime_type: 'application/epub+zip', folder_path: [folder('books', '书籍')] }),
+    file({ id: 'compact-book-1', name: '紧凑系列1.epub', mime_type: 'application/epub+zip', folder_path: [folder('books', '书籍')] }),
+    file({ id: 'compact-book-2', name: '紧凑系列2.epub', mime_type: 'application/epub+zip', folder_path: [folder('books', '书籍')] }),
+  ],
   image: [file({ id: 'image-1', name: '参考图片.png', mime_type: 'image/png', folder_path: [folder('photos', '照片')] })],
   video: [file({ id: 'video-1', name: '参考视频.webm', mime_type: 'video/webm', folder_path: [folder('videos', '视频')] })],
   audio: [file({ id: 'audio-1', name: '参考音频.mp3', mime_type: 'audio/mpeg', duration_ms: 125000, folder_path: [folder('music', '音乐')] })],

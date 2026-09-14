@@ -377,11 +377,19 @@ fn word_number_suffix(value: &str, keyword: &str) -> Option<(String, u32)> {
             marker_end -= 1;
         }
     }
-    let marker_start = marker_end.saturating_sub(keyword.len());
-    if &lower[marker_start..marker_end] != keyword {
+    let marker_start = marker_end.checked_sub(keyword.len())?;
+    if lower.get(marker_start..marker_end)? != keyword {
         return None;
     }
-    let title = trim_suffix_separators(&value[..marker_start]);
+    let prefix = &value[..marker_start];
+    if !prefix
+        .chars()
+        .next_back()
+        .is_some_and(|character| character.is_whitespace() || matches!(character, '-' | '_' | '·'))
+    {
+        return None;
+    }
+    let title = trim_suffix_separators(prefix);
     let number = value[number_start..].parse().ok()?;
     (!title.is_empty()).then_some((title, number))
 }
@@ -1116,6 +1124,14 @@ mod tests {
         assert_eq!(
             book_series_info("三体 V4.epub"),
             ("三体".to_owned(), Some(4))
+        );
+        assert_eq!(
+            book_series_info("紧凑系列1.epub"),
+            ("紧凑系列1".to_owned(), None)
+        );
+        assert_eq!(
+            book_series_info("紧凑系列Vol2.epub"),
+            ("紧凑系列Vol2".to_owned(), None)
         );
     }
 
