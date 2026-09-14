@@ -152,6 +152,7 @@
 - `2026-09-14`，old `18080` / new `18084`：对同一 mock 文件/回收站分别把目录或回收站刷新响应延迟 700ms，实际点击新建、删除、移动、重命名、恢复、永久删除和清空；old 均在 refresh 完成前不显示成功 toast，Rust 初始版会立即反馈，且 extract 分支错误刷新当前目录。已让 Rust 等待对应 `FolderLoadRequest`/`TrashLoadRequest` 完成后再反馈，并恢复 extract 只刷新任务中心；`rust-mutation-feedback-order-reference-parity.spec.ts` old/new 7/7，`cargo fmt --all -- --check`、`cargo xtask check`、`cargo xtask web-build` 均通过，显式端口完整 suite 150/150 通过。修复提交 `83f7738`。
 - `2026-09-14`，old `18080` / new `18084`：实际打开图片预览和 EPUB 阅读器，比较根节点初始焦点、Tab/Shift+Tab 首尾环绕、更多菜单/目录抽屉 Escape、第二次 Escape 关闭预览、文件卡焦点恢复和 `body` overflow 生命周期；old 的 `usePreviewDialog` 只对媒体/阅读器启用焦点 trap，账户、编辑器、分享及普通确认弹窗保持非 trap 语义。`rust-overlay-focus-reference-parity.spec.ts` old/new 2/2 通过，提交 `c238c02`。
 - `2026-09-14`，old `18080` / new `18084`：在 overlay focus 用例加入后的显式双版本完整 `rust-*.spec.ts` suite 中，152/152 通过（约 5.9 分钟）；包含账户、全局壳层、分类、文件浏览、上传、CRUD、编辑器、阅读器、媒体、分享、任务中心和移动端已有 parity 用例。此前同一套件出现过一次文件夹上传结果采样抖动，单项连续 3 次及本次完整重跑均通过，最终结果以本次 152/152 为准。
+- `2026-09-14`，old `18080` / new `18084`：账户外层与密码子面板、编辑器未保存确认、分享 active 面板的 Escape/焦点边界实际对照；两版账户/分享面板均保持打开且不阻止 Escape 默认事件，编辑器确认弹窗从真实聚焦按钮按 Escape 后关闭并保留编辑器。相关账户、编辑器、分享 spec 定向 12/12 通过，提交 `4940aa2`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -165,7 +166,7 @@
 | `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；`rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover，补齐 TOTP setup loading 时点击子弹窗空白关闭，以及密码提交 pending 时关闭子弹窗后点击账户外层遮罩；`rust-account-download-reference-parity.spec.ts` 对照恢复码下载本地化时间格式/静态内容，并验证复制失败局部错误与无 toast |
 | `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
 | `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 成功/409 错误文案、`toast success/error` class、无额外 role、CSS、命中区域、批量下载数量文案、CRUD/回收站/移动成功反馈的刷新后时序和 3.6 秒时限已 old/new 对照；分享/TOTP 剪贴板失败已确认是局部错误且无 toast；权限过期、断线及完整来源矩阵仍待验证 |
-| `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；桌面壳层连续 24 次 Tab 焦点落点、媒体/阅读器预览焦点 trap 与恢复已一致；账户/编辑器/分享嵌套边界及完整键盘状态矩阵仍待验 |
+| `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；桌面壳层连续 24 次 Tab 焦点落点、媒体/阅读器预览焦点 trap 与恢复、账户/编辑器/分享嵌套边界已一致；完整键盘状态矩阵仍待验 |
 
 ## 3. 顶栏、任务中心和系统状态
 
@@ -436,6 +437,7 @@
 | 基线与清单 | 1 | `068b9bb`、`821769c`（E2E new 默认端口） | healthz、old/new 构建和基线记录已完成；双版本测试未显式传 URL 时默认命中当前 Rust `18084` | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip）、`226daf1`（stale navigation parity）、`697239f`（分类 history parity） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；浏览器后退/弹层 history、失败导航保留旧内容/选择、根节点 tooltip、慢/快目录响应竞态及筛选后分类 history 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 媒体/阅读器焦点生命周期 | 10–11、15 | `c238c02` | `rust-overlay-focus-reference-parity.spec.ts` old/new 各 2/2 | 实际比较图片预览、EPUB 阅读器的初始焦点、Tab/Shift+Tab 环绕、菜单/目录 Escape、二次 Escape 关闭、文件卡焦点恢复和 body overflow；仅确认 old 同样启用 trap 的媒体/阅读器，账户/编辑器/分享/普通弹窗仍待完整键盘矩阵 | 局部 PASS |
+| 通用弹层嵌套键盘边界 | 1.4、2、5–7、10–11 | `4940aa2` | `rust-account-reference-parity.spec.ts`、`rust-editor-reference-parity.spec.ts`、`rust-share-dialog-reference-parity.spec.ts` 定向 12/12 | old/new 实际比较账户外层/密码子面板 Escape 与焦点、编辑器未保存确认 Escape、分享 active Escape；保留 reference 的非 trap 和默认事件语义 | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
 | 目录选择器图标、展开控件、Escape、disabled 与 flyout 语义 | 8、15 | `d528aed`、`9ff563b`、`d0421c5`、`3198ff8`、`82cd1b3` | `rust-directory-picker-reference-parity.spec.ts` old/new 各 3/3；`rust-actions-parity-ui.spec.ts` old/new 各 9/9 | old/new 实际打开移动目标选择器，比较触发器、面包屑、子目录、深层路径、空目录图标、目标点击/Escape 默认事件、传输中 disabled class/opacity/按钮状态、进入/退出过渡和卸载时序；首帧探针监听真实 DOM 过渡 class，定位比较容忍 `<1px` 浏览器亚像素误差 | 局部 PASS |
 | 面包屑 DOM、平滑显露与移动端布局 | 5、15 | `2e2221d`、`3040995`、`da5321c`、`5dd791a` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 3/3；布局首项重复 5 次通过；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、最终横向位置、`scrollTo` smooth options、中间级点击/Enter/触摸、点击根和浏览器后退；测试等待 smooth 动画收敛，避免瞬时采样误报 | 局部 PASS |
