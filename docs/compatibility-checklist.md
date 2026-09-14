@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`3657c79`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`cb277b7`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -92,6 +92,7 @@
 - `2026-09-14`，old `18080` / new `18084`：同一延迟 `POST /api/auth/totp/setup` 实际点击“开始设置”，在 loading 中点击 TOTP 子弹窗空白；old 会关闭子弹窗，Rust 初始版因 `totp_busy` 限制仍停留。已恢复遮罩关闭行为，`rust-account-reference-parity.spec.ts`（用户名入口 + TOTP loading）old/new 2/2，提交 `077e678`。
 - `2026-09-14`，old `18080` / new `18084`：同一延迟移动 `PATCH /api/files/{id}` 实际点击“移动”后，在请求 pending 中点击遮罩；old 会立即关闭外层传输弹窗，Rust 初始版因 `transfer_busy` 限制仍停留。已移除传输遮罩和外层关闭回调的 busy 阻断；`rust-transfer-dialog-reference-parity.spec.ts` old/new 1/1，提交 `8bbbd22`。
 - `2026-09-14`，old `18080` / new `18084`：同一真实文件夹选择在两个独立上下文中上传，记录“已保留目录结构，开始上传 2 个文件”反馈事件，并逐页进入根目录、nested 目录核对两个 TXT；old/new `rust-upload-parity.spec.ts` 文件夹双实例场景 1/1，完整上传集合 5/5，提交 `255349d`。原测试只等待 3.6 秒可见 toast，在高数据量工作树下会误报，已改为记录实际出现事件。
+- `2026-09-14`，old `18080` / new `18084`：对同一普通 TXT 上传的真实 PUT 请求延迟 5 秒，确认旧版在字节传输期间任务中心仍不显示该 upload 任务（服务端创建记录但不发 jobs 事件），完成后才显示“上传 / 已完成 / 100%”；Rust 初始版创建任务时额外发事件，错误显示“排队中”并暴露取消按钮。已移除创建阶段事件，恢复旧版通知时机；`rust-upload-parity.spec.ts` old/new 双上下文用例通过，上传模块现 6/6，修复提交 `cb277b7`。
 - `2026-09-14`，old `18080` / new `18084`：同一延迟密码 `PATCH /api/auth/password` 实际提交修改，先关闭密码子弹窗，再点击账户外层遮罩；old 会关闭账户弹层，Rust 初始版因外层 `password_busy/totp_busy` 限制仍停留。已移除账户外层 busy 阻断，保留提交按钮 disabled/loading；`rust-account-reference-parity.spec.ts` old/new 3/3，新增场景提交 `1acb307`。
 - `2026-09-14`，old `18080` / new `18083`：实际触发成功和 409 错误 Toast，比较文案、`toast success/error` class、无额外 role、定位/颜色/padding/命中区域、最新通知交互及 3.6 秒消失；Rust 初始版缺少 error class 且额外带 `role=status`，已按 reference 恢复。`rust-feedback-reference-parity.spec.ts` old/new 各 2/2，提交 `253e92d`；断线、剪贴板失败、堆叠等业务来源仍待验。
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 媒体库逐项切换书架、图片/视频图库、音乐方块/列表；双页面对照实际暴露 Rust 单本 EPUB 标题仍带“第1卷”、图片切到视频时图库模式被重置、分类卡/音频行缺少旧版 `contextmenu.prevent` 三处差异。已改为使用分组标题、父级共享首个图库模式和持久化 key，并恢复分类卡/行右键默认事件语义。旧版原始 `library-ui.spec.ts` 4/4、Rust `rust-library-ui.spec.ts` 8/8、`rust-library-reference-parity.spec.ts` old/new 双上下文 1/1，`cargo xtask check` 通过；提交 `1ffae0e`。
@@ -215,9 +216,9 @@
 | `[ ]` | 拖放上传 | 文件/目录拖放、目标目录、overlay、非法文件、重复上传和完成后列表刷新一致。 | old/new `rust-upload-parity.spec.ts` 4/4：文件夹相对路径、shell/子元素 `dragleave` 覆盖层、回收站禁止拖放和刷新后反馈时序已通过；非法文件、重复上传、完整进度/失败矩阵仍待验 |
 | `[ ]` | 创建 upload | `POST /api/uploads` 的 chunk/single 模式、大小、类型、目标目录、断点信息和错误处理一致。 | API caller 部分存在 |
 | `[ ]` | 上传进度 | 单文件/多文件进度、速度、剩余时间、并发、pending/uploading/completing/completed/failed/cancelled 状态和文案一致。 | 旧版进度公式已与 Rust 对齐并有边界单测；本地队列进度未独立渲染，任务中心/并发/失败取消完整操作矩阵仍待验 |
-| `[ ]` | 上传队列 | 队列面板的展开/收起、排序、显示更多、取消、重试、失败原因、完成清理和与任务中心的分工一致。 | 待恢复 parity |
+| `[ ]` | 上传队列 | 队列面板的展开/收起、排序、显示更多、取消、重试、失败原因、完成清理和与任务中心的分工一致。 | 已确认 reference 的可见分工：上传进行中不出现在任务中心，完成后才进入完成通知；old/new 延迟真实上传各 1/1。独立本地队列的并发、断点、失败/重试和取消矩阵仍待验 |
 | `[ ]` | 断点续传 | 刷新/关闭后使用 `revaro.uploads.v1` 恢复；分片获取、记录、complete、abort 和过期记录清理一致。 | controller/API 存在，持久化和 UI 待验 |
-| `[ ]` | 上传完成 | 列表/分类/统计刷新，任务中心更新，toast，当前路径和重复文件结果一致。 | old/new 文件夹上传已实测 toast、当前根目录刷新、嵌套目录和两个文件结果；分类/任务中心更新、重复文件和完整失败结果仍待验 |
+| `[ ]` | 上传完成 | 列表/分类/统计刷新，任务中心更新，toast，当前路径和重复文件结果一致。 | old/new 文件夹上传已实测 toast、当前根目录刷新、嵌套目录和两个文件结果；普通文件任务中心“传输中隐藏、完成后通知”已双版本实测；分类、重复文件和完整失败结果仍待验 |
 
 ## 8. 新建、重命名、移动、复制、删除和回收站
 
@@ -440,7 +441,7 @@
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 失败导航状态保留 | 5、6、15 | `db5b963` | `rust-navigation-parity.spec.ts` old/new 定向用例各 1/1 | 列表已有选择时发起延迟 500 导航并返回 500，实际比较 loading/失败后的旧列表、选择工具栏和错误 toast；成功导航清空选择，完整 stale request 矩阵仍未完 | old/new navigation parity trace | 局部 PASS |
-| 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E）、`0d9d993`（拖拽覆盖层）、`5eaa9da`（文件夹刷新时序）、`3d90ae5`（进度取整）、`255349d`（文件夹 old/new 双实例） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；拖拽 `.self` 语义、文件夹刷新后成功反馈、旧版进度边界和同一文件夹的 old/new toast/嵌套目录结果已追加；断点续传完整 UI、重复/失败矩阵未完 | parity Playwright trace、`rust-upload-parity.spec.ts` 5/5（含 old/new 文件夹双实例）、`cargo xtask check` 通过 | 局部 PASS |
+| 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E）、`0d9d993`（拖拽覆盖层）、`5eaa9da`（文件夹刷新时序）、`3d90ae5`（进度取整）、`255349d`（文件夹 old/new 双实例）、`cb277b7`（任务通知时机） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；拖拽 `.self` 语义、文件夹刷新后成功反馈、旧版进度边界、同一文件夹的 old/new toast/嵌套目录结果以及普通上传传输中隐藏/完成后通知已追加；断点续传完整 UI、重复/失败矩阵未完 | parity Playwright trace、`rust-upload-parity.spec.ts` 6/6（含 old/new 文件夹与普通文件双实例）、`cargo xtask check` 待本提交后重跑 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、`f953af8`（移动失败反馈）、`a46b845`（删除/重命名 parity） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast、移动 PATCH 失败数量与首项错误文案、删除多选继续处理/刷新清选择、重命名原始空白输入已追加；冲突/失败/清空矩阵未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*`、`rust-transfer-dialog-reference-parity.spec.ts`、`rust-crud-reference-parity.spec.ts` | 局部 PASS |
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；etag 冲突/全部扩展名/完整 loading 与视觉矩阵未完 | `rust-editor-reference-parity.spec.ts` old/new 各 3/3、reader/editor parity trace | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
