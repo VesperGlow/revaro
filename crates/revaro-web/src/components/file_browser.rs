@@ -788,6 +788,29 @@ pub fn FileBrowser(
         let selected_ids = selected_ids;
         Callback::new(move |(): ()| selected_ids.set(HashSet::new()))
     };
+    let clear_selection_from_blank = {
+        let selected_ids = selected_ids;
+        Callback::new(move |event: web_sys::MouseEvent| {
+            if selected_ids.get_untracked().is_empty() {
+                return;
+            }
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            else {
+                return;
+            };
+            if target
+                .closest("button,a,input,textarea,select,[role=\"toolbar\"],.file-card,.file-row")
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                return;
+            }
+            selected_ids.set(HashSet::new());
+        })
+    };
     let toggle_selection = {
         let selected_ids = selected_ids;
         Callback::new(move |item: File| {
@@ -1954,7 +1977,10 @@ pub fn FileBrowser(
                 on_open_trash=load_trash.clone()
             />
 
-            <section class="content">
+            <section
+                class="content"
+                on:click=move |event: web_sys::MouseEvent| clear_selection_from_blank.run(event)
+            >
                 <Show
                     when=move || section.get() == LibraryKind::File
                     fallback=move || {

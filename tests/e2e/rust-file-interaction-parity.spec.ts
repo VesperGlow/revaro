@@ -50,6 +50,46 @@ test('移动端列表在选择模式下轻触行只切换选择，不打开文�
   }
 })
 
+test('点击内容空白处会清除文件选择', async ({ page }) => {
+  const name = `compat-blank-${crypto.randomUUID()}.txt`
+  let id = ''
+
+  try {
+    await login(page)
+    id = await page.evaluate(async ({ name, root }) => {
+      const response = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: root, name, content: 'blank selection parity' }),
+      })
+      if (!response.ok) throw new Error(`创建文档失败：${response.status}`)
+      const file = await response.json() as { id: string }
+      return file.id
+    }, { name, root: ROOT })
+
+    await page.reload()
+    await page.getByRole('button', { name: '列表' }).click()
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await expect(row).toBeVisible()
+    await row.getByRole('button', { name: '选择项目' }).click()
+    await expect(page.locator('.selection-toolbar')).toContainText('1 项')
+
+    await page.evaluate(() => window.scrollTo(0, 0))
+    const content = page.locator('.content')
+    const box = await content.boundingBox()
+    if (!box) throw new Error('内容区域没有布局盒')
+    await page.mouse.click(box.x + 2, box.y + 2)
+    await expect(page.locator('.selection-toolbar')).toHaveCount(0)
+  } finally {
+    if (id) {
+      await page.evaluate(async ({ id }) => {
+        await fetch(`/api/files/${id}`, { method: 'DELETE' })
+        await fetch(`/api/trash/${id}`, { method: 'DELETE' })
+      }, { id })
+    }
+  }
+})
+
 test('可编辑 TXT 在文件卡上使用旧版文档图标，而不是阅读器图标', async ({ page }) => {
   const name = `compat-icon-${crypto.randomUUID()}.txt`
   let id = ''
