@@ -60,21 +60,15 @@ pub fn FileBrowserHeader(
         if event.key() != "Escape" {
             return;
         }
-        let mut closed = false;
         if let Some(details) = create_for_escape.get()
             && details.open()
         {
             details.set_open(false);
-            closed = true;
         }
         if let Some(details) = upload_for_escape.get()
             && details.open()
         {
             details.set_open(false);
-            closed = true;
-        }
-        if closed {
-            event.prevent_default();
         }
     });
     on_cleanup(move || {
