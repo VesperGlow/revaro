@@ -219,9 +219,6 @@ pub fn ReaderView(
         let _ = body.style().set_property("overflow", "hidden");
     }
 
-    let previous_path = web_sys::window()
-        .and_then(|window| window.location().pathname().ok())
-        .unwrap_or_else(|| "/".to_owned());
     replace_reader_url(&file.id);
     let previous_title = document
         .as_ref()
@@ -359,7 +356,6 @@ pub fn ReaderView(
     let cleanup_lifecycle =
         leptos::__reexports::send_wrapper::SendWrapper::new(lifecycle_listeners);
     let cleanup_file_id = file.id.clone();
-    let cleanup_previous_path = previous_path.clone();
     let cleanup_previous_title = previous_title.clone();
     on_cleanup(move || {
         let cleanup_runtime = cleanup_runtime.take();
@@ -379,7 +375,6 @@ pub fn ReaderView(
                 let _ = body.style().remove_property("overflow");
             }
         }
-        restore_reader_url(&cleanup_previous_path);
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
             document.set_title(&cleanup_previous_title);
         }
@@ -946,15 +941,6 @@ fn replace_reader_url(file_id: &str) {
     };
     let url = format!("/read/{file_id}");
     let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&url));
-}
-
-fn restore_reader_url(path: &str) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    if let Ok(history) = window.history() {
-        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(path));
-    }
 }
 
 fn focus_element_by_id(id: &str) {
