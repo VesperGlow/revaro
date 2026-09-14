@@ -80,7 +80,7 @@ pub fn VideoPlayer(
     let user_seeked = RwSignal::new(false);
 
     let source = format!("/api/files/{}/preview", item.id);
-    let poster = format!("/api/files/{}/thumbnail", item.id);
+    let poster = thumbnail_url(&item);
     let item_name = item.name.clone();
     let item_id = item.id.clone();
 
@@ -944,6 +944,16 @@ fn video_rate() -> f64 {
     } else {
         1.0
     }
+}
+
+fn thumbnail_url(file: &File) -> String {
+    format!(
+        "/api/files/{}/thumbnail?v={}",
+        file.id,
+        js_sys::encode_uri_component(&file.etag)
+            .as_string()
+            .unwrap_or_default()
+    )
 }
 
 fn disable_tracks(media: &HtmlMediaElement) {
