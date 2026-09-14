@@ -182,6 +182,7 @@
 - `2026-09-15`，old `18080` / new `18084`：按旧 server route registry、old `web/src` 调用点和 Rust route/caller 逐项反向清点；未发现旧版主 UI 调用方在 Rust 端无对应实现。新增 API 双实例探针比较认证、存储、library、状态、任务、根目录/children、回收站、分享及所有专用缺失分流；另以同名同内容文档实际完成创建、读取、保存、完整/Range 下载、preview、分享/撤销、重命名、复制、删除、恢复和 purge 生命周期，均 old/new 1/1。探针发现并恢复 `GET /api/uploads/{id}` 缺失时 old 的 `upload not found`（Rust 原为 `pending upload not found`），上传其他操作仍保留 pending 文案；服务端单测通过，修复提交 `da88991`，API E2E 提交 `eac64a8`。live 数据中历史文件可能省略可选 `etag`，对照只忽略该字段，其余契约字段仍严格比较。
 - `2026-09-15`，old `18080` / new `18084`：重建 new 后串行复跑全局键盘/弹层集合 27/27，以及账户、确认操作、传输、编辑器、分享和操作菜单集合 28/28；实际覆盖桌面 24 步 Tab 顺序、媒体/阅读器焦点陷阱与恢复、顶栏/状态/任务/侧栏/下拉/确认/账户/传输/编辑器/分享的 Escape、主要表单 Enter、空白关闭和浏览器后退。old/new 均通过，未把 401 安全强化差异当作兼容通过依据。
 - `2026-09-15`，old `18080` / new `18084`：重建 new 后串行复跑分类/侧栏集合 16/16；五类分类实际切换到书架、图片、视频、音乐、文件，比较数量、标题、路径树、卡片/行、系列/图库/音乐视图、空态、503→重试 loading→恢复、缺失/null bucket、非法视图偏好、分类 history 和路径过滤；old/new 均通过。文件目录树仍保留 reference 未注册组件的已知运行时差异，不把该条目提前标 PASS。
+- `2026-09-15`，old `18080` / new `18084`：在同一 mock 根目录实际进入子目录，并延迟两版的 `/api/files/{id}/children` 响应；两版在目录切换期间都显示“正在读取文件…”，响应放行后都进入相同空目录完成态。根目录、列表/方块、回收站、空目录和读取失败结构的文件浏览集合 `rust-file-browser-reference-parity.spec.ts` old/new 3/3 通过，测试提交 `6cdeec9`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -237,7 +238,7 @@
 | `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分享确认框叠加时关闭外层 modal 但保留 reference 外置 dialog、分类筛选后的分类切换/后退/前进，以及慢/快目录响应竞态不覆盖最后一次导航；分类 history 已由 `rust-library-history-reference-parity.spec.ts` 补齐，其它弹层组合仍待验证 |
 | `[ ]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 根目录实际切换并比较内容卡/行与按钮状态，列表偏好刷新后恢复；移动端内容布局、滚动和完整响应式矩阵仍待验 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
-| `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | 空根/空回收站文案、模拟读取失败 toast，以及失败导航中旧内容/选择工具栏保留策略已 old/new 对照；首次 loading、重试和完整旧内容保留矩阵仍待验 |
+| `[ ]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | old/new 已实际对照目录切换 loading→完成、空根/空回收站文案、模拟读取失败 toast、分类 503→重试 loading→恢复，以及失败导航中旧内容/选择工具栏保留策略；`rust-file-browser-reference-parity.spec.ts` 3/3、`rust-library-reference-parity.spec.ts` 2/2、`rust-navigation-parity.spec.ts` 定向通过；完整回收站失败、各路径重试和旧内容矩阵仍待验 |
 | `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | 上传控制器有基础实现，UI 状态待验证 |
 | `[ ]` | 响应式布局 | 桌面、平板、390px 手机宽度下内容区、侧栏、顶栏、工具栏、对话框和滚动容器的宽高/层级一致。 | 待对照截图 |
 
