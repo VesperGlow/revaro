@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -68,13 +68,6 @@ async function mockShell(page: Page) {
   })
 }
 
-async function prepare(context: BrowserContext) {
-  await context.addInitScript(() => {
-    localStorage.removeItem('revaro:sidebar:collapsed')
-    localStorage.removeItem('revaro:library:media:file')
-  })
-}
-
 async function openShell(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?responsive-reference=${crypto.randomUUID()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
@@ -136,8 +129,6 @@ test('六个 viewport 断点的页面几何和可见入口保持 reference', asy
   for (const viewport of viewports) {
     const oldContext = await browser.newContext({ viewport })
     const newContext = await browser.newContext({ viewport })
-    await prepare(oldContext)
-    await prepare(newContext)
     const oldPage = await oldContext.newPage()
     const newPage = await newContext.newPage()
     try {
@@ -152,5 +143,46 @@ test('六个 viewport 断点的页面几何和可见入口保持 reference', asy
     } finally {
       await Promise.all([oldContext.close(), newContext.close()])
     }
+  }
+})
+
+test('移动端列表/方块切换及刷新偏好保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockShell(oldPage), mockShell(newPage)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.getByTitle('列表视图').click(),
+      newPage.getByTitle('列表视图').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.file-row')).toHaveCount(items.length),
+      expect(newPage.locator('.file-row')).toHaveCount(items.length),
+    ])
+    expect(await layoutSnapshot(newPage), 'Rust 移动端列表布局与 reference 不一致')
+      .toEqual(await layoutSnapshot(oldPage))
+
+    await Promise.all([oldPage.reload(), newPage.reload()])
+    await Promise.all([
+      expect(oldPage.locator('.file-row')).toHaveCount(items.length),
+      expect(newPage.locator('.file-row')).toHaveCount(items.length),
+    ])
+    expect(await layoutSnapshot(newPage), 'Rust 移动端刷新后的列表偏好与 reference 不一致')
+      .toEqual(await layoutSnapshot(oldPage))
+
+    await Promise.all([
+      oldPage.getByTitle('方块视图').click(),
+      newPage.getByTitle('方块视图').click(),
+    ])
+    expect(await layoutSnapshot(newPage), 'Rust 移动端切回方块布局与 reference 不一致')
+      .toEqual(await layoutSnapshot(oldPage))
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
