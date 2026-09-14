@@ -115,7 +115,7 @@ test('多选删除部分失败时继续处理并保留 reference 反馈', async 
   }
 })
 
-async function mockRename(page: Page, failure = false) {
+async function mockRename(page: Page, failure = false, delayMs = 0) {
   const file = {
     id: 'crud-rename-file',
     parent_id: ROOT,
@@ -153,6 +153,9 @@ async function mockRename(page: Page, failure = false) {
     if (path === `/api/files/${file.id}` && request.method() === 'PATCH') {
       const body = request.postDataJSON() as { name?: string }
       renameValues.push(body.name ?? '')
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
       if (failure) {
         return route.fulfill({
           status: 409,
@@ -211,6 +214,43 @@ test('重命名保留 reference 的原始空白输入', async ({ browser }) => {
     expect(oldMock.renameValues).toEqual([renamed])
     await expect(oldPage.locator('.file-row').filter({ hasText: renamed })).toBeVisible()
     await expect(newPage.locator('.file-row').filter({ hasText: renamed })).toBeVisible()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('重命名保存进行中仍允许按 reference 关闭弹窗', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockRename(page, false, 800)
+    const dialog = await openRenameFixture(page, baseUrl)
+    await dialog.locator('input').fill('重命名进行中.txt')
+    const requestStarted = page.waitForRequest(request => {
+      const path = new URL(request.url()).pathname
+      return path === `/api/files/crud-rename-file` && request.method() === 'PATCH'
+    })
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await requestStarted
+    await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
+    await dialog.locator('header button').click()
+    await page.waitForTimeout(50)
+    return page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' }).count()
+  }
+
+  try {
+    const [oldCount, newCount] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newCount, 'Rust 重命名请求进行中不应阻止 reference 的关闭操作').toBe(oldCount)
+    expect(oldCount).toBe(0)
   } finally {
     await oldContext.close()
     await newContext.close()

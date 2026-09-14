@@ -1346,7 +1346,13 @@ pub fn FileBrowser(
         let dialog_error = dialog_error;
         let dialog_busy = dialog_busy;
         Callback::new(move |(): ()| {
-            if !dialog_busy.get_untracked() {
+            // The reference rename modal keeps its close button and backdrop
+            // active while PATCH is pending. Generic confirmation dialogs are
+            // removed before their mutation starts, so only rename needs this
+            // exception to the busy guard.
+            let rename_can_close =
+                matches!(dialog.get_untracked(), Some(DialogState::Rename { .. }));
+            if !dialog_busy.get_untracked() || rename_can_close {
                 dialog.set(None);
                 dialog_value.set(String::new());
                 dialog_error.set(String::new());
