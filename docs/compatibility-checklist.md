@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`75426a5`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`da5321c`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -75,7 +75,7 @@
 - `2026-09-14`，old `18080` / new `18083`：模拟四张图片分布在根目录、两级 `归档 / 旅行` 和 `归档 / 工作`，逐项点击分类路径树；根/节点计数、首层默认展开、子路径展开、过滤后的卡片数、active 行和回到“全部位置”均一致。空分类另验证“还没有图片内容”路径提示、空态文案和“上传文件”入口，old/new 各 1/1。随后用两版真实 API 创建唯一的根目录/子目录并打开“文件”树：old `/children` 已返回目录，但 DOM 只留下未解析的 `<sidebardirectorynode>`（旧 `SidebarFileTree.vue` 未导入该组件），new 能展开子目录并导航到 `/f/{id}`。这是 reference 自身缺失组件注册的运行时缺陷，不把 new 的有效目录树降级成缺陷；文件树条目仍保持未完成，需在兼容范围决策中显式处理。
 - `2026-09-14`，old `18080` / new `18083`：`rust-icon-reference-parity.spec.ts` 在两个独立浏览器上下文中用同一 mock 数据逐项读取实际 DOM；顶栏任务、系统状态三张服务卡、五类侧栏/路径树、回收站、折叠、文件视图、新建/上传、任务取消/密码/重试/完成展开，以及移动端抽屉和账户工具入口的 SVG 几何均一致。Rust 初始版本中任务取消、密码、重试、媒体控制、状态卡、文件操作等多个 Lucide 几何差异已按 old `@lucide/vue` 1.41.0 恢复；任务中心“展开其余/收起”箭头也恢复，媒体/文件项全类型图标仍待继续覆盖。
 - `2026-09-14`，old `18080` / new `18083`：`rust-directory-picker-reference-parity.spec.ts` 在两个独立浏览器上下文中从列表行实际打开“移动”入口，逐项对照目录选择器触发器、根路径、子目录、深层路径和空目录状态的 SVG 几何，并实际点击目标目录、按 Escape 关闭；两版均 1/1。Rust 初始目录选择器的 ChevronRight 方向错误且缺少 reference 的 stroke/fill 属性，已恢复旧版 Lucide 几何；`rust-actions-parity-ui.spec.ts` old/new 各 9/9，移动/复制的排除、冲突和完整结果矩阵仍待验。
-- `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，导航全套仍保留在 `[ ]` 直到中间级/键盘/触摸矩阵完成。
+- `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，并追加中间级点击、Enter、触摸点击三条导航结果对照，整组现为 3/3。导航全套仍保留在 `[ ]` 直到 stale request/完整键盘状态矩阵完成。
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：反向对照 `SelectionToolbar.vue` 的打开按钮分流，旧版对同时满足 editable/book 的 `.txt` 显示书本“阅读”图标，Rust 初始版错误显示编辑图标；已按旧版条件顺序恢复，`rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1。另实际点击列表行“移动”后，旧版选择工具栏立即隐藏而 Rust 初始版仍显示；已让媒体预览、阅读器、编辑器、移动/复制、分享和账户弹层按旧版隐藏工具栏，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
@@ -383,7 +383,7 @@
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；浏览器后退/弹层 history、失败导航保留旧内容/选择和根节点 tooltip 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
 | 目录选择器图标与展开控件 | 8、15 | `d528aed` | `rust-directory-picker-reference-parity.spec.ts` old/new 各 1/1；`rust-actions-parity-ui.spec.ts` old/new 各 9/9 | old/new 实际打开移动目标选择器，比较触发器、面包屑、子目录、深层路径、空目录图标并验证点击目标/Escape 关闭 | 局部 PASS |
-| 面包屑 DOM、平滑显露与移动端布局 | 5、15 | `2e2221d`、`3040995` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 2/2；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、横向位置、`scrollTo` smooth options、点击根和浏览器后退 | 局部 PASS |
+| 面包屑 DOM、平滑显露与移动端布局 | 5、15 | `2e2221d`、`3040995`、`da5321c` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 3/3；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、横向位置、`scrollTo` smooth options、中间级点击/Enter/触摸、点击根和浏览器后退 | 局部 PASS |
 | 壳层响应式监听生命周期 | 2、15 | `9dc5204` | `rust-navigation-parity.spec.ts` old/new 各 10/10 | 实际注销卸载认证壳层，拦截 `MediaQueryList` add/remove，确认顶栏/侧栏监听均被释放；完整断线/重连清理仍未完 | 局部 PASS |
 | 侧栏展开箭头状态 | 4、15 | `317d1bd` | `rust-icon-reference-parity.spec.ts` old/new 各 1/1 | 实际点击分类和路径树展开控件，比较 SVG transform；分类/路径箭头均与 old 的 90° 旋转一致 | 局部 PASS |
 | 通用确认弹窗时序 | 8、15 | `045247f` | `rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 延迟创建请求下实际点击确认，比较弹窗即时关闭和后台结果；重命名保存中语义单独保留 | 局部 PASS |
