@@ -1000,6 +1000,16 @@ pub fn FileBrowser(
             let logout = on_logout.clone();
             let task_center = task_center.clone();
 
+            // The reference `confirmDialog`/`promptDialog` resolves and
+            // removes AppDialog synchronously. The mutation continues after
+            // the confirmation surface is gone; only RenameDialog stays
+            // mounted while its save request is in flight.
+            if !rename_action {
+                dialog.set(None);
+                dialog_value.set(String::new());
+                dialog_error.set(String::new());
+            }
+
             leptos::task::spawn_local(async move {
                 let result: Result<String, api::RequestError> = async {
                     match state {

@@ -320,6 +320,33 @@ test('新建文件夹弹窗保留空值禁用、Enter、Escape 和点击空白�
   }
 })
 
+test('确认操作提交后立即关闭通用弹窗并在后台等待结果', async ({ page }) => {
+  await login(page)
+  await page.route('**/api/directories', async route => {
+    await new Promise(resolve => setTimeout(resolve, 800))
+    return route.fulfill({
+      status: 201,
+      json: {
+        id: `compat-delayed-${crypto.randomUUID()}`,
+        parent_id: '00000000-0000-0000-0000-000000000000',
+        name: '延迟目录',
+        kind: 'directory',
+        size: 0,
+        status: 'ready',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+        mime_type: '',
+      },
+    })
+  })
+
+  await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
+  const dialog = page.locator('.app-dialog')
+  await dialog.locator('input').fill('延迟目录')
+  await dialog.getByRole('button', { name: '创建', exact: true }).click()
+  await expect(dialog).toHaveCount(0, { timeout: 250 })
+})
+
 test('通用确认/输入操作失败时按 reference 关闭弹窗并显示错误 toast', async ({ page }) => {
   await login(page)
   await page.route('**/api/directories', route => route.fulfill({
