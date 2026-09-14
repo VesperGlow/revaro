@@ -1,0 +1,95 @@
+import { expect, test, type Page } from '@playwright/test'
+
+const ROOT = '00000000-0000-0000-0000-000000000000'
+const FILE_ID = 'modal-history-file'
+const STAMP = '2026-01-01T00:00:00Z'
+
+const file = {
+  id: FILE_ID,
+  parent_id: ROOT,
+  name: '历史弹层.txt',
+  kind: 'file',
+  size: 12,
+  status: 'ready',
+  created_at: STAMP,
+  updated_at: STAMP,
+  mime_type: 'text/plain',
+  etag: 'modal-history-etag',
+}
+
+async function mockShare(page: Page) {
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [file], total_bytes: file.size, file_count: 1 })
+    if (path === `/api/files/${FILE_ID}/share` && request.method() === 'GET') {
+      return json({ active: true, url: 'http://127.0.0.1:18084/s/modal-history-token', created_at: STAMP })
+    }
+    return json({ items: [] })
+  })
+}
+
+async function openShare(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?modal-history-reference=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.getByTitle('列表视图').click()
+  const row = page.locator('.file-row').filter({ hasText: file.name })
+  await row.getByRole('button', { name: '选择项目' }).click()
+  await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
+  await expect(page.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/modal-history-token/)
+}
+
+async function layerSnapshot(page: Page) {
+  return page.evaluate(() => ({
+    path: location.pathname,
+    share: document.querySelector('.share-modal')?.className ?? null,
+    dialog: document.querySelector('.app-dialog')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+  }))
+}
+
+test('分享确认弹窗叠加时浏览器后退保留 reference 的弹层清理语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockShare(oldPage), mockShare(newPage)])
+    await Promise.all([openShare(oldPage, oldUrl), openShare(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.share-modal').getByRole('button', { name: '停止分享' }).click(),
+      newPage.locator('.share-modal').getByRole('button', { name: '停止分享' }).click(),
+    ])
+    await expect(oldPage.locator('.app-dialog')).toBeVisible()
+    await expect(newPage.locator('.app-dialog')).toBeVisible()
+
+    await Promise.all([oldPage.goBack(), newPage.goBack()])
+    await expect(oldPage.locator('.share-modal')).toHaveCount(0)
+    await expect(newPage.locator('.share-modal')).toHaveCount(0)
+    // AppDialog is mounted outside the reference modal. Browser back closes
+    // the share modal but leaves this confirmation open; preserve that
+    // observed behavior even though it is an unusual navigation edge case.
+    await expect(oldPage.locator('.app-dialog')).toBeVisible()
+    await expect(newPage.locator('.app-dialog')).toBeVisible()
+    expect(await layerSnapshot(newPage), 'Rust 嵌套确认弹层后退清理与 reference 不一致').toEqual(await layerSnapshot(oldPage))
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
