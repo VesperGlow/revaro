@@ -238,6 +238,56 @@ test('old/new 全部旧版可编辑扩展名都从文件入口进入相同 edito
   }
 })
 
+test('编辑器输入与原值相同仍保持 reference 的未修改状态', async ({ browser }) => {
+  const name = `editor-same-value-${crypto.randomUUID()}.md`
+  const content = '# unchanged\n\n输入同样的内容'
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await createDocument(page, name, content)
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    await page.locator('.file-row').filter({ hasText: name }).click()
+
+    const editor = page.locator('.document-editor')
+    await expect(editor.locator('textarea')).toHaveValue(content)
+    const before = {
+      unsaved: await editor.locator('.unsaved-dot').count(),
+      saveDisabled: await editor.getByRole('button', { name: '保存' }).isDisabled(),
+    }
+    await editor.locator('textarea').fill(content)
+    await page.waitForTimeout(50)
+    return {
+      before,
+      after: {
+        unsaved: await editor.locator('.unsaved-dot').count(),
+        saveDisabled: await editor.getByRole('button', { name: '保存' }).isDisabled(),
+      },
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      before: { unsaved: 0, saveDisabled: true },
+      after: { unsaved: 0, saveDisabled: true },
+    })
+    expect(newResult, 'Rust 编辑器相同值输入后的 dirty 状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 ETag 冲突反馈', async ({ browser }) => {
   const name = `editor-conflict-${crypto.randomUUID()}.md`
   const content = '# conflict reference\n'
