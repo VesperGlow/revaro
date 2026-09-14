@@ -1072,12 +1072,6 @@ pub fn FileBrowser(
                 DialogState::RegenerateShare | DialogState::RevokeShare
             );
             let selected = selected_ids.get_untracked();
-            let ids: Vec<String> = items
-                .get_untracked()
-                .into_iter()
-                .filter(|item| selected.contains(&item.id))
-                .map(|item| item.id)
-                .collect();
             let delete_targets = items
                 .get_untracked()
                 .into_iter()
@@ -1212,8 +1206,18 @@ pub fn FileBrowser(
                             Ok(format!("已将 {removed} 项移入回收站"))
                         }
                         DialogState::Purge => {
-                            for id in ids {
-                                api::purge_trash(&id).await?;
+                            for (id, name) in delete_targets {
+                                match api::purge_trash(&id).await {
+                                    Ok(()) => {}
+                                    Err(error) if error.is_unauthorized() => return Err(error),
+                                    Err(error) => {
+                                        return Err(api::RequestError {
+                                            status: error.status,
+                                            code: error.code,
+                                            message: format!("{name}：{}", error.message),
+                                        });
+                                    }
+                                }
                             }
                             Ok("已永久删除所选项目".to_owned())
                         }

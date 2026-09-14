@@ -339,3 +339,139 @@ test('重命名冲突保留输入弹窗并恢复可重试状态', async ({ brows
     await newContext.close()
   }
 })
+
+const trashFile = {
+  id: 'crud-trash-failure',
+  parent_id: ROOT,
+  name: '回收站失败.txt',
+  kind: 'file',
+  size: 12,
+  status: 'ready',
+  created_at: STAMP,
+  updated_at: STAMP,
+  deleted_at: STAMP,
+  mime_type: 'text/plain',
+  etag: 'crud-trash-failure-etag',
+}
+
+async function mockTrashFailure(page: Page, action: 'restore' | 'purge') {
+  const calls: string[] = []
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    if (path === '/api/trash') return json({ items: [trashFile], total_bytes: trashFile.size, file_count: 1 })
+    if (path === `/api/trash/${trashFile.id}/restore` && request.method() === 'POST' && action === 'restore') {
+      calls.push('restore')
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { status: 409, message: 'restore conflict' } }),
+      })
+    }
+    if (path === `/api/trash/${trashFile.id}` && request.method() === 'DELETE' && action === 'purge') {
+      calls.push('purge')
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { status: 409, message: 'purge conflict' } }),
+      })
+    }
+    return json({ items: [] })
+  })
+  return { calls }
+}
+
+async function openTrashFailureFixture(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?crud-trash-reference=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.getByTitle('列表视图').click()
+  await page.getByTitle('回收站').first().click()
+  await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+  const row = page.locator('.file-row').filter({ hasText: trashFile.name })
+  await expect(row).toBeVisible()
+  await row.getByRole('button', { name: '选择项目' }).click()
+  return page.getByRole('toolbar', { name: '所选项目操作' })
+}
+
+test('回收站恢复冲突保留项目与选择状态', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mock = await mockTrashFailure(page, 'restore')
+    const toolbar = await openTrashFailureFixture(page, baseUrl)
+    await toolbar.getByRole('button', { name: '恢复', exact: true }).click()
+    await expect(page.locator('.toast')).toHaveText('回收站失败.txt：restore conflict')
+    await expect(page.locator('.file-row').filter({ hasText: trashFile.name })).toBeVisible()
+    await expect(page.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
+    return mock.calls
+  }
+
+  try {
+    const [oldCalls, newCalls] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newCalls, 'Rust 恢复冲突后的项目/选择状态与 reference 不一致').toEqual(oldCalls)
+    expect(newCalls).toEqual(['restore'])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('回收站永久删除冲突关闭确认框并保留项目', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mock = await mockTrashFailure(page, 'purge')
+    const toolbar = await openTrashFailureFixture(page, baseUrl)
+    await toolbar.getByRole('button', { name: '永久删除', exact: true }).click()
+    const dialog = page.locator('.app-dialog')
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: '永久删除', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('回收站失败.txt：purge conflict')
+    await expect(page.locator('.file-row').filter({ hasText: trashFile.name })).toBeVisible()
+    await expect(page.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
+    return mock.calls
+  }
+
+  try {
+    const [oldCalls, newCalls] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newCalls, 'Rust 永久删除冲突后的确认框/项目状态与 reference 不一致').toEqual(oldCalls)
+    expect(newCalls).toEqual(['purge'])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
