@@ -171,6 +171,7 @@
 - `2026-09-15`，old `18080` / new `18084`：实际暂停音频、清空本地位置、点击“前进 30 秒”、等待 `timeupdate`/500ms 防抖后关闭预览；旧版 seek 后仍不立即写本地位置，Rust 初始版因 `user_seeked` 分支立即写入。已恢复旧版的防抖时序，并对照关闭时各发送一次远端保存，`rust-media-parity-ui.spec.ts` old/new 1/1，修复提交 `f1671c9`。
 - `2026-09-15`，old `18080` / new `18084`：实际暂停视频、清空本地位置、用自定义进度条 seek 到 20 秒、等待 `timeupdate`/600ms 防抖后关闭预览；旧版 seek 后不立即写本地位置，Rust 初始版在 `seek_to` 内立即写入。已恢复旧版节流边界，并对照关闭时各发送一次远端保存，`rust-media-parity-ui.spec.ts` old/new 1/1，修复提交 `b625b1c`。
 - `2026-09-15`，old `18080` / new `18084`：实际延迟视频 preview 请求并采样初始状态（两版均无 loading 遮罩、中心播放按钮隐藏、控制按钮为“暂停”），再注入含 `&nbsp;`、十六进制 entity、标签和换行的 VTT cue；Rust 初始版保留 entity 字面量，已按旧版 DOM `textContent` 解码，慢响应与字幕用例 old/new 均 1/1，修复提交 `22f320e`。
+- `2026-09-15`，old `18080` / new `18084`：实际在图片“实际大小”后于同一鼠标坐标滚轮放大并比较 computed transform/图像边界；旧版缩放后仍以鼠标位置为锚点，Rust 初始版把目标点误设为原点。已恢复 pointer-preserving wheel zoom，`rust-media-parity-ui.spec.ts` old/new 1/1，修复提交 `7119137`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -303,7 +304,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 图片查看 | `/preview`、loading/error、画廊上一张/下一张、缩略图、计数、实际大小/适应窗口、放大缩小、双击、滚轮、拖动边界、stage 点击显隐 chrome、键盘 `←/→/+/-/0/1` 一致。 | old/new media parity 14/14 已覆盖首次打开不预加载、切换时预加载、controls、带 `etag` 版本参数的 thumb、thumb 失败绝对 URL fallback、从根节点 Tab 进入菜单、thumb/menu、退出、桌面/390/320 宽度；完整键盘/滚轮/边界矩阵仍待验 |
+| `[ ]` | 图片查看 | `/preview`、loading/error、画廊上一张/下一张、缩略图、计数、实际大小/适应窗口、放大缩小、双击、滚轮、拖动边界、stage 点击显隐 chrome、键盘 `←/→/+/-/0/1` 一致。 | old/new media parity 14/14 已覆盖首次打开不预加载、切换时预加载、controls、带 `etag` 版本参数的 thumb、thumb 失败绝对 URL fallback、从根节点 Tab 进入菜单、thumb/menu、退出、桌面/390/320 宽度；滚轮鼠标锚点另由同 spec old/new 1/1 验证；完整键盘/边界矩阵仍待验 |
 | `[ ]` | 图片触摸 | 双指缩放、拖动、手势取消不误翻页、边界限制、旋转/重排状态保持一致。 | 待验证 |
 | `[ ]` | 图片更多菜单 | 下载、移动、复制、信息等 menu 的位置、点击外部/Esc、loading/error 和返回行为一致。 | old/new 实际对照更多入口、下载/移动/复制/信息项、popover 几何与 hover、空白/Escape 和焦点恢复；点击各动作后的 loading/error/返回仍待验 |
 | `[ ]` | 音频播放器 | `/audio` 元数据、封面 fallback、章节、上一/下一章、时间跳转、进度、播放/暂停、loading/error/retry、一首/多首行为一致。 | old/new media parity 已覆盖章节标识、controls、桌面/移动宽度；seek/关闭进度保存时序另由 `rust-media-parity-ui.spec.ts` old/new 1/1 验证；播放状态、错误重试和完整持久化矩阵仍待验 |
@@ -485,7 +486,7 @@
 | CRUD/传输刷新—反馈时序 | 8、15 | `83f7738` | 同一 700ms 延迟 mock 实际覆盖新建、删除、移动、重命名、恢复、永久删除、清空回收站；old/new 在刷新完成前均无成功 Toast，完成后文案与列表状态一致。Rust 使用可完成的 folder/trash refresh request，并恢复 extract 只刷新任务中心；`cargo fmt --all -- --check`、`cargo xtask check`、`cargo xtask web-build` 与最新显式端口完整 suite 160/160 均通过 | `rust-mutation-feedback-order-reference-parity.spec.ts` old/new 7/7 | PASS |
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity）、`0027c57`（extension/conflict parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；新增 11 扩展名入口、延迟 loading、Ctrl+S、ETag 冲突和未保存取消；完整视觉、编码/大文件、browser-back 和失败矩阵未完 | `rust-editor-reference-parity.spec.ts` Rust 5/5；其中新增 old/new 双上下文 2/2，既有 Rust bundle 场景 3/3 | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
-| 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity）、`dcfc9c1`（video poster etag parity）、`f1671c9`（audio seek persistence timing）、`b625b1c`（video seek persistence timing）、`22f320e`（subtitle text parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；视频 poster 的 etag 编码、音频/视频 seek 与关闭保存时序、复杂字幕 entity/换行已单独 old/new 验证；损坏/seek 边界仍未完 | `rust-media-parity-ui.spec.ts`、`rust-video-poster-reference-parity.spec.ts` | 局部 PASS |
+| 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity）、`dcfc9c1`（video poster etag parity）、`f1671c9`（audio seek persistence timing）、`b625b1c`（video seek persistence timing）、`22f320e`（subtitle text parity）、`7119137`（image wheel anchor） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；视频 poster 的 etag 编码、音频/视频 seek 与关闭保存时序、复杂字幕 entity/换行、图片滚轮锚点已单独 old/new 验证；损坏/seek 边界仍未完 | `rust-media-parity-ui.spec.ts`、`rust-video-poster-reference-parity.spec.ts` | 局部 PASS |
 | 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E）、`7b278b7`（归档入口双版本） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档入口/任务密码/状态刷新、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言；`rust-archive-reference-parity.spec.ts` old/new 1/1 | 局部 PASS |
 | 全局通知与批量下载反馈 | 2、12、15 | `a0e7f8e`、`31ca8e5`、`25c966f`、`eb617a8` | `rust-feedback-reference-parity.spec.ts` old/new 来源用例 7/7；`rust-share-dialog-reference-parity.spec.ts` 重生成/停止分享 1/1；`rust-editor-reference-parity.spec.ts` 放弃编辑 1/1；workspace `cargo xtask check` 通过 | 延迟批量下载、任务完成/失败、分享重生成/停止分享、放弃编辑保留已有 toast 均实际比较 old/new；Rust 初始重生成额外通知与 discard 清空通知已恢复；所有双版本 new fallback 已锁定当前 Rust 18084 | 局部 PASS |
 | 文件浏览头新建/上传菜单 | 5、7、8、15 | `6828692` | `rust-file-header-menu-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较新建/上传菜单初始关闭、展开、summary/popover/首项尺寸与层级、hover、空白关闭及“新建文档”动作后的 editor/菜单状态 | 局部 PASS |
