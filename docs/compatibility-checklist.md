@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`e26855f`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`a6ac08e`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -85,6 +85,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际对文件卡执行右键并读取冒泡事件的 `defaultPrevented`，两版均阻止浏览器原生菜单；随后实际打开图片预览“更多操作”，比较菜单初始/展开尺寸、定位、层级、hover、空白关闭、Escape 关闭和 summary 焦点恢复，两版均一致。`rust-preview-menu-reference-parity.spec.ts` old/new 1/1，提交 `8f51320`；音频音量/视频字幕与播放设置菜单仍待完整状态矩阵。
 - `2026-09-14`，old `18080` / new `18083`：列表模式实际选择目录、TXT、EPUB、图片、ZIP、未知文件，逐项比较所选摘要、按钮出现条件/顺序、中文文案和 SVG 路径；再比较 TXT+图片多选。old/new 均一致，工具栏关闭后选择清理也一致；`rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1，提交 `6c9e46a`。移动端布局及回收站恢复/永久删除分支仍待验。
 - `2026-09-14`，old `18080` / new `18083`，390×844 触摸 viewport：实际进入列表、选择 TXT 并读取移动端工具栏布局，再打开账户工具菜单进入回收站，选择已删除 TXT；old/new 的移动工具栏几何和回收站“恢复/永久删除”分支一致。`rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1，提交 `e26855f`。
+- `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后比较用户名编辑入口和会话区；旧版入口为 `svg + span`，Rust 初始版只有 `span`，且对应 hover 图标未命中。已恢复旧版铅笔 path、14px 尺寸和统一 icon helper；old/new DOM、geometry、hover、编辑聚焦和 Escape 取消均 1/1，`rust-account-reference-parity.spec.ts`，提交 `a6ac08e`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，并追加中间级点击、Enter、触摸点击三条导航结果对照，整组现为 3/3。导航全套仍保留在 `[ ]` 直到 stale request/完整键盘状态矩阵完成。
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
@@ -125,7 +126,7 @@
 | `[P]` | TOTP 登录 | 需要二次验证时的输入、回退、错误、重试、恢复码路径和 session 建立一致。 | old/new `rust-auth-parity.spec.ts` 的二次输入、错误保留和重试分支均通过 |
 | `[P]` | 会话检查 | `/api/auth/me`、刷新页面、已过期 cookie、401 后回登录页且不遗留旧数据。 | 初始/刷新过期 cookie 两版均回登录；中途 401 old 保留壳层+toast，new 回登录以清除过期 session 下的旧数据，记录为安全强化例外 |
 | `[P]` | 账户入口 | 顶栏账户按钮应打开“账户设置”而不是直接退出登录；用户名、头像、菜单文案和层级一致。 | old/new 桌面实际点击均打开账户设置；移动端工具菜单入口已对照，退出动作仍在独立条目验证 |
-| `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭 |
+| `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；另以 `rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover |
 | `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
 | `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 成功颜色/时限、目录错误、批量下载数量文案、Toast 命中区域和操作失败已对照；权限过期、断线、剪贴板失败及堆叠顺序仍待验证 |
 | `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；Tab 焦点边界、账户/编辑器/分享/媒体/阅读器嵌套顺序仍待验 |
@@ -179,7 +180,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；Enter、`.epub` 目录边界、日期时区和 12 类卡/行矩阵已恢复，hover/完整视觉状态仍待对照 |
-| `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；文件项各类型、fallback、颜色和状态叠加仍待同一 fixture 截图对照 |
+| `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；账户用户名编辑铅笔已恢复；文件项各类型、fallback、颜色和状态叠加仍待同一 fixture 截图对照 |
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 待验证 |
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
@@ -428,6 +429,7 @@
 | 媒体预览更多菜单与右键语义 | 6、11、15 | `8f51320` | `rust-preview-menu-reference-parity.spec.ts` old/new 各 1/1 | 实际比较文件卡右键默认事件、图片预览更多菜单项/几何/hover、空白与 Escape 关闭、summary 焦点恢复；音频/视频菜单全状态仍待验 | 局部 PASS |
 | 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；移动端与回收站分支仍待验 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
+| 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
