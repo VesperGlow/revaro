@@ -2162,9 +2162,13 @@ pub fn FileBrowser(
                                     download_file(&files[0]);
                                     return;
                                 }
+                                let file_count = files.len();
                                 let ids = files.into_iter().map(|item| item.id).collect();
                                 leptos::task::spawn_local(async move {
-                                    notify.run(Feedback::success("正在准备批量下载…"));
+                                    notify.run(Feedback::success(format!(
+                                        "正在准备 {} 个文件…",
+                                        file_count
+                                    )));
                                     match api::prepare_batch_download(ids).await {
                                         Ok(ticket) => {
                                             start_download(&format!(
