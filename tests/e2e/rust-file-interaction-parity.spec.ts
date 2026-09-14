@@ -294,3 +294,44 @@ test('方块文件卡聚焦后按空格不会滚动页面', async ({ page }) => 
     }
   }
 })
+
+test('回收站目录行按 Enter 保留 reference 的默认事件处理', async ({ page }) => {
+  const name = `compat-trash-folder-key-${crypto.randomUUID()}`
+  let id = ''
+
+  try {
+    await login(page)
+    id = await page.evaluate(async ({ name, root }) => {
+      const response = await fetch('/api/directories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: root, name }),
+      })
+      if (!response.ok) throw new Error(`创建目录失败：${response.status}`)
+      return (await response.json() as { id: string }).id
+    }, { name, root: ROOT })
+    await page.evaluate(async folderId => {
+      const response = await fetch(`/api/files/${folderId}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error(`移入回收站失败：${response.status}`)
+    }, id)
+
+    await page.getByTitle('回收站').first().click()
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    const row = page.locator('.file-card, .file-row').filter({ hasText: name })
+    await expect(row).toBeVisible()
+    await row.focus()
+    await page.evaluate(() => {
+      ;(window as Window & { __enterDefaultPrevented?: boolean }).__enterDefaultPrevented = undefined
+      window.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          ;(window as Window & { __enterDefaultPrevented?: boolean }).__enterDefaultPrevented = event.defaultPrevented
+        }
+      }, { once: true })
+    })
+    await page.keyboard.press('Enter')
+    expect(await page.evaluate(() => (window as Window & { __enterDefaultPrevented?: boolean }).__enterDefaultPrevented)).toBe(true)
+    await expect(page.locator('.modal-backdrop')).toHaveCount(0)
+  } finally {
+    if (id) await page.evaluate(async folderId => { await fetch(`/api/trash/${folderId}`, { method: 'DELETE' }) }, id)
+  }
+})

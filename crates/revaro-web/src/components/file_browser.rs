@@ -2598,11 +2598,11 @@ fn FileTile(
                 }
             }
             on:keydown=move |event: web_sys::KeyboardEvent| {
-                if event.key() == "Enter"
-                    && (!trash_mode.get_untracked() || item_for_key.kind == FileKind::File)
-                {
+                if event.key() == "Enter" {
                     event.prevent_default();
-                    on_open_key.run(item_for_key.clone());
+                    if !trash_mode.get_untracked() || item_for_key.kind == FileKind::File {
+                        on_open_key.run(item_for_key.clone());
+                    }
                 } else if event.key() == " " {
                     // FileCard.vue uses Vue's `.prevent` modifier on the
                     // production grid even when the grid is not selectable;
@@ -2679,11 +2679,11 @@ fn FileRow(
                 }
             }
             on:keydown=move |event: web_sys::KeyboardEvent| {
-                if event.key() == "Enter"
-                    && (!trash_mode.get_untracked() || item_for_key.kind == FileKind::File)
-                {
+                if event.key() == "Enter" {
                     event.prevent_default();
-                    on_open_key.run(item_for_key.clone());
+                    if !trash_mode.get_untracked() || item_for_key.kind == FileKind::File {
+                        on_open_key.run(item_for_key.clone());
+                    }
                 } else if event.key() == " " {
                     event.prevent_default();
                     on_select.run(item_for_select_key.clone());
