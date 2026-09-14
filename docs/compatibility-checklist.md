@@ -77,6 +77,7 @@
 - `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，导航全套仍保留在 `[ ]` 直到中间级/键盘/触摸矩阵完成。
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
+- `2026-09-14`，old `18080` / new `18083`：反向对照 `SelectionToolbar.vue` 的打开按钮分流，旧版对同时满足 editable/book 的 `.txt` 显示书本“阅读”图标，Rust 初始版错误显示编辑图标；已按旧版条件顺序恢复，`rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1。另实际点击列表行“移动”后，旧版选择工具栏立即隐藏而 Rust 初始版仍显示；已让媒体预览、阅读器、编辑器、移动/复制、分享和账户弹层按旧版隐藏工具栏，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -147,7 +148,7 @@
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
 | `[ ]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | 待验证 |
 | `[ ]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | Rust 有部分 open logic，完整矩阵待验 |
-| `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | Rust 已连接 open/extract/download/share/rename/move/delete/restore/purge；完整出现条件、disabled 和所有文件类型矩阵仍待验证 |
+| `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | `.txt` 同时 editable/book 时的阅读图标、打开移动/复制/预览/阅读器/编辑器/分享/账户弹层时隐藏工具栏已 old/new 对照；完整出现条件、disabled、计数/总大小和所有文件类型矩阵仍待验证 |
 
 ## 7. 上传入口、队列和任务联动
 
@@ -364,6 +365,7 @@
 | 面包屑 DOM 与移动端布局 | 5、15 | `2e2221d` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 1/1；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、横向位置、点击根和浏览器后退 | 局部 PASS |
 | 侧栏展开箭头状态 | 4、15 | `317d1bd` | `rust-icon-reference-parity.spec.ts` old/new 各 1/1 | 实际点击分类和路径树展开控件，比较 SVG transform；分类/路径箭头均与 old 的 90° 旋转一致 | 局部 PASS |
 | 通用确认弹窗时序 | 8、15 | `045247f` | `rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 延迟创建请求下实际点击确认，比较弹窗即时关闭和后台结果；重命名保存中语义单独保留 | 局部 PASS |
+| 选择工具栏分流与弹层可见性 | 6、8、15 | `f898067` | `rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1；`rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 实际选择 `.txt` 对照阅读图标几何；实际打开移动弹层对照选择工具栏立即隐藏；完整文件类型/disabled 矩阵未完 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
