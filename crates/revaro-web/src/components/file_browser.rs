@@ -257,7 +257,6 @@ pub fn FileBrowser(
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
-            selected_ids.set(HashSet::new());
             let requested_id = id;
             if pending_editor_refresh
                 .get_untracked()
@@ -300,6 +299,7 @@ pub fn FileBrowser(
                         items.set(children.items);
                         total_bytes.set(children.total_bytes);
                         file_count.set(children.file_count);
+                        selected_ids.set(HashSet::new());
                         trash_mode.set(false);
                         tree_token.update(|token| *token = token.wrapping_add(1));
                         replace_folder_url(&requested_id);
@@ -369,7 +369,6 @@ pub fn FileBrowser(
             request_sequence.set(sequence);
             loading.set(true);
             error.set(String::new());
-            selected_ids.set(HashSet::new());
             let logout = on_logout.clone();
 
             leptos::task::spawn_local(async move {
@@ -381,6 +380,7 @@ pub fn FileBrowser(
                         items.set(trash.items);
                         total_bytes.set(trash.total_bytes);
                         file_count.set(trash.file_count);
+                        selected_ids.set(HashSet::new());
                         trash_mode.set(true);
                         section.set(LibraryKind::File);
                         library_folder_id.set(None);

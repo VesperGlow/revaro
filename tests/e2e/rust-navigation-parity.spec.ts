@@ -414,3 +414,77 @@ test('认证壳层卸载时释放响应式媒体查询监听', async ({ page }) 
   await expect(page.getByLabel('用户名')).toBeVisible()
   await expect.poll(async () => page.evaluate(() => window.__compatMediaQuery?.removes ?? 0)).toBe(counts?.adds)
 })
+
+test('目录读取中或失败时保留 reference 的当前选择状态', async ({ page }) => {
+  const rootFile = {
+    id: ROOT,
+    parent_id: null,
+    name: '我的文件',
+    kind: 'directory',
+    size: 0,
+    status: 'ready',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    mime_type: '',
+  }
+  const selectedFile = {
+    id: 'compat-selected-file',
+    parent_id: ROOT,
+    name: '保留选择.txt',
+    kind: 'file',
+    size: 10,
+    status: 'ready',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    mime_type: 'text/plain',
+  }
+  const brokenFolder = {
+    id: 'compat-broken-folder',
+    parent_id: ROOT,
+    name: '读取失败的目录',
+    kind: 'directory',
+    size: 0,
+    status: 'ready',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    mime_type: '',
+  }
+
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 2 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 2 })
+    if (path === `/api/files/${ROOT}`) return json({ file: rootFile, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) {
+      return json({ items: [selectedFile, brokenFolder], total_bytes: 10, file_count: 1 })
+    }
+    if (path === `/api/files/${brokenFolder.id}` || path === `/api/files/${brokenFolder.id}/children`) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      return route.fulfill({ status: 500, json: { error: { status: 500, code: null, message: '模拟读取失败' } } })
+    }
+    return json({ items: [] })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.getByTitle('列表视图').click()
+  const selectedRow = page.locator('.file-row').filter({ hasText: selectedFile.name })
+  const brokenRow = page.locator('.file-row').filter({ hasText: brokenFolder.name })
+  await selectedRow.getByRole('button', { name: '选择项目' }).click()
+  await expect(page.locator('.selection-toolbar')).toBeVisible()
+
+  await brokenRow.click()
+  await expect(page.locator('.selection-toolbar')).toBeVisible()
+  await expect(page.locator('.state')).toContainText('正在读取文件')
+  await expect(page.locator('.toast')).toContainText('模拟读取失败')
+  await expect(page.locator('.selection-toolbar')).toBeVisible()
+  await expect(page.locator('.file-row').filter({ hasText: selectedFile.name })).toBeVisible()
+})
