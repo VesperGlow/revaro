@@ -54,15 +54,16 @@ pub fn directory_paths(paths: &[Vec<String>]) -> Vec<String> {
     paths
 }
 
-/// Progress while bytes are being transferred, leaving the final two percent
-/// for the acknowledgement and commit transaction.
+/// Progress while bytes are being transferred, leaving the reference's
+/// acknowledgement and commit headroom after the rounded file percentage.
 #[must_use]
 pub fn transfer_progress(done: i64, total: i64) -> u8 {
     if total <= 0 {
         return 98;
     }
     let done = done.clamp(0, total) as f64;
-    ((done / total as f64) * 98.0).round().clamp(0.0, 98.0) as u8
+    let percent = ((done / total as f64) * 100.0).round().min(99.0);
+    (percent * 0.98).floor().clamp(0.0, 98.0) as u8
 }
 
 /// The exact byte size expected for a numbered part.
@@ -129,8 +130,10 @@ mod tests {
     fn progress_is_bounded_and_reserves_commit_space() {
         assert_eq!(transfer_progress(0, 100), 0);
         assert_eq!(transfer_progress(50, 100), 49);
-        assert_eq!(transfer_progress(100, 100), 98);
-        assert_eq!(transfer_progress(1000, 100), 98);
+        assert_eq!(transfer_progress(1, 3), 32);
+        assert_eq!(transfer_progress(1, 7), 13);
+        assert_eq!(transfer_progress(100, 100), 97);
+        assert_eq!(transfer_progress(1000, 100), 97);
         assert_eq!(transfer_progress(0, 0), 98);
     }
 

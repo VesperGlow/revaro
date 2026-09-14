@@ -770,7 +770,6 @@ impl UploadController {
         };
 
         ensure_not_cancelled(active)?;
-        self.set_task_if_current(task_id, run_id, |task| task.progress = 99);
         let verifier =
             AbortController::new().map_err(|error| js_error("无法创建提交控制器", error))?;
         let signal = verifier.signal();
