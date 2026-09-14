@@ -3,6 +3,69 @@ import { login } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 
+function crc32(data: Buffer) {
+  let value = 0xffffffff
+  for (const byte of data) {
+    value ^= byte
+    for (let bit = 0; bit < 8; bit += 1) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0)
+  }
+  return value ^ 0xffffffff
+}
+
+function storedZip(entries: Array<[string, Buffer]>) {
+  const local: Buffer[] = []
+  const central: Buffer[] = []
+  let offset = 0
+
+  for (const [name, data] of entries) {
+    const nameBytes = Buffer.from(name)
+    const checksum = crc32(data) >>> 0
+    const localHeader = Buffer.alloc(30)
+    localHeader.writeUInt32LE(0x04034b50, 0)
+    localHeader.writeUInt16LE(20, 4)
+    localHeader.writeUInt16LE(0x800, 6)
+    localHeader.writeUInt32LE(checksum, 14)
+    localHeader.writeUInt32LE(data.length, 18)
+    localHeader.writeUInt32LE(data.length, 22)
+    localHeader.writeUInt16LE(nameBytes.length, 26)
+    local.push(Buffer.concat([localHeader, nameBytes, data]))
+
+    const centralHeader = Buffer.alloc(46)
+    centralHeader.writeUInt32LE(0x02014b50, 0)
+    centralHeader.writeUInt16LE(20, 4)
+    centralHeader.writeUInt16LE(20, 6)
+    centralHeader.writeUInt16LE(0x800, 8)
+    centralHeader.writeUInt32LE(checksum, 16)
+    centralHeader.writeUInt32LE(data.length, 20)
+    centralHeader.writeUInt32LE(data.length, 24)
+    centralHeader.writeUInt16LE(nameBytes.length, 28)
+    centralHeader.writeUInt32LE(offset, 42)
+    central.push(Buffer.concat([centralHeader, nameBytes]))
+    offset += localHeader.length + nameBytes.length + data.length
+  }
+
+  const centralDirectory = Buffer.concat(central)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(centralDirectory.length, 12)
+  end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...local, centralDirectory, end])
+}
+
+function iconEpub() {
+  const container = '<?xml version="1.0" encoding="UTF-8"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'
+  const opf = '<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>图标回归验收</dc:title></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>'
+  const chapter = '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>图标回归验收</h1><p>书籍图标没有封面时应使用 reference 几何。</p></body></html>'
+  return storedZip([
+    ['mimetype', Buffer.from('application/epub+zip')],
+    ['META-INF/container.xml', Buffer.from(container)],
+    ['OEBPS/content.opf', Buffer.from(opf)],
+    ['OEBPS/chapter.xhtml', Buffer.from(chapter)],
+  ])
+}
+
 test('移动端列表在选择模式下轻触行只切换选择，不打开文件', async ({ browser }) => {
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -112,6 +175,79 @@ test('可编辑 TXT 在文件卡上使用旧版文档图标，而不是阅读器
     await expect(card).toBeVisible()
     await expect(card.locator('.document-type-icon')).toHaveCount(1)
     await expect(card.locator('.book-type-icon')).toHaveCount(0)
+  } finally {
+    if (id) {
+      await page.evaluate(async ({ id }) => {
+        await fetch(`/api/files/${id}`, { method: 'DELETE' })
+        await fetch(`/api/trash/${id}`, { method: 'DELETE' })
+      }, { id })
+    }
+  }
+})
+
+test('EPUB 文件卡使用旧版书籍图标几何', async ({ page }) => {
+  const name = `compat-book-icon-${crypto.randomUUID()}.epub`
+  let id = ''
+
+  try {
+    await login(page)
+    await page.locator('input[type=file]').first().setInputFiles({
+      name,
+      mimeType: 'application/epub+zip',
+      buffer: iconEpub(),
+    })
+
+    const card = page.locator('.file-card').filter({ hasText: name })
+    await expect(card).toBeVisible({ timeout: 20_000 })
+    await expect(card.locator('.book-type-icon')).toHaveCount(1)
+    await expect(card.locator('.book-type-icon .icon-detail')).toHaveAttribute(
+      'd',
+      'M48 24v57M23 31c7 0 13 1 18 4M23 44c7 0 13 1 18 4M73 31c-7 0-13 1-18 4M73 44c-7 0-13 1-18 4',
+    )
+
+    id = await page.evaluate(async ({ name, root }) => {
+      const response = await fetch(`/api/files/${root}/children`)
+      if (!response.ok) throw new Error(`刷新文件列表失败：${response.status}`)
+      const data = await response.json() as { items?: Array<{ id: string; name: string }> }
+      return data.items?.find(item => item.name === name)?.id ?? ''
+    }, { name, root: ROOT })
+  } finally {
+    if (id) {
+      await page.evaluate(async ({ id }) => {
+        await fetch(`/api/files/${id}`, { method: 'DELETE' })
+        await fetch(`/api/trash/${id}`, { method: 'DELETE' })
+      }, { id })
+    }
+  }
+})
+
+test('方块文件卡聚焦后按空格不会滚动页面', async ({ page }) => {
+  const name = `compat-space-${crypto.randomUUID()}.txt`
+  let id = ''
+
+  try {
+    await login(page)
+    id = await page.evaluate(async ({ name, root }) => {
+      const response = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: root, name, content: 'space parity' }),
+      })
+      if (!response.ok) throw new Error(`创建文档失败：${response.status}`)
+      return (await response.json() as { id: string }).id
+    }, { name, root: ROOT })
+
+    await page.reload()
+    const card = page.locator('.file-card').filter({ hasText: name })
+    await expect(card).toBeVisible()
+    await card.focus()
+    await page.evaluate(() => window.scrollTo(0, 150))
+    const before = await page.evaluate(() => window.scrollY)
+    await page.keyboard.press('Space')
+    await page.waitForTimeout(100)
+    const after = await page.evaluate(() => window.scrollY)
+    expect(after).toBe(before)
+    await expect(page.locator('.modal-backdrop')).toHaveCount(0)
   } finally {
     if (id) {
       await page.evaluate(async ({ id }) => {

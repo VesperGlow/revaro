@@ -2492,9 +2492,14 @@ fn FileTile(
                 {
                     event.prevent_default();
                     on_open_key.run(item_for_key.clone());
-                } else if event.key() == " " && selectable {
+                } else if event.key() == " " {
+                    // FileCard.vue uses Vue's `.prevent` modifier on the
+                    // production grid even when the grid is not selectable;
+                    // keep a focused card from scrolling the page on Space.
                     event.prevent_default();
-                    on_select.run(item_for_select_key.clone());
+                    if selectable {
+                        on_select.run(item_for_select_key.clone());
+                    }
                 }
             }
             on:contextmenu=move |event: web_sys::MouseEvent| event.prevent_default()
@@ -2882,7 +2887,7 @@ fn file_icon(file: &File) -> AnyView {
         view! {
             <svg class="file-type-icon book-type-icon" viewBox="0 0 96 96" aria-hidden="true">
                 <path class="icon-base" d="M48 24c-9-6-20-8-34-8v57c14 0 25 2 34 8 9-6 20-8 34-8V16c-14 0-25 2-34 8Z"></path>
-                <path class="icon-detail" d="M48 24v57M23 31c7 0 13 1 18 4M23 44c7 0 13 1 18 4M73 31c-7 0-13 1-18 4M73 44c-7 0-13-1-18 4"></path>
+                <path class="icon-detail" d="M48 24v57M23 31c7 0 13 1 18 4M23 44c7 0 13 1 18 4M73 31c-7 0-13 1-18 4M73 44c-7 0-13 1-18 4"></path>
             </svg>
         }
         .into_any()
