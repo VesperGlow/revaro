@@ -53,6 +53,7 @@ async function mockShell(page: Page, statusValue = status) {
       return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
     }
     if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === '/api/trash') return json({ items: [], total_bytes: 0, file_count: 0 })
     if (path === `/api/files/${ROOT}`) {
       return json({
         file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
@@ -168,6 +169,88 @@ test('任务中心和系统状态 badge 保持 reference 尺寸与视觉层级',
     expect(await badgeMetrics(newPage, serviceSelector)).toEqual(await badgeMetrics(oldPage, serviceSelector))
     expect(await newPage.locator('.status-grid .service-card').nth(2).innerText())
       .toBe(await oldPage.locator('.status-grid .service-card').nth(2).innerText())
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('桌面与移动顶栏入口保持 reference 的完整分流', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  const closeAccount = async (page: Page) => {
+    await page.locator('.account-modal > header button').click()
+    await expect(page.locator('.account-modal')).toHaveCount(0)
+  }
+
+  const closeOutside = async (page: Page) => {
+    const viewport = page.viewportSize()!
+    await page.mouse.click(4, viewport.height - 4)
+  }
+
+  const exerciseDesktop = async (page: Page) => {
+    await page.getByTitle('任务中心').click()
+    await expect(page.locator('.task-panel')).toBeVisible()
+    await page.getByTitle('任务中心').click()
+    await expect(page.locator('.task-panel')).toBeHidden()
+
+    await page.locator('.system-status > summary').click()
+    await expect(page.locator('.status-panel')).toBeVisible()
+    await closeOutside(page)
+    await expect(page.locator('.status-panel')).toBeHidden()
+
+    await page.locator('button[title="打开账户设置"]').click()
+    await expect(page.locator('.account-modal')).toBeVisible()
+    await expect(page.getByRole('heading', { name: '登录私人空间' })).toHaveCount(0)
+    await closeAccount(page)
+
+    await page.locator('.topbar button[title="回收站"]').click()
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '返回我的文件', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  }
+
+  const exerciseMobile = async (page: Page) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.locator('summary[aria-label="打开账户与工具菜单"]').click()
+    const menu = page.locator('.mobile-account-menu')
+    await expect(menu).toHaveAttribute('open', '')
+
+    await menu.getByRole('button', { name: /^任务中心/ }).click()
+    await expect(menu).not.toHaveAttribute('open')
+    await expect(page.locator('.task-panel')).toBeVisible()
+    await closeOutside(page)
+    await expect(page.locator('.task-panel')).toBeHidden()
+
+    await menu.locator('summary').click()
+    await menu.getByRole('button', { name: '账户设置', exact: true }).click()
+    await expect(menu).not.toHaveAttribute('open')
+    await expect(page.locator('.account-modal')).toBeVisible()
+    await closeAccount(page)
+
+    await menu.locator('summary').click()
+    await menu.getByRole('button', { name: '回收站', exact: true }).click()
+    await expect(menu).not.toHaveAttribute('open')
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '返回我的文件', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+
+    await page.locator('.system-status > summary').click()
+    await expect(page.locator('.status-panel')).toBeVisible()
+    await closeOutside(page)
+    await expect(page.locator('.status-panel')).toBeHidden()
+  }
+
+  try {
+    await Promise.all([mockShell(oldPage), mockShell(newPage)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([exerciseDesktop(oldPage), exerciseDesktop(newPage)])
+    await Promise.all([exerciseMobile(oldPage), exerciseMobile(newPage)])
   } finally {
     await oldContext.close()
     await newContext.close()
