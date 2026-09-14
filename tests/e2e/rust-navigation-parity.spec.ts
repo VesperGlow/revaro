@@ -121,6 +121,63 @@ test('从嵌套目录进入回收站后点击文件分类返回原目录', async
   }
 })
 
+test('目录导航与浏览器后退前进保持 reference history 语义', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await login(page)
+  const name = `compat-history-${crypto.randomUUID()}`
+  const folderId = await page.evaluate(async ({ name, root }) => {
+    const response = await fetch('/api/directories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parent_id: root, name }),
+    })
+    if (!response.ok) throw new Error(`创建目录失败：${response.status}`)
+    return (await response.json() as { id: string }).id
+  }, { name, root: ROOT })
+
+  try {
+    await page.reload()
+    await page.locator('.file-card, .file-row').filter({ hasText: name }).click()
+    await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
+    expect(new URL(page.url()).pathname).toBe(`/f/${folderId}`)
+
+    await page.goBack()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    expect(new URL(page.url()).pathname).toBe('/')
+
+    // The reference only handles the back action it pushed. A browser
+    // forward restores the URL entry but does not replay the folder request;
+    // keep this observed behaviour explicit so old/new runs remain honest.
+    await page.goForward()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    expect(new URL(page.url()).pathname).toBe(`/f/${folderId}`)
+  } finally {
+    await page.evaluate(async ({ folderId }) => {
+      await fetch(`/api/files/${folderId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      await fetch(`/api/trash/${folderId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }, { folderId })
+  }
+})
+
+test('弹层打开后浏览器后退先关闭弹层并保留当前页面', async ({ page }) => {
+  await login(page)
+  const account = page.locator('button[title="打开账户设置"]')
+  await account.click()
+  await expect(page.locator('.account-modal')).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/')
+
+  await page.goBack()
+  await expect(page.locator('.account-modal')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/')
+})
+
 test('无效文件夹深链回到根目录并加载 reference 的默认页面', async ({ page }) => {
   await page.goto('/f/compatibility-folder-that-does-not-exist')
   await page.getByLabel('用户名').fill(process.env.E2E_USERNAME || 'admin')
