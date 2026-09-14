@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`ce4d34c`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`b4147c6`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -84,6 +84,7 @@
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 任务和三张状态卡实际读取 badge 的 class、尺寸、padding 与文字；旧版顶栏任务 badge 和服务卡 badge 均为 `size-sm`，Rust 初始版分别过大或缺少尺寸 class；已恢复 `size-sm`。缓存命中率用 2/3 暴露旧版 `Math.round` 与 Rust 初始整数除法的 67%/66% 差异，也已恢复。`rust-global-ui-reference-parity.spec.ts` old/new 各 1/1，聚合导航/任务/图标集合 old/new 各 15/15。
 - `2026-09-14`，old `18080` / new `18083`：系统状态 mock 首帧、非法 SSE JSON、`critical` 状态、桌面/390px 面板几何、空白/Escape 关闭和 summary 焦点逐项读取；另以首个 EventSource 响应结束验证 1s 断线重连，再在退出登录后等待 1.3s 验证没有新连接。old/new `rust-global-ui-reference-parity.spec.ts` 串行各 5/5；Rust 初始版曾把所有非 `degraded` 状态压成 `ok`，并在 SystemStatus Escape 错误阻止默认事件，已按 reference 恢复 raw 状态 class 与键盘语义，提交 `16b70e3`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：实际打开移动端账户与工具菜单后按 Escape，并在 window 阶段捕获 `defaultPrevented`；old 为 `false`、菜单关闭且焦点回到 summary，Rust 初始版为 `true`，已移除额外阻止。`rust-navigation-parity.spec.ts` old/new 各 1/1，提交 `ce4d34c`。
+- `2026-09-14`，old `18080` / new `18083`，390×844：实际打开移动端分类抽屉后按 Escape，并在 window 阶段捕获 `defaultPrevented`；old 为 `false`、抽屉关闭，Rust 初始版为 `true`，已移除额外阻止。`rust-navigation-parity.spec.ts` old/new 各 1/1，提交 `b4147c6`。
 - `2026-09-14`，old `18080` / new `18083`：分类切换实际记录 `/api/library/all` 请求次数；旧版首次加载后在书架、图库、视频、音乐、文件分类间复用快照，只有明确 Refresh 才重新读取。Rust 初始版每次分类切换都重新请求；已恢复缓存视图与 force refresh 分流，并保持 force refresh 失败后旧缓存仍可供后续分类切换复用。`rust-library-ui.spec.ts` old/new 各 8/8，相关提交为 `d068eb8`、`bb6edba`。
 - `2026-09-14`，old `18080` / new `18083`：选中列表文件后发起延迟且返回 500 的目录导航，旧版在 loading 和失败后均保留原列表与选择工具栏，Rust 初始版立即清掉选择；已将清空时机移到成功导航分支。old/new `rust-navigation-parity.spec.ts` 定向用例各 1/1，修复提交 `db5b963`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：向长路径面包屑注入 `scrollTo` 探针，旧版每次当前路径变化均调用 `{left: scrollWidth, behavior: "smooth"}`，Rust 初始版只写 `scrollLeft`、没有平滑调用。已恢复 `ScrollToOptions` 平滑显露，`rust-breadcrumb-layout-reference-parity.spec.ts` old/new 的 DOM/边距与平滑调用各通过，修复提交 `3040995`。
@@ -389,6 +390,7 @@
 | 任务中心与操作时序 | 3、15 | `5c69720`、`2d9f584`、`d05c438` | `rust-task-center-parity.spec.ts` old/new 各 9/9 | 两个活动任务原始进度先平均再四舍五入；小数条宽、失败满格、名称 fallback、Escape 焦点、请求中按钮和 `Promise.all` 删除均实际对照；延迟初始请求仍显示 reference 空任务文案 | 局部 PASS |
 | 系统状态 SSE 与全局键盘语义 | 3、13、15 | `16b70e3` | `rust-global-ui-reference-parity.spec.ts` old/new 各 5/5 | 实际对照三卡首帧、非法数据、critical 状态 class、桌面/移动几何、空白/Escape（含默认事件和焦点）、断线重连以及退出登录后的 EventSource/定时器清理 | 局部 PASS |
 | 移动端工具菜单键盘语义 | 2、3、15 | `ce4d34c` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际打开账户与工具菜单，比较 Escape 的关闭、summary 焦点和 window 阶段 `defaultPrevented=false` | 局部 PASS |
+| 移动端分类抽屉键盘语义 | 2、4、15 | `b4147c6` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际打开分类抽屉，比较 Escape 的关闭结果与 window 阶段 `defaultPrevented=false` | 局部 PASS |
 | 顶栏/状态 badge 与命中率 | 3、4、15 | `8f5356f`、`1108947` | `rust-global-ui-reference-parity.spec.ts` old/new 各 1/1；聚合导航/任务/图标集合 old/new 各 15/15 | 同一 mock 数据逐项比较任务 header、服务卡 badge 的 class/尺寸/padding/文字，并用 2/3 fixture 验证 67% 四舍五入；系统状态异常 class/重连已由独立模块覆盖 | 局部 PASS |
 | 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba` | `rust-library-ui.spec.ts` old/new 各 8/8 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；refresh 失败后继续切换仍复用旧快照；完整分类错误/数量矩阵未完 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
