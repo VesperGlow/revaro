@@ -335,3 +335,41 @@ test('回收站目录行按 Enter 保留 reference 的默认事件处理', async
     if (id) await page.evaluate(async folderId => { await fetch(`/api/trash/${folderId}`, { method: 'DELETE' }) }, id)
   }
 })
+
+test('目录名带 EPUB 后缀仍使用文件夹 fallback，而不是书籍预览', async ({ page }) => {
+  const name = `compat-folder-${crypto.randomUUID()}.epub`
+  let id = ''
+  let thumbnailRequests = 0
+  page.on('request', request => {
+    if (id && new URL(request.url()).pathname === `/api/files/${id}/thumbnail`) thumbnailRequests += 1
+  })
+
+  try {
+    await login(page)
+    id = await page.evaluate(async ({ name, root }) => {
+      const response = await fetch('/api/directories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: root, name }),
+      })
+      if (!response.ok) throw new Error(`创建目录失败：${response.status}`)
+      return (await response.json() as { id: string }).id
+    }, { name, root: ROOT })
+
+    await page.reload()
+    const card = page.locator('.file-card').filter({ hasText: name })
+    await expect(card).toBeVisible()
+    await page.waitForTimeout(250)
+    expect(thumbnailRequests).toBe(0)
+    await expect(card).toHaveClass(/folder-tile/)
+    await expect(card).toHaveClass(/fallback-tile/)
+    await expect(card).not.toHaveClass(/preview-tile/)
+    await expect(card.locator('.folder-type-icon')).toHaveCount(1)
+    await expect(card.locator('img.ui-image')).toHaveCount(0)
+  } finally {
+    if (id) await page.evaluate(async folderId => {
+      await fetch(`/api/files/${folderId}`, { method: 'DELETE' })
+      await fetch(`/api/trash/${folderId}`, { method: 'DELETE' })
+    }, id)
+  }
+})

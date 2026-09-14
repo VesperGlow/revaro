@@ -2730,7 +2730,7 @@ fn tile_class(file: &File, preview_available: bool) -> String {
         class.push_str(" folder-tile");
     } else if classify::is_editable(file) {
         class.push_str(" document-tile");
-    } else if classify::is_book(file) && !classify::is_editable(file) {
+    } else if is_epub_file(file) {
         class.push_str(" book-tile");
     } else if classify::is_audio(file) {
         class.push_str(" audio-tile");
@@ -2750,7 +2750,11 @@ fn initial_preview_available(file: &File) -> bool {
     classify::is_image(file)
         || (classify::is_audio(file) && file.has_cover)
         || classify::is_video(file)
-        || classify::is_epub_name(&file.name)
+        || is_epub_file(file)
+}
+
+fn is_epub_file(file: &File) -> bool {
+    file.kind == FileKind::File && classify::is_epub_name(&file.name)
 }
 
 fn row_class(file: &File) -> String {
@@ -2858,7 +2862,7 @@ pub(crate) fn file_preview_with_state(
 fn FilePreview(file: File, preview_available: Option<RwSignal<bool>>) -> impl IntoView {
     let is_image = classify::is_image(&file);
     let is_audio_cover = classify::is_audio(&file) && file.has_cover;
-    let is_epub = classify::is_epub_name(&file.name);
+    let is_epub = is_epub_file(&file);
     let is_video = classify::is_video(&file);
     let thumbnail = thumbnail_url(&file);
     let preview = format!("/api/files/{}/preview", file.id);
@@ -3019,7 +3023,7 @@ fn file_icon(file: &File) -> AnyView {
             </svg>
         }
         .into_any()
-    } else if classify::is_book(file) && !classify::is_editable(file) {
+    } else if is_epub_file(file) {
         view! {
             <svg class="file-type-icon book-type-icon" viewBox="0 0 96 96" aria-hidden="true">
                 <path class="icon-base" d="M48 24c-9-6-20-8-34-8v57c14 0 25 2 34 8 9-6 20-8 34-8V16c-14 0-25 2-34 8Z"></path>
