@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`31a8ce7`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`3d50af0`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -102,6 +102,7 @@
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，old `18080` / new `18083`：同一 mock 根目录在 1440×900 与 390×844 实际读取文件浏览头，逐项比较标题/统计、方块/列表按钮文字、active、`aria-pressed`、断点显示和布局；两版切换结果一致，`rust-global-ui-reference-parity.spec.ts` 该集合 6/6，文件视图偏好刷新用例 old/new 各 1/1，提交 `93ae4cf`。
 - `2026-09-14`，old `18080` / new `18083`：实际创建唯一目录并移入回收站，聚焦生产网格卡后按 Enter；旧版 `FileCard.vue` 的 `.prevent` 即使回收站目录不可打开也会将 `defaultPrevented` 设为 `true`，Rust 初始版只在可打开分支阻止事件、结果为 `false`。已让 FileTile/FileRow 先无条件阻止 Enter，再按旧版条件决定是否打开；两版定向 `rust-file-interaction-parity.spec.ts` 各 1/1，且均不弹出打开弹窗，提交 `31a8ce7`。
+- `2026-09-14`，old `18080` / new `18083`：实际创建名为 `compat-folder-<uuid>.epub` 的目录并读取文件卡；旧版目标目录不请求 thumbnail、使用 `folder-tile fallback-tile` 和文件夹 SVG，Rust 初始版误请求该目录 thumbnail。已将主文件浏览的 EPUB 预览、class 和 icon 谓词收紧为 `kind=file`，并保留非 ready EPUB 的旧版类型语义；old/new 定向用例各 1/1，Rust `cargo test -p revaro-web` 51/51、WASM check 通过，提交 `3d50af0`。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
@@ -164,7 +165,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开。 | Rust 有 FileTile/rows 基础；回收站目录 Enter 的事件语义已恢复，视觉和全类型矩阵待对照 |
+| `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染。 | Rust 有 FileTile/rows 基础；回收站目录 Enter 与目录 `.epub` 的文件类型边界已恢复，视觉和全类型矩阵待对照 |
 | `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；文件项各类型、fallback、颜色和状态叠加仍待同一 fixture 截图对照 |
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 待验证 |
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
@@ -397,7 +398,7 @@
 | 文件浏览头下拉键盘语义 | 5、7、15 | `75426a5` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际分别打开新建/上传菜单，比较 Escape 关闭结果与 window 阶段 `defaultPrevented=false` | 局部 PASS |
 | 顶栏/状态 badge 与命中率 | 3、4、15 | `8f5356f`、`1108947` | `rust-global-ui-reference-parity.spec.ts` old/new 各 1/1；聚合导航/任务/图标集合 old/new 各 15/15 | 同一 mock 数据逐项比较任务 header、服务卡 badge 的 class/尺寸/padding/文字，并用 2/3 fixture 验证 67% 四舍五入；系统状态异常 class/重连已由独立模块覆盖 | 局部 PASS |
 | 文件浏览头视图与断点状态 | 5、15 | `93ae4cf` | `rust-global-ui-reference-parity.spec.ts` old/new 双上下文 6/6；`rust-file-view-preference.spec.ts` old/new 各 1/1 | 1440/390px 实际比较标题/统计、方块/列表 active、`aria-pressed`、断点可见性和布局，并验证列表偏好刷新后恢复 | 局部 PASS |
-| 文件项回收站键盘语义 | 6、15 | `31a8ce7` | `rust-file-interaction-parity.spec.ts` old/new 定向各 1/1 | 实际创建并删除目录后聚焦回收站网格卡按 Enter；两版均 `defaultPrevented=true` 且不打开目录，覆盖 FileTile/FileRow 的无条件 `.prevent` 语义 | 局部 PASS |
+| 文件项回收站键盘语义与类型边界 | 6、15 | `31a8ce7`、`3d50af0` | `rust-file-interaction-parity.spec.ts` old/new 定向各 2/2；`cargo test -p revaro-web` 51/51；WASM check | 实际验证回收站目录 Enter 的无条件 `.prevent`，以及目录名带 `.epub` 时不请求 thumbnail、保持文件夹 fallback/icon | 局部 PASS |
 | 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba` | `rust-library-ui.spec.ts` old/new 各 8/8 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；refresh 失败后继续切换仍复用旧快照；完整分类错误/数量矩阵未完 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
