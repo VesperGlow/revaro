@@ -2129,6 +2129,7 @@ pub fn FileBrowser(
                             && !transfer_open.get()
                             && share_file.get().is_none()
                             && !account_open.get()
+                            && dialog.get().is_none()
                     }
                     fallback=|| ()
                 >

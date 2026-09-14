@@ -139,9 +139,6 @@ pub fn RenameDialog(
     let close_footer = on_cancel;
     let confirm_input = on_confirm.clone();
     let confirm_button = on_confirm;
-    let input_ref = NodeRef::<leptos::html::Input>::new();
-    focus_input_after_render(input_ref);
-
     view! {
         <div
             class="modal-backdrop"
@@ -168,10 +165,8 @@ pub fn RenameDialog(
                 <label>
                     "新名称"
                     <input
-                        node_ref=input_ref
                         type="text"
                         maxlength="1024"
-                        autofocus
                         prop:value=move || value.get()
                         on:input=move |event| value.set(event_target_value(&event))
                         on:keydown=move |event: web_sys::KeyboardEvent| {
