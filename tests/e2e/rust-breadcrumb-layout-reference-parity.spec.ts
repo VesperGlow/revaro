@@ -161,3 +161,43 @@ test('深层面包屑沿用 reference 的平滑自动显露行为', async ({ bro
     await newContext.close()
   }
 })
+
+test('深层面包屑中间级保留 reference 的点击、Enter 和触摸导航行为', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockNavigation(oldPage), mockNavigation(newPage)])
+    await Promise.all([openDeepPath(oldPage, oldUrl), openDeepPath(newPage, newUrl)])
+
+    await oldPage.locator('nav.breadcrumbs button').nth(1).click()
+    await newPage.locator('nav.breadcrumbs button').nth(1).click()
+    await expect(oldPage.getByRole('heading', { name: '一级目录', exact: true })).toBeVisible()
+    await expect(newPage.getByRole('heading', { name: '一级目录', exact: true })).toBeVisible()
+    expect(new URL(newPage.url()).pathname).toBe(new URL(oldPage.url()).pathname)
+    expect(await newPage.locator('nav.breadcrumbs').innerText()).toBe(await oldPage.locator('nav.breadcrumbs').innerText())
+
+    await Promise.all([openDeepPath(oldPage, oldUrl), openDeepPath(newPage, newUrl)])
+    await oldPage.locator('nav.breadcrumbs button').nth(2).focus()
+    await newPage.locator('nav.breadcrumbs button').nth(2).focus()
+    await oldPage.keyboard.press('Enter')
+    await newPage.keyboard.press('Enter')
+    await expect(oldPage.getByRole('heading', { name: '二级目录', exact: true })).toBeVisible()
+    await expect(newPage.getByRole('heading', { name: '二级目录', exact: true })).toBeVisible()
+    expect(new URL(newPage.url()).pathname).toBe(new URL(oldPage.url()).pathname)
+
+    await Promise.all([openDeepPath(oldPage, oldUrl), openDeepPath(newPage, newUrl)])
+    await oldPage.locator('nav.breadcrumbs button').nth(3).tap()
+    await newPage.locator('nav.breadcrumbs button').nth(3).tap()
+    await expect(oldPage.getByRole('heading', { name: '三级目录', exact: true })).toBeVisible()
+    await expect(newPage.getByRole('heading', { name: '三级目录', exact: true })).toBeVisible()
+    expect(new URL(newPage.url()).pathname).toBe(new URL(oldPage.url()).pathname)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
