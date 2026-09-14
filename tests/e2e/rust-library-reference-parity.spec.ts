@@ -284,3 +284,56 @@ test('旧版与 Rust 版音乐视图非法偏好均回退到方块并标记 acti
     await newContext.close()
   }
 })
+
+test('旧版与 Rust 版对缺失的媒体 bucket 均按空分类处理', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const payload = {
+    items: { book: library.book, image: library.image, video: library.video },
+    counts,
+  }
+
+  const mockMissingAudio = async (page: Page) => {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') return json(payload)
+      if (path === '/api/library/counts') return json(counts)
+      if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
+      if (path === `/api/files/${ROOT}/children`) return json({ items: rootChildren, total_bytes: 1000, file_count: 1 })
+      if (path.endsWith('/thumbnail') || path.endsWith('/preview') || path.endsWith('/cover')) {
+        return route.fulfill({ contentType: 'image/svg+xml', body: thumbnail })
+      }
+      return json({ items: [] })
+    })
+  }
+
+  try {
+    await Promise.all([mockMissingAudio(oldPage), mockMissingAudio(newPage)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('[data-category="audio"]').click(),
+      newPage.locator('[data-category="audio"]').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.library-view .state')).toContainText('这里还没有音乐内容'),
+      expect(newPage.locator('.library-view .state')).toContainText('这里还没有音乐内容'),
+    ])
+    expect(await libraryStateSnapshot(newPage), 'Rust 缺失媒体 bucket 的空分类状态应保持 reference')
+      .toEqual(await libraryStateSnapshot(oldPage))
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})

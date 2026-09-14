@@ -8,6 +8,7 @@
 //! Request types set `deny_unknown_fields` to preserve the server's historical
 //! behaviour of rejecting unknown JSON members with `400 invalid JSON request`.
 
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
 use crate::classify::LibraryKind;
@@ -15,6 +16,14 @@ use crate::model::{File, LibraryCounts, LibraryItem, Task, UploadMode, UploadPar
 use crate::reader::{Anchor, FlowManifest, TocEntry};
 use crate::storage::CompletedPart;
 use crate::time::Timestamp;
+
+fn deserialize_vec_or_default<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 /// Health probe response.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,12 +397,16 @@ pub mod library {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct LibraryBuckets {
         /// Books.
+        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
         pub book: Vec<LibraryItem>,
         /// Images.
+        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
         pub image: Vec<LibraryItem>,
         /// Videos.
+        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
         pub video: Vec<LibraryItem>,
         /// Audio files.
+        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
         pub audio: Vec<LibraryItem>,
     }
 }
@@ -731,6 +744,34 @@ mod tests {
         for bucket in ["book", "image", "video", "audio"] {
             assert_eq!(json["items"][bucket], serde_json::json!([]), "{bucket}");
         }
+    }
+
+    #[test]
+    fn library_all_treats_missing_or_null_media_buckets_as_empty() {
+        let counts = serde_json::to_value(LibraryCounts::default()).unwrap();
+        let missing: LibraryAll = serde_json::from_value(serde_json::json!({
+            "items": {
+                "book": [],
+                "image": [],
+                "video": []
+            },
+            "counts": counts
+        }))
+        .unwrap();
+        assert!(missing.items.audio.is_empty());
+
+        let null: LibraryAll = serde_json::from_value(serde_json::json!({
+            "items": {
+                "book": null,
+                "image": [],
+                "video": [],
+                "audio": null
+            },
+            "counts": serde_json::to_value(LibraryCounts::default()).unwrap()
+        }))
+        .unwrap();
+        assert!(null.items.book.is_empty());
+        assert!(null.items.audio.is_empty());
     }
 
     #[test]
