@@ -288,6 +288,96 @@ test('编辑器输入与原值相同仍保持 reference 的未修改状态', asy
   }
 })
 
+test('old/new Markdown 编辑模式、分栏预览和安全渲染状态一致', async ({ browser }) => {
+  const name = `editor-modes-${crypto.randomUUID()}.md`
+  const content = '# Title\n\n#### Deep heading\n\n1. one\n2. two\n\n- [x] done\n- [ ] todo\n\n| a | b |\n| --- | :---: |\n| 1 | 2 |\n\n[link](https://example.com "T") and ![alt](cover.png)\n\n~~gone~~ and <u>under</u>\n\n<script>alert(1)</script>'
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await createDocument(page, name, content)
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    await page.locator('.file-row').filter({ hasText: name }).click()
+
+    const editor = page.locator('.document-editor')
+    await expect(editor.locator('textarea')).toHaveValue(content)
+    await expect(editor.locator('.editor-meta b')).toHaveText(`${new TextEncoder().encode(content).length.toLocaleString()} 字节`)
+    const initial = {
+      workspace: await editor.locator('.editor-workspace').getAttribute('class'),
+      textarea: await editor.locator('textarea').count(),
+      preview: await editor.locator('.markdown-preview').count(),
+      activeTab: await editor.locator('.editor-tabs button.active').textContent(),
+    }
+
+    await editor.getByRole('button', { name: '分栏' }).click()
+    const split = {
+      workspace: await editor.locator('.editor-workspace').getAttribute('class'),
+      textarea: await editor.locator('textarea').count(),
+      preview: await editor.locator('.markdown-preview').count(),
+      activeTab: await editor.locator('.editor-tabs button.active').textContent(),
+    }
+
+    await editor.getByRole('button', { name: '预览' }).click()
+    const preview = editor.locator('.markdown-preview')
+    const previewState = {
+      workspace: await editor.locator('.editor-workspace').getAttribute('class'),
+      textarea: await editor.locator('textarea').count(),
+      preview: await preview.count(),
+      activeTab: await editor.locator('.editor-tabs button.active').textContent(),
+      heading: await preview.locator('h1').textContent(),
+      deepHeading: await preview.locator('h4').textContent(),
+      orderedItems: await preview.locator('ol li').count(),
+      checkboxes: await preview.locator('input[type=checkbox]').count(),
+      centeredHeader: await preview.locator('table th[align=center]').textContent(),
+      link: await preview.locator('a[href="https://example.com"][title="T"]').textContent(),
+      image: await preview.locator('img[src="cover.png"][alt="alt"]').count(),
+      deleted: await preview.locator('del').textContent(),
+      underline: await preview.locator('u').textContent(),
+      scripts: await preview.locator('script').count(),
+      inlineHandlers: await preview.locator('[onclick]').count(),
+    }
+    return { initial, split, preview: previewState }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      initial: { workspace: 'editor-workspace mode-edit markdown', textarea: 1, preview: 0, activeTab: '编辑' },
+      split: { workspace: 'editor-workspace mode-split markdown', textarea: 1, preview: 1, activeTab: '分栏' },
+      preview: {
+        workspace: 'editor-workspace mode-preview markdown',
+        textarea: 0,
+        preview: 1,
+        activeTab: '预览',
+        heading: 'Title',
+        deepHeading: 'Deep heading',
+        orderedItems: 2,
+        checkboxes: 2,
+        centeredHeader: 'b',
+        link: 'link',
+        image: 1,
+        deleted: 'gone',
+        underline: 'under',
+        scripts: 0,
+        inlineHandlers: 0,
+      },
+    })
+    expect(newResult, 'Rust Markdown 编辑器模式或预览渲染与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 ETag 冲突反馈', async ({ browser }) => {
   const name = `editor-conflict-${crypto.randomUUID()}.md`
   const content = '# conflict reference\n'
