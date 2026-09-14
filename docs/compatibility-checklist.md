@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`253e92d`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`1ffae0e`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -88,6 +88,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际打开账户设置后比较用户名编辑入口和会话区；旧版入口为 `svg + span`，Rust 初始版只有 `span`，且对应 hover 图标未命中。已恢复旧版铅笔 path、14px 尺寸和统一 icon helper；old/new DOM、geometry、hover、编辑聚焦和 Escape 取消均 1/1，`rust-account-reference-parity.spec.ts`，提交 `a6ac08e`。
 - `2026-09-14`，old `18080` / new `18083`：用同一 mock TOTP 数据实际完成“账户设置 → 两步验证设置 → 启用 → 下载文本”，读取浏览器下载文件逐字比较文件名、时间行、恢复码顺序和换行；old 使用默认 `Date.toLocaleString()`，Rust 初始版使用 ISO 时间戳，已恢复浏览器本地化格式。`rust-account-download-reference-parity.spec.ts` old/new 1/1，账户相关两项合计 2/2，提交 `80cf6c3`。
 - `2026-09-14`，old `18080` / new `18083`：实际触发成功和 409 错误 Toast，比较文案、`toast success/error` class、无额外 role、定位/颜色/padding/命中区域、最新通知交互及 3.6 秒消失；Rust 初始版缺少 error class 且额外带 `role=status`，已按 reference 恢复。`rust-feedback-reference-parity.spec.ts` old/new 各 2/2，提交 `253e92d`；断线、剪贴板失败、堆叠等业务来源仍待验。
+- `2026-09-14`，old `18080` / new `18083`：同一 mock 媒体库逐项切换书架、图片/视频图库、音乐方块/列表；双页面对照实际暴露 Rust 单本 EPUB 标题仍带“第1卷”、图片切到视频时图库模式被重置、分类卡/音频行缺少旧版 `contextmenu.prevent` 三处差异。已改为使用分组标题、父级共享首个图库模式和持久化 key，并恢复分类卡/行右键默认事件语义。旧版原始 `library-ui.spec.ts` 4/4、Rust `rust-library-ui.spec.ts` 8/8、`rust-library-reference-parity.spec.ts` old/new 双上下文 1/1，`cargo xtask check` 通过；提交 `1ffae0e`。
 - `2026-09-14`，old `18080` / new `18083`，390×844：`rust-breadcrumb-layout-reference-parity.spec.ts` 先实际暴露 Rust 面包屑额外 `span` 导致每个路径项都获得首/末项移动端 margin（old 1/1 对照失败），随后移除包装并恢复 direct `button`/`ChevronRight` 子节点；修复后 old/new DOM 层级、每项 margin 和深层横向位置均 1/1，并追加中间级点击、Enter、触摸点击三条导航结果对照，整组现为 3/3。导航全套仍保留在 `[ ]` 直到 stale request/完整键盘状态矩阵完成。
 - `2026-09-14`，old `18080` / new `18083`：实际点击媒体分类和路径树展开控件后读取 SVG computed transform，旧版分类/路径箭头均为 `matrix(0, 1, -1, 0, 0, 0)`，Rust 初始版为 `none`；已恢复动态展开态的 90° 旋转，`rust-icon-reference-parity.spec.ts` old/new 各 1/1。
 - `2026-09-14`，old `18080` / new `18083`：将创建目录 POST 延迟 800ms，old 点击“创建”后通用确认弹窗立即移除，Rust 初始版停留在“处理中…”直到请求完成；已恢复旧版同步关闭/后台等待语义，重命名弹窗仍按旧版保留保存中状态，`rust-actions-parity-ui.spec.ts` old/new 各 10/10。
@@ -153,7 +154,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[P]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new `rust-library-ui.spec.ts` 与导航定向用例确认顺序、文案、active/current、点击切换和返回 |
-| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all`、五类有数据视图、分类 503 → 重试 loading → 恢复内容、空分类路径/空态、首次快照缓存与显式刷新已在 old/new 对照；各类数量、旧内容保留和完整错误矩阵仍待验 |
+| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all`、五类有数据视图、分类 503 → 重试 loading → 恢复内容、空分类路径/空态、首次快照缓存与显式刷新已在 old/new 对照；书架标题分组、图库/音乐视图和分类卡右键语义另由 `1ffae0e` 双版本用例覆盖；各类数量、旧内容保留和完整错误矩阵仍待验 |
 | `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 多级媒体路径树计数、默认展开、展开/过滤、active、展开箭头旋转、根节点 tooltip 和空路径提示 old/new 已对照；文件目录树加载/递归及旧版切换竞态仍待稳定场景裁定 |
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
@@ -416,7 +417,7 @@
 | 顶栏/状态 badge 与命中率 | 3、4、15 | `8f5356f`、`1108947` | `rust-global-ui-reference-parity.spec.ts` old/new 各 1/1；聚合导航/任务/图标集合 old/new 各 15/15 | 同一 mock 数据逐项比较任务 header、服务卡 badge 的 class/尺寸/padding/文字，并用 2/3 fixture 验证 67% 四舍五入；系统状态异常 class/重连已由独立模块覆盖 | 局部 PASS |
 | 文件浏览头视图与断点状态 | 5、15 | `93ae4cf` | `rust-global-ui-reference-parity.spec.ts` old/new 双上下文 6/6；`rust-file-view-preference.spec.ts` old/new 各 1/1 | 1440/390px 实际比较标题/统计、方块/列表 active、`aria-pressed`、断点可见性和布局，并验证列表偏好刷新后恢复 | 局部 PASS |
 | 文件项键盘、类型边界与日期格式 | 6、15 | `31a8ce7`、`3d50af0`、`33a4052` | `rust-file-interaction-parity.spec.ts` old/new 定向各 2/2；`rust-file-card-reference-parity.spec.ts` old/new 矩阵 1/1；`cargo test -p revaro-web` 51/51；WASM/web build | 实际验证回收站目录 Enter、目录名 `.epub` 的 thumbnail/fallback、12 类卡/行节点及浏览器本地时区日期 | 局部 PASS |
-| 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba` | `rust-library-ui.spec.ts` old/new 各 8/8 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；refresh 失败后继续切换仍复用旧快照；完整分类错误/数量矩阵未完 | 局部 PASS |
+| 媒体库快照与 force refresh | 4、5、15 | `d068eb8`、`bb6edba`、`1ffae0e` | `rust-library-ui.spec.ts` old/new 各 8/8；`rust-library-reference-parity.spec.ts` old/new 各 1/1 | 实际切换分类只请求一次 `/api/library/all`，显式 Refresh 才重新读取；refresh 失败后继续切换仍复用旧快照；书架单本分组标题、图库模式跨图片/视频切换、媒体分类内容和右键默认事件也已双版本对照；完整分类错误/数量矩阵未完 | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 失败导航状态保留 | 5、6、15 | `db5b963` | `rust-navigation-parity.spec.ts` old/new 定向用例各 1/1 | 列表已有选择时发起延迟 500 导航并返回 500，实际比较 loading/失败后的旧列表、选择工具栏和错误 toast；成功导航清空选择，完整 stale request 矩阵仍未完 | old/new navigation parity trace | 局部 PASS |
@@ -436,4 +437,5 @@
 | 全局 Toast 严重级别与时序 | 2、15 | `253e92d` | `rust-feedback-reference-parity.spec.ts` old/new 各 2/2；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；初始 Rust 的 error class/额外 role 已恢复 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
 | 通用弹窗 Escape 语义 | 2、8、15 | `c0a5fd9` | `rust-dialog-keyboard-reference-parity.spec.ts` old/new 1/1；WASM/web build 通过 | 实际打开新建文件夹弹窗、聚焦输入、按 Escape，对照关闭结果和 window bubble 的 `defaultPrevented=false` | 局部 PASS |
+| 分类媒体视图与文件项交互 | 4–6、15 | `1ffae0e` | old 原始 `library-ui.spec.ts` 4/4；Rust `rust-library-ui.spec.ts` 8/8；双版本 `rust-library-reference-parity.spec.ts` 1/1；`cargo xtask check` | 同一 fixture 实际比较书架/图库/音乐标题、分组、卡片/行、视图切换、图片到视频的会话状态延续及分类卡/音频行 `contextmenu.prevent`；Rust 初始三处差异均已恢复 | 局部 PASS |
 | 全量 API caller 与最终视觉回归 | 13–16 | 待提交 | API matrix 已反向登记并修正 caller 记录；全量状态、无障碍、响应式、CSP/监听器审计未完 | 待补齐 | 未完成 |
