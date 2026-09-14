@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`cb277b7`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`8e72809`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -134,6 +134,8 @@
 - `2026-09-14`，old `18080` / new `18084`：深层面包屑布局用例曾在平滑滚动尚未结束时读取位置，重复运行出现 0/1/6px 瞬时偏移；两版父容器和最终计算样式一致。测试现等待两版均到达 `scrollWidth - clientWidth` 的最终位置后再比较，390×844 深层 DOM/首末 margin/横向位置、smooth 显露、中间级 click/Enter/tap 稳定 old/new 各 3/3，布局首项另重复 5 次全通过；测试稳定性提交 `5dd791a`。
 - `2026-09-14`，old `18080` / new `18084`：实际让新建目录请求分别断网、返回 403 和连续返回两条不同 409；old/new 的 transport 文案（`Failed to fetch`）、403 错误 class/CSS/时限、单槽位最新通知和从替换时刻重新计时均一致，`rust-feedback-reference-parity.spec.ts` old/new 5/5。Rust 初始 transport toast 多展示 `TypeError: ` 前缀，已在 API 边界恢复旧版可见文案，提交 `3657c79`；401 会话边界的安全强化另见前述记录。
 - `2026-09-14`，old `18080` / new `18084`：同一双选删除 fixture 让首项 DELETE 返回 500、后项成功；旧版仍尝试后项，刷新列表并显示“已移入 1 项，1 项失败：删除失败.txt：delete failed”，Rust 初始版首错即停且只显示 `delete failed`。已恢复继续处理、刷新/清选择和精确反馈；同一用例另验证重命名尾随空格原样送入 PATCH，`rust-crud-reference-parity.spec.ts` old/new 2/2，修复提交 `a46b845`。
+- `2026-09-14`，old `18080` / new `18084`：新建文件夹实际输入空格并按 Enter，old/new 均保持弹窗、禁用创建且不发 POST；取消后重新提交同一 409，均立即关闭确认框并显示 `folder already exists`。重命名同一 409 时两版均保留原输入、弹窗和可重试的保存按钮；`rust-crud-reference-parity.spec.ts` old/new 4/4，测试提交 `f82e7f8`。
+- `2026-09-14`，old `18080` / new `18084`：回收站恢复 409 两版均保留项目、选择和文件名错误；永久删除 409 时旧版文案为 `回收站失败.txt：purge conflict`，Rust 初始版丢失文件名。已恢复逐项永久删除失败上下文，回收站冲突用例 old/new 2/2，`cargo xtask check` 通过，修复提交 `8e72809`。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
@@ -224,16 +226,16 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | 基础入口存在 |
+| `[ ]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | old/new 已实际验证空白输入 disabled 且不发请求、取消、409 关闭弹窗 + error toast（`rust-crud-reference-parity.spec.ts` 4/4）；非法名、loading 和成功刷新仍待收口 |
 | `[ ]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | old/new 已验证创建菜单实际动作、默认名、进入 editor、菜单立即关闭和保存重开；取消、失败仍待收口 |
-| `[ ]` | 重命名 | 单选条件、输入初值/扩展名规则、冲突、空白、Enter/Esc、PATCH 结果和列表更新一致。 | old/new 已实际对照初始名称、输入/按钮状态、文案、焦点及弹窗时选择工具栏卸载；另确认尾随空格原样进入 PATCH；冲突/空名、Enter/Esc、保存中和完整 PATCH 结果矩阵仍待收口 |
+| `[ ]` | 重命名 | 单选条件、输入初值/扩展名规则、冲突、空白、Enter/Esc、PATCH 结果和列表更新一致。 | old/new 已实际对照初始名称、输入/按钮状态、文案、焦点及弹窗时选择工具栏卸载；尾随空格原样进入 PATCH；409 冲突保留输入/弹窗并恢复可重试状态（`rust-crud-reference-parity.spec.ts` 4/4）；空名、Enter/Esc、保存中和完整 PATCH 结果矩阵仍待收口 |
 | `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | old/new 触发器、面板定位/DOM、140ms 进入/退出过渡、路径图标几何、实际移动和清理、PATCH pending 时点击遮罩关闭已对照；排除子目录/冲突/错误仍待验 |
 | `[P]` | 目录选择器浮层定位与过渡 | 打开后 nextTick 定位；popover 在窗口边缘的 fixed/top-bottom/max-height 选择一致；进入/退出 opacity、transform、140ms 时序和关闭后的卸载一致。 | old/new 实际比较进入首帧、50ms 定位、独立退出首帧及 140ms 后卸载；`rust-directory-picker-reference-parity.spec.ts` old/new 3/3，提交 `3198ff8` |
 | `[ ]` | 复制 | 目标选择、目录/文件、同名处理、任务或立即结果、完成刷新和错误一致。 | old/new 媒体更多菜单实际复制并验证原文件保留；普通文件、同名和失败仍待验 |
 | `[ ]` | 删除 | 确认文案、单项/多项、目录、取消、loading、移入回收站、selection 清理和列表刷新一致。 | old/new 多选删除确认文案、单文件清理链路已对照；同一首项失败/后项成功 fixture 已确认继续处理、刷新清选择和“成功数/失败数/首项错误”反馈；目录、取消/loading、401 和完整失败矩阵仍待验 |
 | `[ ]` | 回收站查看 | 列表/网格、原路径/删除时间/大小、空状态、打开限制、恢复/永久删除入口一致。 | old/new 空回收站、列表行元信息、TXT 键盘打开分流已对照；完整 grid/只读矩阵仍待验 |
-| `[ ]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | old/new 直接恢复和清理已实际验证；冲突、失败、多选仍待验 |
-| `[ ]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | old/new 永久删除确认、清理链路已对照；清空回收站、失败/loading仍待验 |
+| `[ ]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | old/new 直接恢复和清理已实际验证；单项 409 冲突保留项目/选择并显示文件名错误；多选、原位置冲突和完整失败矩阵仍待验 |
+| `[ ]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | old/new 永久删除确认、清理链路和 409 失败文件名文案已对照；清空回收站、loading 和多项/401 矩阵仍待验 |
 | `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退、分享二级确认取消/提交关闭/错误回显、传输 PATCH pending 时遮罩关闭、账户密码 pending 时关闭子弹窗后外层遮罩关闭已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误和焦点回收仍待验 |
 
 ## 9. 文本文档查看与编辑器
@@ -425,7 +427,7 @@
 | 桌面全局 Tab 焦点顺序 | 2–6、15 | `2451445` | `rust-global-focus-reference-parity.spec.ts` old/new 双上下文 1/1 | 1440×900 实际连续按 Tab 24 次，比较顶栏、侧栏、路径树、文件头和文件项焦点落点；额外 aria-label 只作为无障碍增强保留，嵌套弹层焦点边界仍未完 | 局部 PASS |
 | 侧栏展开箭头状态 | 4、15 | `317d1bd` | `rust-icon-reference-parity.spec.ts` old/new 各 1/1 | 实际点击分类和路径树展开控件，比较 SVG transform；分类/路径箭头均与 old 的 90° 旋转一致 | 局部 PASS |
 | 通用确认弹窗时序 | 8、15 | `045247f` | `rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 延迟创建请求下实际点击确认，比较弹窗即时关闭和后台结果；重命名保存中语义单独保留 | 局部 PASS |
-| 重命名弹窗与选择工具栏层级 | 8、15 | `0e90830`、`a46b845` | `rust-rename-dialog-reference-parity.spec.ts` old/new 双上下文 1/1；`rust-crud-reference-parity.spec.ts` old/new 2/2；`cargo xtask check` 通过 | 实际打开重命名，对照初始名称、输入/按钮状态、文案、焦点和弹窗打开后选择工具栏卸载；另以尾随空格确认原始输入原样送入 PATCH；Rust 移除专属 autofocus 并恢复旧版层级时序，语义 role/type 增强保留；冲突/空名/Enter/Esc/保存中仍未完 | 局部 PASS |
+| 重命名弹窗与选择工具栏层级 | 8、15 | `0e90830`、`a46b845`、`f82e7f8` | `rust-rename-dialog-reference-parity.spec.ts` old/new 双上下文 1/1；`rust-crud-reference-parity.spec.ts` old/new 4/4；`cargo xtask check` 通过 | 实际打开重命名，对照初始名称、输入/按钮状态、文案、焦点和弹窗打开后选择工具栏卸载；尾随空格原样送入 PATCH；409 冲突保留输入/弹窗并恢复可重试状态；Rust 移除专属 autofocus 并恢复旧版层级时序，语义 role/type 增强保留；空名/Enter/Esc/保存中仍未完 | 局部 PASS |
 | 选择工具栏分流与弹层可见性 | 6、8、15 | `f898067` | `rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1；`rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 实际选择 `.txt` 对照阅读图标几何；实际打开移动弹层对照选择工具栏立即隐藏；完整文件类型/disabled 矩阵未完 | 局部 PASS |
 | 任务中心与操作时序 | 3、15 | `5c69720`、`2d9f584`、`d05c438` | `rust-task-center-parity.spec.ts` old/new 各 9/9 | 两个活动任务原始进度先平均再四舍五入；小数条宽、失败满格、名称 fallback、Escape 焦点、请求中按钮和 `Promise.all` 删除均实际对照；延迟初始请求仍显示 reference 空任务文案 | 局部 PASS |
 | 系统状态 SSE 与全局键盘语义 | 3、13、15 | `16b70e3` | `rust-global-ui-reference-parity.spec.ts` old/new 各 5/5 | 实际对照三卡首帧、非法数据、critical 状态 class、桌面/移动几何、空白/Escape（含默认事件和焦点）、断线重连以及退出登录后的 EventSource/定时器清理 | 局部 PASS |
@@ -442,7 +444,7 @@
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 失败导航状态保留 | 5、6、15 | `db5b963` | `rust-navigation-parity.spec.ts` old/new 定向用例各 1/1 | 列表已有选择时发起延迟 500 导航并返回 500，实际比较 loading/失败后的旧列表、选择工具栏和错误 toast；成功导航清空选择，完整 stale request 矩阵仍未完 | old/new navigation parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E）、`0d9d993`（拖拽覆盖层）、`5eaa9da`（文件夹刷新时序）、`3d90ae5`（进度取整）、`255349d`（文件夹 old/new 双实例）、`cb277b7`（任务通知时机） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；拖拽 `.self` 语义、文件夹刷新后成功反馈、旧版进度边界、同一文件夹的 old/new toast/嵌套目录结果以及普通上传传输中隐藏/完成后通知已追加；断点续传完整 UI、重复/失败矩阵未完 | parity Playwright trace、`rust-upload-parity.spec.ts` 6/6（含 old/new 文件夹与普通文件双实例）、`cargo xtask check` 待本提交后重跑 | 局部 PASS |
-| CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、`f953af8`（移动失败反馈）、`a46b845`（删除/重命名 parity） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast、移动 PATCH 失败数量与首项错误文案、删除多选继续处理/刷新清选择、重命名原始空白输入已追加；冲突/失败/清空矩阵未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*`、`rust-transfer-dialog-reference-parity.spec.ts`、`rust-crud-reference-parity.spec.ts` | 局部 PASS |
+| CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、`f953af8`（移动失败反馈）、`a46b845`（删除/重命名 parity）、`f82e7f8`（CRUD conflict parity）、`8e72809`（purge error context） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast、空白输入不发请求、409 关闭确认框、移动 PATCH 失败数量与首项错误文案、删除多选继续处理/刷新清选择、重命名原始空白输入和 409 保留输入/可重试、回收站恢复/永久删除 409 的项目/选择/文件名错误上下文已追加；目录/401/清空和完整 loading 失败矩阵仍未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*`、`rust-transfer-dialog-reference-parity.spec.ts`、`rust-crud-reference-parity.spec.ts` | 局部 PASS |
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；etag 冲突/全部扩展名/完整 loading 与视觉矩阵未完 | `rust-editor-reference-parity.spec.ts` old/new 各 3/3、reader/editor parity trace | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
@@ -457,7 +459,7 @@
 | 账户 TOTP loading 遮罩行为 | 2、8、15 | `077e678` | `rust-account-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟 setup 请求期间实际点击子弹窗空白，比较 old/new 的关闭结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义 | 局部 PASS |
 | 账户密码 loading 外层遮罩行为 | 2、8、15 | `1acb307` | `rust-account-reference-parity.spec.ts` old/new 双上下文 3/3；`cargo xtask check` 通过 | 延迟密码 PATCH 期间实际提交、关闭子弹窗并点击账户外层遮罩，比较账户弹层卸载；Rust 初始外层 busy 限制已移除，按钮 disabled/loading 仍保留 | 局部 PASS |
 | 移动/复制 loading 与失败反馈 | 8、15 | `8bbbd22`、`f953af8` | `rust-transfer-dialog-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟移动 PATCH 请求期间实际点击 old/new 遮罩，比较弹窗卸载结果；另以同一 500 响应比较“已移动 0 项，1 项失败：文件：move failed”文案；Rust 初始 busy 限制和“部分项目失败”文案均已恢复；目标排除、冲突和成功刷新仍未完 | 局部 PASS |
-| 删除多选与重命名输入边界 | 8、15 | `a46b845` | `rust-crud-reference-parity.spec.ts` old/new 2/2；`cargo xtask check` 通过 | 同一双选首项失败/后项成功 fixture 实测继续 DELETE、刷新列表、清选择并显示精确失败数量；同一 rename fixture 实测尾随空格原样进入 PATCH；目录/取消/401/冲突/空名等矩阵仍未完 | 局部 PASS |
+| 删除多选与重命名输入边界 | 8、15 | `a46b845`、`f82e7f8`、`8e72809` | `rust-crud-reference-parity.spec.ts` old/new 6/6；`cargo xtask check` 通过 | 双选首项失败/后项成功继续 DELETE、刷新列表、清选择并显示精确反馈；rename 尾随空格原样送入 PATCH；新建文件夹空白/取消/409、rename 409 输入保留/可重试、trash restore/purge 409 的项目/选择/文件名文案均已对照；目录/401/空名/Enter/Esc/loading 等矩阵仍未完 | 局部 PASS |
 | 账户设置恢复码下载与剪贴板错误 | 2、15 | `80cf6c3`、`c1ce934` | `rust-account-download-reference-parity.spec.ts` old/new 各 2/2；`cargo xtask check` 通过 | 实际完成 TOTP 启用并读取下载文件；文件名、本地化时间格式、恢复码顺序和换行与 reference 一致；另注入剪贴板失败，比较局部错误、按钮状态和无全局 toast；初始 Rust ISO 时间格式已恢复 | 局部 PASS |
 | 全局 Toast 严重级别与时序 | 2、15 | `253e92d`、`c1ce934`、`3657c79` | `rust-feedback-reference-parity.spec.ts` old/new 各 5/5；分享/TOTP 剪贴板失败 old/new 各 1/1；`cargo xtask check` 通过 | 实际比较成功/409 错误 Toast 的文案、class、role、CSS/命中区域、最新通知和 3.6 秒消失；局部剪贴板失败也确认不会误发全局 toast；另以断网/403/连续不同错误验证 transport 文案、权限错误和单槽位重计时；初始 Rust 的 error class/额外 role/transport `TypeError:` 前缀已恢复，401 会话安全边界、完整来源矩阵和嵌套弹层焦点仍未完 | 局部 PASS |
 | 侧栏状态与响应式交互 | 4、15 | `6710996` | `rust-sidebar-state-reference-parity.spec.ts` old/new 1/1 | 桌面 active/hover、路径展开、折叠 rail、390×844 移动抽屉及过渡完成后的尺寸/颜色/布局实际对照 | 局部 PASS |
