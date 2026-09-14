@@ -84,6 +84,7 @@
 - `2026-09-14`，old `18080` / new `18083`：按旧版 reader-flow reference 逐页、逐目录项、逐次翻页运行 17 项；两版均 17/17 通过。覆盖稳定窗口、热路径零重复请求、字号/行距客户端重排、跨 spine、父级/随机 TOC、未加载 chunk、连续翻页、旋转、图片 NavAnchor、无 fragment 回退、L2 重开/版本变化和阅读器视觉覆盖层。L2 用例仅在每次测试开头清理浏览器 Cache Storage，并等待异步请求完成，确保共享 Chromium 进程不会把上一次测试的缓存当作 reference 初始设备状态。
 - `2026-09-14`，old `18080` / new `18083`：真实上传 EPUB old/new 各 1/1；DOM 中全书 `data-block` 均为连续唯一的 `0…37`，翻页后的页码和无障碍文案均为 `14` / `阅读进度 14.0%`，TOC Escape 关闭后焦点回到 `#toc-button`。Rust 曾在每个 spine 内重复注入 global block 编号，已由 `ed13571` 恢复旧版全书编号后通过。
 - `2026-09-14`，old `18080` / new `18083`：反向对照 reader 的文本 fragment 二分定位、媒体 visual start、点击点/可见块回退、DOM 文本进度计算、TOC 导航深度保护、windowSync 取消/恢复、Tab 候选和键盘 Enter 行为；Rust reader/cache 与真实 EPUB 验收代码提交 `a47dc50`，old/new reader-flow 各 17/17，真实 EPUB 各 1/1。
+- `2026-09-14`，old `18080` / new `18083`：文档编辑器专用探针先实际暴露三处 Rust 回退：新文档扩展名校验先 trim 导致尾随空格被错误接受，校验错误时保存按钮消失，回收站 YAML 等非 Markdown 可编辑文件被错误设为 Preview；另以延迟 1.2 秒的目录 children 响应验证旧版保存成功 toast 必须等待刷新完成。`2f9eb7b` 恢复原始输入校验、错误时保留保存操作、只读 Markdown 分流和刷新完成后的反馈时序；修复后 `rust-editor-reference-parity.spec.ts` old/new 各 3/3，覆盖尾随空格错误、YAML/Markdown 回收站只读状态和保存刷新时序。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -188,11 +189,11 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 编辑器入口 | md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv 等旧版可编辑扩展名，点击文件打开 editor；回收站内容只读。 | old/new 已验证 Markdown 新文档、保存及再次打开、trash TXT 键盘分流；完整扩展名矩阵和回收站只读仍待验证 |
-| `[ ]` | 新文档编辑 | 默认文件名、初始内容、editor modal/页面尺寸、关闭、保存、创建失败和成功返回一致。 | Rust 已有 `/api/documents` caller；old/new 已验证默认名、编辑、保存和重开，创建取消/失败仍待收口 |
-| `[ ]` | 读取 | `/content`、编码/大文件错误、loading/error、只读提示、滚动和文本保持一致。 | Rust 已有 `/content` caller；old/new 已验证真实 TXT 读取和内容保持，编码/大文件/error/readonly 全矩阵仍待验 |
-| `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown 的 GFM 元素与主动 HTML 清理结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。reference 使用 `marked` + DOMPurify；Rust 使用 `pulldown-cmark` + `ammonia` 对齐可见结果。 | old/new 已验证编辑/分栏/预览、GFM 标题/列表/任务项/表格/删除线/安全 HTML、主动 HTML 清理和保存；光标/滚动、非 Markdown tabs 和错误仍待验 |
-| `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | old/new 已验证保存按钮、成功 toast、持久化重开；etag冲突、busy/失败重试仍待验 |
+| `[ ]` | 编辑器入口 | md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv 等旧版可编辑扩展名，点击文件打开 editor；回收站内容只读。 | old/new 已验证 Markdown 新文档、保存及再次打开、回收站 YAML/Markdown 只读分流和 trash TXT 键盘进入 reader；全部扩展名、网格/列表和回收站完整矩阵仍待验 |
+| `[ ]` | 新文档编辑 | 默认文件名、初始内容、editor modal/页面尺寸、关闭、保存、创建失败和成功返回一致。 | old/new 已验证默认名、编辑、保存、重开、尾随空格扩展名错误和错误后保存按钮保留；创建取消/冲突/失败全矩阵仍待收口 |
+| `[ ]` | 读取 | `/content`、编码/大文件错误、loading/error、只读提示、滚动和文本保持一致。 | Rust 已有 `/content` caller；old/new 已验证真实 TXT 读取、YAML/Markdown 只读内容和提示，编码/大文件/loading/error/滚动全矩阵仍待验 |
+| `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown 的 GFM 元素与主动 HTML 清理结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。reference 使用 `marked` + DOMPurify；Rust 使用 `pulldown-cmark` + `ammonia` 对齐可见结果。 | old/new 已验证编辑/分栏/预览、GFM 标题/列表/任务项/表格/删除线/安全 HTML、主动 HTML 清理、非 Markdown 无 tabs 和错误后仍可保存；光标/滚动、复杂 Markdown 错误仍待验 |
+| `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | old/new 已验证保存按钮、错误后重试入口、成功 toast 必须等待目录刷新、持久化重开；etag 冲突、busy/请求失败和 metadata 全矩阵仍待验 |
 | `[ ]` | 未保存关闭 | dirty 检测、关闭/浏览器后退确认、取消返回编辑、确认丢弃、Esc/backdrop 行为一致。 | Rust 已有 dirty、确认对话框和 backdrop/Esc 路径；browser-back、取消后继续编辑和 readonly 矩阵仍待验 |
 | `[ ]` | 编辑器视觉 | 标题、文件名、工具栏、图标、按钮文案、编辑区字体/行高、readonly 和错误层级与旧版一致。 | 待恢复 |
 
@@ -378,7 +379,7 @@
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`1937d06`、`83ec6c0`、`8e59b85`、`4ba891f`（逐项 parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class、视频 preview class、媒体库刷新图标/失败重试和多级分类路径已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card/library parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、待提交 dialog failure parity | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast 已追加；冲突/失败/清空矩阵未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*` | 局部 PASS |
-| 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard 已 old/new 实测；etag 冲突/全部扩展名未完 | reader/editor parity trace | 局部 PASS |
+| 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E）、`2f9eb7b`（editor reverse parity） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard、尾随空格校验、错误保留保存、回收站 YAML/Markdown 只读分流和刷新反馈时序已 old/new 实测；etag 冲突/全部扩展名/完整 loading 与视觉矩阵未完 | `rust-editor-reference-parity.spec.ts` old/new 各 3/3、reader/editor parity trace | 局部 PASS |
 | 阅读器 | 10 | `14084bf`（core）、`d18556d`（web）、`ed13571`（全局 block）、`a47dc50`（定位/进度/缓存/导航 E2E） | old/new reference reader-flow 各 17/17；真实上传 EPUB 各 1/1；全局 block 0…37、14/14.0% 进度文案、TOC Escape 焦点、L2 同版本零请求/版本变化重取已实测；触摸/错误/偏好和完整 UI 状态矩阵仍未完 | reader-flow trace、real EPUB trace、`rust-reader-ui.spec.ts` | 局部 PASS |
 | 媒体 | 11 | `d18556d`（实现）、`d257696`（E2E）、`b84ce18`（thumb/focus parity） | 图片/音频/视频桌面/窄屏/触摸、字幕、存储、全屏主链路、缩略图版本参数和预览 Tab 首焦点已有 old/new 实测；损坏/seek 边界仍未完 | media parity trace | 局部 PASS |
 | 下载/分享/归档 | 12 | `ff43716`（Range）、`d18556d`（UI）、`d257696`（E2E）、`3967289`（公开分享 transport E2E） | 单文件、ZIP、分享生命周期、公开分享安全 headers/Range/无效 token、归档任务、preview/206/416 已 old/new 实测；HEAD/大文件/媒体 seek 与视觉状态仍未完 | download/share/action parity trace；公开分享 old/new 追加断言 | 局部 PASS |
