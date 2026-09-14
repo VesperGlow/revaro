@@ -652,7 +652,15 @@ fn request_transport(message: String) -> RequestError {
     RequestError {
         status: 0,
         code: None,
-        message,
+        // `fetch()` rejects with an Error whose browser-facing message is
+        // `Failed to fetch`; gloo's Display implementation includes the JS
+        // constructor name (`TypeError: ...`). The Vue client surfaced only
+        // `error.message`, so remove that runtime prefix before it reaches a
+        // user-facing toast.
+        message: message
+            .strip_prefix("TypeError: ")
+            .unwrap_or(&message)
+            .to_owned(),
     }
 }
 
