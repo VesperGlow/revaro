@@ -1370,6 +1370,7 @@ pub fn FileBrowser(
             let logout = on_logout.clone();
             leptos::task::spawn_local(async move {
                 let mut completed = 0_usize;
+                let mut failed = 0_usize;
                 let mut first_error = None::<String>;
                 let mut unauthorized = false;
                 for item in targets {
@@ -1399,6 +1400,7 @@ pub fn FileBrowser(
                             break;
                         }
                         Err(request_error) => {
+                            failed += 1;
                             first_error.get_or_insert_with(|| {
                                 format!("{}：{}", item.name, request_error.message)
                             });
@@ -1422,7 +1424,7 @@ pub fn FileBrowser(
                 };
                 if let Some(message) = first_error {
                     notify.run(Feedback::error(format!(
-                        "已{verb} {completed} 项，部分项目失败：{message}"
+                        "已{verb} {completed} 项，{failed} 项失败：{message}"
                     )));
                 } else {
                     notify.run(Feedback::success(format!("已{verb} {completed} 项")));

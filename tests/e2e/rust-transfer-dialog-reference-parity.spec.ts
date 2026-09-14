@@ -22,7 +22,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function mockTransfer(page: Page) {
+async function mockTransfer(page: Page, failure = false) {
   const transferGate = deferred()
   await page.route('**/api/**', async route => {
     const request = route.request()
@@ -45,6 +45,13 @@ async function mockTransfer(page: Page) {
     }
     if (path === `/api/files/${ROOT}/children`) return json({ items: [file], total_bytes: file.size, file_count: 1 })
     if (path === `/api/files/${FILE_ID}` && request.method() === 'PATCH') {
+      if (failure) {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { status: 500, message: 'move failed' } }),
+        })
+      }
       await transferGate.promise
       return json({ ...file })
     }
@@ -53,7 +60,7 @@ async function mockTransfer(page: Page) {
   return { transferGate }
 }
 
-async function startTransfer(page: Page, baseUrl: string) {
+async function startTransfer(page: Page, baseUrl: string, waitForBusy = true) {
   await page.goto(`${baseUrl}/?transfer-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
   await page.getByTitle('列表视图').click()
@@ -63,7 +70,7 @@ async function startTransfer(page: Page, baseUrl: string) {
   await expect(page.locator('.move-copy-dialog')).toBeVisible()
   await expect(page.locator('.directory-trigger')).toBeVisible()
   await page.locator('.move-copy-dialog').getByRole('button', { name: '移动', exact: true }).click()
-  await expect(page.locator('.move-copy-dialog .primary')).toBeDisabled()
+  if (waitForBusy) await expect(page.locator('.move-copy-dialog .primary')).toBeDisabled()
 }
 
 test('移动请求进行中点击遮罩仍关闭传输弹窗', async ({ browser }) => {
@@ -85,6 +92,28 @@ test('移动请求进行中点击遮罩仍关闭传输弹窗', async ({ browser 
     await expect(newPage.locator('.move-copy-dialog'), 'Rust 传输请求中遮罩关闭与 reference 不一致').toHaveCount(0)
     oldMock.transferGate.resolve()
     newMock.transferGate.resolve()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('移动部分失败的全局反馈文案保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockTransfer(oldPage, true), mockTransfer(newPage, true)])
+    await Promise.all([startTransfer(oldPage, oldUrl, false), startTransfer(newPage, newUrl, false)])
+    await expect(oldPage.locator('.move-copy-dialog')).toHaveCount(0)
+    await expect(newPage.locator('.move-copy-dialog')).toHaveCount(0)
+    await expect(oldPage.locator('.toast')).toHaveText('已移动 0 项，1 项失败：传输中的文件.txt：move failed')
+    await expect(newPage.locator('.toast')).toHaveText('已移动 0 项，1 项失败：传输中的文件.txt：move failed')
+    expect(await newPage.locator('.toast').textContent()).toBe(await oldPage.locator('.toast').textContent())
   } finally {
     await oldContext.close()
     await newContext.close()
