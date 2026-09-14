@@ -222,7 +222,7 @@
 | 状态 | 旧版 API | 旧版调用方/用途 | Rust handler/API 与当前 caller 初检 |
 |---|---|---|---|
 | `[ ]` | `GET /healthz` | 启动/监控 | handler 存在；两实例 200，需纳入部署验收 |
-| `[ ]` | `GET /readyz` | 就绪检查 | handler/响应和未就绪语义待验证 |
+| `[P]` | `GET /readyz` | 就绪检查 | Rust 现已同时 ping SQLite 与本地对象存储；old/new 实例均返回 `{"status":"ready"}`，存储根缺失单测返回 503 `object storage unavailable` |
 | `[ ]` | `GET /s/{token}` | 公开分享页 | handler 存在；Rust/浏览器全链路待验 |
 | `[ ]` | `POST /api/auth/login` | LoginPage | Rust `login()` 存在；表单/TOTP/错误待验 |
 | `[P]` | `POST /api/auth/logout` | 顶栏账户菜单明确退出 | Rust `logout()` 由账户设置的明确退出按钮调用；old/new 登录回跳已验证 |
@@ -341,6 +341,7 @@
 |---|---|---|---|---|---|
 | 基线与清单 | 1 | `068b9bb` | healthz、old/new 构建和基线记录已完成 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E） | 认证、账户、任务、状态、移动抽屉、空态和关键入口 old/new 已通过；完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图 | 局部 PASS |
+| 就绪探针 | 1、13 | 当前提交（`/readyz`） | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
 | 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png` | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E） | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；冲突/失败/清空矩阵未完 | parity Playwright trace | 局部 PASS |

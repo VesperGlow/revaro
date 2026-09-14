@@ -9,6 +9,7 @@
 //! server produced, so the client's error handling is already correct.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::routing::get;
@@ -49,27 +50,53 @@ async fn health() -> Json<Health> {
     })
 }
 
-/// Readiness probe: the database answers.
+/// Readiness probe: the database and local object store answer.
 ///
-/// Object storage joins this check once the storage module is migrated; the Go
-/// handler answered `503 object storage unavailable` in that case.
+/// The Go handler used one three-second request deadline and reported the
+/// database and object-store failures separately. Keep both checks here: a
+/// process with a healthy SQLite handle but an unwritable object root cannot
+/// serve the product's actual data plane.
 async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Health>, ApiError> {
+    let deadline = Instant::now() + Duration::from_secs(3);
     let database = state.db.clone();
-    let reachable = tokio::task::spawn_blocking(move || database.ping())
-        .await
-        .map_err(|error| {
-            tracing::error!(%error, "readiness check could not run");
-            ApiError::unavailable("database unavailable")
-        })?;
-    match reachable {
-        Ok(()) => Ok(Json(Health {
-            status: "ready".to_owned(),
-        })),
+    let reachable = tokio::time::timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        tokio::task::spawn_blocking(move || database.ping()),
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(%error, "database readiness check timed out");
+        ApiError::unavailable("database unavailable")
+    })?
+    .map_err(|error| {
+        tracing::error!(%error, "database readiness check could not run");
+        ApiError::unavailable("database unavailable")
+    })?;
+    if let Err(error) = reachable {
+        tracing::warn!(%error, "database readiness check failed");
+        return Err(ApiError::unavailable("database unavailable"));
+    }
+
+    match tokio::time::timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        state.store.ping(),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "object storage readiness check failed");
+            return Err(ApiError::unavailable("object storage unavailable"));
+        }
         Err(error) => {
-            tracing::warn!(%error, "readiness check failed");
-            Err(ApiError::unavailable("database unavailable"))
+            tracing::warn!(%error, "object storage readiness check timed out");
+            return Err(ApiError::unavailable("object storage unavailable"));
         }
     }
+
+    Ok(Json(Health {
+        status: "ready".to_owned(),
+    }))
 }
 
 /// The authenticated API subtree.
@@ -152,6 +179,25 @@ mod tests {
         let (status, body) = get(build(test_state().await), "/readyz", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({"status": "ready"}));
+    }
+
+    #[tokio::test]
+    async fn readyz_reports_object_storage_failure() {
+        let state = test_state().await;
+        tokio::fs::remove_dir_all(state.store.root())
+            .await
+            .expect("remove test object root");
+        let (status, body) = get(build(state), "/readyz", None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": {
+                    "status": 503,
+                    "message": "object storage unavailable"
+                }
+            })
+        );
     }
 
     #[tokio::test]
