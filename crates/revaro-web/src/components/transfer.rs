@@ -55,7 +55,7 @@ pub fn TransferDialog(
             class="modal-backdrop transfer-backdrop"
             role="presentation"
             on:click=move |event: MouseEvent| {
-                if event.target() == event.current_target() && !busy.get_untracked() {
+                if event.target() == event.current_target() {
                     cancel_backdrop.run(())
                 }
             }

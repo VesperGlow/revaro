@@ -1329,14 +1329,12 @@ pub fn FileBrowser(
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
-            if !transfer_busy.get_untracked() {
-                if request_overlay_close(nav_actions, history_suppressed) {
-                    return;
-                }
-                transfer_open.set(false);
-                transfer_targets.set(Vec::new());
-                transfer_error.set(String::new());
+            if request_overlay_close(nav_actions, history_suppressed) {
+                return;
             }
+            transfer_open.set(false);
+            transfer_targets.set(Vec::new());
+            transfer_error.set(String::new());
         })
     };
     let transfer_unauthorized = {
