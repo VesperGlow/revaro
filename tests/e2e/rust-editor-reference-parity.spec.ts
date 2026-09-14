@@ -327,3 +327,48 @@ test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 E
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+test('放弃未保存编辑不会清除已有的 reference 全局 toast', async ({ browser }) => {
+  const folderName = `editor-toast-${crypto.randomUUID()}`
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
+    const folderDialog = page.locator('.app-dialog')
+    await folderDialog.locator('input').fill(folderName)
+    await folderDialog.getByRole('button', { name: '创建', exact: true }).click()
+    await expect(page.locator('.toast')).toHaveText('文件夹已创建')
+
+    await page.getByRole('button', { name: '新建文档', exact: true }).first().click()
+    const editor = page.locator('.document-editor')
+    await expect(editor).toBeVisible()
+    await editor.locator('textarea').fill('toast must survive discard')
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
+    const discard = page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' })
+    await expect(discard).toBeVisible()
+    await discard.getByRole('button', { name: '放弃修改' }).click()
+    await expect(editor).toHaveCount(0)
+    return {
+      toast: await page.locator('.toast').innerText(),
+      className: await page.locator('.toast').getAttribute('class'),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newResult, 'Rust 放弃编辑时不应清除 reference 的全局 toast').toEqual(oldResult)
+    expect(oldResult).toEqual({ toast: '文件夹已创建', className: 'toast success' })
+  } finally {
+    await Promise.all([removeByName(oldPage, folderName), removeByName(newPage, folderName)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
