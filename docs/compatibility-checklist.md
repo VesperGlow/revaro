@@ -25,14 +25,14 @@
 ### 1.2 隔离运行实例
 
 - `[P]` old worktree：`/tmp/revaro-old`，detached `3a18bde`，服务 `http://127.0.0.1:18080`。
-- `[P]` new 基线 worktree：`/tmp/revaro-new`，detached `e9b6202`；当前恢复中的 new 实际运行实例从 `/config/revaro` 当前工作树构建，服务 `http://127.0.0.1:18082`。
+- `[P]` new 基线 worktree：`/tmp/revaro-new`，detached `e9b6202`；当前恢复中的 new 实际运行实例从 `/config/revaro` 当前工作树构建，服务 `http://127.0.0.1:18083`（`18082` 仅保留早期对照记录）。
 - `[P]` old/new 使用不同的 `APP_DATA_DIR`、`APP_WORK_DIR`、端口和管理员 cookie；不得交叉使用数据库、上传临时文件或任务队列。
 - `[P]` 两个实例均 `GET /healthz` 返回 200；old 使用迁移前 Go server + data-plane，new 使用 Rust server + Rust wasm bundle。
 - `[B]` Docker/Compose 由于环境没有 `/var/run/docker.sock` 无法启动；已切换为本机构建、独立进程和 Chromium 实测，不因此跳过浏览器验证。
 - `[P]` old 前端 `npm ci && npm run build`、data-plane release build、Go server build 均通过。
 - `[P]` new `cargo build --locked --release -p revaro-server`、`cargo xtask web-build` 均通过。
 - `[P]` new 当前已有 smoke E2E：基础 `tests/e2e` 3/3 通过（Rust media、TXT/EPUB reader）；迁移恢复期间的对照 suite 另见 1.4。
-- `[B]` old/new 原有 E2E：非真实 EPUB 场景已修正选择前置条件并各 37/37 通过；真实 EPUB 综合场景在旧版 runner 中超过 1 分钟未结束，需单独稳定 runner 后再解除此基础设施标记。旧版生产网格确实没有选择控件；列表选择和多选/ZIP 已由独立 old/new 操作覆盖。
+- `[P]` old/new 原有 E2E：非真实 EPUB 场景两版各 37/37 通过；三本真实 EPUB 的连续翻页/windowSync 回退场景 old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）通过。旧版生产网格确实没有选择控件；列表选择和多选/ZIP 已由独立 old/new 操作覆盖。
 - `[P]` 已保存初始浏览器截图：`/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png`；后续每个模块保存同一 viewport、同一数据状态的 old/new 截图或 trace。
 
 ### 1.3 每个条目的固定验收顺序
@@ -65,7 +65,7 @@
 - `2026-09-14`，old `18080` / new `18083`：将 `POST /api/directories` 同时模拟为 409，旧版关闭新建文件夹弹窗并显示错误 toast；Rust 初始行为把错误留在弹窗内，已恢复为关闭弹窗 + toast。两版回归均通过；分享二次确认错误仍按分享层单独验证。
 - `2026-09-14`，old `18080` / new `18083`：新建文件夹成功后再触发一次根目录刷新，两版均保留“文件夹已创建”成功 toast；Rust 初始目录/回收站刷新会清空全局反馈，已移除该非 reference 行为。old/new `rust-actions-parity-ui.spec.ts` 的目录刷新用例通过。
 - `2026-09-14`，old `18080` / new `18083`：列表选中一项后滚动到顶部并真实点击内容区左上空白，旧版和 Rust 版均清除选择工具栏（`rust-file-interaction-parity.spec.ts` 1/1 each）；文件行、按钮和工具栏仍由过滤规则排除，不会误清除。
-- `2026-09-14`，old `18080` / new `18082`：修正 reference E2E 的选择前置条件后，原始 `e2e` 集合中非真实 EPUB 两版各 37/37 项通过；剩余真实 EPUB 综合场景在旧版测试 runner 中超过 1 分钟未结束，单独保留为 runner/场景稳定性问题，不作为 Rust 差异结论。
+- `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
 ## 2. 启动、认证和全局壳层
