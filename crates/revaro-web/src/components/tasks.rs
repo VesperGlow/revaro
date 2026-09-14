@@ -489,17 +489,12 @@ impl TaskController {
         // reconnect timer, so releasing its callbacks cannot race an event.
         self.runtime.event_listeners.borrow_mut().clear();
 
-        let source = match EventSource::new("/api/events") {
-            Ok(source) => source,
-            Err(error) => {
-                self.feedback.run(Feedback::error(format!(
-                    "任务事件流不可用：{}",
-                    js_error_text(error)
-                )));
-                self.start_fallback();
-                self.schedule_reconnect();
-                return;
-            }
+        // The reference calls the constructor directly. A constructor-level
+        // failure therefore has no user-visible fallback/notification; only
+        // a source that was successfully created participates in the later
+        // reconnect and polling lifecycle.
+        let Ok(source) = EventSource::new("/api/events") else {
+            return;
         };
         let jobs_controller = self.clone();
         let jobs = Closure::<dyn FnMut(Event)>::new(move |_| {
@@ -1020,11 +1015,4 @@ fn current_task(tasks: RwSignal<Vec<Task>>, id: &str) -> Task {
         .into_iter()
         .find(|task| task.id == id)
         .unwrap_or_default()
-}
-
-fn js_error_text(error: wasm_bindgen::JsValue) -> String {
-    error
-        .as_string()
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| "浏览器不支持 Server-Sent Events".to_owned())
 }

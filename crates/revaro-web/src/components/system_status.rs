@@ -48,13 +48,12 @@ impl StatusRuntime {
         }
         self.clear_reconnect_timer();
         self.listeners.borrow_mut().clear();
-        let source = match EventSource::new("/api/system/status/stream") {
-            Ok(source) => source,
-            Err(error) => {
-                self.error.set(format!("状态流不可用：{error:?}"));
-                self.schedule_reconnect();
-                return;
-            }
+        // The reference constructs EventSource without a constructor-level
+        // error branch. If the browser cannot construct it, the panel stays
+        // in its ordinary pending state and does not manufacture a toast or
+        // an error card; preserve that visible contract here.
+        let Ok(source) = EventSource::new("/api/system/status/stream") else {
+            return;
         };
 
         let status_runtime = Rc::clone(self);
