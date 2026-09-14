@@ -293,6 +293,11 @@ fn PathTree(
     let node_id = node.id.clone();
     let node_name = node.name.clone();
     let node_path = node.path.clone();
+    let node_title = if node_path.is_empty() {
+        node_name.clone()
+    } else {
+        node_path
+    };
     let select_id = node.id.clone();
     let node_children = RwSignal::new(node.children);
     let node_count = node.count;
@@ -334,7 +339,7 @@ fn PathTree(
                 <button
                     type="button"
                     class="path-label"
-                    title=node_path
+                    title=node_title
                     on:click=select
                 >
                     {icons::folder()}

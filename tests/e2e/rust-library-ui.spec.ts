@@ -166,6 +166,9 @@ test('分类栏五个入口与书架、图库、音乐、文件视图完整切�
   await sidebar.locator('[data-category="image"]').click()
   await expect(page.locator('.gallery-switch')).toBeVisible()
   await expect(page.locator('.library-view .file-card')).toHaveCount(3)
+  await expect(
+    sidebar.locator('.sidebar-category:has([data-category="image"]) .path-label').first(),
+  ).toHaveAttribute('title', '我的文件')
   await expect(page.locator('.library-view .file-card').first().locator('.card-preview')).toHaveAttribute('title', '预览图片')
   await page.getByRole('button', { name: '图库分类' }).click()
   await expect(page.locator('.album-list')).toBeVisible()
