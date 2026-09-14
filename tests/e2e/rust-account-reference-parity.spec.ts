@@ -36,6 +36,17 @@ async function openAccount(page: Page, baseUrl: string) {
   await expect(page.locator('.account-modal').getByRole('button', { name: '设置', exact: true })).toBeEnabled()
 }
 
+async function installEscapeProbe(page: Page) {
+  await page.evaluate(() => {
+    ;(window as Window & { __accountEscapeDefaultPrevented?: boolean }).__accountEscapeDefaultPrevented = undefined
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        ;(window as Window & { __accountEscapeDefaultPrevented?: boolean }).__accountEscapeDefaultPrevented = event.defaultPrevented
+      }
+    }, { once: true })
+  })
+}
+
 async function accountMetrics(page: Page) {
   return page.locator('.account-modal').evaluate(account => {
     const edit = account.querySelector('.edit-username')!
@@ -76,6 +87,45 @@ test('账户设置的用户名编辑入口和会话区保持 reference', async (
     await Promise.all([mockAccount(oldPage), mockAccount(newPage)])
     await Promise.all([openAccount(oldPage, oldUrl), openAccount(newPage, newUrl)])
     expect(await accountMetrics(newPage), 'Rust 账户设置结构与 reference 不一致').toEqual(await accountMetrics(oldPage))
+
+    await Promise.all([installEscapeProbe(oldPage), installEscapeProbe(newPage)])
+    await Promise.all([oldPage.keyboard.press('Escape'), newPage.keyboard.press('Escape')])
+    await expect(oldPage.locator('.account-modal')).toBeVisible()
+    await expect(newPage.locator('.account-modal')).toBeVisible()
+    expect(await oldPage.evaluate(() => (window as Window & { __accountEscapeDefaultPrevented?: boolean }).__accountEscapeDefaultPrevented)).toBe(false)
+    expect(await newPage.evaluate(() => (window as Window & { __accountEscapeDefaultPrevented?: boolean }).__accountEscapeDefaultPrevented)).toBe(false)
+
+    await Promise.all([
+      oldPage.locator('.password-entry').click(),
+      newPage.locator('.password-entry').click(),
+    ])
+    const passwordFocus = await Promise.all([
+      oldPage.evaluate(() => {
+        const element = document.activeElement
+        return { tag: element?.tagName ?? '', type: (element as HTMLInputElement | null)?.type ?? '', aria: element?.getAttribute('aria-label') ?? '' }
+      }),
+      newPage.evaluate(() => {
+        const element = document.activeElement
+        return { tag: element?.tagName ?? '', type: (element as HTMLInputElement | null)?.type ?? '', aria: element?.getAttribute('aria-label') ?? '' }
+      }),
+    ])
+    expect(passwordFocus[1], 'Rust 密码子面板打开后的焦点与 reference 不一致').toEqual(passwordFocus[0])
+    await Promise.all([
+      oldPage.locator('.password-dialog input[type="password"]').first().focus(),
+      newPage.locator('.password-dialog input[type="password"]').first().focus(),
+    ])
+    await Promise.all([installEscapeProbe(oldPage), installEscapeProbe(newPage)])
+    await Promise.all([oldPage.keyboard.press('Escape'), newPage.keyboard.press('Escape')])
+    await expect(oldPage.locator('.password-dialog')).toBeVisible()
+    await expect(newPage.locator('.password-dialog')).toBeVisible()
+    expect(await oldPage.evaluate(() => (window as Window & { __accountEscapeDefaultPrevented?: boolean }).__accountEscapeDefaultPrevented)).toBe(false)
+    expect(await newPage.evaluate(() => (window as Window & { __accountEscapeDefaultPrevented?: boolean }).__accountEscapeDefaultPrevented)).toBe(false)
+    await Promise.all([
+      oldPage.locator('.password-dialog button[aria-label="关闭"]').click(),
+      newPage.locator('.password-dialog button[aria-label="关闭"]').click(),
+    ])
+    await expect(oldPage.locator('.password-dialog')).toHaveCount(0)
+    await expect(newPage.locator('.password-dialog')).toHaveCount(0)
 
     await Promise.all([
       oldPage.locator('.edit-username').hover(),

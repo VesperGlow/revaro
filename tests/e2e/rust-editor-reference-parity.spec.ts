@@ -282,6 +282,12 @@ test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 E
     await editor.getByRole('button', { name: '关闭编辑器' }).click()
     const discard = page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' })
     await expect(discard).toBeVisible()
+    await discard.getByRole('button', { name: '取消' }).focus()
+    await page.keyboard.press('Escape')
+    await expect(discard).toHaveCount(0)
+    await expect(editor).toBeVisible()
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
+    await expect(discard).toBeVisible()
     await discard.getByRole('button', { name: '取消' }).click()
     await expect(editor).toBeVisible()
 

@@ -137,6 +137,10 @@ test('分享弹窗 loading 与 active 状态保持 reference', async ({ browser 
     await expect(oldPage.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/\/s\//)
     await expect(newPage.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/\/s\//)
     expect(await dialogSnapshot(newPage), 'Rust 分享 active 状态与 reference 不一致').toEqual(await dialogSnapshot(oldPage))
+
+    await Promise.all([oldPage.keyboard.press('Escape'), newPage.keyboard.press('Escape')])
+    await expect(oldPage.locator('.share-modal')).toBeVisible()
+    await expect(newPage.locator('.share-modal')).toBeVisible()
   } finally {
     await oldContext.close()
     await newContext.close()
