@@ -144,6 +144,8 @@ pub fn FileBrowser(
     let library_items = RwSignal::new(Vec::<LibraryItem>::new());
     let library_items_by_type =
         RwSignal::new(std::collections::HashMap::<LibraryKind, Vec<LibraryItem>>::new());
+    let library_gallery_mode = RwSignal::new(None::<String>);
+    let library_gallery_key = RwSignal::new(None::<String>);
     let library_counts = RwSignal::new(LibraryCounts::default());
     let library_trees = RwSignal::new(LibraryTrees::new());
     let library_loading = RwSignal::new(false);
@@ -2091,6 +2093,8 @@ pub fn FileBrowser(
                                 loading=library_loading
                                 error=library_error
                                 filter_label_signal=library_filter_label
+                                gallery_mode=library_gallery_mode
+                                gallery_key=library_gallery_key
                                 on_open=open_library_item.clone()
                                 on_refresh=refresh_library.clone()
                                 on_upload=upload_library.clone()

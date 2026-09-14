@@ -494,21 +494,29 @@ pub fn LibraryView(
     loading: RwSignal<bool>,
     error: RwSignal<String>,
     filter_label_signal: RwSignal<String>,
+    gallery_mode: RwSignal<Option<String>>,
+    gallery_key: RwSignal<Option<String>>,
     on_open: Callback<File>,
     on_refresh: Callback<()>,
     on_upload: Callback<()>,
 ) -> impl IntoView {
-    let gallery_key = if kind == LibraryKind::Image || kind == LibraryKind::Video {
+    let initial_gallery_key = if kind == LibraryKind::Image || kind == LibraryKind::Video {
         format!("revaro:library:gallery:{}", kind.as_str())
     } else {
         String::new()
     };
+    // Vue keeps one LibraryView instance while only changing its `type` prop.
+    // Consequently the first image/video category selected in a session owns
+    // the gallery preference for that instance. Keep the same shared signal in
+    // the Rust parent instead of resetting it on every category switch.
+    if gallery_mode.get_untracked().is_none() && !initial_gallery_key.is_empty() {
+        let mode = browser::local_storage_get(&initial_gallery_key)
+            .filter(|value| value == "all" || value == "albums")
+            .unwrap_or_else(|| "all".to_owned());
+        gallery_key.set(Some(initial_gallery_key));
+        gallery_mode.set(Some(mode));
+    }
     let media_key = "revaro:library:media:audio".to_owned();
-    let gallery_mode = RwSignal::new(if gallery_key.is_empty() {
-        "all".to_owned()
-    } else {
-        browser::local_storage_get(&gallery_key).unwrap_or_else(|| "all".to_owned())
-    });
     let media_mode =
         RwSignal::new(browser::local_storage_get(&media_key).unwrap_or_else(|| "grid".to_owned()));
     let title = category_title(kind);
@@ -516,11 +524,10 @@ pub fn LibraryView(
 
     let set_gallery_mode = {
         let gallery_mode = gallery_mode;
-        let gallery_key = gallery_key.clone();
         Callback::new(move |mode: String| {
-            gallery_mode.set(mode.clone());
-            if !gallery_key.is_empty() {
-                browser::local_storage_set(&gallery_key, &mode);
+            gallery_mode.set(Some(mode.clone()));
+            if let Some(key) = gallery_key.get_untracked() {
+                browser::local_storage_set(&key, &mode);
             }
         })
     };
@@ -619,7 +626,7 @@ pub fn LibraryView(
 fn render_library_content(
     kind: LibraryKind,
     items: RwSignal<Vec<LibraryItem>>,
-    gallery_mode: RwSignal<String>,
+    gallery_mode: RwSignal<Option<String>>,
     media_mode: RwSignal<String>,
     on_open: Callback<File>,
     set_gallery_mode: Callback<String>,
@@ -647,7 +654,7 @@ fn render_library_content(
             let album_open = on_open;
             view! {
                 <Show
-                    when=move || gallery_mode.get() == "albums"
+                    when=move || gallery_mode.get().as_deref() == Some("albums")
                     fallback=move || view! {
                         <div class="file-grid">
                             <For each=move || all.get() key=|item| item.file.id.clone() let:item>
@@ -672,8 +679,8 @@ fn render_library_content(
                 <div class="gallery-switch" role="group" aria-label="图库视图切换">
                     <button
                         type="button"
-                        class:active=move || gallery_mode.get() == "all"
-                        aria-pressed=move || if gallery_mode.get() == "all" { "true" } else { "false" }
+                        class:active=move || gallery_mode.get().as_deref() == Some("all")
+                        aria-pressed=move || if gallery_mode.get().as_deref() == Some("all") { "true" } else { "false" }
                         on:click=move |_| set_gallery_mode.run("all".to_owned())
                     >
                         {icons::layout_grid()}
@@ -681,8 +688,8 @@ fn render_library_content(
                     </button>
                     <button
                         type="button"
-                        class:active=move || gallery_mode.get() == "albums"
-                        aria-pressed=move || if gallery_mode.get() == "albums" { "true" } else { "false" }
+                        class:active=move || gallery_mode.get().as_deref() == Some("albums")
+                        aria-pressed=move || if gallery_mode.get().as_deref() == Some("albums") { "true" } else { "false" }
                         on:click=move |_| set_gallery_mode.run("albums".to_owned())
                     >
                         {icons::images()}
@@ -725,13 +732,14 @@ fn BookSeriesCard(group: BookSeries, on_open: Callback<File>) -> impl IntoView {
     let items = group.items;
     let title = group.title;
     let count = items.len();
+    let single_title = title.clone();
     view! {
         <Show
             when=move || is_series
             fallback=move || {
                 item.clone().map_or_else(
                     || ().into_any(),
-                    |item| view! { <BookSingleCard item=item on_open=on_open.clone() /> }.into_any(),
+                    |item| view! { <BookSingleCard item=item title=single_title.clone() on_open=on_open.clone() /> }.into_any(),
                 )
             }
         >
@@ -784,13 +792,8 @@ fn BookSeriesCovers(items: Vec<LibraryItem>, on_open: Callback<File>) -> impl In
 }
 
 #[component]
-fn BookSingleCard(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
+fn BookSingleCard(item: LibraryItem, title: String, on_open: Callback<File>) -> impl IntoView {
     let file = item.file;
-    let title = file
-        .name
-        .rsplit_once('.')
-        .map_or(file.name.as_str(), |(title, _)| title)
-        .to_owned();
     let size = format_size(non_negative(file.size));
     let title_for_attr = title.clone();
     let title_for_text = title;
@@ -866,6 +869,7 @@ fn LibraryCard(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
                     event.prevent_default();
                 }
             }
+            on:contextmenu=move |event: web_sys::MouseEvent| event.prevent_default()
         >
             <div class="card-preview" title=preview_title>{file_preview_with_state(&item.file, Some(preview_available))}</div>
             <div class="card-info">
@@ -915,6 +919,7 @@ fn LibraryRow(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
                     event.prevent_default();
                 }
             }
+            on:contextmenu=move |event: web_sys::MouseEvent| event.prevent_default()
         >
             <div class="row-preview">{library_preview(&item.file)}</div>
             <div class="row-info"><strong title=name_for_title>{name.clone()}</strong><small>{folder_label(&item)}</small></div>
