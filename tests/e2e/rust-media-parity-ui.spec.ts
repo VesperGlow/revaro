@@ -702,3 +702,51 @@ test('old/new 触屏媒体手势链保持视频点按、图片缩放与取消语
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+test('old/new 不支持媒体保留原文件错误分流且不请求转码入口', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    const requested: string[] = []
+    page.on('request', request => requested.push(new URL(request.url()).pathname))
+    await page.route('**/api/files/*/preview', route => route.fulfill({ contentType: 'application/octet-stream', body: 'not decodable media' }))
+
+    const errors: Array<{ selector: 'audio' | 'video'; code: number | null; message: string }> = []
+    for (const [name, selector] of [['山间来信.m4a', 'audio'], ['山间漫步.webm', 'video']] as const) {
+      await open(page, name)
+      const media = page.locator(selector)
+      await expect.poll(() => media.evaluate((element: HTMLMediaElement) => element.error?.code ?? null)).toBe(4)
+      errors.push({ selector, code: await media.evaluate((element: HTMLMediaElement) => element.error?.code ?? null), message: await page.getByRole('alert').innerText() })
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.preview-modal')).toHaveCount(0)
+    }
+    return {
+      errors,
+      transcodingRequests: requested.filter(path => /hls|fmp4|transcode|audio\/stream/.test(path)),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.errors.map(({ selector, code }) => ({ selector, code }))).toEqual([
+      { selector: 'audio', code: 4 },
+      { selector: 'video', code: 4 },
+    ])
+    expect(oldResult.errors[0].message).toBe('浏览器无法播放此原始格式，请下载后使用本地播放器打开')
+    expect(oldResult.errors[1].message).toContain('浏览器无法播放此原始格式，请下载后使用本地播放器打开')
+    expect(oldResult.errors[1].message).toContain('重新尝试')
+    expect(oldResult.transcodingRequests).toEqual([])
+    expect(newResult, 'Rust 不支持媒体的错误分流与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
