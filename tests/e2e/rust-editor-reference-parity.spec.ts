@@ -8,15 +8,42 @@ async function removeByName(page: Parameters<typeof login>[0], name: string) {
     if (!root.ok) return
     const children = await root.json() as { items?: Array<{ id: string; name: string }> }
     for (const item of children.items ?? []) {
-      if (item.name === wanted) await fetch(`/api/files/${item.id}`, { method: 'DELETE', headers })
+      if (wanted.includes(item.name)) await fetch(`/api/files/${item.id}`, { method: 'DELETE', headers })
     }
     const trash = await fetch('/api/trash')
     if (!trash.ok) return
     const deleted = await trash.json() as { items?: Array<{ id: string; name: string }> }
     for (const item of deleted.items ?? []) {
-      if (item.name === wanted) await fetch(`/api/trash/${item.id}`, { method: 'DELETE', headers })
+      if (wanted.includes(item.name)) await fetch(`/api/trash/${item.id}`, { method: 'DELETE', headers })
     }
-  }, name)
+  }, [name])
+}
+
+async function removeByNames(page: Parameters<typeof login>[0], names: string[]) {
+  await page.evaluate(async wanted => {
+    const headers = { 'Content-Type': 'application/json' }
+    const root = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+    if (root.ok) {
+      const children = await root.json() as { items?: Array<{ id: string; name: string }> }
+      for (const item of children.items ?? []) {
+        if (wanted.includes(item.name)) await fetch(`/api/files/${item.id}`, { method: 'DELETE', headers })
+      }
+    }
+    const trash = await fetch('/api/trash')
+    if (!trash.ok) return
+    const deleted = await trash.json() as { items?: Array<{ id: string; name: string }> }
+    for (const item of deleted.items ?? []) {
+      if (wanted.includes(item.name)) await fetch(`/api/trash/${item.id}`, { method: 'DELETE', headers })
+    }
+  }, names)
+}
+
+async function loginAt(page: Parameters<typeof login>[0], baseUrl: string) {
+  await page.goto(`${baseUrl}/?editor-reference=${Date.now()}`)
+  await page.getByLabel('用户名').fill(process.env.E2E_USERNAME || 'admin')
+  await page.getByLabel('密码').fill(process.env.E2E_PASSWORD || 'revaro-e2e-password')
+  await page.getByRole('button', { name: '进入我的网盘' }).click()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
 }
 
 async function createDocument(page: Parameters<typeof login>[0], name: string, content: string) {
@@ -147,5 +174,150 @@ test('文档保存在 reference 的目录刷新完成后才显示成功反馈', 
     await expect(page.locator('.toast')).toContainText('文档已保存', { timeout: 2_000 })
   } finally {
     await removeByName(page, name)
+  }
+})
+
+test('old/new 全部旧版可编辑扩展名都从文件入口进入相同 editor', async ({ browser }) => {
+  const suffix = crypto.randomUUID()
+  const extensions = ['md', 'markdown', 'txt', 'yaml', 'yml', 'json', 'toml', 'ini', 'conf', 'log', 'csv']
+  const documents = extensions.map(extension => ({
+    name: `editor-extension-${suffix}.${extension}`,
+    extension,
+    content: `editor extension ${extension}`,
+  }))
+  const names = documents.map(document => document.name)
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await Promise.all(documents.map(document => createDocument(page, document.name, document.content)))
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+
+    const result: Array<{ extension: string; label: string; tabs: boolean; saveDisabled: boolean }> = []
+    for (const document of documents) {
+      const row = page.locator('.file-row').filter({ hasText: document.name })
+      await expect(row).toBeVisible({ timeout: 20_000 })
+      await row.click()
+      const editor = page.locator('.document-editor')
+      await expect(editor).toBeVisible()
+      await expect(editor.locator('textarea')).toHaveValue(document.content)
+      await expect(editor.locator('.editor-title small')).toHaveText('文本编辑器')
+      result.push({
+        extension: document.extension,
+        label: await editor.locator('.editor-title small').textContent() || '',
+        tabs: await editor.locator('.editor-tabs').isVisible().catch(() => false),
+        saveDisabled: await editor.getByRole('button', { name: '保存' }).isDisabled(),
+      })
+      await editor.getByRole('button', { name: '关闭编辑器' }).click()
+      await expect(editor).toHaveCount(0)
+    }
+    return result
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual(documents.map(document => ({
+      extension: document.extension,
+      label: '文本编辑器',
+      tabs: ['md', 'markdown'].includes(document.extension),
+      saveDisabled: true,
+    })))
+    expect(newResult, 'Rust 可编辑扩展名入口与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByNames(oldPage, names), removeByNames(newPage, names)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 ETag 冲突反馈', async ({ browser }) => {
+  const name = `editor-conflict-${crypto.randomUUID()}.md`
+  const content = '# conflict reference\n'
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    const id = await createDocument(page, name, content)
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    await page.route(`**/api/files/${id}/content`, async route => {
+      if (route.request().method() === 'GET') {
+        await new Promise(resolve => setTimeout(resolve, 900))
+        await route.continue()
+        return
+      }
+      await route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: {
+            status: 409,
+            code: 'document_conflict',
+            message: 'document changed elsewhere; reopen it before saving',
+          },
+        }),
+      })
+    })
+
+    await page.locator('.file-row').filter({ hasText: name }).click()
+    const editor = page.locator('.document-editor')
+    await expect(editor.locator('.editor-loading')).toBeVisible()
+    await expect(editor.locator('textarea')).toHaveValue(content, { timeout: 10_000 })
+    await editor.locator('textarea').fill(`${content}edited`)
+    await expect(editor.getByRole('button', { name: '保存' })).toBeEnabled()
+
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
+    const discard = page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' })
+    await expect(discard).toBeVisible()
+    await discard.getByRole('button', { name: '取消' }).click()
+    await expect(editor).toBeVisible()
+
+    await editor.locator('textarea').press('Control+s')
+    const error = editor.locator('.editor-header-message.error')
+    await expect(error).toHaveText('document changed elsewhere; reopen it before saving')
+    await expect(editor.getByRole('button', { name: '保存' })).toBeEnabled()
+    const result = {
+      loading: await editor.locator('.editor-loading').count(),
+      discard: await discard.count(),
+      error: await error.textContent(),
+      stillOpen: await editor.count(),
+      saveEnabled: await editor.getByRole('button', { name: '保存' }).isEnabled(),
+    }
+
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
+    await page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' }).getByRole('button', { name: '放弃修改' }).click()
+    await expect(editor).toHaveCount(0)
+    return result
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      loading: 0,
+      discard: 0,
+      error: 'document changed elsewhere; reopen it before saving',
+      stillOpen: 1,
+      saveEnabled: true,
+    })
+    expect(newResult, 'Rust editor 加载/冲突/关闭行为与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
