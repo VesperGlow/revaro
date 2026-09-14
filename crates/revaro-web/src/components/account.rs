@@ -792,7 +792,7 @@ pub fn AccountSettings(
                 </Show>
 
                 <Show when=move || panel.get() == Some(AccountPanel::Totp) fallback=|| ()>
-                    <div class="account-subdialog-backdrop" role="presentation" on:click=move |event: MouseEvent| if event.target() == event.current_target() && !totp_busy.get_untracked() { close_panel.run(()) }>
+                    <div class="account-subdialog-backdrop" role="presentation" on:click=move |event: MouseEvent| if event.target() == event.current_target() { close_panel.run(()) }>
                         <section class="modal account-subdialog totp-dialog" role="dialog" aria-modal="true">
                             <header><div><p class="eyebrow dark">"SECURITY"</p><h2>"两步验证"</h2><p class="subdialog-hint">"使用兼容 TOTP 的身份验证器保护管理员登录。"</p></div><button type="button" aria-label="关闭" on:click=move |_| close_panel.run(())>"×"</button></header>
                             <Show when=move || totp_loading.get() fallback=move || view! {

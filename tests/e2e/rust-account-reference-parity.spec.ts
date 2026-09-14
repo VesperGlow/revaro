@@ -108,3 +108,81 @@ test('账户设置的用户名编辑入口和会话区保持 reference', async (
     await newContext.close()
   }
 })
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(value => { resolve = value })
+  return { promise, resolve }
+}
+
+async function mockTotpLoading(page: Page) {
+  const setupGate = deferred()
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/auth/totp' && request.method() === 'GET') {
+      return json({ enabled: false, recovery_codes: 0 })
+    }
+    if (path === '/api/auth/totp/setup' && request.method() === 'POST') {
+      await setupGate.promise
+      return json({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/Revaro:admin', qr_data_url: 'data:image/png;base64,AA==' })
+    }
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+  return { setupGate }
+}
+
+async function startTotpSetup(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?account-totp-loading=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.locator('button[title="打开账户设置"]').click()
+  const account = page.locator('.account-modal')
+  await account.getByRole('button', { name: '设置', exact: true }).click()
+  const totp = page.locator('.totp-dialog')
+  await expect(totp).toBeVisible()
+  await totp.getByLabel('当前密码', { exact: true }).fill('current-password')
+  await totp.getByRole('button', { name: '开始设置' }).click()
+  await expect(totp.locator('.two-factor-idle button')).toBeDisabled()
+}
+
+test('TOTP 设置请求进行中点击子弹窗空白仍关闭面板', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([mockTotpLoading(oldPage), mockTotpLoading(newPage)])
+    await Promise.all([startTotpSetup(oldPage, oldUrl), startTotpSetup(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.account-subdialog-backdrop').click({ position: { x: 8, y: 8 } }),
+      newPage.locator('.account-subdialog-backdrop').click({ position: { x: 8, y: 8 } }),
+    ])
+    await expect(oldPage.locator('.totp-dialog')).toHaveCount(0)
+    await expect(newPage.locator('.totp-dialog')).toHaveCount(0)
+    oldMock.setupGate.resolve()
+    newMock.setupGate.resolve()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
