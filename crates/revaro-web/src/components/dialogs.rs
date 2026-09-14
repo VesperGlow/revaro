@@ -80,7 +80,6 @@ pub fn ActionDialog(
                 on:submit=submit
                 on:keydown=move |event: web_sys::KeyboardEvent| {
                     if event.key() == "Escape" && !busy.get_untracked() {
-                        event.prevent_default();
                         cancel_from_escape.run(());
                     }
                 }
