@@ -38,7 +38,16 @@ const destination = {
   mime_type: '',
 }
 
-async function mockPicker(page: Page, delayTransfer = false) {
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(value => { resolve = value })
+  return { promise, resolve }
+}
+
+async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = false) {
+  let destinationDetailStarted = false
+  let destinationChildrenStarted = false
+  const destinationGate = deferred()
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -54,14 +63,28 @@ async function mockPicker(page: Page, delayTransfer = false) {
     if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
     if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
     if (path === `/api/files/${ROOT}/children`) return json({ items: [source, destination], total_bytes: source.size, file_count: 1 })
-    if (path === '/api/files/compat-destination') return json({ file: destination, breadcrumbs: [root] })
-    if (path === '/api/files/compat-destination/children') return json({ items: [], total_bytes: 0, file_count: 0 })
+    if (path === '/api/files/compat-destination') {
+      if (probeConcurrency) {
+        destinationDetailStarted = true
+        await destinationGate.promise
+      }
+      return json({ file: destination, breadcrumbs: [root] })
+    }
+    if (path === '/api/files/compat-destination/children') {
+      if (probeConcurrency) destinationChildrenStarted = true
+      return json({ items: [], total_bytes: 0, file_count: 0 })
+    }
     if (delayTransfer && path === '/api/files/compat-source' && route.request().method() === 'PATCH') {
       await new Promise(resolve => setTimeout(resolve, 800))
       return json({})
     }
     return json({ items: [] })
   })
+  return {
+    destinationDetailStarted: () => destinationDetailStarted,
+    destinationChildrenStarted: () => destinationChildrenStarted,
+    releaseDestination: () => destinationGate.resolve(),
+  }
 }
 
 async function openPicker(page: Page, baseUrl: string) {
@@ -211,6 +234,46 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
     await expect.poll(() => oldPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
     await expect.poll(() => newPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('目录选择器进入目标目录并发读取详情和子目录', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([
+      mockPicker(oldPage, false, true),
+      mockPicker(newPage, false, true),
+    ])
+    await Promise.all([openPicker(oldPage, oldUrl), openPicker(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await Promise.all([
+      oldPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+      newPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+    ])
+    await expect.poll(oldMock.destinationDetailStarted).toBe(true)
+    await expect.poll(newMock.destinationDetailStarted).toBe(true)
+    await oldPage.waitForTimeout(120)
+    await newPage.waitForTimeout(120)
+    expect(oldMock.destinationChildrenStarted()).toBe(true)
+    expect(newMock.destinationChildrenStarted(), 'Rust 目录选择器应与 reference 并发读取详情和子目录').toBe(true)
+    oldMock.releaseDestination()
+    newMock.releaseDestination()
+    await Promise.all([
+      expect(oldPage.locator('.directory-trigger')).toHaveAttribute('title', /目标文件夹/),
+      expect(newPage.locator('.directory-trigger')).toHaveAttribute('title', /目标文件夹/),
+    ])
   } finally {
     await oldContext.close()
     await newContext.close()

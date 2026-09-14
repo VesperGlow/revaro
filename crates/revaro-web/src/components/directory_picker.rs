@@ -393,8 +393,12 @@ async fn fetch_directory_data(
     id: &str,
     excluded_ids: &HashSet<String>,
 ) -> Result<(File, Vec<File>, Vec<File>), api::RequestError> {
-    let detail = api::fetch_file(id).await?;
-    let children = api::fetch_children(id).await?;
+    // DirectoryPicker.vue starts both requests through Promise.all. Keep the
+    // same request concurrency so loading, empty and fallback states are
+    // observable at the same point in the interaction.
+    let (detail, children) = futures_util::join!(api::fetch_file(id), api::fetch_children(id));
+    let detail = detail?;
+    let children = children?;
     let folders = children
         .items
         .into_iter()
