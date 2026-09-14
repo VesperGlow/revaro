@@ -20,7 +20,7 @@
 - `[P]` Rust 迁移开始 commit：`c514a74`（`refactor(rust): 建立 Cargo workspace 与前后端共享 core crate`）。该 commit 的父 commit 是旧技术栈仍完整存在的 `3a18bde0cb3278db37fc4e98f1f86297897774c`。
 - `[P]` reference implementation：`3a18bde`（`refactor(ui): 精简移动端分类抽屉为一级入口`，2026-09-12），即迁移启动前最后一个旧版链路 tip；包含完整 `cmd/server`、`internal`、`data-plane` 和 `web`。
 - `[P]` 当前 Rust main：`e9b6202`（`docs(migration): record green CI publish`，2026-09-13）。
-- `[P]` 当前兼容恢复工作树 HEAD：`a46b845`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
+- `[P]` 当前兼容恢复工作树 HEAD：`5dd791a`；上面的 `e9b6202` 保留为恢复开始时的 Rust 基线，后续每个逻辑模块均以独立提交推进。
 - `[P]` 初始工作区在本清单创建前干净；本清单必须先独立提交，再进入功能恢复提交。
 
 ### 1.2 隔离运行实例
@@ -130,6 +130,7 @@
 - `2026-09-14`，old `18080` / new `18084`：实际以同一 active 分享链接点击复制，旧版只将按钮改为“已复制”、不产生全局 toast；Rust 初始版额外显示“分享链接已复制”，已移除通知并保留复制状态/失败回显。`rust-share-dialog-reference-parity.spec.ts` 复制场景 old/new 1/1，修复提交 `94ad574`。
 - `2026-09-14`，old `18080` / new `18084`：对移动请求注入同一 `PATCH /api/files/{id}` 500（`move failed`），旧版全局反馈为“已移动 0 项，1 项失败：传输中的文件.txt：move failed”，Rust 初始版为“部分项目失败”。已恢复失败数量和首项错误的 reference 文案，`rust-transfer-dialog-reference-parity.spec.ts` old/new 2/2，修复提交 `f953af8`。
 - `2026-09-14`，old `18080` / new `18084`：分别让分享链接和 TOTP 恢复码的 `navigator.clipboard.writeText` 失败；两版均不产生全局 toast，只在各自弹窗保留“复制失败，请手动…”错误，按钮仍可用。`rust-share-dialog-reference-parity.spec.ts` 4/4、`rust-account-download-reference-parity.spec.ts` 2/2；账户下载断言同时修正为比较本地化时间格式和静态内容，排除并行生成时刻秒数的偶然差异，测试提交 `c1ce934`。
+- `2026-09-14`，old `18080` / new `18084`：深层面包屑布局用例曾在平滑滚动尚未结束时读取位置，重复运行出现 0/1/6px 瞬时偏移；两版父容器和最终计算样式一致。测试现等待两版均到达 `scrollWidth - clientWidth` 的最终位置后再比较，390×844 深层 DOM/首末 margin/横向位置、smooth 显露、中间级 click/Enter/tap 稳定 old/new 各 3/3，布局首项另重复 5 次全通过；测试稳定性提交 `5dd791a`。
 - `2026-09-14`，old `18080` / new `18084`：同一双选删除 fixture 让首项 DELETE 返回 500、后项成功；旧版仍尝试后项，刷新列表并显示“已移入 1 项，1 项失败：删除失败.txt：delete failed”，Rust 初始版首错即停且只显示 `delete failed`。已恢复继续处理、刷新/清选择和精确反馈；同一用例另验证重命名尾随空格原样送入 PATCH，`rust-crud-reference-parity.spec.ts` old/new 2/2，修复提交 `a46b845`。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -417,7 +418,7 @@
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；浏览器后退/弹层 history、失败导航保留旧内容/选择和根节点 tooltip 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
 | 目录选择器图标、展开控件、Escape、disabled 与 flyout 语义 | 8、15 | `d528aed`、`9ff563b`、`d0421c5`、`3198ff8` | `rust-directory-picker-reference-parity.spec.ts` old/new 各 3/3；`rust-actions-parity-ui.spec.ts` old/new 各 9/9 | old/new 实际打开移动目标选择器，比较触发器、面包屑、子目录、深层路径、空目录图标、目标点击/Escape 默认事件、传输中 disabled class/opacity/按钮状态、进入/退出过渡和卸载时序 | 局部 PASS |
-| 面包屑 DOM、平滑显露与移动端布局 | 5、15 | `2e2221d`、`3040995`、`da5321c` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 3/3；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、横向位置、`scrollTo` smooth options、中间级点击/Enter/触摸、点击根和浏览器后退 | 局部 PASS |
+| 面包屑 DOM、平滑显露与移动端布局 | 5、15 | `2e2221d`、`3040995`、`da5321c`、`5dd791a` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 3/3；布局首项重复 5 次通过；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、最终横向位置、`scrollTo` smooth options、中间级点击/Enter/触摸、点击根和浏览器后退；测试等待 smooth 动画收敛，避免瞬时采样误报 | 局部 PASS |
 | 壳层响应式监听生命周期 | 2、15 | `9dc5204` | `rust-navigation-parity.spec.ts` old/new 各 10/10 | 实际注销卸载认证壳层，拦截 `MediaQueryList` add/remove，确认顶栏/侧栏监听均被释放；完整断线/重连清理仍未完 | 局部 PASS |
 | 桌面全局 Tab 焦点顺序 | 2–6、15 | `2451445` | `rust-global-focus-reference-parity.spec.ts` old/new 双上下文 1/1 | 1440×900 实际连续按 Tab 24 次，比较顶栏、侧栏、路径树、文件头和文件项焦点落点；额外 aria-label 只作为无障碍增强保留，嵌套弹层焦点边界仍未完 | 局部 PASS |
 | 侧栏展开箭头状态 | 4、15 | `317d1bd` | `rust-icon-reference-parity.spec.ts` old/new 各 1/1 | 实际点击分类和路径树展开控件，比较 SVG transform；分类/路径箭头均与 old 的 90° 旋转一致 | 局部 PASS |
