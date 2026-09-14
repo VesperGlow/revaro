@@ -134,6 +134,7 @@ pub fn FileBrowser(
     let library_error = RwSignal::new(String::new());
     let library_filter_label = RwSignal::new("全部位置".to_owned());
     let library_sequence = RwSignal::new(0_u64);
+    let library_loaded = RwSignal::new(false);
     let tree_token = RwSignal::new(0_u64);
     let request_sequence = RwSignal::new(0_u64);
     let selected_ids = RwSignal::new(HashSet::<String>::new());
@@ -403,6 +404,26 @@ pub fn FileBrowser(
         })
     };
 
+    let apply_library_view = {
+        let library_items = library_items;
+        let library_items_by_type = library_items_by_type;
+        let library_folder_id = library_folder_id;
+        let preview_items = preview_items;
+        let library_filter_label = library_filter_label;
+        Callback::new(move |kind: LibraryKind| {
+            let selected_folder = library_folder_id.get_untracked();
+            let all = library_items_by_type
+                .get_untracked()
+                .get(&kind)
+                .cloned()
+                .unwrap_or_default();
+            library_filter_label.set(library::filter_label(&all, selected_folder.as_deref()));
+            let filtered = library::filter_folder(&all, selected_folder.as_deref());
+            preview_items.set(filtered.iter().map(|item| item.file.clone()).collect());
+            library_items.set(filtered);
+        })
+    };
+
     let load_library = {
         let section = section;
         let library_items = library_items;
@@ -415,9 +436,15 @@ pub fn FileBrowser(
         let preview_items = preview_items;
         let library_filter_label = library_filter_label;
         let library_sequence = library_sequence;
+        let library_loaded = library_loaded;
+        let apply_library_view = apply_library_view.clone();
         let on_logout = on_logout.clone();
         Callback::new(move |kind: LibraryKind| {
             if kind == LibraryKind::File {
+                return;
+            }
+            if library_loaded.get_untracked() {
+                apply_library_view.run(kind);
                 return;
             }
             let sequence = library_sequence.get_untracked().wrapping_add(1);
@@ -449,19 +476,9 @@ pub fn FileBrowser(
                         }
                         library_counts.set(response.counts);
                         library_items_by_type.set(by_type.clone());
-                        let selected_folder = library_folder_id.get_untracked();
-                        let current = by_type.get(&kind).cloned().unwrap_or_default();
-                        library_filter_label
-                            .set(library::filter_label(&current, selected_folder.as_deref()));
-                        library_items
-                            .set(library::filter_folder(&current, selected_folder.as_deref()));
                         library_trees.set(trees);
-                        preview_items.set(
-                            library::filter_folder(&current, selected_folder.as_deref())
-                                .into_iter()
-                                .map(|item| item.file)
-                                .collect(),
-                        );
+                        library_loaded.set(true);
+                        apply_library_view.run(kind);
                         library_loading.set(false);
 
                         // The reference fills in audio durations that the
@@ -565,6 +582,15 @@ pub fn FileBrowser(
         })
     };
 
+    let force_load_library = {
+        let library_loaded = library_loaded;
+        let load_library = load_library.clone();
+        Callback::new(move |kind: LibraryKind| {
+            library_loaded.set(false);
+            load_library.run(kind);
+        })
+    };
+
     let file_input = NodeRef::<leptos::html::Input>::new();
     let folder_input = NodeRef::<leptos::html::Input>::new();
     let upload_refresh = {
@@ -572,7 +598,7 @@ pub fn FileBrowser(
         let trash_mode = trash_mode;
         let load_folder = load_folder.clone();
         let section = section;
-        let load_library = load_library.clone();
+        let force_load_library = force_load_library.clone();
         Callback::new(move |parent_id: String| {
             if trash_mode.get_untracked() {
                 return;
@@ -582,7 +608,7 @@ pub fn FileBrowser(
                     load_folder.run(parent_id);
                 }
             } else {
-                load_library.run(section.get_untracked());
+                force_load_library.run(section.get_untracked());
             }
         })
     };
@@ -1858,7 +1884,7 @@ pub fn FileBrowser(
     let folder_upload = uploads_for_view.clone();
     let upload_folder = Callback::new(move |(): ()| folder_upload.choose_folder());
     let refresh_library = {
-        let load_library = load_library.clone();
+        let force_load_library = force_load_library.clone();
         let section = section;
         Callback::new(move |(): ()| {
             if let kind @ (LibraryKind::Book
@@ -1866,7 +1892,7 @@ pub fn FileBrowser(
             | LibraryKind::Video
             | LibraryKind::Audio) = section.get_untracked()
             {
-                load_library.run(kind);
+                force_load_library.run(kind);
             }
         })
     };

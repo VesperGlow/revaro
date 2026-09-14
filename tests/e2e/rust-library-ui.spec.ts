@@ -54,6 +54,7 @@ const cover = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" 
 
 async function mockLibrary(page: Page, books = library.book) {
   const payload = { ...library, book: books }
+  let libraryRequests = 0
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -61,7 +62,10 @@ async function mockLibrary(page: Page, books = library.book) {
     if (path === '/api/events' || path === '/api/system/status/stream') {
       return route.fulfill({ contentType: 'text/event-stream', body: '' })
     }
-    if (path === '/api/library/all') return json({ items: payload, counts: { ...counts, book: books.length } })
+    if (path === '/api/library/all') {
+      libraryRequests += 1
+      return json({ items: payload, counts: { ...counts, book: books.length } })
+    }
     if (path === '/api/library/counts') return json({ ...counts, book: books.length })
     if (path === `/api/files/audio-2/audio`) return json({ duration: 125, chapters: [], cover_url: '', has_cover: false })
     if (path === `/api/files/${ROOT}/children`) return json({ items: rootItems, total_bytes: 900000, file_count: 4 })
@@ -73,6 +77,7 @@ async function mockLibrary(page: Page, books = library.book) {
     }
     return json({ items: [] })
   })
+  return { libraryRequests: () => libraryRequests }
 }
 
 async function mockNestedLibrary(page: Page) {
@@ -191,6 +196,24 @@ test('分类栏五个入口与书架、图库、音乐、文件视图完整切�
   await expect(page.locator('.content-head h1')).toHaveText('我的文件')
   await page.getByRole('button', { name: '列表' }).click()
   await expect(page.locator('.file-rows .file-row')).toHaveCount(4)
+})
+
+test('分类切换复用 reference 的媒体库快照，显式刷新才重新读取', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 950 })
+  const fixture = await mockLibrary(page)
+  await openApp(page)
+
+  await page.locator('[data-category="book"]').click()
+  await expect(page.locator('.book-shelf')).toBeVisible()
+  expect(fixture.libraryRequests()).toBe(1)
+
+  await page.locator('[data-category="image"]').click()
+  await expect(page.locator('.library-view .file-card')).toHaveCount(3)
+  expect(fixture.libraryRequests()).toBe(1)
+
+  await page.getByRole('button', { name: '刷新' }).click()
+  await expect(page.locator('.library-view .file-card')).toHaveCount(3)
+  expect(fixture.libraryRequests()).toBe(2)
 })
 
 test('分类栏收起、路径树手风琴和移动端抽屉行为与 reference 一致', async ({ page }) => {
