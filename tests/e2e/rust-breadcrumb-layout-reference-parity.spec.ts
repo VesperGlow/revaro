@@ -72,6 +72,32 @@ async function openDeepPath(page: Page, baseUrl: string) {
   await expect(page.locator('nav.breadcrumbs')).toBeVisible()
 }
 
+async function installBreadcrumbScrollProbe(page: Page) {
+  await page.addInitScript(() => {
+    const calls: Array<{ left?: number; behavior?: string }> = []
+    const original = Element.prototype.scrollTo as unknown as (...args: unknown[]) => void
+    Element.prototype.scrollTo = function (...args: unknown[]) {
+      if (this.matches('nav.breadcrumbs')) {
+        const options = args[0]
+        if (typeof options === 'object' && options !== null) {
+          const value = options as { left?: number; behavior?: string }
+          calls.push({ left: value.left, behavior: value.behavior })
+        } else {
+          calls.push({ left: typeof options === 'number' ? options : undefined })
+        }
+      }
+      original.apply(this, args)
+    } as typeof Element.prototype.scrollTo
+    ;(window as typeof window & { __breadcrumbScrollCalls?: typeof calls }).__breadcrumbScrollCalls = calls
+  })
+}
+
+async function breadcrumbScrollCalls(page: Page) {
+  return page.evaluate(() =>
+    (window as typeof window & { __breadcrumbScrollCalls?: Array<{ left?: number; behavior?: string }> }).__breadcrumbScrollCalls ?? [],
+  )
+}
+
 async function breadcrumbLayout(page: Page) {
   return page.locator('nav.breadcrumbs').evaluate(nav => ({
     childTags: Array.from(nav.children).map(child => child.tagName.toLowerCase()),
@@ -103,6 +129,33 @@ test('移动端深层面包屑的 DOM 层级和首末边距保持 reference', as
     const oldLayout = await breadcrumbLayout(oldPage)
     const newLayout = await breadcrumbLayout(newPage)
     expect(newLayout, 'Rust 面包屑不应改变 reference 的子节点层级或移动端边距').toEqual(oldLayout)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('深层面包屑沿用 reference 的平滑自动显露行为', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockNavigation(oldPage),
+      mockNavigation(newPage),
+      installBreadcrumbScrollProbe(oldPage),
+      installBreadcrumbScrollProbe(newPage),
+    ])
+    await Promise.all([openDeepPath(oldPage, oldUrl), openDeepPath(newPage, newUrl)])
+    const oldCalls = await breadcrumbScrollCalls(oldPage)
+    const newCalls = await breadcrumbScrollCalls(newPage)
+    expect(oldCalls.length).toBeGreaterThan(0)
+    expect(oldCalls.every(call => call.behavior === 'smooth')).toBe(true)
+    expect(newCalls).toEqual(oldCalls)
   } finally {
     await oldContext.close()
     await newContext.close()

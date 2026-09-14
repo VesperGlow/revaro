@@ -105,7 +105,10 @@ pub fn FileBrowserHeader(
         let nav = breadcrumb_nav;
         let callback = Closure::once_into_js(move || {
             if let Some(nav) = nav.get() {
-                nav.set_scroll_left(nav.scroll_width());
+                let options = web_sys::ScrollToOptions::new();
+                options.set_left(f64::from(nav.scroll_width()));
+                options.set_behavior(web_sys::ScrollBehavior::Smooth);
+                nav.scroll_to_with_scroll_to_options(&options);
             }
         });
         let _ = window
