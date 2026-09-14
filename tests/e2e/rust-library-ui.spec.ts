@@ -243,3 +243,48 @@ test('媒体库方块卡和音频列表行按 reference 阻止 Space 默认滚�
   await page.keyboard.press('Space')
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(audioBefore)
 })
+
+test('分类读取失败、刷新 loading 和 RefreshCw 图标保持 reference 行为', async ({ page }) => {
+  let libraryRequests = 0
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      libraryRequests += 1
+      if (libraryRequests === 1) {
+        return route.fulfill({ status: 503, json: { error: { status: 503, message: '分类读取失败' } } })
+      }
+      await new Promise(resolve => setTimeout(resolve, 250))
+      return json({
+        items: { book: [], image: [base({ id: 'retry-image', name: '重试图片.png', mime_type: 'image/png', folder_path: [] })], video: [], audio: [] },
+        counts: { book: 0, image: 1, video: 0, audio: 0, file: 0 },
+      })
+    }
+    if (path === `/api/files/${ROOT}`) return json({ file: base({ id: ROOT, name: '我的文件', kind: 'directory', parent_id: null, mime_type: '' }), breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    if (path.endsWith('/thumbnail')) return route.fulfill({ contentType: 'image/svg+xml', body: cover })
+    return json({ items: [] })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.locator('[data-category="image"]').click()
+  await expect(page.getByRole('heading', { name: '图片', exact: true })).toBeVisible()
+  await expect(page.locator('.library-view .state')).toContainText('分类读取失败')
+  const refreshPaths = await page.locator('.library-head .secondary svg path').evaluateAll(paths => paths.map(path => path.getAttribute('d')))
+  expect(refreshPaths).toEqual([
+    'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8',
+    'M21 3v5h-5',
+    'M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16',
+    'M8 16H3v5',
+  ])
+
+  await page.locator('.library-head').getByRole('button', { name: '刷新', exact: true }).click()
+  await expect(page.locator('.library-view .state')).toContainText('正在整理图片…')
+  await expect(page.locator('.library-view .file-card').filter({ hasText: '重试图片.png' })).toBeVisible()
+})

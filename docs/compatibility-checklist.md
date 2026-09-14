@@ -70,6 +70,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际上传无封面 EPUB、等待缩略图失败后检查卡片 class，旧版只保留 `file-card book-tile fallback-tile`；Rust 初始版错误地同时保留 `preview-tile`，已让缩略图失败状态联动外层 class。另实际上传 WebM，旧版视频卡为 `preview-tile`、Rust 初始版漏标，已恢复；对应 file-interaction 用例两版各 2/2。
 - `2026-09-14`，old `18080` / new `18083`，390×844：实际聚焦媒体库图片方块卡和音乐列表行按 Space，旧版均阻止页面滚动；Rust 初始 `LibraryCard`/`LibraryRow` 缺少对应键盘处理，已恢复无条件 `prevent_default`。old/new `rust-library-ui.spec.ts` 定向用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：实际对照 Logo 回根、系统状态面板点空白/Escape/重复点击关闭、桌面与移动端侧栏回收站 footer。Rust 初始移动 footer 点击时错误关闭抽屉，已移除额外关闭；尺寸、路径和其余状态均与 old 一致，`rust-navigation-parity.spec.ts` old/new 定向用例均 1/1。
+- `2026-09-14`，old `18080` / new `18083`：模拟 `/api/library/all` 首次 503、再次刷新延迟返回合法图片条目，旧版错误态、重试 loading、恢复内容和刷新图标路径已逐项对照；Rust 初始 `RefreshCw` 几何不同，已恢复四段 reference path，`rust-library-ui.spec.ts` old/new 定向用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -107,7 +108,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[P]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new `rust-library-ui.spec.ts` 与导航定向用例确认顺序、文案、active/current、点击切换和返回 |
-| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all` 和五类空/有数据视图已在 old/new 对照；数量、刷新和错误全矩阵仍待验 |
+| `[ ]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | `/api/library/all` 和五类空/有数据视图已在 old/new 对照；分类 503 → 重试 loading → 恢复内容已验证，数量、空态和错误全矩阵仍待验 |
 | `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 分类一级展开和移动端隐藏树已恢复；桌面路径树递归、当前高亮和错误状态仍待验 |
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
