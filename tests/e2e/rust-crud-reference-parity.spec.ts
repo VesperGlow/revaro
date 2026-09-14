@@ -475,3 +475,98 @@ test('回收站永久删除冲突关闭确认框并保留项目', async ({ brows
     await newContext.close()
   }
 })
+
+test('回收站清空的取消与失败结果保持 reference 交互', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const item = {
+    id: 'crud-empty-trash-failure',
+    parent_id: ROOT,
+    name: '清空失败.txt',
+    kind: 'file',
+    size: 12,
+    status: 'ready',
+    created_at: STAMP,
+    updated_at: STAMP,
+    deleted_at: STAMP,
+    mime_type: 'text/plain',
+    etag: 'crud-empty-trash-failure-etag',
+  }
+
+  async function mock(page: Page) {
+    const calls: string[] = []
+    await page.route('**/api/**', async route => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') {
+        return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+      }
+      if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+      if (path === `/api/files/${ROOT}`) {
+        return json({
+          file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+          breadcrumbs: [],
+        })
+      }
+      if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+      if (path === '/api/trash' && request.method() === 'GET') return json({ items: [item], total_bytes: item.size, file_count: 1 })
+      if (path === '/api/trash' && request.method() === 'DELETE') {
+        calls.push('empty')
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { status: 500, message: 'empty trash failed' } }),
+        })
+      }
+      return json({ items: [] })
+    })
+    return { calls }
+  }
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mockState = await mock(page)
+    await page.goto(`${baseUrl}/?crud-empty-trash-reference=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('回收站').first().click()
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    const empty = page.getByRole('button', { name: '清空回收站', exact: true })
+    await expect(empty).toBeEnabled()
+
+    await empty.click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('回收站中的 1 项及其内容都会永久删除，无法恢复。')
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    expect(mockState.calls).toEqual([])
+
+    await empty.click()
+    await page.getByRole('dialog').getByRole('button', { name: '清空回收站', exact: true }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('empty trash failed')
+    await expect(page.locator('.file-card, .file-row').filter({ hasText: item.name })).toBeVisible()
+    await expect(empty).toBeEnabled()
+    return mockState.calls
+  }
+
+  try {
+    const [oldCalls, newCalls] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldCalls).toEqual(['empty'])
+    expect(newCalls, 'Rust 清空回收站失败后的确认框/列表/反馈与 reference 不一致').toEqual(oldCalls)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
