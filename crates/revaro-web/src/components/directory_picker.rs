@@ -18,6 +18,7 @@ use crate::browser;
 const POPOVER_MARGIN: f64 = 10.0;
 const POPOVER_GAP: f64 = 6.0;
 const POPOVER_HEIGHT: f64 = 340.0;
+const FLYOUT_DURATION_MS: i32 = 140;
 
 /// A directory picker embedded in a transfer dialog.
 #[component]
@@ -157,9 +158,61 @@ pub fn DirectoryPicker(
         })
     };
 
+    let flyout_visible = RwSignal::new(false);
+    let flyout_closed = RwSignal::new(false);
+    let flyout_timer = RwSignal::new(None::<i32>);
+    let close_flyout = {
+        let flyout_timer = flyout_timer;
+        Callback::new(move |(): ()| {
+            clear_timeout(flyout_timer);
+            expanded.set(false);
+            if !flyout_visible.get_untracked() {
+                flyout_closed.set(false);
+                return;
+            }
+            flyout_closed.set(true);
+            let timeout = schedule_timeout(
+                move || {
+                    flyout_visible.set(false);
+                    flyout_timer.set(None);
+                },
+                FLYOUT_DURATION_MS,
+            );
+            flyout_timer.set(timeout);
+            if timeout.is_none() {
+                flyout_visible.set(false);
+            }
+        })
+    };
+    let open_flyout = {
+        let update_position = update_position.clone();
+        let flyout_timer = flyout_timer;
+        Callback::new(move |(): ()| {
+            clear_timeout(flyout_timer);
+            expanded.set(true);
+            flyout_visible.set(true);
+            flyout_closed.set(true);
+            let update_position = update_position.clone();
+            let timeout = schedule_timeout(
+                move || {
+                    update_position.run(());
+                    flyout_closed.set(false);
+                    flyout_timer.set(None);
+                },
+                0,
+            );
+            flyout_timer.set(timeout);
+            if timeout.is_none() {
+                update_position.run(());
+                flyout_closed.set(false);
+            }
+        })
+    };
+
     let mut outside_listener = {
         let root = root;
         let panel = panel;
+        let close_flyout = close_flyout.clone();
         browser::on_pointerdown(move |event| {
             if !expanded.get_untracked() {
                 return;
@@ -175,14 +228,15 @@ pub fn DirectoryPicker(
                 })
                 .unwrap_or(false);
             if !inside {
-                expanded.set(false);
+                close_flyout.run(());
             }
         })
     };
+    let close_flyout_for_escape = close_flyout.clone();
     let mut escape_listener = browser::on_document_keydown_capture(move |event| {
         if event.key() == "Escape" && expanded.get_untracked() {
             event.stop_propagation();
-            expanded.set(false);
+            close_flyout_for_escape.run(());
         }
     });
     let mut resize_listener = {
@@ -201,24 +255,27 @@ pub fn DirectoryPicker(
             }
         })
     };
+    let close_flyout_for_disabled = close_flyout.clone();
     Effect::new(move |_| {
         if disabled.get() {
-            expanded.set(false);
+            close_flyout_for_disabled.run(());
         }
     });
+    let flyout_timer_for_cleanup = flyout_timer;
     on_cleanup(move || {
         outside_listener.release();
         escape_listener.release();
         resize_listener.release();
         scroll_listener.release();
+        clear_timeout(flyout_timer_for_cleanup);
     });
 
-    let update_on_toggle = update_position;
     let toggle = move |_| {
         if !disabled.get_untracked() {
-            expanded.update(|open| *open = !*open);
             if expanded.get_untracked() {
-                update_on_toggle.run(());
+                close_flyout.run(());
+            } else {
+                open_flyout.run(());
             }
         }
     };
@@ -248,9 +305,15 @@ pub fn DirectoryPicker(
                 <span>{path_label}</span>
                 {chevron_down_icon()}
             </button>
-            <Show when=move || expanded.get() fallback=|| ()>
+            <Show when=move || flyout_visible.get() fallback=|| ()>
                 <leptos::portal::Portal>
-                    <section node_ref=panel class="directory-popover" style=move || panel_style.get() aria-label="选择目标目录">
+                    <section
+                        node_ref=panel
+                        class="directory-popover"
+                        class:flyout-closed=move || flyout_closed.get()
+                        style=move || panel_style.get()
+                        aria-label="选择目标目录"
+                    >
                     <nav class="directory-breadcrumbs" aria-label="目录路径">
                         <button
                             type="button"
@@ -368,6 +431,23 @@ fn directory_path(current_id: &str, current: &Option<File>, breadcrumbs: &[File]
             .map(|item| item.name),
     );
     names.join(" / ")
+}
+
+fn clear_timeout(timer: RwSignal<Option<i32>>) {
+    if let Some(timer_id) = timer.get_untracked()
+        && let Some(window) = web_sys::window()
+    {
+        window.clear_timeout_with_handle(timer_id);
+    }
+    timer.set(None);
+}
+
+fn schedule_timeout(callback: impl FnOnce() + 'static, delay: i32) -> Option<i32> {
+    let window = web_sys::window()?;
+    let callback = wasm_bindgen::closure::Closure::once_into_js(callback);
+    window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), delay)
+        .ok()
 }
 
 fn folder_open_icon() -> impl IntoView {

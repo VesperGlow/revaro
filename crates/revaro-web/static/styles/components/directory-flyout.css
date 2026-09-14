@@ -4,7 +4,7 @@
    add `flyout-closed` to `.directory-popover` (the element the transition
    wrapped) while hidden and remove it on open, which reproduces the original
    `enter-from`/`leave-to` state and the 140 ms transition.
-   DirectoryPicker is a later slice, so this toggle is not wired yet — it is
-   recorded here (and in the migration report) rather than dropped. */
+   The Leptos picker uses the same class toggle to preserve the enter/leave
+   timing while keeping the panel mounted until its transition completes. */
 .directory-popover{transition:opacity .14s ease,transform .14s ease}
 .directory-popover.flyout-closed{opacity:0;transform:translateY(-4px)}

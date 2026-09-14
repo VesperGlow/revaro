@@ -115,6 +115,34 @@ async function pickerDisabledMetrics(page: Page) {
   }))
 }
 
+async function popoverMetrics(page: Page) {
+  return page.locator('.directory-popover').evaluate(element => {
+    const style = getComputedStyle(element)
+    const rect = element.getBoundingClientRect()
+    return {
+      position: style.position,
+      left: style.left,
+      top: style.top,
+      bottom: style.bottom,
+      width: Math.round(rect.width * 100) / 100,
+      height: Math.round(rect.height * 100) / 100,
+      x: Math.round(rect.x * 100) / 100,
+      y: Math.round(rect.y * 100) / 100,
+      maxHeight: style.maxHeight,
+    }
+  })
+}
+
+async function popoverEntranceMetrics(page: Page) {
+  return page.locator('.directory-popover').evaluate(element => {
+    const style = getComputedStyle(element)
+    return {
+      active: style.opacity !== '1' || style.transform !== 'none',
+      transitionDuration: style.transitionDuration,
+    }
+  })
+}
+
 test('移动/复制目录选择器的路径图标和展开关闭行为保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
@@ -132,6 +160,15 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
     await newPage.locator('.directory-trigger').click()
     await expect(oldPage.getByRole('region', { name: '选择目标目录' })).toBeVisible()
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toBeVisible()
+    const oldEntrance = await popoverEntranceMetrics(oldPage)
+    const newEntrance = await popoverEntranceMetrics(newPage)
+    expect(newEntrance.transitionDuration, 'Rust 目录选择器过渡时长与 reference 不一致')
+      .toEqual(oldEntrance.transitionDuration)
+    expect(oldEntrance.active, 'reference 目录选择器进入首帧应处于过渡中').toBe(true)
+    expect(newEntrance.active, 'Rust 目录选择器进入首帧应处于过渡中').toBe(true)
+    await oldPage.waitForTimeout(50)
+    await newPage.waitForTimeout(50)
+    expect(await popoverMetrics(newPage), 'Rust 目录选择器 popover 定位与 reference 不一致').toEqual(await popoverMetrics(oldPage))
     await compareIcons(oldPage, newPage, '.directory-breadcrumbs svg', '目录选择器根路径')
     await compareIcons(oldPage, newPage, '.directory-list > button svg', '目录选择器子目录')
 
@@ -143,12 +180,49 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
     await compareIcons(oldPage, newPage, '.directory-state svg', '目录选择器空目录')
 
     await Promise.all([installEscapeProbe(oldPage), installEscapeProbe(newPage)])
-    await oldPage.keyboard.press('Escape')
-    await newPage.keyboard.press('Escape')
+    await Promise.all([oldPage.keyboard.press('Escape'), newPage.keyboard.press('Escape')])
     await expect(oldPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
     await expect.poll(() => oldPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
     await expect.poll(() => newPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('目录选择器关闭时保留 reference 的退出过渡', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18083'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockPicker(oldPage), mockPicker(newPage)])
+    await Promise.all([openPicker(oldPage, oldUrl), openPicker(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await expect(oldPage.getByRole('region', { name: '选择目标目录' })).toBeVisible()
+    await expect(newPage.getByRole('region', { name: '选择目标目录' })).toBeVisible()
+    await Promise.all([oldPage.waitForTimeout(220), newPage.waitForTimeout(220)])
+
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    const oldLeave = await popoverEntranceMetrics(oldPage)
+    const newLeave = await popoverEntranceMetrics(newPage)
+    expect(oldLeave.transitionDuration, 'reference 目录选择器退出过渡时长探针异常').toBe('0.14s, 0.14s')
+    expect(newLeave.transitionDuration, 'Rust 目录选择器退出过渡时长与 reference 不一致')
+      .toEqual(oldLeave.transitionDuration)
+    expect(oldLeave.active, 'reference 目录选择器退出首帧应处于过渡中').toBe(true)
+    expect(newLeave.active, 'Rust 目录选择器退出首帧应处于过渡中').toBe(true)
+    await expect(oldPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
+    await expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
   } finally {
     await oldContext.close()
     await newContext.close()
