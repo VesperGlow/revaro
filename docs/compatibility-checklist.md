@@ -180,6 +180,7 @@
 - `2026-09-15`，old `18080` / new `18084`：分别让音频和视频原文件 preview 返回不可解码的 `application/octet-stream`；两版均使用“浏览器无法播放此原始格式，请下载后使用本地播放器打开”及视频“重新尝试”入口，并且不请求 HLS/fMP4/transcode/audio-stream。`rust-media-parity-ui.spec.ts` old/new 1/1，测试提交 `710e434`。
 - `2026-09-15`，old `18080` / new `18084`：桌面和 390×844 移动端逐项实际点击顶栏任务中心、在线状态、账户设置、回收站，以及移动账户/工具菜单中的任务、账户、回收站；两版均按 reference 打开/关闭对应面板，账户入口不误触发退出，移动菜单点击后正确关闭并完成目标跳转。`rust-global-ui-reference-parity.spec.ts` old/new 完整分流 1/1，测试提交 `f752758`。
 - `2026-09-15`，old `18080` / new `18084`：按旧 server route registry、old `web/src` 调用点和 Rust route/caller 逐项反向清点；未发现旧版主 UI 调用方在 Rust 端无对应实现。新增 API 双实例探针比较认证、存储、library、状态、任务、根目录/children、回收站、分享及所有专用缺失分流；另以同名同内容文档实际完成创建、读取、保存、完整/Range 下载、preview、分享/撤销、重命名、复制、删除、恢复和 purge 生命周期，均 old/new 1/1。探针发现并恢复 `GET /api/uploads/{id}` 缺失时 old 的 `upload not found`（Rust 原为 `pending upload not found`），上传其他操作仍保留 pending 文案；服务端单测通过，修复提交 `da88991`，API E2E 提交 `eac64a8`。live 数据中历史文件可能省略可选 `etag`，对照只忽略该字段，其余契约字段仍严格比较。
+- `2026-09-15`，old `18080` / new `18084`：重建 new 后串行复跑全局键盘/弹层集合 27/27，以及账户、确认操作、传输、编辑器、分享和操作菜单集合 28/28；实际覆盖桌面 24 步 Tab 顺序、媒体/阅读器焦点陷阱与恢复、顶栏/状态/任务/侧栏/下拉/确认/账户/传输/编辑器/分享的 Escape、主要表单 Enter、空白关闭和浏览器后退。old/new 均通过，未把 401 安全强化差异当作兼容通过依据。
 
 ## 2. 启动、认证和全局壳层
 
@@ -193,7 +194,7 @@
 | `[P]` | 账户设置 | 账户资料、用户名修改、头像读取/上传/删除、密码修改、TOTP 状态/setup/enable/recovery/delete、成功/失败/取消/关闭行为一致。 | old/new `rust-account-parity.spec.ts` 2/2 与 `rust-password-parity.spec.ts` 1/1 通过，覆盖头像、用户名、密码、TOTP 全链路和错误/关闭；`rust-account-reference-parity.spec.ts` 恢复用户名编辑铅笔入口的 DOM/geometry/hover，补齐 TOTP setup loading 时点击子弹窗空白关闭，以及密码提交 pending 时关闭子弹窗后点击账户外层遮罩；`rust-account-download-reference-parity.spec.ts` 对照恢复码下载本地化时间格式/静态内容，并验证复制失败局部错误与无 toast |
 | `[P]` | 退出登录 | 只在账户设置或移动端工具菜单的明确“退出登录”动作触发；成功后清空 session/任务/页面状态并回登录页。 | old/new 明确点击账户设置内“退出登录”后回登录页；账户入口本身不会退出 |
 | `[ ]` | 全局错误/Toast | 成功、失败、权限过期、冲突、网络断开、复制剪贴板失败的 toast 文案、颜色、时长、关闭方式和堆叠顺序一致。 | 成功/409 错误文案、`toast success/error` class、无额外 role、CSS、命中区域、批量下载数量文案、CRUD/回收站/移动成功反馈的刷新后时序和 3.6 秒时限已 old/new 对照；分享/TOTP 剪贴板失败、后台任务完成/失败、分享重生成不通知/停止分享通知、放弃编辑保留已有 toast 已 old/new 对照；401 安全强化例外、事件流构造失败和逐调用点完整状态矩阵仍待最终收口 |
-| `[ ]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | 顶栏/状态/任务/侧栏/文件头下拉/内容菜单、通用确认弹窗的 Escape、主要 Enter 和弹层 history 已有 old/new 用例；桌面壳层连续 24 次 Tab 焦点落点、媒体/阅读器预览焦点 trap 与恢复、账户/编辑器/分享嵌套边界已一致；完整键盘状态矩阵仍待验 |
+| `[P]` | 全局键盘 | Escape 关闭当前最内层弹窗/菜单，Enter 提交可提交表单，Tab 焦点不越界；浏览器后退的 modal/folder 语义一致。 | old/new 全局键盘集合 27/27、账户/确认/传输/编辑器/分享/操作集合 28/28；桌面 24 步 Tab、媒体/阅读器 trap、顶栏/状态/任务/侧栏/下拉/确认/账户/传输/编辑器/分享 Escape、主要 Enter、空白关闭和浏览器后退均实际对照 |
 
 ## 3. 顶栏、任务中心和系统状态
 
@@ -462,7 +463,7 @@
 | 模块 | Checklist 范围 | commit | 自动测试 | old/new 浏览器证据 | 状态 |
 |---|---|---|---|---|---|
 | 基线与清单 | 1 | `068b9bb`、`821769c`（E2E new 默认端口） | healthz、old/new 构建和基线记录已完成；双版本测试未显式传 URL 时默认命中当前 Rust `18084` | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
-| 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip）、`226daf1`（stale navigation parity）、`697239f`（分类 history parity）、`f752758`（顶栏入口完整分流） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；桌面/390×844 顶栏任务、在线状态、账户设置、回收站及移动工具菜单三项均逐项实际打开目标并关闭中间菜单，账户入口不会误登出；浏览器后退/弹层 history、失败导航保留旧内容/选择、根节点 tooltip、慢/快目录响应竞态及筛选后分类 history 已追加；全局错误/键盘和完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
+| 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip）、`226daf1`（stale navigation parity）、`697239f`（分类 history parity）、`f752758`（顶栏入口完整分流） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；桌面/390×844 顶栏完整分流、浏览器后退/弹层 history、失败导航保留旧内容/选择、根节点 tooltip、慢/快目录响应竞态及筛选后分类 history 已追加；全局键盘 27/27 + 账户/确认/传输/编辑器/分享/操作 28/28 已复跑；全局 Toast、分类/文件浏览和完整状态矩阵仍未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 媒体/阅读器焦点生命周期 | 10–11、15 | `c238c02` | `rust-overlay-focus-reference-parity.spec.ts` old/new 各 2/2 | 实际比较图片预览、EPUB 阅读器的初始焦点、Tab/Shift+Tab 环绕、菜单/目录 Escape、二次 Escape 关闭、文件卡焦点恢复和 body overflow；仅确认 old 同样启用 trap 的媒体/阅读器，账户/编辑器/分享/普通弹窗仍待完整键盘矩阵 | 局部 PASS |
 | 通用弹层嵌套键盘边界 | 1.4、2、5–7、10–11 | `4940aa2` | `rust-account-reference-parity.spec.ts`、`rust-editor-reference-parity.spec.ts`、`rust-share-dialog-reference-parity.spec.ts` 定向 12/12 | old/new 实际比较账户外层/密码子面板 Escape 与焦点、编辑器未保存确认 Escape、分享 active Escape；保留 reference 的非 trap 和默认事件语义 | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
