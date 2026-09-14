@@ -68,6 +68,7 @@
 - `2026-09-14`，old `18080` / new `18083`：实际聚焦生产方块文件卡后按 Space，旧版 `FileCard.vue` 的 `.prevent` 使页面保持 `scrollY=150`；Rust 初始版滚到 `574`，已恢复无条件 `prevent_default`（仅在可选择时切换选择），old/new `rust-file-interaction-parity.spec.ts` 均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：实际上传无封面 EPUB 并读取浏览器 DOM，旧版书籍图标 `path.icon-detail` 的 `d` 与 Rust 初始版仅一处几何字符串不同（`-13 1` vs `-13-1`）；已恢复 reference 路径，old/new 书籍图标几何用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：实际上传无封面 EPUB、等待缩略图失败后检查卡片 class，旧版只保留 `file-card book-tile fallback-tile`；Rust 初始版错误地同时保留 `preview-tile`，已让缩略图失败状态联动外层 class。另实际上传 WebM，旧版视频卡为 `preview-tile`、Rust 初始版漏标，已恢复；对应 file-interaction 用例两版各 2/2。
+- `2026-09-14`，old `18080` / new `18083`，390×844：实际聚焦媒体库图片方块卡和音乐列表行按 Space，旧版均阻止页面滚动；Rust 初始 `LibraryCard`/`LibraryRow` 缺少对应键盘处理，已恢复无条件 `prevent_default`。old/new `rust-library-ui.spec.ts` 定向用例均 1/1。
 - `2026-09-14`，old `18080` / new `18083`：旧版原始 `e2e/auth-status.spec.ts`、`mobile.spec.ts`、`library-ui.spec.ts`、`files.spec.ts`、`media-ui.spec.ts`、`reader-flow.spec.ts` 分别为 2/2、1/1、4/4、3/3、10/10、17/17；两版均通过。三本真实 EPUB 原始 `reader-real-epub.spec.ts` old 1/1（约 1.5 分钟）、new 1/1（约 3.3 分钟）；完整 reference 行为集合已可在两隔离实例执行。
 - `2026-09-14`，Rust 工作树此前执行 `cargo fmt --all && cargo xtask check` 通过：workspace unit/integration/doc tests、clippy `-D warnings`、WASM target check 均通过；最新 download 兼容修复另执行 `cargo test -p revaro-server file_routes --lib`（22/22）和 `cargo xtask web-build`，并用新 bundle 完成 reader 4/4 与 old 共享 reader 2/2。
 
@@ -351,7 +352,7 @@
 | 基线与清单 | 1 | `068b9bb` | healthz、old/new 构建和基线记录已完成 | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
 | 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、待提交 history parity 测试 | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态和关键入口 old/new 已通过；浏览器后退/弹层 history 已追加；完整状态矩阵未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、`/tmp/revaro-modal-history-*` | 局部 PASS |
 | 就绪探针 | 1、13 | `938a60a` | Rust router 单测：DB 正常、对象存储失败；old/new 实例实际响应一致 | `/readyz` old/new 200 对照 | PASS |
-| 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、待提交 file-card parity | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡 Space、EPUB 书籍图标几何、EPUB fallback class 和视频 preview class 已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card parity trace | 局部 PASS |
+| 文件浏览与选择 | 5–6 | `d18556d`（实现）、`d257696`（E2E）、`待提交`（file-card/library-card parity） | 面包屑/历史、列表选择、文件图标、打开分流和操作菜单已有 old/new 用例；方块卡与媒体库卡 Space、EPUB 书籍图标几何、EPUB fallback class 和视频 preview class 已追加验证；hover/长按/全部类型未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、file-card parity trace | 局部 PASS |
 | 上传与任务 | 7、3 | `3beac64`（server）、`d18556d`（web）、`d257696`（E2E） | 上传入口、目录上传、任务中心分组/取消/重试/归档输入和完成刷新已有 old/new 用例；断点续传完整 UI 未完 | parity Playwright trace 与任务/上传测试结果 | 局部 PASS |
 | CRUD 与回收站 | 8 | `d18556d`（实现）、`d257696`（E2E）、待提交 dialog failure parity | 新建、重命名、移动、复制、删除、恢复、永久删除主链路已 old/new 实测；新建 API 失败时弹窗关闭/toast 已追加；冲突/失败/清空矩阵未完 | parity Playwright trace、`/tmp/revaro-dialog-error-*` | 局部 PASS |
 | 文档编辑器 | 9 | `d18556d`（实现）、`d257696`（E2E） | TXT/Markdown 新建、读取、GFM 预览/HTML 清理、保存、dirty discard 已 old/new 实测；etag 冲突/全部扩展名未完 | reader/editor parity trace | 局部 PASS |

@@ -862,6 +862,8 @@ fn LibraryCard(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
                 if event.key() == "Enter" {
                     event.prevent_default();
                     on_open.run(file_for_key.clone());
+                } else if event.key() == " " {
+                    event.prevent_default();
                 }
             }
         >
@@ -895,10 +897,25 @@ fn library_preview_title(file: &File) -> &'static str {
 #[component]
 fn LibraryRow(item: LibraryItem, on_open: Callback<File>) -> impl IntoView {
     let file = item.file.clone();
+    let file_for_key = file.clone();
     let name = file.name.clone();
     let name_for_title = name.clone();
     view! {
-        <article class="file-row" role="button" tabindex="0" aria-label=format!("{}，未选择", name) on:click=move |_| on_open.run(file.clone())>
+        <article
+            class="file-row"
+            role="button"
+            tabindex="0"
+            aria-label=format!("{}，未选择", name)
+            on:click=move |_| on_open.run(file.clone())
+            on:keydown=move |event: web_sys::KeyboardEvent| {
+                if event.key() == "Enter" {
+                    event.prevent_default();
+                    on_open.run(file_for_key.clone());
+                } else if event.key() == " " {
+                    event.prevent_default();
+                }
+            }
+        >
             <div class="row-preview">{library_preview(&item.file)}</div>
             <div class="row-info"><strong title=name_for_title>{name.clone()}</strong><small>{folder_label(&item)}</small></div>
             <span class="row-duration">{format_duration(item.duration_ms)}</span>
