@@ -157,7 +157,6 @@ pub fn AppSidebar(
                     title="回收站"
                     aria-label="回收站"
                     on:click=move |_| {
-                        mobile_open.set(false);
                         on_open_trash.run(());
                     }
                 >

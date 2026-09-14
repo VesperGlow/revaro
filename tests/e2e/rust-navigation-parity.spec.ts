@@ -275,6 +275,56 @@ test('直接打开五类分类和文件夹地址时恢复 reference 页面与规
   expect(new URL(page.url()).pathname).toBe('/')
 })
 
+test('顶栏 Logo、系统状态关闭和侧栏回收站 footer 保持 reference 行为', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await login(page)
+
+  const status = page.locator('.system-status')
+  const statusPanel = status.locator('.status-panel')
+  await status.locator('summary').click()
+  await expect(statusPanel).toBeVisible()
+  await page.getByRole('heading', { name: '我的文件', exact: true }).click()
+  await expect(statusPanel).toBeHidden()
+
+  await status.locator('summary').click()
+  await page.keyboard.press('Escape')
+  await expect(statusPanel).toBeHidden()
+
+  await status.locator('summary').click()
+  await status.locator('summary').click()
+  await expect(statusPanel).toBeHidden()
+
+  const logo = page.locator('.topbar .logo')
+  const statusBox = await status.locator('summary').boundingBox()
+  const logoBox = await logo.boundingBox()
+  const trashBox = await page.locator('.app-sidebar .trash-entry').boundingBox()
+  expect(statusBox?.width).toBeCloseTo(44, 0)
+  expect(statusBox?.height).toBeCloseTo(44, 0)
+  expect(logoBox?.height).toBeCloseTo(34, 0)
+  expect(trashBox?.height).toBeCloseTo(42, 0)
+
+  await page.locator('.app-sidebar .trash-entry').click()
+  await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/')
+  await logo.click()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/')
+
+  await page.locator('.app-sidebar [data-category="image"]').click()
+  await expect(page.getByRole('heading', { name: '图片', exact: true })).toBeVisible()
+  await logo.click()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/')
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.locator('.sidebar-handle').click()
+  await page.locator('.app-sidebar .trash-entry').click()
+  await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+  await expect(page.locator('.app-sidebar')).toHaveClass(/mobile-open/)
+})
+
 test('桌面侧栏折叠与分类路径手风琴在刷新后保持 reference 状态', async ({ page }) => {
   await page.addInitScript(() => {
     if (!sessionStorage.getItem('compat-sidebar-reset')) {
