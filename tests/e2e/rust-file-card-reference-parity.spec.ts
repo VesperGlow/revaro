@@ -58,10 +58,10 @@ async function mockFileBrowser(page: Page) {
   })
 }
 
-async function openBrowser(page: Page, baseUrl: string) {
+async function openBrowser(page: Page, baseUrl: string, expectedCount = items.length) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await expect(page.locator('.file-card')).toHaveCount(items.length)
+  await expect(page.locator('.file-card')).toHaveCount(expectedCount)
   await page.waitForTimeout(150)
 }
 
@@ -182,6 +182,145 @@ test('文件卡与列表行全类型、状态和预览节点保持 reference', a
     await oldPage.waitForTimeout(150)
     await newPage.waitForTimeout(150)
     expect(await rowMetrics(newPage), 'Rust 列表文件项与 reference 不一致').toEqual(await rowMetrics(oldPage))
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+const fallbackItems = [
+  base({ id: 'delayed-image', name: '等待图片.png', mime_type: 'image/png' }),
+  base({ id: 'fallback-image', name: '回退图片.png', mime_type: 'image/png' }),
+  base({ id: 'broken-audio', name: '损坏封面.mp3', mime_type: 'audio/mpeg', has_cover: true }),
+  base({ id: 'broken-epub', name: '损坏封面.epub', mime_type: 'application/epub+zip' }),
+]
+
+async function mockFallbackBrowser(page: Page) {
+  let delayedThumbRequests = 0
+  let fallbackThumbRequests = 0
+  let fallbackPreviewRequests = 0
+  let brokenAudioThumbRequests = 0
+  let brokenEpubThumbRequests = 0
+  let releaseDelayed!: () => void
+  const delayed = new Promise<void>(resolve => {
+    releaseDelayed = resolve
+  })
+
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: fallbackItems.length } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: fallbackItems.length })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: base({ id: ROOT, name: '我的文件', kind: 'directory', parent_id: null, size: 0, mime_type: '' }),
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: fallbackItems, total_bytes: 4096, file_count: fallbackItems.length })
+    if (path === '/api/files/delayed-image/thumbnail') {
+      delayedThumbRequests += 1
+      await delayed
+      return route.fulfill({ contentType: 'image/svg+xml', body: cover })
+    }
+    if (path === '/api/files/fallback-image/thumbnail') {
+      fallbackThumbRequests += 1
+      return route.fulfill({ status: 500, body: 'thumbnail unavailable' })
+    }
+    if (path === '/api/files/fallback-image/preview') {
+      fallbackPreviewRequests += 1
+      return route.fulfill({ contentType: 'image/svg+xml', body: cover })
+    }
+    if (path === '/api/files/broken-audio/thumbnail') {
+      brokenAudioThumbRequests += 1
+      return route.fulfill({ status: 500, body: 'thumbnail unavailable' })
+    }
+    if (path === '/api/files/broken-epub/thumbnail') {
+      brokenEpubThumbRequests += 1
+      return route.fulfill({ status: 500, body: 'thumbnail unavailable' })
+    }
+    if (path.endsWith('/thumbnail')) return route.fulfill({ contentType: 'image/svg+xml', body: cover })
+    return json({ items: [] })
+  })
+
+  return {
+    delayedThumbRequests: () => delayedThumbRequests,
+    fallbackThumbRequests: () => fallbackThumbRequests,
+    fallbackPreviewRequests: () => fallbackPreviewRequests,
+    brokenAudioThumbRequests: () => brokenAudioThumbRequests,
+    brokenEpubThumbRequests: () => brokenEpubThumbRequests,
+    releaseDelayed,
+  }
+}
+
+async function fallbackState(page: Page) {
+  return page.locator('.file-card').evaluateAll(cards => cards.map(card => {
+    const preview = card.querySelector('.card-preview')
+    const image = preview?.querySelector('img')
+    return {
+      name: card.querySelector('.card-info strong')?.textContent?.trim(),
+      classes: Array.from(card.classList).sort(),
+      previewClasses: Array.from(preview?.classList ?? []).sort(),
+      imageSrc: image?.getAttribute('src') ?? null,
+      imageLoading: image?.getAttribute('loading') ?? null,
+      iconClass: preview?.querySelector('svg')?.getAttribute('class') ?? null,
+    }
+  }))
+}
+
+test('文件卡缩略图 loading 与各类失败回退保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([mockFallbackBrowser(oldPage), mockFallbackBrowser(newPage)])
+    await Promise.all([
+      openBrowser(oldPage, oldUrl, fallbackItems.length),
+      openBrowser(newPage, newUrl, fallbackItems.length),
+    ])
+
+    await expect.poll(oldMock.delayedThumbRequests).toBe(1)
+    await expect.poll(newMock.delayedThumbRequests).toBe(1)
+    expect(await fallbackState(newPage), 'Rust 缩略图 loading 初始节点与 reference 不一致').toEqual(await fallbackState(oldPage))
+
+    oldMock.releaseDelayed()
+    newMock.releaseDelayed()
+    await expect.poll(oldMock.fallbackPreviewRequests).toBe(1)
+    await expect.poll(newMock.fallbackPreviewRequests).toBe(1)
+    await expect.poll(() => oldPage.locator('.file-card').filter({ hasText: '损坏封面.mp3' }).locator('.audio-type-icon').count()).toBe(1)
+    await expect.poll(() => newPage.locator('.file-card').filter({ hasText: '损坏封面.mp3' }).locator('.audio-type-icon').count()).toBe(1)
+    await expect.poll(() => oldPage.locator('.file-card').filter({ hasText: '损坏封面.epub' }).locator('.book-type-icon').count()).toBe(1)
+    await expect.poll(() => newPage.locator('.file-card').filter({ hasText: '损坏封面.epub' }).locator('.book-type-icon').count()).toBe(1)
+    expect(await fallbackState(newPage), 'Rust 缩略图错误回退与 reference 不一致').toEqual(await fallbackState(oldPage))
+    expect(oldMock.fallbackThumbRequests()).toBe(1)
+    expect(newMock.fallbackThumbRequests()).toBe(1)
+    expect(oldMock.brokenAudioThumbRequests()).toBe(1)
+    expect(newMock.brokenAudioThumbRequests()).toBe(1)
+    expect(oldMock.brokenEpubThumbRequests()).toBe(1)
+    expect(newMock.brokenEpubThumbRequests()).toBe(1)
+
+    await Promise.all([oldPage.getByTitle('列表视图').click(), newPage.getByTitle('列表视图').click()])
+    await expect(oldPage.locator('.file-row')).toHaveCount(fallbackItems.length)
+    await expect(newPage.locator('.file-row')).toHaveCount(fallbackItems.length)
+    await expect.poll(() => oldPage.locator('.file-row').filter({ hasText: '回退图片.png' }).locator('img').getAttribute('src')).toContain('/preview')
+    await expect.poll(() => newPage.locator('.file-row').filter({ hasText: '回退图片.png' }).locator('img').getAttribute('src')).toContain('/preview')
+    expect(
+      await newPage.locator('.file-row').filter({ hasText: '损坏封面.mp3' }).locator('.audio-type-icon').count(),
+    ).toBe(await oldPage.locator('.file-row').filter({ hasText: '损坏封面.mp3' }).locator('.audio-type-icon').count())
+    expect(
+      await newPage.locator('.file-row').filter({ hasText: '损坏封面.epub' }).locator('.book-type-icon').count(),
+    ).toBe(await oldPage.locator('.file-row').filter({ hasText: '损坏封面.epub' }).locator('.book-type-icon').count())
   } finally {
     await oldContext.close()
     await newContext.close()
