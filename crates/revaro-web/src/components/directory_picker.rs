@@ -355,7 +355,7 @@ pub fn DirectoryPicker(
                                 .into_any()
                             } else if !error.get().is_empty() {
                                 view! {
-                                    <div class="directory-state error" role="alert">
+                                    <div class="directory-state error">
                                         <p>{move || error.get()}</p>
                                         <button type="button" on:click=retry>"重新加载"</button>
                                     </div>

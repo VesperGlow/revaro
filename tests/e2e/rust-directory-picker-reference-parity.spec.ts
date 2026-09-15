@@ -53,6 +53,7 @@ function deferred() {
 async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = false, sourceItem = source) {
   let destinationDetailStarted = false
   let destinationChildrenStarted = false
+  let failNextRootChildren = false
   const transferParents: string[] = []
   const destinationGate = deferred()
   await page.route('**/api/**', async route => {
@@ -69,7 +70,17 @@ async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = 
     }
     if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
     if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
-    if (path === `/api/files/${ROOT}/children`) return json({ items: [sourceItem, destination], total_bytes: sourceItem.size, file_count: 1 })
+    if (path === `/api/files/${ROOT}/children`) {
+      if (failNextRootChildren) {
+        failNextRootChildren = false
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { status: 500, message: 'directory load failed' } }),
+        })
+      }
+      return json({ items: [sourceItem, destination], total_bytes: sourceItem.size, file_count: 1 })
+    }
     if (path === '/api/files/compat-destination') {
       if (probeConcurrency) {
         destinationDetailStarted = true
@@ -92,18 +103,20 @@ async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = 
   return {
     destinationDetailStarted: () => destinationDetailStarted,
     destinationChildrenStarted: () => destinationChildrenStarted,
+    failNextRootChildren: () => { failNextRootChildren = true },
     releaseDestination: () => destinationGate.resolve(),
     transferParents,
   }
 }
 
-async function openPicker(page: Page, baseUrl: string) {
+async function openPicker(page: Page, baseUrl: string, beforeTransfer?: () => void) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '列表', exact: true }).click()
   const row = page.locator('.file-row').filter({ hasText: '待移动.txt' })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
+  beforeTransfer?.()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动', exact: true }).click()
   await expect(page.locator('.directory-trigger')).toBeVisible()
 }
@@ -316,6 +329,49 @@ test('移动目录时选择器排除自身并按 reference 提交目标目录', 
     ])
     expect(newMock.transferParents, 'Rust 移动目录提交的目标 parent_id 与 reference 不一致').toEqual(oldMock.transferParents)
     expect(oldMock.transferParents).toEqual(['compat-destination'])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('目录选择器加载失败后按 reference 展示错误并支持重新加载', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([mockPicker(oldPage), mockPicker(newPage)])
+    await Promise.all([
+      openPicker(oldPage, oldUrl, oldMock.failNextRootChildren),
+      openPicker(newPage, newUrl, newMock.failNextRootChildren),
+    ])
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    const oldError = oldPage.locator('.directory-state.error')
+    const newError = newPage.locator('.directory-state.error')
+    await Promise.all([expect(oldError).toBeVisible(), expect(newError).toBeVisible()])
+    expect(await newError.textContent(), 'Rust 目录选择器失败文案与 reference 不一致')
+      .toEqual(await oldError.textContent())
+    expect(await newError.getByRole('button').textContent(), 'Rust 目录选择器重试入口与 reference 不一致')
+      .toEqual(await oldError.getByRole('button').textContent())
+    expect(await newError.getAttribute('role')).toEqual(await oldError.getAttribute('role'))
+
+    await Promise.all([
+      oldError.getByRole('button', { name: '重新加载', exact: true }).click(),
+      newError.getByRole('button', { name: '重新加载', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true })).toBeVisible(),
+      expect(newPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true })).toBeVisible(),
+    ])
+    await expect(oldError).toHaveCount(0)
+    await expect(newError).toHaveCount(0)
   } finally {
     await oldContext.close()
     await newContext.close()
