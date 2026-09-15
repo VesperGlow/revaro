@@ -172,9 +172,11 @@ pub fn VideoPlayer(
         }
     };
     let on_track_load = move |_| track_loaded.set(true);
-    let on_track_error = move |_| {
-        active_subtitle_lines.set(Vec::new());
-    };
+    // The Vue reference treats a track error as a diagnostic event only. Keep
+    // the last cue overlay visible until the browser emits the next cuechange
+    // or the user explicitly changes/disables the track; clearing it here
+    // causes a visible flash that the reference does not produce.
+    let on_track_error = move |_| {};
     {
         let apply_subtitle = apply_subtitle.clone();
         Effect::new(move |_| {

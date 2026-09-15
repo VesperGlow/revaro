@@ -844,6 +844,46 @@ test('old/new 视频字幕 cue 文本的实体解码与分行一致', async ({ b
   }
 })
 
+test('old/new 字幕轨道错误不会清除已经显示的 cue', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间漫步.webm')
+    await expect(page.locator('.video-subtitle-overlay')).toBeVisible()
+    const track = page.locator('track').first()
+    await track.evaluate(element => element.dispatchEvent(new Event('error')))
+    await page.waitForTimeout(100)
+    const overlay = page.locator('.video-subtitle-overlay')
+    if (await overlay.count() === 0) return { count: 0, text: null, lines: [] }
+    return overlay.evaluate(element => ({
+      count: 1,
+      text: element.textContent,
+      lines: Array.from(element.querySelectorAll('span')).map(line => line.textContent),
+    }))
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      count: 1,
+      text: '沿着山间的小路，慢慢走。',
+      lines: ['沿着山间的小路，慢慢走。'],
+    })
+    expect(newResult, 'Rust 字幕轨道错误时错误地清除了 reference 已显示 cue').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 图片滚轮缩放保持鼠标锚点一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
