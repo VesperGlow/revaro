@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type BrowserContext, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 
 // This is the reference media-ui suite with valid Rust Timestamp values. It
@@ -312,6 +312,106 @@ test('图片：实际大小、拖动边界、缩略图、菜单和逐层退出',
   await expect(page.locator('.preview-commandbar')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.locator('.preview-modal')).toHaveCount(0)
+})
+
+test('old/new 媒体操作菜单保持下载预览、移动复制进入目标选择和原有文案', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+
+  async function exercise(context: BrowserContext, baseUrl: string) {
+    const downloadPage = await context.newPage()
+    await mockMedia(downloadPage, baseUrl)
+    await open(downloadPage, '群山.png')
+    await expect(downloadPage.locator('.preview-image')).toBeVisible()
+    await downloadPage.locator('.preview-commandbar summary').click()
+    const imageMenu = downloadPage.locator('.preview-menu[open]')
+    const imageMenuResult = {
+      actions: await imageMenu.getByRole('button').allTextContents(),
+      detail: await imageMenu.locator('.media-detail').innerText(),
+    }
+    const downloadPromise = downloadPage.waitForEvent('download')
+    await imageMenu.getByRole('button', { name: '下载', exact: true }).click()
+    const download = await downloadPromise
+    // The reference closes only the native details menu for a normal media
+    // download; the preview itself remains open. Move/copy are different:
+    // their parent action replaces the preview with the transfer dialog.
+    await expect(downloadPage.locator('.preview-modal')).toHaveCount(1)
+    const previewCountAfterDownload = await downloadPage.locator('.preview-modal').count()
+    await downloadPage.close()
+
+    const movePage = await context.newPage()
+    await mockMedia(movePage, baseUrl)
+    await open(movePage, '山间来信.m4a')
+    await expect(movePage.locator('audio')).toHaveJSProperty('readyState', 4)
+    await movePage.locator('.preview-commandbar summary').click()
+    const audioMenu = movePage.locator('.preview-menu[open]')
+    const audioMenuResult = {
+      actions: await audioMenu.getByRole('button').allTextContents(),
+      detail: await audioMenu.locator('.media-detail').innerText(),
+    }
+    await audioMenu.getByRole('button', { name: '移动', exact: true }).click()
+    await expect(movePage.locator('.preview-modal')).toHaveCount(0)
+    const moveDialog = movePage.locator('.move-copy-dialog')
+    await expect(moveDialog).toBeVisible()
+    const moveResult = {
+      title: await moveDialog.getByRole('heading').innerText(),
+      target: await moveDialog.locator('header p').last().innerText(),
+    }
+    await moveDialog.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(moveDialog).toHaveCount(0)
+    await movePage.close()
+
+    const copyPage = await context.newPage()
+    await mockMedia(copyPage, baseUrl)
+    await open(copyPage, '山间漫步.webm')
+    await expect(copyPage.locator('.video-player-shell video')).toBeVisible()
+    await copyPage.getByLabel('播放设置', { exact: true }).click()
+    const videoMenu = copyPage.locator('.preview-menu[open]')
+    const videoMenuResult = {
+      actions: await videoMenu.getByRole('button').allTextContents(),
+      detail: await videoMenu.locator('.media-detail').innerText(),
+    }
+    await videoMenu.getByRole('button', { name: '复制', exact: true }).click()
+    await expect(copyPage.locator('.preview-modal')).toHaveCount(0)
+    const copyDialog = copyPage.locator('.move-copy-dialog')
+    await expect(copyDialog).toBeVisible()
+    const copyResult = {
+      title: await copyDialog.getByRole('heading').innerText(),
+      target: await copyDialog.locator('header p').last().innerText(),
+    }
+    await copyDialog.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(copyDialog).toHaveCount(0)
+    await copyPage.close()
+
+    return {
+      imageMenuResult,
+      imageDownloadFilename: download.suggestedFilename(),
+      previewCountAfterDownload,
+      audioMenuResult,
+      moveResult,
+      videoMenuResult,
+      copyResult,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldContext, oldUrl),
+      exercise(newContext, newUrl),
+    ])
+    expect(oldResult.imageMenuResult.actions).toEqual(['下载', '移动', '复制'])
+    expect(oldResult.audioMenuResult.actions).toEqual(['下载', '移动', '复制'])
+    expect(oldResult.videoMenuResult.actions).toEqual(['下载', '移动', '复制'])
+    expect(oldResult.imageDownloadFilename).toBe('群山.png')
+    expect(oldResult.previewCountAfterDownload).toBe(1)
+    expect(oldResult.moveResult.title).toBe('移动到')
+    expect(oldResult.copyResult.title).toBe('复制到')
+    expect(newResult, 'Rust 媒体操作菜单与 reference 的完整操作结果不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
 })
 
 test('old/new 图片未达到翻页阈值时保留拖动中的水平跟手位移', async ({ browser }) => {

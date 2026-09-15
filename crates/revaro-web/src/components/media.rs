@@ -36,6 +36,10 @@ pub enum MenuIcon {
     Volume,
 }
 
+fn has_natural_dimensions(size: Size) -> bool {
+    size.width > 0.0 && size.height > 0.0
+}
+
 /// A disclosure menu that closes when focus moves outside it.
 ///
 /// Native `<details>` preserves keyboard and screen-reader semantics. The
@@ -701,7 +705,7 @@ pub fn MediaPreview(
                                             <p class="media-detail">
                                                 {icons::info()}
                                                 {format_size(non_negative(file.size))}
-                                                <Show when=move || natural.get().width.is_sign_positive() fallback=|| ()>
+                                                <Show when=move || has_natural_dimensions(natural.get()) fallback=|| ()>
                                                     <span>{move || format!("{} × {}", natural.get().width as u64, natural.get().height as u64)}</span>
                                                 </Show>
                                             </p>
