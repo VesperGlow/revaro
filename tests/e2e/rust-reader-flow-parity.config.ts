@@ -5,7 +5,7 @@ const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
 
 export default defineConfig({
   testDir: '.',
-  testMatch: /rust-reader-flow-reference-parity\.spec\.ts/,
+  testMatch: /rust-reader-(flow|real-epub)-reference-parity\.spec\.ts/,
   timeout: 90_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

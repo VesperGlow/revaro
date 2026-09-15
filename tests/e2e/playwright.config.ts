@@ -9,7 +9,10 @@ process.env.E2E_NEW_URL ||= 'http://127.0.0.1:18084'
 
 export default defineConfig({
   testDir: '.',
-  testIgnore: process.env.E2E_READER_FLOW === '1' ? [] : ['rust-reader-flow-reference-parity.spec.ts'],
+  testIgnore: process.env.E2E_READER_FLOW === '1' ? [] : [
+    'rust-reader-flow-reference-parity.spec.ts',
+    'rust-reader-real-epub-reference-parity.spec.ts',
+  ],
   outputDir: 'test-results',
   timeout: 45_000,
   expect: { timeout: 10_000 },
