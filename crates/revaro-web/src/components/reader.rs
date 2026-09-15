@@ -768,14 +768,12 @@ pub fn ReaderView(
                     <div node_ref=flow id="flow" class="rf-flow revaro-content"></div>
                 </div>
                 <Show when=move || stage.get() == ReaderStage::Loading fallback=|| ()>
-                    <div id="loading" class="reader-loading" aria-live="polite">
-                        <span class="spinner" aria-hidden="true"></span>
-                        {move || loading_text.get()}
-                    </div>
+                    <div id="loading" class="reader-loading">{move || loading_text.get()}</div>
                 </Show>
                 <Show when=move || stage.get() == ReaderStage::Error fallback=|| ()>
-                    <div class="reader-loading" role="alert">
-                        <p>{move || error_text.get()}</p>
+                    <div class="reader-loading">
+                        {move || error_text.get()}
+                        {" "}
                         <button class="font-step" type="button" on:click=close_view.clone()>"关闭"</button>
                     </div>
                 </Show>

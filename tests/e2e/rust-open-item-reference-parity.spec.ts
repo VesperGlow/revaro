@@ -62,7 +62,7 @@ function createFlowGate(): FlowGate {
   return { started, markStarted, released, release }
 }
 
-async function mockOpening(page: Page, flowGate?: FlowGate) {
+async function mockOpening(page: Page, flowGate?: FlowGate, flowFailure = false) {
   await page.route('**/api/**', async route => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -90,6 +90,9 @@ async function mockOpening(page: Page, flowGate?: FlowGate) {
     if (path === `/api/files/${epub.id}/book/flow`) {
       flowGate?.markStarted()
       if (flowGate) await flowGate.released
+      if (flowFailure) {
+        return route.fulfill({ status: 503, json: { error: { status: 503, message: '阅读流暂时不可用' } } })
+      }
       return json(manifest)
     }
     if (path === `/api/files/${epub.id}/book/flow/chunks/0`) {
@@ -256,17 +259,67 @@ test('阅读器网络加载阶段的文案与 reference 一致', async ({ browse
       await page.locator('.file-card').filter({ hasText: epub.name }).click()
       await flowGate.started
       await expect(page.locator('.reader-loading')).toBeVisible()
-      return page.locator('.reader-loading').innerText()
+      return page.locator('.reader-loading').evaluate(element => ({
+        id: element.id,
+        className: element.className,
+        role: element.getAttribute('role'),
+        ariaLive: element.getAttribute('aria-live'),
+        text: element.textContent?.trim() ?? '',
+        childTags: Array.from(element.children).map(child => child.tagName.toLowerCase()),
+      }))
     }
 
     const [oldText, newText] = await Promise.all([
       readLoadingText(oldPage, oldUrl, oldFlow),
       readLoadingText(newPage, newUrl, newFlow),
     ])
-    expect(newText, 'Rust 阅读器网络加载文案与 reference 不一致').toBe(oldText)
+    expect(newText, 'Rust 阅读器网络加载状态与 reference 不一致').toEqual(oldText)
   } finally {
     oldFlow.release()
     newFlow.release()
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('阅读器打开失败状态与 reference 的结构和关闭操作一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockOpening(oldPage, undefined, true),
+      mockOpening(newPage, undefined, true),
+    ])
+    const readErrorState = async (page: Page, baseUrl: string) => {
+      await page.goto(`${baseUrl}/?reader-error-reference=${Date.now()}`)
+      await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+      await page.locator('.file-card').filter({ hasText: epub.name }).click()
+      const error = page.locator('.reader-loading').filter({ hasText: '阅读流暂时不可用' })
+      await expect(error).toBeVisible()
+      const state = await error.evaluate(element => ({
+        id: element.id,
+        className: element.className,
+        role: element.getAttribute('role'),
+        ariaLive: element.getAttribute('aria-live'),
+        text: element.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+        childTags: Array.from(element.children).map(child => child.tagName.toLowerCase()),
+        closeLabel: element.querySelector('button')?.textContent?.trim() ?? null,
+      }))
+      await error.getByRole('button', { name: '关闭', exact: true }).click()
+      await expect(page.locator('#reader-view')).toHaveCount(0)
+      return state
+    }
+
+    const [oldState, newState] = await Promise.all([
+      readErrorState(oldPage, oldUrl),
+      readErrorState(newPage, newUrl),
+    ])
+    expect(newState, 'Rust 阅读器错误态与 reference 不一致').toEqual(oldState)
+  } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
