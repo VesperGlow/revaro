@@ -619,6 +619,11 @@ test('old/new 视频隐藏控制条的 inert 与 range 无障碍文本保持一�
     await open(page, '山间漫步.webm')
     const video = page.locator('.video-player-shell video')
     await expect(video).toHaveJSProperty('paused', false)
+    // The reference restores the mocked server position asynchronously. Wait
+    // for that observable state before comparing the two independently timed
+    // browser contexts; otherwise old can be sampled at 0:00 while Rust has
+    // already reached the same eventual 0:10.
+    await expect(page.locator('.video-seek')).toHaveAttribute('aria-valuetext', '0:10')
     const rangeState = {
       seek: await page.locator('.video-seek').getAttribute('aria-valuetext'),
       volume: await page.locator('.video-volume').getAttribute('aria-valuetext'),
