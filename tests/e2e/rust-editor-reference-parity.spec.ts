@@ -590,6 +590,87 @@ test('放弃未保存编辑不会清除已有的 reference 全局 toast', async 
   }
 })
 
+test('old/new Markdown 边界语义保持 reference 的 DOM 结构和安全清理', async ({ browser }) => {
+  const name = `editor-markdown-boundary-${crypto.randomUUID()}.md`
+  const content = [
+    '# Boundary',
+    '',
+    '第一行  ',
+    '硬换行',
+    '',
+    '> 引用第一行',
+    '> 引用第二行',
+    '',
+    '- 父项',
+    '  - 子项',
+    '    1. 嵌套编号',
+    '',
+    '- [x] 已完成',
+    '- [ ] 待完成',
+    '',
+    '```javascript',
+    'const value = 1 < 2',
+    '```',
+    '',
+    '<https://example.com>',
+    '',
+    '<div onclick="alert(1)">安全文本</div>',
+    '',
+    '[危险链接](javascript:alert(2))',
+    '',
+    '<script>alert(3)</script>',
+  ].join('\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await createDocument(page, name, content)
+    await page.reload()
+    await page.getByRole('button', { name: '列表' }).click()
+    await page.locator('.file-row').filter({ hasText: name }).click()
+    const editor = page.locator('.document-editor')
+    await expect(editor.locator('textarea')).toHaveValue(content)
+    await editor.getByRole('button', { name: '预览' }).click()
+    const preview = editor.locator('.markdown-preview')
+    await expect(preview).toBeVisible()
+    return preview.evaluate(element => {
+      const directText = (node: Element) => Array.from(node.childNodes)
+        .filter(child => child.nodeType === Node.TEXT_NODE)
+        .map(child => child.textContent ?? '')
+        .join('')
+        .replace(/\s+/g, ' ')
+        .trim()
+      const attributes = (node: Element) => Object.fromEntries(
+        Array.from(node.attributes)
+          .sort((left, right) => left.name.localeCompare(right.name))
+          .map(attribute => [attribute.name, attribute.value]),
+      )
+      return Array.from(element.querySelectorAll('*')).map(node => ({
+        tag: node.tagName.toLowerCase(),
+        attributes: attributes(node),
+        directText: directText(node),
+        text: (node.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      }))
+    })
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newResult, 'Rust Markdown 边界 DOM 结构或安全清理与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 const DIRTY_ROOT = '00000000-0000-0000-0000-000000000000'
 const DIRTY_STAMP = '2026-01-01T00:00:00Z'
 const DIRTY_FILE = {

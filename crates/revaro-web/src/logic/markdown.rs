@@ -21,6 +21,15 @@ pub fn render_markdown(source: &str) -> String {
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut rendered = String::new();
     html::push_html(&mut rendered, Parser::new_ext(source, options));
+    // `marked` emits a break without a whitespace text node after it. The
+    // pulldown-cmark renderer pretty-prints the same element as `<br />\n`,
+    // which changes `textContent` (and copied text) even though the pixels are
+    // identical. Remove only that renderer newline; whitespace in code blocks
+    // and ordinary Markdown text remains untouched.
+    rendered = rendered
+        .replace("<br />\n", "<br />")
+        .replace("<br>\n", "<br>")
+        .replace("<br/>\n", "<br/>");
     for (style, align) in [
         (" style=\"text-align: left\"", " align=\"left\""),
         (" style=\"text-align: center\"", " align=\"center\""),
@@ -35,7 +44,15 @@ pub fn render_markdown(source: &str) -> String {
         .add_tags(["input"])
         .add_tag_attributes("input", ["checked", "disabled", "type"])
         .add_generic_attributes(["class"]);
-    sanitizer.clean(&rendered).to_string()
+    // `ammonia` reparses and serializes the fragment, so apply the same tiny
+    // normalization once more after sanitizing as well; its serializer uses a
+    // canonical `<br>` spelling and can reintroduce the newline.
+    sanitizer
+        .clean(&rendered)
+        .to_string()
+        .replace("<br>\n", "<br>")
+        .replace("<br />\n", "<br />")
+        .replace("<br/>\n", "<br/>")
 }
 
 #[cfg(test)]
@@ -70,5 +87,13 @@ mod tests {
         assert!(!html.contains("<script>"));
         assert!(!html.contains("alert(2)"));
         assert!(!html.contains("javascript:"));
+    }
+
+    #[test]
+    fn does_not_add_copyable_whitespace_after_hard_breaks() {
+        let html = render_markdown("first  \nsecond");
+
+        assert!(html.contains("first<br>second"));
+        assert!(!html.contains("<br>\n"));
     }
 }
