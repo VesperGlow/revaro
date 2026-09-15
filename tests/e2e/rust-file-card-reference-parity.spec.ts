@@ -326,3 +326,107 @@ test('文件卡缩略图 loading 与各类失败回退保持 reference', async (
     await newContext.close()
   }
 })
+
+const longNameItem = base({
+  id: 'long-name',
+  name: '这是一个用于验证文件名截断行为的超长文本文档-abcdefghijklmnopqrstuvwxyz-0123456789-最终版本.txt',
+  mime_type: 'text/plain',
+})
+
+async function mockLongNameBrowser(page: Page) {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: base({ id: ROOT, name: '我的文件', kind: 'directory', parent_id: null, size: 0, mime_type: '' }),
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) {
+      return json({ items: [longNameItem], total_bytes: longNameItem.size, file_count: 1 })
+    }
+    return json({ items: [] })
+  })
+}
+
+async function longNameMetrics(page: Page) {
+  return page.evaluate(() => {
+    const measure = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector)
+      if (!element) return null
+      const style = getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return {
+        text: element.textContent?.trim() ?? '',
+        title: element.getAttribute('title'),
+        display: style.display,
+        minWidth: style.minWidth,
+        maxWidth: style.maxWidth,
+        width: Math.round(rect.width * 100) / 100,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        overflow: style.overflow,
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+      }
+    }
+    return {
+      bodyOverflowX: getComputedStyle(document.body).overflowX,
+      card: {
+        info: measure('.file-card .card-info'),
+        name: measure('.file-card .card-info strong'),
+        meta: measure('.file-card .card-info small'),
+      },
+      row: {
+        info: measure('.file-row .row-info'),
+        name: measure('.file-row .row-info strong'),
+        meta: measure('.file-row .row-info small'),
+      },
+    }
+  })
+}
+
+test('长文件名在方块与列表布局中保持 reference 截断和溢出行为', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    const oldContext = await browser.newContext({ viewport })
+    const newContext = await browser.newContext({ viewport })
+    const oldPage = await oldContext.newPage()
+    const newPage = await newContext.newPage()
+
+    try {
+      await Promise.all([mockLongNameBrowser(oldPage), mockLongNameBrowser(newPage)])
+      await Promise.all([
+        openBrowser(oldPage, oldUrl, 1),
+        openBrowser(newPage, newUrl, 1),
+      ])
+      expect(await longNameMetrics(newPage), 'Rust 方块长文件名截断与 reference 不一致')
+        .toEqual(await longNameMetrics(oldPage))
+
+      await Promise.all([
+        oldPage.getByTitle('列表视图').click(),
+        newPage.getByTitle('列表视图').click(),
+      ])
+      await Promise.all([
+        expect(oldPage.locator('.file-row')).toHaveCount(1),
+        expect(newPage.locator('.file-row')).toHaveCount(1),
+      ])
+      expect(await longNameMetrics(newPage), 'Rust 列表长文件名截断与 reference 不一致')
+        .toEqual(await longNameMetrics(oldPage))
+    } finally {
+      await Promise.all([oldContext.close(), newContext.close()])
+    }
+  }
+})
