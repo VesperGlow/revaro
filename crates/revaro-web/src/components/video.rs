@@ -685,6 +685,21 @@ pub fn VideoPlayer(
         }
     };
 
+    // The reference VideoControls forwards PreviewMenu's native toggle event
+    // back to showControls(). Closing a menu therefore restarts the same
+    // auto-hide window as any other control interaction.
+    let menu_interact = Callback::new(move |_: bool| {
+        show_video_controls(
+            controls_visible,
+            controls_timer,
+            playing,
+            starting,
+            buffering,
+            error,
+            false,
+        );
+    });
+
     // Discover metadata and progress independently, just as the audio player
     // does. A metadata failure leaves native video playback available.
     {
@@ -862,7 +877,7 @@ pub fn VideoPlayer(
                     </div>
                     <span class="video-control-spacer"></span>
                     <Show when=move || !subtitles.get().is_empty() fallback=|| ()>
-                        <PreviewMenu label="字幕".to_owned() icon=MenuIcon::Captions>
+                        <PreviewMenu label="字幕".to_owned() icon=MenuIcon::Captions on_toggle=menu_interact.clone()>
                             <label class="video-setting"><span>"字幕"</span><select aria-label="字幕轨道" prop:value=move || active_subtitle.get().map_or_else(|| "-1".to_owned(), |index| index.to_string()) on:change={move |event: Event| {
                                 let Some(select) = event.target().and_then(|target| target.dyn_into::<HtmlSelectElement>().ok()) else { return; };
                                 active_subtitle.set(select.value().parse::<usize>().ok().filter(|index| *index < subtitles.get_untracked().len()));
@@ -876,7 +891,7 @@ pub fn VideoPlayer(
                             </select></label>
                         </PreviewMenu>
                     </Show>
-                    <PreviewMenu label="播放设置".to_owned() icon=MenuIcon::Settings>
+                    <PreviewMenu label="播放设置".to_owned() icon=MenuIcon::Settings on_toggle=menu_interact>
                         <label class="video-setting"><span>"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=change_rate>
                             <option value="0.5">"0.5×"</option><option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
                         </select></label>

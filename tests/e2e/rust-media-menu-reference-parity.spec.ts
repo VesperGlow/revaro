@@ -255,3 +255,51 @@ test('视频字幕与播放设置菜单在桌面与移动端保持 reference 的
     }
   }
 })
+
+test('视频菜单开合会按 reference 重置控制条自动隐藏计时器', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page)
+    await open(page, baseUrl, '菜单视频.webm')
+    const video = page.locator('video')
+    await expect(video).toHaveJSProperty('readyState', 4)
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => !element.paused)).toBe(true)
+
+    // Keep the pointer away from the controls so only the menu toggle can
+    // affect the 2.8s auto-hide timer. This mirrors PreviewMenu's native
+    // toggle event without making the assertion depend on pointer geometry.
+    await page.mouse.move(0, 0)
+    await page.evaluate(() => {
+      const menu = document.querySelector<HTMLDetailsElement>('.video-controls .preview-menu')
+      if (!menu) throw new Error('video preview menu missing')
+      menu.open = true
+      menu.dispatchEvent(new Event('toggle'))
+    })
+    await page.waitForTimeout(1_000)
+    await page.evaluate(() => {
+      const menu = document.querySelector<HTMLDetailsElement>('.video-controls .preview-menu')
+      if (!menu) throw new Error('video preview menu missing')
+      menu.open = false
+      menu.dispatchEvent(new Event('toggle'))
+    })
+    await page.waitForTimeout(2_100)
+    return page.locator('.video-controls').evaluate(element => element.classList.contains('visible'))
+  }
+
+  try {
+    const [oldVisible, newVisible] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldVisible).toBe(true)
+    expect(newVisible, 'Rust 视频菜单开合未按 reference 重置控制条自动隐藏计时器').toBe(oldVisible)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})

@@ -47,6 +47,7 @@ pub fn PreviewMenu(
     icon: MenuIcon,
     #[prop(optional)] volume: Option<RwSignal<f64>>,
     #[prop(optional)] muted: Option<RwSignal<bool>>,
+    #[prop(optional)] on_toggle: Option<Callback<bool>>,
     children: Children,
 ) -> impl IntoView {
     let menu = NodeRef::<leptos::html::Details>::new();
@@ -69,10 +70,18 @@ pub fn PreviewMenu(
     on_cleanup(move || outside.release());
 
     let menu_for_escape = menu;
+    let on_toggle = on_toggle.clone();
     view! {
         <details
             node_ref=menu
             class="preview-menu"
+            on:toggle=move |_| {
+                if let Some(callback) = on_toggle.as_ref()
+                    && let Some(details) = menu_for_escape.get()
+                {
+                    callback.run(details.open());
+                }
+            }
             on:keydown=move |event: KeyboardEvent| {
                 if event.key() == "Escape" {
                     if let Some(details) = menu_for_escape.get() {
