@@ -186,3 +186,123 @@ test('移动端列表/方块切换及刷新偏好保持 reference', async ({ bro
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+async function dialogSnapshot(page: Page) {
+  return page.locator('.dialog-backdrop').evaluate(backdrop => {
+    const rect = (selector: string) => {
+      const element = backdrop.querySelector<HTMLElement>(selector)
+      if (!element) return null
+      const box = element.getBoundingClientRect()
+      return {
+        x: Math.round(box.x * 100) / 100,
+        y: Math.round(box.y * 100) / 100,
+        width: Math.round(box.width * 100) / 100,
+        height: Math.round(box.height * 100) / 100,
+      }
+    }
+    const style = (selector: string, property: string) => {
+      const element = backdrop.querySelector<HTMLElement>(selector)
+      return element ? getComputedStyle(element).getPropertyValue(property) : null
+    }
+    return {
+      backdrop: (() => {
+        const box = backdrop.getBoundingClientRect()
+        return {
+          x: Math.round(box.x * 100) / 100,
+          y: Math.round(box.y * 100) / 100,
+          width: Math.round(box.width * 100) / 100,
+          height: Math.round(box.height * 100) / 100,
+        }
+      })(),
+      modal: rect('.app-dialog'),
+      icon: rect('.dialog-icon'),
+      copy: rect('.dialog-copy'),
+      input: rect('.app-dialog input'),
+      footer: rect('.app-dialog footer'),
+      modalDisplay: style('.app-dialog', 'display'),
+      modalPadding: style('.app-dialog', 'padding'),
+      footerGap: style('.app-dialog footer', 'gap'),
+      buttonHeight: style('.app-dialog footer button', 'min-height'),
+    }
+  })
+}
+
+async function selectionSnapshot(page: Page) {
+  return page.locator('.selection-toolbar').evaluate(toolbar => {
+    const rect = (element: Element | null) => {
+      if (!(element instanceof HTMLElement)) return null
+      const box = element.getBoundingClientRect()
+      return {
+        x: Math.round(box.x * 100) / 100,
+        y: Math.round(box.y * 100) / 100,
+        width: Math.round(box.width * 100) / 100,
+        height: Math.round(box.height * 100) / 100,
+      }
+    }
+    const style = (element: Element | null, property: string) =>
+      element instanceof HTMLElement ? getComputedStyle(element).getPropertyValue(property) : null
+    const buttons = [...toolbar.querySelectorAll<HTMLButtonElement>('.selection-actions button')]
+    return {
+      toolbar: rect(toolbar),
+      summary: rect(toolbar.querySelector('.selection-summary')),
+      actions: rect(toolbar.querySelector('.selection-actions')),
+      actionCount: buttons.length,
+      actionRects: buttons.map(button => rect(button)),
+      actionFlexDirection: style(buttons[0], 'flex-direction'),
+      actionOverflow: style(toolbar.querySelector('.selection-actions'), 'overflow-x'),
+    }
+  })
+}
+
+test('对话框和选择工具栏在桌面/断点/手机宽度保持 reference 几何', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const viewports = [
+    { width: 1440, height: 900 },
+    { width: 851, height: 900 },
+    { width: 850, height: 900 },
+    { width: 390, height: 844 },
+  ]
+
+  for (const viewport of viewports) {
+    const oldContext = await browser.newContext({ viewport })
+    const newContext = await browser.newContext({ viewport })
+    const oldPage = await oldContext.newPage()
+    const newPage = await newContext.newPage()
+    try {
+      await Promise.all([mockShell(oldPage), mockShell(newPage)])
+      await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+
+      const openCreateFolder = async (page: Page) => {
+        const desktopButton = page.locator('.desktop-create-actions button').filter({ hasText: '新建文件夹' })
+        if (await desktopButton.isVisible()) {
+          await desktopButton.click()
+        } else {
+          await page.locator('.create-menu summary').click()
+          await page.locator('.create-menu-popover').getByRole('button', { name: '新建文件夹' }).click()
+        }
+        await expect(page.locator('.dialog-backdrop .app-dialog')).toBeVisible()
+      }
+      await Promise.all([openCreateFolder(oldPage), openCreateFolder(newPage)])
+      expect(await dialogSnapshot(newPage), `Rust ${viewport.width}px 对话框几何与 reference 不一致`)
+        .toEqual(await dialogSnapshot(oldPage))
+
+      await Promise.all([
+        oldPage.locator('.dialog-backdrop .app-dialog button.secondary').click(),
+        newPage.locator('.dialog-backdrop .app-dialog button.secondary').click(),
+      ])
+      await Promise.all([
+        oldPage.getByTitle('列表视图').click(),
+        newPage.getByTitle('列表视图').click(),
+      ])
+      await Promise.all([
+        oldPage.locator('.file-row').getByRole('button', { name: '选择项目' }).first().click(),
+        newPage.locator('.file-row').getByRole('button', { name: '选择项目' }).first().click(),
+      ])
+      expect(await selectionSnapshot(newPage), `Rust ${viewport.width}px 选择工具栏几何与 reference 不一致`)
+        .toEqual(await selectionSnapshot(oldPage))
+    } finally {
+      await Promise.all([oldContext.close(), newContext.close()])
+    }
+  }
+})
