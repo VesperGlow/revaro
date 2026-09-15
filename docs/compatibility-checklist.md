@@ -223,6 +223,7 @@
 - `2026-09-15`，old `18080` / new `18084`：实际在图片适应窗口状态下拖动 24px（低于 60px 翻页阈值）并在指针未释放时读取 transform；reference 会保留临时水平跟手位移，Rust 初始版只记录位移而未渲染，已恢复；old/new 1/1，修复提交 `d9edd80`。
 - `2026-09-15`，old `18080` / new `18084`：实际打开图片并展开缩略图栏，再点击第二张图片；旧版保持胶片栏展开，并在栏打开/选中项变化后用 `{block: "nearest", inline: "center"}` 定位当前缩略图。Rust 初始版因父级动态闭包重建 `MediaPreview` 而丢失本地展开状态，且缺少定位调用；已稳定挂载预览组件并恢复两次定位，`rust-media-parity-ui.spec.ts` 新增 old/new 1/1，完整文件 28/28（首轮 1 项时序采样重跑后通过），修复提交 `f22bc2b`。
 - `2026-09-15`，old `18080` / new `18084`：实际打开音频和视频播放器并在浏览器 focus 层记录播放器根节点的调用参数；旧版两者挂载时均使用 `{preventScroll:true}`，Rust 初始版无选项调用。已恢复音频章节播放器和视频播放器的挂载焦点语义，`rust-media-focus-reference-parity.spec.ts` old/new 2/2，修复提交 `e79af9f`。
+- `2026-09-15`，以全新独立数据目录启动 old `18180`（Go server + 独立 data-plane `17180`）和 new `18184`（Rust server），在当前 bundle 上串行执行 `rust-*.spec.ts` 全部 230 项，old/new 双版本实际操作 230/230 通过（约 10.3 分钟）。首轮发现的只读 library schema 误报来自 Rust-only smoke 残留文件和异步 `duration_ms` 元数据，不是同名文件契约差异；API 探针已按 old/new 共有同名 fixture 比较并单独检查可选字段类型，上传拖放用例也等待 reference 的 250ms 完成刷新，测试修正提交 `0642967`。
 - `2026-09-15`，old `18080` / new `18084`：在图片预览和 EPUB 阅读器中实际记录关闭覆盖层时的 `HTMLElement.focus` 参数；旧版对仍连接的触发卡传入 `{preventScroll:true}`，触发卡已被移除时不再调用 focus。Rust 初始版无条件调用无选项 `focus()`，已在两类 overlay 恢复连接检查和 `preventScroll`，old/new `rust-overlay-focus-reference-parity.spec.ts` 各 2/2，修复提交 `6352538`。
 - `2026-09-15`，old `18080` / new `18084`：实际把目录选择器触发器的几何位置向下移动 80px，再从已连接的内部滚动容器派发不冒泡 `scroll`；reference 的 window capture listener 会同步移动 fixed popover，Rust 初始版位置保持不变。已恢复捕获阶段监听及释放逻辑，`rust-directory-picker-reference-parity.spec.ts` old/new 完整各 5/5，修复提交 `248a6be`。
 
@@ -281,7 +282,7 @@
 | `[P]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 1440×900 以 40 个实际 mock 文件比较两种布局的 active/`aria-pressed`/tooltip/icon、可见项、长页面滚动位置、切换后的 localStorage 和非法偏好回退；`rust-file-view-state-reference-parity.spec.ts` old/new 1/1。已有 390×844 切换/刷新/切回和六档断点布局用例继续覆盖移动端 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
 | `[P]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | old/new 390×844 实际对照根目录 loading、空根、目录 loading→完成、目录失败、回收站失败；普通文件/回收站失败保留旧内容并只显示 Toast、不出现错误卡/重试按钮；分类 503→重试→恢复由 `rust-library-reference-parity.spec.ts` 覆盖；`rust-file-loading-state-reference-parity.spec.ts` old/new 3/3（含详情/children 并发）、`rust-file-browser-reference-parity.spec.ts`、`rust-navigation-parity.spec.ts` 均通过 |
-| `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | old/new 已实际验证含 File 的 drop 默认事件、overlay 显示/关闭、子元素 dragleave 保持 overlay、回收站拒绝 drop、根目录实际上传并完成 ready 文件；文件夹拖放的浏览器目录项、重复/取消/重试和完整失败状态仍待验 |
+| `[ ]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | old/new 已实际验证含 File 的 drop 默认事件、overlay 显示/关闭、子元素 dragleave 保持 overlay、回收站拒绝 drop、根目录实际上传并完成 ready 文件；单文件实际拖放场景在 fresh old/new 端口 1/1 通过，并等待 reference 完成后的 250ms 目录刷新以排除旧版自身竞态；文件夹拖放的浏览器目录项、重复/取消/重试和完整失败状态仍待验 |
 | `[ ]` | 响应式布局 | 桌面、平板、390px 手机宽度下内容区、侧栏、顶栏、工具栏、对话框和滚动容器的宽高/层级一致。 | old/new `rust-responsive-layout-reference-parity.spec.ts` 已在 1440/1024/851/850/390/320px 对照基础壳层几何、断点入口可见性、网格列和 body 横向溢出，1/1 通过；对话框、上传/选择工具栏、媒体/阅读器和滚动容器完整矩阵仍待验 |
 
 ## 6. 文件项、图标和选择/操作菜单
@@ -303,7 +304,7 @@
 |---|---|---|---|
 | `[P]` | 上传入口 | 文件浏览头部独立上传菜单，含“上传文件”“上传文件夹”；桌面按钮、移动端下拉、图标、popover 层级、hover、点击外部/Esc 关闭和菜单动作一致。 | old/new 桌面与移动端均实际展开同一菜单；文案、说明、图标/层级、首项 hover、外部关闭、Escape 和菜单动作已对照；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1 |
 | `[ ]` | 文件选择 | 单/多文件选择、文件夹选择、取消、空选择、同名文件、路径/相对目录保留、浏览器能力差异一致。 | 当前重建后的 old/new 完整上传集合均 15/15：空选择无请求、同名双选 `[201,409]`、单文件完成、文件夹相对路径/同层顺序和坏 resume 记录旁的有效记录均已实际验证；取消选择和浏览器能力差异仍待验 |
-| `[ ]` | 拖放上传 | 文件/目录拖放、目标目录、overlay、非法文件、重复上传和完成后列表刷新一致。 | 当前重建后的 old/new 完整集合 15/15；已覆盖文件夹相对路径/同层顺序、shell/子元素 `dragleave` overlay、回收站禁止拖放、默认事件语义、刷新后反馈时序、普通上传通知时机、503/409 重试和单文件无 ETag 完成；非法文件、完整进度/取消矩阵仍待验 |
+| `[ ]` | 拖放上传 | 文件/目录拖放、目标目录、overlay、非法文件、重复上传和完成后列表刷新一致。 | 当前重建后的 old/new 完整集合 15/15；已覆盖文件夹相对路径/同层顺序、shell/子元素 `dragleave` overlay、回收站禁止拖放、默认事件语义、刷新后反馈时序、普通上传通知时机、503/409 重试和单文件无 ETag 完成；实际单文件拖放在 fresh old/new 双实例通过，测试等待 reference 250ms 完成刷新；非法文件、完整进度/取消矩阵仍待验 |
 | `[ ]` | 创建 upload | `POST /api/uploads` 的 chunk/single 模式、大小、类型、目标目录、断点信息和错误处理一致。 | old/new 实际核对 single/multipart 创建体、目标目录、大小/MIME、重复冲突和 multipart 分片批次；异常响应、边界参数及完整 `POST` 错误路径仍待验 |
 | `[ ]` | 上传进度 | 单文件/多文件进度、速度、剩余时间、并发、pending/uploading/completing/completed/failed/cancelled 状态和文案一致。 | 旧版进度公式、重试退避和 multipart 裸 PUT 语义已与 Rust 对齐；任务中心传输中隐藏、完成后 100% 和连续失败状态已 old/new 对照；并发、完整进度/取消状态矩阵仍待验 |
 | `[ ]` | 上传队列 | 队列面板的展开/收起、排序、显示更多、取消、重试、失败原因、完成清理和与任务中心的分工一致。 | old/new 完整集合 15/15 确认 reference 的可见分工：上传进行中和连续失败的本地任务均不出现在任务中心，完成后才进入完成通知；刷新后无本地句柄的任务中心取消 fallback 已对照。独立本地队列无可见面板；并发、失败/重试和本地取消内部状态矩阵仍待验 |
