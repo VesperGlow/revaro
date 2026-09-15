@@ -148,6 +148,20 @@ test('old/new preview、Range、鉴权和 thumbnail 响应保持 reference 行�
       expect(comparable(newPreview), `${fixture.name} preview headers/status 与 reference 不一致`).toEqual(comparable(oldPreview))
       expect(newPreview.body.equals(oldPreview.body), `${fixture.name} preview body 与 reference 不一致`).toBe(true)
 
+      const [oldHead, newHead] = await Promise.all([
+        responseShape(await clients[0].fetch(`/api/files/${created[0][index].id}/preview`, {
+          method: 'HEAD',
+          headers: headers(oldUrl),
+        })),
+        responseShape(await clients[1].fetch(`/api/files/${created[1][index].id}/preview`, {
+          method: 'HEAD',
+          headers: headers(newUrl),
+        })),
+      ])
+      expect(comparable(newHead), `${fixture.name} preview HEAD 与 reference 不一致`).toEqual(comparable(oldHead))
+      expect(newHead.body.length).toBe(0)
+      expect(oldHead.body.length).toBe(0)
+
       const [oldRange, newRange] = await Promise.all([
         responseShape(await clients[0].get(`/api/files/${created[0][index].id}/preview`, {
           headers: { ...headers(oldUrl), Range: 'bytes=2-9' },
@@ -158,6 +172,17 @@ test('old/new preview、Range、鉴权和 thumbnail 响应保持 reference 行�
       ])
       expect(comparable(newRange), `${fixture.name} preview Range 与 reference 不一致`).toEqual(comparable(oldRange))
       expect(newRange.body.equals(oldRange.body), `${fixture.name} preview Range body 与 reference 不一致`).toBe(true)
+
+      const [oldMatching, newMatching] = await Promise.all([
+        responseShape(await clients[0].get(`/api/files/${created[0][index].id}/preview`, {
+          headers: { ...headers(oldUrl), Range: 'bytes=0-2', 'If-Range': oldPreview.etag },
+        })),
+        responseShape(await clients[1].get(`/api/files/${created[1][index].id}/preview`, {
+          headers: { ...headers(newUrl), Range: 'bytes=0-2', 'If-Range': newPreview.etag },
+        })),
+      ])
+      expect(comparable(newMatching), `${fixture.name} matching If-Range 与 reference 不一致`).toEqual(comparable(oldMatching))
+      expect(newMatching.body.equals(oldMatching.body), `${fixture.name} matching If-Range body 与 reference 不一致`).toBe(true)
 
       const [oldStale, newStale] = await Promise.all([
         responseShape(await clients[0].get(`/api/files/${created[0][index].id}/preview`, {

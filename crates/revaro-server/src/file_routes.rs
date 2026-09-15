@@ -19,11 +19,13 @@
 //! counts from a cached listing. This module only fetches rows and joins them.
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::{Path as PathParam, Query, State};
-use axum::routing::get;
+use axum::routing::{MethodFilter, get};
 use axum::{Json, Router};
+use bytes::Bytes;
 use revaro_core::ApiError;
 use revaro_core::api::{Children, FileDetail, Library, LibraryAll, LibraryBuckets};
 use revaro_core::classify::LibraryKind;
@@ -75,8 +77,17 @@ pub fn routes() -> Router<Arc<AppState>> {
             axum::routing::patch(patch_file).delete(delete_file),
         )
         .route("/files/{id}/copy", axum::routing::post(copy_file))
-        .route("/files/{id}/download", get(download))
-        .route("/files/{id}/preview", get(preview))
+        // Axum's `get` intentionally also dispatches HEAD. The reference
+        // chi router registered these content handlers for GET only, so keep
+        // that externally visible method boundary during the migration.
+        .route(
+            "/files/{id}/download",
+            get(download).on(MethodFilter::HEAD, head_not_allowed),
+        )
+        .route(
+            "/files/{id}/preview",
+            get(preview).on(MethodFilter::HEAD, head_not_allowed),
+        )
         .route("/documents", axum::routing::post(create_document))
         .route(
             "/files/{id}/media/progress",
@@ -1801,6 +1812,21 @@ async fn download(
 ) -> Result<axum::response::Response, ApiError> {
     let file = ready_file(state.clone(), id, "ready file not found").await?;
     serve_file(state, file, false, headers).await
+}
+
+/// The reference registered content delivery for GET only. Keep HEAD behind
+/// the same authentication boundary, but do not expose a synthetic metadata
+/// response merely because Axum's `get` convenience route normally supports
+/// HEAD automatically.
+async fn head_not_allowed(_user: AuthUser) -> axum::response::Response {
+    // An empty `Body` carries an exact-zero size hint and Hyper adds
+    // `Content-Length: 0`; the old net/http method rejection omitted it.
+    // An empty stream keeps the body empty without manufacturing that header.
+    let body =
+        axum::body::Body::from_stream(futures_util::stream::empty::<Result<Bytes, Infallible>>());
+    let mut response = axum::response::Response::new(body);
+    *response.status_mut() = http::StatusCode::METHOD_NOT_ALLOWED;
+    response
 }
 
 /// Resolve a live, ready file by id.
