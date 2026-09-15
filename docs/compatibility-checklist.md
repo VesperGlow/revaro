@@ -234,6 +234,8 @@
 - `2026-09-15`，old `18180` / new `18184` 先实际显示有效 VTT cue，再向两版原生 `track` 派发 `error`；旧版仅记录诊断、保留当前字幕 overlay，Rust 初始版清空字幕并卸载 overlay。已恢复 reference 的诊断-only 语义，新增 `rust-media-parity-ui.spec.ts` old/new 1/1，完整媒体文件现为 34/34，修复提交 `476d747`；其余字幕失败组合仍待验。
 - `2026-09-15`，old `18180` / new `18184` 实际逐项操作文件卡与列表行：右键阻止原生菜单、方块 Space 阻止滚动但不选择、目录 Enter 导航、列表 Space 选择，以及 390×844 选择模式轻触列表行只取消选择不打开 editor；old/new 新增交互用例 2/2。结合已有全类型、loading/fallback、pending/failed、长文件名、焦点/hover 和列表日期矩阵，文件项主交互已收口；旧版生产方块未传 `selectable`，因此无可达长按选择或 disabled 控件分支。
 - `2026-09-15`，old `18180` / new `18184` 在阅读器目录抽屉打开时实际拦截 `HTMLElement.focus` 参数；reference 使用 `{preventScroll:true}`，Rust 初始版使用无参数 `focus()`。已恢复异步目录焦点的 `preventScroll` 选项，避免阅读位置因焦点回收发生滚动；`rust-overlay-focus-reference-parity.spec.ts` 阅读器 old/new 1/1（整文件 2/2），修复提交待提交。
+- `2026-09-15`，old `18180` / new `18184` 以 390×844 同一阅读流实际操作字号、行距、主题、工具显隐、空目录和遮罩关闭；两版状态快照一致。期间发现 Rust 行距按钮把整值显示为 `2.0`，reference 显示 `2`，已恢复格式；`rust-reader-reference-parity.spec.ts` old/new 1/1。
+- `2026-09-15`，old `18180` / new `18184` 在 390×844 触摸上下文通过 Chromium `Input.dispatchTouchEvent` 实际横向拖动、纵向拖动；两版横向翻页 transform/页码一致，纵向手势不变更页码。另对照父子目录缩进、活动项、无缓存 flow 的错误文案及“关闭”入口，old/new 1/1；新 reader parity 文件整组 3/3。
 
 ## 2. 启动、认证和全局壳层
 
@@ -354,11 +356,11 @@
 | `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | old/new 17项 reader-flow 与真实 TXT 链路已通过；仍需把条目证据拆到各子场景 |
 | `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 真实 EPUB 1/1、reader-flow 17/17 和普通文件打开分流/浏览器后退 1/1 已通过；损坏/错误回退和逐项截图仍待验 |
 | `[P]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | old/new reader-flow 的顶栏、标题截断、ring、沉浸式隐藏和恢复均通过；真实 EPUB 另验证页码及 `阅读进度 14.0%` |
-| `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；触摸翻页/取消、完整键盘状态仍待独立矩阵 |
-| `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | old/new reader-flow 已通过文本 locator、fragment、未加载 chunk、媒体 NavAnchor、无 fragment、父级/随机跳转和 Escape 焦点；空目录、复杂层级视觉和完整错误状态仍待验 |
-| `[ ]` | 阅读设置 | 字号、行距、主题、背景、沉浸式模式、弹层覆盖正文、图标居中、纯客户端重排零 chunk 请求一致。 | old/new reader-flow 已通过字号/行距零 chunk、主题、覆盖层几何和工具显隐；偏好跨刷新、边界 disabled、触摸/键盘完整状态仍待验 |
+| `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；`rust-reader-reference-parity.spec.ts` 在 390×844 通过 Chromium touch 横向翻页及纵向不翻页；touchcancel、完整键盘状态仍待独立矩阵 |
+| `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | old/new reader-flow 已通过文本 locator、fragment、未加载 chunk、媒体 NavAnchor、无 fragment、父级/随机跳转和 Escape 焦点；新增 old/new 对照空目录、父子缩进、活动项和错误关闭；完整视觉/错误矩阵仍待验 |
+| `[ ]` | 阅读设置 | 字号、行距、主题、背景、沉浸式模式、弹层覆盖正文、图标居中、纯客户端重排零 chunk 请求一致。 | old/new reader-flow 已通过字号/行距零 chunk、主题、覆盖层几何和工具显隐；新增 old/new 390px 对照偏好读写、行距文案、主题/工具/空目录状态；跨刷新、边界 disabled、触摸/键盘完整状态仍待验 |
 | `[ ]` | 进度和缓存 | `revaro-reader-prefs`、服务端 `/book/progress`、anchor、manifest/chunk L2 cache、重开零重复请求、版本变化重取一致。 | old/new reader-flow 17/17、真实 EPUB 1/1；Rust 已恢复全局 `data-block`、14/14.0% 标签、版本/指纹变更清理和重开零 chunk，偏好/断网/失败/并发保存矩阵仍待验 |
-| `[ ]` | 阅读器响应式 | 桌面/窄屏/触摸、手势与滚动冲突、旋转、空白点击和 drawer 关闭一致。 | old/new 已通过 390×844 视觉、旋转重排、drawer/scrim/Escape；实际触摸手势、pointer cancel、safe-area 和滚动冲突仍待验 |
+| `[ ]` | 阅读器响应式 | 桌面/窄屏/触摸、手势与滚动冲突、旋转、空白点击和 drawer 关闭一致。 | old/new 已通过 390×844 视觉、旋转重排、drawer/scrim/Escape，以及 Chromium touch 横向/纵向手势；pointer cancel、safe-area 和滚动冲突仍待验 |
 
 旧版 `web/e2e/reader-flow.spec.ts` 和 `reader-real-epub.spec.ts` 的全部行为场景都属于本节，不得只以当前 3 个 smoke case 通过代替：包括窗口预取、目录锚点、回退到开头、跨 spine、父级目录不回弹、随机 seek 稳定、页边界、旋转、图片章节定位、缓存复开和视觉覆盖层。
 

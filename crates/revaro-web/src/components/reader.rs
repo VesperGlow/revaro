@@ -868,7 +868,7 @@ pub fn ReaderView(
                                     type="button"
                                     on:click=move |_| set_line_height(value)
                                 >
-                                    {format!("{value:.1}")}
+                                    {line_height_label(value)}
                                 </button>
                             }
                         })
@@ -2224,6 +2224,14 @@ fn progress_label(percent: f64) -> String {
         format!("{value:.0}%")
     } else {
         format!("{value:.1}%")
+    }
+}
+
+fn line_height_label(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
     }
 }
 
