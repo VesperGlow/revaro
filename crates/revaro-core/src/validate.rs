@@ -300,7 +300,7 @@ pub fn validate_batch_download_ids(ids: &[String]) -> Result<(), ApiError> {
     }
     let mut seen = std::collections::HashSet::with_capacity(ids.len());
     for id in ids {
-        if !crate::ids::is_uuid(id) {
+        if !is_valid_batch_download_id(id) {
             return Err(ApiError::bad_request("invalid file id"));
         }
         if !seen.insert(id) {
@@ -308,6 +308,21 @@ pub fn validate_batch_download_ids(ids: &[String]) -> Result<(), ApiError> {
         }
     }
     Ok(())
+}
+
+/// Validate the externally supplied identifier shape used by the historical
+/// batch-download endpoint. File rows normally use UUIDs, but the old handler
+/// deliberately left the final lookup to the database: a safe unknown value
+/// therefore produced the same 404 as any other missing file. Keep that
+/// distinction at the API boundary for clients which rely on the old error
+/// partitioning.
+fn is_valid_batch_download_id(id: &str) -> bool {
+    if id.is_empty() || id == "." || id == ".." || id.len() > 128 || id.trim() != id {
+        return false;
+    }
+    !id.chars().any(|character| {
+        character < '\u{20}' || character == '\u{7f}' || character == '/' || character == '\\'
+    })
 }
 
 #[cfg(test)]
@@ -581,12 +596,8 @@ mod tests {
                 .message,
             "duplicate file id"
         );
-        assert_eq!(
-            validate_batch_download_ids(&["nope".to_owned()])
-                .unwrap_err()
-                .message,
-            "invalid file id"
-        );
+        assert!(validate_batch_download_ids(&["nope".to_owned()]).is_ok());
+        assert!(validate_batch_download_ids(&["blobs/file".to_owned()]).is_err());
         let too_many: Vec<String> = (0..1001).map(|index| format!("{index:0>36}")).collect();
         assert!(
             validate_batch_download_ids(&too_many)
