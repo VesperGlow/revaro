@@ -257,6 +257,109 @@ test('桌面与移动顶栏入口保持 reference 的完整分流', async ({ bro
   }
 })
 
+async function globalDisclosureSnapshot(page: Page) {
+  return page.evaluate(() => {
+    const visible = (selector: string) => {
+      const element = document.querySelector(selector) as HTMLElement | null
+      if (!element) return false
+      const style = getComputedStyle(element)
+      return style.display !== 'none' && style.visibility !== 'hidden'
+    }
+    return {
+      taskOpen: document.querySelector('.task-center')?.hasAttribute('open') ?? false,
+      taskVisible: visible('.task-panel'),
+      statusOpen: document.querySelector('.system-status')?.hasAttribute('open') ?? false,
+      statusVisible: visible('.status-panel'),
+      mobileMenuOpen: document.querySelector('.mobile-account-menu')?.hasAttribute('open') ?? false,
+      accountVisible: visible('.account-modal'),
+      trashHeading: document.querySelector('h1')?.textContent?.trim() ?? null,
+      pathname: location.pathname,
+    }
+  })
+}
+
+test('顶栏 disclosure 互相切换、外部关闭和重复操作保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  const compare = async (label: string) => {
+    expect(await globalDisclosureSnapshot(newPage), `Rust ${label} 与 reference 的全局 disclosure 状态不一致`)
+      .toEqual(await globalDisclosureSnapshot(oldPage))
+  }
+
+  const desktopSequence = async (page: Page, baseUrl: string) => {
+    await openShell(page, baseUrl)
+
+    await page.locator('.task-center > summary').click()
+    await expect(page.locator('.task-panel')).toBeVisible()
+    await page.locator('.system-status > summary').click()
+    await expect(page.locator('.status-panel')).toBeVisible()
+    await page.locator('.system-status > summary').click()
+    await page.locator('.task-center > summary').click()
+    await page.locator('.task-center > summary').click()
+    await expect(page.locator('.task-panel')).toBeHidden()
+
+    await page.locator('.system-status > summary').click()
+    await page.mouse.click(4, 896)
+    await expect(page.locator('.status-panel')).toBeHidden()
+
+    await page.locator('.system-status > summary').click()
+    await page.locator('button[title="打开账户设置"]').click()
+    await expect(page.locator('.account-modal')).toBeVisible()
+    await expect(page.locator('.task-panel')).toBeHidden()
+    await expect(page.locator('.status-panel')).toBeHidden()
+    await page.locator('.account-modal > header button').click()
+
+    await page.locator('.topbar button[title="回收站"]').click()
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '返回我的文件', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  }
+
+  const mobileSequence = async (page: Page, baseUrl: string) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(page.locator('.mobile-account-menu > summary')).toBeVisible()
+
+    await page.locator('.mobile-account-menu > summary').click()
+    await page.locator('.system-status > summary').click()
+    await expect(page.locator('.status-panel')).toBeVisible()
+    await page.locator('.system-status > summary').click()
+    await page.locator('.mobile-account-menu > summary').click()
+    await expect(page.locator('.mobile-account-menu')).toHaveAttribute('open', '')
+    await page.locator('.mobile-account-menu > summary').click()
+    await expect(page.locator('.mobile-account-menu')).not.toHaveAttribute('open')
+
+    await page.locator('.mobile-account-menu > summary').click()
+    await page.locator('.mobile-account-menu').getByRole('button', { name: /^任务中心/ }).click()
+    await expect(page.locator('.task-panel')).toBeVisible()
+    await page.locator('.system-status > summary').click()
+    await expect(page.locator('.status-panel')).toBeVisible()
+    await expect(page.locator('.task-panel')).toBeHidden()
+    await page.mouse.click(4, 840)
+    await expect(page.locator('.status-panel')).toBeHidden()
+
+    await page.locator('.mobile-account-menu > summary').click()
+    await page.locator('.mobile-account-menu').getByRole('button', { name: '账户设置', exact: true }).click()
+    await expect(page.locator('.account-modal')).toBeVisible()
+    await page.locator('.account-modal > header button').click()
+  }
+
+  try {
+    await Promise.all([mockShell(oldPage), mockShell(newPage)])
+    await Promise.all([desktopSequence(oldPage, oldUrl), desktopSequence(newPage, newUrl)])
+    await compare('桌面连续切换完成后')
+
+    await Promise.all([mobileSequence(oldPage, oldUrl), mobileSequence(newPage, newUrl)])
+    await compare('移动端连续切换完成后')
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('文件浏览头视图切换与断点布局保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
