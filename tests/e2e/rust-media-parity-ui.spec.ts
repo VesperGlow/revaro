@@ -233,6 +233,59 @@ test('old/new 图片未达到翻页阈值时保留拖动中的水平跟手位移
   }
 })
 
+test('old/new 图片缩略图栏切换后保持展开并重新定位当前缩略图', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => {
+      const state = window as Window & { __revaroThumbnailReveals?: Array<unknown> }
+      state.__revaroThumbnailReveals = []
+      const scrollIntoView = Element.prototype.scrollIntoView
+      Element.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+        if (this.matches('.preview-filmstrip [aria-current="true"]')) {
+          state.__revaroThumbnailReveals!.push(
+            typeof options === 'object' && options !== null
+              ? { block: options.block, inline: options.inline }
+              : options ?? null,
+          )
+        }
+        return scrollIntoView.call(this, options)
+      }
+    })
+    await mockMedia(page, baseUrl)
+    await open(page, '群山.png')
+    await page.getByRole('button', { name: '缩略图', exact: true }).click()
+    await expect(page.locator('.preview-filmstrip')).toBeVisible()
+    await page.getByRole('button', { name: '查看 远山.png' }).click()
+    await expect(page.locator('.preview-file-meta')).toHaveText('远山.png')
+    await expect(page.locator('.preview-filmstrip')).toBeVisible()
+    return page.evaluate(() => ({
+      current: document.querySelector('.preview-filmstrip [aria-current="true"] img')?.getAttribute('alt'),
+      reveals: (window as Window & { __revaroThumbnailReveals?: Array<unknown> }).__revaroThumbnailReveals,
+    }))
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.current).toBe('远山.png')
+    expect(oldResult.reveals).toEqual([
+      { block: 'nearest', inline: 'center' },
+      { block: 'nearest', inline: 'center' },
+    ])
+    expect(newResult, 'Rust 缩略图栏切换后的展开和当前项定位与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('图片预览：从根节点按 Tab 首先进入更多操作菜单', async ({ page }) => {
   await mockMedia(page)
   await open(page, '群山.png')

@@ -166,7 +166,6 @@ pub fn MediaPreview(
             }
             last_selected_id.set_value(file.id.clone());
             chrome_visible.set(true);
-            thumbnails_open.set(false);
             loading.set(classify::is_image(&file));
             image_error.set(false);
             natural.set(Size {
@@ -177,6 +176,7 @@ pub fn MediaPreview(
             pan.set(Point { x: 0.0, y: 0.0 });
             pointers.set(HashMap::new());
             drag.set(DragState::default());
+            reveal_thumbnail(root);
             if classify::is_image(&file) && !previous_id.is_empty() {
                 preload_adjacent(&file, &items.get_untracked());
             }
@@ -786,7 +786,13 @@ pub fn MediaPreview(
                                     </button>
                                     <button class="media-icon-button" type="button" aria-label="放大" title="放大" prop:disabled={move || zoom.get() >= max_zoom(natural.get(), stage_size.get()) || loading.get() || image_error.get()} on:click=move |_| set_zoom(zoom, pan, natural, stage_size, zoom.get_untracked() * 1.2, Point { x: 0.0, y: 0.0 }, Point { x: 0.0, y: 0.0 })>{icons::zoom_in()}</button>
                                     <Show when=move || gallery_items(&items.get()).len().gt(&1) fallback=|| ()>
-                                        <button class="media-icon-button" type="button" aria-label="缩略图" title="缩略图" aria-expanded=move || if thumbnails_open.get() { "true" } else { "false" } on:click=move |_| thumbnails_open.update(|open| *open = !*open)>{icons::gallery_horizontal_end()}</button>
+                                        <button class="media-icon-button" type="button" aria-label="缩略图" title="缩略图" aria-expanded=move || if thumbnails_open.get() { "true" } else { "false" } on:click=move |_| {
+                                            let open = !thumbnails_open.get_untracked();
+                                            thumbnails_open.set(open);
+                                            if open {
+                                                reveal_thumbnail(root);
+                                            }
+                                        }>{icons::gallery_horizontal_end()}</button>
                                     </Show>
                                 </div>
                                 <Show when=move || thumbnails_open.get() fallback=|| ()>
@@ -1102,6 +1108,27 @@ fn thumbnail_fallback(event: leptos::ev::ErrorEvent, file: &File) {
     if image.src() != absolute {
         image.set_src(&absolute);
     }
+}
+
+fn reveal_thumbnail(root: NodeRef<leptos::html::Section>) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let callback = Closure::once_into_js(move || {
+        let Some(root) = root.get() else {
+            return;
+        };
+        let Ok(Some(element)) = root.query_selector(".preview-filmstrip [aria-current=\"true\"]")
+        else {
+            return;
+        };
+        let options = web_sys::ScrollIntoViewOptions::new();
+        options.set_block(web_sys::ScrollLogicalPosition::Nearest);
+        options.set_inline(web_sys::ScrollLogicalPosition::Center);
+        element.scroll_into_view_with_scroll_into_view_options(&options);
+    });
+    let _ =
+        window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
 }
 
 fn preload_adjacent(selected: &File, items: &[File]) {

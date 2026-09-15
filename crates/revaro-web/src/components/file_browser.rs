@@ -2427,23 +2427,14 @@ pub fn FileBrowser(
                 }
             }}
             <Show when=move || media_file.get().is_some() fallback=|| ()>
-                {move || {
-                    if media_file.get().is_some() {
-                        view! {
-                            <MediaPreview
-                                selected=media_file
-                                items=preview_items
-                                on_close=close_media
-                                on_download=download_media
-                                on_move=move_media
-                                on_copy=copy_media
-                            />
-                        }
-                        .into_any()
-                    } else {
-                        ().into_any()
-                    }
-                }}
+                <MediaPreview
+                    selected=media_file
+                    items=preview_items
+                    on_close=close_media
+                    on_download=download_media
+                    on_move=move_media
+                    on_copy=copy_media
+                />
             </Show>
             <Show when=move || reader_file.get().is_some() fallback=|| ()>
                 {move || {
