@@ -150,11 +150,27 @@ pub fn on_resize(callback: impl Fn(leptos::ev::UiEvent) + 'static) -> OwnedListe
 
 /// Listen for viewport or scroll-container movement while a positioned
 /// transient view is mounted.
+///
+/// Scroll events from element scroll containers do not bubble. The reference
+/// registers this listener on `window` with capture enabled, which is why this
+/// helper cannot use the ordinary bubbling `WindowListenerHandle` path.
 pub fn on_scroll(callback: impl Fn(leptos::ev::Event) + 'static) -> OwnedListener {
-    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
-        ev::scroll,
-        callback,
-    ))))
+    let Some(window) = web_sys::window() else {
+        return OwnedListener(None);
+    };
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(callback);
+    let listener = listener.into_js_value();
+    let _ =
+        window.add_event_listener_with_callback_and_bool("scroll", listener.unchecked_ref(), true);
+    let cleanup = leptos::__reexports::send_wrapper::SendWrapper::new((window, listener));
+    OwnedListener(Some(ListenerHandle::Raw(Box::new(move || {
+        let (window, listener) = cleanup.take();
+        let _ = window.remove_event_listener_with_callback_and_bool(
+            "scroll",
+            listener.unchecked_ref(),
+            true,
+        );
+    }))))
 }
 
 /// Listen for changes to the document's fullscreen element.

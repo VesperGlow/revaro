@@ -240,6 +240,65 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
   }
 })
 
+async function shiftPickerTriggerForNestedScroll(page: Page, shift: number) {
+  await page.evaluate((value) => {
+    const trigger = document.querySelector('.directory-trigger') as HTMLElement | null
+    if (!trigger) throw new Error('directory trigger not found')
+    const initial = trigger.getBoundingClientRect()
+    ;(window as any).__pickerScrollShift = value
+    trigger.getBoundingClientRect = () => {
+      const current = (window as any).__pickerScrollShift || 0
+      return new DOMRect(initial.x, initial.y + current, initial.width, initial.height)
+    }
+    const scroller = document.createElement('div')
+    scroller.setAttribute('data-picker-scroll-probe', '')
+    document.body.append(scroller)
+    ;(window as any).__pickerScrollProbe = scroller
+    scroller.dispatchEvent(new Event('scroll'))
+  }, shift)
+}
+
+test('目录选择器在嵌套滚动容器移动时跟随触发器', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockPicker(oldPage), mockPicker(newPage)])
+    await Promise.all([openPicker(oldPage, oldUrl), openPicker(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('region', { name: '选择目标目录' })).toBeVisible(),
+      expect(newPage.getByRole('region', { name: '选择目标目录' })).toBeVisible(),
+    ])
+    await Promise.all([oldPage.waitForTimeout(50), newPage.waitForTimeout(50)])
+    const oldBefore = await popoverMetrics(oldPage)
+    const newBefore = await popoverMetrics(newPage)
+
+    await Promise.all([
+      shiftPickerTriggerForNestedScroll(oldPage, 80),
+      shiftPickerTriggerForNestedScroll(newPage, 80),
+    ])
+    await Promise.all([oldPage.waitForTimeout(50), newPage.waitForTimeout(50)])
+    const oldAfter = await popoverMetrics(oldPage)
+    const newAfter = await popoverMetrics(newPage)
+    const oldShift = oldAfter.y - oldBefore.y
+    const newShift = newAfter.y - newBefore.y
+
+    expect(oldShift, 'reference 嵌套滚动应重新定位 popover').toBeCloseTo(80, 0)
+    expect(newShift, 'Rust 嵌套滚动后的 popover 定位与 reference 不一致').toBeCloseTo(oldShift, 0)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
 test('目录选择器进入目标目录并发读取详情和子目录', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
