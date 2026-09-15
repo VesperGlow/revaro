@@ -236,6 +236,7 @@
 - `2026-09-15`，old `18180` / new `18184` 在阅读器目录抽屉打开时实际拦截 `HTMLElement.focus` 参数；reference 使用 `{preventScroll:true}`，Rust 初始版使用无参数 `focus()`。已恢复异步目录焦点的 `preventScroll` 选项，避免阅读位置因焦点回收发生滚动；`rust-overlay-focus-reference-parity.spec.ts` 阅读器 old/new 1/1（整文件 2/2），修复提交 `209179e`。
 - `2026-09-15`，old `18180` / new `18184` 以 390×844 同一阅读流实际操作字号、行距、主题、工具显隐、空目录和遮罩关闭；两版状态快照一致。期间发现 Rust 行距按钮把整值显示为 `2.0`，reference 显示 `2`，已恢复格式；`rust-reader-reference-parity.spec.ts` old/new 1/1。
 - `2026-09-15`，old `18180` / new `18184` 在 390×844 触摸上下文通过 Chromium `Input.dispatchTouchEvent` 实际横向拖动、纵向拖动；两版横向翻页 transform/页码一致，纵向手势不变更页码。另对照父子目录缩进、活动项、无缓存 flow 的错误文案及“关闭”入口，old/new 1/1；新 reader parity 文件整组 3/3。
+- `2026-09-15`，old `18180` / new `18184` 在 1440、851、850、390px 实际打开“新建文件夹”确认弹窗并读取 modal、icon、copy、input、footer 和按钮 computed geometry；又切换列表并打开选择工具栏比较桌面/断点/手机布局。发现 Rust `ActionDialog` 缺少旧版 input border 和 button `min-height/padding/font-weight`，通用弹窗比 reference 高 11px；已恢复旧版控件规则，`rust-responsive-layout-reference-parity.spec.ts` 新增对照 old/new 1/1，修复提交 `a3b9b58`。
 
 ## 2. 启动、认证和全局壳层
 
