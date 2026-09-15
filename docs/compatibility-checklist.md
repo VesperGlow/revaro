@@ -257,6 +257,7 @@
 - `2026-09-15`，old `18180` / new `18184`：新增顶栏全局 disclosure 连续操作矩阵，桌面实际交替打开/关闭任务中心与系统状态、点击外部区域、从状态面板切到账户设置和回收站；390×844 实际交替打开状态球、账户工具菜单和任务中心，验证菜单互相关闭、重复点击、外部关闭与账户设置返回。新增用例 old/new 各 1/1，提交 `990a60f`。
 - `2026-09-15`，old `18180` / new `18184`：实际进入两层目录后在同一浏览器事件循环连续执行两次后退，并将第一层恢复请求延迟 350ms。旧版先保留第二层页面的 loading，再按 `popChain` 顺序完成第一层和根目录恢复；Rust 初始版让第二次请求抢先完成并跳过该中间状态。已恢复串行 history 队列和可等待的目录恢复，`rust-history-sequence-reference-parity.spec.ts` old/new 1/1；连同导航、分类 history、弹层 history 和打开分流集合共 22/22 通过，修复提交 `bfa45da`。
 - `2026-09-15`，old `18180` / new `18184`：实际让普通上传的字节 PUT 保持进行中，再从任务中心点击取消；两版都先触发本地 XHR abort，随后 DELETE 远端 upload session，最终 session 均 404 且任务进入取消终态。`rust-upload-cancel-reference-parity.spec.ts` old/new 1/1，请求顺序和中止事件一致，提交 `ae30e4a`；完整进度、断线和本地队列状态矩阵仍待验。
+- `2026-09-15`，old `18180` / new `18184`：以同一随机目录在两个实例实际逐项提交空名、`.`、`..`、首尾空格、斜杠/反斜杠、控制字符和 256 字符名称；`POST /api/directories`、`PATCH /api/files/{id}`、`POST /api/documents`、`POST /api/uploads` 的状态与错误 JSON 均一致，目录清理后无残留。`rust-crud-reference-parity.spec.ts` 非法名称用例 old/new 1/1，测试提交 `897db00`；这项证据仅收口 API 校验，弹窗层 loading/非法名展示和完整失败状态仍待验。
 
 ## 2. 启动、认证和全局壳层
 
@@ -346,7 +347,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | old/new 已实际验证空白输入 disabled 且不发请求、有效名称按 Enter 提交、遮罩/Escape 取消、409 关闭弹窗 + error toast，以及延迟 children 刷新完成后才显示“文件夹已创建”（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；非法名、loading 和完整成功矩阵仍待收口 |
+| `[ ]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | old/new 已实际验证空白输入 disabled 且不发请求、有效名称按 Enter 提交、遮罩/Escape 取消、409 关闭弹窗 + error toast，以及延迟 children 刷新完成后才显示“文件夹已创建”（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；API 层非法名称矩阵（空名、点路径、空白、分隔符、控制字符、超长名）已由 old/new 逐项对照（`897db00`），弹窗层非法名/loading 和完整成功矩阵仍待收口 |
 | `[ ]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | old/new 已验证创建菜单实际动作、默认名、进入 editor、菜单立即关闭和保存重开；取消、失败仍待收口 |
 | `[ ]` | 重命名 | 单选条件、输入初值/扩展名规则、冲突、空白、Enter/Esc、PATCH 结果和列表更新一致。 | old/new 已实际对照初始名称、输入/按钮状态、文案、焦点及弹窗时选择工具栏卸载；尾随空格原样进入 PATCH；空名允许提交、有效输入按 Enter 提交、遮罩关闭且 Escape 保留弹窗；409 冲突保留输入/弹窗并恢复可重试状态；延迟 children 刷新完成后才显示成功反馈；800ms PATCH 进行中标题栏关闭仍按 reference 卸载弹窗（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；完整 PATCH 结果矩阵仍待收口 |
 | `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | old/new 触发器、面板定位/DOM、140ms 进入/退出过渡、路径图标几何、目录源排除自身、目标选中及 `parent_id` 提交、实际移动和清理、PATCH pending 时点击遮罩关闭、延迟 children 刷新完成后才显示成功反馈，以及首次 children 500 后错误态/“重新加载”恢复已对照；排除子目录/冲突和完整结果矩阵仍待验 |
