@@ -97,7 +97,9 @@ pub fn VideoPlayer(
         let shell_for_focus = shell;
         let callback = Closure::once_into_js(move || {
             if let Some(element) = shell_for_focus.get() {
-                let _ = element.focus();
+                let options = web_sys::FocusOptions::new();
+                options.set_prevent_scroll(true);
+                let _ = element.focus_with_options(&options);
             }
         });
         let _ = window

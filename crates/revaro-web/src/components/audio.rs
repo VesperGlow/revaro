@@ -483,7 +483,11 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
             element.set_autoplay(true);
             element.set_volume(volume.get_untracked());
             element.set_muted(muted.get_untracked());
-            let _ = player.get().map(|element| element.focus());
+            if let Some(element) = player.get() {
+                let options = web_sys::FocusOptions::new();
+                options.set_prevent_scroll(true);
+                let _ = element.focus_with_options(&options);
+            }
             element.load();
             let _ = element.play();
         });
