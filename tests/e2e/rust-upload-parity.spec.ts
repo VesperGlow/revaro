@@ -474,6 +474,139 @@ test('old/new 普通文件上传按 reference 的时机进入任务中心', asyn
   }
 })
 
+test('old/new 普通上传队列保持 reference 的三文件并发上限', async ({ browser }) => {
+  const names = Array.from({ length: 4 }, (_, index) => `upload-concurrency-${crypto.randomUUID()}-${index}.txt`)
+  const buffer = Buffer.from('upload concurrency reference\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    let active = 0
+    let maxActive = 0
+    let byteRequests = 0
+    await page.route(/\/api\/uploads\/[^/]+\/data$/, async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue()
+        return
+      }
+      active += 1
+      byteRequests += 1
+      maxActive = Math.max(maxActive, active)
+      try {
+        // Keep the first three XHRs in flight long enough to observe the
+        // reference queue's FILE_CONCURRENCY boundary before the fourth starts.
+        await new Promise(resolve => setTimeout(resolve, 500))
+        const response = await route.fetch()
+        await route.fulfill({ response })
+      } finally {
+        active -= 1
+      }
+    })
+
+    await loginAt(page, baseUrl)
+    await page.locator('input[type=file]').first().setInputFiles(
+      names.map(name => ({ name, mimeType: 'text/plain', buffer })),
+    )
+    await expect.poll(() => maxActive, { timeout: 15_000 }).toBe(3)
+    await expect.poll(() => byteRequests, { timeout: 20_000 }).toBe(4)
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return -1
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).filter(item => wanted.includes(item.name) && item.status === 'ready').length
+    }, names), { timeout: 20_000 }).toBe(names.length)
+    return { maxActive, byteRequests }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ maxActive: 3, byteRequests: 4 })
+    expect(newResult, 'Rust 普通上传并发上限与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      removeCreated(oldPage, names),
+      removeCreated(newPage, names),
+      oldContext.close(),
+      newContext.close(),
+    ])
+  }
+})
+
+test('old/new 页面卸载时只中止本地上传请求而不提前删除 reference session', async ({ browser }) => {
+  const name = `upload-dispose-reference-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload dispose reference\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    const abortRequests: string[] = []
+    let uploadId = ''
+    page.on('request', request => {
+      const url = new URL(request.url())
+      if (url.pathname.startsWith('/api/uploads/') && request.method() === 'DELETE') {
+        abortRequests.push(url.pathname)
+      }
+    })
+    await page.route(/\/api\/uploads\/[^/]+\/data$/, async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue()
+        return
+      }
+      try {
+        await new Promise(resolve => setTimeout(resolve, 5_000))
+        const response = await route.fetch()
+        await route.fulfill({ response })
+      } catch {
+        // A page reload aborts this browser XHR, which is the behavior under test.
+      }
+    })
+
+    await loginAt(page, baseUrl)
+    const created = page.waitForResponse(response => {
+      const url = new URL(response.url())
+      return url.pathname === '/api/uploads' && response.request().method() === 'POST' && response.ok()
+    })
+    const byteStarted = page.waitForRequest(request => {
+      const url = new URL(request.url())
+      return url.pathname.match(/^\/api\/uploads\/[^/]+\/data$/) !== null && request.method() === 'PUT'
+    })
+    await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer })
+    uploadId = (await (await created).json() as { upload_id: string }).upload_id
+    await byteStarted
+    await page.reload()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.waitForTimeout(700)
+    const result = [...abortRequests]
+    if (uploadId) {
+      await page.evaluate(async id => { await fetch(`/api/uploads/${id}`, { method: 'DELETE' }) }, uploadId)
+    }
+    return result
+  }
+
+  try {
+    const [oldRequests, newRequests] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldRequests).toEqual([])
+    expect(newRequests, 'Rust 页面卸载不应比 reference 额外删除上传 session').toEqual(oldRequests)
+  } finally {
+    await Promise.all([removeCreated(oldPage, [name]), removeCreated(newPage, [name])])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 刷新后任务中心取消上传仍走 reference 的任务取消入口', async ({ browser }) => {
   const name = `upload-task-cancel-reference-${crypto.randomUUID()}.bin`
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
@@ -1108,5 +1241,85 @@ test('old/new 刷新后用 revaro.uploads.v1 恢复未完成 multipart 上传', 
     expect(newResult, 'Rust 断点续传请求与 reference 不一致').toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 断点记录指向过期 session 时按 reference 清理并重新创建', async ({ browser }) => {
+  const name = `upload-expired-resume-${crypto.randomUUID()}.txt`
+  const staleUploadId = `expired-${crypto.randomUUID()}`
+  const buffer = Buffer.from('expired resume reference\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    let staleLookups = 0
+    let creates = 0
+    await page.route(/\/api\/uploads(?:\/|$)/, async route => {
+      const request = route.request()
+      const pathname = new URL(request.url()).pathname
+      if (pathname === `/api/uploads/${staleUploadId}` && request.method() === 'GET') {
+        staleLookups += 1
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'not_found', message: 'upload not found' } }),
+        })
+        return
+      }
+      if (pathname === '/api/uploads' && request.method() === 'POST') creates += 1
+      await route.continue()
+    })
+
+    await loginAt(page, baseUrl)
+    await page.evaluate(({ uploadId, uploadName, size }) => {
+      localStorage.setItem('revaro.uploads.v1', JSON.stringify([{
+        uploadId,
+        parentId: '00000000-0000-0000-0000-000000000000',
+        name: uploadName,
+        size,
+        lastModified: 456,
+      }]))
+    }, { uploadId: staleUploadId, uploadName: name, size: buffer.length })
+    await page.evaluate(({ uploadName, contents }) => {
+      const input = document.querySelector('input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) throw new Error('file input is missing')
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([contents], uploadName, {
+        type: 'text/plain',
+        lastModified: 456,
+      }))
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { uploadName: name, contents: buffer.toString() })
+    await expect.poll(() => staleLookups, { timeout: 10_000 }).toBe(1)
+    await expect.poll(() => creates, { timeout: 10_000 }).toBe(1)
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === wanted && item.status === 'ready')
+    }, name), { timeout: 20_000 }).toBe(true)
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('revaro.uploads.v1') || '[]'))
+    return { staleLookups, creates, saved }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ staleLookups: 1, creates: 1, saved: [] })
+    expect(newResult, 'Rust 过期断点记录清理与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+      oldContext.close(),
+      newContext.close(),
+    ])
   }
 })
