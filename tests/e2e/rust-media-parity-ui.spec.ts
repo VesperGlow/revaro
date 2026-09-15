@@ -1024,6 +1024,99 @@ test('old/new 图片滚轮缩放保持鼠标锚点一致', async ({ browser }) =
   }
 })
 
+test('old/new 图片键盘快捷键保持翻页、缩放和默认事件语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '群山.png')
+    await expect(page.locator('.preview-image')).toBeVisible()
+
+    const dispatch = async (key: string) => page.evaluate(keyValue => new Promise<boolean>(resolve => {
+      const handler = (event: KeyboardEvent) => {
+        window.removeEventListener('keydown', handler)
+        resolve(event.defaultPrevented)
+      }
+      window.addEventListener('keydown', handler)
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: keyValue,
+        bubbles: true,
+        cancelable: true,
+      }))
+    }), key)
+
+    const initial = await page.locator('.preview-image').evaluate(element => ({
+      transform: getComputedStyle(element).transform,
+      percent: document.querySelector('.preview-actual-size')?.textContent?.trim() ?? '',
+      selected: document.querySelector('.preview-file-meta')?.textContent?.trim() ?? '',
+    }))
+    const plusPrevented = await dispatch('=')
+    const enlarged = await page.locator('.preview-image').evaluate(element => ({
+      transform: getComputedStyle(element).transform,
+      percent: document.querySelector('.preview-actual-size')?.textContent?.trim() ?? '',
+      selected: document.querySelector('.preview-file-meta')?.textContent?.trim() ?? '',
+    }))
+    const minusPrevented = await dispatch('-')
+    const fit = await page.locator('.preview-image').evaluate(element => ({
+      transform: getComputedStyle(element).transform,
+      percent: document.querySelector('.preview-actual-size')?.textContent?.trim() ?? '',
+      selected: document.querySelector('.preview-file-meta')?.textContent?.trim() ?? '',
+    }))
+    const actualPrevented = await dispatch('1')
+    const actual = await page.locator('.preview-image').evaluate(element => ({
+      transform: getComputedStyle(element).transform,
+      percent: document.querySelector('.preview-actual-size')?.textContent?.trim() ?? '',
+      selected: document.querySelector('.preview-file-meta')?.textContent?.trim() ?? '',
+    }))
+    const fitPrevented = await dispatch('0')
+    const refit = await page.locator('.preview-image').evaluate(element => ({
+      transform: getComputedStyle(element).transform,
+      percent: document.querySelector('.preview-actual-size')?.textContent?.trim() ?? '',
+      selected: document.querySelector('.preview-file-meta')?.textContent?.trim() ?? '',
+    }))
+    const nextPrevented = await dispatch('ArrowRight')
+    await expect(page.locator('.preview-file-meta')).toHaveText('远山.png')
+    const next = await page.locator('.preview-file-meta').innerText()
+    const previousPrevented = await dispatch('ArrowLeft')
+    await expect(page.locator('.preview-file-meta')).toHaveText('群山.png')
+    const previous = await page.locator('.preview-file-meta').innerText()
+
+    return {
+      initial,
+      enlarged,
+      fit,
+      actual,
+      refit,
+      defaultPrevented: { plusPrevented, minusPrevented, actualPrevented, fitPrevented, nextPrevented, previousPrevented },
+      next,
+      previous,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.defaultPrevented).toEqual({
+      plusPrevented: true,
+      minusPrevented: true,
+      actualPrevented: false,
+      fitPrevented: false,
+      nextPrevented: true,
+      previousPrevented: true,
+    })
+    expect(newResult, 'Rust 图片键盘翻页/缩放与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 媒体关闭预览的最终进度保存使用相同的 keepalive 语义', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
