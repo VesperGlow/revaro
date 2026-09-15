@@ -106,6 +106,31 @@ async function mockShell(page: Page) {
   })
 }
 
+async function mockAmbiguousFileKinds(page: Page) {
+  const files = [
+    { id: 'icon-ambiguous-book', name: 'MIME 冲突.epub', kind: 'file', size: 100, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: 'audio/mpeg' },
+    { id: 'icon-ambiguous-editable', name: 'MIME 冲突.txt', kind: 'file', size: 100, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: 'audio/mpeg' },
+    { id: 'icon-audio', name: '普通音频.mp3', kind: 'file', size: 100, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: 'audio/mpeg' },
+    { id: 'icon-generic', name: '普通归档.zip', kind: 'file', size: 100, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: 'application/zip' },
+  ]
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: files.length } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: files.length })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: files, total_bytes: files.length * 100, file_count: files.length })
+    if (path.endsWith('/thumbnail')) return route.fulfill({ status: 404, body: '' })
+    return json({ items: [] })
+  })
+}
+
 async function openShell(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
@@ -217,5 +242,48 @@ test('旧版与 Rust 版全局入口、任务中心和文件操作图标保持 r
   } finally {
     await oldContext.close()
     await newContext.close()
+  }
+})
+
+test('文件图标的重叠类型回退顺序保持 reference', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function snapshot(page: Page, baseUrl: string) {
+    await mockAmbiguousFileKinds(page)
+    await page.goto(`${baseUrl}/?icon-overlap-reference=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    const result: Record<string, string> = {}
+    for (const name of ['MIME 冲突.epub', 'MIME 冲突.txt', '普通音频.mp3', '普通归档.zip']) {
+      const card = page.locator('.file-card').filter({ hasText: name })
+      await expect(card).toBeVisible()
+      await expect.poll(async () => card.locator('.file-type-icon, .large-video').count(), { timeout: 3000 }).toBe(1)
+      result[name] = await card.locator('.file-type-icon, .large-video').evaluate(element => {
+        if (element.classList.contains('large-video')) return 'video'
+        return ['book-type-icon', 'document-type-icon', 'audio-type-icon', 'folder-type-icon', 'generic-type-icon']
+          .find(value => element.classList.contains(value)) ?? ''
+      })
+    }
+    return result
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      snapshot(oldPage, oldUrl),
+      snapshot(newPage, newUrl),
+    ])
+    expect(newState, 'Rust 文件重叠类型图标回退顺序与 reference 不一致').toEqual(oldState)
+    expect(oldState).toEqual({
+      'MIME 冲突.epub': 'book-type-icon',
+      'MIME 冲突.txt': 'document-type-icon',
+      '普通音频.mp3': 'audio-type-icon',
+      '普通归档.zip': 'generic-type-icon',
+    })
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })

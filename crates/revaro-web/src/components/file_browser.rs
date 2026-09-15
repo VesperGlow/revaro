@@ -3140,17 +3140,6 @@ fn file_icon(file: &File) -> AnyView {
             </span>
         }
         .into_any()
-    } else if classify::is_audio(file) {
-        view! {
-            <svg class="file-type-icon audio-type-icon" viewBox="0 0 96 96" aria-hidden="true">
-                <path class="icon-base" d="M22 10h38l17 17v58H22Z"></path>
-                <path class="icon-fold" d="M60 10v17h17Z"></path>
-                <path class="icon-detail audio-note" d="M62 42v27m0-27-20 5v27"></path>
-                <ellipse class="icon-accent" cx="35" cy="75" rx="9" ry="7"></ellipse>
-                <ellipse class="icon-accent" cx="55" cy="70" rx="9" ry="7"></ellipse>
-            </svg>
-        }
-        .into_any()
     } else if is_epub_file(file) {
         view! {
             <svg class="file-type-icon book-type-icon" viewBox="0 0 96 96" aria-hidden="true">
@@ -3165,6 +3154,17 @@ fn file_icon(file: &File) -> AnyView {
                 <path class="icon-base" d="M22 10h38l17 17v58H22Z"></path>
                 <path class="icon-fold" d="M60 10v17h17Z"></path>
                 <path class="icon-detail" d="M34 45h31M34 57h31M34 69h22"></path>
+            </svg>
+        }
+        .into_any()
+    } else if classify::is_audio(file) {
+        view! {
+            <svg class="file-type-icon audio-type-icon" viewBox="0 0 96 96" aria-hidden="true">
+                <path class="icon-base" d="M22 10h38l17 17v58H22Z"></path>
+                <path class="icon-fold" d="M60 10v17h17Z"></path>
+                <path class="icon-detail audio-note" d="M62 42v27m0-27-20 5v27"></path>
+                <ellipse class="icon-accent" cx="35" cy="75" rx="9" ry="7"></ellipse>
+                <ellipse class="icon-accent" cx="55" cy="70" rx="9" ry="7"></ellipse>
             </svg>
         }
         .into_any()
