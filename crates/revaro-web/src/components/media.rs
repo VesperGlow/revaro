@@ -208,7 +208,9 @@ pub fn MediaPreview(
     if let Some(window) = web_sys::window() {
         let callback = Closure::once_into_js(move || {
             if let Some(element) = root_for_mount.get() {
-                let _ = element.focus();
+                let options = web_sys::FocusOptions::new();
+                options.set_prevent_scroll(true);
+                let _ = element.focus_with_options(&options);
             }
             update_stage_size(stage_for_resize, resize_size);
             clamp_pan(resize_pan, resize_natural, resize_size, resize_zoom);
@@ -235,7 +237,11 @@ pub fn MediaPreview(
         if mounted {
             if let Some(element) = previous_focus {
                 if let Ok(element) = element.dyn_into::<web_sys::HtmlElement>() {
-                    let _ = element.focus();
+                    if element.is_connected() {
+                        let options = web_sys::FocusOptions::new();
+                        options.set_prevent_scroll(true);
+                        let _ = element.focus_with_options(&options);
+                    }
                 }
             }
         }

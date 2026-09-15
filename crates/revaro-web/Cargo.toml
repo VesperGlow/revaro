@@ -55,6 +55,7 @@ web-sys = { workspace = true, features = [
     "EventSource",
     "FileReader",
     "EventTarget",
+    "FocusOptions",
     "HtmlDetailsElement",
     "HtmlElement",
     "HtmlAudioElement",

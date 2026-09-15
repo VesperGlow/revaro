@@ -48,6 +48,30 @@ function focusName(page: Page) {
   })
 }
 
+async function installFocusProbe(page: Page) {
+  await page.addInitScript(() => {
+    const original = HTMLElement.prototype.focus
+    ;(window as any).__focusRestoreCalls = []
+    HTMLElement.prototype.focus = function (...args: any[]) {
+      if (this.matches('.file-card')) {
+        ;(window as any).__focusRestoreCalls.push({
+          connected: this.isConnected,
+          options: args[0] ? { preventScroll: args[0].preventScroll === true } : null,
+        })
+      }
+      return original.apply(this, args)
+    }
+  })
+}
+
+function focusRestoreCalls(page: Page) {
+  return page.evaluate(() => (window as any).__focusRestoreCalls ?? [])
+}
+
+async function clearFocusProbe(page: Page) {
+  await page.evaluate(() => { (window as any).__focusRestoreCalls = [] })
+}
+
 async function mockMedia(page: Page) {
   const image = '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="600"><rect width="900" height="600" fill="#aac"/></svg>'
   await page.route('**/api/**', async route => {
@@ -119,6 +143,7 @@ async function mockReader(page: Page) {
 
 async function exerciseMedia(page: Page, baseUrl: string) {
   await mockMedia(page)
+  await installFocusProbe(page)
   await page.goto(`${baseUrl}/?overlay-focus-media=${Date.now()}`)
   const card = page.locator('.file-card').filter({ hasText: '焦点图片.png' })
   await card.click()
@@ -140,11 +165,23 @@ async function exerciseMedia(page: Page, baseUrl: string) {
   }
   await page.keyboard.press('Escape')
   await expect(page.locator('.preview-modal')).toHaveCount(0)
-  return { initial, first, last, menuEscape, restored: await focusName(page), overflow: await page.evaluate(() => document.body.style.overflow) }
+  const connectedRestore = await focusRestoreCalls(page)
+  const restored = await focusName(page)
+
+  await card.click()
+  await expect(page.locator('.preview-modal')).toBeVisible()
+  await clearFocusProbe(page)
+  await page.evaluate(() => document.querySelector('.file-card')?.remove())
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.preview-modal')).toHaveCount(0)
+  const disconnectedRestore = await focusRestoreCalls(page)
+
+  return { initial, first, last, menuEscape, restored, overflow: await page.evaluate(() => document.body.style.overflow), connectedRestore, disconnectedRestore }
 }
 
 async function exerciseReader(page: Page, baseUrl: string) {
   await mockReader(page)
+  await installFocusProbe(page)
   await page.goto(`${baseUrl}/?overlay-focus-reader=${Date.now()}`)
   await page.locator('.file-card').filter({ hasText: book.name }).click()
   await expect(page.locator('#reader-view')).toBeVisible()
@@ -165,7 +202,18 @@ async function exerciseReader(page: Page, baseUrl: string) {
   const tocEscape = { open: await page.locator('#toc-drawer.open').count(), focus: await focusName(page) }
   await page.keyboard.press('Escape')
   await expect(page.locator('#reader-view')).toHaveCount(0)
-  return { initial, first, last, drawerShiftTab, tocEscape, restored: await focusName(page), overflow: await page.evaluate(() => document.body.style.overflow) }
+  const connectedRestore = await focusRestoreCalls(page)
+  const restored = await focusName(page)
+
+  await page.locator('.file-card').filter({ hasText: book.name }).click()
+  await expect(page.locator('#reader-view')).toBeVisible()
+  await clearFocusProbe(page)
+  await page.evaluate(() => document.querySelector('.file-card')?.remove())
+  await page.keyboard.press('Escape')
+  await expect(page.locator('#reader-view')).toHaveCount(0)
+  const disconnectedRestore = await focusRestoreCalls(page)
+
+  return { initial, first, last, drawerShiftTab, tocEscape, restored, overflow: await page.evaluate(() => document.body.style.overflow), connectedRestore, disconnectedRestore }
 }
 
 for (const [name, exercise] of [['媒体预览', exerciseMedia], ['阅读器', exerciseReader] ] as const) {

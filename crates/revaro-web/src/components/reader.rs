@@ -345,7 +345,9 @@ pub fn ReaderView(
         let focus_root = root;
         let callback = Closure::once_into_js(move || {
             if let Some(root) = focus_root.get() {
-                let _ = root.focus();
+                let options = web_sys::FocusOptions::new();
+                options.set_prevent_scroll(true);
+                let _ = root.focus_with_options(&options);
             }
         });
         let _ = window
@@ -381,7 +383,11 @@ pub fn ReaderView(
         if let Some(element) = previous_focus
             && let Ok(element) = element.dyn_into::<HtmlElement>()
         {
-            let _ = element.focus();
+            if element.is_connected() {
+                let options = web_sys::FocusOptions::new();
+                options.set_prevent_scroll(true);
+                let _ = element.focus_with_options(&options);
+            }
         }
     });
 
