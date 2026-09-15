@@ -872,6 +872,49 @@ test('old/new 文件选择的空输入与同名重复结果保持 reference 行�
   }
 })
 
+test('old/new 取消文件和文件夹选择不创建上传任务并关闭入口菜单', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function cancelChooser(page: Parameters<typeof login>[0], baseUrl: string) {
+    let uploadCreates = 0
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/uploads' && request.method() === 'POST') uploadCreates += 1
+    })
+    await loginAt(page, baseUrl)
+    for (const [index, input] of [
+      [0, 'input[type=file]:not([webkitdirectory])'],
+      [1, 'input[webkitdirectory]'],
+    ] as const) {
+      const menu = page.locator('.upload-menu')
+      await menu.locator('summary').click()
+      await expect(menu).toHaveAttribute('open', '')
+      const chooser = page.waitForEvent('filechooser')
+      await menu.locator('.upload-menu-popover > button').nth(index).click()
+      await chooser
+      await page.waitForTimeout(250)
+      await expect(menu).not.toHaveAttribute('open', '')
+      await expect.poll(() => page.locator(input).evaluate(element => (element as HTMLInputElement).files?.length ?? -1)).toBe(0)
+    }
+    return uploadCreates
+  }
+
+  try {
+    const [oldCreates, newCreates] = await Promise.all([
+      cancelChooser(oldPage, oldUrl),
+      cancelChooser(newPage, newUrl),
+    ])
+    expect(oldCreates).toBe(0)
+    expect(newCreates, 'Rust 取消文件选择不应创建 upload session').toBe(oldCreates)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 单文件上传没有 ETag 时保留 reference 的完成行为', async ({ browser }) => {
   const name = `upload-no-etag-reference-${crypto.randomUUID()}.txt`
   const buffer = Buffer.from('upload without etag reference\n')
