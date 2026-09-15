@@ -821,7 +821,7 @@ pub fn VideoPlayer(
                     </For>
                 </div>
             </Show>
-            <div class="video-top-shade" class:visible=move || controls_visible.get() || !playing.get()>
+            <div class="video-top-shade" class:visible=move || controls_visible.get() || !playing.get() inert=move || !controls_visible.get() && playing.get()>
                 <div class="video-title-group">
                     <button class="video-back" type="button" aria-label="退出播放" on:click={
                         let on_close = on_close.clone();
@@ -843,8 +843,8 @@ pub fn VideoPlayer(
             <Show when=move || !error.get().is_empty() fallback=|| ()>
                 <div class="video-error" role="alert"><p>{move || error.get()}</p><button type="button" on:click=retry_playback>"重新尝试"</button></div>
             </Show>
-            <div class="video-controls" class:visible=move || controls_visible.get() || !playing.get()>
-                <input class="video-seek" type="range" min="0" max=move || duration.get().max(1.0).to_string() step="0.25" prop:value=move || timeline_position().min(duration.get().max(1.0)).to_string() style=move || format!("--video-progress:{}%;", progress()) aria-label="视频进度" prop:disabled={move || duration.get() <= 0.0} on:input=preview_seek on:change=commit_seek on:pointercancel=cancel_seek />
+            <div class="video-controls" class:visible=move || controls_visible.get() || !playing.get() inert=move || !controls_visible.get() && playing.get()>
+                <input class="video-seek" type="range" min="0" max=move || duration.get().max(1.0).to_string() step="0.25" prop:value=move || timeline_position().min(duration.get().max(1.0)).to_string() style=move || format!("--video-progress:{}%;", progress()) aria-label="视频进度" aria-valuetext=move || format_media_time(timeline_position()) prop:disabled={move || duration.get() <= 0.0} on:input=preview_seek on:change=commit_seek on:pointercancel=cancel_seek />
                 <div class="video-control-row">
                     <button class="video-icon-button" type="button" aria-label=move || if playing.get() || starting.get() && autoplay_pending.get() { "暂停" } else { "播放" } on:click=move |_| toggle_playback()>
                         {move || if playing.get() || starting.get() && autoplay_pending.get() { icons::pause().into_any() } else { icons::play().into_any() }}
@@ -854,7 +854,7 @@ pub fn VideoPlayer(
                         <button class="video-icon-button" type="button" aria-label=move || if effective_volume() == 0.0 { "取消静音" } else { "静音" } on:click=move |_| toggle_mute()>
                             {move || volume_icon(effective_volume())}
                         </button>
-                        <input class="video-volume" type="range" min="0" max="1" step="0.01" aria-label="音量" prop:value=move || effective_volume().to_string() on:input=change_volume />
+                        <input class="video-volume" type="range" min="0" max="1" step="0.01" aria-label="音量" aria-valuetext=move || format!("{}%", (effective_volume() * 100.0).round() as i64) prop:value=move || effective_volume().to_string() on:input=change_volume />
                     </div>
                     <span class="video-control-spacer"></span>
                     <Show when=move || !subtitles.get().is_empty() fallback=|| ()>

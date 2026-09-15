@@ -308,6 +308,52 @@ test('old/new 视频音量归零后点击静音按钮恢复最近一次可听音
   }
 })
 
+test('old/new 视频隐藏控制条的 inert 与 range 无障碍文本保持一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.evaluate(() => localStorage.setItem('revaro-video-volume', '0.27'))
+    await open(page, '山间漫步.webm')
+    const video = page.locator('.video-player-shell video')
+    await expect(video).toHaveJSProperty('paused', false)
+    const rangeState = {
+      seek: await page.locator('.video-seek').getAttribute('aria-valuetext'),
+      volume: await page.locator('.video-volume').getAttribute('aria-valuetext'),
+    }
+
+    await video.focus()
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(3200)
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await expect(page.locator('.video-controls')).toBeHidden()
+    return {
+      ...rangeState,
+      controlsInert: await page.locator('.video-controls').getAttribute('inert'),
+      topShadeInert: await page.locator('.video-top-shade').getAttribute('inert'),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.seek).not.toBeNull()
+    expect(oldResult.volume).not.toBeNull()
+    expect(oldResult.controlsInert).not.toBeNull()
+    expect(oldResult.topShadeInert).not.toBeNull()
+    expect(newResult, 'Rust 视频隐藏控制条或 range 无障碍属性与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频用户 seek 与预览关闭的进度持久化时机一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
