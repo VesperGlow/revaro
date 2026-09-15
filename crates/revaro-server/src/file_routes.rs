@@ -1874,6 +1874,35 @@ fn range_error_response(
     response
 }
 
+fn if_none_match_matches(value: &str, etag: &str) -> bool {
+    value.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        if candidate == "*" {
+            return true;
+        }
+        let candidate = candidate.strip_prefix("W/").unwrap_or(candidate).trim();
+        let current = etag.strip_prefix("W/").unwrap_or(etag).trim();
+        candidate == current && candidate.starts_with('"') && candidate.ends_with('"')
+    })
+}
+
+fn not_modified_response(disposition: &str, etag: &str) -> axum::response::Response {
+    let body =
+        axum::body::Body::from_stream(futures_util::stream::empty::<Result<Bytes, Infallible>>());
+    let mut response = axum::response::Response::new(body);
+    *response.status_mut() = http::StatusCode::NOT_MODIFIED;
+    let headers = response.headers_mut();
+    headers.insert(
+        http::header::CONTENT_DISPOSITION,
+        disposition.parse().expect("valid content disposition"),
+    );
+    headers.insert(
+        http::header::ETAG,
+        etag.parse().expect("quoted etag is a header value"),
+    );
+    response
+}
+
 /// `GET /api/files/{id}/download` and `GET /api/files/{id}/preview`.
 ///
 /// Implements the subset of `http.ServeContent` the product relies on: a strong
@@ -1921,6 +1950,17 @@ pub(crate) async fn serve_file(
         "{disposition}; filename*=UTF-8''{}",
         encode_filename(&file.name)
     );
+
+    // Go's ServeContent evaluates If-None-Match before Range and emits a 304
+    // with the validator and disposition retained, but without representation
+    // headers such as Content-Type, Content-Length or Accept-Ranges.
+    if request_headers
+        .get(http::header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| if_none_match_matches(value, &etag))
+    {
+        return Ok(not_modified_response(&content_disposition, &etag));
+    }
 
     let range_header = match request_headers
         .get(http::header::IF_RANGE)

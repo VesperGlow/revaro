@@ -97,6 +97,24 @@ test('old/new 下载 Range、If-Range、非法范围和 HEAD 保持 reference �
     expect(comparable(newFull), '完整下载响应与 reference 不一致').toEqual(comparable(oldFull))
     expect(newFull.body.equals(oldFull.body), '完整下载内容与 reference 不一致').toBe(true)
 
+    const conditionalCases = [
+      { label: 'matching-etag', value: (index: number) => index === 0 ? oldFull.etag : newFull.etag },
+      { label: 'wildcard', value: () => '*' },
+      { label: 'stale-etag', value: () => '"stale"' },
+    ] as const
+    for (const item of conditionalCases) {
+      const [oldResponse, newResponse] = await Promise.all(paths.map(async (path, index) => responseShape(
+        await clients[index].fetch(path, {
+          headers: {
+            ...originHeaders(index === 0 ? oldUrl : newUrl),
+            'If-None-Match': item.value(index),
+          },
+        }),
+      )))
+      expect(comparable(newResponse), `${item.label} If-None-Match 与 reference 不一致`).toEqual(comparable(oldResponse))
+      expect(newResponse.body.equals(oldResponse.body), `${item.label} If-None-Match body 与 reference 不一致`).toBe(true)
+    }
+
     const cases = [
       { label: 'fixed', range: 'bytes=2-8' },
       { label: 'open-ended', range: 'bytes=9-' },
