@@ -321,6 +321,8 @@ test('分享二级确认取消、提交关闭和错误回显保持 reference', a
     newMock.postGate.resolve()
     await expect(oldShare.locator('.form-error')).toHaveText('share create failed')
     await expect(newShare.locator('.form-error')).toHaveText('share create failed')
+    expect(await newShare.locator('.form-error').getAttribute('role'), 'Rust 分享失败提示的 DOM 语义应与 reference 一致')
+      .toBe(await oldShare.locator('.form-error').getAttribute('role'))
     expect(await dialogSnapshot(newPage), 'Rust 分享二级确认失败状态与 reference 不一致').toEqual(await dialogSnapshot(oldPage))
   } finally {
     await oldContext.close()
@@ -409,6 +411,8 @@ test('复制分享链接失败时保留 reference 的弹窗错误且不产生全
     ])
     await expect(oldPage.locator('.share-modal .form-error')).toHaveText('复制失败，请手动选择链接复制')
     await expect(newPage.locator('.share-modal .form-error')).toHaveText('复制失败，请手动选择链接复制')
+    expect(await newPage.locator('.share-modal .form-error').getAttribute('role'), 'Rust 分享复制错误提示的 DOM 语义应与 reference 一致')
+      .toBe(await oldPage.locator('.share-modal .form-error').getAttribute('role'))
     await expect(oldPage.locator('.share-modal').getByRole('button', { name: '复制链接' })).toBeVisible()
     await expect(newPage.locator('.share-modal').getByRole('button', { name: '复制链接' })).toBeVisible()
     expect(await newPage.locator('.share-modal').textContent()).toBe(await oldPage.locator('.share-modal').textContent())

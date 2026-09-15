@@ -72,7 +72,7 @@ pub fn ShareDialog(
                                 "创建公开链接"
                             </button>
                             <Show when=move || !error.get().is_empty() fallback=|| ()>
-                                <p class="form-error" role="alert">{move || error.get()}</p>
+                                <p class="form-error">{move || error.get()}</p>
                             </Show>
                         }
                     >
@@ -98,7 +98,7 @@ pub fn ShareDialog(
                             </p>
                         </Show>
                         <Show when=move || !error.get().is_empty() fallback=|| ()>
-                            <p class="form-error" role="alert">{move || error.get()}</p>
+                            <p class="form-error">{move || error.get()}</p>
                         </Show>
                         <footer class="share-footer">
                             <button class="danger-text" type="button" prop:disabled=move || busy.get() on:click=move |_| revoke.run(())>"停止分享"</button>
