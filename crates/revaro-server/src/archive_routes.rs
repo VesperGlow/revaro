@@ -742,8 +742,21 @@ fn archive_failure_message(error: String) -> String {
     {
         "解压失败：临时磁盘空间不足，请释放服务器磁盘空间后重试".to_owned()
     } else {
-        format!("解压失败：{error}")
+        format!("解压失败：{}", historical_archive_engine_error(&error))
     }
+}
+
+/// Preserve the old Go server's visible data-plane error envelope. The
+/// pre-migration server called the Rust sidecar over HTTP; extraction failures
+/// therefore reached the task as `data plane: <message> (400)`. The migrated
+/// in-process engine carries the same libarchive detail in an
+/// `archive input error:` wrapper, which must not leak into the user-facing
+/// task text.
+fn historical_archive_engine_error(error: &str) -> String {
+    error.strip_prefix("archive input error:").map_or_else(
+        || error.to_owned(),
+        |detail| format!("data plane:{} (400)", detail),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1996,5 +2009,13 @@ mod tests {
         assert_eq!(parent_relative("a/b/c.txt"), "a/b");
         assert_eq!(basename("a/b/c.txt"), "c.txt");
         assert_eq!(expanded_limit(1), 4 << 30);
+        assert_eq!(
+            historical_archive_engine_error("archive input error: invalid archive"),
+            "data plane: invalid archive (400)"
+        );
+        assert_eq!(
+            historical_archive_engine_error("invalid archive"),
+            "invalid archive"
+        );
     }
 }

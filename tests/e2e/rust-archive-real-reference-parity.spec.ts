@@ -133,6 +133,18 @@ async function waitForRootItem(page: Page, name: string) {
   }, { wanted: name, root: ROOT }), { timeout: 30_000 }).toBe(true)
 }
 
+async function readyRootNames(page: Page, names: string[]) {
+  return page.evaluate(async ({ names, root }) => {
+    const response = await fetch(`/api/files/${root}/children`)
+    if (!response.ok) throw new Error(`read root children failed: ${response.status}`)
+    const payload = await response.json() as { items?: Array<{ name: string; kind: string; status?: string }> }
+    return (payload.items ?? [])
+      .filter(item => item.kind === 'directory' && item.status === 'ready' && names.includes(item.name))
+      .map(item => item.name)
+      .sort()
+  }, { names, root: ROOT })
+}
+
 async function startExtraction(page: Page, name: string) {
   await waitForRootItem(page, name)
   await page.reload()
@@ -145,6 +157,18 @@ async function startExtraction(page: Page, name: string) {
   await toolbar.getByRole('button', { name: '在线解压' }).click()
   await page.getByRole('dialog').getByRole('button', { name: '开始解压' }).click()
   await expect.poll(() => page.locator('.toast').textContent().catch(() => ''), { timeout: 10_000 }).toContain(name)
+}
+
+async function startExtractionWithoutToast(page: Page, name: string) {
+  await waitForRootItem(page, name)
+  return page.evaluate(async ({ name, root }) => {
+    const childrenResponse = await fetch(`/api/files/${root}/children`)
+    const payload = await childrenResponse.json() as { items?: Array<{ id: string; name: string; status?: string }> }
+    const file = (payload.items ?? []).find(item => item.name === name && item.status === 'ready')
+    if (!file) throw new Error('archive source not found')
+    const response = await fetch(`/api/files/${file.id}/extract`, { method: 'POST' })
+    return response.status
+  }, { name, root: ROOT })
 }
 
 async function openPasswordDialog(page: Page, name: string) {
@@ -210,7 +234,12 @@ test('old/new 真实未加密 ZIP 的完整解压结果保持 reference 行为',
     ])
     expect(oldFile.id).not.toBe('')
     expect(newFile.id).not.toBe('')
-    await Promise.all([startExtraction(oldPage, name), startExtraction(newPage, name)])
+    const [oldStart, newStart] = await Promise.all([
+      startExtractionWithoutToast(oldPage, name),
+      startExtractionWithoutToast(newPage, name),
+    ])
+    expect(oldStart).toBe(202)
+    expect(newStart).toBe(202)
     const [oldWaiting, newWaiting] = await Promise.all([
       waitForTask(oldPage, name, 'completed'),
       waitForTask(newPage, name, 'completed'),
@@ -236,6 +265,18 @@ test('old/new 真实未加密 ZIP 的完整解压结果保持 reference 行为',
     ])
     expect(newChildren.map((item: { name: string; size: number; kind: string }) => ({ name: item.name, size: item.size, kind: item.kind })))
       .toEqual(oldChildren.map((item: { name: string; size: number; kind: string }) => ({ name: item.name, size: item.size, kind: item.kind })))
+
+    // A second extraction is the reference conflict policy: create a sibling
+    // with the next available suffix instead of failing or overwriting.
+    await Promise.all([startExtraction(oldPage, name), startExtraction(newPage, name)])
+    await Promise.all([
+      waitForTask(oldPage, name, 'completed'),
+      waitForTask(newPage, name, 'completed'),
+    ])
+    expect(await readyRootNames(oldPage, [outputName, `${outputName} (2)`]))
+      .toEqual([outputName, `${outputName} (2)`])
+    expect(await readyRootNames(newPage, [outputName, `${outputName} (2)`]))
+      .toEqual([outputName, `${outputName} (2)`])
   } finally {
     await Promise.all([
       cleanup(oldPage, [name, outputName]),
@@ -275,6 +316,90 @@ test('old/new 真实加密 ZIP 的等待密码入口保持 reference 行为', as
       openPasswordDialog(newPage, name),
     ])
     expect(newDialog, 'Rust 加密归档密码入口与 reference 不一致').toEqual(oldDialog)
+
+    const [oldCancel, newCancel] = await Promise.all([
+      oldPage.evaluate(async id => (await fetch(`/api/tasks/${id}/cancel`, { method: 'POST' })).status, oldWaiting.id),
+      newPage.evaluate(async id => (await fetch(`/api/tasks/${id}/cancel`, { method: 'POST' })).status, newWaiting.id),
+    ])
+    expect(newCancel).toBe(oldCancel)
+    expect(oldCancel).toBe(204)
+    const [oldCancelled, newCancelled] = await Promise.all([
+      waitForTask(oldPage, name, 'cancelled'),
+      waitForTask(newPage, name, 'cancelled'),
+    ])
+    expect({ status: newCancelled.status, phase: newCancelled.phase, progress: newCancelled.progress, error: newCancelled.error, name: newCancelled.name })
+      .toEqual({ status: oldCancelled.status, phase: oldCancelled.phase, progress: oldCancelled.progress, error: oldCancelled.error, name: oldCancelled.name })
+  } finally {
+    await Promise.all([
+      cleanup(oldPage, [name]),
+      cleanup(newPage, [name]),
+    ])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 损坏归档的任务失败状态与错误文案保持 reference 行为', async ({ browser }) => {
+  test.setTimeout(60_000)
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const name = `archive-corrupt-reference-${crypto.randomUUID()}.zip`
+  const bytes = Buffer.from('this is not a valid archive\n')
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([login(oldPage, oldUrl), login(newPage, newUrl)])
+    await Promise.all([
+      uploadArchive(oldPage, name, bytes),
+      uploadArchive(newPage, name, bytes),
+    ])
+    await Promise.all([startExtraction(oldPage, name), startExtraction(newPage, name)])
+    const [oldFailed, newFailed] = await Promise.all([
+      waitForTask(oldPage, name, 'failed'),
+      waitForTask(newPage, name, 'failed'),
+    ])
+    expect({ status: newFailed.status, phase: newFailed.phase, progress: newFailed.progress, error: newFailed.error, name: newFailed.name })
+      .toEqual({ status: oldFailed.status, phase: oldFailed.phase, progress: oldFailed.progress, error: oldFailed.error, name: oldFailed.name })
+  } finally {
+    await Promise.all([
+      cleanup(oldPage, [name]),
+      cleanup(newPage, [name]),
+    ])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 归档路径安全拒绝的任务错误保持 reference 行为', async ({ browser }) => {
+  test.setTimeout(60_000)
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const name = `archive-unsafe-reference-${crypto.randomUUID()}.zip`
+  const bytes = storedZip([['../escape.txt', Buffer.from('must not escape\n')]])
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([login(oldPage, oldUrl), login(newPage, newUrl)])
+    await Promise.all([
+      uploadArchive(oldPage, name, bytes),
+      uploadArchive(newPage, name, bytes),
+    ])
+    const [oldStart, newStart] = await Promise.all([
+      startExtractionWithoutToast(oldPage, name),
+      startExtractionWithoutToast(newPage, name),
+    ])
+    expect(oldStart).toBe(202)
+    expect(newStart).toBe(202)
+    const [oldFailed, newFailed] = await Promise.all([
+      waitForTask(oldPage, name, 'failed'),
+      waitForTask(newPage, name, 'failed'),
+    ])
+    expect({ status: newFailed.status, phase: newFailed.phase, progress: newFailed.progress, error: newFailed.error, name: newFailed.name })
+      .toEqual({ status: oldFailed.status, phase: oldFailed.phase, progress: oldFailed.progress, error: oldFailed.error, name: oldFailed.name })
   } finally {
     await Promise.all([
       cleanup(oldPage, [name]),

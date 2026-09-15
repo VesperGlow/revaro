@@ -7,10 +7,9 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use libarchive2::{FileType, ReadArchive};
-use revaro_core::validate::normalize_archive_path;
 use tokio_util::sync::CancellationToken;
 
 /// Maximum number of archive entries inspected by one extraction.
@@ -175,8 +174,7 @@ impl ArchiveEngine {
                 expanded_bytes,
             });
 
-            let relative = normalize_archive_path(&metadata.pathname)
-                .map_err(|error| ArchiveError::UnsafePath(error.message))?;
+            let relative = historical_archive_path(&metadata.pathname)?;
             let target = output.join(PathBuf::from(&relative));
             if metadata.is_link {
                 return Err(ArchiveError::LinksNotAllowed);
@@ -258,6 +256,28 @@ impl ArchiveEngine {
             expanded_bytes,
         })
     }
+}
+
+/// Reproduce the pre-migration data-plane path policy. It intentionally
+/// rejects every non-normal component instead of cleaning `.` or `..`: the
+/// old sidecar used `Path::components()` and only accepted ordinary names.
+/// The server still performs a second validation while importing the output.
+fn historical_archive_path(raw: &str) -> Result<String, ArchiveError> {
+    let path = Path::new(raw);
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) if !name.is_empty() => clean.push(name),
+            _ => return Err(ArchiveError::Input(format!("unsafe archive path: {raw:?}"))),
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return Err(ArchiveError::Input("empty archive path".to_owned()));
+    }
+    clean
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| ArchiveError::Input("archive path is not valid UTF-8".to_owned()))
 }
 
 /// Calculate the output ceiling used by the historical server.
@@ -472,7 +492,9 @@ mod tests {
                 |_| {},
             )
             .unwrap_err();
-        assert!(matches!(error, ArchiveError::UnsafePath(_)));
+        assert!(
+            matches!(error, ArchiveError::Input(message) if message == "unsafe archive path: \"../escape.txt\"")
+        );
         assert!(!root.join("escape.txt").exists());
 
         fs::write(&source, zip_bytes(&[("large.txt", b"12345")])).unwrap();
