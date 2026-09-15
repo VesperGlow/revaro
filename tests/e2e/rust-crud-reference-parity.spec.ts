@@ -171,11 +171,11 @@ async function mockRename(page: Page, failure = false, delayMs = 0) {
   return { renameValues }
 }
 
-async function openRenameFixture(page: Page, baseUrl: string) {
+async function openRenameFixture(page: Page, baseUrl: string, fileName = '重命名之前.txt') {
   await page.goto(`${baseUrl}/?crud-rename-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
   await page.getByTitle('列表视图').click()
-  const row = page.locator('.file-row').filter({ hasText: '重命名之前.txt' })
+  const row = page.locator('.file-row').filter({ hasText: fileName })
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '重命名' }).click()
   const dialog = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
@@ -214,6 +214,89 @@ test('重命名保留 reference 的原始空白输入', async ({ browser }) => {
     expect(oldMock.renameValues).toEqual([renamed])
     await expect(oldPage.locator('.file-row').filter({ hasText: renamed })).toBeVisible()
     await expect(newPage.locator('.file-row').filter({ hasText: renamed })).toBeVisible()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+async function mockRenameBoundaries(page: Page) {
+  const file = {
+    id: 'crud-rename-boundary-file',
+    parent_id: ROOT,
+    name: '重命名边界.txt',
+    kind: 'file',
+    size: 12,
+    status: 'ready',
+    created_at: STAMP,
+    updated_at: STAMP,
+    mime_type: 'text/plain',
+    etag: 'crud-rename-boundary-etag',
+  }
+  const renameValues: string[] = []
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [file], total_bytes: file.size, file_count: 1 })
+    if (path === `/api/files/${file.id}` && request.method() === 'PATCH') {
+      const body = request.postDataJSON() as { name?: string }
+      renameValues.push(body.name ?? '')
+      return json(file)
+    }
+    return json({ items: [] })
+  })
+  return renameValues
+}
+
+test('重命名空名、Enter、遮罩和 Escape 按 reference 保持边界语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const renameValues = await mockRenameBoundaries(page)
+    const first = await openRenameFixture(page, baseUrl, '重命名边界.txt')
+    await first.locator('input').fill('')
+    await expect(first.getByRole('button', { name: '保存', exact: true })).toBeEnabled()
+    await first.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(first).toHaveCount(0)
+
+    const second = await openRenameFixture(page, baseUrl, '重命名边界.txt')
+    await second.locator('input').fill('Enter 重命名.txt')
+    await second.locator('input').press('Enter')
+    await expect(second).toHaveCount(0)
+
+    const third = await openRenameFixture(page, baseUrl, '重命名边界.txt')
+    await page.locator('.modal-backdrop').click({ position: { x: 8, y: 8 } })
+    await expect(third).toHaveCount(0)
+
+    const fourth = await openRenameFixture(page, baseUrl, '重命名边界.txt')
+    await page.keyboard.press('Escape')
+    const escapeCount = await page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' }).count()
+    return { renameValues, escapeCount }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newState, 'Rust 重命名空名/Enter/遮罩/Escape 边界与 reference 不一致').toEqual(oldState)
+    expect(oldState).toEqual({ renameValues: ['', 'Enter 重命名.txt'], escapeCount: 1 })
   } finally {
     await oldContext.close()
     await newContext.close()
@@ -340,6 +423,97 @@ test('新建文件夹空输入、取消和冲突失败保持 reference 交互', 
     expect(newState.calls, 'Rust 新建文件夹空输入/冲突请求时序与 reference 不一致').toEqual(oldState.calls)
     expect(newState.calls).toEqual(['冲突目录'])
     expect(newState.disabled).toBe(oldState.disabled)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+async function mockCreateFolderSuccess(page: Page) {
+  let created: { id: string; parent_id: string; name: string; kind: string; size: number; status: string; created_at: string; updated_at: string; mime_type: string } | null = null
+  const createCalls: string[] = []
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: created ? 1 : 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: created ? 1 : 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) {
+      return json({ items: created ? [created] : [], total_bytes: 0, file_count: created ? 1 : 0 })
+    }
+    if (path === '/api/directories' && request.method() === 'POST') {
+      const body = request.postDataJSON() as { name?: string; parent_id?: string }
+      createCalls.push(body.name ?? '')
+      created = {
+        id: 'crud-dialog-enter-folder',
+        parent_id: body.parent_id ?? ROOT,
+        name: body.name ?? '',
+        kind: 'directory',
+        size: 0,
+        status: 'ready',
+        created_at: STAMP,
+        updated_at: STAMP,
+        mime_type: '',
+      }
+      return route.fulfill({ status: 201, json: created })
+    }
+    return json({ items: [] })
+  })
+  return { createCalls }
+}
+
+test('新建文件夹有效输入支持 Enter，遮罩与 Escape 取消保持 reference 行为', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mock = await mockCreateFolderSuccess(page)
+    await page.goto(`${baseUrl}/?crud-create-keyboard-reference=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
+    const dialog = page.locator('.app-dialog')
+    await dialog.locator('input').fill('Enter 创建目录')
+    await dialog.locator('input').press('Enter')
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.file-card, .file-row').filter({ hasText: 'Enter 创建目录' })).toBeVisible()
+
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
+    await expect(page.locator('.app-dialog')).toBeVisible()
+    await page.locator('.dialog-backdrop').click({ position: { x: 8, y: 8 } })
+    await expect(page.locator('.app-dialog')).toHaveCount(0)
+
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
+    await expect(page.locator('.app-dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.app-dialog')).toHaveCount(0)
+    return mock.createCalls
+  }
+
+  try {
+    const [oldCalls, newCalls] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newCalls, 'Rust 新建文件夹 Enter/遮罩/Escape 行为与 reference 不一致').toEqual(oldCalls)
+    expect(oldCalls).toEqual(['Enter 创建目录'])
   } finally {
     await oldContext.close()
     await newContext.close()
