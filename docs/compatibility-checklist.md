@@ -232,6 +232,7 @@
 - `2026-09-15`，在全新隔离 old `18180` / new `18184` 将 `revaro-video-volume` 设为 `0` 后实际打开视频；旧版同时恢复原生 `<video>.volume=0`、`muted=true` 和“取消静音”入口，Rust 初始版只有静音音量而 `muted=false`，已恢复。`rust-media-parity-ui.spec.ts` old/new 2/2（含零音量后恢复最近可听音量），修复提交 `92a4b19`；视频失败/刷新完整持久化矩阵仍待验。
 - `2026-09-15`，在全新隔离 old `18180` / new `18184` 实际让视频播放并将鼠标停在控制条上超过 2.8 秒；旧版 `controlsHovered` 会保持控制条可见，Rust 初始版自动隐藏，已恢复 hover 保持条件。old/new 1/1，`rust-media-parity-ui.spec.ts`，修复提交 `8a1da62`；键盘/菜单打开和控制条完整状态矩阵仍待验。
 - `2026-09-15`，old `18180` / new `18184` 先实际显示有效 VTT cue，再向两版原生 `track` 派发 `error`；旧版仅记录诊断、保留当前字幕 overlay，Rust 初始版清空字幕并卸载 overlay。已恢复 reference 的诊断-only 语义，新增 `rust-media-parity-ui.spec.ts` old/new 1/1，完整媒体文件现为 34/34，修复提交 `476d747`；其余字幕失败组合仍待验。
+- `2026-09-15`，old `18180` / new `18184` 实际逐项操作文件卡与列表行：右键阻止原生菜单、方块 Space 阻止滚动但不选择、目录 Enter 导航、列表 Space 选择，以及 390×844 选择模式轻触列表行只取消选择不打开 editor；old/new 新增交互用例 2/2。结合已有全类型、loading/fallback、pending/failed、长文件名、焦点/hover 和列表日期矩阵，文件项主交互已收口；旧版生产方块未传 `selectable`，因此无可达长按选择或 disabled 控件分支。
 
 ## 2. 启动、认证和全局壳层
 
@@ -295,7 +296,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；old/new 已实际通过类型/状态 7/7 双版本集合及 old/new 各 8/8 交互集合，覆盖 Enter、`.epub` 目录边界、日期时区、12 类卡/行矩阵以及正常/hover/focus/selected/pending/failed 状态；新增延迟缩略图、图片单次原图回退、音频/EPUB 封面失败图标回退并确认两种布局结果（`rust-file-card-reference-parity.spec.ts` old/new 2/2，`bd7e939`）；视频缩略图重试对特殊 ETag 的 URI 编码也已恢复（`5b7451a`）；1440/390px 超长文件名的卡/行单行省略、title 和无横向溢出已 old/new 1/1（`05ad4b8`）；完整 disabled/触摸和全部错误组合仍待验 |
+| `[P]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；old/new 已实际通过类型/状态 7/7 双版本集合及 old/new 各 8/8 交互集合，覆盖 Enter、`.epub` 目录边界、日期时区、12 类卡/行矩阵以及正常/hover/focus/selected/pending/failed 状态；新增延迟缩略图、图片单次原图回退、音频/EPUB 封面失败图标回退并确认两种布局结果（`rust-file-card-reference-parity.spec.ts` old/new 2/2，`bd7e939`）；视频缩略图重试对特殊 ETag 的 URI 编码也已恢复（`5b7451a`）；1440/390px 超长文件名的卡/行单行省略、title 和无横向溢出已 old/new 1/1（`05ad4b8`）；右键、方块 Space/Enter、列表 Space 选择和 390×844 选择模式轻触行已由 `rust-file-card-interaction-reference-parity.spec.ts` old/new 2/2 实测。旧版生产方块没有传 `selectable`，不存在可达的长按选择或 disabled 控件分支；pending/failed 只使用 `mutedrow` 状态，文件项验收通过 |
 | `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；账户用户名编辑铅笔已恢复；文件项 12 类 preview/fallback 图标路径和节点已矩阵对照，且 card/row SVG computed style 与正常/hover/focus/selected/pending/failed 状态均 old/new 2/2；视频缩略图重试的特殊 ETag 编码已恢复（`5b7451a`）；完整截图级视觉和触摸状态仍待验 |
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 方块正常/预览 hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的 computed style、伪元素和选择控件已 old/new 1/1；文件项双版本 7/7、交互 old/new 各 8/8 另确认 Space/Enter、右键和选择 pointer；完整 loading/disabled、长按及任务覆盖层仍待验 |
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
