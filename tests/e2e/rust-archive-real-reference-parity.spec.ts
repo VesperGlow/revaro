@@ -1,3 +1,8 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import { expect, test, type Page } from '@playwright/test'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
@@ -50,6 +55,54 @@ function storedZip(entries: Array<[string, Buffer]>) {
   end.writeUInt32LE(directory.length, 12)
   end.writeUInt32LE(offset, 16)
   return Buffer.concat([...local, directory, end])
+}
+
+function tar(entries: Array<[string, Buffer]>) {
+  const blocks: Buffer[] = []
+  for (const [name, body] of entries) {
+    const header = Buffer.alloc(512)
+    header.write(name, 0, 100, 'utf8')
+    header.write('0000644\0', 100, 8, 'ascii')
+    header.write('0000000\0', 108, 8, 'ascii')
+    header.write('0000000\0', 116, 8, 'ascii')
+    header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii')
+    header.write('00000000000\0', 136, 12, 'ascii')
+    header.fill(0x20, 148, 156)
+    header.write('0', 156, 1, 'ascii')
+    header.write('ustar\0', 257, 6, 'ascii')
+    header.write('00', 263, 2, 'ascii')
+    const checksum = header.reduce((sum, value) => sum + value, 0)
+    header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii')
+    blocks.push(header, body)
+    const padding = (512 - (body.length % 512)) % 512
+    if (padding) blocks.push(Buffer.alloc(padding))
+  }
+  blocks.push(Buffer.alloc(1024))
+  return Buffer.concat(blocks)
+}
+
+function compress(command: string, body: Buffer) {
+  const args = command === 'zstd' ? ['-q', '-c'] : ['-c']
+  return execFileSync(command, args, { input: body })
+}
+
+function sevenZip(body: Buffer) {
+  const root = mkdtempSync(join(tmpdir(), 'revaro-archive-format-'))
+  try {
+    writeFileSync(join(root, 'entry.txt'), body)
+    const output = join(root, 'fixture.7z')
+    execFileSync('7z', ['a', '-bd', '-y', output, 'entry.txt'], { cwd: root, stdio: 'ignore' })
+    return readFileSync(output)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+function archiveBaseName(name: string) {
+  for (const suffix of ['.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst', '.tgz', '.tbz2', '.tbz', '.txz', '.tzst', '.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz', '.zst']) {
+    if (name.toLowerCase().endsWith(suffix)) return name.slice(0, -suffix.length)
+  }
+  return name
 }
 
 type TaskSnapshot = {
@@ -124,6 +177,12 @@ async function waitForTask(page: Page, name: string, status: string) {
   return (await taskSnapshot(page, name))!
 }
 
+async function waitForTerminalTask(page: Page, name: string) {
+  await expect.poll(async () => (await taskSnapshot(page, name))?.status ?? '', { timeout: 30_000 })
+    .toMatch(/^(completed|failed|waiting_input|cancelled)$/)
+  return (await taskSnapshot(page, name))!
+}
+
 async function waitForRootItem(page: Page, name: string) {
   await expect.poll(() => page.evaluate(async ({ wanted, root }) => {
     const response = await fetch(`/api/files/${root}/children`)
@@ -143,6 +202,27 @@ async function readyRootNames(page: Page, names: string[]) {
       .map(item => item.name)
       .sort()
   }, { names, root: ROOT })
+}
+
+async function outputSnapshot(page: Page, outputName: string) {
+  return page.evaluate(async ({ outputName, root }) => {
+    const rootResponse = await fetch(`/api/files/${root}/children`)
+    const rootPayload = await rootResponse.json() as { items?: Array<{ id: string; name: string; kind: string; status?: string }> }
+    const output = (rootPayload.items ?? []).find(item => item.name === outputName && item.kind === 'directory' && item.status === 'ready')
+    if (!output) throw new Error(`output directory not found: ${outputName}`)
+    const childrenResponse = await fetch(`/api/files/${output.id}/children`)
+    const childrenPayload = await childrenResponse.json() as { items?: Array<{ id: string; name: string; kind: string; size: number; mime_type?: string; status?: string }> }
+    const children = []
+    for (const item of childrenPayload.items ?? []) {
+      let body = ''
+      if (item.kind === 'file') {
+        const response = await fetch(`/api/files/${item.id}/download`)
+        body = Array.from(new Uint8Array(await response.arrayBuffer())).map(value => value.toString(16).padStart(2, '0')).join('')
+      }
+      children.push({ name: item.name, kind: item.kind, size: item.size, mime_type: item.mime_type ?? '', status: item.status ?? '', body })
+    }
+    return children.sort((left, right) => left.name.localeCompare(right.name))
+  }, { outputName, root: ROOT })
 }
 
 async function startExtraction(page: Page, name: string) {
@@ -404,6 +484,76 @@ test('old/new 归档路径安全拒绝的任务错误保持 reference 行为', a
     await Promise.all([
       cleanup(oldPage, [name]),
       cleanup(newPage, [name]),
+    ])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 真实归档格式后缀和解压结果保持 reference 行为', async ({ browser }) => {
+  test.setTimeout(180_000)
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID()
+  const body = Buffer.from(`archive format parity ${suffix}\n`)
+  const tarBytes = tar([['entry.txt', body]])
+  const formats = [
+    ['zip', storedZip([['entry.txt', body]])],
+    ['tar', tarBytes],
+    ['tar.gz', gzipSync(tarBytes)],
+    ['tgz', gzipSync(tarBytes)],
+    ['tar.bz2', compress('bzip2', tarBytes)],
+    ['tbz2', compress('bzip2', tarBytes)],
+    ['tbz', compress('bzip2', tarBytes)],
+    ['tar.xz', compress('xz', tarBytes)],
+    ['txz', compress('xz', tarBytes)],
+    ['tar.zst', compress('zstd', tarBytes)],
+    ['tzst', compress('zstd', tarBytes)],
+    ['gz', gzipSync(body)],
+    ['bz2', compress('bzip2', body)],
+    ['xz', compress('xz', body)],
+    ['zst', compress('zstd', body)],
+    ['7z', sevenZip(body)],
+    // A real RAR cannot be produced by the installed open-source 7z binary.
+    // Keep the suffix in the matrix with a valid archive payload to verify the
+    // old route's suffix recognition; genuine RAR decoder coverage remains an
+    // explicit fixture gap rather than being silently called PASS.
+    ['rar', storedZip([['entry.txt', body]])],
+  ] as const
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const names: string[] = []
+
+  try {
+    await Promise.all([login(oldPage, oldUrl), login(newPage, newUrl)])
+    for (const [extension, bytes] of formats) {
+      const name = `archive-format-${extension.replaceAll('.', '-')}-${suffix}.${extension}`
+      const outputName = archiveBaseName(name)
+      names.push(name, outputName)
+      await Promise.all([
+        uploadArchive(oldPage, name, bytes),
+        uploadArchive(newPage, name, bytes),
+      ])
+      await Promise.all([startExtraction(oldPage, name), startExtraction(newPage, name)])
+      const [oldResult, newResult] = await Promise.all([
+        waitForTerminalTask(oldPage, name),
+        waitForTerminalTask(newPage, name),
+      ])
+      expect({ status: newResult.status, phase: newResult.phase, progress: newResult.progress, error: newResult.error })
+        .toEqual({ status: oldResult.status, phase: oldResult.phase, progress: oldResult.progress, error: oldResult.error })
+      if (oldResult.status === 'completed') {
+        const [oldOutput, newOutput] = await Promise.all([
+          outputSnapshot(oldPage, outputName),
+          outputSnapshot(newPage, outputName),
+        ])
+        expect(newOutput, `${extension} 解压结果与 reference 不一致`).toEqual(oldOutput)
+      }
+    }
+  } finally {
+    await Promise.all([
+      cleanup(oldPage, names),
+      cleanup(newPage, names),
     ])
     await Promise.all([oldContext.close(), newContext.close()])
   }

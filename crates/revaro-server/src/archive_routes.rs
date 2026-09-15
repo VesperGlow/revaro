@@ -867,10 +867,7 @@ async fn import_output(
                 return Err(error);
             }
         };
-        let mime_type = mime_guess::from_path(&entry.relative)
-            .first_raw()
-            .unwrap_or("application/octet-stream")
-            .to_owned();
+        let mime_type = historical_archive_mime_type(&entry.relative);
         objects.push(ImportedObject {
             relative: entry.relative.clone(),
             key,
@@ -1164,6 +1161,20 @@ fn archive_base_name(name: &str) -> String {
         name.to_owned()
     } else {
         name[..name.len() - extension.len() - 1].to_owned()
+    }
+}
+
+/// Match the pre-migration `mime.TypeByExtension` value used for extracted
+/// files. Go appends an UTF-8 charset to text types returned from its MIME
+/// table, while `mime_guess` intentionally returns the bare registered type.
+fn historical_archive_mime_type(path: &str) -> String {
+    let mime = mime_guess::from_path(path)
+        .first_raw()
+        .unwrap_or("application/octet-stream");
+    if mime.starts_with("text/") && !mime.contains(';') {
+        format!("{mime}; charset=utf-8")
+    } else {
+        mime.to_owned()
     }
 }
 
@@ -1736,7 +1747,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(imported.0, 18);
-        assert_eq!(imported.1, "text/plain");
+        assert_eq!(imported.1, "text/plain; charset=utf-8");
         assert_eq!(imported.2, keys::sha256_hex(b"hello from archive"));
         assert_eq!(imported.3, "sha256");
         let (status, children) = request(
@@ -2006,6 +2017,15 @@ mod tests {
         assert_eq!(archive_base_name("book.tar.gz"), "book");
         assert_eq!(archive_base_name("book.ZIP"), "book");
         assert_eq!(archive_base_name(".zip"), "");
+        assert_eq!(
+            historical_archive_mime_type("entry.txt"),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(historical_archive_mime_type("entry.png"), "image/png");
+        assert_eq!(
+            historical_archive_mime_type("entry.unknown"),
+            "application/octet-stream"
+        );
         assert_eq!(parent_relative("a/b/c.txt"), "a/b");
         assert_eq!(basename("a/b/c.txt"), "c.txt");
         assert_eq!(expanded_limit(1), 4 << 30);
