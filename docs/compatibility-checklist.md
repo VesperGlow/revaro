@@ -249,6 +249,7 @@
 - `2026-09-15`，old `18180` / new `18184`：将移动 PATCH 设为 409 冲突，实际从列表选择、打开移动弹窗并确认；两版均关闭弹窗、保留当前目录刷新结果，并显示 `已移动 0 项，1 项失败：传输中的文件.txt：move conflict`。移动传输 parity 现 old/new 4/4，测试提交 `0d4d832`。
 - `2026-09-15`，old `18180` / new `18184`，390×844：实际打开移动弹窗和目录下拉，对照弹窗宽高、header/body/footer/picker 几何、fixed 下拉尺寸及 Escape 关闭；发现 Rust 缺少旧版移动端 `.move-copy-body{padding:14px}`，已恢复。`rust-transfer-dialog-reference-parity.spec.ts` old/new 3/3，修复提交 `d9b8efc`。
 - `2026-09-15`，old `18180` / new `18184`：实际让目录选择器首次 children 请求返回 500，比较错误文案、重试按钮和 DOM 语义，再点击“重新加载”恢复目标目录；两版均保持错误状态可见、重试后清除错误并显示目标，Rust 额外的 `role="alert"` 已移除。`rust-directory-picker-reference-parity.spec.ts` 完整 old/new 7/7，修复与测试提交 `ac3eb96`。
+- `2026-09-15`，old `18180` / new `18184`：新增顶栏全局 disclosure 连续操作矩阵，桌面实际交替打开/关闭任务中心与系统状态、点击外部区域、从状态面板切到账户设置和回收站；390×844 实际交替打开状态球、账户工具菜单和任务中心，验证菜单互相关闭、重复点击、外部关闭与账户设置返回。新增用例 old/new 各 1/1，提交 `990a60f`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -544,6 +545,7 @@
 | 选择工具栏分流与弹层可见性 | 6、8、15 | `f898067` | `rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1；`rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 实际选择 `.txt` 对照阅读图标几何；实际打开移动弹层对照选择工具栏立即隐藏；完整文件类型/disabled 矩阵未完 | 局部 PASS |
 | 任务中心与操作时序 | 3、15 | `5c69720`、`2d9f584`、`d05c438`、`8bc004d` | `rust-task-center-parity.spec.ts` old/new 各 9/9；`rust-task-center-reference-parity.spec.ts` old/new 各 2/2 | 两个活动任务原始进度先平均再四舍五入；小数条宽、失败满格、名称 fallback、Escape 焦点、请求中按钮和 `Promise.all` 删除均实际对照；延迟初始请求仍显示 reference 空任务文案；错误密码场景实际确认弹窗保留、文案和错误段落无额外 `role` 语义 | 局部 PASS |
 | 系统状态 SSE 与全局键盘语义 | 3、13、15 | `16b70e3` | `rust-global-ui-reference-parity.spec.ts` old/new 各 5/5 | 实际对照三卡首帧、非法数据、critical 状态 class、桌面/移动几何、空白/Escape（含默认事件和焦点）、断线重连以及退出登录后的 EventSource/定时器清理 | 局部 PASS |
+| 顶栏 disclosure 连续切换 | 2–3、15 | `990a60f` | `rust-global-ui-reference-parity.spec.ts` 新增 old/new 各 1/1 | 实际在桌面和 390×844 交替操作任务中心、系统状态、账户工具菜单、账户设置和回收站，比较互相关闭、重复打开/关闭、外部点击和最终路径/弹层状态；既有单入口 Escape/焦点用例继续保留 | 局部 PASS |
 | 移动端工具菜单键盘语义 | 2、3、15 | `ce4d34c` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际打开账户与工具菜单，比较 Escape 的关闭、summary 焦点和 window 阶段 `defaultPrevented=false` | 局部 PASS |
 | 移动端分类抽屉键盘语义 | 2、4、15 | `b4147c6` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际打开分类抽屉，比较 Escape 的关闭结果与 window 阶段 `defaultPrevented=false` | 局部 PASS |
 | 文件浏览头下拉键盘语义 | 5、7、15 | `75426a5` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际分别打开新建/上传菜单，比较 Escape 关闭结果与 window 阶段 `defaultPrevented=false` | 局部 PASS |
