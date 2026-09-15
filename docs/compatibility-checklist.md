@@ -266,7 +266,7 @@
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
 | `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |
-| `[ ]` | 侧栏图标 | Lucide 风格、stroke、大小、对齐、active/hover/disabled 颜色和五类具体图标与旧版一致，不用“看起来相似”的替代图标。 | `rust-icon-reference-parity.spec.ts` 与 `rust-sidebar-state-reference-parity.spec.ts` 已在 old/new 浏览器逐项比对侧栏、路径、折叠、回收站和移动抽屉 geometry/active/hover；disabled、完整文件类型图标和路径树竞态仍待验 |
+| `[P]` | 侧栏/全局入口图标 | 旧版实际存在的顶栏、系统状态、任务中心、五类侧栏、路径展开、回收站、视图切换、新建/上传、任务操作和移动工具入口，Lucide 几何、stroke、大小、对齐以及 active/hover/折叠状态一致；不虚构旧版不存在的 disabled 规则。 | `rust-icon-reference-parity.spec.ts` 与 `rust-sidebar-state-reference-parity.spec.ts` 在 old/new 浏览器逐项比较 SVG 几何、computed 状态、路径/折叠/回收站和移动抽屉；该子项单独重跑 old/new 3/3 通过。文件类型图标、媒体控制和完整 loading/disabled/触摸状态由后续文件项/媒体项继续验收 |
 | `[P]` | 侧栏 active/hover/折叠/移动状态 | 分类行 active/hover、计数、展开箭头、桌面 rail 与 390×844 抽屉的布局、动画完成后的尺寸和点击状态一致。 | old/new `rust-sidebar-state-reference-parity.spec.ts` 各 1/1；保留 Rust 额外回收站 `aria-label` 作为无障碍增强 |
 | `[P]` | 回收站 footer | 桌面/移动端位置、图标、active、点击和 trash empty 状态一致。 | old/new 桌面尺寸、移动端 footer 点击、回收站空态和移动抽屉保持打开的 reference 语义已实测 |
 
