@@ -68,7 +68,7 @@ pub fn VideoPlayer(
     } else {
         0.9
     });
-    let muted = RwSignal::new(false);
+    let muted = RwSignal::new(initial_volume == 0.0);
     let volume_feedback = RwSignal::new(false);
     let rate = RwSignal::new(video_rate());
     let pointer_type = RwSignal::new(String::from("mouse"));
