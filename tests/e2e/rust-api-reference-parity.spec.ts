@@ -57,13 +57,34 @@ function arrayItemKeys(value: unknown) {
 }
 
 function stableArrayItemKeys(value: unknown) {
-  return arrayItemKeys(value).filter(key => key !== 'etag')
+  return arrayItemKeys(value).filter(key => key !== 'etag' && key !== 'duration_ms')
 }
 
 function objectValue(value: unknown, key: string): unknown {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)[key]
     : undefined
+}
+
+function compareCommonArrayItemKeys(oldValue: unknown, newValue: unknown, label: string) {
+  if (!Array.isArray(oldValue) || !Array.isArray(newValue)) return
+  const newByName = new Map(
+    newValue
+      .filter(item => typeof objectValue(item, 'name') === 'string')
+      .map(item => [String(objectValue(item, 'name')), item]),
+  )
+  for (const oldItem of oldValue) {
+    const name = objectValue(oldItem, 'name')
+    if (typeof name !== 'string') continue
+    const newItem = newByName.get(name)
+    if (!newItem) continue
+    expect(stableArrayItemKeys([newItem]), `${label}.${name} item schema 不一致`)
+      .toEqual(stableArrayItemKeys([oldItem]))
+    for (const item of [oldItem, newItem]) {
+      const duration = objectValue(item, 'duration_ms')
+      if (duration !== undefined) expect(typeof duration, `${label}.${name}.duration_ms 类型不一致`).toBe('number')
+    }
+  }
 }
 
 function fileSemantics(value: unknown) {
@@ -155,8 +176,11 @@ test('旧版 API 路由、响应字段和错误分流在 Rust 版仍可达', asy
       .toEqual(objectKeys(objectValue(oldLibrary.json, 'counts')))
     expect(objectValue(newLibrary.json, 'type')).toBe('file')
     expect(objectValue(oldLibrary.json, 'type')).toBe('file')
-    expect(stableArrayItemKeys(objectValue(newLibrary.json, 'items')))
-      .toEqual(stableArrayItemKeys(objectValue(oldLibrary.json, 'items')))
+    compareCommonArrayItemKeys(
+      objectValue(oldLibrary.json, 'items'),
+      objectValue(newLibrary.json, 'items'),
+      '/api/library',
+    )
 
     const [oldLibraryAll, newLibraryAll] = await Promise.all([
       jsonResponse(oldClient, oldUrl, '/api/library/all'),
@@ -168,9 +192,7 @@ test('旧版 API 路由、响应字段和错误分流在 Rust 版仍可达', asy
     const newBuckets = objectValue(newLibraryAll.json, 'items') as Record<string, unknown>
     for (const bucket of Object.keys(oldBuckets)) {
       expect(Array.isArray(newBuckets[bucket]), `library/all.${bucket} 不是数组`).toBe(true)
-      if (Array.isArray(oldBuckets[bucket]) && oldBuckets[bucket].length && Array.isArray(newBuckets[bucket]) && newBuckets[bucket].length) {
-        expect(stableArrayItemKeys(newBuckets[bucket])).toEqual(stableArrayItemKeys(oldBuckets[bucket]))
-      }
+      compareCommonArrayItemKeys(oldBuckets[bucket], newBuckets[bucket], `/api/library/all.${bucket}`)
     }
 
     const [oldRoot, newRoot] = await Promise.all([

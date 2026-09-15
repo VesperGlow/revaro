@@ -226,6 +226,11 @@ test('old/new 实际拖放文件按 reference 上传到当前目录并拒绝回�
       return (payload.items ?? []).some(item => item.name === wanted && item.status === 'ready')
     }, fileName), { timeout: 20_000 }).toBe(true)
 
+    // The reference schedules one more current-folder refresh 250 ms after
+    // completion. Let that refresh settle before the next navigation so this
+    // test compares the trash/drop behavior rather than its timing race.
+    await page.waitForTimeout(500)
+
     await page.getByRole('button', { name: '打开回收站' }).click()
     await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
     const responseCountBeforeTrashDrop = uploadResponses.length

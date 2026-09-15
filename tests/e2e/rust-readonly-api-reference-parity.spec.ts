@@ -49,10 +49,41 @@ function stableItemKeys(value: unknown) {
   for (const item of value) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue
     for (const key of Object.keys(item)) {
-      if (key !== 'etag') fields.add(key)
+      // etag and media duration are optional runtime metadata. The old and
+      // new databases can finish media analysis at different times while a
+      // shared suite is running, so compare those fields only by type when
+      // they are present, not as part of the stable item schema.
+      if (key !== 'etag' && key !== 'duration_ms') fields.add(key)
     }
   }
   return [...fields].sort()
+}
+
+function itemByName(value: unknown, name: string) {
+  if (!Array.isArray(value)) return undefined
+  return value.find(item => valueOf(item, 'name') === name)
+}
+
+function valueOf(value: unknown, key: string) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)[key]
+    : undefined
+}
+
+function compareCommonItemSchemas(oldItems: unknown, newItems: unknown, label: string) {
+  if (!Array.isArray(oldItems) || !Array.isArray(newItems)) return
+  const oldNamed = oldItems.filter(item => typeof valueOf(item, 'name') === 'string')
+  for (const oldItem of oldNamed) {
+    const name = String(valueOf(oldItem, 'name'))
+    const newItem = itemByName(newItems, name)
+    if (!newItem) continue
+    expect(stableItemKeys([newItem]), `${label}.${name} item schema 不一致`)
+      .toEqual(stableItemKeys([oldItem]))
+    for (const item of [oldItem, newItem]) {
+      const duration = valueOf(item, 'duration_ms')
+      if (duration !== undefined) expect(typeof duration, `${label}.${name}.duration_ms 类型不一致`).toBe('number')
+    }
+  }
 }
 
 async function remove(client: APIRequestContext, baseUrl: string, id: string) {
@@ -105,10 +136,7 @@ test('旧版只读 API 的统计增量、分类 schema 和系统状态 schema �
       const newItems = results[1].items
       expect(Array.isArray(oldItems)).toBe(true)
       expect(Array.isArray(newItems)).toBe(true)
-      if (Array.isArray(oldItems) && oldItems.length && Array.isArray(newItems) && newItems.length) {
-        expect(stableItemKeys(newItems), `/api/library?type=${kind} item schema 不一致`)
-          .toEqual(stableItemKeys(oldItems))
-      }
+      compareCommonItemSchemas(oldItems, newItems, `/api/library?type=${kind}`)
     }
 
     const statuses = await Promise.all(clients.map(client => json(client, '/api/system/status')))
