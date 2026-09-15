@@ -597,14 +597,15 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                         <button type="button" prop:disabled={move || current_chapter_index() >= chapters().len().saturating_sub(1)} on:click=move |_| _next_chapter_callback.with_value(|callback| callback())><span>"下一章"</span>{icons::skip_forward()}</button>
                     </div>
                     <div class="audio-chapter-list">
-                        <For each=move || chapters() key=|chapter| chapter.id let:chapter>
-                            <button type="button" data-chapter-index=move || chapter.id.saturating_sub(1).to_string() aria-current=move || if chapters().iter().position(|value| value.id == chapter.id) == Some(current_chapter_index()) { Some("true") } else { None } on:click={
+                        <For each=move || indexed_chapters(chapters()) key=|(index, _)| *index let:entry>
+                            <button type="button" data-chapter-index=entry.0.to_string() aria-current=move || if entry.0 == current_chapter_index() { Some("true") } else { None } on:click={
                                 let seek_callback = seek_callback;
+                                let chapter = entry.1.clone();
                                 move |_| seek_callback.with_value(|seek| seek(chapter.start, true))
                             }>
-                                <span class="audio-chapter-number">{format!("{:02}", chapter.id)}</span>
-                                <strong>{chapter.title.clone()}</strong>
-                                <small>{format_media_time(chapter.start)}</small>
+                                <span class="audio-chapter-number">{format!("{:02}", entry.0 + 1)}</span>
+                                <strong>{entry.1.title.clone()}</strong>
+                                <small>{format_media_time(entry.1.start)}</small>
                             </button>
                         </For>
                     </div>
@@ -685,6 +686,10 @@ fn audio_duration(media: Option<AudioMedia>, native: f64) -> f64 {
             (value.duration.is_finite() && value.duration > 0.0).then_some(value.duration)
         })
         .unwrap_or(native.max(0.0))
+}
+
+fn indexed_chapters(chapters: Vec<AudioChapter>) -> Vec<(usize, AudioChapter)> {
+    chapters.into_iter().enumerate().collect()
 }
 
 fn safe_duration(value: f64) -> f64 {

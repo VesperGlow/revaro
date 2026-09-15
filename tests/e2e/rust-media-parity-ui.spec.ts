@@ -61,9 +61,9 @@ async function mockMedia(page: Page, baseUrl?: string) {
         has_cover: true,
         cover_url: '/api/files/image-1/preview',
         chapters: [
-          { id: 1, title: '第一章 · 风从山谷来', start: 0, end: 40 },
-          { id: 2, title: '第二章 · 在林间停留', start: 40, end: 80 },
-          { id: 3, title: '第三章 · 晚风与归途', start: 80, end: 120 },
+          { id: 11, title: '第一章 · 风从山谷来', start: 0, end: 40 },
+          { id: 22, title: '第二章 · 在林间停留', start: 40, end: 80 },
+          { id: 33, title: '第三章 · 晚风与归途', start: 80, end: 120 },
         ],
       })
     }
