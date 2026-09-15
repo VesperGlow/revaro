@@ -61,7 +61,13 @@ pub fn VideoPlayer(
     let current_time = RwSignal::new(0.0_f64);
     let duration = RwSignal::new(0.0_f64);
     let controls_visible = RwSignal::new(true);
-    let volume = RwSignal::new(video_volume());
+    let initial_volume = video_volume();
+    let volume = RwSignal::new(initial_volume);
+    let last_audible_volume = RwSignal::new(if initial_volume > 0.0 {
+        initial_volume
+    } else {
+        0.9
+    });
     let muted = RwSignal::new(false);
     let volume_feedback = RwSignal::new(false);
     let rate = RwSignal::new(video_rate());
@@ -485,6 +491,9 @@ pub fn VideoPlayer(
         };
         let value = input.value().parse::<f64>().unwrap_or(0.9).clamp(0.0, 1.0);
         volume.set(value);
+        if value > 0.0 {
+            last_audible_volume.set(value);
+        }
         muted.set(value == 0.0);
         browser::local_storage_set("revaro-video-volume", &value.to_string());
         if let Some(video) = video_media_element(video) {
@@ -513,10 +522,18 @@ pub fn VideoPlayer(
         );
     };
     let toggle_mute = move || {
-        let next = !muted.get_untracked();
-        muted.set(next);
+        let silent = muted.get_untracked() || volume.get_untracked() == 0.0;
+        if silent {
+            if volume.get_untracked() == 0.0 {
+                volume.set(last_audible_volume.get_untracked());
+            }
+            muted.set(false);
+        } else {
+            muted.set(true);
+        }
         if let Some(video) = video_media_element(video) {
-            video.set_muted(next);
+            video.set_volume(volume.get_untracked());
+            video.set_muted(muted.get_untracked());
         }
         show_video_controls(
             controls_visible,

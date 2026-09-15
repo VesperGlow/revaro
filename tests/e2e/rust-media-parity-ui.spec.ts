@@ -264,6 +264,50 @@ test('音频和视频恢复旧版各自的音量、倍速与位置存储，不�
   await expect.poll(() => page.locator('.video-player-shell video').evaluate((element: HTMLVideoElement) => element.playbackRate)).toBe(0.5)
 })
 
+test('old/new 视频音量归零后点击静音按钮恢复最近一次可听音量', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.evaluate(() => localStorage.setItem('revaro-video-volume', '0.27'))
+    await open(page, '山间漫步.webm')
+    const video = page.locator('.video-player-shell video')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.volume)).toBeCloseTo(0.27, 2)
+    const volume = page.locator('.video-volume').first()
+    await volume.evaluate(element => {
+      const input = element as HTMLInputElement
+      input.value = '0'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.volume)).toBe(0)
+    await expect(page.getByRole('button', { name: '取消静音', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '取消静音', exact: true }).click()
+    return {
+      volume: await video.evaluate((element: HTMLVideoElement) => element.volume),
+      muted: await video.evaluate((element: HTMLVideoElement) => element.muted),
+      button: await page.locator('.video-desktop-volume button').getAttribute('aria-label'),
+      stored: await page.evaluate(() => localStorage.getItem('revaro-video-volume')),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.volume).toBeCloseTo(0.27, 2)
+    expect(oldResult.muted).toBe(false)
+    expect(newResult, 'Rust 视频归零后取消静音未恢复 reference 音量').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频用户 seek 与预览关闭的进度持久化时机一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
