@@ -227,6 +227,7 @@
 - `2026-09-15`，old `18080` / new `18084`：在图片预览和 EPUB 阅读器中实际记录关闭覆盖层时的 `HTMLElement.focus` 参数；旧版对仍连接的触发卡传入 `{preventScroll:true}`，触发卡已被移除时不再调用 focus。Rust 初始版无条件调用无选项 `focus()`，已在两类 overlay 恢复连接检查和 `preventScroll`，old/new `rust-overlay-focus-reference-parity.spec.ts` 各 2/2，修复提交 `6352538`。
 - `2026-09-15`，old `18080` / new `18084`：实际把目录选择器触发器的几何位置向下移动 80px，再从已连接的内部滚动容器派发不冒泡 `scroll`；reference 的 window capture listener 会同步移动 fixed popover，Rust 初始版位置保持不变。已恢复捕获阶段监听及释放逻辑，`rust-directory-picker-reference-parity.spec.ts` old/new 完整各 5/5，修复提交 `248a6be`。
 - `2026-09-15`，以全新隔离 old `18180` / new `18184` 实际让文件卡缩略图分别处于延迟 loading、图片首轮缩略图失败后回退原图、音频封面失败和 EPUB 封面失败；两版均保持相同 DOM/class、`loading="lazy"`、回退请求次数和类型图标，切换列表后结果仍一致。`rust-file-card-reference-parity.spec.ts` 新增状态用例 old/new 2/2，测试提交 `bd7e939`；文件项完整 loading/disabled/触摸矩阵仍未完。
+- `2026-09-15`，以全新隔离 old `18180` / new `18184` 在 1440×900 与 390×844 实际渲染同一超长 TXT 文件名，逐项比较方块/列表的完整文本、title、`min/max-width`、`overflow/text-overflow/white-space`、可视宽度/scrollWidth 和 body 横向溢出；两版均保持 reference 的单行省略和无横向溢出，`rust-file-card-reference-parity.spec.ts` 长文件名用例 old/new 1/1，测试提交 `05ad4b8`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -290,7 +291,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；old/new 已实际通过类型/状态 7/7 双版本集合及 old/new 各 8/8 交互集合，覆盖 Enter、`.epub` 目录边界、日期时区、12 类卡/行矩阵以及正常/hover/focus/selected/pending/failed 状态；新增延迟缩略图、图片单次原图回退、音频/EPUB 封面失败图标回退并确认两种布局结果（`rust-file-card-reference-parity.spec.ts` old/new 2/2，`bd7e939`）；视频缩略图重试对特殊 ETag 的 URI 编码也已恢复（`5b7451a`）；完整 disabled/触摸和全部错误组合仍待验 |
+| `[ ]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；old/new 已实际通过类型/状态 7/7 双版本集合及 old/new 各 8/8 交互集合，覆盖 Enter、`.epub` 目录边界、日期时区、12 类卡/行矩阵以及正常/hover/focus/selected/pending/failed 状态；新增延迟缩略图、图片单次原图回退、音频/EPUB 封面失败图标回退并确认两种布局结果（`rust-file-card-reference-parity.spec.ts` old/new 2/2，`bd7e939`）；视频缩略图重试对特殊 ETag 的 URI 编码也已恢复（`5b7451a`）；1440/390px 超长文件名的卡/行单行省略、title 和无横向溢出已 old/new 1/1（`05ad4b8`）；完整 disabled/触摸和全部错误组合仍待验 |
 | `[ ]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；账户用户名编辑铅笔已恢复；文件项 12 类 preview/fallback 图标路径和节点已矩阵对照，且 card/row SVG computed style 与正常/hover/focus/selected/pending/failed 状态均 old/new 2/2；视频缩略图重试的特殊 ETag 编码已恢复（`5b7451a`）；完整截图级视觉和触摸状态仍待验 |
 | `[ ]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 方块正常/预览 hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的 computed style、伪元素和选择控件已 old/new 1/1；文件项双版本 7/7、交互 old/new 各 8/8 另确认 Space/Enter、右键和选择 pointer；完整 loading/disabled、长按及任务覆盖层仍待验 |
 | `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
