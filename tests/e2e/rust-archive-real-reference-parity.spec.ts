@@ -495,9 +495,17 @@ test('old/new 真实归档格式后缀和解压结果保持 reference 行为', a
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const suffix = crypto.randomUUID()
   const body = Buffer.from(`archive format parity ${suffix}\n`)
-  const tarBytes = tar([['entry.txt', body]])
+  const archiveEntries: Array<[string, Buffer]> = [
+    ['entry.txt', body],
+    ['entry.md', Buffer.from(`# ${suffix}\n`)],
+    ['entry.json', Buffer.from('{"archive":true}\n')],
+    ['entry.html', Buffer.from('<p>archive</p>\n')],
+    ['entry.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>\n')],
+    ['entry.bin', Buffer.from([0, 1, 2, 3])],
+  ]
+  const tarBytes = tar(archiveEntries)
   const formats = [
-    ['zip', storedZip([['entry.txt', body]])],
+    ['zip', storedZip(archiveEntries)],
     ['tar', tarBytes],
     ['tar.gz', gzipSync(tarBytes)],
     ['tgz', gzipSync(tarBytes)],
@@ -517,7 +525,7 @@ test('old/new 真实归档格式后缀和解压结果保持 reference 行为', a
     // Keep the suffix in the matrix with a valid archive payload to verify the
     // old route's suffix recognition; genuine RAR decoder coverage remains an
     // explicit fixture gap rather than being silently called PASS.
-    ['rar', storedZip([['entry.txt', body]])],
+    ['rar', storedZip(archiveEntries)],
   ] as const
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
