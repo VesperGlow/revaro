@@ -26,6 +26,17 @@ const deletedFile = {
   mime_type: 'text/plain',
   etag: 'crud-delete-success-etag',
 }
+const deletedDirectory = {
+  id: 'crud-delete-directory',
+  parent_id: ROOT,
+  name: '删除目录',
+  kind: 'directory',
+  size: 0,
+  status: 'ready',
+  created_at: STAMP,
+  updated_at: STAMP,
+  mime_type: '',
+}
 
 async function mockDelete(page: Page) {
   let visible = [failedFile, deletedFile]
@@ -109,6 +120,87 @@ test('多选删除部分失败时继续处理并保留 reference 反馈', async 
     await expect(newPage.locator('.file-row').filter({ hasText: deletedFile.name })).toHaveCount(0)
     await expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
     await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+async function mockDirectoryDelete(page: Page) {
+  let visible = true
+  const deleteCalls: string[] = []
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: visible ? 1 : 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: visible ? 1 : 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) {
+      return json({ items: visible ? [deletedDirectory] : [], total_bytes: 0, file_count: visible ? 1 : 0 })
+    }
+    if (path === `/api/files/${deletedDirectory.id}` && request.method() === 'DELETE') {
+      deleteCalls.push(deletedDirectory.id)
+      visible = false
+      return route.fulfill({ status: 204, body: '' })
+    }
+    return json({ items: [] })
+  })
+  return { deleteCalls }
+}
+
+test('目录删除的取消、确认文案和成功刷新保持 reference 行为', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mock = await mockDirectoryDelete(page)
+    await page.goto(`${baseUrl}/?crud-directory-delete-reference=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const row = page.locator('.file-row').filter({ hasText: deletedDirectory.name })
+    await expect(row).toBeVisible()
+    await row.getByRole('button', { name: '选择项目' }).click()
+
+    const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
+    await toolbar.getByRole('button', { name: '删除', exact: true }).click()
+    const firstDialog = page.getByRole('dialog').filter({ hasText: '移入回收站？' })
+    await expect(firstDialog).toContainText('选中的 1 项会移入回收站，文件夹中的内容也会一起保留。')
+    await firstDialog.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(firstDialog).toHaveCount(0)
+    await expect(row).toBeVisible()
+    expect(mock.deleteCalls).toEqual([])
+
+    await toolbar.getByRole('button', { name: '删除', exact: true }).click()
+    await page.getByRole('dialog').filter({ hasText: '移入回收站？' }).getByRole('button', { name: '移入回收站', exact: true }).click()
+    await expect(page.locator('.file-row').filter({ hasText: deletedDirectory.name })).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('已将 1 项移入回收站')
+    return mock.deleteCalls
+  }
+
+  try {
+    const [oldCalls, newCalls] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldCalls).toEqual([deletedDirectory.id])
+    expect(newCalls, 'Rust 目录删除的取消/确认/刷新行为与 reference 不一致').toEqual(oldCalls)
   } finally {
     await oldContext.close()
     await newContext.close()
