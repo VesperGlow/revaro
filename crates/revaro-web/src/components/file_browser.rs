@@ -5,7 +5,9 @@
 //! are mounted in the same authenticated shell so their session and gallery
 //! state stay attached to the listing.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use futures_channel::oneshot;
 use futures_util::{StreamExt, stream};
@@ -2057,6 +2059,8 @@ pub fn FileBrowser(
         })
     };
 
+    let popstate_queue = Rc::new(RefCell::new(Vec::<NavAction>::new()));
+    let popstate_processing = Rc::new(Cell::new(false));
     let mut popstate = {
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
@@ -2075,56 +2079,87 @@ pub fn FileBrowser(
         let library_folder_id = library_folder_id;
         let library_filter_label = library_filter_label;
         let current_id = current_id;
-        let load_folder = load_folder.clone();
+        let load_folder_request = load_folder_request.clone();
         let load_library = load_library.clone();
+        let library_loading = library_loading;
+        let popstate_queue = popstate_queue.clone();
+        let popstate_processing = popstate_processing.clone();
         browser::on_popstate(move |_| {
             let mut actions = nav_actions.get_untracked();
             let Some(action) = actions.pop() else {
                 return;
             };
             nav_actions.set(actions);
-            history_suppressed.set(true);
-            match action {
-                NavAction::Overlay => {
-                    media_file.set(None);
-                    reader_file.set(None);
-                    editor_open.set(false);
-                    transfer_open.set(false);
-                    transfer_targets.set(Vec::new());
-                    transfer_error.set(String::new());
-                    share_file.set(None);
-                    share_error.set(String::new());
-                    share_copied.set(false);
-                    account_open.set(false);
-                    if section.get_untracked() == LibraryKind::File {
-                        replace_folder_url(&current_id.get_untracked());
-                    } else {
-                        replace_library_url(
-                            section.get_untracked(),
-                            library_folder_id.get_untracked().as_deref(),
-                        );
-                    }
-                }
-                NavAction::Folder { id } => {
-                    load_folder.run(id);
-                }
-                NavAction::Section {
-                    section: previous,
-                    folder_id,
-                } => {
-                    section.set(previous);
-                    trash_mode.set(false);
-                    library_folder_id.set(None);
-                    library_filter_label.set("全部位置".to_owned());
-                    if previous == LibraryKind::File {
-                        load_folder.run(folder_id);
-                    } else {
-                        replace_library_url(previous, None);
-                        load_library.run((previous, false));
-                    }
-                }
+            popstate_queue.borrow_mut().push(action);
+            if popstate_processing.replace(true) {
+                return;
             }
-            history_suppressed.set(false);
+
+            let popstate_queue = popstate_queue.clone();
+            let popstate_processing = popstate_processing.clone();
+            let load_folder_request = load_folder_request.clone();
+            let load_library = load_library.clone();
+            leptos::task::spawn_local(async move {
+                loop {
+                    let Some(action) = popstate_queue.borrow_mut().pop() else {
+                        break;
+                    };
+                    history_suppressed.set(true);
+                    match action {
+                        NavAction::Overlay => {
+                            media_file.set(None);
+                            reader_file.set(None);
+                            editor_open.set(false);
+                            transfer_open.set(false);
+                            transfer_targets.set(Vec::new());
+                            transfer_error.set(String::new());
+                            share_file.set(None);
+                            share_error.set(String::new());
+                            share_copied.set(false);
+                            account_open.set(false);
+                            if section.get_untracked() == LibraryKind::File {
+                                replace_folder_url(&current_id.get_untracked());
+                            } else {
+                                replace_library_url(
+                                    section.get_untracked(),
+                                    library_folder_id.get_untracked().as_deref(),
+                                );
+                            }
+                        }
+                        NavAction::Folder { id } => {
+                            let (sender, receiver) = oneshot::channel();
+                            load_folder_request.run(FolderLoadRequest {
+                                id,
+                                completion: Some(sender),
+                            });
+                            let _ = receiver.await;
+                        }
+                        NavAction::Section {
+                            section: previous,
+                            folder_id,
+                        } => {
+                            section.set(previous);
+                            trash_mode.set(false);
+                            library_folder_id.set(None);
+                            library_filter_label.set("全部位置".to_owned());
+                            if previous == LibraryKind::File {
+                                let (sender, receiver) = oneshot::channel();
+                                load_folder_request.run(FolderLoadRequest {
+                                    id: folder_id,
+                                    completion: Some(sender),
+                                });
+                                let _ = receiver.await;
+                            } else {
+                                replace_library_url(previous, None);
+                                load_library.run((previous, false));
+                                wait_for_signal_clear(library_loading).await;
+                            }
+                        }
+                    }
+                    history_suppressed.set(false);
+                }
+                popstate_processing.set(false);
+            });
         })
     };
     on_cleanup(move || popstate.release());
@@ -3187,6 +3222,27 @@ fn push_browser_history() {
         && let Ok(history) = window.history()
     {
         let _ = history.push_state_with_url(&JsValue::NULL, "", None);
+    }
+}
+
+async fn wait_for_signal_clear(signal: RwSignal<bool>) {
+    while signal.get_untracked() {
+        let (sender, receiver) = oneshot::channel();
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let callback = Closure::once_into_js(move || {
+            let _ = sender.send(());
+        });
+        if window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0)
+            .is_err()
+        {
+            return;
+        }
+        if receiver.await.is_err() {
+            return;
+        }
     }
 }
 
