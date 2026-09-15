@@ -47,7 +47,22 @@ const manifest = {
 
 const picture = '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="600"><rect width="900" height="600" fill="#789"/></svg>'
 
-async function mockOpening(page: Page) {
+type FlowGate = {
+  started: Promise<void>
+  markStarted: () => void
+  released: Promise<void>
+  release: () => void
+}
+
+function createFlowGate(): FlowGate {
+  let markStarted = () => {}
+  let release = () => {}
+  const started = new Promise<void>(resolve => { markStarted = resolve })
+  const released = new Promise<void>(resolve => { release = resolve })
+  return { started, markStarted, released, release }
+}
+
+async function mockOpening(page: Page, flowGate?: FlowGate) {
   await page.route('**/api/**', async route => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -72,7 +87,11 @@ async function mockOpening(page: Page) {
       if (request.method() === 'PUT') return route.fulfill({ status: 204, body: '' })
       return json({})
     }
-    if (path === `/api/files/${epub.id}/book/flow`) return json(manifest)
+    if (path === `/api/files/${epub.id}/book/flow`) {
+      flowGate?.markStarted()
+      if (flowGate) await flowGate.released
+      return json(manifest)
+    }
     if (path === `/api/files/${epub.id}/book/flow/chunks/0`) {
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<p data-block="0">兼容阅读内容</p>' })
     }
@@ -216,6 +235,39 @@ test('旧版与 Rust 版普通文件打开分流及浏览器后退行为一致',
   } finally {
     await oldContext.close()
     await newContext.close()
+  }
+})
+
+test('阅读器网络加载阶段的文案与 reference 一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const oldFlow = createFlowGate()
+  const newFlow = createFlowGate()
+
+  try {
+    await Promise.all([mockOpening(oldPage, oldFlow), mockOpening(newPage, newFlow)])
+    const readLoadingText = async (page: Page, baseUrl: string, flowGate: FlowGate) => {
+      await page.goto(`${baseUrl}/?reader-loading-reference=${Date.now()}`)
+      await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+      await page.locator('.file-card').filter({ hasText: epub.name }).click()
+      await flowGate.started
+      await expect(page.locator('.reader-loading')).toBeVisible()
+      return page.locator('.reader-loading').innerText()
+    }
+
+    const [oldText, newText] = await Promise.all([
+      readLoadingText(oldPage, oldUrl, oldFlow),
+      readLoadingText(newPage, newUrl, newFlow),
+    ])
+    expect(newText, 'Rust 阅读器网络加载文案与 reference 不一致').toBe(oldText)
+  } finally {
+    oldFlow.release()
+    newFlow.release()
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
 

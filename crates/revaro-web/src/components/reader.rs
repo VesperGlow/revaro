@@ -1114,7 +1114,10 @@ async fn open_reader(
         }
     }
 
-    loading_text.set("正在读取阅读流…".to_owned());
+    // Keep the network phase wording from the reference reader. The flow
+    // endpoint is an implementation detail; users see the same book-loading
+    // state while its manifest is being fetched.
+    loading_text.set("正在读取书籍…".to_owned());
     let network = api::fetch_book_flow(&file_id).await;
     match network {
         Ok(network_manifest) => {
