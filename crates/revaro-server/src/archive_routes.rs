@@ -684,7 +684,17 @@ fn archive_error(error: ArchiveError) -> WorkerError {
     if matches!(error, ArchiveError::Cancelled) {
         WorkerError::Cancelled
     } else {
-        WorkerError::Message(error.to_string())
+        let message = error.to_string();
+        // The pre-migration server received every non-password extraction
+        // failure from the sidecar as a data-plane HTTP error. Preserve that
+        // marker for engine errors that are not libarchive open/read errors
+        // (for example a rejected link or special file), so the visible task
+        // message keeps the old `data plane: ... (400)` envelope.
+        WorkerError::Message(if message.starts_with("archive input error:") {
+            message
+        } else {
+            format!("archive input error: {message}")
+        })
     }
 }
 

@@ -7,6 +7,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const ZIP_BASE64 = 'UEsDBAoACQAAAEOnL13hAghUKAAAABwAAAAKABwAc2VjcmV0LnR4dFVUCQAD3UCpat1AqWp1eAsAAQToAwAABOgDAAA7bIAwEhh2wIhc1ASfiwu6IsLgqdhIZ6CutzDXLbC7vkM9w7BuLbRxUEsHCOECCFQoAAAAHAAAAFBLAQIeAwoACQAAAEOnL13hAghUKAAAABwAAAAKABgAAAAAAAEAAACkgQAAAABzZWNyZXQudHh0VVQFAAPdQKlqdXgLAAEE6AMAAAToAwAAUEsFBgAAAAABAAEAUAAAAHwAAAAAAA=='
+const RAR_BASE64 = 'UmFyIRoHAM+QcwAADQAAAAAAAACEUnQgkDIAFAAAABQAAAADQqLIvrd22j4UMAgApIEAAHRlc3QudHh0gAi3dto+t3baPnRlc3QgdGV4dCBkb2N1bWVudA0KnS90IJAyAAgAAAAIAAAAA3tEybbRTNg+FDAIAP+hAAB0ZXN0bGlua8AI0UzYPlBf2j50ZXN0LnR4dM3gdCCQOgAUAAAAFAAAAANCosi+Y3faPhQwEACkgQAAdGVzdGRpclx0ZXN0LnR4dMDMY3faPmN32j50ZXN0IHRleHQgZG9jdW1lbnQNCqHIdOCQMQAAAAAAAAAAAAMAAAAAY3faPhQwBwDtQQAAdGVzdGRpcsDMY3faPmR32j7m53TgkDYAAAAAAAAAAAADAAAAAJ2r1T4UMAwA7UEAAHRlc3RlbXB0eWRpcoDMnavVPsVd2j7EPXsAQAcA'
 
 function crc32(data: Buffer) {
   let value = 0xffffffff
@@ -562,6 +563,53 @@ test('old/new 真实归档格式后缀和解压结果保持 reference 行为', a
     await Promise.all([
       cleanup(oldPage, names),
       cleanup(newPage, names),
+    ])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 真实 RAR 的文件、目录和链接结果保持 reference 行为', async ({ browser }) => {
+  test.setTimeout(60_000)
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const name = `archive-real-rar-reference-${crypto.randomUUID()}.rar`
+  const bytes = Buffer.from(RAR_BASE64, 'base64')
+  const outputName = archiveBaseName(name)
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([login(oldPage, oldUrl), login(newPage, newUrl)])
+    await Promise.all([
+      uploadArchive(oldPage, name, bytes),
+      uploadArchive(newPage, name, bytes),
+    ])
+    const [oldStart, newStart] = await Promise.all([
+      startExtractionWithoutToast(oldPage, name),
+      startExtractionWithoutToast(newPage, name),
+    ])
+    expect(oldStart).toBe(202)
+    expect(newStart).toBe(202)
+    const [oldResult, newResult] = await Promise.all([
+      waitForTerminalTask(oldPage, name),
+      waitForTerminalTask(newPage, name),
+    ])
+    expect({ status: newResult.status, phase: newResult.phase, progress: newResult.progress, error: newResult.error })
+      .toEqual({ status: oldResult.status, phase: oldResult.phase, progress: oldResult.progress, error: oldResult.error })
+
+    if (oldResult.status === 'completed') {
+      const [oldOutput, newOutput] = await Promise.all([
+        outputSnapshot(oldPage, outputName),
+        outputSnapshot(newPage, outputName),
+      ])
+      expect(newOutput, 'Rust 真实 RAR 解压结果与 reference 不一致').toEqual(oldOutput)
+    }
+  } finally {
+    await Promise.all([
+      cleanup(oldPage, [name, outputName]),
+      cleanup(newPage, [name, outputName]),
     ])
     await Promise.all([oldContext.close(), newContext.close()])
   }
