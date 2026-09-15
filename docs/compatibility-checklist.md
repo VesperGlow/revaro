@@ -214,6 +214,7 @@
 - `2026-09-15`，old `18080` / new `18084`：实际新建空文档后比较未保存标记、保存按钮和关闭路径；两版均保留新文档的未保存标记，但关闭不弹放弃确认。`rust-editor-reference-parity.spec.ts` old/new 10/10，验证提交 `fcd771c`。
 - `2026-09-15`，old `18080` / new `18084`：将目录详情响应延迟，实际进入目录并观察 `/api/files/{id}` 与 `/api/files/{id}/children` 的启动时序；old 两请求并发，Rust 初始版等待详情后才请求 children，已恢复 `Promise.all` 等价的 `futures_util::join!`。释放请求后两版均进入同一空目录完成态；`rust-file-loading-state-reference-parity.spec.ts` old/new 3/3，修复与探针提交 `0123689`。
 - `2026-09-15`，old `18080` / new `18084`：实际让新文档创建接口返回 409，比较错误后 editor 是否保留、错误文案、未保存标记和再次保存按钮；两版均保留 editor 并允许重试，`rust-editor-reference-parity.spec.ts` old/new 11/11，验证提交 `a82441c`。
+- `2026-09-15`，old `18080` / new `18084`：账户设置用户名编辑在延迟 PATCH 下按 Enter，实际读取 keydown/blur/focusout 顺序、焦点和 disabled 状态；两版均按 reference 先失焦再提交，`rust-account-reference-parity.spec.ts` old/new 4/4，测试提交 `397f200`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -496,7 +497,6 @@
 | 模块 | Checklist 范围 | commit | 自动测试 | old/new 浏览器证据 | 状态 |
 |---|---|---|---|---|---|
 | 基线与清单 | 1 | `068b9bb`、`821769c`（E2E new 默认端口） | healthz、old/new 构建和基线记录已完成；双版本测试未显式传 URL 时默认命中当前 Rust `18084` | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
-| 全局导航与 UI | 2–4 | `d18556d`（实现）、`d257696`（E2E）、`ba16ddb`（路由）、`db5b963`（失败导航选择状态）、`9d4ea2b`（根节点 tooltip）、`226daf1`（stale navigation parity）、`697239f`（分类 history parity）、`f752758`（顶栏入口完整分流）、`f52e986`（EventSource 构造失败语义）、`d83d5a4`（事件流探针） | 认证、账户、任务、状态、移动抽屉、分类入口/直达路由、空态、Logo、回收站 footer 和关键入口 old/new 已通过；旧版原始 `auth-status.spec.ts` old/new 各 2/2、`library-ui.spec.ts` old/new 各 4/4、`files.spec.ts` old/new 各 3/3；桌面/390×844 顶栏完整分流、浏览器后退/弹层 history、失败导航保留旧内容/选择、根节点 tooltip、慢/快目录响应竞态及筛选后分类 history、全局键盘 27/27 + 账户/确认/传输/编辑器/分享/操作 28/28、Toast 来源与 EventSource 构造失败 pending 语义均已追加；分类路径、深链接、浏览器历史组合和完整状态矩阵仍未完 | `/tmp/revaro-old-global-parity.png`、`/tmp/revaro-new-global-parity.png`、移动端同名截图、导航 trace、`/tmp/revaro-history-*`、旧版原始 E2E trace | 局部 PASS |
 | 媒体/阅读器焦点生命周期 | 10–11、15 | `c238c02` | `rust-overlay-focus-reference-parity.spec.ts` old/new 各 2/2 | 实际比较图片预览、EPUB 阅读器的初始焦点、Tab/Shift+Tab 环绕、菜单/目录 Escape、二次 Escape 关闭、文件卡焦点恢复和 body overflow；仅确认 old 同样启用 trap 的媒体/阅读器，账户/编辑器/分享/普通弹窗仍待完整键盘矩阵 | 局部 PASS |
 | 通用弹层嵌套键盘边界 | 1.4、2、5–7、10–11 | `4940aa2` | `rust-account-reference-parity.spec.ts`、`rust-editor-reference-parity.spec.ts`、`rust-share-dialog-reference-parity.spec.ts` 定向 12/12 | old/new 实际比较账户外层/密码子面板 Escape 与焦点、编辑器未保存确认 Escape、分享 active Escape；保留 reference 的非 trap 和默认事件语义 | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
@@ -536,7 +536,7 @@
 | 分享弹窗 loading/active/二级确认/复制状态 | 2、12、15 | `01c48cb`、`39b4055`、`94ad574`、`c1ce934`、`31ca8e5`、`4940aa2` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 5/5；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；二级确认取消/提交关闭/错误回显、复制成功/失败局部状态、active Escape、重生成成功不产生全局 toast、停止分享产生成功 toast 均已对照；分享非 trap 边界已补齐，完整视觉状态矩阵仍未完 | 局部 PASS |
 | 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a`、`e064296` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 3/3 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；另实际往返全选/取消全选，确认只按当前列表可见项目计数；移动端与回收站恢复/永久删除分支另有独立对照 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
-| 账户设置用户名编辑入口 | 2、15 | `a6ac08e` | `rust-account-reference-parity.spec.ts` old/new 各 1/1；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；初始 Rust 图标缺失已恢复 | 局部 PASS |
+| 账户设置用户名编辑入口 | 2、15 | `a6ac08e`、`397f200` | `rust-account-reference-parity.spec.ts` old/new 各 4/4；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；延迟 PATCH 下按 Enter 的 keydown→blur→focusout 顺序、焦点回收、disabled 和提交启动均与 reference 一致；初始 Rust 图标缺失已恢复 | 局部 PASS |
 | 账户 TOTP loading 遮罩行为 | 2、8、15 | `077e678` | `rust-account-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟 setup 请求期间实际点击子弹窗空白，比较 old/new 的关闭结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义 | 局部 PASS |
 | 账户密码 loading 外层遮罩行为 | 2、8、15 | `1acb307` | `rust-account-reference-parity.spec.ts` old/new 双上下文 3/3；`cargo xtask check` 通过 | 延迟密码 PATCH 期间实际提交、关闭子弹窗并点击账户外层遮罩，比较账户弹层卸载；Rust 初始外层 busy 限制已移除，按钮 disabled/loading 仍保留 | 局部 PASS |
 | 移动/复制 loading、失败与成功反馈 | 8、15 | `8bbbd22`、`f953af8`、`83f7738` | `rust-transfer-dialog-reference-parity.spec.ts` old/new 双上下文 2/2；`rust-mutation-feedback-order-reference-parity.spec.ts` old/new 7/7；`cargo xtask check` 通过 | 延迟移动 PATCH 请求期间实际点击 old/new 遮罩，比较弹窗卸载结果；另以同一 500 响应比较“已移动 0 项，1 项失败：文件：move failed”文案；再以 700ms children 延迟确认成功 toast 等待目录刷新；Rust 初始 busy 限制、失败数量文案和成功反馈时序均已恢复；目标排除、冲突、复制成功和完整错误矩阵仍未完 | 局部 PASS |
