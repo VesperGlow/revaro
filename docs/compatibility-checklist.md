@@ -260,6 +260,7 @@
 - `2026-09-15`，old `18180` / new `18184`：以同一随机目录在两个实例实际逐项提交空名、`.`、`..`、首尾空格、斜杠/反斜杠、控制字符和 256 字符名称；`POST /api/directories`、`PATCH /api/files/{id}`、`POST /api/documents`、`POST /api/uploads` 的状态与错误 JSON 均一致，目录清理后无残留。`rust-crud-reference-parity.spec.ts` 非法名称用例 old/new 1/1，测试提交 `897db00`；这项证据仅收口 API 校验，弹窗层 loading/非法名展示和完整失败状态仍待验。
 - `2026-09-15`，old `18180` / new `18184`：实际创建同一 Markdown 文档，打开编辑器预览并逐项比较 hard break、blockquote、嵌套列表、task list、代码围栏、autolink 和危险 HTML 的 DOM 标签/属性/文本；发现 Rust 渲染的 `<br>` 后多出可复制换行，已仅移除渲染器产生的该换行，保留代码块及普通文本空白。`rust-editor-reference-parity.spec.ts` 边界用例 old/new 1/1，完整编辑器 old/new 12/12，Markdown 单测 3/3，修复提交 `1b93087`。
 - `2026-09-15`，完整 `rust-*.spec.ts` 首轮发现媒体无障碍用例在双浏览器独立调度下偶发采样到 old `0:00`、new `0:10`；实际重复探针确认两版恢复完成后均为 `0:10`，已让用例等待 reference 的异步恢复状态再比较，定向 old/new 5/5 通过，测试修订提交 `7f08739`。
+- `2026-09-16`，在全新隔离数据目录的 old `18180` 与 new `18184` 上，以显式 `E2E_BASE_URL`/`E2E_REFERENCE_URL`/`E2E_NEW_URL` 串行执行当前完整 `rust-*.spec.ts` 套件；覆盖基础导航、全局壳层、任务/状态、文件浏览、上传、CRUD、编辑器、阅读器、媒体、下载/分享/归档、响应式和移动端共 `277/277`，耗时约 12.9 分钟。该结果包含 Markdown hard-break DOM 兼容和视频隐藏控制 accessibility 采样修订，作为当前工作树回归基线；不替代下方仍标为局部 PASS/未完成的旧版功能矩阵。
 
 ## 2. 启动、认证和全局壳层
 
