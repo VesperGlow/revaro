@@ -73,6 +73,108 @@ async function startTransfer(page: Page, baseUrl: string, waitForBusy = true) {
   if (waitForBusy) await expect(page.locator('.move-copy-dialog .primary')).toBeDisabled()
 }
 
+async function openTransferOnly(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?transfer-mobile-reference=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.getByTitle('列表视图').click()
+  const row = page.locator('.file-row').filter({ hasText: file.name })
+  await row.getByRole('button', { name: '选择项目' }).click()
+  await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动' }).click()
+  await expect(page.locator('.move-copy-dialog')).toBeVisible()
+}
+
+async function transferLayout(page: Page) {
+  return page.locator('.move-copy-dialog').evaluate(element => {
+    const rect = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    const child = (selector: string) => {
+      const child = element.querySelector(selector)
+      if (!child) return null
+      const childRect = child.getBoundingClientRect()
+      return {
+        x: Math.round(childRect.x * 100) / 100,
+        y: Math.round(childRect.y * 100) / 100,
+        width: Math.round(childRect.width * 100) / 100,
+        height: Math.round(childRect.height * 100) / 100,
+      }
+    }
+    return {
+      rect: {
+        x: Math.round(rect.x * 100) / 100,
+        y: Math.round(rect.y * 100) / 100,
+        width: Math.round(rect.width * 100) / 100,
+        height: Math.round(rect.height * 100) / 100,
+      },
+      width: style.width,
+      padding: style.padding,
+      header: child('header'),
+      body: child('.move-copy-body'),
+      picker: child('.directory-picker'),
+      footer: child('footer'),
+      buttons: Array.from(element.querySelectorAll('footer button')).map(button => {
+        const buttonRect = button.getBoundingClientRect()
+        return {
+          text: button.textContent?.trim(),
+          width: Math.round(buttonRect.width * 100) / 100,
+          height: Math.round(buttonRect.height * 100) / 100,
+        }
+      }),
+    }
+  })
+}
+
+async function pickerLayout(page: Page) {
+  return page.locator('.directory-popover').evaluate(element => {
+    const rect = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return {
+      x: Math.round(rect.x * 100) / 100,
+      y: Math.round(rect.y * 100) / 100,
+      width: Math.round(rect.width * 100) / 100,
+      height: Math.round(rect.height * 100) / 100,
+      maxHeight: style.maxHeight,
+      position: style.position,
+    }
+  })
+}
+
+test('移动弹窗和目录下拉在手机视口保持 reference 布局', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockTransfer(oldPage), mockTransfer(newPage)])
+    await Promise.all([openTransferOnly(oldPage, oldUrl), openTransferOnly(newPage, newUrl)])
+    expect(await transferLayout(newPage), 'Rust 手机移动弹窗几何与 reference 不一致').toEqual(await transferLayout(oldPage))
+
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('region', { name: '选择目标目录' })).toBeVisible(),
+      expect(newPage.getByRole('region', { name: '选择目标目录' })).toBeVisible(),
+    ])
+    await Promise.all([oldPage.waitForTimeout(220), newPage.waitForTimeout(220)])
+    expect(await pickerLayout(newPage), 'Rust 手机目录下拉几何与 reference 不一致').toEqual(await pickerLayout(oldPage))
+    await Promise.all([
+      oldPage.keyboard.press('Escape'),
+      newPage.keyboard.press('Escape'),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0),
+      expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
 test('移动请求进行中点击遮罩仍关闭传输弹窗', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
