@@ -186,6 +186,53 @@ test('图片：实际大小、拖动边界、缩略图、菜单和逐层退出',
   await expect(page.locator('.preview-modal')).toHaveCount(0)
 })
 
+test('old/new 图片未达到翻页阈值时保留拖动中的水平跟手位移', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '群山.png')
+    const stage = page.locator('.preview-stage')
+    const image = page.locator('.preview-image')
+    await expect(image).toBeVisible()
+    const bounds = await stage.boundingBox()
+    expect(bounds).not.toBeNull()
+    const centerX = bounds!.x + bounds!.width / 2
+    const centerY = bounds!.y + bounds!.height / 2
+    const initialX = await image.evaluate(element => new DOMMatrix(getComputedStyle(element).transform).e)
+    await page.mouse.move(centerX, centerY)
+    await page.mouse.down()
+    // Keep the movement below the 60px gallery-switch threshold. The
+    // reference still moves the fitted image with the pointer during this
+    // live gesture, even though pointer-up does not change the item.
+    await page.mouse.move(centerX + 24, centerY + 5)
+    await page.waitForTimeout(40)
+    const result = await image.evaluate(element => {
+      const style = getComputedStyle(element)
+      const transform = new DOMMatrix(style.transform)
+      return { transform: style.transform, translateX: transform.e }
+    })
+    await page.mouse.up()
+    return { ...result, dragDelta: result.translateX - initialX }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.dragDelta).toBeGreaterThan(15)
+    expect(newResult, 'Rust 图片未达到翻页阈值时没有保持 reference 的跟手位移').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('图片预览：从根节点按 Tab 首先进入更多操作菜单', async ({ page }) => {
   await mockMedia(page)
   await open(page, '群山.png')

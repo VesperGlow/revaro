@@ -707,7 +707,14 @@ pub fn MediaPreview(
                                         src=format!("/api/files/{}/preview", file.id)
                                         alt=file.name.clone()
                                         draggable="false"
-                                        style=move || image_style(natural.get(), stage_size.get(), pan.get(), zoom.get(), loading.get() || image_error.get())
+                                        style=move || image_style(
+                                            natural.get(),
+                                            stage_size.get(),
+                                            pan.get(),
+                                            zoom.get(),
+                                            drag.get().dx,
+                                            loading.get() || image_error.get(),
+                                        )
                                         on:load=move |event: Event| image_loaded(event, natural, stage_size, loading, pan, zoom)
                                         on:error=move |_| { image_error.set(true); loading.set(false); }
                                         on:dblclick=move |event: MouseEvent| {
@@ -974,12 +981,26 @@ fn update_stage_size(stage: NodeRef<leptos::html::Div>, size: RwSignal<Size>) {
     });
 }
 
-fn image_style(natural: Size, stage: Size, pan: Point, zoom: f64, hidden: bool) -> String {
+fn image_style(
+    natural: Size,
+    stage: Size,
+    pan: Point,
+    zoom: f64,
+    drag_x: f64,
+    hidden: bool,
+) -> String {
     let fitted = fit_image(natural, stage);
     let display = if hidden { "none" } else { "block" };
+    // At fit zoom the reference applies the live horizontal drag offset while
+    // the pointer is down. The offset is temporary: the completed gesture
+    // either changes the gallery item or is cleared on pointer-up.
+    let drag_x = if zoom <= 1.0 { drag_x } else { 0.0 };
     format!(
         "display:{display};width:{}px;height:{}px;transform:translate(-50%,-50%) translate3d({}px,{}px,0) scale({zoom});",
-        fitted.width, fitted.height, pan.x, pan.y
+        fitted.width,
+        fitted.height,
+        pan.x + drag_x,
+        pan.y
     )
 }
 
