@@ -1117,7 +1117,7 @@ fn show_video_controls(
                     })
                     .is_some_and(|shell| {
                         shell
-                            .query_selector("details[open], :focus-visible")
+                            .query_selector("details[open], :focus-visible, .video-controls:hover")
                             .ok()
                             .flatten()
                             .is_some()
