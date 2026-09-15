@@ -31,6 +31,12 @@ type ReaderFixture = {
   flowFailure?: boolean
 }
 
+type ReaderPrefsFixture = {
+  fontSize: number
+  lineHeight: number
+  theme: 'light' | 'dark'
+}
+
 const defaultToc: TocEntry[] = [
   { label: '第一章', depth: 0, spine: 0, block: 0, chunk: 0, text_path: [0], text_offset: 0 },
   { label: '第二章', depth: 2, spine: 1, block: 20, chunk: 1, text_path: [0], text_offset: 0 },
@@ -101,9 +107,10 @@ async function mockReader(page: Page, fixture: ReaderFixture = {}) {
   })
 }
 
-async function prepare(page: Page, baseUrl: string, fixture: ReaderFixture = {}, prefs = { fontSize: 21, lineHeight: 1.4, theme: 'light' }) {
+async function prepare(page: Page, baseUrl: string, fixture: ReaderFixture = {}, prefs: ReaderPrefsFixture | null = { fontSize: 21, lineHeight: 1.4, theme: 'light' }) {
   await page.addInitScript(value => {
-    localStorage.setItem('revaro-reader-prefs', JSON.stringify(value))
+    if (value === null) localStorage.removeItem('revaro-reader-prefs')
+    else localStorage.setItem('revaro-reader-prefs', JSON.stringify(value))
   }, prefs)
   await mockReader(page, fixture)
   await page.goto(`${baseUrl}/?reader-reference=${Date.now()}`)
@@ -217,6 +224,14 @@ async function touchSwipe(page: Page, start: { x: number; y: number }, end: { x:
   await client.detach()
 }
 
+async function touchCancel(page: Page, start: { x: number; y: number }, end: { x: number; y: number }) {
+  const client = await page.context().newCDPSession(page)
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 1, x: start.x, y: start.y }] })
+  await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ id: 1, x: end.x, y: end.y }] })
+  await client.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] })
+  await client.detach()
+}
+
 async function pageState(page: Page) {
   return page.evaluate(() => ({
     label: document.querySelector('#page-label')?.textContent?.trim() ?? null,
@@ -253,6 +268,34 @@ test('old/new 阅读器 390px 横向触摸翻页，纵向手势不改变阅读�
     expect(newState, 'Rust 阅读器触摸翻页和 reference 不一致').toEqual(oldState)
     expect(newState.horizontal.transform).not.toBe(newState.before.transform)
     expect(newState.vertical.label).toBe(newState.horizontal.label)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 阅读器触摸取消恢复当前栏，不误翻页', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await prepare(page, baseUrl)
+    const before = await pageState(page)
+    await touchCancel(page, { x: 300, y: 400 }, { x: 80, y: 400 })
+    await page.waitForTimeout(120)
+    return { before, after: await pageState(page) }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newState, 'Rust 阅读器 touch-cancel 恢复和 reference 不一致').toEqual(oldState)
+    expect(newState.after.label).toBe(newState.before.label)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
@@ -309,5 +352,72 @@ test('old/new 阅读器目录层级、活动项和错误关闭入口一致', asy
     expect(newError, 'Rust 阅读器错误关闭和 reference 不一致').toEqual(oldError)
   } finally {
     await Promise.all([oldContext.close(), newContext.close(), oldErrorContext.close(), newErrorContext.close()])
+  }
+})
+
+test('old/new 阅读器默认偏好、字号边界持久化和分层 Escape 行为一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    // null means that the browser starts without the preference key, so this
+    // checks the actual reference defaults instead of the fixture defaults used
+    // by the layout tests above.
+    await prepare(page, baseUrl, {}, null)
+    const initial = await readerSnapshot(page)
+
+    await page.locator('#font-button').click()
+    for (let i = 0; i < 20; i++) await page.locator('#font-smaller').click()
+    const minimum = await page.evaluate(() => ({
+      value: (document.querySelector('#font-slider') as HTMLInputElement).value,
+      smallerDisabled: (document.querySelector('#font-smaller') as HTMLButtonElement).disabled,
+      largerDisabled: (document.querySelector('#font-larger') as HTMLButtonElement).disabled,
+    }))
+    for (let i = 0; i < 30; i++) await page.locator('#font-larger').click()
+    const maximum = await page.evaluate(() => ({
+      value: (document.querySelector('#font-slider') as HTMLInputElement).value,
+      smallerDisabled: (document.querySelector('#font-smaller') as HTMLButtonElement).disabled,
+      largerDisabled: (document.querySelector('#font-larger') as HTMLButtonElement).disabled,
+    }))
+
+    await page.locator('.v2-lineheight .font-step').first().click()
+    await page.locator('#theme-button').click()
+    await expect
+      .poll(() => page.locator('#flow').evaluate(element => getComputedStyle(element).fontSize), { timeout: 3000 })
+      .toBe('32px')
+    const changed = await readerSnapshot(page)
+    const saved = await prefsSnapshot(page)
+
+    await page.locator('#toc-button').click()
+    await expect(page.locator('#toc-drawer')).toHaveClass(/open/)
+    await page.keyboard.press('Escape')
+    const tocEscape = await readerSnapshot(page)
+
+    await page.locator('#font-button').click()
+    await expect(page.locator('#font-popover')).toBeVisible()
+    await page.keyboard.press('Escape')
+    const fontEscape = await readerSnapshot(page)
+
+    await page.keyboard.press('Escape')
+    await expect(page.locator('#reader-view')).toHaveCount(0)
+    await page.locator('.file-card').filter({ hasText: book.name }).click()
+    await expect(page.locator('#reader-view')).toBeVisible()
+    await expect(page.locator('#loading')).toBeHidden({ timeout: 20_000 })
+    const restored = await readerSnapshot(page)
+    return { initial, minimum, maximum, changed, saved, tocEscape, fontEscape, restored }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newState, 'Rust 阅读器默认偏好、边界、持久化或 Escape 层级和 reference 不一致').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
