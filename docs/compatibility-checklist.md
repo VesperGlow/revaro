@@ -222,6 +222,8 @@
 - `2026-09-15`，old `18080` / new `18084`：实际等待视频控制条自动隐藏后检查 Tab 隔离及 range 的 `aria-valuetext`；reference 对隐藏的 controls/顶部返回层设置 `inert`，进度和音量分别暴露格式化文本。Rust 初始版缺少这些属性，已恢复；old/new 1/1，修复提交 `b85d0ad`。
 - `2026-09-15`，old `18080` / new `18084`：实际在图片适应窗口状态下拖动 24px（低于 60px 翻页阈值）并在指针未释放时读取 transform；reference 会保留临时水平跟手位移，Rust 初始版只记录位移而未渲染，已恢复；old/new 1/1，修复提交 `d9edd80`。
 - `2026-09-15`，old `18080` / new `18084`：实际打开图片并展开缩略图栏，再点击第二张图片；旧版保持胶片栏展开，并在栏打开/选中项变化后用 `{block: "nearest", inline: "center"}` 定位当前缩略图。Rust 初始版因父级动态闭包重建 `MediaPreview` 而丢失本地展开状态，且缺少定位调用；已稳定挂载预览组件并恢复两次定位，`rust-media-parity-ui.spec.ts` 新增 old/new 1/1，完整文件 28/28（首轮 1 项时序采样重跑后通过），修复提交 `f22bc2b`。
+- `2026-09-15`，old `18080` / new `18084`：在图片预览和 EPUB 阅读器中实际记录关闭覆盖层时的 `HTMLElement.focus` 参数；旧版对仍连接的触发卡传入 `{preventScroll:true}`，触发卡已被移除时不再调用 focus。Rust 初始版无条件调用无选项 `focus()`，已在两类 overlay 恢复连接检查和 `preventScroll`，old/new `rust-overlay-focus-reference-parity.spec.ts` 各 2/2，修复提交 `6352538`。
+- `2026-09-15`，old `18080` / new `18084`：实际把目录选择器触发器的几何位置向下移动 80px，再从已连接的内部滚动容器派发不冒泡 `scroll`；reference 的 window capture listener 会同步移动 fixed popover，Rust 初始版位置保持不变。已恢复捕获阶段监听及释放逻辑，`rust-directory-picker-reference-parity.spec.ts` old/new 完整各 5/5，修复提交 `248a6be`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -504,10 +506,10 @@
 | 模块 | Checklist 范围 | commit | 自动测试 | old/new 浏览器证据 | 状态 |
 |---|---|---|---|---|---|
 | 基线与清单 | 1 | `068b9bb`、`821769c`（E2E new 默认端口） | healthz、old/new 构建和基线记录已完成；双版本测试未显式传 URL 时默认命中当前 Rust `18084` | `/tmp/revaro-old-initial.png`、`/tmp/revaro-new-initial.png` | 已建立，仍持续追加证据 |
-| 媒体/阅读器焦点生命周期 | 10–11、15 | `c238c02` | `rust-overlay-focus-reference-parity.spec.ts` old/new 各 2/2 | 实际比较图片预览、EPUB 阅读器的初始焦点、Tab/Shift+Tab 环绕、菜单/目录 Escape、二次 Escape 关闭、文件卡焦点恢复和 body overflow；仅确认 old 同样启用 trap 的媒体/阅读器，账户/编辑器/分享/普通弹窗仍待完整键盘矩阵 | 局部 PASS |
+| 媒体/阅读器焦点生命周期 | 10–11、15 | `c238c02`、`6352538` | `rust-overlay-focus-reference-parity.spec.ts` old/new 各 2/2 | 实际比较图片预览、EPUB 阅读器的初始焦点、Tab/Shift+Tab 环绕、菜单/目录 Escape、二次 Escape 关闭、文件卡焦点恢复和 body overflow；另用 focus probe 对照触发卡仍连接时的 `{preventScroll:true}` 与触发卡移除时不调用 focus；仅确认 old 同样启用 trap 的媒体/阅读器，账户/编辑器/分享/普通弹窗仍待完整键盘矩阵 | 局部 PASS |
 | 通用弹层嵌套键盘边界 | 1.4、2、5–7、10–11 | `4940aa2` | `rust-account-reference-parity.spec.ts`、`rust-editor-reference-parity.spec.ts`、`rust-share-dialog-reference-parity.spec.ts` 定向 12/12 | old/new 实际比较账户外层/密码子面板 Escape 与焦点、编辑器未保存确认 Escape、分享 active Escape；保留 reference 的非 trap 和默认事件语义 | 局部 PASS |
 | 全局图标与任务中心控件 | 3–4、6、11、15 | `e329690`（`icons.rs` geometry、路径/音频 fallback、任务展开箭头、old/new DOM E2E） | `rust-icon-reference-parity.spec.ts` 双上下文实际比较全局入口、状态卡、菜单、任务操作、路径和移动端图标；媒体/文件项全类型与完整状态矩阵未完 | old/new icon parity trace；old package source 对照记录 | 局部 PASS |
-| 目录选择器图标、展开控件、Escape、disabled 与 flyout 语义 | 8、15 | `d528aed`、`9ff563b`、`d0421c5`、`3198ff8`、`82cd1b3` | `rust-directory-picker-reference-parity.spec.ts` old/new 各 3/3；`rust-actions-parity-ui.spec.ts` old/new 各 9/9 | old/new 实际打开移动目标选择器，比较触发器、面包屑、子目录、深层路径、空目录图标、目标点击/Escape 默认事件、传输中 disabled class/opacity/按钮状态、进入/退出过渡和卸载时序；首帧探针监听真实 DOM 过渡 class，定位比较容忍 `<1px` 浏览器亚像素误差 | 局部 PASS |
+| 目录选择器图标、展开控件、Escape、disabled、flyout 与嵌套滚动语义 | 8、15 | `d528aed`、`9ff563b`、`d0421c5`、`3198ff8`、`82cd1b3`、`248a6be` | `rust-directory-picker-reference-parity.spec.ts` old/new 完整各 5/5；`rust-actions-parity-ui.spec.ts` old/new 各 9/9 | old/new 实际打开移动目标选择器，比较触发器、面包屑、子目录、深层路径、空目录图标、目标点击/Escape 默认事件、传输中 disabled class/opacity/按钮状态、进入/退出过渡和卸载时序；另从内部滚动容器派发不冒泡 scroll，比较 window capture 触发的 fixed popover 重定位；首帧探针监听真实 DOM 过渡 class，定位比较容忍 `<1px` 浏览器亚像素误差 | 局部 PASS |
 | 面包屑 DOM、平滑显露与移动端布局 | 5、15 | `2e2221d`、`3040995`、`da5321c`、`5dd791a` | `rust-breadcrumb-layout-reference-parity.spec.ts` old/new 各 3/3；布局首项重复 5 次通过；`rust-navigation-parity.spec.ts` old/new 各 9/9 | 390×844 深层路径实际比较 direct 子节点、首末 margin、最终横向位置、`scrollTo` smooth options、中间级点击/Enter/触摸、点击根和浏览器后退；测试等待 smooth 动画收敛，避免瞬时采样误报 | 局部 PASS |
 | 壳层响应式监听生命周期 | 2、15 | `9dc5204` | `rust-navigation-parity.spec.ts` old/new 各 10/10 | 实际注销卸载认证壳层，拦截 `MediaQueryList` add/remove，确认顶栏/侧栏监听均被释放；完整断线/重连清理仍未完 | 局部 PASS |
 | 桌面全局 Tab 焦点顺序 | 2–6、15 | `2451445` | `rust-global-focus-reference-parity.spec.ts` old/new 双上下文 1/1 | 1440×900 实际连续按 Tab 24 次，比较顶栏、侧栏、路径树、文件头和文件项焦点落点；额外 aria-label 只作为无障碍增强保留，媒体/阅读器 trap 与账户/编辑器/分享非 trap 边界已有独立证据，完整状态矩阵仍未完 | 局部 PASS |
