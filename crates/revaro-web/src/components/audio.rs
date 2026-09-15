@@ -301,9 +301,21 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let on_key = {
         let toggle_playback = toggle_playback.clone();
         let seek = seek.clone();
+        let player = player;
         let close_panel = {
             let panel_open = panel_open;
-            move || panel_open.set(false)
+            move || {
+                panel_open.set(false);
+                if let Some(element) = player.get() {
+                    let _ = element
+                        .unchecked_into::<web_sys::Element>()
+                        .query_selector("[data-panel-trigger=\"chapters\"]")
+                        .ok()
+                        .flatten()
+                        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+                        .map(|element| element.focus());
+                }
+            }
         };
         move |event: KeyboardEvent| {
             if event.default_prevented() {
@@ -344,17 +356,80 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
 
     let open_panel = move |_| {
         panel_open.set(true);
+        // The reference waits for the sheet to mount before moving focus to
+        // its close button. A synchronous query races Leptos DOM insertion
+        // and leaves keyboard users on the trigger.
+        if let Some(window) = web_sys::window() {
+            let callback = Closure::once_into_js(move || {
+                if let Some(element) = player.get() {
+                    let _ = element
+                        .unchecked_into::<web_sys::Element>()
+                        .query_selector(".audio-panel .media-icon-button")
+                        .ok()
+                        .flatten()
+                        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+                        .map(|element| element.focus());
+                }
+            });
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
+        }
+    };
+    let close_panel = move |_| {
+        panel_open.set(false);
         if let Some(element) = player.get() {
             let _ = element
                 .unchecked_into::<web_sys::Element>()
-                .query_selector(".audio-panel .media-icon-button")
+                .query_selector("[data-panel-trigger=\"chapters\"]")
                 .ok()
                 .flatten()
                 .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
                 .map(|element| element.focus());
         }
     };
-    let close_panel = move |_| panel_open.set(false);
+    let toggle_panel = move |event: leptos::ev::MouseEvent| {
+        if panel_open.get_untracked() {
+            close_panel(event);
+        } else {
+            open_panel(event);
+        }
+    };
+    let revealed_chapter = StoredValue::new(None::<usize>);
+    {
+        let player = player;
+        Effect::new(move |_| {
+            let open = panel_open.get();
+            let index = current_chapter_index();
+            if !open {
+                revealed_chapter.set_value(None);
+                return;
+            }
+            if revealed_chapter.get_value() == Some(index) {
+                return;
+            }
+            revealed_chapter.set_value(Some(index));
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let callback = Closure::once_into_js(move || {
+                let Some(player) = player.get() else {
+                    return;
+                };
+                let selector = format!(".audio-panel [data-chapter-index=\"{index}\"]");
+                let Ok(Some(element)) = player
+                    .unchecked_into::<web_sys::Element>()
+                    .query_selector(&selector)
+                else {
+                    return;
+                };
+                let options = web_sys::ScrollIntoViewOptions::new();
+                options.set_block(web_sys::ScrollLogicalPosition::Nearest);
+                element.scroll_into_view_with_scroll_into_view_options(&options);
+            });
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
+        });
+    }
     let set_rate = move |event: Event| {
         let Some(element) = event
             .target()
@@ -575,8 +650,8 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                         <label class="audio-rate"><span class="media-sr-only">"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=set_rate>
                             <option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
                         </select></label>
-                        <button type="button" data-panel-trigger="chapters" aria-expanded=move || if panel_open.get() { "true" } else { "false" } on:click=open_panel>{icons::list()}<span>"章节"</span></button>
-                        <PreviewMenu label="音量".to_owned() icon=MenuIcon::Volume>
+                        <button type="button" data-panel-trigger="chapters" aria-expanded=move || if panel_open.get() { "true" } else { "false" } on:click=toggle_panel>{icons::list()}<span>"章节"</span></button>
+                        <PreviewMenu label="音量".to_owned() icon=MenuIcon::Volume volume=volume muted=muted>
                             <div class="audio-volume">
                                 <button type="button" aria-label=move || if muted.get() { "取消静音" } else { "静音" } on:click=toggle_mute>
                                     {move || if muted.get() { icons::volume_x().into_any() } else { icons::volume_2().into_any() }}

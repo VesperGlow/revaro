@@ -42,7 +42,13 @@ pub enum MenuIcon {
 /// document listener only adds the outside-pointer behaviour that native
 /// disclosure elements do not provide consistently across browsers.
 #[component]
-pub fn PreviewMenu(label: String, icon: MenuIcon, children: Children) -> impl IntoView {
+pub fn PreviewMenu(
+    label: String,
+    icon: MenuIcon,
+    #[prop(optional)] volume: Option<RwSignal<f64>>,
+    #[prop(optional)] muted: Option<RwSignal<bool>>,
+    children: Children,
+) -> impl IntoView {
     let menu = NodeRef::<leptos::html::Details>::new();
     let outside_menu = menu;
     let mut outside = browser::on_pointerdown(move |event| {
@@ -89,7 +95,16 @@ pub fn PreviewMenu(label: String, icon: MenuIcon, children: Children) -> impl In
                 aria-label=label.clone()
                 title=label
             >
-                {menu_icon(icon)}
+                {move || {
+                    if icon == MenuIcon::Volume
+                        && (muted.is_some_and(|value| value.get())
+                            || volume.is_some_and(|value| value.get() <= 0.0))
+                    {
+                        icons::volume_x().into_any()
+                    } else {
+                        menu_icon(icon)
+                    }
+                }}
             </summary>
             <div
                 class="preview-menu-panel"

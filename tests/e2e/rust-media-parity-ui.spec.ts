@@ -135,6 +135,134 @@ for (const width of [1440, 390, 320]) {
   })
 }
 
+test('old/new 音频章节面板保持 reference 的切换与焦点回收', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    await expect(page.locator('audio')).toHaveJSProperty('readyState', 4)
+    const trigger = page.locator('[data-panel-trigger="chapters"]')
+    await trigger.click()
+    await expect(page.locator('.audio-panel')).toBeVisible()
+    await expect(page.locator('.audio-panel .media-icon-button')).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.audio-panel')).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+    await trigger.click()
+    await expect(page.locator('.audio-panel')).toBeVisible()
+    await trigger.click()
+    await expect(page.locator('.audio-panel')).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+    await trigger.click()
+    await expect(page.locator('.audio-panel')).toBeVisible()
+    await page.locator('.audio-panel .media-icon-button').click()
+    await expect(page.locator('.audio-panel')).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+  }
+
+  try {
+    await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 音频打开和切换章节时保持 reference 的当前项定位', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => {
+      const state = window as Window & { __revaroAudioChapterReveals?: Array<unknown> }
+      state.__revaroAudioChapterReveals = []
+      const scrollIntoView = Element.prototype.scrollIntoView
+      Element.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+        if (this.matches('.audio-panel [data-chapter-index]')) {
+          state.__revaroAudioChapterReveals!.push({
+            index: this.getAttribute('data-chapter-index'),
+            block: typeof options === 'object' && options !== null ? options.block : options ?? null,
+          })
+        }
+        return scrollIntoView.call(this, options)
+      }
+    })
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => (window as Window & { __revaroAudioChapterReveals?: Array<unknown> }).__revaroAudioChapterReveals?.length ?? 0)).toBe(1)
+    await page.locator('[data-chapter-index="1"]').click()
+    await expect(page.locator('[data-chapter-index="1"]')).toHaveAttribute('aria-current', 'true')
+    await expect.poll(() => page.evaluate(() => (window as Window & { __revaroAudioChapterReveals?: Array<unknown> }).__revaroAudioChapterReveals?.length ?? 0)).toBe(2)
+    return page.evaluate(() => (window as Window & { __revaroAudioChapterReveals?: Array<unknown> }).__revaroAudioChapterReveals)
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual([
+      { index: '0', block: 'nearest' },
+      { index: '1', block: 'nearest' },
+    ])
+    expect(newResult, 'Rust 音频章节当前项定位与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 音频音量入口图标随静音状态保持 reference 几何', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => {
+      localStorage.setItem('revaro-audio-volume', '0')
+      localStorage.setItem('revaro-audio-muted', 'false')
+    })
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    const summary = page.locator('.audio-options .preview-menu > summary')
+    const iconPath = () => summary.locator('svg path').evaluateAll(elements => elements.map(element => element.getAttribute('d')).join('|'))
+    const silent = await iconPath()
+    await summary.click()
+    await page.locator('.audio-volume input').fill('0.5')
+    const audible = await iconPath()
+    await page.locator('.audio-volume button').click()
+    const muted = await iconPath()
+    return { silent, audible, muted }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.silent).not.toBe(oldResult.audible)
+    expect(oldResult.muted).toBe(oldResult.silent)
+    expect(newResult, 'Rust 音频音量入口的静音图标与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const [name, selector] of [['山间来信.m4a', 'audio'], ['山间漫步.webm', 'video']] as const) {
   test(`不支持的原文件直接报错：${selector}`, async ({ page }) => {
     await mockMedia(page)
