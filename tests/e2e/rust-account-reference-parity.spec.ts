@@ -159,6 +159,44 @@ test('账户设置的用户名编辑入口和会话区保持 reference', async (
   }
 })
 
+test('账户头像选择器只按 reference 打开一次', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockAccount(page)
+    await page.addInitScript(() => {
+      const state = window as Window & { __avatarPickerClicks?: number }
+      state.__avatarPickerClicks = 0
+      const original = HTMLInputElement.prototype.click
+      HTMLInputElement.prototype.click = function click(this: HTMLInputElement) {
+        if (this.matches('.avatar-settings input[type="file"]')) {
+          state.__avatarPickerClicks = (state.__avatarPickerClicks ?? 0) + 1
+        }
+        return original.call(this)
+      }
+    })
+    await openAccount(page, baseUrl)
+    await page.locator('.avatar-actions button').first().click()
+    return page.evaluate(() => (window as Window & { __avatarPickerClicks?: number }).__avatarPickerClicks ?? 0)
+  }
+
+  try {
+    const [oldClicks, newClicks] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldClicks).toBe(1)
+    expect(newClicks, 'Rust 头像文件选择器被重复打开').toBe(oldClicks)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(value => { resolve = value })
