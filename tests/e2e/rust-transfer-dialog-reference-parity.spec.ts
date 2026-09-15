@@ -22,7 +22,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function mockTransfer(page: Page, failure = false) {
+async function mockTransfer(page: Page, failure = false, failureStatus = 500) {
   const transferGate = deferred()
   await page.route('**/api/**', async route => {
     const request = route.request()
@@ -47,9 +47,9 @@ async function mockTransfer(page: Page, failure = false) {
     if (path === `/api/files/${FILE_ID}` && request.method() === 'PATCH') {
       if (failure) {
         return route.fulfill({
-          status: 500,
+          status: failureStatus,
           contentType: 'application/json',
-          body: JSON.stringify({ error: { status: 500, message: 'move failed' } }),
+          body: JSON.stringify({ error: { status: failureStatus, message: failureStatus === 409 ? 'move conflict' : 'move failed' } }),
         })
       }
       await transferGate.promise
@@ -215,6 +215,34 @@ test('移动部分失败的全局反馈文案保持 reference', async ({ browser
     await expect(newPage.locator('.move-copy-dialog')).toHaveCount(0)
     await expect(oldPage.locator('.toast')).toHaveText('已移动 0 项，1 项失败：传输中的文件.txt：move failed')
     await expect(newPage.locator('.toast')).toHaveText('已移动 0 项，1 项失败：传输中的文件.txt：move failed')
+    expect(await newPage.locator('.toast').textContent()).toBe(await oldPage.locator('.toast').textContent())
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('移动冲突关闭弹窗并保留 reference 的失败反馈', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockTransfer(oldPage, true, 409),
+      mockTransfer(newPage, true, 409),
+    ])
+    await Promise.all([
+      startTransfer(oldPage, oldUrl, false),
+      startTransfer(newPage, newUrl, false),
+    ])
+    await expect(oldPage.locator('.move-copy-dialog')).toHaveCount(0)
+    await expect(newPage.locator('.move-copy-dialog')).toHaveCount(0)
+    await expect(oldPage.locator('.toast')).toHaveText('已移动 0 项，1 项失败：传输中的文件.txt：move conflict')
+    await expect(newPage.locator('.toast')).toHaveText('已移动 0 项，1 项失败：传输中的文件.txt：move conflict')
     expect(await newPage.locator('.toast').textContent()).toBe(await oldPage.locator('.toast').textContent())
   } finally {
     await oldContext.close()
