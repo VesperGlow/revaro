@@ -234,6 +234,7 @@
 - `2026-09-15`，old `18180` / new `18184` 先实际显示有效 VTT cue，再向两版原生 `track` 派发 `error`；旧版仅记录诊断、保留当前字幕 overlay，Rust 初始版清空字幕并卸载 overlay。已恢复 reference 的诊断-only 语义，新增 `rust-media-parity-ui.spec.ts` old/new 1/1，完整媒体文件现为 34/34，修复提交 `476d747`；其余字幕失败组合仍待验。
 - `2026-09-15`，old `18180` / new `18184` 实际逐项操作文件卡与列表行：右键阻止原生菜单、方块 Space 阻止滚动但不选择、目录 Enter 导航、列表 Space 选择，以及 390×844 选择模式轻触列表行只取消选择不打开 editor；old/new 新增交互用例 2/2。结合已有全类型、loading/fallback、pending/failed、长文件名、焦点/hover 和列表日期矩阵，文件项主交互已收口；旧版生产方块未传 `selectable`，因此无可达长按选择或 disabled 控件分支。
 - `2026-09-15`，old `18180` / new `18184` 在阅读器目录抽屉打开时实际拦截 `HTMLElement.focus` 参数；reference 使用 `{preventScroll:true}`，Rust 初始版使用无参数 `focus()`。已恢复异步目录焦点的 `preventScroll` 选项，避免阅读位置因焦点回收发生滚动；`rust-overlay-focus-reference-parity.spec.ts` 阅读器 old/new 1/1（整文件 2/2），修复提交 `209179e`。
+- `2026-09-15`，专用 `rust-reader-flow-parity.config.ts` 让同一份旧版 `reader-flow.spec.ts` 场景分别运行在 old `18180` 与 new `18184`；窗口预取、连续/边界翻页、readingAnchor、文本 locator 与 percent-encoded fragment 回退、未加载 chunk、父级目录不回弹、随机 seek、spine 窗口释放、旋转、NavAnchor、无 fragment、IndexedDB L2 复开/版本失效和视觉覆盖层两端均 17/17 通过。测试提交 `cfaea4d`；以后不得以 3 个 reader smoke case 代替该完整入口。
 - `2026-09-15`，old `18180` / new `18184` 以 390×844 同一阅读流实际操作字号、行距、主题、工具显隐、空目录和遮罩关闭；两版状态快照一致。期间发现 Rust 行距按钮把整值显示为 `2.0`，reference 显示 `2`，已恢复格式；`rust-reader-reference-parity.spec.ts` old/new 1/1。
 - `2026-09-15`，old `18180` / new `18184` 在 390×844 触摸上下文通过 Chromium `Input.dispatchTouchEvent` 实际横向拖动、纵向拖动；两版横向翻页 transform/页码一致，纵向手势不变更页码。另对照父子目录缩进、活动项、无缓存 flow 的错误文案及“关闭”入口，old/new 1/1；新 reader parity 文件整组 3/3。
 - `2026-09-15`，old `18180` / new `18184` 在 1440、851、850、390px 实际打开“新建文件夹”确认弹窗并读取 modal、icon、copy、input、footer 和按钮 computed geometry；又切换列表并打开选择工具栏比较桌面/断点/手机布局。发现 Rust `ActionDialog` 缺少旧版 input border 和 button `min-height/padding/font-weight`，通用弹窗比 reference 高 11px；已恢复旧版控件规则，`rust-responsive-layout-reference-parity.spec.ts` 新增对照 old/new 1/1，修复提交 `a3b9b58`。
@@ -361,8 +362,8 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | old/new 17项 reader-flow 与真实 TXT 链路已通过；仍需把条目证据拆到各子场景 |
-| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 真实 EPUB 1/1、reader-flow 17/17 和普通文件打开分流/浏览器后退 1/1 已通过；损坏/错误回退和逐项截图仍待验 |
+| `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | 同一份完整旧版 `reader-flow.spec.ts` 在专用双项目配置 old/new 各 17/17；覆盖书名/进度/返回、窗口预取、分页边界、旋转、L2 复开；真实 TXT/深链运行时仍按旧版路由现象单独记录，损坏/错误矩阵仍待验 |
+| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 专用 reader-flow 各 17/17，真实 EPUB 各 1/1；覆盖 manifest/flow/chunk、目录/图片 NavAnchor、样式重排、缓存和首屏；损坏/错误回退和逐项截图仍待验 |
 | `[P]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | old/new reader-flow 的顶栏、标题截断、ring、沉浸式隐藏和恢复均通过；真实 EPUB 另验证页码及 `阅读进度 14.0%` |
 | `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；`rust-reader-reference-parity.spec.ts` 在 390×844 通过 Chromium touch 横向翻页及纵向不翻页；touchcancel、完整键盘状态仍待独立矩阵 |
 | `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | old/new reader-flow 已通过文本 locator、fragment、未加载 chunk、媒体 NavAnchor、无 fragment、父级/随机跳转和 Escape 焦点；新增 old/new 对照空目录、父子缩进、活动项和错误关闭；完整视觉/错误矩阵仍待验 |
@@ -516,7 +517,7 @@
 
 - `[ ]` 为每个已恢复模块增加或更新 Rust unit/integration tests，以及对应 Chromium old/new parity E2E；测试必须操作用户入口，不只直接调用 API。
 - `[ ]` old `web/e2e` 全部可执行；已知两个选择器异常要修正测试夹具或另建等价手工用例后再判定文件模块。
-- `[ ]` new parity suite 覆盖旧版 `auth-status.spec.ts`、`files.spec.ts`、`library-ui.spec.ts`、`media-ui.spec.ts`、`mobile.spec.ts`、`reader-flow.spec.ts`、`reader-real-epub.spec.ts` 的行为集合。
+- `[ ]` new parity suite 覆盖旧版 `auth-status.spec.ts`、`files.spec.ts`、`library-ui.spec.ts`、`media-ui.spec.ts`、`mobile.spec.ts`、`reader-flow.spec.ts`、`reader-real-epub.spec.ts` 的行为集合；其中 `reader-flow.spec.ts` 已由专用 old/new 双项目配置固定为两端各 17/17（`cfaea4d`），其余旧版原始入口仍需在最终门槛统一复跑并保留输出。
 - `[ ]` 每个逻辑完整模块单独提交，提交说明包含 checklist ID、旧版证据、新版证据和验证命令；不要把无关功能混入恢复提交。
 - `[ ]` 每个模块提交前通过：`cargo xtask check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace`、`cargo xtask web-build`（或项目约定的等价 wasm build）。
 - `[ ]` 最终只在本文件所有旧版功能条目均为 `[P]` 后，才宣布 Rust 迁移兼容恢复完成。
