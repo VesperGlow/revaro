@@ -52,10 +52,16 @@ async function installFocusProbe(page: Page) {
   await page.addInitScript(() => {
     const original = HTMLElement.prototype.focus
     ;(window as any).__focusRestoreCalls = []
+    ;(window as any).__readerFocusCalls = []
     HTMLElement.prototype.focus = function (...args: any[]) {
       if (this.matches('.file-card')) {
         ;(window as any).__focusRestoreCalls.push({
           connected: this.isConnected,
+          options: args[0] ? { preventScroll: args[0].preventScroll === true } : null,
+        })
+      }
+      if (this.id === 'toc-close') {
+        ;(window as any).__readerFocusCalls.push({
           options: args[0] ? { preventScroll: args[0].preventScroll === true } : null,
         })
       }
@@ -69,7 +75,14 @@ function focusRestoreCalls(page: Page) {
 }
 
 async function clearFocusProbe(page: Page) {
-  await page.evaluate(() => { (window as any).__focusRestoreCalls = [] })
+  await page.evaluate(() => {
+    ;(window as any).__focusRestoreCalls = []
+    ;(window as any).__readerFocusCalls = []
+  })
+}
+
+function readerFocusCalls(page: Page) {
+  return page.evaluate(() => (window as any).__readerFocusCalls ?? [])
 }
 
 async function mockMedia(page: Page) {
@@ -194,8 +207,10 @@ async function exerciseReader(page: Page, baseUrl: string) {
   await page.keyboard.press('Shift+Tab')
   const last = await focusName(page)
 
+  await clearFocusProbe(page)
   await page.locator('#toc-button').click()
   await expect(page.locator('#toc-close')).toBeFocused()
+  const tocFocus = await readerFocusCalls(page)
   await page.keyboard.press('Shift+Tab')
   const drawerShiftTab = await page.evaluate(() => Boolean(document.activeElement?.closest('#toc-drawer')))
   await page.keyboard.press('Escape')
@@ -213,7 +228,7 @@ async function exerciseReader(page: Page, baseUrl: string) {
   await expect(page.locator('#reader-view')).toHaveCount(0)
   const disconnectedRestore = await focusRestoreCalls(page)
 
-  return { initial, first, last, drawerShiftTab, tocEscape, restored, overflow: await page.evaluate(() => document.body.style.overflow), connectedRestore, disconnectedRestore }
+  return { initial, first, last, tocFocus, drawerShiftTab, tocEscape, restored, overflow: await page.evaluate(() => document.body.style.overflow), connectedRestore, disconnectedRestore }
 }
 
 for (const [name, exercise] of [['媒体预览', exerciseMedia], ['阅读器', exerciseReader] ] as const) {

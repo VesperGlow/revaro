@@ -964,7 +964,20 @@ fn focus_element_after_render(id: &str) {
         return;
     };
     let id = id.to_owned();
-    let callback = Closure::once_into_js(move || focus_element_by_id(&id));
+    let callback = Closure::once_into_js(move || {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        let Some(element) = document
+            .get_element_by_id(&id)
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        else {
+            return;
+        };
+        let options = web_sys::FocusOptions::new();
+        options.set_prevent_scroll(true);
+        let _ = element.focus_with_options(&options);
+    });
     let _ =
         window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
 }
