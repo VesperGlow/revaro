@@ -233,7 +233,7 @@
 - `2026-09-15`，在全新隔离 old `18180` / new `18184` 实际让视频播放并将鼠标停在控制条上超过 2.8 秒；旧版 `controlsHovered` 会保持控制条可见，Rust 初始版自动隐藏，已恢复 hover 保持条件。old/new 1/1，`rust-media-parity-ui.spec.ts`，修复提交 `8a1da62`；键盘/菜单打开和控制条完整状态矩阵仍待验。
 - `2026-09-15`，old `18180` / new `18184` 先实际显示有效 VTT cue，再向两版原生 `track` 派发 `error`；旧版仅记录诊断、保留当前字幕 overlay，Rust 初始版清空字幕并卸载 overlay。已恢复 reference 的诊断-only 语义，新增 `rust-media-parity-ui.spec.ts` old/new 1/1，完整媒体文件现为 34/34，修复提交 `476d747`；其余字幕失败组合仍待验。
 - `2026-09-15`，old `18180` / new `18184` 实际逐项操作文件卡与列表行：右键阻止原生菜单、方块 Space 阻止滚动但不选择、目录 Enter 导航、列表 Space 选择，以及 390×844 选择模式轻触列表行只取消选择不打开 editor；old/new 新增交互用例 2/2。结合已有全类型、loading/fallback、pending/failed、长文件名、焦点/hover 和列表日期矩阵，文件项主交互已收口；旧版生产方块未传 `selectable`，因此无可达长按选择或 disabled 控件分支。
-- `2026-09-15`，old `18180` / new `18184` 在阅读器目录抽屉打开时实际拦截 `HTMLElement.focus` 参数；reference 使用 `{preventScroll:true}`，Rust 初始版使用无参数 `focus()`。已恢复异步目录焦点的 `preventScroll` 选项，避免阅读位置因焦点回收发生滚动；`rust-overlay-focus-reference-parity.spec.ts` 阅读器 old/new 1/1（整文件 2/2），修复提交待提交。
+- `2026-09-15`，old `18180` / new `18184` 在阅读器目录抽屉打开时实际拦截 `HTMLElement.focus` 参数；reference 使用 `{preventScroll:true}`，Rust 初始版使用无参数 `focus()`。已恢复异步目录焦点的 `preventScroll` 选项，避免阅读位置因焦点回收发生滚动；`rust-overlay-focus-reference-parity.spec.ts` 阅读器 old/new 1/1（整文件 2/2），修复提交 `209179e`。
 - `2026-09-15`，old `18180` / new `18184` 以 390×844 同一阅读流实际操作字号、行距、主题、工具显隐、空目录和遮罩关闭；两版状态快照一致。期间发现 Rust 行距按钮把整值显示为 `2.0`，reference 显示 `2`，已恢复格式；`rust-reader-reference-parity.spec.ts` old/new 1/1。
 - `2026-09-15`，old `18180` / new `18184` 在 390×844 触摸上下文通过 Chromium `Input.dispatchTouchEvent` 实际横向拖动、纵向拖动；两版横向翻页 transform/页码一致，纵向手势不变更页码。另对照父子目录缩进、活动项、无缓存 flow 的错误文案及“关闭”入口，old/new 1/1；新 reader parity 文件整组 3/3。
 
