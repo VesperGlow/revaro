@@ -215,6 +215,7 @@
 - `2026-09-15`，old `18080` / new `18084`：将目录详情响应延迟，实际进入目录并观察 `/api/files/{id}` 与 `/api/files/{id}/children` 的启动时序；old 两请求并发，Rust 初始版等待详情后才请求 children，已恢复 `Promise.all` 等价的 `futures_util::join!`。释放请求后两版均进入同一空目录完成态；`rust-file-loading-state-reference-parity.spec.ts` old/new 3/3，修复与探针提交 `0123689`。
 - `2026-09-15`，old `18080` / new `18084`：实际让新文档创建接口返回 409，比较错误后 editor 是否保留、错误文案、未保存标记和再次保存按钮；两版均保留 editor 并允许重试，`rust-editor-reference-parity.spec.ts` old/new 11/11，验证提交 `a82441c`。
 - `2026-09-15`，old `18080` / new `18084`：账户设置用户名编辑在延迟 PATCH 下按 Enter，实际读取 keydown/blur/focusout 顺序、焦点和 disabled 状态；两版均按 reference 先失焦再提交，`rust-account-reference-parity.spec.ts` old/new 4/4，测试提交 `397f200`。
+- `2026-09-15`，old `18080` / new `18084`：阻塞两版 `/api/files/{id}/book/flow` 后实际读取阅读器 loading 文案；old 显示“正在读取书籍…”，Rust 初始版错误显示“正在读取阅读流…”，已恢复 reference 文案。`rust-open-item-reference-parity.spec.ts` old/new 3/3，修复提交 `b6822fb`。
 
 ## 2. 启动、认证和全局壳层
 
@@ -536,7 +537,7 @@
 | 分享弹窗 loading/active/二级确认/复制状态 | 2、12、15 | `01c48cb`、`39b4055`、`94ad574`、`c1ce934`、`31ca8e5`、`4940aa2` | `rust-share-dialog-reference-parity.spec.ts` old/new 双上下文 5/5；`cargo xtask check` 通过 | 延迟读取/创建请求期间实际比较可关闭 loading、遮罩、重新打开、active 链接输入、按钮状态、尺寸和文案；二级确认取消/提交关闭/错误回显、复制成功/失败局部状态、active Escape、重生成成功不产生全局 toast、停止分享产生成功 toast 均已对照；分享非 trap 边界已补齐，完整视觉状态矩阵仍未完 | 局部 PASS |
 | 选择工具栏文件类型分流 | 6、8、15 | `6c9e46a`、`e064296` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 3/3 | 列表实际选择目录、TXT、EPUB、图片、ZIP、未知和双选，比较按钮顺序/文案/图标路径/摘要及关闭后清理；另实际往返全选/取消全选，确认只按当前列表可见项目计数；移动端与回收站恢复/永久删除分支另有独立对照 | 局部 PASS |
 | 选择工具栏移动端与回收站状态 | 6、8、15 | `e26855f` | `rust-selection-toolbar-reference-parity.spec.ts` old/new 各 1/1 | 390×844 实际比较移动端工具栏几何以及回收站已删除 TXT 的“恢复/永久删除”分支；完整 disabled/loading/失败状态仍待验 | 局部 PASS |
-| 账户设置用户名编辑入口 | 2、15 | `a6ac08e`、`397f200` | `rust-account-reference-parity.spec.ts` old/new 各 4/4；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；延迟 PATCH 下按 Enter 的 keydown→blur→focusout 顺序、焦点回收、disabled 和提交启动均与 reference 一致；初始 Rust 图标缺失已恢复 | 局部 PASS |
+| 账户设置用户名编辑入口 | 2、15 | `a6ac08e`、`397f200`、`fe173d9` | `rust-account-reference-parity.spec.ts` old/new 各 5/5；`cargo xtask check` 通过 | 实际比较用户名编辑按钮的 SVG/路径/14px geometry、会话区结构、hover 颜色、输入聚焦和 Escape 取消；延迟 PATCH 下按 Enter 的 keydown→blur→focusout 顺序、焦点回收、disabled 和提交启动均与 reference 一致；头像文件选择按钮在两版均只触发一次原生 file input click；初始 Rust 图标缺失已恢复 | 局部 PASS |
 | 账户 TOTP loading 遮罩行为 | 2、8、15 | `077e678` | `rust-account-reference-parity.spec.ts` old/new 双上下文 2/2；`cargo xtask check` 通过 | 延迟 setup 请求期间实际点击子弹窗空白，比较 old/new 的关闭结果；Rust 初始 busy 限制已移除，恢复 reference 可关闭语义 | 局部 PASS |
 | 账户密码 loading 外层遮罩行为 | 2、8、15 | `1acb307` | `rust-account-reference-parity.spec.ts` old/new 双上下文 3/3；`cargo xtask check` 通过 | 延迟密码 PATCH 期间实际提交、关闭子弹窗并点击账户外层遮罩，比较账户弹层卸载；Rust 初始外层 busy 限制已移除，按钮 disabled/loading 仍保留 | 局部 PASS |
 | 移动/复制 loading、失败与成功反馈 | 8、15 | `8bbbd22`、`f953af8`、`83f7738` | `rust-transfer-dialog-reference-parity.spec.ts` old/new 双上下文 2/2；`rust-mutation-feedback-order-reference-parity.spec.ts` old/new 7/7；`cargo xtask check` 通过 | 延迟移动 PATCH 请求期间实际点击 old/new 遮罩，比较弹窗卸载结果；另以同一 500 响应比较“已移动 0 项，1 项失败：文件：move failed”文案；再以 700ms children 延迟确认成功 toast 等待目录刷新；Rust 初始 busy 限制、失败数量文案和成功反馈时序均已恢复；目标排除、冲突、复制成功和完整错误矩阵仍未完 | 局部 PASS |
