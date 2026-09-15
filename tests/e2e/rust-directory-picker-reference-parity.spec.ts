@@ -37,6 +37,12 @@ const destination = {
   updated_at: STAMP,
   mime_type: '',
 }
+const sourceDirectory = {
+  ...source,
+  name: '待移动目录',
+  kind: 'directory',
+  mime_type: '',
+}
 
 function deferred() {
   let resolve!: () => void
@@ -44,9 +50,10 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = false) {
+async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = false, sourceItem = source) {
   let destinationDetailStarted = false
   let destinationChildrenStarted = false
+  const transferParents: string[] = []
   const destinationGate = deferred()
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
@@ -62,7 +69,7 @@ async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = 
     }
     if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
     if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
-    if (path === `/api/files/${ROOT}/children`) return json({ items: [source, destination], total_bytes: source.size, file_count: 1 })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [sourceItem, destination], total_bytes: sourceItem.size, file_count: 1 })
     if (path === '/api/files/compat-destination') {
       if (probeConcurrency) {
         destinationDetailStarted = true
@@ -74,9 +81,11 @@ async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = 
       if (probeConcurrency) destinationChildrenStarted = true
       return json({ items: [], total_bytes: 0, file_count: 0 })
     }
-    if (delayTransfer && path === '/api/files/compat-source' && route.request().method() === 'PATCH') {
-      await new Promise(resolve => setTimeout(resolve, 800))
-      return json({})
+    if (path === '/api/files/compat-source' && route.request().method() === 'PATCH') {
+      const body = route.request().postDataJSON() as { parent_id?: string }
+      transferParents.push(body.parent_id ?? '')
+      if (delayTransfer) await new Promise(resolve => setTimeout(resolve, 800))
+      return json({ ...sourceItem, parent_id: body.parent_id ?? sourceItem.parent_id })
     }
     return json({ items: [] })
   })
@@ -84,6 +93,7 @@ async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = 
     destinationDetailStarted: () => destinationDetailStarted,
     destinationChildrenStarted: () => destinationChildrenStarted,
     releaseDestination: () => destinationGate.resolve(),
+    transferParents,
   }
 }
 
@@ -234,6 +244,78 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
     await expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0)
     await expect.poll(() => oldPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
     await expect.poll(() => newPage.evaluate(() => (window as Window & { __pickerEscapeDefaultPrevented?: boolean }).__pickerEscapeDefaultPrevented)).toBe(false)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+async function openDirectoryMoveFixture(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?directory-picker-exclusion-reference=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '列表', exact: true }).click()
+  const row = page.locator('.file-row').filter({ hasText: sourceDirectory.name })
+  await expect(row).toBeVisible()
+  await row.getByRole('button', { name: '选择项目' }).click()
+  await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动', exact: true }).click()
+  await expect(page.locator('.move-copy-dialog')).toBeVisible()
+}
+
+test('移动目录时选择器排除自身并按 reference 提交目标目录', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([
+      mockPicker(oldPage, false, false, sourceDirectory),
+      mockPicker(newPage, false, false, sourceDirectory),
+    ])
+    await Promise.all([openDirectoryMoveFixture(oldPage, oldUrl), openDirectoryMoveFixture(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('region', { name: '选择目标目录' })).toBeVisible(),
+      expect(newPage.getByRole('region', { name: '选择目标目录' })).toBeVisible(),
+    ])
+
+    const oldFolders = await oldPage.locator('.directory-popover .directory-list > button').allTextContents()
+    const newFolders = await newPage.locator('.directory-popover .directory-list > button').allTextContents()
+    expect(oldFolders).toEqual(['目标文件夹'])
+    expect(newFolders, 'Rust 移动目录时不应把源目录本身列为目标').toEqual(oldFolders)
+    await expect(oldPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: sourceDirectory.name, exact: true })).toHaveCount(0)
+    await expect(newPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: sourceDirectory.name, exact: true })).toHaveCount(0)
+
+    await Promise.all([
+      oldPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+      newPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+    ])
+    await expect(oldPage.locator('.directory-trigger')).toHaveAttribute('title', '我的文件 / 目标文件夹')
+    await expect(newPage.locator('.directory-trigger')).toHaveAttribute('title', '我的文件 / 目标文件夹')
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0),
+      expect(newPage.getByRole('region', { name: '选择目标目录' })).toHaveCount(0),
+    ])
+
+    await Promise.all([
+      oldPage.locator('.move-copy-dialog').getByRole('button', { name: '移动', exact: true }).click(),
+      newPage.locator('.move-copy-dialog').getByRole('button', { name: '移动', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.toast')).toHaveText('已移动 1 项'),
+      expect(newPage.locator('.toast')).toHaveText('已移动 1 项'),
+    ])
+    expect(newMock.transferParents, 'Rust 移动目录提交的目标 parent_id 与 reference 不一致').toEqual(oldMock.transferParents)
+    expect(oldMock.transferParents).toEqual(['compat-destination'])
   } finally {
     await oldContext.close()
     await newContext.close()
