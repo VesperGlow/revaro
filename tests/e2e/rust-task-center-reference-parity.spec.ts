@@ -55,6 +55,38 @@ async function mockTasks(page: Page) {
   })
 }
 
+async function mockPasswordFailure(page: Page) {
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks' && request.method() === 'GET') {
+      return json({ items: tasks })
+    }
+    if (path === '/api/tasks/waiting-task/input') {
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { status: 409, message: '密码错误' } }),
+      })
+    }
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+}
+
 async function openBrowser(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?task-center-reference=${crypto.randomUUID()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
@@ -148,5 +180,53 @@ test('任务中心分组、进度、展开、密码弹窗、Escape 与空白关�
     await Promise.all([expect(oldPanel).toBeHidden(), expect(newPanel).toBeHidden()])
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('任务密码错误保留 reference 的局部错误语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockPasswordFailure(oldPage), mockPasswordFailure(newPage)])
+    await Promise.all([
+      openBrowser(oldPage, oldUrl),
+      openBrowser(newPage, newUrl),
+    ])
+    await Promise.all([
+      oldPage.getByTitle('任务中心').click(),
+      newPage.getByTitle('任务中心').click(),
+    ])
+    await Promise.all([
+      oldPage.locator('.active-group article').filter({ hasText: '需要密码.zip' }).click(),
+      newPage.locator('.active-group article').filter({ hasText: '需要密码.zip' }).click(),
+    ])
+    await Promise.all([
+      oldPage.locator('.input-dialog input').fill('wrong'),
+      newPage.locator('.input-dialog input').fill('wrong'),
+    ])
+    await Promise.all([
+      oldPage.locator('.input-dialog').getByRole('button', { name: '继续任务' }).click(),
+      newPage.locator('.input-dialog').getByRole('button', { name: '继续任务' }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.input-dialog p')).toHaveText('密码错误'),
+      expect(newPage.locator('.input-dialog p')).toHaveText('密码错误'),
+    ])
+    const snapshot = (page: Page) => page.locator('.input-dialog p').evaluate(element => ({
+      text: element.textContent?.trim() ?? '',
+      className: element.getAttribute('class'),
+      role: element.getAttribute('role'),
+    }))
+    const oldSnapshot = await snapshot(oldPage)
+    const newSnapshot = await snapshot(newPage)
+    expect(newSnapshot, 'Rust 任务密码错误的局部 DOM 语义与 reference 不一致').toEqual(oldSnapshot)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
   }
 })

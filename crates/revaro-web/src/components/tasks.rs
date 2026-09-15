@@ -828,7 +828,7 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                         on:input=move |event| password_value.set(event_target_value(&event))
                     />
                     <Show when=move || !password_error.get().is_empty() fallback=|| ()>
-                        <p role="alert">{move || password_error.get()}</p>
+                        <p>{move || password_error.get()}</p>
                     </Show>
                     <footer>
                         <button type="button" on:click=move |_| close_password.run(())>
