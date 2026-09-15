@@ -876,3 +876,93 @@ test('回收站清空的取消与失败结果保持 reference 交互', async ({ 
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
+
+test('old/new CRUD、文档和上传入口保留 reference 的非法名称校验', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const invalidNames = [
+    '',
+    '.',
+    '..',
+    ' leading',
+    'trailing ',
+    'a/b',
+    'a\\b',
+    'a\u0001b',
+    'a\u007fb',
+    'a'.repeat(256),
+  ]
+
+  async function exercise(page: Page, baseUrl: string) {
+    const folderName = `crud-validation-${crypto.randomUUID()}`
+    await page.goto(`${baseUrl}/?crud-validation-reference=${Date.now()}`)
+    await page.evaluate(async () => {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'revaro-e2e-password' }),
+      })
+      if (!response.ok) throw new Error(`login failed: ${response.status}`)
+    })
+    const valid = await page.evaluate(async ({ folderName, root }) => {
+      const response = await fetch('/api/directories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: root, name: folderName }),
+      })
+      return { status: response.status, body: await response.json() as { id?: string } }
+    }, { folderName, root: ROOT })
+    expect(valid.status).toBe(201)
+    const folderId = valid.body.id
+    if (!folderId) throw new Error('validation fixture folder was not created')
+
+    const results = await page.evaluate(async ({ folderId: id, invalidNames: names, root }) => {
+      async function request(path: string, method: string, body: unknown) {
+        const response = await fetch(path, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const text = await response.text()
+        let parsed: unknown = text
+        try {
+          parsed = JSON.parse(text)
+        } catch {
+          // Preserve a non-JSON body as text for diagnostics.
+        }
+        return { status: response.status, body: parsed }
+      }
+      const rows: Array<{ name: string; directory: { status: number; body: unknown }; rename: { status: number; body: unknown }; document: { status: number; body: unknown }; upload: { status: number; body: unknown } }> = []
+      for (const name of names) {
+        rows.push({
+          name,
+          directory: await request('/api/directories', 'POST', { parent_id: root, name }),
+          rename: await request(`/api/files/${id}`, 'PATCH', { name }),
+          document: await request('/api/documents', 'POST', { parent_id: root, name, content: 'validation' }),
+          upload: await request('/api/uploads', 'POST', { parent_id: root, name, size: 0, mime_type: 'text/plain' }),
+        })
+      }
+      return rows
+    }, { folderId, invalidNames, root: ROOT })
+    await page.evaluate(async id => {
+      const headers = { 'Content-Type': 'application/json' }
+      await fetch(`/api/files/${id}`, { method: 'DELETE', headers })
+      await fetch(`/api/trash/${id}`, { method: 'DELETE', headers })
+    }, folderId)
+    return results
+  }
+
+  try {
+    const [oldResults, newResults] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(newResults, 'Rust CRUD/文档/上传非法名称校验与 reference 不一致').toEqual(oldResults)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
