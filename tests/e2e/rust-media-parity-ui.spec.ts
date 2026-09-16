@@ -1996,6 +1996,61 @@ test('old/new 视频用户 seek 与预览关闭的进度持久化时机一致', 
   }
 })
 
+test('old/new 视频刷新和重开时服务端进度失败仍恢复本机位置', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => localStorage.setItem('revaro-video-position:video-1', '10'))
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/video-1/media/progress', async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ status: 503, json: { error: 'progress unavailable' } })
+      return route.fulfill({ status: 200, json: { position: 10, duration: 30 } })
+    })
+
+    async function openAndPause() {
+      await open(page, '山间漫步.webm')
+      const video = page.locator('.video-player-shell video')
+      await expect(video).toHaveJSProperty('readyState', 4)
+      await expect.poll(() => video.evaluate((element: HTMLVideoElement) => Math.floor(element.currentTime))).toBe(10)
+      await video.evaluate((element: HTMLVideoElement) => element.pause())
+      await expect(video).toHaveJSProperty('paused', true)
+      return {
+        position: Math.floor(await video.evaluate((element: HTMLVideoElement) => element.currentTime)),
+        displayed: await page.locator('.video-time').innerText(),
+        nativeDuration: await video.evaluate((element: HTMLVideoElement) => element.duration),
+        localStorage: await page.evaluate(() => localStorage.getItem('revaro-video-position:video-1')),
+      }
+    }
+
+    const first = await openAndPause()
+    await page.getByRole('button', { name: '退出播放', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    await page.reload()
+    await expect(page.locator('.file-card').filter({ hasText: '山间漫步.webm' })).toBeVisible()
+    const reopened = await openAndPause()
+    return { first, reopened }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      first: { position: 10, displayed: '0:10 / 0:30', nativeDuration: 30, localStorage: '10' },
+      reopened: { position: 10, displayed: '0:10 / 0:30', nativeDuration: 30, localStorage: '10' },
+    })
+    expect(newResult, 'Rust 视频刷新/重开本机进度恢复与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 视频 preview 慢响应期间的初始 loading 控件一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

@@ -332,6 +332,17 @@ pub fn VideoPlayer(
         }
     };
     let on_can_play = move |_| {
+        // Chromium can expose a readyState/duration pair after a second
+        // `load()` without replaying `loadedmetadata` to a listener that was
+        // attached during the initial source load. Keep the control bar's
+        // duration in sync with the native element at the first playable
+        // event, matching the reference's metadata display on retry/resume.
+        if let Some(video) = video_element(video) {
+            let native_duration = safe_duration(video.duration());
+            if native_duration > 0.0 {
+                duration.set(native_duration);
+            }
+        }
         buffering.set(false);
         starting.set(false);
         show_video_controls(
@@ -911,7 +922,7 @@ pub fn VideoPlayer(
                     <button class="video-icon-button" type="button" aria-label=move || if playing.get() || starting.get() && autoplay_pending.get() { "暂停" } else { "播放" } on:click=move |_| toggle_playback()>
                         {move || if playing.get() || starting.get() && autoplay_pending.get() { icons::pause().into_any() } else { icons::play().into_any() }}
                     </button>
-                    <span class="video-time">{move || format_media_time(timeline_position())}<span>{format!(" / {}", format_media_time(duration.get()))}</span></span>
+                    <span class="video-time">{move || format_media_time(timeline_position())}<span>{move || format!(" / {}", format_media_time(duration.get()))}</span></span>
                     <div class="video-desktop-volume">
                         <button class="video-icon-button" type="button" aria-label=move || if effective_volume() == 0.0 { "取消静音" } else { "静音" } on:click=move |_| toggle_mute()>
                             {move || volume_icon(effective_volume())}
