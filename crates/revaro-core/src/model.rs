@@ -142,25 +142,106 @@ string_enum! {
     }
 }
 
-string_enum! {
-    /// Lifecycle of a row in `tasks`.
-    #[derive(Default)]
-    TaskStatus {
-        /// Waiting for a worker.
-        #[default]
-        Queued => "queued",
-        /// A worker is executing.
-        Running => "running",
-        /// The task needs input (for example an archive password).
-        WaitingInput => "waiting_input",
-        /// A failed task was retried.
-        Retrying => "retrying",
-        /// Finished successfully.
-        Completed => "completed",
-        /// Finished unsuccessfully.
-        Failed => "failed",
-        /// Cancelled by the user.
-        Cancelled => "cancelled",
+/// Lifecycle of a row in `tasks`.
+///
+/// The Go browser decoded task responses into a structural TypeScript type, so
+/// a newer server status remained in the task array and was simply omitted
+/// from the known groups. Keep database parsing strict through [`FromStr`],
+/// while accepting an unknown response value as `Unknown` for the browser.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TaskStatus {
+    /// Waiting for a worker.
+    #[default]
+    Queued,
+    /// A worker is executing.
+    Running,
+    /// The task needs input (for example an archive password).
+    WaitingInput,
+    /// A failed task was retried.
+    Retrying,
+    /// Finished successfully.
+    Completed,
+    /// Finished unsuccessfully.
+    Failed,
+    /// Cancelled by the user.
+    Cancelled,
+    /// A status introduced by a newer server; ignored by known UI groups.
+    Unknown,
+}
+
+impl TaskStatus {
+    /// Every status understood by the product and persisted in SQLite.
+    pub const ALL: &'static [Self] = &[
+        Self::Queued,
+        Self::Running,
+        Self::WaitingInput,
+        Self::Retrying,
+        Self::Completed,
+        Self::Failed,
+        Self::Cancelled,
+    ];
+
+    /// The canonical wire and database spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::WaitingInput => "waiting_input",
+            Self::Retrying => "retrying",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Default used when a legacy or newer task response omits its status.
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self::Unknown
+    }
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for TaskStatus {
+    type Err = crate::model::UnknownEnumValue;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "waiting_input" => Ok(Self::WaitingInput),
+            "retrying" => Ok(Self::Retrying),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(crate::model::UnknownEnumValue {
+                type_name: "TaskStatus",
+                value: other.to_owned(),
+            }),
+        }
+    }
+}
+
+impl serde::Serialize for TaskStatus {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TaskStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            Some(raw) => raw.parse().unwrap_or(Self::Unknown),
+            None => Self::Unknown,
+        })
     }
 }
 
@@ -355,6 +436,7 @@ pub struct Task {
     #[serde(rename = "type")]
     pub task_type: String,
     /// Lifecycle state.
+    #[serde(default = "TaskStatus::unknown")]
     pub status: TaskStatus,
     /// Human-readable phase within the task.
     #[serde(default)]
@@ -453,6 +535,31 @@ mod tests {
         let error = "bogus".parse::<FileStatus>().unwrap_err();
         assert_eq!(error.type_name, "FileStatus");
         assert_eq!(error.value, "bogus");
+    }
+
+    #[test]
+    fn task_response_unknown_statuses_are_ignored_but_database_parsing_stays_strict() {
+        assert_eq!(
+            serde_json::from_str::<TaskStatus>(r#""future_status""#).unwrap(),
+            TaskStatus::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<TaskStatus>("null").unwrap(),
+            TaskStatus::Unknown
+        );
+        assert!("future_status".parse::<TaskStatus>().is_err());
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Unknown).unwrap(),
+            r#""unknown""#
+        );
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "future-task",
+            "type": "upload",
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z"
+        }))
+        .unwrap();
+        assert_eq!(task.status, TaskStatus::Unknown);
     }
 
     #[test]

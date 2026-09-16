@@ -282,6 +282,59 @@ test('任务中心空名称沿用 reference 的已知类型与未知类型回退
   await expect(unknown).toHaveAttribute('title', '')
 })
 
+async function mockUnknownTaskStatus(page: Page) {
+  const missingStatus = task({ id: 'missing-status', phase: '缺省阶段', name: '缺省状态任务' }) as Record<string, unknown>
+  delete missingStatus.status
+  const tasks = [
+    task({ id: 'future-status', status: 'future_status', phase: '未来阶段', name: '未来状态任务' }),
+    missingStatus,
+  ]
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: tasks })
+    if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+}
+
+test('old/new 任务中心收到未知 status 时保留旧版忽略语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockUnknownTaskStatus(oldPage), mockUnknownTaskStatus(newPage)])
+    await Promise.all([oldPage.goto(`${oldUrl}/`), newPage.goto(`${newUrl}/`)])
+    await Promise.all([
+      expect(oldPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+      expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+    ])
+    await Promise.all([oldPage.getByTitle('任务中心').click(), newPage.getByTitle('任务中心').click()])
+    await Promise.all([
+      expect(oldPage.locator('.task-panel')).toBeVisible(),
+      expect(newPage.locator('.task-panel')).toBeVisible(),
+      expect(oldPage.locator('.task-panel .empty')).toHaveCount(0),
+      expect(newPage.locator('.task-panel .empty')).toHaveCount(0),
+      expect(oldPage.locator('.task-panel article')).toHaveCount(0),
+      expect(newPage.locator('.task-panel article')).toHaveCount(0),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
 test('任务中心动作等待期间保留 reference 的按钮状态', async ({ page }) => {
   const tasks = [
     task({ id: 'cancel-action', status: 'running', phase: '上传中', progress: 42, name: '取消.bin' }),

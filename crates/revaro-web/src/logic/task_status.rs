@@ -6,9 +6,9 @@
 //! task centre groups by the same predicate, so the two must never drift; that
 //! is why the predicate lives here as the single definition.
 //!
-//! The status type itself is shared: [`TaskStatus`] comes from `revaro-core`,
-//! the same enum the server serializes, so a new status cannot appear on the
-//! wire without the client knowing about it.
+//! The status type itself is shared: [`TaskStatus`] comes from `revaro-core`.
+//! Unknown response values are represented by its `Unknown` variant, matching
+//! the old structural client which kept them out of every known task group.
 
 use revaro_core::model::{TaskStatus, task_type};
 
@@ -65,6 +65,7 @@ pub const fn task_status_tone(status: TaskStatus) -> TaskTone {
         TaskStatus::Completed => TaskTone::Success,
         TaskStatus::Failed => TaskTone::Danger,
         TaskStatus::Cancelled => TaskTone::Neutral,
+        TaskStatus::Unknown => TaskTone::Neutral,
     }
 }
 
@@ -122,6 +123,13 @@ pub fn task_status_label(status: TaskStatus, kind: &str, phase: &str, error: &st
         TaskStatus::Completed => "已完成".to_owned(),
         TaskStatus::Cancelled => "已取消".to_owned(),
         TaskStatus::Failed => {
+            if error.is_empty() {
+                "失败".to_owned()
+            } else {
+                error.to_owned()
+            }
+        }
+        TaskStatus::Unknown => {
             if error.is_empty() {
                 "失败".to_owned()
             } else {

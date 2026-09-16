@@ -474,7 +474,8 @@ impl TaskController {
                 TaskStatus::Queued
                 | TaskStatus::Running
                 | TaskStatus::WaitingInput
-                | TaskStatus::Retrying => {}
+                | TaskStatus::Retrying
+                | TaskStatus::Unknown => {}
             }
         }
         self.tasks.set(after);

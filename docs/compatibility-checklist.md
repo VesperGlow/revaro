@@ -318,6 +318,7 @@
 - `2026-09-17`，实际在传输中取消同一文件后立即再次选择：old/new 均先中止首个裸 PUT、DELETE 首个 session，再创建新的 session、完成 PUT/complete，并在根目录刷新出 ready 文件；`rust-upload-cancel-reference-parity.spec.ts` 取消后重选用例 old/new 1/1，请求顺序和本地 abort 均一致。
 - `2026-09-17`，实际让 old/new 首个单文件 PUT 在页面刷新时中止，再以相同文件名、大小和 `lastModified` 重新选择；两版均保留 `revaro.uploads.v1` 与服务端 pending session，刷新后的请求顺序都是 `GET session → PUT data → POST complete`，最终清理 resume 记录并出现 ready 文件。Rust 初始版因误校验旧版 GET 单请求 `part_count:1` 直接停在 GET，已按旧客户端忽略该字段的行为修复；`rust-upload-parity.spec.ts` 刷新重选 old/new 1/1。
 - `2026-09-17`，实际让目录选择器、上传目录冲突恢复和文件树的 `GET /api/files/{id}/children` 成功响应只返回 `items`；旧版这些 caller 只消费目录条目，Rust 初始共享 `Children` 严格要求 `total_bytes/file_count`，稀疏响应会使目录选择器停在“我的文件”。已为这三类 caller 增加 items-only response projection，主文件浏览器仍保留统计字段；目录选择器稀疏 children old/new 1/1、完整套件 9/9，侧栏套件 6/6，上传套件 26/26。
+- `2026-09-17`，在 old/new 任务中心让 `GET /api/tasks` 返回未知、缺省和非字符串 `status`；旧版结构化 JSON caller 保留任务数组但不把它放入活动/完成/失败分组，Rust 初始共享枚举解码失败而错误显示空任务态。已让任务响应中的这些状态映射为 `TaskStatus::Unknown`（数据库 `FromStr` 仍严格），old/new 未分组面板 1/1，任务中心完整套件 10/10，core unknown-status 单测通过。
 - `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层
@@ -340,7 +341,7 @@
 |---|---|---|---|
 | `[P]` | Logo/回到根目录 | 桌面和移动端 logo 图标、`回到我的文件` aria/title、点击后路径、active 状态一致。 | old/new 桌面、移动端从分类/回收站点击 Logo 均回根；按钮尺寸和 title/aria 已在 `rust-navigation-parity.spec.ts` 对照 |
 | `[P]` | 任务中心入口 | 顶栏独立任务中心图标/summary，入口位置、图标、数量/状态提示、点击展开和再次点击关闭一致；不能被上传入口替换。 | old/new 实际点击 summary 均展开任务面板；空状态、点击空白和 Escape 已对照 |
-| `[P]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | old/new `rust-task-center-parity.spec.ts` 覆盖 waiting/active/completed/cancelled/failed、不可重试、完成空态、上传/归档标签、显示更多及原始小数进度先平均再四舍五入 |
+| `[P]` | 任务面板分组 | 活跃、已完成/已取消、失败分组；上传/归档解压/字幕任务标签、进度、状态中文文案、平均进度和空状态一致。 | old/new `rust-task-center-parity.spec.ts` 覆盖 waiting/active/completed/cancelled/failed、不可重试、完成空态、上传/归档标签、显示更多及原始小数进度先平均再四舍五入；未知 `status` 响应按旧版保留任务数组但不进入任何已知分组，避免 Rust 整体解码失败 |
 | `[P]` | 任务操作 | 取消、重试、清除已完成、归档密码输入、任务详情、失败错误、超过四项时“显示更多”、任务流实时更新一致。 | old/new `rust-task-center-parity.spec.ts` 定向 9/9：取消、重试、继续输入密码、清除完成、空白/Escape/入口关闭、分数/名称 fallback、请求中按钮和并发清理均通过；`rust-task-center-reference-parity.spec.ts` 2/2 另确认错误密码保留弹窗、文案和 `.input-dialog p` 局部 DOM 语义；任务详情入口在 reference 无独立页面，归档行即输入入口 |
 | `[P]` | 任务面板交互 | 面板不被背景遮挡、点击面板不关闭、点空白关闭、Esc 关闭、点击入口切换、loading/error/empty 一致。 | old/new mock、延迟初始读取、空状态、Escape 焦点和请求中状态均验证；桌面/移动端切换不会重复拉取或断开共享 SSE，`rust-task-center-parity.spec.ts` old/new 各 9/9 |
 | `[P]` | 系统状态入口 | 在线/状态球可点击；`aria-label=打开系统状态`、title=`系统状态`、颜色/ok 状态和位置一致。 | old/new 实际点击均展开状态面板；aria/title、ok 状态和三卡布局已对照 |
@@ -615,7 +616,7 @@
 | 通用确认弹窗时序 | 8、15 | `045247f` | `rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 延迟创建请求下实际点击确认，比较弹窗即时关闭和后台结果；重命名保存中语义单独保留 | 局部 PASS |
 | 重命名弹窗与选择工具栏层级 | 8、15 | `0e90830`、`a46b845`、`f82e7f8`、`0f87f0d`、`bf7ad53` | `rust-rename-dialog-reference-parity.spec.ts` old/new 双上下文 1/1；`rust-crud-reference-parity.spec.ts` old/new 10/10；`cargo xtask check` 通过 | 实际打开重命名，对照初始名称、输入/按钮状态、文案、焦点和弹窗打开后选择工具栏卸载；尾随空格原样送入 PATCH；空名允许提交、Enter 提交、遮罩关闭和 Escape 保留弹窗；409 冲突保留输入/弹窗并恢复可重试状态；800ms PATCH 进行中标题栏关闭与 reference 一致；Rust 移除专属 autofocus 并恢复旧版层级时序，语义 role/type 增强保留；完整 PATCH 结果矩阵仍未完 | 局部 PASS |
 | 选择工具栏分流与弹层可见性 | 6、8、15 | `f898067` | `rust-selection-toolbar-icon-reference-parity.spec.ts` old/new 各 1/1；`rust-actions-parity-ui.spec.ts` old/new 各 10/10 | 实际选择 `.txt` 对照阅读图标几何；实际打开移动弹层对照选择工具栏立即隐藏；完整文件类型/disabled 矩阵未完 | 局部 PASS |
-| 任务中心与操作时序 | 3、15 | `5c69720`、`2d9f584`、`d05c438`、`8bc004d` | `rust-task-center-parity.spec.ts` old/new 各 9/9；`rust-task-center-reference-parity.spec.ts` old/new 各 2/2 | 两个活动任务原始进度先平均再四舍五入；小数条宽、失败满格、名称 fallback、Escape 焦点、请求中按钮和 `Promise.all` 删除均实际对照；延迟初始请求仍显示 reference 空任务文案；错误密码场景实际确认弹窗保留、文案和错误段落无额外 `role` 语义 | 局部 PASS |
+| 任务中心与操作时序 | 3、15 | `5c69720`、`2d9f584`、`d05c438`、`8bc004d` | `rust-task-center-parity.spec.ts` old/new 各 10/10；`rust-task-center-reference-parity.spec.ts` old/new 各 2/2 | 两个活动任务原始进度先平均再四舍五入；小数条宽、失败满格、名称 fallback、未知 status 忽略、Escape 焦点、请求中按钮和 `Promise.all` 删除均实际对照；延迟初始请求仍显示 reference 空任务文案；错误密码场景实际确认弹窗保留、文案和错误段落无额外 `role` 语义 | 局部 PASS |
 | 系统状态 SSE 与全局键盘语义 | 3、13、15 | `16b70e3` | `rust-global-ui-reference-parity.spec.ts` old/new 各 5/5 | 实际对照三卡首帧、非法数据、critical 状态 class、桌面/移动几何、空白/Escape（含默认事件和焦点）、断线重连以及退出登录后的 EventSource/定时器清理 | 局部 PASS |
 | 顶栏 disclosure 连续切换 | 2–3、15 | `990a60f` | `rust-global-ui-reference-parity.spec.ts` 新增 old/new 各 1/1 | 实际在桌面和 390×844 交替操作任务中心、系统状态、账户工具菜单、账户设置和回收站，比较互相关闭、重复打开/关闭、外部点击和最终路径/弹层状态；既有单入口 Escape/焦点用例继续保留 | 局部 PASS |
 | 移动端工具菜单键盘语义 | 2、3、15 | `ce4d34c` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际打开账户与工具菜单，比较 Escape 的关闭、summary 焦点和 window 阶段 `defaultPrevented=false` | 局部 PASS |
