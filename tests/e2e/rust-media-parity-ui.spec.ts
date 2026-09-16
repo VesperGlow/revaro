@@ -1708,6 +1708,95 @@ test('old/new 触屏媒体手势链保持视频点按、图片缩放与取消语
   }
 })
 
+test('old/new 触屏图片最大缩放后的拖动在四边钳制到舞台边界', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '群山.png')
+    const image = page.locator('.preview-image')
+    await expect(image).toBeVisible()
+    await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(1800)
+
+    const zoomIn = page.getByRole('button', { name: '放大', exact: true })
+    let zoomSteps = 0
+    while (await zoomIn.isEnabled() && zoomSteps < 24) {
+      await zoomIn.tap()
+      zoomSteps += 1
+    }
+    await expect(zoomIn).toBeDisabled()
+
+    const stageBox = await page.locator('.preview-stage').boundingBox()
+    expect(stageBox).not.toBeNull()
+    const startX = Math.round(stageBox!.x + stageBox!.width / 2)
+    const startY = Math.round(stageBox!.y + stageBox!.height / 2)
+    const leftX = Math.round(stageBox!.x + 4)
+    const rightX = Math.round(stageBox!.x + stageBox!.width - 4)
+    const topY = Math.round(stageBox!.y + 4)
+    const bottomY = Math.round(stageBox!.y + stageBox!.height - 4)
+    const session = await page.context().newCDPSession(page)
+
+    async function dragTo(x: number, y: number) {
+      await session.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x: startX, y: startY, id: 1 }],
+      })
+      await session.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [{ x, y, id: 1 }],
+      })
+      await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    }
+
+    async function edgeGaps() {
+      return page.evaluate(() => {
+        const stage = document.querySelector('.preview-stage')!.getBoundingClientRect()
+        const image = document.querySelector('.preview-image')!.getBoundingClientRect()
+        return {
+          left: image.left - stage.left,
+          top: image.top - stage.top,
+          right: image.right - stage.right,
+          bottom: image.bottom - stage.bottom,
+        }
+      })
+    }
+
+    for (let step = 0; step < 16; step += 1) await dragTo(leftX, topY)
+    const topLeft = await edgeGaps()
+    for (let step = 0; step < 16; step += 1) await dragTo(rightX, bottomY)
+    const bottomRight = await edgeGaps()
+    return { zoomSteps, topLeft, bottomRight }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.zoomSteps).toBeGreaterThan(0)
+    expect(oldResult.topLeft.right).toBeCloseTo(0, 0)
+    expect(oldResult.topLeft.bottom).toBeCloseTo(0, 0)
+    expect(oldResult.topLeft.left).toBeLessThan(0)
+    expect(oldResult.topLeft.top).toBeLessThan(0)
+    expect(oldResult.bottomRight.left).toBeCloseTo(0, 0)
+    expect(oldResult.bottomRight.top).toBeCloseTo(0, 0)
+    expect(oldResult.bottomRight.right).toBeGreaterThan(0)
+    expect(oldResult.bottomRight.bottom).toBeGreaterThan(0)
+    expect(newResult.zoomSteps).toBe(oldResult.zoomSteps)
+    for (const edge of ['left', 'top', 'right', 'bottom'] as const) {
+      expect(newResult.topLeft[edge]).toBeCloseTo(oldResult.topLeft[edge], 0)
+      expect(newResult.bottomRight[edge]).toBeCloseTo(oldResult.bottomRight[edge], 0)
+    }
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 不支持媒体保留原文件错误分流且不请求转码入口', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
