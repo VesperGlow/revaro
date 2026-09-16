@@ -540,6 +540,105 @@ test('old/new Markdown 编辑模式、分栏预览和安全渲染状态一致', 
   }
 })
 
+test('old/new Markdown edit/split 保留 textarea 光标滚动，preview 切换按旧版重建状态', async ({ browser }) => {
+  const name = `editor-caret-scroll-${crypto.randomUUID()}.md`
+  const content = Array.from({ length: 180 }, (_, index) =>
+    `## Section ${index + 1}\n\nParagraph ${index + 1}: caret and scroll parity.`,
+  ).join('\n\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await createDocument(page, name, content)
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    await page.locator('.file-row').filter({ hasText: name }).click()
+    const editor = page.locator('.document-editor')
+    const textarea = editor.locator('textarea')
+    await expect(textarea).toHaveValue(content)
+
+    const editState = () => textarea.evaluate(element => {
+      const field = element as HTMLTextAreaElement
+      return {
+        selectionStart: field.selectionStart,
+        selectionEnd: field.selectionEnd,
+        scrollTop: field.scrollTop,
+        valueLength: field.value.length,
+      }
+    })
+    await textarea.evaluate(element => {
+      const field = element as HTMLTextAreaElement
+      field.dataset.parityProbe = 'retained-edit-node'
+      field.focus()
+      field.setSelectionRange(525, 539)
+      field.scrollTop = 640
+    })
+    const initial = await editState()
+
+    await editor.getByRole('button', { name: '分栏', exact: true }).click()
+    await expect(editor.locator('.editor-workspace')).toHaveClass(/mode-split/)
+    const split = await editState()
+    const sameTextareaInSplit = await textarea.getAttribute('data-parity-probe')
+
+    await editor.getByRole('button', { name: '预览', exact: true }).click()
+    await expect(editor.locator('.markdown-preview')).toBeVisible()
+    await expect(textarea).toHaveCount(0)
+    const preview = editor.locator('.markdown-preview')
+    const previewScrollBeforeLeaving = await preview.evaluate(element => {
+      element.scrollTop = 640
+      return element.scrollTop
+    })
+
+    await editor.getByRole('button', { name: '编辑', exact: true }).click()
+    await expect(textarea).toHaveValue(content)
+    const afterPreviewEdit = {
+      ...await editState(),
+      retainedNodeMarker: await textarea.getAttribute('data-parity-probe'),
+    }
+
+    await editor.getByRole('button', { name: '预览', exact: true }).click()
+    await expect(preview).toBeVisible()
+    const previewScrollAfterReopen = await preview.evaluate(element => element.scrollTop)
+    const saveDisabled = await editor.getByRole('button', { name: '保存', exact: true }).isDisabled()
+    const dirtyCount = await editor.locator('.unsaved-dot').count()
+    return {
+      initial,
+      split,
+      sameTextareaInSplit,
+      previewScrollBeforeLeaving,
+      afterPreviewEdit,
+      previewScrollAfterReopen,
+      saveDisabled,
+      dirtyCount,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.initial.selectionStart).toBe(525)
+    expect(oldResult.initial.selectionEnd).toBe(539)
+    expect(oldResult.initial.scrollTop).toBe(640)
+    expect(oldResult.split).toEqual(oldResult.initial)
+    expect(oldResult.sameTextareaInSplit).toBe('retained-edit-node')
+    expect(oldResult.previewScrollBeforeLeaving).toBe(640)
+    expect(oldResult.afterPreviewEdit.retainedNodeMarker).toBeNull()
+    expect(oldResult.saveDisabled).toBe(true)
+    expect(oldResult.dirtyCount).toBe(0)
+    expect(newResult, 'Rust Markdown textarea 光标/滚动生命周期与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 ETag 冲突反馈', async ({ browser }) => {
   const name = `editor-conflict-${crypto.randomUUID()}.md`
   const content = '# conflict reference\n'
