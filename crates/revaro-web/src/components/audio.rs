@@ -252,8 +252,15 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
             return;
         };
         if element.paused() {
-            if element.play().is_err() {
-                error.set("浏览器无法开始播放，请重试".to_owned());
+            match element.play() {
+                Ok(promise) => {
+                    leptos::task::spawn_local(async move {
+                        if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+                            error.set("浏览器无法开始播放，请重试".to_owned());
+                        }
+                    });
+                }
+                Err(_) => error.set("浏览器无法开始播放，请重试".to_owned()),
             }
         } else {
             let _ = element.pause();
