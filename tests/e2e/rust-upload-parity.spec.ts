@@ -2257,3 +2257,52 @@ test('old/new 断点记录指向过期 session 时按 reference 清理并重新�
     ])
   }
 })
+
+test('old/new upload complete 成功响应缺少文件字段时仍按 HTTP 成功完成', async ({ browser }) => {
+  const name = `upload-sparse-complete-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload sparse complete response\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    let completeCalls = 0
+    await page.route(/\/api\/uploads\/[^/]+\/complete$/, async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
+      completeCalls += 1
+      const response = await route.fetch()
+      await route.fulfill({ status: response.status(), contentType: 'application/json', body: '{}' })
+    })
+    await loginAt(page, baseUrl)
+    await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer })
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === wanted && item.status === 'ready')
+    }, name), { timeout: 20_000 }).toBe(true)
+    return { completeCalls }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ completeCalls: 1 })
+    expect(newResult, 'Rust upload complete 稀疏成功响应未保持 reference 行为').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+      oldContext.close(),
+      newContext.close(),
+    ])
+  }
+})

@@ -361,12 +361,14 @@ pub async fn record_upload_part(
 
 /// Commit the upload transaction. The historical client disabled its generic
 /// 60-second timeout for this verification call and relied on the caller's
-/// abort signal instead, so a large local-disk hash is not cut off early.
+/// abort signal instead, so a large local-disk hash is not cut off early. It
+/// also ignored the successful response body, so only the HTTP result is
+/// consumed here.
 pub async fn complete_upload(
     id: &str,
     request: &CompleteUploadRequest,
     signal: Option<&web_sys::AbortSignal>,
-) -> Result<revaro_core::model::File, RequestError> {
+) -> Result<(), RequestError> {
     let request = api_request_timeout(
         Request::post(&format!("/api/uploads/{id}/complete")),
         0,
@@ -374,7 +376,7 @@ pub async fn complete_upload(
     )
     .json(request)
     .map_err(|error| request_transport(error.to_string()))?;
-    send_json(request).await
+    send_empty(request).await
 }
 
 /// Abandon a session and remove its pending file row and staging bytes.

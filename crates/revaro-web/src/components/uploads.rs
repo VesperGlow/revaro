@@ -22,7 +22,7 @@ use revaro_core::api::uploads::{
 };
 use revaro_core::limits;
 use revaro_core::model::{
-    File as ModelFile, FileKind, FileStatus, UploadMode, UploadStatus as UploadLifecycle,
+    File as ModelFile, FileKind, UploadMode, UploadStatus as UploadLifecycle,
 };
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -67,7 +67,6 @@ struct UploadTask {
 /// The server contract resolved for one queue run.
 struct ResolvedUpload {
     upload_id: String,
-    file_id: String,
     mode: UploadMode,
     url: String,
     part_size: i64,
@@ -780,12 +779,7 @@ impl UploadController {
             })
             .await;
         active.verifier.borrow_mut().take();
-        let committed = result?;
-        if (!resolved.file_id.is_empty() && committed.id != resolved.file_id)
-            || committed.status != FileStatus::Ready
-        {
-            return Err(local_error("服务端返回的文件状态无效"));
-        }
+        result?;
         Ok(())
     }
 
@@ -800,20 +794,14 @@ impl UploadController {
                     // The commit endpoint is idempotent. Completing here also
                     // validates that the saved session still belongs to this
                     // file before the task is shown as done.
-                    let committed = api::complete_upload(
+                    api::complete_upload(
                         upload_id,
                         &CompleteUploadRequest { parts: Vec::new() },
                         None,
                     )
                     .await?;
-                    if (!status.file_id.is_empty() && committed.id != status.file_id)
-                        || committed.size != size
-                    {
-                        return Err(local_error("断点上传对应的文件已发生变化"));
-                    }
                     return Ok(ResolvedUpload {
                         upload_id: upload_id.to_owned(),
-                        file_id: status.file_id,
                         mode: status.mode,
                         url: status.url,
                         part_size: status.part_size,
@@ -829,7 +817,6 @@ impl UploadController {
                     }
                     return Ok(ResolvedUpload {
                         upload_id: status.upload_id,
-                        file_id: status.file_id,
                         mode: status.mode,
                         url: status.url,
                         part_size: status.part_size,
@@ -858,7 +845,6 @@ impl UploadController {
         validate_upload_shape(created.mode, created.part_size, created.part_count, size)?;
         Ok(ResolvedUpload {
             upload_id: created.upload_id,
-            file_id: created.file_id,
             mode: created.mode,
             url: created.url,
             part_size: created.part_size,
