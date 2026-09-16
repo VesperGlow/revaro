@@ -1162,9 +1162,12 @@ pub fn FileBrowser(
                                     message: "文件夹名称不能为空".to_owned(),
                                 })
                             } else {
-                                api::create_directory(&CreateDirectoryRequest { parent_id, name })
-                                    .await
-                                    .map(|_| "文件夹已创建".to_owned())
+                                api::create_directory_action(&CreateDirectoryRequest {
+                                    parent_id,
+                                    name,
+                                })
+                                .await
+                                .map(|_| "文件夹已创建".to_owned())
                             }
                         }
                         DialogState::DiscardEditor => Ok(String::new()),

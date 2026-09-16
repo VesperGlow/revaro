@@ -388,6 +388,18 @@ pub async fn create_directory(
     send_json(request).await
 }
 
+/// Create a directory from the foreground file-browser action.
+///
+/// The historical action ignored the successful response body. Upload
+/// directory creation still uses [`create_directory`] because it needs the
+/// returned folder record to build its local path tree.
+pub async fn create_directory_action(request: &CreateDirectoryRequest) -> Result<(), RequestError> {
+    let request = api_request(Request::post("/api/directories"))
+        .json(request)
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_empty(request).await
+}
+
 /// Rename or move one live file or directory.
 pub async fn patch_file(
     id: &str,

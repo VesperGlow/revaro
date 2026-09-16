@@ -25,7 +25,7 @@ const root = {
   mime_type: '',
 }
 
-async function mockCreateFolder(page: Page) {
+async function mockCreateFolder(page: Page, options: { emptyResponse?: boolean } = {}) {
   let created = false
   await page.route('**/api/**', async route => {
     const request = route.request()
@@ -47,7 +47,7 @@ async function mockCreateFolder(page: Page) {
     }
     if (path === '/api/directories' && request.method() === 'POST') {
       created = true
-      return route.fulfill({ status: 201, json: folder })
+      return route.fulfill({ status: 201, json: options.emptyResponse ? {} : folder })
     }
     return json({ items: [] })
   })
@@ -98,6 +98,33 @@ test('新建目录成功反馈等待 reference 的目录刷新完成', async ({ 
     ])
     expect(oldState.beforeRefresh, 'reference 应在目录刷新完成前不显示成功 Toast').toEqual({ toast: null, folderVisible: 0 })
     expect(newState, 'Rust 成功反馈的刷新时序与 reference 不一致').toEqual(oldState)
+    expect(oldState.afterRefresh).toBe('文件夹已创建')
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 新建目录成功响应缺少文件字段时仍保留成功反馈', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockCreateFolder(oldPage, { emptyResponse: true }),
+      mockCreateFolder(newPage, { emptyResponse: true }),
+    ])
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldState.beforeRefresh, 'reference 应在目录刷新完成前不显示成功 Toast').toEqual({ toast: null, folderVisible: 0 })
+    expect(newState, 'Rust 新建目录成功响应缺字段时未保留 reference 反馈').toEqual(oldState)
     expect(oldState.afterRefresh).toBe('文件夹已创建')
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
