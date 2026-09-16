@@ -495,6 +495,58 @@ test('记录旧版续传 complete 对自身 parts 元数据的解码缺陷并保
   }
 })
 
+test('旧版 upload complete 的存储层分片失败保持 502 envelope', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const sessions: Array<{ uploadId: string; fileId: string }> = []
+
+  try {
+    for (const [index, client] of clients.entries()) {
+      const baseUrl = index === 0 ? oldUrl : newUrl
+      const created = await jsonResponse(
+        client,
+        baseUrl,
+        '/api/uploads',
+        'POST',
+        {
+          parent_id: ROOT,
+          name: `continuation-storage-error-${crypto.randomUUID()}.bin`,
+          size: 2 ** 24,
+          mime_type: 'application/octet-stream',
+        },
+      )
+      expect(created.response.status()).toBe(201)
+      sessions[index] = {
+        uploadId: String(objectValue(created.json, 'upload_id')),
+        fileId: String(objectValue(created.json, 'file_id')),
+      }
+    }
+
+    const results = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      `/api/uploads/${sessions[index].uploadId}/complete`,
+      'POST',
+      { parts: [{ part_number: 1, etag: 'missing-staged-part' }] },
+    )))
+    await compareTransport(results[0], results[1])
+    expect(results[0].response.status()).toBe(502)
+    expect(results[0].json).toEqual({
+      error: { status: 502, message: 'object storage could not complete the upload' },
+    })
+    expect(results[1].json).toEqual(results[0].json)
+  } finally {
+    await Promise.all(clients.map(async (client, index) => {
+      const session = sessions[index]
+      if (!session) return
+      await client.delete(`/api/uploads/${session.uploadId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)
+      await client.delete(`/api/files/${session.fileId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)
+    }))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版文档 API 的创建、读取、保存、下载、分享和回收生命周期保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

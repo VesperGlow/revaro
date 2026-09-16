@@ -1097,21 +1097,12 @@ fn write_error(error: StorageError) -> ApiError {
 }
 
 fn complete_error(error: StorageError) -> ApiError {
-    match error {
-        StorageError::InvalidPartList | StorageError::PartMissing { .. } => {
-            ApiError::bad_request("multipart completion list is incomplete")
-        }
-        StorageError::PartEtagMismatch { .. } => {
-            ApiError::bad_request("multipart completion list is invalid")
-        }
-        StorageError::SizeMismatch { .. } => {
-            ApiError::bad_request("uploaded object size does not match the declared size")
-        }
-        other => {
-            tracing::error!(%other, "upload completion failed");
-            ApiError::new(502, "object storage could not complete the upload")
-        }
-    }
+    tracing::error!(%error, "upload completion failed");
+    // The Go route only validates the shape of the completion list itself.
+    // Missing staged parts, ETag mismatches, and other failures reported by
+    // object storage all use its generic 502 response; keep the 400 messages
+    // above for the route-level count/order/empty-ETag checks.
+    ApiError::new(502, "object storage could not complete the upload")
 }
 
 fn conflict_or(error: DbError) -> ApiError {
