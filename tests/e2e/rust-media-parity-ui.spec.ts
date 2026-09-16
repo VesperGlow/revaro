@@ -429,6 +429,102 @@ test('old/new 音频 metadata 接口失败时回退文件名章节且原始播�
   }
 })
 
+test('old/new 音频上一章按三秒阈值回退，下一章定位起点并恢复播放', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    const previous = page.getByRole('button', { name: '上一章', exact: true })
+    const next = page.getByRole('button', { name: '下一章', exact: true })
+
+    async function setPausedTime(time: number) {
+      await audio.evaluate((element: HTMLAudioElement, value) => {
+        element.pause()
+        element.currentTime = value
+        element.dispatchEvent(new Event('timeupdate'))
+      }, time)
+    }
+    async function currentTime() {
+      return audio.evaluate((element: HTMLAudioElement) => element.currentTime)
+    }
+
+    await setPausedTime(50)
+    await expect(page.locator('.audio-chapter-current h1')).toHaveText('第二章 · 在林间停留')
+    await previous.click()
+    await expect.poll(async () => Math.abs(await currentTime() - 40)).toBeLessThan(0.01)
+    const withinChapter = {
+      time: await currentTime(),
+      title: await page.locator('.audio-chapter-current h1').innerText(),
+      paused: await audio.evaluate((element: HTMLAudioElement) => element.paused),
+    }
+
+    await setPausedTime(41)
+    await previous.click()
+    await expect.poll(async () => Math.abs(await currentTime())).toBeLessThan(0.01)
+    const nearChapterStart = {
+      time: await currentTime(),
+      title: await page.locator('.audio-chapter-current h1').innerText(),
+    }
+
+    await audio.evaluate(element => {
+      const state = window as Window & { __chapterSeekedTimes?: number[] }
+      state.__chapterSeekedTimes = []
+      element.addEventListener('seeked', () => state.__chapterSeekedTimes?.push(Math.floor(element.currentTime)), { once: true })
+    })
+    await next.click()
+    await expect.poll(() => page.evaluate(() => (window as Window & { __chapterSeekedTimes?: number[] }).__chapterSeekedTimes?.length ?? 0)).toBe(1)
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => !element.paused)).toBe(true)
+    const nextChapter = {
+      time: await page.evaluate(() => (window as Window & { __chapterSeekedTimes?: number[] }).__chapterSeekedTimes?.[0] ?? -1),
+      title: await page.locator('.audio-chapter-current h1').innerText(),
+      paused: await audio.evaluate((element: HTMLAudioElement) => element.paused),
+    }
+    await audio.evaluate((element: HTMLAudioElement) => element.pause())
+
+    await setPausedTime(100)
+    await expect(page.locator('.audio-chapter-current h1')).toHaveText('第三章 · 晚风与归途')
+    await expect(next).toBeDisabled()
+    await previous.click()
+    await expect.poll(async () => Math.abs(await currentTime() - 80)).toBeLessThan(0.01)
+    const lastChapter = {
+      time: await currentTime(),
+      nextDisabled: await next.isDisabled(),
+      title: await page.locator('.audio-chapter-current h1').innerText(),
+    }
+    return { withinChapter, nearChapterStart, nextChapter, lastChapter }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.withinChapter.time).toBeCloseTo(40, 1)
+    expect(oldResult.withinChapter.title).toBe('第二章 · 在林间停留')
+    expect(oldResult.withinChapter.paused).toBe(true)
+    expect(oldResult.nearChapterStart.time).toBeCloseTo(0, 1)
+    expect(oldResult.nearChapterStart.title).toBe('第一章 · 风从山谷来')
+    expect(oldResult.nextChapter.time).toBeCloseTo(40, 1)
+    expect(oldResult.nextChapter.title).toBe('第二章 · 在林间停留')
+    expect(oldResult.nextChapter.paused).toBe(false)
+    expect(oldResult.lastChapter.time).toBeCloseTo(80, 1)
+    expect(oldResult.lastChapter.nextDisabled).toBe(true)
+    expect(oldResult.lastChapter.title).toBe('第三章 · 晚风与归途')
+    expect(newResult, 'Rust 音频上一章/下一章语义与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const width of [1440, 390, 320]) {
   test(`音频 ${width}px：章节、秒数跳转、Esc 和焦点恢复`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
