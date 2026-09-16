@@ -28,7 +28,7 @@ use crate::api;
 use crate::browser;
 use crate::logic::feedback::{Feedback, FeedbackKind};
 use crate::logic::format::{format_date, format_size};
-use crate::logic::routing::{folder_id, folder_url, library_route, library_url};
+use crate::logic::routing::{folder_id, folder_url, library_route, library_url, reader_id};
 
 use super::account::AccountSettings;
 use super::dialogs::{ActionDialog, RenameDialog};
@@ -1966,6 +1966,12 @@ pub fn FileBrowser(
         .and_then(|window| window.location().pathname().ok())
         .unwrap_or_default();
     let initial_route = library_route(&pathname);
+    let initial_reader = reader_id(&pathname).and_then(|encoded| {
+        js_sys::decode_uri_component(&encoded)
+            .ok()
+            .and_then(|value| value.as_string())
+            .filter(|id| !id.contains('/'))
+    });
     history_suppressed.set(true);
     if let Some((kind, folder)) = initial_route
         && kind != LibraryKind::File
@@ -1979,7 +1985,30 @@ pub fn FileBrowser(
         if initial_folder == ROOT_ID && pathname != "/" {
             replace_folder_url(&initial_folder);
         }
-        load_folder.run(initial_folder);
+        if let Some(reader_id) = initial_reader {
+            let (sender, receiver) = oneshot::channel();
+            load_folder_request.run(FolderLoadRequest {
+                id: initial_folder,
+                completion: Some(sender),
+            });
+            let reader_file = reader_file;
+            let push_overlay = push_overlay.clone();
+            let logout = on_logout.clone();
+            leptos::task::spawn_local(async move {
+                let _ = receiver.await;
+                match api::fetch_file(&reader_id).await {
+                    Ok(detail) if classify::is_book(&detail.file) => {
+                        push_overlay.run(());
+                        replace_reader_url(&detail.file.id);
+                        reader_file.set(Some(detail.file));
+                    }
+                    Err(error) if error.is_unauthorized() => logout.run(()),
+                    _ => {}
+                }
+            });
+        } else {
+            load_folder.run(initial_folder);
+        }
     }
     history_suppressed.set(false);
     let username = RwSignal::new(session.username.clone());

@@ -59,6 +59,7 @@
 - `2026-09-14`，old `18080` / new `18082`：侧栏持久化与移动抽屉定向集合两版均 2/2 通过；折叠 rail 和分类手风琴刷新后恢复，移动端隐藏桌面控件、遮罩关闭和六个一级入口一致。
 - `2026-09-14`，old `18080` / new `18082`：旧版 `e2e/auth-status.spec.ts` 两项均通过，状态 SSE 三卡、纵向布局、无伪卡片、Esc/空白关闭和未登录 401 响应一致。
 - `2026-09-14`，old `18080` / new `18082`：真实 TXT 深链接 `/read/{id}` 均回到根目录且不打开阅读器；这是 reference 运行时现状（旧源码虽有 `openDeepLink` 意图），当前 Rust 未引入额外差异，暂不把旧版自身缺陷冒充 Rust 回退。
+- `2026-09-17`，old `18180` / new `18184`：受控 reader API 下实际验证有效 `/read/{id}`，old 已登录直达和登录后均回到 `/`、不打开 Reader；Rust 两条路径均打开 `深链文本` 并保留规范 `/read/{id}`；无效目标两版均回到根且不留下 Reader/error toast。`rust-deep-link-reference-parity.spec.ts` old/new 3/3。反查旧 `app-controller.ts` 只有 `/read/{fileId}` 阅读器深链入口，没有独立媒体/普通文件深链路由；旧 `openRoute()` 先改写 pathname、旧登录成功只 `openFolder(root)`，因此这里将新版按源码明确意图恢复，并把旧运行时缺陷记作例外。
 - `2026-09-14`，old `18080` / new `18082`：已登录页面中途把目录 children 请求改为 401 时，old 保留壳层并显示 `session expired` toast，new 回到登录页；Rust 保留这一安全边界，避免过期 session 下继续展示旧数据，属于允许的安全强化，正常成功路径不变。
 - `2026-09-14`，old `18080` / new `18084`：以同一 mock 目录实际触发 children 401，old/new 分别确认上述结果；`rust-feedback-reference-parity.spec.ts` old/new 1/1，测试提交 `2005d99`。该用例保持为安全例外证据，不把两版不同结果标记为 parity PASS。
 - `2026-09-14`，old `18080` / new `18083`：无效 `/f/compatibility-folder-that-does-not-exist` 登录后均回到 `/`，加载“我的文件”，不留下错误状态；另以 mock API 实际打开 `/library/book`、`/library/image`、`/library/video`、`/library/audio/f/compatibility-route-folder`、`/library/file` 和 `/f/compatibility-route-folder`，两版页面与规范 URL 一致。
@@ -334,7 +335,7 @@
 | `[P]` | 根目录内容头 | `我的文件` 标题、当前路径 nav、项目数/文件数/大小三项 metadata 的文案、间距和层级一致。 | old/new 1440×900 实际比较根目录与回收站内容头、统计文案、动作按钮和返回路径；390×844 空态/错误态结构也逐项比较，`rust-file-browser-reference-parity.spec.ts` 2/2 |
 | `[P]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根、`scrollTo({behavior:"smooth"})`、DOM 层级和首末项 margin，以及中间级 click/Enter/tap 均已对照；`rust-breadcrumb-layout-reference-parity.spec.ts` 3/3 |
 | `[P]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | old/new 直达浏览器用例覆盖五类分类、分类路径、文件夹路径和无效 `/f/{id}`；无效地址均回根并加载默认页面 |
-| `[ ]` | 深链接 | `/read/{fileId}` 打开旧版阅读器；媒体/文件深链接、登录后回到目标、无效深链接错误/返回一致。 | old/new 真实 TXT 与受控 reader mock 均实际回根且不打开阅读器；已确认旧源码存在但 reference 运行时因 pathname 改写顺序未触发，`rust-deep-link-reference-parity.spec.ts` old/new 1/1 仅记录现象，不把共同缺陷标为功能 PASS；是否修复旧版意图仍需单独决定 |
+| `[P]` | 深链接 | 旧版定义的 `/read/{fileId}` 打开 Reader，登录后续接目标；无效目标安全回根。旧版没有独立媒体/普通文件深链 URL，不新增路由。 | 旧版已登录直达及登录后都回根、不读目标（`openRoute()` 改写 pathname、`submitLogin()` 只打开 root）；Rust 两条路径均打开 TXT Reader 并更新为 `/read/{id}`；失效 ID 两版均回根、无 Reader/error toast。old/new mock 浏览器用例 `rust-deep-link-reference-parity.spec.ts` 3/3；按明确旧源码意图保留新版修复，旧版运行时为已记录例外 |
 | `[ ]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退、前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分享确认框叠加时关闭外层 modal 但保留 reference 外置 dialog、TOTP enrollment 子状态下后退关闭账户层且重开后重置、重命名/移动弹窗后退关闭并保留选择、重命名取消/保存各消费一条历史、分类筛选后的分类切换/后退/前进、慢/快目录响应竞态，以及两次快速后退按旧版 `popChain` 顺序逐级恢复 loading/内容；`rust-history-sequence-reference-parity.spec.ts` 与相关导航集合 old/new 22/22，`rust-modal-history-reference-parity.spec.ts` 3/3；发现并恢复 Rust RenameDialog 未登记/未消费 history 的回退，相关重命名边界测试 old/new 2/2；其它弹层组合仍待验证 |
 | `[P]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 1440×900 以 40 个实际 mock 文件比较两种布局的 active/`aria-pressed`/tooltip/icon、可见项、长页面滚动位置、切换后的 localStorage 和非法偏好回退；`rust-file-view-state-reference-parity.spec.ts` old/new 1/1。已有 390×844 切换/刷新/切回和六档断点布局用例继续覆盖移动端 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
@@ -400,7 +401,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | 同一份完整旧版 `reader-flow.spec.ts` 在专用双项目配置 old/new 各 17/17；覆盖书名/进度/返回、窗口预取、分页边界、旋转、L2 复开；真实 TXT/深链运行时仍按旧版路由现象单独记录，损坏/错误矩阵仍待验 |
+| `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | 同一份完整旧版 `reader-flow.spec.ts` 在专用双项目配置 old/new 各 17/17；覆盖书名/进度/返回、窗口预取、分页边界、旋转、L2 复开；2026-09-17 Rust 直接/登录后 TXT 深链 old/new 用例 3/3，恢复旧源码声明意图并记录旧运行时例外；损坏/错误矩阵仍待验 |
 | `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 专用 reader-flow 各 17/17，真实 EPUB 各 1/1；覆盖 manifest/flow/chunk、目录/图片 NavAnchor、样式重排、缓存和首屏；损坏/错误回退和逐项截图仍待验 |
 | `[P]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | old/new reader-flow 的顶栏、标题截断、ring、沉浸式隐藏和恢复均通过；真实 EPUB 另验证页码及 `阅读进度 14.0%` |
 | `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；`rust-reader-reference-parity.spec.ts` 在 390×844 通过 Chromium touch 横向翻页、纵向不翻页及 `touchcancel` 恢复当前栏；完整键盘状态仍待独立矩阵 |
