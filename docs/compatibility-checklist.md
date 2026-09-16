@@ -299,6 +299,7 @@
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/media/progress` 发送缺省字段、未知字段、malformed JSON、缺失媒体文件 malformed、缺省 position 和非法值；old 先查 ready 媒体文件再解码，缺省数值按 0、未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404。Rust 初始必填 Json 返回 422、未知字段被接受且解析先行，已恢复 Go decoder 零值/拒绝未知字段和校验顺序；`rust-specialized-api-reference-parity.spec.ts` old/new 2/2。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/book/progress` 发送缺省字段、未知字段、malformed JSON、缺失书籍 malformed 和 `null`；old 先查 ready 书籍再解码，缺省/`null` 返回 204，未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404。Rust 初始 `JsonBody` 在 handler 之前解析，缺失文件 malformed 返回 400，已恢复旧版查找/解码顺序；`rust-specialized-api-reference-parity.spec.ts` old/new 3/3。
 - `2026-09-17`，实际在 old `18180` / new `18184` 的加密 ZIP waiting_input 任务上向 `POST /api/tasks/{id}/input` 发送缺失任务 malformed、当前任务缺省 password 和未知字段；old 先检查任务状态/类型再解码，分别返回 409、`400 archive password is required`、`400 invalid JSON request`。Rust 初始 extractor 先解码且要求 password 字段，已恢复 Go decoder 零值/拒绝未知字段和旧版校验顺序；`rust-archive-real-reference-parity.spec.ts` 加密 ZIP old/new 1/1。
+- `2026-09-17`，实际对 old `18180` / new `18184` 的登录、凭据、密码、用户名、TOTP setup/enable/recovery/disable 和头像 PUT 发送缺省字段、未知字段及 malformed JSON；old 对缺省字段按 Go decoder 零值进入各自业务校验，未知/malformed 统一返回 `400 invalid JSON request`（登录缺省返回 401 invalid credentials）。Rust 初始必填 Json 对缺省字段返回 422，已为认证输入恢复零值/拒绝未知字段；`rust-api-reference-parity.spec.ts` 认证 API 1/1，认证/账户/密码回归 9/9。
 - `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层
@@ -468,7 +469,7 @@
 | `[P]` | `GET /healthz` | 启动/监控 | old/new 实例均实际请求并返回相同 `200 {"status":"ok"}`；`rust-public-share-reference-parity.spec.ts` |
 | `[P]` | `GET /readyz` | 就绪检查 | Rust 现已同时 ping SQLite 与本地对象存储；old/new 实例均返回 `{"status":"ready"}`，存储根缺失单测返回 503 `object storage unavailable` |
 | `[P]` | `GET /s/{token}` | 公开分享页 | old/new 创建同名同内容文档并生成分享；无 cookie 读取完整流、Range、响应安全头和撤销后的 404 均实际对照；公开流 `ETag` 与 reference 同为缺省；`rust-public-share-reference-parity.spec.ts` 2/2 |
-| `[P]` | `POST /api/auth/login` | LoginPage | Rust `login()` 由登录页调用；old/new 实际登录、TOTP、Enter、loading/错误和 API 登录探针均通过 |
+| `[P]` | `POST /api/auth/login` | LoginPage | Rust `login()` 由登录页调用；old/new 实际登录、TOTP、Enter、loading/错误以及缺省/未知/malformed JSON API 探针均通过 |
 | `[P]` | `POST /api/auth/logout` | 顶栏账户菜单明确退出 | Rust `logout()` 由账户设置的明确退出按钮调用；old/new 登录回跳已验证 |
 | `[P]` | `GET /api/auth/me` | App 启动/刷新 session | Rust `fetch_session()` 由启动壳层调用；old/new 刷新/过期 cookie/中途 401 分流已对照，API 会话字段也已核对 |
 | `[P]` | `PATCH /api/auth/credentials` | 账户设置凭据 | old UI 没有直接 caller（用户名/密码分拆为下列两个接口）；Rust handler 保留旧 API 兼容 |

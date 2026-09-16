@@ -251,6 +251,76 @@ test('旧版 API 路由、响应字段和错误分流在 Rust 版仍可达', asy
   }
 })
 
+test('旧版认证 API 的 JSON 零值、未知字段和校验错误在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const rawClients = await Promise.all([
+    createRequest.newContext({ baseURL: oldUrl }),
+    createRequest.newContext({ baseURL: newUrl }),
+  ])
+
+  try {
+    const loginCases: Array<[string, unknown, number, Record<string, unknown>]> = [
+      ['缺省字段', {}, 401, { error: { status: 401, message: 'invalid credentials' } }],
+      ['未知字段', { username: 'x', password: 'x', extra: true }, 400, { error: { status: 400, message: 'invalid JSON request' } }],
+      ['malformed', Buffer.from('{"username":'), 400, { error: { status: 400, message: 'invalid JSON request' } }],
+    ]
+    for (const [label, data, expectedStatus, expectedError] of loginCases) {
+      const results = await Promise.all(rawClients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        '/api/auth/login',
+        'POST',
+        data,
+      )))
+      await compareTransport(results[0], results[1])
+      expect(results[0].response.status(), `reference 登录 ${label} 状态异常`).toBe(expectedStatus)
+      expect(results[1].response.status(), `Rust 登录 ${label} 状态与 reference 不一致`).toBe(expectedStatus)
+      expect(results[0].json, `reference 登录 ${label} 错误 envelope 异常`).toEqual(expectedError)
+      expect(results[1].json, `Rust 登录 ${label} 错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+    }
+  } finally {
+    await Promise.all(rawClients.map(client => client.dispose()))
+  }
+
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const protectedCases: Array<[string, string, string]> = [
+    ['/api/auth/credentials', 'PATCH', 'username is required and password must be between 12 and 1024 characters'],
+    ['/api/auth/password', 'PATCH', 'password must be between 12 and 1024 characters'],
+    ['/api/profile/username', 'PATCH', 'username must be between 1 and 128 characters'],
+    ['/api/auth/totp/setup', 'POST', 'current password is required'],
+    ['/api/auth/totp/enable', 'POST', 'current password and verification code are required'],
+    ['/api/auth/totp/recovery-codes', 'POST', 'current password and verification code are required'],
+    ['/api/auth/totp', 'DELETE', 'current password and verification code are required'],
+    ['/api/profile/avatar', 'PUT', 'avatar must be a data URL'],
+  ]
+  try {
+    for (const [path, method, message] of protectedCases) {
+      const cases: Array<[string, unknown, Record<string, unknown>]> = [
+        ['缺省字段', {}, { error: { status: 400, message } }],
+        ['未知字段', { extra: true }, { error: { status: 400, message: 'invalid JSON request' } }],
+        ['malformed', Buffer.from('{'), { error: { status: 400, message: 'invalid JSON request' } }],
+      ]
+      for (const [label, data, expectedError] of cases) {
+        const results = await Promise.all(clients.map((client, index) => jsonResponse(
+          client,
+          index === 0 ? oldUrl : newUrl,
+          path,
+          method,
+          data,
+        )))
+        await compareTransport(results[0], results[1])
+        expect(results[0].response.status(), `reference ${method} ${path} ${label} 状态异常`).toBe(400)
+        expect(results[1].response.status(), `Rust ${method} ${path} ${label} 状态与 reference 不一致`).toBe(400)
+        expect(results[0].json, `reference ${method} ${path} ${label} 错误 envelope 异常`).toEqual(expectedError)
+        expect(results[1].json, `Rust ${method} ${path} ${label} 错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+      }
+    }
+  } finally {
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版 upload 创建输入校验和错误 envelope 在 Rust 版保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

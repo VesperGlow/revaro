@@ -41,6 +41,54 @@ use crate::state::AppState;
 /// Largest accepted avatar, matching Go's `maxAvatarBytes` (`2 << 20`).
 pub const MAX_AVATAR_BYTES: usize = 2 << 20;
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginInput {
+    username: Option<String>,
+    password: Option<String>,
+    second_factor: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialsInput {
+    current_password: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasswordInput {
+    current_password: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UsernameInput {
+    username: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentPasswordInput {
+    current_password: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasswordCodeInput {
+    current_password: Option<String>,
+    code: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AvatarInput {
+    data_url: Option<String>,
+}
+
 /// The authenticated HTTP surface, mounted under `/api` by [`crate::router`].
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -161,7 +209,7 @@ fn unmap(address: IpAddr) -> IpAddr {
 async fn login(
     State(state): State<Arc<AppState>>,
     ClientIp(ip): ClientIp,
-    JsonBody(body): JsonBody<LoginRequest>,
+    request: Request,
 ) -> Result<Response, ApiError> {
     let limiter = state.auth.limiter();
     if !limiter.allow(&ip) {
@@ -171,6 +219,13 @@ async fn login(
             crate::auth::RETRY_AFTER_BLOCKED,
         ));
     }
+    let JsonBody(input) = JsonBody::<Option<LoginInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let body = LoginRequest {
+        username: input.username.unwrap_or_default(),
+        password: input.password.unwrap_or_default(),
+        second_factor: input.second_factor.unwrap_or_default(),
+    };
     if body.username.len() > 128 || body.password.len() > 1024 || body.second_factor.len() > 128 {
         limiter.fail(&ip);
         return Err(ApiError::unauthorized("invalid credentials"));
@@ -246,8 +301,16 @@ async fn me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<Json<P
 async fn change_credentials(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(body): JsonBody<ChangeCredentialsRequest>,
+    request: Request,
 ) -> Result<Response, ApiError> {
+    let JsonBody(input) =
+        JsonBody::<Option<CredentialsInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let body = ChangeCredentialsRequest {
+        current_password: input.current_password.unwrap_or_default(),
+        username: input.username.unwrap_or_default(),
+        password: input.password.unwrap_or_default(),
+    };
     if body.username.is_empty()
         || body.username.len() > 128
         || body.password.len() < 12
@@ -289,8 +352,14 @@ async fn change_credentials(
 async fn change_password(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(body): JsonBody<ChangePasswordRequest>,
+    request: Request,
 ) -> Result<Response, ApiError> {
+    let JsonBody(input) = JsonBody::<Option<PasswordInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let body = ChangePasswordRequest {
+        current_password: input.current_password.unwrap_or_default(),
+        password: input.password.unwrap_or_default(),
+    };
     if body.password.len() < 12 || body.password.len() > 1024 || body.current_password.len() > 1024
     {
         return Err(ApiError::bad_request(
@@ -328,8 +397,12 @@ async fn change_password(
 async fn change_username(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(body): JsonBody<ChangeUsernameRequest>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
+    let JsonBody(input) = JsonBody::<Option<UsernameInput>>::from_request(request, &state).await?;
+    let body = ChangeUsernameRequest {
+        username: input.unwrap_or_default().username.unwrap_or_default(),
+    };
     let username = body.username.trim();
     if username.is_empty() || username.len() > 128 {
         return Err(ApiError::bad_request(
@@ -365,8 +438,16 @@ async fn totp_status(
 async fn begin_totp_setup(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(body): JsonBody<PasswordRequest>,
+    request: Request,
 ) -> Result<JsonStatus<TotpSetup>, ApiError> {
+    let JsonBody(input) =
+        JsonBody::<Option<CurrentPasswordInput>>::from_request(request, &state).await?;
+    let body = PasswordRequest {
+        current_password: input
+            .unwrap_or_default()
+            .current_password
+            .unwrap_or_default(),
+    };
     if body.current_password.is_empty() || body.current_password.len() > 1024 {
         return Err(ApiError::bad_request("current password is required"));
     }
@@ -399,8 +480,15 @@ async fn begin_totp_setup(
 async fn enable_totp(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(body): JsonBody<PasswordCodeRequest>,
+    request: Request,
 ) -> Result<Json<TotpRecovery>, ApiError> {
+    let JsonBody(input) =
+        JsonBody::<Option<PasswordCodeInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let body = PasswordCodeRequest {
+        current_password: input.current_password.unwrap_or_default(),
+        code: input.code.unwrap_or_default(),
+    };
     if !valid_totp_confirmation(&body) {
         return Err(ApiError::bad_request(
             "current password and verification code are required",
@@ -431,8 +519,15 @@ async fn enable_totp(
 async fn regenerate_totp_recovery_codes(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(body): JsonBody<PasswordCodeRequest>,
+    request: Request,
 ) -> Result<Json<TotpRecovery>, ApiError> {
+    let JsonBody(input) =
+        JsonBody::<Option<PasswordCodeInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let body = PasswordCodeRequest {
+        current_password: input.current_password.unwrap_or_default(),
+        code: input.code.unwrap_or_default(),
+    };
     if !valid_totp_confirmation(&body) {
         return Err(ApiError::bad_request(
             "current password and verification code are required",
@@ -458,8 +553,15 @@ async fn regenerate_totp_recovery_codes(
 async fn disable_totp(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(body): JsonBody<PasswordCodeRequest>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
+    let JsonBody(input) =
+        JsonBody::<Option<PasswordCodeInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let body = PasswordCodeRequest {
+        current_password: input.current_password.unwrap_or_default(),
+        code: input.code.unwrap_or_default(),
+    };
     if !valid_totp_confirmation(&body) {
         return Err(ApiError::bad_request(
             "current password and verification code are required",
@@ -519,8 +621,12 @@ async fn get_avatar(State(state): State<Arc<AppState>>) -> Result<Response, ApiE
 /// `PUT /api/profile/avatar`
 async fn update_avatar(
     State(state): State<Arc<AppState>>,
-    JsonBody(body): JsonBody<AvatarRequest>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
+    let JsonBody(input) = JsonBody::<Option<AvatarInput>>::from_request(request, &state).await?;
+    let body = AvatarRequest {
+        data_url: input.unwrap_or_default().data_url.unwrap_or_default(),
+    };
     let Some(comma) = body.data_url.find(',') else {
         return Err(ApiError::bad_request("avatar must be a data URL"));
     };
