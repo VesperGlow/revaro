@@ -183,6 +183,26 @@ async function json(client: APIRequestContext, baseUrl: string, path: string, me
   }
 }
 
+async function requestResult(
+  client: APIRequestContext,
+  baseUrl: string,
+  path: string,
+  method = 'GET',
+  data?: unknown,
+) {
+  const response = await client.fetch(path, {
+    method,
+    headers: headers(baseUrl, data !== undefined),
+    data,
+  })
+  const text = await response.text()
+  return {
+    status: response.status(),
+    contentType: response.headers()['content-type']?.split(';')[0],
+    value: text ? JSON.parse(text) as Record<string, unknown> : null,
+  }
+}
+
 function fileSemantics(file: Record<string, unknown>) {
   return {
     parent_id: file.parent_id,
@@ -352,6 +372,58 @@ test('旧版媒体进度 API 的 JSON 解码和文件查找顺序在 Rust 版保
         expect(newResult.value.position, `Rust ${label} position 与 reference 不一致`).toBe(oldResult.value.position)
         expect(newResult.value.duration, `Rust ${label} duration 与 reference 不一致`).toBe(oldResult.value.duration)
         expect(typeof newResult.value.updated_at, `Rust ${label} updated_at 类型不一致`).toBe(typeof oldResult.value.updated_at)
+      }
+    }
+  } finally {
+    await Promise.all([
+      oldCreated
+        ? cleanup(oldClient, [String(oldCreated.file.id)], [oldCreated.uploadId])
+        : Promise.resolve(),
+      newCreated
+        ? cleanup(newClient, [String(newCreated.file.id)], [newCreated.uploadId])
+        : Promise.resolve(),
+    ])
+    await Promise.all([oldClient.dispose(), newClient.dispose()])
+  }
+})
+
+test('旧版阅读进度 API 的 JSON 解码和文件查找顺序在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const oldClient = await login(oldUrl)
+  const newClient = await login(newUrl)
+  let oldCreated: { file: Record<string, unknown>; uploadId: string } | undefined
+  let newCreated: { file: Record<string, unknown>; uploadId: string } | undefined
+
+  try {
+    ;[oldCreated, newCreated] = await Promise.all([
+      upload(oldClient, oldUrl, `book-progress-${suffix}.epub`, 'application/epub+zip', epub()),
+      upload(newClient, newUrl, `book-progress-${suffix}.epub`, 'application/epub+zip', epub()),
+    ])
+    const oldId = String(oldCreated.file.id)
+    const newId = String(newCreated.file.id)
+    const cases: Array<[string, unknown, number, Record<string, unknown>?, boolean?]> = [
+      ['缺省字段', {}, 204],
+      ['未知字段', { anchor: null, extra: true }, 400, { error: { status: 400, message: 'invalid JSON request' } }],
+      ['malformed', Buffer.from('{"anchor":'), 400, { error: { status: 400, message: 'invalid JSON request' } }],
+      ['缺失文件 malformed', Buffer.from('{"anchor":'), 404, { error: { status: 404, message: 'ready file not found' } }, true],
+      ['null', Buffer.from('null'), 204],
+    ]
+    for (const [label, data, expectedStatus, expectedError, missing] of cases) {
+      const [oldResult, newResult] = await Promise.all([
+        requestResult(oldClient, oldUrl, `/api/files/${missing ? MISSING : oldId}/book/progress`, 'PUT', data),
+        requestResult(newClient, newUrl, `/api/files/${missing ? MISSING : newId}/book/progress`, 'PUT', data),
+      ])
+      expect(newResult.status, `Rust ${label} 状态与 reference 不一致`).toBe(oldResult.status)
+      expect(newResult.contentType, `Rust ${label} Content-Type 与 reference 不一致`).toBe(oldResult.contentType)
+      expect(oldResult.status, `reference ${label} 状态异常`).toBe(expectedStatus)
+      if (expectedError) {
+        expect(oldResult.value, `reference ${label} 错误 envelope 异常`).toEqual(expectedError)
+        expect(newResult.value, `Rust ${label} 错误 envelope 与 reference 不一致`).toEqual(oldResult.value)
+      } else {
+        expect(newResult.value, `Rust ${label} 不应返回响应体`).toBeNull()
+        expect(oldResult.value, `reference ${label} 不应返回响应体`).toBeNull()
       }
     }
   } finally {

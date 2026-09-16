@@ -297,6 +297,7 @@
 - `2026-09-17`，实际对 old `18180` / new `18184` 的目录/文档创建、文件 PATCH 和复制发送缺省字段、未知字段及 malformed JSON，并覆盖 root PATCH 和缺失 source 的校验顺序；Rust 初始 Axum `Json` 返回 422，空 PATCH/复制的业务分流也晚于旧版，已改为 Go decoder 的零值语义、统一 `400 invalid JSON request` 和旧版校验顺序。`rust-api-reference-parity.spec.ts` 文件变更 API old/new 1/1；CRUD/copy 回归集合通过。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/content` 发送缺省 `content`、未知字段、malformed JSON、缺失文件 malformed 及缺省 content 的过期 ETag；old 先查 ready 文件再解码，`{}` 保存空内容并返回 200，未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404，过期 ETag 返回 409。Rust 初始 Axum `Json` 先返回 422，已改为 Go decoder 零值语义和旧版查找/解码顺序；`rust-api-reference-parity.spec.ts` old/new 2/2，编辑器保存失败/刷新 metadata 回归 old/new 3/3。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/media/progress` 发送缺省字段、未知字段、malformed JSON、缺失媒体文件 malformed、缺省 position 和非法值；old 先查 ready 媒体文件再解码，缺省数值按 0、未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404。Rust 初始必填 Json 返回 422、未知字段被接受且解析先行，已恢复 Go decoder 零值/拒绝未知字段和校验顺序；`rust-specialized-api-reference-parity.spec.ts` old/new 2/2。
+- `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/book/progress` 发送缺省字段、未知字段、malformed JSON、缺失书籍 malformed 和 `null`；old 先查 ready 书籍再解码，缺省/`null` 返回 204，未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404。Rust 初始 `JsonBody` 在 handler 之前解析，缺失文件 malformed 返回 400，已恢复旧版查找/解码顺序；`rust-specialized-api-reference-parity.spec.ts` old/new 3/3。
 - `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层
@@ -511,7 +512,7 @@
 | `[P]` | `GET /api/files/{id}/book/assets/{index}` | EPUB 资源 | Rust reader flow `<img>/<object>` URL 由 `ReaderView` 生成；old/new 真实 EPUB 资源场景已通过 |
 | `[P]` | `GET /api/files/{id}/book/cover` | EPUB cover | Rust reader cover URL/fallback 由 `ReaderView` 调用；old/new 真实 EPUB 已通过 |
 | `[P]` | `GET /api/files/{id}/book/progress` | reader progress | Rust `fetch_book_progress()` 由 reader 启动调用；old/new reader-flow 已验证 |
-| `[P]` | `PUT /api/files/{id}/book/progress` | reader progress save | Rust `save_book_progress()` 由 reader 翻页/关闭调用；old/new reader-flow 已验证 |
+| `[P]` | `PUT /api/files/{id}/book/progress` | reader progress save | Rust `save_book_progress()` 由 reader 翻页/关闭调用；old/new reader-flow 及缺省/未知/malformed JSON、缺失书籍查找顺序已验证 |
 | `[P]` | `GET /api/files/{id}/book/flow` | reader manifest/flow | Rust `fetch_book_flow()` 由 reader 启动调用；old/new reader-flow/EPUB 已验证 |
 | `[P]` | `GET /api/files/{id}/book/flow/chunks/{index}` | reader window/cache | Rust `fetch_book_chunk()` 由窗口预取/cache 调用；old/new reader-flow 已验证 |
 | `[P]` | `GET /api/files/{id}/thumbnail` | 卡片/视频 poster/cover | Rust file cards/library/video/audio 构造带 etag URL；old/new library/media 已验证 |

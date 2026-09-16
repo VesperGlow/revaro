@@ -11,7 +11,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path as PathParam, State};
+use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -309,9 +309,11 @@ async fn save_book_progress(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    JsonBody(request): JsonBody<Option<SaveProgressRequest>>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
     let file = reader_file(Arc::clone(&state), id).await?;
+    let JsonBody(request) =
+        JsonBody::<Option<SaveProgressRequest>>::from_request(request, &state).await?;
     // `encoding/json` accepts `null` into a struct and leaves it at its zero
     // value. Deserialising an Option preserves that small wire-level detail
     // while `{}` continues to mean the same thing as an empty progress object.
