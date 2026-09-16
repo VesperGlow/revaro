@@ -672,6 +672,125 @@ test('old/new 页面卸载时只中止本地上传请求而不提前删除 refer
   }
 })
 
+test('old/new 刷新后重新选择同一文件复用 reference pending session', async ({ browser }) => {
+  const name = `upload-reload-reselect-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('reload and resume reference\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    const calls: string[] = []
+    let uploadId = ''
+    let firstPutStarted!: () => void
+    const firstPut = new Promise<void>(resolve => { firstPutStarted = resolve })
+    let firstPutAborted = false
+    let initialPut = true
+
+    page.on('request', request => {
+      const url = new URL(request.url())
+      if (!url.pathname.startsWith('/api/uploads')) return
+      if (['GET', 'POST', 'PUT', 'DELETE'].includes(request.method())) {
+        calls.push(`${request.method()} ${url.pathname}`)
+      }
+      if (request.method() === 'PUT' && url.pathname.match(/^\/api\/uploads\/[^/]+\/data$/)) {
+        firstPutStarted()
+      }
+    })
+    page.on('requestfailed', request => {
+      const url = new URL(request.url())
+      if (uploadId && url.pathname === `/api/uploads/${uploadId}/data`) firstPutAborted = true
+    })
+    await page.route(/\/api\/uploads$/, async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
+      const response = await route.fetch()
+      if (response.ok()) uploadId = String((await response.json() as { upload_id: string }).upload_id)
+      await route.fulfill({ response })
+    })
+    await page.route(/\/api\/uploads\/[^/]+\/data$/, async route => {
+      if (route.request().method() !== 'PUT' || !initialPut) {
+        await route.continue()
+        return
+      }
+      try {
+        await new Promise(resolve => setTimeout(resolve, 5_000))
+        const response = await route.fetch()
+        await route.fulfill({ response })
+      } catch {
+        // Reload intentionally aborts the first browser XHR.
+      }
+    })
+
+    await loginAt(page, baseUrl)
+    const file = { name, mimeType: 'text/plain', buffer, lastModified: 456 }
+    await page.locator('input[type=file]').first().setInputFiles(file)
+    await expect.poll(() => uploadId, { timeout: 10_000 }).not.toBe('')
+    await firstPut
+    const savedLastModified = await page.evaluate(() => {
+      const raw = localStorage.getItem('revaro.uploads.v1')
+      return raw ? JSON.parse(raw)[0]?.lastModified ?? null : null
+    })
+    expect(typeof savedLastModified).toBe('number')
+
+    await page.reload()
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    initialPut = false
+    await page.evaluate(({ fileName, contents, lastModified }) => {
+      const input = document.querySelector('input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) throw new Error('file input is missing')
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([contents], fileName, {
+        type: 'text/plain',
+        lastModified,
+      }))
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { fileName: name, contents: buffer.toString(), lastModified: savedLastModified })
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === wanted && item.status === 'ready')
+    }, name), { timeout: 20_000 }).toBe(true)
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('revaro.uploads.v1') || '[]'))
+    return {
+      calls: calls.map(call => call.replace(/[0-9a-f-]{36}/g, ':id')),
+      firstPutAborted,
+      saved,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.firstPutAborted).toBe(true)
+    expect(oldResult.saved).toEqual([])
+    expect(oldResult.calls).toEqual([
+      'POST /api/uploads',
+      'PUT /api/uploads/:id/data',
+      'GET /api/uploads/:id',
+      'PUT /api/uploads/:id/data',
+      'POST /api/uploads/:id/complete',
+    ])
+    expect(newResult, 'Rust 刷新后重新选择未保持 reference 的 session 复用顺序').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+      oldContext.close(),
+      newContext.close(),
+    ])
+  }
+})
+
 test('old/new 刷新后任务中心取消上传仍走 reference 的任务取消入口', async ({ browser }) => {
   const name = `upload-task-cancel-reference-${crypto.randomUUID()}.bin`
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'

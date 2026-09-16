@@ -1259,7 +1259,12 @@ fn validate_upload_shape(
         UploadMode::Single if limits::uses_multipart_upload(total_size) => {
             Err(local_error("服务端返回了错误的上传模式"))
         }
-        UploadMode::Single if part_count != 0 || part_size_value <= 0 => {
+        // The reference GET endpoint derives `part_count` from the stored
+        // size even for a single-request upload (so a resumed session can
+        // report `1`, while the original POST reports `0`). The reference
+        // browser client ignores that field for single uploads; keep resume
+        // compatible and only require a usable upload size.
+        UploadMode::Single if part_size_value <= 0 => {
             Err(local_error("服务端返回了无效的单文件上传参数"))
         }
         UploadMode::Single => Ok(()),
