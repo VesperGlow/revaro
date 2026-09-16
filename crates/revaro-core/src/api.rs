@@ -113,8 +113,10 @@ pub mod auth {
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct TotpStatus {
         /// Whether TOTP is enabled.
+        #[serde(default)]
         pub enabled: bool,
         /// Number of unused recovery codes.
+        #[serde(default)]
         pub recovery_codes: i64,
     }
 
