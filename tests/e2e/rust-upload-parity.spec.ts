@@ -1597,6 +1597,147 @@ test('old/new 断点 GET upload 成功响应缺少未使用字段时仍完成单
   }
 })
 
+test('old/new multipart 断点 parts 缺少尺寸和哈希字段时仍复用已确认分片', async ({ browser }) => {
+  const name = `upload-sparse-parts-${crypto.randomUUID()}.bin`
+  const partSize = 8 * 1024 * 1024
+  const fileSize = partSize * 2 + 5
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  type ResumeState = {
+    getCalls: number
+    createCalls: number
+    partRequests: number[][]
+    data: Array<{ part: number; size: number }>
+    records: Array<{ part_number: number; etag: string; size: number }>
+    complete: Array<Record<string, unknown>> | null
+  }
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string, uploadId: string) {
+    const state: ResumeState = { getCalls: 0, createCalls: 0, partRequests: [], data: [], records: [], complete: null }
+    await page.route(/\/api\/uploads(?:\/|$)/, async route => {
+      const request = route.request()
+      const pathname = new URL(request.url()).pathname
+      if (pathname === '/api/uploads' && request.method() === 'POST') {
+        state.createCalls += 1
+        return route.fulfill({ status: 500, body: 'sparse resume must not create a new session' })
+      }
+      if (pathname === `/api/uploads/${uploadId}` && request.method() === 'GET') {
+        state.getCalls += 1
+        return route.fulfill({
+          json: {
+            upload_id: uploadId,
+            mode: 'multipart',
+            url: '',
+            part_size: partSize,
+            part_count: 3,
+            expected_size: fileSize,
+            status: 'pending',
+            parts: [
+              { part_number: 1, etag: 'saved-etag-1' },
+              { part_number: 2, etag: 'saved-etag-2' },
+            ],
+          },
+        })
+      }
+      if (pathname === `/api/uploads/${uploadId}/parts` && request.method() === 'POST') {
+        const body = request.postDataJSON() as { part_numbers?: number[] }
+        state.partRequests.push(body.part_numbers ?? [])
+        return route.fulfill({
+          json: {
+            parts: (body.part_numbers ?? []).map(part => ({
+              part_number: part,
+              url: `/api/uploads/${uploadId}/data/${part}`,
+            })),
+          },
+        })
+      }
+      const dataMatch = pathname.match(new RegExp(`^/api/uploads/${uploadId}/data/(\\d+)$`))
+      if (dataMatch && request.method() === 'PUT') {
+        state.data.push({ part: Number(dataMatch[1]), size: request.postDataBuffer()?.length ?? 0 })
+        return route.fulfill({ status: 200, headers: { ETag: 'resumed-etag-3' }, body: '' })
+      }
+      const recordMatch = pathname.match(new RegExp(`^/api/uploads/${uploadId}/parts/(\\d+)$`))
+      if (recordMatch && request.method() === 'PUT') {
+        const body = request.postDataJSON() as { etag?: string; size?: number }
+        state.records.push({
+          part_number: Number(recordMatch[1]),
+          etag: body.etag ?? '',
+          size: body.size ?? 0,
+        })
+        return route.fulfill({ status: 204, body: '' })
+      }
+      if (pathname === `/api/uploads/${uploadId}/complete` && request.method() === 'POST') {
+        state.complete = request.postDataJSON()?.parts ?? null
+        return route.fulfill({
+          json: {
+            id: `file-${uploadId}`,
+            parent_id: ROOT,
+            name,
+            kind: 'file',
+            size: fileSize,
+            mime_type: 'application/octet-stream',
+            status: 'ready',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        })
+      }
+      return route.continue()
+    })
+
+    await loginAt(page, baseUrl)
+    await page.evaluate(({ uploadId: id, uploadName, size }) => {
+      localStorage.setItem('revaro.uploads.v1', JSON.stringify([{
+        uploadId: id,
+        parentId: '00000000-0000-0000-0000-000000000000',
+        name: uploadName,
+        size,
+        lastModified: 123,
+      }]))
+    }, { uploadId, uploadName: name, size: fileSize })
+    await page.evaluate(({ uploadName, size }) => {
+      const input = document.querySelector('input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) throw new Error('file input is missing')
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([new Uint8Array(size)], uploadName, {
+        type: 'application/octet-stream',
+        lastModified: 123,
+      }))
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { uploadName: name, size: fileSize })
+    await expect.poll(() => state.complete, { timeout: 30_000 }).not.toBeNull()
+    return state
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl, 'sparse-parts-old'),
+      exercise(newPage, newUrl, 'sparse-parts-new'),
+    ])
+    expect(oldResult).toEqual({
+      getCalls: 1,
+      createCalls: 0,
+      partRequests: [[3]],
+      data: [{ part: 3, size: 5 }],
+      records: [{ part_number: 3, etag: 'resumed-etag-3', size: 5 }],
+      complete: [
+        { part_number: 1, etag: 'saved-etag-1' },
+        { part_number: 2, etag: 'saved-etag-2' },
+        { part_number: 3, etag: 'resumed-etag-3' },
+      ],
+    })
+    expect(newResult, 'Rust 稀疏 multipart 断点 parts 未保持 reference 的复用顺序').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new multipart 上传按 reference 请求分片、记录校验并按序完成', async ({ browser }) => {
   const name = 'upload-multipart-reference-' + crypto.randomUUID() + '.bin'
   const partSize = 8 * 1024 * 1024

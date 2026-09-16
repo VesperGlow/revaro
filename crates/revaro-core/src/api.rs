@@ -909,9 +909,9 @@ mod tests {
             expires_at: Timestamp::parse("2024-05-06T07:08:09Z").unwrap(),
             parts: vec![UploadPart {
                 part_number: 1,
-                size: 16,
+                size: Some(16),
                 etag: "e".into(),
-                content_hash: String::new(),
+                content_hash: Some(String::new()),
             }],
         };
         let json = serde_json::to_value(&body).unwrap();
@@ -920,6 +920,17 @@ mod tests {
         assert_eq!(
             json["parts"][0],
             serde_json::json!({"part_number": 1, "size": 16, "etag": "e", "content_hash": ""})
+        );
+        let sparse: UploadPart = serde_json::from_value(serde_json::json!({
+            "part_number": 2,
+            "etag": "saved"
+        }))
+        .unwrap();
+        assert_eq!(sparse.size, None);
+        assert_eq!(sparse.content_hash, None);
+        assert_eq!(
+            serde_json::to_value(sparse).unwrap(),
+            serde_json::json!({"part_number": 2, "etag": "saved"})
         );
     }
 

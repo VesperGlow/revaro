@@ -416,15 +416,15 @@ pub struct UploadPart {
     /// 1-based part number.
     pub part_number: i32,
     /// Part size in bytes.
-    pub size: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
     /// Entity tag returned when the part was stored.
     pub etag: String,
     /// Optional per-part integrity hash.
     ///
-    /// Always present in `GET /api/uploads/{id}`, possibly empty, so it is not
-    /// skipped when empty.
-    #[serde(default)]
-    pub content_hash: String,
+    /// Older successful resume responses omitted this field altogether.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 /// A row of the `tasks` table as the API exposes it.

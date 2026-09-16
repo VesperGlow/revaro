@@ -893,13 +893,14 @@ impl UploadController {
             let Some(expected) = part_size(total_size, part_size_value, number) else {
                 continue;
             };
-            if index < part_count && part.size == expected && !part.etag.trim().is_empty() {
+            let size_matches = part.size.is_none_or(|size| size == expected);
+            if index < part_count && size_matches && !part.etag.trim().is_empty() {
                 sent[index] = expected;
                 completed[index] = Some(revaro_core::storage::CompletedPart {
                     part_number: part.part_number,
                     etag: part.etag,
-                    size: Some(part.size),
-                    content_hash: Some(part.content_hash),
+                    size: part.size,
+                    content_hash: part.content_hash,
                 });
             }
         }

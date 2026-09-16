@@ -453,9 +453,9 @@ WHERE upload_id = ?1 ORDER BY part_number",
                 .query_map([&record.id], |row| {
                     Ok(UploadPart {
                         part_number: row.get(0)?,
-                        size: row.get(1)?,
+                        size: Some(row.get(1)?),
                         etag: row.get(2)?,
-                        content_hash: row.get(3)?,
+                        content_hash: Some(row.get(3)?),
                     })
                 })
                 .map_err(|error| database_error(DbError::Query(error)))?;
