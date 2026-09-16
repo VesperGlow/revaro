@@ -648,6 +648,7 @@ pub mod system {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Component {
         /// `ok` or `degraded`.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub status: String,
         /// Size in bytes, omitted when zero.
         #[serde(default, skip_serializing_if = "is_zero")]
@@ -658,6 +659,7 @@ pub mod system {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Storage {
         /// `ok` or `degraded`.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub status: String,
         /// Bytes held by ready, non-deleted files, counting copies separately.
         pub bytes: i64,
@@ -671,6 +673,7 @@ pub mod system {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Cache {
         /// `ok` or `degraded`.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub status: String,
         /// Bytes held in memory.
         pub memory_bytes: i64,
@@ -716,6 +719,7 @@ pub mod system {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Status {
         /// Overall health.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub status: String,
         /// Database component.
         pub database: Component,
@@ -1007,6 +1011,27 @@ mod tests {
         assert_eq!(json["storage"]["trash_bytes"], 0);
         assert_eq!(json["storage"]["file_count"], 1);
         assert!(json["cache"].get("classes").is_none());
+    }
+
+    #[test]
+    fn system_status_treats_nullable_statuses_as_empty() {
+        let status: system::Status = serde_json::from_value(serde_json::json!({
+            "status": null,
+            "database": { "status": null, "bytes": 1 },
+            "storage": { "status": null, "bytes": 2, "trash_bytes": 0, "file_count": 0 },
+            "cache": {
+                "status": null,
+                "memory_bytes": 0,
+                "disk_bytes": 0,
+                "memory_entries": 0,
+                "disk_entries": 0
+            }
+        }))
+        .unwrap();
+        assert!(status.status.is_empty());
+        assert!(status.database.status.is_empty());
+        assert!(status.storage.status.is_empty());
+        assert!(status.cache.status.is_empty());
     }
 
     #[test]

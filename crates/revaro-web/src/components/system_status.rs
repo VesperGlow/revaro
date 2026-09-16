@@ -200,12 +200,7 @@ pub fn SystemStatus() -> impl IntoView {
         cleanup_runtime.take().dispose();
     });
 
-    let overall_class = Signal::derive_local(move || {
-        status
-            .get()
-            .map(|value| value.status)
-            .unwrap_or_else(|| "pending".to_owned())
-    });
+    let overall_class = Signal::derive_local(move || overall_status_class(status.get().as_ref()));
 
     view! {
         <details node_ref=panel class=move || format!("system-status {}", overall_class.get())>
@@ -317,6 +312,13 @@ fn status_tone(status: &str) -> &'static str {
     }
 }
 
+fn overall_status_class(status: Option<&Status>) -> String {
+    match status {
+        Some(value) if !value.status.is_empty() => value.status.clone(),
+        _ => "pending".to_owned(),
+    }
+}
+
 fn state_label(status: &str) -> String {
     match status {
         "critical" => "异常".to_owned(),
@@ -365,5 +367,20 @@ mod tests {
         assert_eq!(state_label("ok"), "正常");
         assert_eq!(state_label("degraded"), "需注意");
         assert_eq!(state_label("critical"), "异常");
+    }
+
+    #[test]
+    fn empty_overall_status_keeps_the_pending_class() {
+        let status = Status {
+            status: String::new(),
+            ..Status::default()
+        };
+        assert_eq!(overall_status_class(Some(&status)), "pending");
+        assert_eq!(overall_status_class(None), "pending");
+        let status = Status {
+            status: "degraded".to_owned(),
+            ..Status::default()
+        };
+        assert_eq!(overall_status_class(Some(&status)), "degraded");
     }
 }

@@ -175,6 +175,49 @@ test('任务中心和系统状态 badge 保持 reference 尺寸与视觉层级',
   }
 })
 
+test('old/new 系统状态 SSE 显式 null 状态仍保留服务卡', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const nullableStatus = {
+    status: null,
+    database: { status: null, bytes: 1024 },
+    storage: { status: null, bytes: 2048, trash_bytes: 512, file_count: 1 },
+    cache: {
+      status: null,
+      memory_bytes: 1024,
+      disk_bytes: 2048,
+      memory_entries: 1,
+      disk_entries: 2,
+      classes: { default: { hits: 2, misses: 1, loads: 1, load_errors: 0, evictions: 0 } },
+    },
+  }
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([mockShell(oldPage, nullableStatus), mockShell(newPage, nullableStatus)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.system-status > summary').click(),
+      newPage.locator('.system-status > summary').click(),
+    ])
+    const snapshot = async (page: Page) => ({
+      className: await page.locator('.system-status').getAttribute('class'),
+      error: (await page.locator('.status-error').count()) > 0 ? await page.locator('.status-error').textContent() : null,
+      cards: await page.locator('.status-grid .service-card').count(),
+      badges: await page.locator('.status-grid .status-badge').allTextContents(),
+    })
+    const oldState = await snapshot(oldPage)
+    const newState = await snapshot(newPage)
+    expect(oldState).toEqual({ className: 'system-status pending', error: null, cards: 3, badges: ['正常', '2.0 KB', '正常'] })
+    expect(newState, 'Rust 系统状态不应因 null 状态字段丢弃整条 SSE').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('桌面与移动顶栏入口保持 reference 的完整分流', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
