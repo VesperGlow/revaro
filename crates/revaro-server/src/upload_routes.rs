@@ -41,9 +41,11 @@ use revaro_core::model::{UploadMode, UploadPart, UploadStatus};
 use revaro_core::time::Timestamp;
 use revaro_core::validate;
 use rusqlite::Connection;
+use serde::Deserialize;
 use tokio_util::io::StreamReader;
 
 use crate::auth::extract::AuthUser;
+use crate::auth_routes::JsonBody;
 use crate::db::DbError;
 use crate::state::AppState;
 use crate::storage::StorageError;
@@ -72,6 +74,18 @@ struct UploadRecord {
     mime_type: String,
     status: UploadStatus,
     expires_at: Timestamp,
+}
+
+/// The Go decoder filled omitted upload fields with their zero values before
+/// validation. Keep that wire behaviour instead of letting Axum turn a
+/// missing required member into a framework-level 422 response.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateUploadInput {
+    parent_id: Option<String>,
+    name: Option<String>,
+    size: Option<i64>,
+    mime_type: Option<String>,
 }
 
 impl UploadRecord {
@@ -175,8 +189,14 @@ fn database_error(error: DbError) -> ApiError {
 async fn create_upload(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
-    Json(request): Json<CreateUploadRequest>,
+    JsonBody(input): JsonBody<CreateUploadInput>,
 ) -> Result<(StatusCode, Json<CreateUpload>), ApiError> {
+    let request = CreateUploadRequest {
+        parent_id: input.parent_id.unwrap_or_default(),
+        name: input.name.unwrap_or_default(),
+        size: input.size.unwrap_or_default(),
+        mime_type: input.mime_type.unwrap_or_default(),
+    };
     validate::validate_name(&request.name)?;
     validate::validate_file_size(request.size)?;
     let mime_type = if request.mime_type.is_empty() {
@@ -185,6 +205,24 @@ async fn create_upload(
         request.mime_type
     };
     validate::validate_mime_type(&mime_type)?;
+
+    let parent_id = request.parent_id.clone();
+    let parent_valid = state
+        .db
+        .call_api(move |connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM files WHERE id = ?1 AND kind = 'directory' \
+AND status = 'ready' AND deleted_at IS NULL)",
+                    [&parent_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| database_error(DbError::Query(error)))
+        })
+        .await?;
+    if !parent_valid {
+        return Err(ApiError::bad_request("parent directory is invalid"));
+    }
 
     let multipart = limits::uses_multipart_upload(request.size);
     let part_size = if multipart {

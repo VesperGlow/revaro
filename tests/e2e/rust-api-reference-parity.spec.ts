@@ -251,6 +251,48 @@ test('旧版 API 路由、响应字段和错误分流在 Rust 版仍可达', asy
   }
 })
 
+test('旧版 upload 创建输入校验和错误 envelope 在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const cases: Array<[string, unknown]> = [
+    ['缺少 parent_id', { name: 'upload-invalid-parent.txt', size: 1, mime_type: 'text/plain' }],
+    ['缺少 name', { parent_id: ROOT, size: 1, mime_type: 'text/plain' }],
+    ['非法 parent_id', { parent_id: MISSING, name: 'upload-invalid-parent.txt', size: 1, mime_type: 'text/plain' }],
+    ['未知字段', { parent_id: ROOT, name: 'upload-unknown-field.txt', size: 1, mime_type: 'text/plain', extra: true }],
+  ]
+
+  try {
+    for (const [label, data] of cases) {
+      const results = await Promise.all(clients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        '/api/uploads',
+        'POST',
+        data,
+      )))
+      await compareTransport(results[0], results[1])
+      expect(results[0].response.status(), `${label} 的 reference 状态异常`).toBe(400)
+      expect(results[1].response.status(), `Rust ${label} 的状态与 reference 不一致`).toBe(400)
+      expect(results[1].json, `Rust ${label} 的错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+    }
+
+    const malformed = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/uploads',
+      'POST',
+      '{"parent_id":',
+    )))
+    await compareTransport(malformed[0], malformed[1])
+    expect(malformed[0].response.status()).toBe(400)
+    expect(malformed[1].json).toEqual(malformed[0].json)
+    expect(malformed[0].json).toEqual({ error: { status: 400, message: 'invalid JSON request' } })
+  } finally {
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版文档 API 的创建、读取、保存、下载、分享和回收生命周期保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
