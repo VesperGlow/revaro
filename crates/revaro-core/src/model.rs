@@ -501,7 +501,11 @@ pub struct LibraryItem {
     #[serde(default)]
     pub folder_path: Vec<FolderRef>,
     /// Media duration in milliseconds, omitted when unknown or not media.
-    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_i64",
+        skip_serializing_if = "is_zero_i64"
+    )]
     pub duration_ms: i64,
 }
 
@@ -914,6 +918,38 @@ mod tests {
         assert_eq!(json["name"], "clip.mp4");
         assert_eq!(json["duration_ms"], 1500);
         assert_eq!(json["folder_path"][0]["name"], "Movies");
+    }
+
+    #[test]
+    fn library_items_treat_nullable_duration_as_unknown() {
+        let item = serde_json::from_value::<LibraryItem>(serde_json::json!({
+            "id": "audio",
+            "parent_id": null,
+            "name": "track.mp3",
+            "kind": "file",
+            "size": 1,
+            "status": "ready",
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z",
+            "folder_path": [],
+            "duration_ms": null
+        }))
+        .unwrap();
+        assert_eq!(item.duration_ms, 0);
+
+        let invalid = serde_json::from_value::<LibraryItem>(serde_json::json!({
+            "id": "audio",
+            "parent_id": null,
+            "name": "track.mp3",
+            "kind": "file",
+            "size": 1,
+            "status": "ready",
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z",
+            "folder_path": [],
+            "duration_ms": "125"
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
