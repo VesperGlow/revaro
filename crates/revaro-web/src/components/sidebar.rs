@@ -438,28 +438,38 @@ fn FileTree(
     let expanded = RwSignal::new(true);
     let children = RwSignal::new(None::<Vec<File>>);
     let loading = RwSignal::new(false);
+    let request_token = RwSignal::new(0_u64);
     let load = {
         let children = children;
         let loading = loading;
+        let request_token = request_token;
         Callback::new(move |(): ()| {
+            let token = request_token.get_untracked().wrapping_add(1);
+            request_token.set(token);
             loading.set(true);
             leptos::task::spawn_local(async move {
-                match api::fetch_children(ROOT_ID).await {
-                    Ok(data) => children.set(Some(
+                let result = api::fetch_children(ROOT_ID).await;
+                if request_token.get_untracked() != token {
+                    return;
+                }
+                let directories = result
+                    .map(|data| {
                         data.items
                             .into_iter()
                             .filter(|item| item.kind == FileKind::Directory)
-                            .collect(),
-                    )),
-                    Err(_) => children.set(Some(Vec::new())),
-                }
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                children.set(Some(directories));
                 loading.set(false);
             });
         })
     };
     let initial_load = load.clone();
+    let reload_request_token = request_token;
     Effect::new(move |_| {
         let _ = reload_token.get();
+        reload_request_token.update(|token| *token = token.wrapping_add(1));
         children.set(None);
         if expanded.get_untracked() {
             initial_load.run(());
@@ -534,30 +544,40 @@ fn DirectoryNode(
     let expanded = RwSignal::new(false);
     let children = RwSignal::new(None::<Vec<File>>);
     let loading = RwSignal::new(false);
+    let request_token = RwSignal::new(0_u64);
     let load = {
         let id = id.clone();
         let children = children;
         let loading = loading;
+        let request_token = request_token;
         Callback::new(move |(): ()| {
+            let token = request_token.get_untracked().wrapping_add(1);
+            request_token.set(token);
             loading.set(true);
             let id = id.clone();
             leptos::task::spawn_local(async move {
-                match api::fetch_children(&id).await {
-                    Ok(data) => children.set(Some(
+                let result = api::fetch_children(&id).await;
+                if request_token.get_untracked() != token {
+                    return;
+                }
+                let directories = result
+                    .map(|data| {
                         data.items
                             .into_iter()
                             .filter(|item| item.kind == FileKind::Directory)
-                            .collect(),
-                    )),
-                    Err(_) => children.set(Some(Vec::new())),
-                }
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                children.set(Some(directories));
                 loading.set(false);
             });
         })
     };
     let reload = load.clone();
+    let reload_request_token = request_token;
     Effect::new(move |_| {
         let _ = reload_token.get();
+        reload_request_token.update(|token| *token = token.wrapping_add(1));
         children.set(None);
         if expanded.get_untracked() {
             reload.run(());

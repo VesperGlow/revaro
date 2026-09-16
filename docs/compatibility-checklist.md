@@ -8,7 +8,7 @@
 
 - `[ ]` 尚未完成旧版/新版双向验证。
 - `[R]` 已确认 Rust 版回退，待恢复。
-- `[P]` 已恢复并通过自动化和实际浏览器验证；若唯一差异是本清单明确记录的旧版安全缺陷修复，也标为 `[P]`，不得把该例外隐藏在“功能类似”描述里。
+- `[P]` 已恢复并通过自动化和实际浏览器验证；若差异来自旧版可复现的运行时缺陷，按用户要求保留新版正常行为并明确记录例外后也可标为 `[P]`，不得把差异隐藏在“功能类似”描述里。
 - `[B]` 测试基础设施或测试选择器异常，不能作为功能通过/失败结论；仍需另行手工验证。
 - 每个条目都要补充证据：旧版操作结果、新版操作结果、差异、代码位置、测试命令、浏览器验证结果。
 - “旧版确认”可以由旧版源码、旧版运行时和旧版 E2E 共同构成；不能仅凭当前页面推断旧版没有某项功能。
@@ -282,6 +282,7 @@
 - `2026-09-16`，old `18180` / new `18184` 分别延迟音频 metadata API 和让该 API 返回 500：延迟时先显示文件名单章 fallback，metadata 到达后切为三章且不重新请求/中断原始音频；500 时保留文件名单章、下一章禁用，但原始媒体继续播放且不误显示播放器解码错误。两个新场景 old/new 各 1/1；上一轮完整媒体 suite 41/41 未包含这批新增音频定向场景。
 - `2026-09-16`，old `18180` / new `18184` 实际操作音频章节导航：章内已播放超过 3 秒时“上一章”回当前章起点，距章首 3 秒内回上一章；“下一章”跳至下章起点并开始播放，最后一章 disabled；old/new 定向 1/1，聚合六项音频状态/章节用例 6/6。
 - `2026-09-16`，old `18180` / new `18184` 实际让暂停视频的 `play()` 返回拒绝 Promise，再点击播放；两版均保留暂停状态和“播放”按钮，没有 `.video-error` 且 `unhandledrejection` 为 0。旧版用户播放和初始化播放都对返回值调用空 `catch`；Rust 已在点击播放与初始化播放路径等待并消费拒绝。`rust-media-parity-ui.spec.ts` 定向 old/new 1/1；`cargo xtask web-build`、release server build、`cargo xtask check` 与格式检查均通过。
+- `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层
 
@@ -318,7 +319,7 @@
 |---|---|---|---|
 | `[P]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new `rust-library-ui.spec.ts` 与导航定向用例确认顺序、文案、active/current、点击切换和返回 |
 | `[P]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | old/new 分类/侧栏集合 16/16；实际切换五类并比较数量、标题、路径树、卡片/行、系列/图库/音乐视图、空态、503→重试 loading→恢复、缺失/null bucket、非法音乐视图偏好和分类 history；API `/api/library`、`/api/library/all`、`/api/library/counts` 的传输/顶层字段也已双实例核对 |
-| `[ ]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 多级媒体路径树计数、默认展开、展开/过滤、active、展开箭头旋转、根节点 tooltip、空路径提示、刷新保留展开状态、侧栏折叠后重置层级和分类失败/重试 loading old/new 已由 `rust-sidebar-tree-reference-parity.spec.ts`、`rust-library-reference-parity.spec.ts` 对照；文件目录树 loading/空/500/stale reload 也以同一测试 old/new 6/6 实测；旧版未注册组件与 new 有效递归导航的运行时差异仍需兼容范围决策，完整文件树入口/状态矩阵未完 |
+| `[P]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 多级媒体路径树计数、默认展开、展开/过滤、active、展开箭头旋转、根节点 tooltip、空路径提示、刷新保留展开状态、侧栏折叠后重置层级和分类失败/重试 loading old/new 已由 `rust-sidebar-tree-reference-parity.spec.ts`、`rust-library-reference-parity.spec.ts` 对照；文件树根节点收合/展开、递归进入一级/嵌套目录、空目录、loading/空/500 已在 old/new 实测。旧版 `SidebarFileTree.vue` 未注册 `SidebarDirectoryNode`，所以旧版只有不可见 custom element；Rust 保留可用树作为明确缺陷例外，并拒绝旧请求覆盖新目录。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；实现见 `crates/revaro-web/src/components/sidebar.rs` |
 | `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
 | `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
 | `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |

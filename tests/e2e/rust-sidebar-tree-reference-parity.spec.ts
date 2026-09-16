@@ -233,6 +233,10 @@ async function mockSidebarTree(page: Page) {
     if (path === '/api/files/dir-archive/children') {
       return json({ items: archiveChildren, total_bytes: 0, file_count: archiveChildren.length })
     }
+    if (path === '/api/files/dir-travel') {
+      return json({ file: archiveChildren[0], breadcrumbs: [root, rootChildren[0]] })
+    }
+    if (path === '/api/files/dir-travel/children') return json({ items: [], total_bytes: 0, file_count: 0 })
     if (path === '/api/files/dir-empty') {
       return json({ file: rootChildren[1], breadcrumbs: [root] })
     }
@@ -345,7 +349,7 @@ test('旧版与 Rust 版分类路径树保留递归展开、计数、过滤、ac
   }
 })
 
-test('文件目录树反向审计记录 reference 的组件注册缺陷并保护 Rust 递归导航', async ({ browser }) => {
+test('文件目录树记录 reference 组件注册缺陷并保护 Rust 递归导航', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
@@ -369,6 +373,23 @@ test('文件目录树反向审计记录 reference 的组件注册缺陷并保护
     await expect.poll(() => oldPage.locator('sidebardirectorynode').count()).toBe(2)
     await expect(newPage.locator('.file-tree-root > .path-children > .path-node')).toHaveCount(2)
 
+    await Promise.all([
+      oldPage.locator('.file-tree-root > .path-row .path-toggle').click(),
+      newPage.locator('.file-tree-root > .path-row .path-toggle').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.file-tree-root > .path-row .path-toggle')).toHaveAttribute('aria-expanded', 'false'),
+      expect(newPage.locator('.file-tree-root > .path-row .path-toggle')).toHaveAttribute('aria-expanded', 'false'),
+    ])
+    await Promise.all([
+      oldPage.locator('.file-tree-root > .path-row .path-toggle').click(),
+      newPage.locator('.file-tree-root > .path-row .path-toggle').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.file-tree-root > .path-row .path-toggle')).toHaveAttribute('aria-expanded', 'true'),
+      expect(newPage.locator('.file-tree-root > .path-row .path-toggle')).toHaveAttribute('aria-expanded', 'true'),
+    ])
+
     // SidebarFileTree.vue in the pinned reference omits the
     // SidebarDirectoryNode import, so Vue leaves unresolved custom elements
     // instead of rendering the returned directory rows. Keep that observation
@@ -378,6 +399,20 @@ test('文件目录树反向审计记录 reference 的组件注册缺陷并保护
     await newPage.locator('.file-tree-root .path-label', { hasText: '归档' }).click()
     await expect(newPage.getByRole('heading', { name: '归档', exact: true })).toBeVisible()
     expect(new URL(newPage.url()).pathname).toBe('/f/dir-archive')
+    await expect(newPage.locator('.file-tree-root > .path-children > .path-node > .path-row').filter({ hasText: '归档' }))
+      .toHaveClass(/active/)
+
+    const archiveNode = newPage.locator('.file-tree-root .path-row').filter({ hasText: '归档' }).locator('xpath=..')
+    await archiveNode.locator('.path-toggle').click()
+    const travelLabel = newPage.locator('.file-tree-root .path-label', { hasText: '旅行' })
+    await expect(travelLabel).toBeVisible()
+    await travelLabel.click()
+    await expect(newPage.getByRole('heading', { name: '旅行', exact: true })).toBeVisible()
+    expect(new URL(newPage.url()).pathname).toBe('/f/dir-travel')
+
+    await newPage.locator('.file-tree-root .path-label', { hasText: '空目录' }).click()
+    await expect(newPage.getByRole('heading', { name: '空目录', exact: true })).toBeVisible()
+    await expect(newPage.locator('.content .file-card')).toHaveCount(0)
   } finally {
     await oldContext.close()
     await newContext.close()
@@ -431,7 +466,7 @@ test('文件目录树加载、空态和失败回退保持 reference', async ({ b
   }
 })
 
-test('文件目录树 refresh token 的慢响应覆盖顺序保持 reference', async ({ browser }) => {
+test('文件目录树拒绝过期 children 响应覆盖较新的结果', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
@@ -466,15 +501,13 @@ test('文件目录树 refresh token 的慢响应覆盖顺序保持 reference', a
       expect.poll(() => fileTreeChildNames(newPage)).toEqual(['刷新目录']),
     ])
 
-    // Both implementations follow the pinned reference and allow the older
-    // request to settle last; this test prevents a future partial rewrite from
-    // changing that observable refresh-token ordering accidentally.
+    // The old page receives the stale result because its unresolved custom
+    // elements never render directory rows. Preserve that source observation,
+    // while requiring Rust to keep the newer result visible to the user.
     oldMock.releaseStale()
     newMock.releaseStale()
-    await Promise.all([
-      expect.poll(() => fileTreeChildNames(oldPage)).toEqual(['过期目录']),
-      expect.poll(() => fileTreeChildNames(newPage)).toEqual(['过期目录']),
-    ])
+    await expect.poll(() => fileTreeChildNames(oldPage)).toEqual(['过期目录'])
+    await expect.poll(() => fileTreeChildNames(newPage)).toEqual(['刷新目录'])
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
