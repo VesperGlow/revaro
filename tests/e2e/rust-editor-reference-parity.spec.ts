@@ -834,6 +834,81 @@ test('old/new 文档 PUT 普通失败保留修改与 ETag，busy 锁定后可重
   }
 })
 
+test('old/new 文档保存后列表大小/本地时间 metadata 随目录刷新更新', async ({ browser }) => {
+  const name = `editor-list-metadata-${crypto.randomUUID()}.md`
+  const originalContent = '# before metadata\n'
+  const editedContent = 'x'.repeat(4097)
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    const id = await createDocument(page, name, originalContent)
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await expect(row).toBeVisible()
+    const initialMeta = await row.locator('small').first().innerText()
+
+    await row.click()
+    const editor = page.locator('.document-editor')
+    await expect(editor.locator('textarea')).toHaveValue(originalContent)
+    await editor.locator('textarea').fill(editedContent)
+    await editor.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(page.locator('.toast')).toHaveText('文档已保存')
+    await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await expect(row.locator('small').first()).toContainText(' · ')
+    const updatedMeta = await row.locator('small').first().innerText()
+    const server = await page.evaluate(async ({ fileId, rootId }) => {
+      const listing = await fetch(`/api/files/${rootId}/children`)
+      if (!listing.ok) throw new Error(`children request failed: ${listing.status}`)
+      const children = await listing.json() as { items?: Array<{ id: string; size: number; updated_at: string }> }
+      const file = children.items?.find(item => item.id === fileId)
+      if (!file) throw new Error('saved document missing from children')
+      const contentResponse = await fetch(`/api/files/${fileId}/content`)
+      if (!contentResponse.ok) throw new Error(`content request failed: ${contentResponse.status}`)
+      const body = await contentResponse.json() as { content: string }
+      const formattedDate = new Intl.DateTimeFormat('zh-CN', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      }).format(new Date(file.updated_at))
+      return { size: file.size, date: formattedDate, content: body.content }
+    }, { fileId: id, rootId: '00000000-0000-0000-0000-000000000000' })
+    const initialParts = initialMeta.split(' · ')
+    const updatedParts = updatedMeta.split(' · ')
+    return {
+      initialSize: initialParts[0],
+      initialHasDate: initialParts.length === 2,
+      updatedSize: updatedParts[0],
+      updatedHasDate: updatedParts.length === 2,
+      updatedDateMatchesServer: updatedParts[1] === server.date,
+      serverSize: server.size,
+      savedContent: server.content === editedContent,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.initialHasDate).toBe(true)
+    expect(oldResult.initialSize).not.toBe(oldResult.updatedSize)
+    expect(oldResult.updatedHasDate).toBe(true)
+    expect(oldResult.updatedDateMatchesServer).toBe(true)
+    expect(oldResult.serverSize).toBe(editedContent.length)
+    expect(oldResult.savedContent).toBe(true)
+    expect(newResult, 'Rust 文档保存后的列表 metadata/目录刷新与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 文档内容 GET 首次失败后退出加载态，关闭重开可重新读取', async ({ browser }) => {
   const name = `editor-read-retry-${crypto.randomUUID()}.md`
   const content = '# fetched after retry\n'
