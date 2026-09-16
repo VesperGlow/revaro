@@ -303,24 +303,31 @@ pub mod uploads {
         /// Upload session id.
         pub upload_id: String,
         /// Placeholder file row.
+        #[serde(default)]
         pub file_id: String,
         /// Single-request or multipart transfer.
         pub mode: UploadMode,
         /// Target URL, empty for multipart uploads.
+        #[serde(default)]
         pub url: String,
         /// Part size the client must slice with.
         pub part_size: i64,
         /// Number of parts; `0` for single-request uploads.
         pub part_count: usize,
         /// Declared total size.
+        #[serde(default)]
         pub expected_size: i64,
         /// Declared MIME type.
+        #[serde(default)]
         pub mime_type: String,
         /// Session state.
+        #[serde(default)]
         pub status: UploadStatusKind,
         /// Session expiry.
+        #[serde(default)]
         pub expires_at: Timestamp,
         /// Parts acknowledged so far.
+        #[serde(default)]
         pub parts: Vec<UploadPart>,
     }
 

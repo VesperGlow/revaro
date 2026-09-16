@@ -806,7 +806,9 @@ impl UploadController {
                         None,
                     )
                     .await?;
-                    if committed.id != status.file_id || committed.size != size {
+                    if (!status.file_id.is_empty() && committed.id != status.file_id)
+                        || committed.size != size
+                    {
                         return Err(local_error("断点上传对应的文件已发生变化"));
                     }
                     return Ok(ResolvedUpload {
@@ -822,7 +824,7 @@ impl UploadController {
                 }
                 Ok(status) if status.status == UploadLifecycle::Pending => {
                     validate_upload_shape(status.mode, status.part_size, status.part_count, size)?;
-                    if status.expected_size != size {
+                    if status.expected_size != 0 && status.expected_size != size {
                         return Err(local_error("本地文件大小与断点上传不一致"));
                     }
                     return Ok(ResolvedUpload {
