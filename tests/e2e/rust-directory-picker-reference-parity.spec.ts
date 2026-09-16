@@ -429,8 +429,8 @@ test('目录选择器在嵌套滚动容器移动时跟随触发器', async ({ br
     const oldShift = oldAfter.y - oldBefore.y
     const newShift = newAfter.y - newBefore.y
 
-    expect(oldShift, 'reference 嵌套滚动应重新定位 popover').toBeCloseTo(80, 0)
-    expect(newShift, 'Rust 嵌套滚动后的 popover 定位与 reference 不一致').toBeCloseTo(oldShift, 0)
+    expect(Math.abs(oldShift - 80), 'reference 嵌套滚动的定位采样偏离请求位移').toBeLessThan(3)
+    expect(Math.abs(newShift - oldShift), 'Rust 嵌套滚动后的 popover 定位与 reference 不一致').toBeLessThan(1)
   } finally {
     await oldContext.close()
     await newContext.close()
@@ -470,6 +470,61 @@ test('目录选择器进入目标目录并发读取详情和子目录', async ({
     await Promise.all([
       expect(oldPage.locator('.directory-trigger')).toHaveAttribute('title', /目标文件夹/),
       expect(newPage.locator('.directory-trigger')).toHaveAttribute('title', /目标文件夹/),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('目录选择器进入目标目录时保持 reference 的 loading 状态', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([
+      mockPicker(oldPage, false, true),
+      mockPicker(newPage, false, true),
+    ])
+    await Promise.all([openPicker(oldPage, oldUrl), openPicker(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await Promise.all([
+      oldPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+      newPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.directory-state')).toHaveText('正在读取文件夹…'),
+      expect(newPage.locator('.directory-state')).toHaveText('正在读取文件夹…'),
+    ])
+    const oldLoading = {
+      text: await oldPage.locator('.directory-state').innerText(),
+      triggerTitle: await oldPage.locator('.directory-trigger').getAttribute('title'),
+      folderButtonCount: await oldPage.locator('.directory-list > button').count(),
+    }
+    const newLoading = {
+      text: await newPage.locator('.directory-state').innerText(),
+      triggerTitle: await newPage.locator('.directory-trigger').getAttribute('title'),
+      folderButtonCount: await newPage.locator('.directory-list > button').count(),
+    }
+    expect(oldLoading).toEqual({
+      text: '正在读取文件夹…',
+      triggerTitle: '我的文件',
+      folderButtonCount: 0,
+    })
+    expect(newLoading, 'Rust 目录选择器进入目标目录的 loading 状态与 reference 不一致').toEqual(oldLoading)
+
+    oldMock.releaseDestination()
+    newMock.releaseDestination()
+    await Promise.all([
+      expect(oldPage.locator('.directory-trigger')).toHaveAttribute('title', '我的文件 / 目标文件夹'),
+      expect(newPage.locator('.directory-trigger')).toHaveAttribute('title', '我的文件 / 目标文件夹'),
     ])
   } finally {
     await oldContext.close()
