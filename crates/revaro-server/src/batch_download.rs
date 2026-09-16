@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path as PathParam, State};
+use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Router, body::Body};
@@ -24,7 +24,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use revaro_core::ApiError;
-use revaro_core::api::{BatchDownloadRequest, BatchDownloadTicket};
+use revaro_core::api::BatchDownloadTicket;
 use revaro_core::model::{File, FileKind, FileStatus};
 use revaro_core::validate::validate_batch_download_ids;
 use rusqlite::Connection;
@@ -46,6 +46,12 @@ pub const BATCH_DOWNLOAD_TOKEN_TTL: Duration = Duration::from_secs(2 * 60);
 pub const MAX_BATCH_DOWNLOAD_TOKENS: usize = 256;
 /// Number of chunks retained while a ZIP is being sent.
 const ZIP_CHANNEL_CAPACITY: usize = 8;
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchDownloadInput {
+    ids: Option<Vec<Option<String>>>,
+}
 
 /// A validated file and the safe name it will have inside the archive.
 #[derive(Debug, Clone)]
@@ -158,12 +164,20 @@ pub fn routes() -> Router<Arc<AppState>> {
 async fn prepare(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
-    JsonBody(request): JsonBody<BatchDownloadRequest>,
+    request: Request,
 ) -> Result<axum::Json<BatchDownloadTicket>, ApiError> {
-    validate_batch_download_ids(&request.ids)?;
+    let JsonBody(input) =
+        JsonBody::<Option<BatchDownloadInput>>::from_request(request, &state).await?;
+    let ids = input
+        .and_then(|input| input.ids)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| id.unwrap_or_default())
+        .collect::<Vec<_>>();
+    validate_batch_download_ids(&ids)?;
     let entries = state
         .db
-        .call_api(move |connection| resolve_entries(connection, &request.ids))
+        .call_api(move |connection| resolve_entries(connection, &ids))
         .await?;
 
     let token = state

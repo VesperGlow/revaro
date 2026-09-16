@@ -143,6 +143,21 @@ async function prepare(client: APIRequestContext, baseUrl: string, ids: string[]
   return { response, text, json }
 }
 
+async function prepareBody(client: APIRequestContext, baseUrl: string, data: unknown) {
+  const response = await client.post('/api/files/batch-download/prepare', {
+    headers: headers(baseUrl, true),
+    data,
+  })
+  const text = await response.text()
+  let json: unknown = null
+  try {
+    json = JSON.parse(text)
+  } catch {
+    // Keep the raw body in the assertion for malformed/error responses.
+  }
+  return { response, text, json }
+}
+
 async function cleanup(client: APIRequestContext, baseUrl: string, fixture: {
   files: Array<{ id: string; uploadId: string }>
   pending: { id: string; uploadId: string }
@@ -267,6 +282,36 @@ test('old/new 批量下载完整覆盖 prepare、ZIP 内容、一次性 token �
       cleanup(oldClient, oldUrl, oldFixture),
       cleanup(newClient, newUrl, newFixture),
     ])
+    await Promise.all([oldClient.dispose(), newClient.dispose()])
+  }
+})
+
+test('旧版批量下载 prepare 的 JSON 零值和未知字段在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const [oldClient, newClient] = await Promise.all([login(oldUrl), login(newUrl)])
+  const cases: Array<[string, unknown, Record<string, unknown>]> = [
+    ['缺省字段', {}, { error: { status: 400, message: 'at least one file id is required' } }],
+    ['null', { ids: null }, { error: { status: 400, message: 'at least one file id is required' } }],
+    ['null item', { ids: [null] }, { error: { status: 400, message: 'invalid file id' } }],
+    ['未知字段', { ids: [], extra: true }, { error: { status: 400, message: 'invalid JSON request' } }],
+    ['malformed', Buffer.from('{"ids":'), { error: { status: 400, message: 'invalid JSON request' } }],
+  ]
+
+  try {
+    for (const [label, data, expectedError] of cases) {
+      const [oldResult, newResult] = await Promise.all([
+        prepareBody(oldClient, oldUrl, data),
+        prepareBody(newClient, newUrl, data),
+      ])
+      expect(newResult.response.status(), `Rust ${label} 状态与 reference 不一致`).toBe(oldResult.response.status())
+      expect(newResult.response.headers()['content-type']?.split(';', 1)[0], `Rust ${label} Content-Type 与 reference 不一致`)
+        .toBe(oldResult.response.headers()['content-type']?.split(';', 1)[0])
+      expect(oldResult.response.status(), `reference ${label} 状态异常`).toBe(400)
+      expect(oldResult.json, `reference ${label} 错误 envelope 异常`).toEqual(expectedError)
+      expect(newResult.json, `Rust ${label} 错误 envelope 与 reference 不一致`).toEqual(oldResult.json)
+    }
+  } finally {
     await Promise.all([oldClient.dispose(), newClient.dispose()])
   }
 })

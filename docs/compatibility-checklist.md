@@ -300,6 +300,7 @@
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/book/progress` 发送缺省字段、未知字段、malformed JSON、缺失书籍 malformed 和 `null`；old 先查 ready 书籍再解码，缺省/`null` 返回 204，未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404。Rust 初始 `JsonBody` 在 handler 之前解析，缺失文件 malformed 返回 400，已恢复旧版查找/解码顺序；`rust-specialized-api-reference-parity.spec.ts` old/new 3/3。
 - `2026-09-17`，实际在 old `18180` / new `18184` 的加密 ZIP waiting_input 任务上向 `POST /api/tasks/{id}/input` 发送缺失任务 malformed、当前任务缺省 password 和未知字段；old 先检查任务状态/类型再解码，分别返回 409、`400 archive password is required`、`400 invalid JSON request`。Rust 初始 extractor 先解码且要求 password 字段，已恢复 Go decoder 零值/拒绝未知字段和旧版校验顺序；`rust-archive-real-reference-parity.spec.ts` 加密 ZIP old/new 1/1。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的登录、凭据、密码、用户名、TOTP setup/enable/recovery/disable 和头像 PUT 发送缺省字段、未知字段及 malformed JSON；old 对缺省字段按 Go decoder 零值进入各自业务校验，未知/malformed 统一返回 `400 invalid JSON request`（登录缺省返回 401 invalid credentials）。Rust 初始必填 Json 对缺省字段返回 422，已为认证输入恢复零值/拒绝未知字段；`rust-api-reference-parity.spec.ts` 认证 API 1/1，认证/账户/密码回归 9/9。
+- `2026-09-17`，实际对 old `18180` / new `18184` 的 `POST /api/files/batch-download/prepare` 发送缺省 `ids`、`null`、`[null]`、未知字段及 malformed JSON；old 缺省/`null` 进入“至少一个文件 ID”、`[null]` 进入“invalid file id”，未知/malformed 返回 `400 invalid JSON request`。Rust 初始必填 `Vec<String>` 对缺省/`null`/`[null]` 均提前返回 400 invalid JSON，已恢复 Go decoder 的空 slice/空字符串零值；`rust-batch-download-reference-parity.spec.ts` old/new 2/2。
 - `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层
@@ -499,7 +500,7 @@
 | `[P]` | `GET /api/files/{id}` | 文件详情/进入目录 | Rust `fetch_file()` 由浏览器、面包屑和 DirectoryPicker 调用；导航对照已验证 |
 | `[P]` | `GET /api/files/{id}/children` | 文件夹内容/目录选择器 | Rust `fetch_children()` 由浏览器、侧栏文件树、DirectoryPicker 和上传队列调用；old/new 目录导航已验证 |
 | `[P]` | `GET /api/files/{id}/download` | 单文件/媒体下载 | Rust direct URL 与 `download_file()` 调用；old/new 单文件及 Range 已验证 |
-| `[P]` | `POST /api/files/batch-download/prepare` | 多选 ZIP | Rust `prepare_batch_download()` 由 SelectionToolbar 调用；old/new 实际一次 prepare、token 形状、空/未知/对象键形/重复/目录/pending/缺失选择的状态、错误 envelope 均已核对；旧版安全但未知 ID 的 404 语义已恢复（`85d4a50`） |
+| `[P]` | `POST /api/files/batch-download/prepare` | 多选 ZIP | Rust `prepare_batch_download()` 由 SelectionToolbar 调用；old/new 实际一次 prepare、token 形状、空/未知/对象键形/重复/目录/pending/缺失选择的状态、错误 envelope，以及缺省/`null`/`[null]`/未知/malformed JSON 均已核对；旧版安全但未知 ID 的 404 语义已恢复（`85d4a50`） |
 | `[P]` | `GET /api/files/batch-download/{token}` | ZIP token 下载 | Rust 通过隐藏 anchor 下载 token；old/new 实际核对 ZIP Content-Type/Disposition/Cache-Control、重复文件名后缀、逐 entry 内容、未登录 401、首次消费成功和重放 404；UI 另核对建议文件名与无 iframe/CSP；`rust-batch-download-reference-parity.spec.ts` |
 | `[P]` | `GET /api/files/{id}/preview` | 图片/音频/视频/文件预览 | Rust media 组件 direct URL；old/new 图片/音频/视频及不支持文本 preview/Range 已验证 |
 | `[P]` | `GET /api/files/{id}/audio` | 音频 metadata/章节 | old/new 实际上传同一 WAV 后查询成功响应，duration、cover、章节和 JSON 传输一致；Rust `fetch_audio()` 有；`rust-specialized-api-reference-parity.spec.ts` |
