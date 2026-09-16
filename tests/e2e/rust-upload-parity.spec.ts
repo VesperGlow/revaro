@@ -1503,6 +1503,141 @@ test('old/new 刷新后用 revaro.uploads.v1 恢复未完成 multipart 上传', 
   }
 })
 
+test('old/new 断点续传全部分片已确认时直接完成而不重复上传', async ({ browser }) => {
+  const name = 'upload-all-parts-confirmed-' + crypto.randomUUID() + '.bin'
+  const partSize = 8 * 1024 * 1024
+  const fileSize = partSize * 2
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  type ResumeState = {
+    getCalls: number
+    createCalls: number
+    partRequests: number
+    dataRequests: number
+    recordRequests: number
+    complete: Array<{ part_number: number; etag: string; size?: number; content_hash?: string }> | null
+  }
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string, uploadId: string) {
+    const state: ResumeState = {
+      getCalls: 0,
+      createCalls: 0,
+      partRequests: 0,
+      dataRequests: 0,
+      recordRequests: 0,
+      complete: null,
+    }
+    await page.route(/\/api\/uploads(?:\/|$)/, async route => {
+      const request = route.request()
+      const pathname = new URL(request.url()).pathname
+      if (pathname === '/api/uploads' && request.method() === 'POST') {
+        state.createCalls += 1
+        return route.fulfill({ status: 500, body: 'confirmed resume must not create a new session' })
+      }
+      if (pathname === `/api/uploads/${uploadId}` && request.method() === 'GET') {
+        state.getCalls += 1
+        return route.fulfill({
+          json: {
+            upload_id: uploadId,
+            file_id: `file-${uploadId}`,
+            mode: 'multipart',
+            url: '',
+            part_size: partSize,
+            part_count: 2,
+            expected_size: fileSize,
+            mime_type: 'application/octet-stream',
+            status: 'pending',
+            expires_at: '2026-12-01T00:00:00Z',
+            parts: [
+              { part_number: 1, size: partSize, etag: 'saved-etag-1', content_hash: '' },
+              { part_number: 2, size: partSize, etag: 'saved-etag-2', content_hash: '' },
+            ],
+          },
+        })
+      }
+      if (pathname === `/api/uploads/${uploadId}/parts` && request.method() === 'POST') {
+        state.partRequests += 1
+        return route.fulfill({ status: 500, body: 'all parts were already confirmed' })
+      }
+      if (pathname.startsWith(`/api/uploads/${uploadId}/data/`) && request.method() === 'PUT') {
+        state.dataRequests += 1
+        return route.fulfill({ status: 500, body: 'confirmed parts must not be uploaded again' })
+      }
+      if (pathname.match(new RegExp(`^/api/uploads/${uploadId}/parts/\\d+$`)) && request.method() === 'PUT') {
+        state.recordRequests += 1
+        return route.fulfill({ status: 500, body: 'confirmed parts must not be recorded again' })
+      }
+      if (pathname === `/api/uploads/${uploadId}/complete` && request.method() === 'POST') {
+        state.complete = request.postDataJSON()?.parts ?? null
+        return route.fulfill({
+          json: {
+            id: `file-${uploadId}`,
+            parent_id: '00000000-0000-0000-0000-000000000000',
+            name,
+            kind: 'file',
+            size: fileSize,
+            mime_type: 'application/octet-stream',
+            status: 'ready',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        })
+      }
+      return route.continue()
+    })
+
+    await loginAt(page, baseUrl)
+    await page.evaluate(({ uploadId: id, uploadName, size }) => {
+      localStorage.setItem('revaro.uploads.v1', JSON.stringify([{
+        uploadId: id,
+        parentId: '00000000-0000-0000-0000-000000000000',
+        name: uploadName,
+        size,
+        lastModified: 789,
+      }]))
+    }, { uploadId, uploadName: name, size: fileSize })
+    await page.evaluate(({ uploadName, size }) => {
+      const input = document.querySelector('input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) throw new Error('file input is missing')
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([new Uint8Array(size)], uploadName, {
+        type: 'application/octet-stream',
+        lastModified: 789,
+      }))
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { uploadName: name, size: fileSize })
+    await expect.poll(() => state.complete, { timeout: 30_000 }).not.toBeNull()
+    return state
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl, 'all-confirmed-old'),
+      exercise(newPage, newUrl, 'all-confirmed-new'),
+    ])
+    expect(oldResult).toEqual({
+      getCalls: 1,
+      createCalls: 0,
+      partRequests: 0,
+      dataRequests: 0,
+      recordRequests: 0,
+      complete: [
+        { part_number: 1, etag: 'saved-etag-1', size: partSize, content_hash: '' },
+        { part_number: 2, etag: 'saved-etag-2', size: partSize, content_hash: '' },
+      ],
+    })
+    expect(newResult, 'Rust 全部分片已确认时重复上传或提交字段与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 断点记录指向过期 session 时按 reference 清理并重新创建', async ({ browser }) => {
   const name = `upload-expired-resume-${crypto.randomUUID()}.txt`
   const staleUploadId = `expired-${crypto.randomUUID()}`
