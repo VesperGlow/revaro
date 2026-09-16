@@ -16,6 +16,12 @@ const file = {
   mime_type: 'text/plain',
 }
 
+const secondFile = {
+  ...file,
+  id: 'transfer-dialog-second-file',
+  name: '传输成功的文件.txt',
+}
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(value => { resolve = value })
@@ -58,6 +64,50 @@ async function mockTransfer(page: Page, failure = false, failureStatus = 500) {
     return json({ items: [] })
   })
   return { transferGate }
+}
+
+async function mockMultiTransfer(page: Page) {
+  let visible = [file, secondFile]
+  const transferCalls: string[] = []
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: visible.length } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: visible.length })
+    if (path === `/api/files/${ROOT}`) {
+      return json({
+        file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+        breadcrumbs: [],
+      })
+    }
+    if (path === `/api/files/${ROOT}/children`) {
+      return json({ items: visible, total_bytes: visible.reduce((total, item) => total + item.size, 0), file_count: visible.length })
+    }
+    const match = path.match(new RegExp(`^/api/files/(${file.id}|${secondFile.id})$`))
+    if (match && request.method() === 'PATCH') {
+      const id = match[1]
+      transferCalls.push(id)
+      if (id === file.id) {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { status: 500, message: 'first move failed' } }),
+        })
+      }
+      visible = visible.filter(item => item.id !== id)
+      return json({ ...secondFile, parent_id: ROOT })
+    }
+    return json({ items: [] })
+  })
+  return { transferCalls }
 }
 
 async function startTransfer(page: Page, baseUrl: string, waitForBusy = true) {
@@ -247,5 +297,59 @@ test('移动冲突关闭弹窗并保留 reference 的失败反馈', async ({ bro
   } finally {
     await oldContext.close()
     await newContext.close()
+  }
+})
+
+test('多选移动部分失败时继续处理并保留 reference 反馈', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mock = await mockMultiTransfer(page)
+    await page.goto(`${baseUrl}/?transfer-multi-reference=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('列表视图').click()
+    for (const item of [file, secondFile]) {
+      const row = page.locator('.file-row').filter({ hasText: item.name })
+      await expect(row).toBeVisible()
+      await row.getByRole('button', { name: '选择项目' }).click()
+    }
+    const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
+    await toolbar.getByRole('button', { name: '移动', exact: true }).click()
+    await expect(page.locator('.move-copy-dialog')).toBeVisible()
+    await page.locator('.move-copy-dialog').getByRole('button', { name: '移动', exact: true }).click()
+    await expect(page.locator('.move-copy-dialog')).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('已移动 1 项，1 项失败：传输中的文件.txt：first move failed')
+    await expect(page.locator('.file-row').filter({ hasText: secondFile.name })).toHaveCount(0)
+    await expect(page.locator('.file-row').filter({ hasText: file.name })).toHaveCount(1)
+    await expect(toolbar).toHaveCount(0)
+    return {
+      transferCalls: mock.transferCalls,
+      toast: await page.locator('.toast').textContent(),
+      failedVisible: await page.locator('.file-row').filter({ hasText: file.name }).count(),
+      succeededVisible: await page.locator('.file-row').filter({ hasText: secondFile.name }).count(),
+      toolbarCount: await page.getByRole('toolbar', { name: '所选项目操作' }).count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      transferCalls: [file.id, secondFile.id],
+      toast: '已移动 1 项，1 项失败：传输中的文件.txt：first move failed',
+      failedVisible: 1,
+      succeededVisible: 0,
+      toolbarCount: 0,
+    })
+    expect(newResult, 'Rust 多选移动部分失败的继续处理、刷新和反馈与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
