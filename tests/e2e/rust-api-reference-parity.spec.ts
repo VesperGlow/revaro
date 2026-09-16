@@ -438,6 +438,61 @@ test('旧版文档 API 的创建、读取、保存、下载、分享和回收生
   }
 })
 
+test('旧版目录移动到自身后代的拒绝行为在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const ids: string[][] = [[], []]
+
+  try {
+    const parents = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/directories',
+      'POST',
+      { parent_id: ROOT, name: `move-cycle-parent-${suffix}` },
+    )))
+    for (const [index, result] of parents.entries()) {
+      expect(result.response.status()).toBe(201)
+      ids[index].push(String(objectValue(result.json, 'id')))
+    }
+
+    const children = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      '/api/directories',
+      'POST',
+      { parent_id: ids[index][0], name: `move-cycle-child-${suffix}` },
+    )))
+    for (const [index, result] of children.entries()) {
+      expect(result.response.status()).toBe(201)
+      ids[index].push(String(objectValue(result.json, 'id')))
+    }
+
+    const attempts = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      `/api/files/${ids[index][0]}`,
+      'PATCH',
+      { parent_id: ids[index][1] },
+    )))
+    await compareTransport(attempts[0], attempts[1])
+    expect(attempts[0].response.status()).toBe(400)
+    expect(attempts[1].response.status()).toBe(attempts[0].response.status())
+    expect(attempts[1].json).toEqual(attempts[0].json)
+    expect(attempts[0].json).toEqual({
+      error: {
+        status: 400,
+        message: 'a directory cannot be moved into itself or its descendants',
+      },
+    })
+  } finally {
+    await Promise.all(clients.map((client, index) => cleanup(client, index === 0 ? oldUrl : newUrl, ids[index])))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版清空回收站 API 的全量删除行为在 Rust 版保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
