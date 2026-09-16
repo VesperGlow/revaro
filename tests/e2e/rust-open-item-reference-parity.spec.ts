@@ -202,6 +202,13 @@ async function exerciseOpening(page: Page, baseUrl: string) {
   await expect(page.locator('#reader-title')).toHaveText('兼容书籍')
   states.epub = await overlaySnapshot(page)
   await returnToRoot(page)
+  await page.goForward()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await expect(page.locator('#reader-view')).toHaveCount(0)
+  states.epubForward = await overlaySnapshot(page)
+  await page.goBack()
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  states.epubForwardBack = await overlaySnapshot(page)
 
   for (const item of [image, audio, video]) {
     await page.locator('.file-card').filter({ hasText: item.name }).click()
@@ -216,7 +223,7 @@ async function exerciseOpening(page: Page, baseUrl: string) {
   return states
 }
 
-test('旧版与 Rust 版普通文件打开分流及浏览器后退行为一致', async ({ browser }) => {
+test('旧版与 Rust 版普通文件打开分流及浏览器后退/前进行为一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -234,6 +241,8 @@ test('旧版与 Rust 版普通文件打开分流及浏览器后退行为一致',
     expect(oldState.folder).toEqual({ path: '/f/open-folder', title: 'revaro · 私人网盘', heading: '资料', preview: null, reader: null, editor: null })
     expect(oldState.text).toMatchObject({ path: '/', heading: '我的文件', editor: 'document-editor' })
     expect(oldState.epub).toMatchObject({ path: '/read/open-book', reader: 'reader-shell' })
+    expect(oldState.epubForward).toEqual({ path: '/read/open-book', title: 'revaro · 私人网盘', heading: '我的文件', preview: null, reader: null, editor: null })
+    expect(oldState.epubForwardBack).toEqual({ path: '/', title: 'revaro · 私人网盘', heading: '我的文件', preview: null, reader: null, editor: null })
     expect(oldState.unknown).toMatchObject({ path: '/', preview: null, reader: null, editor: null })
   } finally {
     await oldContext.close()
