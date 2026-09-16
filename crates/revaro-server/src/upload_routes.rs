@@ -25,19 +25,20 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path as PathParam, State};
+use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::TryStreamExt as _;
 use http::StatusCode;
 use revaro_core::ApiError;
 use revaro_core::api::uploads::{
-    CompleteUploadRequest, CreateUpload, CreateUploadRequest, PartUrl, RecordUploadPartRequest,
-    UploadPartsRequest, UploadPartsResponse, UploadStatus as UploadStatusResponse,
+    CreateUpload, CreateUploadRequest, PartUrl, UploadPartsResponse,
+    UploadStatus as UploadStatusResponse,
 };
 use revaro_core::keys;
 use revaro_core::limits;
 use revaro_core::model::{UploadMode, UploadPart, UploadStatus};
+use revaro_core::storage::CompletedPart;
 use revaro_core::time::Timestamp;
 use revaro_core::validate;
 use rusqlite::Connection;
@@ -86,6 +87,41 @@ struct CreateUploadInput {
     name: Option<String>,
     size: Option<i64>,
     mime_type: Option<String>,
+}
+
+/// The Go decoder zero-filled omitted members before each upload endpoint
+/// performed its own validation. Route-local inputs preserve that distinction
+/// from malformed JSON, which is reported as the historical 400 envelope.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadPartsInput {
+    part_numbers: Option<Vec<Option<i32>>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordUploadPartInput {
+    etag: Option<String>,
+    size: Option<i64>,
+    content_hash: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletePartInput {
+    part_number: Option<i32>,
+    etag: Option<String>,
+    // The old Go completion decoder rejects these fields even though the old
+    // resume response returns them. Rust accepts them so a resumed upload can
+    // complete; the explicit old defect is covered by the parity test.
+    size: Option<i64>,
+    content_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompleteUploadInput {
+    parts: Option<Vec<Option<CompletePartInput>>>,
 }
 
 impl UploadRecord {
@@ -144,6 +180,29 @@ FROM uploads WHERE id = ?1",
             },
         )
         .map_err(DbError::Query)
+}
+
+fn load_acknowledged_parts(
+    connection: &Connection,
+    upload_id: &str,
+) -> Result<Vec<CompletedPart>, DbError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT part_number, etag, size, content_hash FROM upload_parts \
+             WHERE upload_id = ?1 ORDER BY part_number",
+        )
+        .map_err(DbError::Query)?;
+    let rows = statement
+        .query_map([upload_id], |row| {
+            Ok(CompletedPart {
+                part_number: row.get(0)?,
+                etag: row.get(1)?,
+                size: Some(row.get(2)?),
+                content_hash: row.get::<_, Option<String>>(3)?,
+            })
+        })
+        .map_err(DbError::Query)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Query)
 }
 
 /// A live, non-expired session, or the `404` every upload endpoint shares.
@@ -511,29 +570,36 @@ async fn upload_parts(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    Json(request): Json<UploadPartsRequest>,
+    request: Request,
 ) -> Result<Json<UploadPartsResponse>, ApiError> {
-    state
+    let record = state
         .db
         .call_api(move |connection| {
             let record = require_pending(connection, &id)?;
             if !record.is_multipart() {
                 return Err(pending_missing());
             }
-            let part_count =
-                limits::multipart_part_count(record.expected_size, record.part_size).unwrap_or(0);
-            let numbers = validate::validate_upload_part_batch(&request.part_numbers, part_count)?;
-            let parts = numbers
-                .into_iter()
-                .map(|part_number| PartUrl {
-                    part_number,
-                    url: format!("/api/uploads/{}/data/{part_number}", record.id),
-                })
-                .collect();
-            Ok(UploadPartsResponse { parts })
+            Ok(record)
         })
-        .await
-        .map(Json)
+        .await?;
+    let JsonBody(request) = JsonBody::<UploadPartsInput>::from_request(request, &state).await?;
+    let part_numbers = request
+        .part_numbers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|part_number| part_number.unwrap_or_default())
+        .collect::<Vec<_>>();
+    let part_count =
+        limits::multipart_part_count(record.expected_size, record.part_size).unwrap_or(0);
+    let numbers = validate::validate_upload_part_batch(&part_numbers, part_count)?;
+    let parts = numbers
+        .into_iter()
+        .map(|part_number| PartUrl {
+            part_number,
+            url: format!("/api/uploads/{}/data/{part_number}", record.id),
+        })
+        .collect();
+    Ok(Json(UploadPartsResponse { parts }))
 }
 
 /// `PUT /api/uploads/{id}/parts/{part}` — acknowledge a stored part.
@@ -541,23 +607,39 @@ async fn record_upload_part(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam((id, part)): PathParam<(String, i32)>,
-    Json(request): Json<RecordUploadPartRequest>,
+    request: Request,
 ) -> Result<StatusCode, ApiError> {
     let _upload_guard = state.uploads.lock(&id).await;
-    state
+    let record = state
         .db
         .call_api(move |connection| {
             let record = require_pending(connection, &id)?;
             if !record.is_multipart() {
                 return Err(pending_missing());
             }
-            let Some(expected) = record.expected_part_size(part) else {
+            if record.expected_part_size(part).is_none() {
                 return Err(ApiError::bad_request("invalid multipart part number"));
-            };
-            let etag = request.etag.trim();
-            if etag.is_empty() || request.size != expected || request.content_hash.len() > 128 {
-                return Err(ApiError::bad_request("invalid uploaded part acknowledgement"));
             }
+            Ok(record)
+        })
+        .await?;
+    let Some(expected) = record.expected_part_size(part) else {
+        return Err(ApiError::bad_request("invalid multipart part number"));
+    };
+    let JsonBody(request) =
+        JsonBody::<RecordUploadPartInput>::from_request(request, &state).await?;
+    let etag = request.etag.unwrap_or_default();
+    let size = request.size.unwrap_or_default();
+    let content_hash = request.content_hash.unwrap_or_default();
+    let etag = etag.trim().to_owned();
+    if etag.is_empty() || size != expected || content_hash.len() > 128 {
+        return Err(ApiError::bad_request(
+            "invalid uploaded part acknowledgement",
+        ));
+    }
+    state
+        .db
+        .call_api(move |connection| {
             connection
                 .execute(
                     "INSERT INTO upload_parts(upload_id,part_number,size,etag,content_hash,completed_at) \
@@ -566,9 +648,9 @@ size=excluded.size,etag=excluded.etag,content_hash=excluded.content_hash,complet
                     rusqlite::params![
                         record.id,
                         part,
-                        request.size,
+                        size,
                         etag,
-                        request.content_hash,
+                        content_hash,
                         Timestamp::now().to_rfc3339(),
                     ],
                 )
@@ -583,13 +665,33 @@ async fn complete_upload(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    Json(request): Json<CompleteUploadRequest>,
+    request: Request,
 ) -> Result<Json<revaro_core::model::File>, ApiError> {
     let _upload_guard = state.uploads.lock(&id).await;
     let record = state
         .db
         .call_api(move |connection| load_upload_api(connection, &id))
         .await?;
+    if (record.status != UploadStatus::Pending && record.status != UploadStatus::Completed)
+        || (record.status == UploadStatus::Pending && record.is_expired(Timestamp::now()))
+    {
+        return Err(pending_missing());
+    }
+    let JsonBody(request) = JsonBody::<CompleteUploadInput>::from_request(request, &state).await?;
+    let mut requested_parts: Vec<CompletedPart> = request
+        .parts
+        .unwrap_or_default()
+        .into_iter()
+        .map(|part| {
+            let part = part.unwrap_or_default();
+            CompletedPart {
+                part_number: part.part_number.unwrap_or_default(),
+                etag: part.etag.unwrap_or_default(),
+                size: part.size,
+                content_hash: part.content_hash,
+            }
+        })
+        .collect();
 
     // Completing twice returns the committed file rather than minting a second
     // one: a client that retried after a lost response must not have to guess.
@@ -606,10 +708,6 @@ async fn complete_upload(
             .await
             .map(Json);
     }
-    if record.status != UploadStatus::Pending || record.is_expired(Timestamp::now()) {
-        return Err(pending_missing());
-    }
-
     // Go's completion path received the object metadata from Stat/CompleteMultipart
     // and persisted its ETag together with the ready file row. The Rust port only
     // retained the content hash, which made a freshly uploaded file lose the
@@ -618,25 +716,33 @@ async fn complete_upload(
         let Some(multipart_id) = record.multipart_id.clone() else {
             return Err(pending_missing());
         };
-        let parts: Vec<revaro_core::storage::CompletedPart> = request
-            .parts
-            .iter()
-            .map(|part| revaro_core::storage::CompletedPart {
-                part_number: part.part_number,
-                etag: part.etag.clone(),
-                ..Default::default()
-            })
-            .collect();
         let expected_parts = limits::multipart_part_count(record.expected_size, record.part_size)
             .map_err(ApiError::bad_request)?;
-        if parts.len() != expected_parts {
+        if requested_parts.is_empty() {
+            let upload_id = record.id.clone();
+            requested_parts = state
+                .db
+                .call_api(move |connection| {
+                    load_acknowledged_parts(connection, &upload_id).map_err(database_error)
+                })
+                .await?;
+        }
+        if requested_parts.len() != expected_parts {
             return Err(ApiError::bad_request(
                 "multipart completion list is incomplete",
             ));
         }
+        requested_parts.sort_by_key(|part| part.part_number);
+        if requested_parts.iter().enumerate().any(|(index, part)| {
+            part.part_number != index as i32 + 1 || part.etag.trim().is_empty()
+        }) {
+            return Err(ApiError::bad_request(
+                "multipart completion list is invalid",
+            ));
+        }
         state
             .store
-            .complete_multipart(&record.object_key, &multipart_id, &parts)
+            .complete_multipart(&record.object_key, &multipart_id, &requested_parts)
             .await
             .map_err(complete_error)?;
         let stored = state
@@ -668,6 +774,11 @@ async fn complete_upload(
         };
         (stored.etag, content_hash)
     } else {
+        if !requested_parts.is_empty() {
+            return Err(ApiError::bad_request(
+                "single upload must not include multipart parts",
+            ));
+        }
         let stored = state
             .store
             .head(&record.object_key)
@@ -998,7 +1109,7 @@ fn complete_error(error: StorageError) -> ApiError {
         }
         other => {
             tracing::error!(%other, "upload completion failed");
-            ApiError::new(502, "object storage write failed")
+            ApiError::new(502, "object storage could not complete the upload")
         }
     }
 }

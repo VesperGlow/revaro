@@ -361,6 +361,140 @@ test('旧版 upload 的尺寸和 MIME 边界校验在 Rust 版保持一致', asy
   }
 })
 
+test('旧版 upload 续传端点的缺省和错误输入在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const uploads: Array<Array<{ uploadId: string; fileId: string }>> = [[], []]
+
+  try {
+    for (const [index, client] of clients.entries()) {
+      for (const [name, size] of [[`continuation-single-${suffix}`, 1], [`continuation-multi-${suffix}`, 2 ** 24]] as const) {
+        const result = await jsonResponse(
+          client,
+          index === 0 ? oldUrl : newUrl,
+          '/api/uploads',
+          'POST',
+          { parent_id: ROOT, name, size, mime_type: 'application/octet-stream' },
+        )
+        expect(result.response.status()).toBe(201)
+        uploads[index].push({
+          uploadId: String(objectValue(result.json, 'upload_id')),
+          fileId: String(objectValue(result.json, 'file_id')),
+        })
+      }
+    }
+
+    const cases: Array<[string, 0 | 1, (uploadId: string) => string, string, unknown, number]> = [
+      ['缺失 session 的 parts malformed', 1, () => `/api/uploads/${MISSING}/parts`, 'POST', '{"part_numbers":', 404],
+      ['parts 缺省', 1, (id) => `/api/uploads/${id}/parts`, 'POST', {}, 400],
+      ['parts 项为 null', 1, (id) => `/api/uploads/${id}/parts`, 'POST', { part_numbers: [null] }, 400],
+      ['parts 未知字段', 1, (id) => `/api/uploads/${id}/parts`, 'POST', { part_numbers: [1], extra: true }, 400],
+      ['parts malformed', 1, (id) => `/api/uploads/${id}/parts`, 'POST', '{"part_numbers":', 400],
+      ['ack 缺省', 1, (id) => `/api/uploads/${id}/parts/1`, 'PUT', {}, 400],
+      ['ack 未知字段', 1, (id) => `/api/uploads/${id}/parts/1`, 'PUT', { etag: 'etag', size: 2 ** 24, extra: true }, 400],
+      ['ack malformed', 1, (id) => `/api/uploads/${id}/parts/1`, 'PUT', '{"etag":', 400],
+      ['缺失 session 的 complete malformed', 0, () => `/api/uploads/${MISSING}/complete`, 'POST', '{"parts":', 404],
+      ['single complete 缺省', 0, (id) => `/api/uploads/${id}/complete`, 'POST', {}, 502],
+      ['single complete 含 parts', 0, (id) => `/api/uploads/${id}/complete`, 'POST', { parts: [{ part_number: 1, etag: 'etag' }] }, 400],
+      ['single complete 未知字段', 0, (id) => `/api/uploads/${id}/complete`, 'POST', { parts: [], extra: true }, 400],
+      ['single complete malformed', 0, (id) => `/api/uploads/${id}/complete`, 'POST', '{"parts":', 400],
+      ['multi complete 缺省', 1, (id) => `/api/uploads/${id}/complete`, 'POST', {}, 400],
+      ['multi complete 项为 null', 1, (id) => `/api/uploads/${id}/complete`, 'POST', { parts: [null] }, 400],
+      ['multi complete 空 ETag', 1, (id) => `/api/uploads/${id}/complete`, 'POST', { parts: [{ part_number: 1, etag: '' }] }, 400],
+      ['multi complete 未知字段', 1, (id) => `/api/uploads/${id}/complete`, 'POST', { parts: [], extra: true }, 400],
+    ]
+    for (const [label, uploadIndex, path, method, data, expectedStatus] of cases) {
+      const results = await Promise.all(clients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        path(uploads[index][uploadIndex].uploadId),
+        method,
+        data,
+      )))
+      await compareTransport(results[0], results[1])
+      expect(results[0].response.status(), `reference ${label} 状态异常`).toBe(expectedStatus)
+      expect(results[1].response.status(), `Rust ${label} 状态与 reference 不一致`).toBe(expectedStatus)
+      expect(results[1].json, `Rust ${label} 错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+    }
+  } finally {
+    await Promise.all(clients.map((client, index) => Promise.all([
+      ...uploads[index].map(upload => client.delete(`/api/uploads/${upload.uploadId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)),
+      ...uploads[index].map(upload => client.delete(`/api/files/${upload.fileId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)),
+    ])))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
+test('记录旧版续传 complete 对自身 parts 元数据的解码缺陷并保留 Rust 可用行为', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const name = `continuation-metadata-${crypto.randomUUID()}.bin`
+  const body = Buffer.alloc(2 ** 24, 0x4d)
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const sessions: Array<{ uploadId: string; fileId: string }> = []
+
+  try {
+    const completed = await Promise.all(clients.map(async (client, index) => {
+      const baseUrl = index === 0 ? oldUrl : newUrl
+      const created = await jsonResponse(
+        client,
+        baseUrl,
+        '/api/uploads',
+        'POST',
+        { parent_id: ROOT, name, size: body.length, mime_type: 'application/octet-stream' },
+      )
+      expect(created.response.status()).toBe(201)
+      const uploadId = String(objectValue(created.json, 'upload_id'))
+      const fileId = String(objectValue(created.json, 'file_id'))
+      sessions[index] = { uploadId, fileId }
+      const partUrls = await client.post(`/api/uploads/${uploadId}/parts`, {
+        headers: headers(baseUrl, true),
+        data: { part_numbers: [1] },
+      })
+      expect(partUrls.status()).toBe(200)
+      const partUrl = String((await partUrls.json()).parts[0].url)
+      const bytes = await client.put(partUrl, {
+        headers: { ...headers(baseUrl), 'Content-Type': 'application/octet-stream' },
+        data: body,
+      })
+      expect(bytes.status()).toBe(204)
+      const etag = bytes.headers().etag
+      const acknowledged = await client.put(`/api/uploads/${uploadId}/parts/1`, {
+        headers: headers(baseUrl, true),
+        data: { etag, size: body.length, content_hash: '' },
+      })
+      expect(acknowledged.status()).toBe(204)
+      return jsonResponse(
+        client,
+        baseUrl,
+        `/api/uploads/${uploadId}/complete`,
+        'POST',
+        { parts: [{ part_number: 1, etag, size: body.length, content_hash: '' }] },
+      )
+    }))
+
+    expect(completed[0].response.status()).toBe(400)
+    expect(completed[0].json).toEqual({ error: { status: 400, message: 'invalid JSON request' } })
+    expect(completed[1].response.status()).toBe(200)
+    expect(objectValue(completed[1].json, 'status')).toBe('ready')
+  } finally {
+    await Promise.all(clients.map(async (client, index) => {
+      const baseUrl = index === 0 ? oldUrl : newUrl
+      const session = sessions[index]
+      if (!session) return
+      if (index === 0) {
+        await client.delete(`/api/uploads/${session.uploadId}`, { headers: headers(baseUrl) }).catch(() => undefined)
+      } else {
+        await client.delete(`/api/files/${session.fileId}`, { headers: headers(baseUrl) }).catch(() => undefined)
+        await client.delete(`/api/trash/${session.fileId}`, { headers: headers(baseUrl) }).catch(() => undefined)
+      }
+    }))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版文档 API 的创建、读取、保存、下载、分享和回收生命周期保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

@@ -150,11 +150,13 @@ test('multipart 分片 URL、裸 PUT、ack、complete 和非法 ack 保持 refer
     const [oldCompleted, newCompleted] = await Promise.all([
       oldClient.post(`/api/uploads/${oldSession.upload_id}/complete`, {
         headers: headers(oldUrl, true),
-        data: { parts: oldEtags.map((etag, index) => ({ part_number: index + 1, etag })) },
+        // An empty list makes the server recover the acknowledged parts from
+        // its resume table, matching the historical browser retry path.
+        data: { parts: [] },
       }),
       newClient.post(`/api/uploads/${newSession.upload_id}/complete`, {
         headers: headers(newUrl, true),
-        data: { parts: newEtags.map((etag, index) => ({ part_number: index + 1, etag })) },
+        data: { parts: [] },
       }),
     ])
     expect(newCompleted.status()).toBe(oldCompleted.status())
