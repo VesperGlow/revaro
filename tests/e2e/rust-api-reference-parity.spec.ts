@@ -608,6 +608,44 @@ test('旧版 upload 裸 PUT 的大小和分片路径错误保持一致', async (
   }
 })
 
+test('旧版文件变更 API 的 JSON 解码和校验顺序在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const cases: Array<[string, string, string, unknown, unknown]> = [
+    ['目录缺省 name', '/api/directories', 'POST', { parent_id: ROOT }, { status: 400, message: 'invalid name' }],
+    ['目录未知字段', '/api/directories', 'POST', { parent_id: ROOT, name: 'json-parity', extra: true }, { status: 400, message: 'invalid JSON request' }],
+    ['目录 malformed', '/api/directories', 'POST', '{"parent_id":', { status: 400, message: 'invalid JSON request' }],
+    ['文档缺省 name', '/api/documents', 'POST', { parent_id: ROOT, content: '' }, { status: 400, message: 'invalid name' }],
+    ['文档未知字段', '/api/documents', 'POST', { parent_id: ROOT, name: 'json-parity.txt', content: '', extra: true }, { status: 400, message: 'invalid JSON request' }],
+    ['文档 malformed', '/api/documents', 'POST', '{"parent_id":', { status: 400, message: 'invalid JSON request' }],
+    ['重命名缺省字段', `/api/files/${MISSING}`, 'PATCH', {}, { status: 400, message: 'name or parent_id is required' }],
+    ['重命名未知字段', `/api/files/${MISSING}`, 'PATCH', { name: 'json-parity.txt', extra: true }, { status: 400, message: 'invalid JSON request' }],
+    ['重命名 malformed', `/api/files/${MISSING}`, 'PATCH', '{"name":', { status: 400, message: 'invalid JSON request' }],
+    ['根目录 malformed', `/api/files/${ROOT}`, 'PATCH', '{"name":', { status: 400, message: 'root cannot be modified' }],
+    ['复制缺省字段', `/api/files/${MISSING}/copy`, 'POST', {}, { status: 404, message: 'ready file not found' }],
+    ['复制未知字段', `/api/files/${MISSING}/copy`, 'POST', { parent_id: ROOT, extra: true }, { status: 400, message: 'invalid JSON request' }],
+    ['复制 malformed', `/api/files/${MISSING}/copy`, 'POST', '{"parent_id":', { status: 400, message: 'invalid JSON request' }],
+  ]
+
+  try {
+    for (const [label, path, method, data, error] of cases) {
+      const results = await Promise.all(clients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        path,
+        method,
+        data,
+      )))
+      await compareTransport(results[0], results[1])
+      expect(results[0].json, `reference ${label} 错误 envelope 异常`).toEqual({ error })
+      expect(results[1].json, `Rust ${label} 错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+    }
+  } finally {
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版文档 API 的创建、读取、保存、下载、分享和回收生命周期保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

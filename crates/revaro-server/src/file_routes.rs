@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Path as PathParam, Query, State};
+use axum::extract::{FromRequest, Path as PathParam, Query, Request, State};
 use axum::routing::{MethodFilter, get};
 use axum::{Json, Router};
 use bytes::Bytes;
@@ -36,9 +36,11 @@ use revaro_core::model::{
 };
 use revaro_core::time::Timestamp;
 use rusqlite::{Connection, Row};
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::auth::extract::AuthUser;
+use crate::auth_routes::JsonBody;
 use crate::db::DbError;
 use crate::state::AppState;
 use crate::storage::StorageError;
@@ -56,6 +58,27 @@ content_hash,hash_algorithm,status,created_at,updated_at,deleted_at,restore_pare
 const FILE_COLUMNS_QUALIFIED: &str = "f.id,f.parent_id,f.name,f.kind,COALESCE(f.object_key,''),\
 f.size,f.mime_type,f.etag,f.content_hash,f.hash_algorithm,f.status,f.created_at,f.updated_at,\
 f.deleted_at,f.restore_parent_id";
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateDirectoryInput {
+    parent_id: Option<String>,
+    name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateDocumentInput {
+    parent_id: Option<String>,
+    name: Option<String>,
+    content: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CopyFileInput {
+    parent_id: Option<String>,
+}
 
 /// Route table for the read-only file surface.
 pub fn routes() -> Router<Arc<AppState>> {
@@ -518,8 +541,13 @@ async fn library_counts(
 async fn create_directory(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
-    Json(request): Json<revaro_core::api::CreateDirectoryRequest>,
+    JsonBody(input): JsonBody<Option<CreateDirectoryInput>>,
 ) -> Result<(http::StatusCode, Json<File>), ApiError> {
+    let input = input.unwrap_or_default();
+    let request = revaro_core::api::CreateDirectoryRequest {
+        parent_id: input.parent_id.unwrap_or_default(),
+        name: input.name.unwrap_or_default(),
+    };
     revaro_core::validate::validate_name(&request.name)?;
     let id = crate::ids::new_id();
     let created = state
@@ -555,10 +583,17 @@ async fn patch_file(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    Json(request): Json<revaro_core::api::PatchFileRequest>,
+    request: Request,
 ) -> Result<Json<File>, ApiError> {
     if revaro_core::ids::is_root(&id) {
         return Err(ApiError::bad_request("root cannot be modified"));
+    }
+    let JsonBody(body) =
+        JsonBody::<Option<revaro_core::api::PatchFileRequest>>::from_request(request, &state)
+            .await?;
+    let request = body.unwrap_or_default();
+    if request.name.is_none() && request.parent_id.is_none() {
+        return Err(ApiError::bad_request("name or parent_id is required"));
     }
     if let Some(name) = &request.name {
         revaro_core::validate::validate_name(name)?;
@@ -2280,8 +2315,14 @@ struct SharePermit(#[allow(dead_code)] std::sync::Arc<tokio::sync::SemaphorePerm
 async fn create_document(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
-    Json(request): Json<revaro_core::api::CreateDocumentRequest>,
+    JsonBody(input): JsonBody<Option<CreateDocumentInput>>,
 ) -> Result<(http::StatusCode, Json<File>), ApiError> {
+    let input = input.unwrap_or_default();
+    let request = revaro_core::api::CreateDocumentRequest {
+        parent_id: input.parent_id.unwrap_or_default(),
+        name: input.name.unwrap_or_default(),
+        content: input.content.unwrap_or_default(),
+    };
     revaro_core::validate::validate_document(&request.name, &request.content)?;
 
     let file_id = crate::ids::new_id();
@@ -2410,8 +2451,12 @@ async fn copy_file(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    Json(request): Json<revaro_core::api::CopyFileRequest>,
+    JsonBody(input): JsonBody<Option<CopyFileInput>>,
 ) -> Result<(http::StatusCode, Json<File>), ApiError> {
+    let input = input.unwrap_or_default();
+    let request = revaro_core::api::CopyFileRequest {
+        parent_id: input.parent_id.unwrap_or_default(),
+    };
     state
         .db
         .call_api(move |connection| {
