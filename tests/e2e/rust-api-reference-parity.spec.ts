@@ -547,6 +547,67 @@ test('旧版 upload complete 的存储层分片失败保持 502 envelope', async
   }
 })
 
+test('旧版 upload 裸 PUT 的大小和分片路径错误保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const uploads: Array<Array<{ uploadId: string; fileId: string }>> = [[], []]
+
+  try {
+    for (const [index, client] of clients.entries()) {
+      const baseUrl = index === 0 ? oldUrl : newUrl
+      for (const [name, size] of [
+        [`raw-put-single-${crypto.randomUUID()}.bin`, 3],
+        [`raw-put-multipart-${crypto.randomUUID()}.bin`, 2 ** 24],
+      ] as const) {
+        const created = await jsonResponse(
+          client,
+          baseUrl,
+          '/api/uploads',
+          'POST',
+          { parent_id: ROOT, name, size, mime_type: 'application/octet-stream' },
+        )
+        expect(created.response.status()).toBe(201)
+        uploads[index].push({
+          uploadId: String(objectValue(created.json, 'upload_id')),
+          fileId: String(objectValue(created.json, 'file_id')),
+        })
+      }
+    }
+
+    const cases: Array<[string, number, string, unknown, string]> = [
+      ['single body size', 0, 'data', Buffer.from('x'), 'upload size mismatch'],
+      ['single part path', 0, 'data/1', undefined, 'single upload has no parts'],
+      ['multipart without part', 1, 'data', undefined, 'invalid part number'],
+      ['multipart invalid part', 1, 'data/2', undefined, 'invalid part number'],
+      ['multipart body size', 1, 'data/1', Buffer.alloc(0), 'upload size mismatch'],
+    ]
+    for (const [label, uploadIndex, suffix, body, message] of cases) {
+      const results = await Promise.all(clients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        `/api/uploads/${uploads[index][uploadIndex].uploadId}/${suffix}`,
+        'PUT',
+        body,
+      )))
+      await compareTransport(results[0], results[1])
+      expect(results[0].response.status(), `reference ${label} 状态异常`).toBe(400)
+      expect(results[0].json, `reference ${label} 错误 envelope 异常`).toEqual({
+        error: { status: 400, message },
+      })
+      expect(results[1].json, `Rust ${label} 错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+    }
+  } finally {
+    await Promise.all(clients.map(async (client, index) => {
+      await Promise.all(uploads[index].flatMap(upload => [
+        client.delete(`/api/uploads/${upload.uploadId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined),
+        client.delete(`/api/files/${upload.fileId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined),
+      ]))
+    }))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版文档 API 的创建、读取、保存、下载、分享和回收生命周期保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

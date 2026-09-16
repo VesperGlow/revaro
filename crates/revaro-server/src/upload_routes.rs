@@ -498,6 +498,15 @@ fn body_reader(body: Body) -> impl tokio::io::AsyncRead + Unpin {
     StreamReader::new(stream)
 }
 
+fn content_length_mismatch(request: &Request, expected: i64) -> bool {
+    request
+        .headers()
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .is_some_and(|length| length >= 0 && length != expected)
+}
+
 /// `PUT /api/uploads/{id}/data` — a whole single-request upload.
 async fn upload_content(
     State(state): State<Arc<AppState>>,
@@ -511,9 +520,10 @@ async fn upload_content(
         .call_api(move |connection| require_pending(connection, &id))
         .await?;
     if record.is_multipart() {
-        return Err(ApiError::bad_request(
-            "multipart uploads must send numbered parts",
-        ));
+        return Err(ApiError::bad_request("invalid part number"));
+    }
+    if content_length_mismatch(&request, record.expected_size) {
+        return Err(ApiError::bad_request("upload size mismatch"));
     }
 
     let mut reader = body_reader(request.into_body());
@@ -539,13 +549,14 @@ async fn upload_content_part(
         .call_api(move |connection| require_pending(connection, &id))
         .await?;
     if !record.is_multipart() {
-        return Err(ApiError::bad_request(
-            "single upload must not include multipart parts",
-        ));
+        return Err(ApiError::bad_request("single upload has no parts"));
     }
     let Some(expected) = record.expected_part_size(part) else {
-        return Err(ApiError::bad_request("invalid multipart part number"));
+        return Err(ApiError::bad_request("invalid part number"));
     };
+    if content_length_mismatch(&request, expected) {
+        return Err(ApiError::bad_request("upload size mismatch"));
+    }
     let Some(multipart_id) = record.multipart_id.clone() else {
         return Err(pending_missing());
     };
@@ -1084,16 +1095,8 @@ fn etag_response(etag: &str) -> http::Response<Body> {
 }
 
 fn write_error(error: StorageError) -> ApiError {
-    match error {
-        StorageError::SizeMismatch { .. } => {
-            ApiError::bad_request("uploaded object size does not match the declared size")
-        }
-        StorageError::NotFound => pending_missing(),
-        other => {
-            tracing::error!(%other, "upload write failed");
-            ApiError::new(502, "object storage write failed")
-        }
-    }
+    tracing::error!(%error, "upload write failed");
+    ApiError::bad_request("file write failed or size mismatch")
 }
 
 fn complete_error(error: StorageError) -> ApiError {
