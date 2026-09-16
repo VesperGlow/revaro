@@ -735,6 +735,96 @@ test('old/new 文档 PUT 普通失败保留修改与 ETag，busy 锁定后可重
   }
 })
 
+test('old/new 文档内容 GET 首次失败后退出加载态，关闭重开可重新读取', async ({ browser }) => {
+  const name = `editor-read-retry-${crypto.randomUUID()}.md`
+  const content = '# fetched after retry\n'
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    const id = await createDocument(page, name, content)
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    let reads = 0
+    await page.route(`**/api/files/${id}/content`, async route => {
+      if (route.request().method() !== 'GET') {
+        await route.continue()
+        return
+      }
+      reads += 1
+      if (reads === 1) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { status: 500, code: 'internal_error', message: 'content temporarily unavailable' },
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await row.click()
+    const editor = page.locator('.document-editor')
+    await expect(editor.locator('.editor-loading')).toBeVisible()
+    const error = editor.locator('.editor-header-message.error')
+    await expect(error).toHaveText('content temporarily unavailable')
+    await expect(editor.locator('.editor-loading')).toHaveCount(0)
+    await expect(editor.locator('textarea')).toHaveValue('')
+    await expect(editor.locator('.unsaved-dot')).toHaveCount(0)
+    await expect(editor.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
+    const failedRead = {
+      error: await error.textContent(),
+      loader: await editor.locator('.editor-loading').count(),
+      content: await editor.locator('textarea').inputValue(),
+      unsaved: await editor.locator('.unsaved-dot').count(),
+      saveDisabled: await editor.getByRole('button', { name: '保存', exact: true }).isDisabled(),
+    }
+
+    await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await row.click()
+    await expect(editor.locator('textarea')).toHaveValue(content)
+    await expect(error).toHaveCount(0)
+    await expect(editor.getByRole('button', { name: '保存', exact: true })).toBeDisabled()
+    return {
+      failedRead,
+      recoveredContent: await editor.locator('textarea').inputValue(),
+      reads,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      failedRead: {
+        error: 'content temporarily unavailable',
+        loader: 0,
+        content: '',
+        unsaved: 0,
+        saveDisabled: true,
+      },
+      recoveredContent: content,
+      reads: 2,
+    })
+    expect(newResult, 'Rust 文档 GET 错误/关闭重试行为与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('放弃未保存编辑不会清除已有的 reference 全局 toast', async ({ browser }) => {
   const folderName = `editor-toast-${crypto.randomUUID()}`
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
