@@ -646,6 +646,67 @@ test('旧版文件变更 API 的 JSON 解码和校验顺序在 Rust 版保持一
   }
 })
 
+test('旧版文档保存 API 的 JSON 解码和文件查找顺序在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const fileIds: string[] = []
+  const name = `document-save-json-${crypto.randomUUID()}.md`
+
+  try {
+    for (const [index, client] of clients.entries()) {
+      const baseUrl = index === 0 ? oldUrl : newUrl
+      const created = await jsonResponse(
+        client,
+        baseUrl,
+        '/api/documents',
+        'POST',
+        { parent_id: ROOT, name, content: 'before' },
+      )
+      expect(created.response.status()).toBe(201)
+      fileIds[index] = String(objectValue(created.json, 'id'))
+    }
+
+    const cases: Array<[string, unknown, number, unknown?, boolean?]> = [
+      ['缺省 content', {}, 200],
+      ['未知字段', { content: 'after', extra: true }, 400, { status: 400, message: 'invalid JSON request' }],
+      ['malformed', '{"content":', 400, { status: 400, message: 'invalid JSON request' }],
+      ['缺失文件 malformed', '{"content":', 404, { status: 404, message: 'ready file not found' }, true],
+      ['缺省 content 但 ETag 冲突', { etag: 'stale-etag' }, 409, { status: 409, message: 'document changed elsewhere; reopen it before saving' }],
+    ]
+    for (const [label, data, expectedStatus, expectedError, missing] of cases) {
+      const results = await Promise.all(clients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        `/api/files/${missing ? MISSING : fileIds[index]}/content`,
+        'PUT',
+        data,
+      )))
+      await compareTransport(results[0], results[1])
+      expect(results[0].response.status(), `reference ${label} 状态异常`).toBe(expectedStatus)
+      expect(results[1].response.status(), `Rust ${label} 状态与 reference 不一致`).toBe(expectedStatus)
+      if (expectedError) {
+        expect(results[0].json, `reference ${label} 错误 envelope 异常`).toEqual({ error: expectedError })
+        expect(results[1].json, `Rust ${label} 错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+      } else {
+        expect(objectKeys(results[1].json), `Rust ${label} 成功响应字段缺失`).toEqual(objectKeys(results[0].json))
+        expect(fileSemantics(results[1].json)).toMatchObject(fileSemantics(results[0].json))
+      }
+    }
+  } finally {
+    await Promise.all(clients.map((client, index) => {
+      const id = fileIds[index]
+      return id
+        ? Promise.all([
+          client.delete(`/api/files/${id}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined),
+          client.delete(`/api/trash/${id}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined),
+        ])
+        : Promise.resolve()
+    }))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版文档 API 的创建、读取、保存、下载、分享和回收生命周期保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

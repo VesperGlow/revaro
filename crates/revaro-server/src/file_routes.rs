@@ -80,6 +80,13 @@ struct CopyFileInput {
     parent_id: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateDocumentInput {
+    content: Option<String>,
+    etag: Option<String>,
+}
+
 /// Route table for the read-only file surface.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -943,7 +950,7 @@ async fn update_document(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    Json(request): Json<revaro_core::api::UpdateDocumentRequest>,
+    request: Request,
 ) -> Result<Json<File>, ApiError> {
     let file = state
         .db
@@ -956,6 +963,14 @@ async fn update_document(
             Ok(file)
         })
         .await?;
+
+    let JsonBody(input) =
+        JsonBody::<Option<UpdateDocumentInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let request = revaro_core::api::UpdateDocumentRequest {
+        content: input.content.unwrap_or_default(),
+        etag: input.etag.unwrap_or_default(),
+    };
 
     revaro_core::validate::validate_document(&file.name, &request.content)?;
 
