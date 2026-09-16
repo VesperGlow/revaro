@@ -504,14 +504,19 @@ pub mod book {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Info {
         /// `epub` or `txt`.
+        #[serde(default)]
         pub format: String,
         /// Book title as parsed from the source.
+        #[serde(default)]
         pub title: String,
         /// File name on disk.
+        #[serde(default)]
         pub name: String,
         /// Whether an embedded cover exists.
+        #[serde(default)]
         pub cover: bool,
         /// Table of contents.
+        #[serde(default)]
         pub toc: Vec<TocEntry>,
     }
 

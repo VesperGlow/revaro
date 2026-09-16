@@ -29,6 +29,7 @@ type TocEntry = {
 type ReaderFixture = {
   toc?: TocEntry[]
   flowFailure?: boolean
+  bookMetadata?: Record<string, unknown>
 }
 
 type ReaderPrefsFixture = {
@@ -92,7 +93,9 @@ async function mockReader(page: Page, fixture: ReaderFixture = {}) {
     if (path === `/api/files/${ROOT}/children`) return json({ items: [book], total_bytes: book.size, file_count: 1 })
     if (path === `/api/files/${BOOK_ID}`) return json({ file: book, breadcrumbs: [root] })
     if (path === `/api/files/${BOOK_ID}/thumbnail`) return route.fulfill({ status: 404, body: '' })
-    if (path === `/api/files/${BOOK_ID}/book`) return json({ format: 'epub', title: '旧版阅读器对照', name: book.name, cover: false, toc: [] })
+    if (path === `/api/files/${BOOK_ID}/book`) {
+      return json(fixture.bookMetadata ?? { format: 'epub', title: '旧版阅读器对照', name: book.name, cover: false, toc: [] })
+    }
     if (path === `/api/files/${BOOK_ID}/book/progress`) {
       if (request.method() === 'PUT') return route.fulfill({ status: 204, body: '' })
       return json({})
@@ -134,6 +137,30 @@ async function prepare(page: Page, baseUrl: string, fixture: ReaderFixture = {},
     await expect(page.locator('#flow .rf-chunk').first()).toBeVisible({ timeout: 20_000 })
   }
 }
+
+test('old/new 阅读器书籍成功响应缺少未使用元数据字段时仍使用 name/title', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const fixture = { bookMetadata: { name: '服务端书名' } }
+
+  try {
+    await Promise.all([
+      prepare(oldPage, oldUrl, fixture),
+      prepare(newPage, newUrl, fixture),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('#reader-title')).toHaveText('服务端书名'),
+      expect(newPage.locator('#reader-title')).toHaveText('服务端书名'),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
 
 async function readerSnapshot(page: Page) {
   return page.evaluate(() => {

@@ -308,6 +308,7 @@
 - `2026-09-17`，实际对 old `18180` / new `18184` 的登录、凭据、密码、用户名、TOTP setup/enable/recovery/disable 和头像 PUT 发送缺省字段、未知字段及 malformed JSON；old 对缺省字段按 Go decoder 零值进入各自业务校验，未知/malformed 统一返回 `400 invalid JSON request`（登录缺省返回 401 invalid credentials）。Rust 初始必填 Json 对缺省字段返回 422，已为认证输入恢复零值/拒绝未知字段；`rust-api-reference-parity.spec.ts` 认证 API 1/1，认证/账户/密码回归 9/9。
 - `2026-09-17`，在 old `18180` / new `18184` 的账户设置 mock 中让 `GET /api/auth/totp` 成功返回 `{}`；旧版读取后仍显示“未启用”和“设置”入口且无错误，Rust 初始 `TotpStatus` 必填字段导致账户设置显示 serde 错误，已让 `enabled`/`recovery_codes` 按旧版缺省为 `false`/`0`。`rust-account-reference-parity.spec.ts` 缺省状态 old/new 1/1、完整 6/6；账户、恢复码下载、密码回归 5/5。
 - `2026-09-17`，在 old/new 的启动会话检查和登录成功路径让 `GET /api/auth/me`、`POST /api/auth/login` 只返回 `username`；旧版 caller 仍进入已认证壳层，Rust 初始 `Profile.has_avatar` 必填导致会话回登录页或登录成功后显示解码错误，已按旧版将该未使用布尔字段缺省为 `false`。会话和登录缺字段 old/new 各 1/1，认证套件 old/new 5/5。
+- `2026-09-17`，在 old/new 阅读器让 `GET /api/files/{id}/book` 成功只返回 `name`；旧版 reader caller 只读取 `name/title` 仍显示服务端书名，Rust 初始 `BookInfo` 强制要求 format/title/cover/toc 而保留文件名，已将未使用元数据字段按旧版缺省。稀疏书籍响应 old/new 1/1，完整 reader reference 套件 6/6。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `POST /api/files/batch-download/prepare` 发送缺省 `ids`、`null`、`[null]`、未知字段及 malformed JSON；old 缺省/`null` 进入“至少一个文件 ID”、`[null]` 进入“invalid file id”，未知/malformed 返回 `400 invalid JSON request`。Rust 初始必填 `Vec<String>` 对缺省/`null`/`[null]` 均提前返回 400 invalid JSON，已恢复 Go decoder 的空 slice/空字符串零值；`rust-batch-download-reference-parity.spec.ts` old/new 2/2。
 - `2026-09-17`，在 old/new 的真实多选下载入口注入 `prepare` 成功但缺少 `token` 以及请求断网；两版都保留所选项目，分别显示“批量下载准备失败”和浏览器 transport 错误，不创建下载链接，Toast 样式/命中区域一致。Rust 初始缺字段响应直接显示 serde 错误，已恢复旧客户端显式 token 检查；`rust-feedback-reference-parity.spec.ts` 批量下载边界 old/new 2/2，反馈套件 10/10。
 - `2026-09-17`，在 old/new 的回收站恢复、永久删除路径延迟 `GET /api/trash` 刷新；两版在刷新完成前均保留已选项目工具栏，完成后才清选择并显示成功反馈，恢复/永久删除/清空回收站 mutation 时序集合 old/new 7/7；Rust 初始版恢复和永久删除都会在发起刷新前清选择，已按 reference 移到刷新完成后。
@@ -433,7 +434,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | 同一份完整旧版 `reader-flow.spec.ts` 在专用双项目配置 old/new 各 17/17；覆盖书名/进度/返回、窗口预取、分页边界、旋转、L2 复开；2026-09-17 Rust 直接/登录后 TXT 深链 old/new 用例 3/3，恢复旧源码声明意图并记录旧运行时例外；损坏/错误矩阵仍待验 |
-| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 专用 reader-flow 各 17/17，真实 EPUB 各 1/1；覆盖 manifest/flow/chunk、目录/图片 NavAnchor、样式重排、缓存和首屏；损坏/错误回退和逐项截图仍待验 |
+| `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 专用 reader-flow 各 17/17，真实 EPUB 各 1/1；书籍成功响应缺少未使用的 format/title/cover/toc 时仍按 `name/title` 显示标题（`rust-reader-reference-parity.spec.ts` old/new 1/1）；覆盖 manifest/flow/chunk、目录/图片 NavAnchor、样式重排、缓存和首屏；损坏/错误回退和逐项截图仍待验 |
 | `[P]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | old/new reader-flow 的顶栏、标题截断、ring、沉浸式隐藏和恢复均通过；真实 EPUB 另验证页码及 `阅读进度 14.0%` |
 | `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；`rust-reader-reference-parity.spec.ts` 在 390×844 通过 Chromium touch 横向翻页、纵向不翻页及 `touchcancel` 恢复当前栏；完整键盘状态仍待独立矩阵 |
 | `[ ]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | old/new reader-flow 已通过文本 locator、fragment、未加载 chunk、媒体 NavAnchor、无 fragment、父级/随机跳转和 Escape 焦点；新增 old/new 对照空目录、父子缩进、活动项和错误关闭；完整视觉/错误矩阵仍待验 |
@@ -524,7 +525,7 @@
 | `[P]` | `PUT /api/files/{id}/media/progress` | 音视频进度保存 | Rust 普通定时路径由 `save_media_progress()` 调用，预览卸载路径由 `save_media_progress_keepalive()` 直接构造同源 keepalive 请求；old/new 存储探针、Request.keepalive 及缺省/未知/malformed JSON、缺失媒体文件查找顺序已验证 |
 | `[P]` | `GET /api/files/{id}/content` | 文本编辑器读取 | Rust `fetch_document()` 由 `DocumentEditor` 流程调用；old/new TXT/Markdown 读取已验证 |
 | `[P]` | `PUT /api/files/{id}/content` | 文本编辑器保存/etag | Rust `update_document()` 由 `DocumentEditor` 调用；old/new 保存和 Markdown 重开已验证，冲突子项仍待验 |
-| `[P]` | `GET /api/files/{id}/book` | EPUB/TXT metadata | old/new 实际上传同一 EPUB 后查询成功响应，format/title/name/cover/TOC 一致；Rust `fetch_book()` 有；`rust-specialized-api-reference-parity.spec.ts` |
+| `[P]` | `GET /api/files/{id}/book` | EPUB/TXT metadata | old/new 实际上传同一 EPUB 后查询成功响应，format/title/name/cover/TOC 一致；成功响应缺少未使用元数据字段时仍按 `name/title` 打开 reader（`rust-reader-reference-parity.spec.ts` old/new 1/1）；Rust `fetch_book()` 有；`rust-specialized-api-reference-parity.spec.ts` |
 | `[P]` | `GET /api/files/{id}/book/assets/{index}` | EPUB 资源 | Rust reader flow `<img>/<object>` URL 由 `ReaderView` 生成；old/new 真实 EPUB 资源场景已通过 |
 | `[P]` | `GET /api/files/{id}/book/cover` | EPUB cover | Rust reader cover URL/fallback 由 `ReaderView` 调用；old/new 真实 EPUB 已通过 |
 | `[P]` | `GET /api/files/{id}/book/progress` | reader progress | Rust `fetch_book_progress()` 由 reader 启动调用；old/new reader-flow 已验证 |
