@@ -548,6 +548,66 @@ test('old/new 音频 metadata 接口失败时回退文件名章节且原始播�
   }
 })
 
+test('old/new 音频 metadata 缺少时长和封面字段时保留章节并用原生时长兜底', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let metadataRequests = 0
+    await page.route('**/api/files/audio-1/audio', async route => {
+      metadataRequests += 1
+      await route.fulfill({ json: {
+        chapters: [
+          { id: 11, title: '第一章 · 风从山谷来', start: 0, end: 40 },
+          { id: 22, title: '第二章 · 在林间停留', start: 40, end: 80 },
+          { id: 33, title: '第三章 · 晚风与归途', start: 80, end: 120 },
+        ],
+      } })
+    })
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => metadataRequests).toBe(1)
+    await page.waitForTimeout(100)
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    return {
+      metadataRequests,
+      duration: await audio.evaluate((element: HTMLAudioElement) => element.duration),
+      displayedDuration: await page.locator('.audio-time span').last().innerText(),
+      chapterCount: await page.locator('.audio-chapter-list button').count(),
+      chapterTitle: await page.locator('.audio-chapter-current h1').innerText(),
+      bookTitleCount: await page.locator('.audio-book-title').count(),
+      coverImageCount: await page.locator('.audio-cover img').count(),
+      nextChapterDisabled: await page.locator('.audio-chapter-navigation button').nth(1).isDisabled(),
+      playerErrorCount: await page.locator('.audio-player-error').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.metadataRequests).toBe(1)
+    expect(oldResult.duration).toBe(120)
+    expect(oldResult.displayedDuration).toBe('2:00')
+    expect(oldResult.chapterCount).toBe(3)
+    expect(oldResult.chapterTitle).toBe('第一章 · 风从山谷来')
+    expect(oldResult.bookTitleCount).toBe(1)
+    expect(oldResult.coverImageCount).toBe(0)
+    expect(oldResult.nextChapterDisabled).toBe(false)
+    expect(oldResult.playerErrorCount).toBe(0)
+    expect(newResult, 'Rust 部分音频 metadata fallback 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频上一章按三秒阈值回退，下一章定位起点并恢复播放', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

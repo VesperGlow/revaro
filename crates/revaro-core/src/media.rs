@@ -117,6 +117,7 @@ pub struct AudioChapter {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioMedia {
     /// Duration in seconds.
+    #[serde(default)]
     pub duration: f64,
     /// Chapter marks.
     #[serde(default)]
@@ -125,6 +126,7 @@ pub struct AudioMedia {
     #[serde(default)]
     pub cover_url: String,
     /// Whether an embedded cover exists.
+    #[serde(default)]
     pub has_cover: bool,
 }
 
@@ -240,5 +242,19 @@ mod tests {
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["chapters"][0]["id"], 1);
         assert_eq!(json["has_cover"], true);
+    }
+
+    #[test]
+    fn audio_metadata_defaults_missing_duration_and_cover_fields() {
+        let media: AudioMedia = serde_json::from_value(serde_json::json!({
+            "chapters": [{"id": 1, "title": "One", "start": 0.0, "end": 12.5}]
+        }))
+        .unwrap();
+
+        assert_eq!(media.duration, 0.0);
+        assert!(!media.has_cover);
+        assert!(media.cover_url.is_empty());
+        assert_eq!(media.chapters.len(), 1);
+        assert_eq!(media.chapters[0].title, "One");
     }
 }
