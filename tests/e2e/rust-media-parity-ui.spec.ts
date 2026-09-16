@@ -3210,6 +3210,71 @@ test('old/new 损坏图片与视频重试保持错误层级、禁用状态和请
   }
 })
 
+test('old/new 图片预览慢响应时保留 loading 文案、工具禁用和导航', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let previewRequests = 0
+    let releasePreview!: () => void
+    const previewGate = new Promise<void>(resolve => { releasePreview = resolve })
+    await page.route('**/api/files/image-1/preview', async route => {
+      previewRequests += 1
+      await previewGate
+      return route.fulfill({ contentType: 'image/svg+xml', body: landscape() })
+    })
+    await page.locator('.file-card').filter({ hasText: '群山.png' }).click()
+    await expect(page.locator('.preview-modal')).toBeVisible()
+    await expect.poll(() => previewRequests).toBe(1)
+    const loading = {
+      status: await page.locator('.preview-image-status[role="status"]').innerText(),
+      imageDisplay: await page.locator('.preview-image').evaluate(element => getComputedStyle(element).display),
+      toolsDisabled: await page.locator('.preview-image-tools button').evaluateAll(buttons => buttons.map(button => (button as HTMLButtonElement).disabled)),
+      navigationCount: await page.locator('.preview-nav').count(),
+    }
+    releasePreview()
+    await expect.poll(() => page.locator('.preview-image').evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(1800)
+    return {
+      previewRequests,
+      loading,
+      loaded: {
+        imageDisplay: await page.locator('.preview-image').evaluate(element => getComputedStyle(element).display),
+        statusCount: await page.locator('.preview-image-status').count(),
+        toolsDisabled: await page.locator('.preview-image-tools button').evaluateAll(buttons => buttons.map(button => (button as HTMLButtonElement).disabled)),
+      },
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      previewRequests: 1,
+      loading: {
+        status: '正在加载图片…',
+        imageDisplay: 'none',
+        toolsDisabled: [true, true, true, true, false],
+        navigationCount: 2,
+      },
+      loaded: {
+        imageDisplay: 'block',
+        statusCount: 0,
+        toolsDisabled: [false, true, false, false, false],
+      },
+    })
+    expect(newResult, 'Rust 图片慢响应 loading/工具/导航状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 媒体重试再次失败仍保留错误层和可重试入口', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
