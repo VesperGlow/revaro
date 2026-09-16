@@ -321,6 +321,7 @@
 - `2026-09-17`，实际让 old/new 首个单文件 PUT 在页面刷新时中止，再以相同文件名、大小和 `lastModified` 重新选择；两版均保留 `revaro.uploads.v1` 与服务端 pending session，刷新后的请求顺序都是 `GET session → PUT data → POST complete`，最终清理 resume 记录并出现 ready 文件。Rust 初始版因误校验旧版 GET 单请求 `part_count:1` 直接停在 GET，已按旧客户端忽略该字段的行为修复；`rust-upload-parity.spec.ts` 刷新重选 old/new 1/1。
 - `2026-09-17`，实际让目录选择器、上传目录冲突恢复和文件树的 `GET /api/files/{id}/children` 成功响应只返回 `items`；旧版这些 caller 只消费目录条目，Rust 初始共享 `Children` 严格要求 `total_bytes/file_count`，稀疏响应会使目录选择器停在“我的文件”。已为这三类 caller 增加 items-only response projection，主文件浏览器仍保留统计字段；目录选择器稀疏 children old/new 1/1、完整套件 9/9，侧栏套件 6/6，上传套件 26/26。
 - `2026-09-17`，在 old/new 任务中心让 `GET /api/tasks` 返回未知、缺省和非字符串 `status`；旧版结构化 JSON caller 保留任务数组但不把它放入活动/完成/失败分组，Rust 初始共享枚举解码失败而错误显示空任务态。已让任务响应中的这些状态映射为 `TaskStatus::Unknown`（数据库 `FromStr` 仍严格），old/new 未分组面板 1/1，任务中心完整套件 10/10，core unknown-status 单测通过。
+- `2026-09-17`，在 old/new 文件列表让 children 返回一个未知 `status`；旧版结构化 `DriveFile` caller 仍渲染该项目并按 `status !== "ready"` 使用 muted 样式，Rust 初始严格 `FileStatus` 解码导致整份列表失败。已让响应中的未知/非字符串状态按旧版非 ready 语义回退为 muted，数据库状态解析仍严格；文件卡/列表 old/new unknown-status 对照通过。
 - `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层

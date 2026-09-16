@@ -295,6 +295,7 @@ pub struct File {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hash_algorithm: String,
     /// Lifecycle state.
+    #[serde(deserialize_with = "deserialize_file_status")]
     pub status: FileStatus,
     /// Creation time.
     pub created_at: Timestamp,
@@ -314,6 +315,21 @@ pub struct File {
     /// Never leaves the server: the browser addresses files by id.
     #[serde(skip)]
     pub object_key: String,
+}
+
+/// The historical browser treated every status other than `ready` as a muted
+/// item and did not validate the string against the current server enum. Keep
+/// that response tolerance while retaining strict `FromStr` parsing for
+/// persisted database values.
+fn deserialize_file_status<'de, D>(deserializer: D) -> Result<FileStatus, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(FileStatus::Failed))
 }
 
 impl File {
@@ -613,6 +629,32 @@ mod tests {
         );
         // The object key must never reach the browser.
         assert!(!serde_json::to_string(&file).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn file_responses_treat_unknown_statuses_as_non_ready() {
+        let base = serde_json::json!({
+            "id": "file",
+            "parent_id": null,
+            "name": "future.txt",
+            "kind": "file",
+            "size": 1,
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z"
+        });
+        let mut unknown = base.clone();
+        unknown["status"] = serde_json::json!("future_status");
+        assert_eq!(
+            serde_json::from_value::<File>(unknown).unwrap().status,
+            FileStatus::Failed
+        );
+
+        let mut non_string = base;
+        non_string["status"] = serde_json::Value::Null;
+        assert_eq!(
+            serde_json::from_value::<File>(non_string).unwrap().status,
+            FileStatus::Failed
+        );
     }
 
     #[test]
