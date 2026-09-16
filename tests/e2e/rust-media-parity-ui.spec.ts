@@ -1117,6 +1117,90 @@ test('old/new 图片键盘快捷键保持翻页、缩放和默认事件语义', 
   }
 })
 
+test('old/new 视频键盘快捷键保持播放、seek、静音和默认事件语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => {
+      localStorage.setItem('revaro-video-volume', '0.9')
+    })
+    await mockMedia(page, baseUrl)
+    await open(page, '山间漫步.webm')
+    const shell = page.locator('.video-player-shell')
+    const video = shell.locator('video')
+    await expect(video).toHaveJSProperty('readyState', 4)
+    await shell.focus()
+
+    await video.evaluate((element: HTMLVideoElement) => {
+      element.muted = false
+      element.volume = 0.9
+    })
+    const dispatch = async (key: string) => page.evaluate(keyValue => {
+      const target = document.querySelector<HTMLElement>('.video-player-shell')
+      if (!target) throw new Error('视频播放器未挂载')
+      const event = new KeyboardEvent('keydown', { key: keyValue, bubbles: true, cancelable: true })
+      target.dispatchEvent(event)
+      return event.defaultPrevented
+    }, key)
+
+    await video.evaluate((element: HTMLVideoElement) => element.pause())
+    const spacePrevented = await dispatch(' ')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.paused)).toBe(false)
+    const kPrevented = await dispatch('k')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.paused)).toBe(true)
+
+    await video.evaluate((element: HTMLVideoElement) => {
+      element.currentTime = 20
+      element.dispatchEvent(new Event('timeupdate'))
+    })
+    const leftPrevented = await dispatch('ArrowLeft')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBe(15)
+    const rightPrevented = await dispatch('ArrowRight')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBe(20)
+
+    const mutedBefore = await video.evaluate((element: HTMLVideoElement) => element.muted)
+    const mutePrevented = await dispatch('m')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.muted)).toBe(!mutedBefore)
+    const mutedAfter = await video.evaluate((element: HTMLVideoElement) => element.muted)
+    const unmutePrevented = await dispatch('m')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.muted)).toBe(mutedBefore)
+    const restored = await video.evaluate((element: HTMLVideoElement) => element.muted === false)
+
+    await page.getByRole('button', { name: '退出播放', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    return {
+      defaultPrevented: { spacePrevented, kPrevented, leftPrevented, rightPrevented, mutePrevented, unmutePrevented },
+      toggled: mutedAfter === !mutedBefore,
+      restored,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.defaultPrevented).toEqual({
+      spacePrevented: true,
+      kPrevented: true,
+      leftPrevented: true,
+      rightPrevented: true,
+      mutePrevented: false,
+      unmutePrevented: false,
+    })
+    expect(oldResult.toggled).toBe(true)
+    expect(oldResult.restored).toBe(true)
+    expect(newResult, 'Rust 视频键盘快捷键与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 媒体关闭预览的最终进度保存使用相同的 keepalive 语义', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
