@@ -335,6 +335,67 @@ test('old/new 任务中心收到未知 status 时保留旧版忽略语义', asyn
   }
 })
 
+test('old/new 任务中心显式 null 字段仍保留可用任务回退', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const nullableTask = task({
+    id: 'nullable-task',
+    status: 'running',
+    phase: null,
+    error: null,
+    source_type: null,
+    source_id: null,
+    cancel_requested: null,
+    name: null,
+  })
+
+  async function mockNullableTask(page: Page) {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [nullableTask] })
+      if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+      if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+      if (path === `/api/files/${ROOT}`) return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP }, breadcrumbs: [] })
+      if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+      return json({ items: [] })
+    })
+  }
+
+  async function snapshot(page: Page, baseUrl: string) {
+    await mockNullableTask(page)
+    await page.goto(`${baseUrl}/?nullable-task=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('任务中心').click()
+    const article = page.locator('.task-panel article').first()
+    return {
+      count: await page.locator('.task-panel article').count(),
+      title: await article.locator('strong').textContent(),
+      status: await article.locator('small').textContent(),
+      percent: await article.locator('em').textContent(),
+    }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      snapshot(oldPage, oldUrl),
+      snapshot(newPage, newUrl),
+    ])
+    expect(oldState).toEqual({ count: 1, title: '上传', status: '', percent: '100%' })
+    expect(newState, 'Rust 任务中心不应因可回退字段为 null 而丢弃整个任务列表').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('任务中心动作等待期间保留 reference 的按钮状态', async ({ page }) => {
   const tasks = [
     task({ id: 'cancel-action', status: 'running', phase: '上传中', progress: 42, name: '取消.bin' }),

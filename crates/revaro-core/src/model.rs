@@ -406,6 +406,24 @@ where
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Older task callers treated a missing or `null` numeric progress value as
+/// zero through JavaScript's normal falsey/coercion rules. Keep that response
+/// tolerance while rejecting other malformed scalar types.
+fn deserialize_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// Older task callers treated a missing or `null` integer counter as zero.
+fn deserialize_nullable_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// The historical `has_cover` check was `=== true`, so an explicit `null`
 /// was the same as a missing/false value. Reject other malformed scalar types
 /// rather than inventing a new truthiness rule.
@@ -567,34 +585,46 @@ pub struct Task {
     #[serde(default = "TaskStatus::unknown")]
     pub status: TaskStatus,
     /// Human-readable phase within the task.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub phase: String,
     /// Completion percentage, `0.0..=100.0`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
     pub progress: f64,
     /// Current throughput in bytes per second.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub speed: i64,
     /// Estimated seconds remaining, omitted when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_seconds: Option<i64>,
     /// How many times this task has been retried.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub retry_count: i64,
     /// Retry ceiling.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub max_retries: i64,
     /// Failure message, omitted while healthy.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub error: String,
     /// Origin kind of the task, omitted when it has none.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub source_type: String,
     /// Origin identifier, omitted when it has none.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub source_id: String,
     /// Whether cancellation has been requested.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub cancel_requested: bool,
     /// Creation time.
     pub created_at: Timestamp,
@@ -607,7 +637,7 @@ pub struct Task {
     /// Last state change.
     pub updated_at: Timestamp,
     /// Display name derived from the task's files or type.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub name: String,
 }
 
@@ -885,6 +915,38 @@ mod tests {
         }
         assert_eq!(json["type"], "upload");
         assert_eq!(json["status"], "queued");
+    }
+
+    #[test]
+    fn task_responses_treat_nullable_display_fields_as_defaults() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "task",
+            "type": "upload",
+            "status": "running",
+            "phase": null,
+            "progress": null,
+            "speed": null,
+            "retry_count": null,
+            "max_retries": null,
+            "error": null,
+            "source_type": null,
+            "source_id": null,
+            "cancel_requested": null,
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z",
+            "name": null
+        }))
+        .unwrap();
+        assert_eq!(task.phase, "");
+        assert_eq!(task.progress, 0.0);
+        assert_eq!(task.speed, 0);
+        assert_eq!(task.retry_count, 0);
+        assert_eq!(task.max_retries, 0);
+        assert!(task.error.is_empty());
+        assert!(task.source_type.is_empty());
+        assert!(task.source_id.is_empty());
+        assert!(!task.cancel_requested);
+        assert!(task.name.is_empty());
     }
 
     #[test]
