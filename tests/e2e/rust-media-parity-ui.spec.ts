@@ -1029,6 +1029,60 @@ test('old/new 音频恢复进度只接受严格早于结束前五秒的位置', 
   }
 })
 
+test('old/new 音频刷新和重开时恢复本机进度，服务端进度失败仍可用', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => localStorage.setItem('revaro-audio-position:audio-1', '25'))
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/audio-1/media/progress', async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ status: 503, json: { error: 'progress unavailable' } })
+      return route.fulfill({ status: 200, json: { position: 25, duration: 120 } })
+    })
+
+    async function openAndPause() {
+      await open(page, '山间来信.m4a')
+      const audio = page.locator('audio')
+      await expect(audio).toHaveJSProperty('readyState', 4)
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => Math.floor(element.currentTime))).toBe(25)
+      await audio.evaluate((element: HTMLAudioElement) => element.pause())
+      await expect(audio).toHaveJSProperty('paused', true)
+      return {
+        position: Math.floor(await audio.evaluate((element: HTMLAudioElement) => element.currentTime)),
+        displayed: await page.locator('.audio-time span').first().innerText(),
+        localStorage: await page.evaluate(() => localStorage.getItem('revaro-audio-position:audio-1')),
+      }
+    }
+
+    const first = await openAndPause()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    await page.reload()
+    await expect(page.locator('.file-card').filter({ hasText: '山间来信.m4a' })).toBeVisible()
+    const reopened = await openAndPause()
+    return { first, reopened }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      first: { position: 25, displayed: '0:25', localStorage: '25' },
+      reopened: { position: 25, displayed: '0:25', localStorage: '25' },
+    })
+    expect(newResult, 'Rust 音频刷新/重开本机进度恢复与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const width of [1440, 390, 320]) {
   test(`音频 ${width}px：章节、秒数跳转、Esc 和焦点恢复`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
