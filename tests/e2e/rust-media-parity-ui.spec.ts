@@ -917,6 +917,56 @@ test('old/new 音频进度 GET 失败或无有效服务端位置时回退本机�
   }
 })
 
+test('old/new 音频恢复进度只接受严格早于结束前五秒的位置', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.evaluate(() => localStorage.setItem('revaro-audio-position:audio-1', '114.9'))
+    await page.route('**/api/files/audio-1/media/progress', async route => {
+      if (route.request().method() === 'GET') {
+        return route.fulfill({ json: { position: 0, duration: 120 } })
+      }
+      return route.fallback()
+    })
+
+    await open(page, '山间来信.m4a')
+    const firstAudio = page.locator('audio')
+    await expect.poll(() => firstAudio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => firstAudio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThanOrEqual(114.9)
+    const nearEndRestored = Math.floor(await firstAudio.evaluate((element: HTMLAudioElement) => element.currentTime))
+    await firstAudio.evaluate((element: HTMLAudioElement) => element.pause())
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.chapter-audio-player')).toHaveCount(0)
+
+    await page.evaluate(() => localStorage.setItem('revaro-audio-position:audio-1', '115'))
+    await open(page, '山间来信.m4a')
+    const boundaryAudio = page.locator('audio')
+    await expect.poll(() => boundaryAudio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => boundaryAudio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeLessThan(5)
+    const boundaryIgnored = Math.floor(await boundaryAudio.evaluate((element: HTMLAudioElement) => element.currentTime))
+    await boundaryAudio.evaluate((element: HTMLAudioElement) => element.pause())
+    return { nearEndRestored, boundaryIgnored }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.nearEndRestored).toBe(114)
+    expect(oldResult.boundaryIgnored).toBe(0)
+    expect(newResult, 'Rust 音频恢复位置结尾阈值与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const width of [1440, 390, 320]) {
   test(`音频 ${width}px：章节、秒数跳转、Esc 和焦点恢复`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
