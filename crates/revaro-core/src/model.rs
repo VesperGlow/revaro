@@ -407,6 +407,7 @@ pub struct Profile {
     /// Login name.
     pub username: String,
     /// Whether an avatar image is stored.
+    #[serde(default)]
     pub has_avatar: bool,
 }
 
