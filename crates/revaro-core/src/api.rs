@@ -213,6 +213,7 @@ pub mod files {
         /// ETag the client must send back when writing.
         pub etag: String,
         /// Last modification time.
+        #[serde(default)]
         pub updated_at: Timestamp,
     }
 
