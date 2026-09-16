@@ -301,6 +301,7 @@
 - `2026-09-17`，实际在 old `18180` / new `18184` 的加密 ZIP waiting_input 任务上向 `POST /api/tasks/{id}/input` 发送缺失任务 malformed、当前任务缺省 password 和未知字段；old 先检查任务状态/类型再解码，分别返回 409、`400 archive password is required`、`400 invalid JSON request`。Rust 初始 extractor 先解码且要求 password 字段，已恢复 Go decoder 零值/拒绝未知字段和旧版校验顺序；`rust-archive-real-reference-parity.spec.ts` 加密 ZIP old/new 1/1。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的登录、凭据、密码、用户名、TOTP setup/enable/recovery/disable 和头像 PUT 发送缺省字段、未知字段及 malformed JSON；old 对缺省字段按 Go decoder 零值进入各自业务校验，未知/malformed 统一返回 `400 invalid JSON request`（登录缺省返回 401 invalid credentials）。Rust 初始必填 Json 对缺省字段返回 422，已为认证输入恢复零值/拒绝未知字段；`rust-api-reference-parity.spec.ts` 认证 API 1/1，认证/账户/密码回归 9/9。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `POST /api/files/batch-download/prepare` 发送缺省 `ids`、`null`、`[null]`、未知字段及 malformed JSON；old 缺省/`null` 进入“至少一个文件 ID”、`[null]` 进入“invalid file id”，未知/malformed 返回 `400 invalid JSON request`。Rust 初始必填 `Vec<String>` 对缺省/`null`/`[null]` 均提前返回 400 invalid JSON，已恢复 Go decoder 的空 slice/空字符串零值；`rust-batch-download-reference-parity.spec.ts` old/new 2/2。
+- `2026-09-17`，实际完成 single upload 后再次执行 `DELETE /api/uploads/{id}`：old 返回 `404 pending upload not found`，而 Rust 返回 `204` 并保留 ready 文件。旧版把已完成会话仍分流到 pending 清理错误，Rust 保留完成响应丢失后可安全重试的幂等行为；`rust-api-reference-parity.spec.ts` 单独记录该明确旧版缺陷，old/new 资源状态探针均确认 ready 文件未被删除。
 - `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层
@@ -539,7 +540,7 @@
 | `[P]` | `POST /api/uploads/{id}/parts` | 获取分片 URL | old/new 实际请求 `[1,2]` 批次，返回的 part 编号和 URL 尾段一致；Rust `request_upload_parts()` 有；`rust-multipart-upload-reference-parity.spec.ts` |
 | `[P]` | `PUT /api/uploads/{id}/parts/{part}` | 记录分片 | old/new 实际接受带空白的有效 ETag 并 trim；空 ETag 均返回 400，size/content-hash 校验分支一致；Rust `record_upload_part()` 有；`rust-multipart-upload-reference-parity.spec.ts` |
 | `[P]` | `POST /api/uploads/{id}/complete` | 完成上传 | old/new 实际完成三类文件，ready 文件对象、content hash 和 ETag 一致；此前 Rust 漏写 ETag 已恢复；`rust-specialized-api-reference-parity.spec.ts` |
-| `[P]` | `DELETE /api/uploads/{id}` | 取消/中止上传 | Rust `abort_upload()` 有；old/new 实际取消 pending session 均 204，upload session 与 pending file 随后同样 404；`rust-api-reference-parity.spec.ts` old/new 1/1 |
+| `[P]` | `DELETE /api/uploads/{id}` | 取消/中止上传 | Rust `abort_upload()` 有；old/new 实际取消 pending session 均 204，upload session 与 pending file 随后同样 404；已单独实测完成 session 再 DELETE：old 返回 `404 pending upload not found`，Rust 返回 `204` 并保留 ready 文件，作为旧版清理缺陷例外记录；`rust-api-reference-parity.spec.ts` pending old/new 1/1、completed exception old/new 1/1 |
 
 ## 14. 旧版页面/组件反向清点
 

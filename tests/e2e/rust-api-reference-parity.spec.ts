@@ -1140,3 +1140,74 @@ test('旧版取消未完成上传 API 的状态和可见文件清理在 Rust 版
     await Promise.all(clients.map(client => client.dispose()))
   }
 })
+
+test('记录旧版完成上传再次 DELETE 的缺陷并保留 Rust 幂等清理', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const sessions: Array<{ uploadId: string; fileId: string }> = []
+
+  try {
+    for (const [index, client] of clients.entries()) {
+      const baseUrl = index === 0 ? oldUrl : newUrl
+      const created = await jsonResponse(
+        client,
+        baseUrl,
+        '/api/uploads',
+        'POST',
+        { parent_id: ROOT, name: `api-completed-abort-${suffix}.bin`, size: 1, mime_type: 'application/octet-stream' },
+      )
+      expect(created.response.status()).toBe(201)
+      const uploadId = String(objectValue(created.json, 'upload_id'))
+      const fileId = String(objectValue(created.json, 'file_id'))
+      sessions[index] = { uploadId, fileId }
+
+      const bytes = await client.put(`/api/uploads/${uploadId}/data`, {
+        headers: { ...headers(baseUrl), 'Content-Type': 'application/octet-stream' },
+        data: Buffer.from('x'),
+      })
+      expect(bytes.status()).toBe(204)
+      const completed = await jsonResponse(
+        client,
+        baseUrl,
+        `/api/uploads/${uploadId}/complete`,
+        'POST',
+        { parts: [] },
+      )
+      expect(completed.response.status()).toBe(200)
+      expect(objectValue(completed.json, 'status')).toBe('ready')
+    }
+
+    const deleted = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      `/api/uploads/${sessions[index].uploadId}`,
+      'DELETE',
+    )))
+    expect(deleted[0].response.status()).toBe(404)
+    expect(deleted[0].json).toEqual({
+      error: { status: 404, message: 'pending upload not found' },
+    })
+    expect(deleted[1].response.status()).toBe(204)
+    expect(deleted[1].text).toBe('')
+
+    const files = await Promise.all(clients.map((client, index) => jsonResponse(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      `/api/files/${sessions[index].fileId}`,
+    )))
+    expect(files[0].response.status()).toBe(200)
+    expect(files[1].response.status()).toBe(200)
+    expect(fileSemantics(objectValue(files[1].json, 'file')))
+      .toEqual(fileSemantics(objectValue(files[0].json, 'file')))
+    expect(objectValue(objectValue(files[0].json, 'file'), 'status')).toBe('ready')
+  } finally {
+    await Promise.all(clients.map((client, index) => cleanup(
+      client,
+      index === 0 ? oldUrl : newUrl,
+      sessions[index] ? [sessions[index].fileId] : [],
+    )))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
