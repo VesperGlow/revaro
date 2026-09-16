@@ -258,6 +258,49 @@ test('old/new 音频预览慢响应时保留旧 loading/disabled/spinner 状态�
   }
 })
 
+test('old/new 音频封面加载失败回退到 Music2 且不中断播放', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/image-1/preview', route => route.fulfill({ status: 503, contentType: 'image/png', body: '' }))
+    await open(page, '山间来信.m4a')
+    const cover = page.locator('.audio-cover')
+    await expect(cover.locator('img')).toHaveCount(0)
+    const svg = cover.locator('svg')
+    await expect(svg).toBeVisible()
+    await expect.poll(() => page.locator('audio').evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => page.locator('audio').evaluate((element: HTMLAudioElement) => !element.paused)).toBe(true)
+    return {
+      fallbackPaths: await svg.locator('path').evaluateAll(elements => elements.map(element => element.getAttribute('d'))),
+      coverBox: await cover.boundingBox(),
+      svgBox: await svg.boundingBox(),
+      audioReadyState: await page.locator('audio').evaluate((element: HTMLAudioElement) => element.readyState),
+      audioPaused: await page.locator('audio').evaluate((element: HTMLAudioElement) => element.paused),
+      playerErrorCount: await page.locator('.audio-player-error').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.fallbackPaths.length).toBeGreaterThan(0)
+    expect(oldResult.audioReadyState).toBe(4)
+    expect(oldResult.audioPaused).toBe(false)
+    expect(oldResult.playerErrorCount).toBe(0)
+    expect(newResult, 'Rust 音频封面失败 fallback 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const width of [1440, 390, 320]) {
   test(`音频 ${width}px：章节、秒数跳转、Esc 和焦点恢复`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
