@@ -1606,6 +1606,67 @@ test('old/new 视频从零音量恢复时保留 reference 的原生 muted 状态
   }
 })
 
+test('old/new 视频用户播放 Promise rejection 静默处理且不出现错误卡', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间漫步.webm')
+    const video = page.locator('.video-player-shell video')
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBe(4)
+    await video.evaluate((element: HTMLVideoElement) => element.pause())
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.paused)).toBe(true)
+    await page.waitForTimeout(50)
+    await page.evaluate(() => {
+      const state = window as unknown as { unhandledPlaybackRejections: number }
+      state.unhandledPlaybackRejections = 0
+      window.addEventListener('unhandledrejection', event => {
+        state.unhandledPlaybackRejections += 1
+        event.preventDefault()
+      })
+    })
+    await video.evaluate((element: HTMLVideoElement) => {
+      Object.defineProperty(element, 'play', {
+        configurable: true,
+        value: () => Promise.reject(new DOMException('Playback blocked', 'NotAllowedError')),
+      })
+    })
+    const playButton = page.locator('.video-controls .video-control-row > button').first()
+    await expect(playButton).toHaveAttribute('aria-label', '播放')
+    await playButton.click()
+    await page.waitForTimeout(100)
+    return {
+      unhandledPlaybackRejections: await page.evaluate(() =>
+        (window as unknown as { unhandledPlaybackRejections: number }).unhandledPlaybackRejections,
+      ),
+      errorCardCount: await page.locator('.video-error').count(),
+      paused: await video.evaluate((element: HTMLVideoElement) => element.paused),
+      playButtonLabel: await playButton.getAttribute('aria-label'),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      unhandledPlaybackRejections: 0,
+      errorCardCount: 0,
+      paused: true,
+      playButtonLabel: '播放',
+    })
+    expect(newResult, 'Rust 视频用户播放 rejection 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 视频控制条悬停时不自动隐藏', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

@@ -32,6 +32,14 @@ use crate::logic::media::{
 use super::icons;
 use super::media::{MenuIcon, PreviewMenu};
 
+fn play_video_ignoring_rejection(video: &HtmlMediaElement) {
+    if let Ok(promise) = video.play() {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        });
+    }
+}
+
 /// Full-screen video player mounted inside [`super::media::MediaPreview`].
 #[component]
 pub fn VideoPlayer(
@@ -360,7 +368,7 @@ pub fn VideoPlayer(
             return;
         }
         if video.paused() {
-            let _ = video.play();
+            play_video_ignoring_rejection(&video);
         } else {
             let _ = video.pause();
         }
@@ -766,7 +774,7 @@ pub fn VideoPlayer(
                 video.set_muted(muted.get_untracked());
                 video.set_playback_rate(rate.get_untracked());
                 video.load();
-                let _ = video.play();
+                play_video_ignoring_rejection(&video);
             }
         });
     }
