@@ -61,6 +61,7 @@ pub fn VideoPlayer(
     let current_time = RwSignal::new(0.0_f64);
     let duration = RwSignal::new(0.0_f64);
     let controls_visible = RwSignal::new(true);
+    let controls_hovered = RwSignal::new(false);
     let initial_volume = video_volume();
     let volume = RwSignal::new(initial_volume);
     let last_audible_volume = RwSignal::new(if initial_volume > 0.0 {
@@ -599,7 +600,7 @@ pub fn VideoPlayer(
                         starting,
                         buffering,
                         error,
-                        true,
+                        false,
                     );
                 }
                 return;
@@ -625,6 +626,32 @@ pub fn VideoPlayer(
                 toggle_fullscreen();
             }
         }
+    };
+    let on_controls_pointer_enter = move |event: PointerEvent| {
+        if event.pointer_type() == "mouse" {
+            controls_hovered.set(true);
+            show_video_controls(
+                controls_visible,
+                controls_timer,
+                playing,
+                starting,
+                buffering,
+                error,
+                false,
+            );
+        }
+    };
+    let on_controls_pointer_leave = move |_: PointerEvent| {
+        controls_hovered.set(false);
+        show_video_controls(
+            controls_visible,
+            controls_timer,
+            playing,
+            starting,
+            buffering,
+            error,
+            false,
+        );
     };
     let on_pointer_down = move |event: PointerEvent| pointer_type.set(event.pointer_type());
     let on_pointer_move = move |event: PointerEvent| {
@@ -862,7 +889,15 @@ pub fn VideoPlayer(
             <Show when=move || !error.get().is_empty() fallback=|| ()>
                 <div class="video-error" role="alert"><p>{move || error.get()}</p><button type="button" on:click=retry_playback>"重新尝试"</button></div>
             </Show>
-            <div class="video-controls" class:visible=move || controls_visible.get() || !playing.get() inert=move || !controls_visible.get() && playing.get()>
+            <div
+                class="video-controls"
+                class:visible=move || controls_visible.get() || !playing.get()
+                class:mouse-hover=move || controls_hovered.get()
+                class:seek-pending=move || pending_seek.get().is_some()
+                inert=move || !controls_visible.get() && playing.get()
+                on:pointerenter=on_controls_pointer_enter
+                on:pointerleave=on_controls_pointer_leave
+            >
                 <input class="video-seek" type="range" min="0" max=move || duration.get().max(1.0).to_string() step="0.25" prop:value=move || timeline_position().min(duration.get().max(1.0)).to_string() style=move || format!("--video-progress:{}%;", progress()) aria-label="视频进度" aria-valuetext=move || format_media_time(timeline_position()) prop:disabled={move || duration.get() <= 0.0} on:input=preview_seek on:change=commit_seek on:pointercancel=cancel_seek />
                 <div class="video-control-row">
                     <button class="video-icon-button" type="button" aria-label=move || if playing.get() || starting.get() && autoplay_pending.get() { "暂停" } else { "播放" } on:click=move |_| toggle_playback()>
@@ -1134,7 +1169,7 @@ fn show_video_controls(
                     })
                     .is_some_and(|shell| {
                         shell
-                            .query_selector("details[open], :focus-visible, .video-controls:hover")
+                            .query_selector("details[open], :focus-visible, .video-controls.mouse-hover, .video-controls.seek-pending")
                             .ok()
                             .flatten()
                             .is_some()

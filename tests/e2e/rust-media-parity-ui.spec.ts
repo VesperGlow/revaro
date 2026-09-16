@@ -769,8 +769,20 @@ test('old/new 音频用户 seek 与预览关闭的进度持久化时机一致', 
     await open(page, '山间来信.m4a')
     const audio = page.locator('audio')
     await expect(audio).toHaveJSProperty('readyState', 4)
-    await audio.evaluate((element: HTMLAudioElement) => element.pause())
-    await page.waitForTimeout(50)
+    // Let the initial autoplay settle before pausing; otherwise a late play()
+    // resolution can advance only one browser between the debounce samples.
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false)
+    await audio.evaluate((element: HTMLAudioElement) => {
+      element.pause()
+      element.currentTime = 10
+      element.dispatchEvent(new Event('timeupdate'))
+    })
+    await expect(audio).toHaveJSProperty('paused', true)
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(10)
+    // Drain the normalization seek's own 500ms save timer before observing
+    // the user seek; otherwise parallel old/new pages can sample opposite
+    // sides of that unrelated timer.
+    await page.waitForTimeout(700)
     await page.evaluate(() => localStorage.removeItem('revaro-audio-position:audio-1'))
     const progressRequests: Array<{ method: string; body: string | null }> = []
     page.on('request', request => {
@@ -1201,6 +1213,141 @@ test('old/new 视频键盘快捷键保持播放、seek、静音和默认事件�
   }
 })
 
+test('old/new 音频键盘快捷键保持播放、章节关闭、seek 和默认事件语义', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    const shell = page.locator('.chapter-audio-player')
+    const audio = page.locator('audio')
+    await expect(audio).toHaveJSProperty('readyState', 4)
+    await page.evaluate(() => {
+      const state = window as typeof window & {
+        __lastAudioKeyEvent?: KeyboardEvent
+        __audioKeyReachedWindowBubble?: boolean
+        __audioKeyTargetTag?: string
+        __audioKeyTargetAriaLabel?: string | null
+      }
+      window.addEventListener('keydown', event => {
+        state.__lastAudioKeyEvent = event
+        state.__audioKeyReachedWindowBubble = false
+        const target = event.target
+        state.__audioKeyTargetTag = target instanceof Element ? target.tagName : ''
+        state.__audioKeyTargetAriaLabel = target instanceof Element ? target.getAttribute('aria-label') : null
+      }, true)
+      window.addEventListener('keydown', event => {
+        if (state.__lastAudioKeyEvent === event) state.__audioKeyReachedWindowBubble = true
+      })
+    })
+    const press = async (key: string) => {
+      await page.keyboard.press(key)
+      return page.evaluate(() => {
+        const state = window as typeof window & {
+          __lastAudioKeyEvent?: KeyboardEvent
+          __audioKeyReachedWindowBubble?: boolean
+          __audioKeyTargetTag?: string
+          __audioKeyTargetAriaLabel?: string | null
+        }
+        const event = state.__lastAudioKeyEvent
+        if (!event) throw new Error('没有观察到音频播放器键盘事件')
+        return {
+          key: event.key,
+          defaultPrevented: event.defaultPrevented,
+          reachedWindowBubble: state.__audioKeyReachedWindowBubble,
+          targetTag: state.__audioKeyTargetTag,
+          targetAriaLabel: state.__audioKeyTargetAriaLabel,
+        }
+      })
+    }
+
+    const chapterTrigger = page.locator('[data-panel-trigger="chapters"]')
+    await chapterTrigger.click()
+    await expect(page.locator('.audio-panel')).toBeVisible()
+    const chapterEscape = await press('Escape')
+    await expect(page.locator('.audio-panel')).toHaveCount(0)
+    await expect(page.locator('.preview-modal')).toBeVisible()
+    await expect(chapterTrigger).toBeFocused()
+
+    await audio.evaluate((element: HTMLAudioElement) => element.pause())
+    await shell.focus()
+    const shortcutPlay = await press('Space')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false)
+    const shortcutPause = await press('Space')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true)
+
+    // A focused transport button must retain its native Space-to-click behavior;
+    // the player's global shortcut deliberately ignores interactive descendants.
+    const playButton = page.getByRole('button', { name: '播放', exact: true })
+    await playButton.focus()
+    const buttonPlay = await press('Space')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false)
+    const pauseButton = page.getByRole('button', { name: '暂停', exact: true })
+    await expect(pauseButton).toBeFocused()
+    const buttonPause = await press('Space')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true)
+
+    await audio.evaluate((element: HTMLAudioElement) => {
+      element.currentTime = 50
+      element.dispatchEvent(new Event('timeupdate'))
+    })
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(50)
+    await shell.focus()
+    const left = await press('ArrowLeft')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(35)
+    const right = await press('ArrowRight')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(65)
+
+    const pausedBeforeClose = await audio.evaluate((element: HTMLAudioElement) => element.paused)
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    return {
+      chapterEscape,
+      shortcutPlay,
+      shortcutPause,
+      buttonPlay,
+      buttonPause,
+      left,
+      right,
+      state: {
+        chapterClosed: await page.locator('.audio-panel').count() === 0,
+        previewClosed: await page.locator('.preview-modal').count() === 0,
+        pausedBeforeClose,
+      },
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.chapterEscape).toEqual({
+      key: 'Escape', defaultPrevented: true, reachedWindowBubble: false,
+      targetTag: 'BUTTON', targetAriaLabel: '收起面板',
+    })
+    for (const event of [oldResult.shortcutPlay, oldResult.shortcutPause, oldResult.left, oldResult.right]) {
+      expect(event.defaultPrevented).toBe(true)
+      expect(event.reachedWindowBubble).toBe(true)
+    }
+    for (const event of [oldResult.buttonPlay, oldResult.buttonPause]) {
+      expect(event.key).toBe(' ')
+      expect(event.defaultPrevented).toBe(false)
+      expect(event.reachedWindowBubble).toBe(true)
+      expect(event.targetTag).toBe('BUTTON')
+    }
+    expect(oldResult.state).toEqual({ chapterClosed: true, previewClosed: true, pausedBeforeClose: true })
+    expect(newResult, 'Rust 音频键盘快捷键与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 媒体关闭预览的最终进度保存使用相同的 keepalive 语义', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
@@ -1345,6 +1492,47 @@ test('触屏：视频点按只切换控制条，图片双指缩放和取消手�
   }
 })
 
+test('old/new 触屏唤出视频控制条后按 reference 自动收起', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间漫步.webm')
+    const shell = page.locator('.video-player-shell')
+    const video = shell.locator('video')
+    const controls = page.locator('.video-controls')
+    await expect(video).toHaveJSProperty('paused', false)
+    await shell.evaluate((element: HTMLElement) => element.blur())
+    await expect(controls).toBeHidden({ timeout: 5_000 })
+    await page.touchscreen.tap(195, 400)
+    await expect(controls).toBeVisible()
+    await expect(video).toHaveJSProperty('paused', false)
+    await page.waitForTimeout(3_100)
+    return {
+      controlsHiddenAfterTapTimeout: await controls.isHidden(),
+      videoStillPlaying: !(await video.evaluate((element: HTMLVideoElement) => element.paused)),
+      controlsClass: await controls.getAttribute('class'),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.controlsHiddenAfterTapTimeout).toBe(true)
+    expect(oldResult.videoStillPlaying).toBe(true)
+    expect(newResult, 'Rust 触屏唤出控制条后未按 reference 自动收起').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 触屏媒体手势链保持视频点按、图片缩放与取消语义', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
@@ -1357,13 +1545,41 @@ test('old/new 触屏媒体手势链保持视频点按、图片缩放与取消语
     await mockMedia(page, baseUrl)
     await open(page, '山间漫步.webm')
     const video = page.locator('.video-player-shell video')
+    const shell = page.locator('.video-player-shell')
+    const controls = page.locator('.video-controls')
     await expect(video).toHaveJSProperty('paused', false)
+    await shell.evaluate((element: HTMLElement) => element.blur())
+    await expect(controls).toBeHidden({ timeout: 5_000 })
+    await page.evaluate(() => {
+      const state = window as typeof window & { __mediaParityPointerTypes?: string[] }
+      state.__mediaParityPointerTypes = []
+      document.querySelector('.video-player-shell')?.addEventListener('pointerdown', event => {
+        state.__mediaParityPointerTypes?.push((event as PointerEvent).pointerType)
+      }, true)
+    })
+    const controlsState = () => page.locator('.video-controls').evaluate(element => {
+      const style = getComputedStyle(element)
+      return {
+        className: element.className,
+        visibility: style.visibility,
+        opacity: style.opacity,
+        pointerEvents: style.pointerEvents,
+        inert: (element as HTMLElement).inert,
+      }
+    })
     await page.touchscreen.tap(195, 400)
-    const hiddenAfterFirstTap = await page.locator('.video-controls').isHidden()
+    await expect(controls).toBeVisible()
+    await page.waitForTimeout(220)
+    const hiddenAfterFirstTap = await controls.isHidden()
+    const controlsAfterFirstTap = await controlsState()
     const playingAfterFirstTap = !(await video.evaluate((element: HTMLVideoElement) => element.paused))
     await page.touchscreen.tap(195, 400)
-    const visibleAfterSecondTap = await page.locator('.video-controls').isVisible()
+    await expect(controls).toBeHidden()
+    await page.waitForTimeout(220)
+    const visibleAfterSecondTap = await controls.isVisible()
+    const controlsAfterSecondTap = await controlsState()
     const playingAfterSecondTap = !(await video.evaluate((element: HTMLVideoElement) => element.paused))
+    const pointerTypes = await page.evaluate(() => (window as typeof window & { __mediaParityPointerTypes?: string[] }).__mediaParityPointerTypes ?? [])
     await page.getByRole('button', { name: '退出播放' }).tap()
 
     await open(page, '群山.png')
@@ -1386,9 +1602,12 @@ test('old/new 触屏媒体手势链保持视频点按、图片缩放与取消语
 
     return {
       hiddenAfterFirstTap,
+      controlsAfterFirstTap,
       playingAfterFirstTap,
       visibleAfterSecondTap,
+      controlsAfterSecondTap,
       playingAfterSecondTap,
+      pointerTypes,
       beforeZoom,
       afterZoom,
       afterCancel,
