@@ -234,6 +234,68 @@ test('old/new 点击播放遇到 Promise rejection 时显示旧版错误反馈',
   }
 })
 
+test('old/new 音频 play 事件只切播放状态，保留拒绝提示和 waiting spinner', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await audio.evaluate((element: HTMLAudioElement) => element.pause())
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true)
+    await audio.evaluate((element: HTMLAudioElement) => {
+      Object.defineProperty(element, 'play', {
+        configurable: true,
+        value: () => Promise.reject(new DOMException('Playback blocked', 'NotAllowedError')),
+      })
+    })
+    await page.getByRole('button', { name: '播放', exact: true }).click()
+    await expect(page.locator('.audio-player-error')).toHaveText('浏览器无法开始播放，请重试')
+    await audio.evaluate((element: HTMLAudioElement) => element.dispatchEvent(new Event('waiting')))
+    await audio.evaluate((element: HTMLAudioElement) => {
+      Object.defineProperty(element, 'play', {
+        configurable: true,
+        value: () => new Promise<void>(resolve => {
+          queueMicrotask(() => {
+            element.dispatchEvent(new Event('play'))
+            resolve()
+          })
+        }),
+      })
+    })
+    await page.getByRole('button', { name: '播放', exact: true }).click()
+    await expect(page.locator('.audio-chapter-current > span')).toHaveText('正在播放')
+    const error = page.locator('.audio-player-error')
+    const errorCount = await error.count()
+    return {
+      errorCount,
+      errorText: errorCount ? await error.innerText() : null,
+      playButtonName: await page.locator('.audio-play').getAttribute('aria-label'),
+      waitingSpinnerCount: await page.locator('.audio-control-spinner').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.errorCount).toBe(1)
+    expect(oldResult.errorText).toBe('浏览器无法开始播放，请重试')
+    expect(oldResult.playButtonName).toBe('暂停')
+    expect(oldResult.waitingSpinnerCount).toBe(1)
+    expect(newResult, 'Rust play 事件状态清理与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 自动播放与章节跳转恢复播放静默处理 rejection', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

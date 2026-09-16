@@ -227,11 +227,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
             save_progress(true);
         }
     };
-    let on_play = move |_| {
-        playing.set(true);
-        waiting.set(false);
-        error.set(String::new());
-    };
+    let on_play = move |_| playing.set(true);
     let on_waiting = move |_| waiting.set(true);
     let on_can_play = move |_| {
         loading.set(false);
