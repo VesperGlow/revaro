@@ -528,7 +528,7 @@ pub struct BookProgress {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareStatus {
     /// Whether a share link exists.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub active: bool,
     /// The public URL, present only while active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -812,6 +812,19 @@ mod tests {
         assert_eq!(file.content_hash, "");
         assert_eq!(file.hash_algorithm, "");
         assert!(!file.has_cover);
+    }
+
+    #[test]
+    fn share_responses_treat_nullable_fields_as_an_inactive_share() {
+        let share = serde_json::from_value::<ShareStatus>(serde_json::json!({
+            "active": null,
+            "url": null,
+            "created_at": null
+        }))
+        .unwrap();
+        assert!(!share.active);
+        assert!(share.url.is_none());
+        assert!(share.created_at.is_none());
     }
 
     #[test]

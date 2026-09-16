@@ -23,7 +23,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function mockShare(page: Page, options: { emptyResponse?: boolean } = {}) {
+async function mockShare(page: Page, options: { emptyResponse?: boolean; nullableResponse?: boolean } = {}) {
   const readGate = deferred()
   const createGate = deferred()
   let firstRead = true
@@ -52,11 +52,19 @@ async function mockShare(page: Page, options: { emptyResponse?: boolean } = {}) 
         firstRead = false
         await readGate.promise
       }
-      return json(options.emptyResponse ? {} : { active: false })
+      return json(options.emptyResponse
+        ? {}
+        : options.nullableResponse
+          ? { active: null, url: null, created_at: null }
+          : { active: false })
     }
     if (path === `/api/files/${FILE_ID}/share` && request.method() === 'POST') {
       await createGate.promise
-      return json(options.emptyResponse ? {} : { active: true, url: 'http://127.0.0.1:18084/s/share-dialog-token', created_at: STAMP })
+      return json(options.emptyResponse
+        ? {}
+        : options.nullableResponse
+          ? { active: null, url: null, created_at: null }
+          : { active: true, url: 'http://127.0.0.1:18084/s/share-dialog-token', created_at: STAMP })
     }
     return json({ items: [] })
   })
@@ -186,6 +194,43 @@ test('old/new 分享成功响应缺少 active 字段时仍保留未分享状态'
     const oldState = await snapshot(oldPage)
     expect(oldState).toEqual({ error: 0, input: 0, create: 1 })
     expect(await snapshot(newPage), 'Rust 分享成功响应缺 active 字段时不应显示 serde 错误').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 分享响应显式 null 字段时仍保留未分享状态', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([
+      mockShare(oldPage, { nullableResponse: true }),
+      mockShare(newPage, { nullableResponse: true }),
+    ])
+    await Promise.all([openShare(oldPage, oldUrl), openShare(newPage, newUrl)])
+    oldMock.readGate.resolve()
+    newMock.readGate.resolve()
+    const snapshot = async (page: Page) => ({
+      error: await page.locator('.share-modal .form-error').count(),
+      input: await page.locator('.share-modal input[aria-label="分享链接"]').count(),
+      create: await page.locator('.share-modal').getByRole('button', { name: '创建公开链接' }).count(),
+    })
+    const oldInitial = await snapshot(oldPage)
+    expect(oldInitial).toEqual({ error: 0, input: 0, create: 1 })
+    expect(await snapshot(newPage), 'Rust 分享读取响应显式 null 时不应显示 serde 错误').toEqual(oldInitial)
+
+    await Promise.all([
+      oldPage.locator('.share-modal').getByRole('button', { name: '创建公开链接' }).click(),
+      newPage.locator('.share-modal').getByRole('button', { name: '创建公开链接' }).click(),
+    ])
+    oldMock.createGate.resolve()
+    newMock.createGate.resolve()
+    expect(await snapshot(newPage), 'Rust 分享创建响应显式 null 时不应显示 serde 错误').toEqual(oldInitial)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
