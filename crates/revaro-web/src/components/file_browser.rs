@@ -96,12 +96,18 @@ struct FolderLoadRequest {
 }
 
 struct TrashLoadRequest {
-    completion: Option<oneshot::Sender<()>>,
+    completion: Option<oneshot::Sender<bool>>,
 }
 
 fn finish_folder_load(completion: &mut Option<oneshot::Sender<()>>) {
     if let Some(sender) = completion.take() {
         let _ = sender.send(());
+    }
+}
+
+fn finish_trash_load(completion: &mut Option<oneshot::Sender<bool>>, success: bool) {
+    if let Some(sender) = completion.take() {
+        let _ = sender.send(success);
     }
 }
 
@@ -433,6 +439,7 @@ pub fn FileBrowser(
             let logout = on_logout.clone();
 
             leptos::task::spawn_local(async move {
+                let mut success = false;
                 match api::fetch_trash().await {
                     Ok(trash) if request_sequence.get_untracked() == sequence => {
                         current.set(None);
@@ -446,6 +453,7 @@ pub fn FileBrowser(
                         section.set(LibraryKind::File);
                         library_folder_id.set(None);
                         loading.set(false);
+                        success = true;
                     }
                     Err(request_error)
                         if request_sequence.get_untracked() == sequence
@@ -460,7 +468,7 @@ pub fn FileBrowser(
                     }
                     Ok(_) | Err(_) => {}
                 }
-                finish_folder_load(&mut completion);
+                finish_trash_load(&mut completion, success);
             });
         })
     };
@@ -1029,12 +1037,19 @@ pub fn FileBrowser(
                         }
                     }
                 }
-                selected_ids.set(HashSet::new());
                 let (sender, receiver) = oneshot::channel();
                 load_trash_request.run(TrashLoadRequest {
                     completion: Some(sender),
                 });
-                let _ = receiver.await;
+                if receiver.await.unwrap_or(false) {
+                    // The reference keeps the selection toolbar mounted
+                    // while `openTrash()` refreshes the list; clear it only
+                    // after the refresh has completed successfully (the
+                    // loader itself also clears it on a successful response).
+                    selected_ids.set(HashSet::new());
+                }
+                // The reference reports a successful mutation after waiting
+                // for `openTrash()`, even when that refresh itself fails.
                 notify.run(Feedback::success("所选项目已恢复"));
             });
         })
@@ -1291,12 +1306,15 @@ pub fn FileBrowser(
                             selected_ids.set(HashSet::new());
                             task_center.refresh_now();
                         } else if in_trash {
-                            selected_ids.set(HashSet::new());
                             let (sender, receiver) = oneshot::channel();
                             load_trash_request.run(TrashLoadRequest {
                                 completion: Some(sender),
                             });
-                            let _ = receiver.await;
+                            if receiver.await.unwrap_or(false) {
+                                // Keep the selection toolbar until the
+                                // reference-style trash refresh completes.
+                                selected_ids.set(HashSet::new());
+                            }
                         } else {
                             selected_ids.set(HashSet::new());
                             let (sender, receiver) = oneshot::channel();

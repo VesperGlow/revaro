@@ -398,9 +398,10 @@ for (const action of ['restore', 'purge', 'empty'] as const) {
       await expect(page.getByRole('dialog')).toHaveCount(0)
       await page.waitForTimeout(180)
       const before = await sampleMutationState(page, trashFile.name)
+      const selectionToolbarDuringRefresh = await page.getByRole('toolbar', { name: '所选项目操作' }).count()
       const success = action === 'restore' ? '所选项目已恢复' : action === 'purge' ? '已永久删除所选项目' : '回收站已清空'
       await expect(page.locator('.toast')).toHaveText(success)
-      return { before, after: await sampleMutationState(page, trashFile.name) }
+      return { before, selectionToolbarDuringRefresh, after: await sampleMutationState(page, trashFile.name) }
     }
 
     try {
@@ -408,6 +409,7 @@ for (const action of ['restore', 'purge', 'empty'] as const) {
       const success = action === 'restore' ? '所选项目已恢复' : action === 'purge' ? '已永久删除所选项目' : '回收站已清空'
       expect(oldState.before.toast).toBeNull()
       expect(newState, `Rust ${action} 成功反馈的刷新时序与 reference 不一致`).toEqual(oldState)
+      expect(oldState.selectionToolbarDuringRefresh).toBe(action === 'empty' ? 0 : 1)
       expect(oldState.after).toEqual({ toast: success, visible: 0 })
     } finally {
       await Promise.all([oldContext.close(), newContext.close()])
