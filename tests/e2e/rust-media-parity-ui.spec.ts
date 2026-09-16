@@ -1797,6 +1797,99 @@ test('old/new 触屏图片最大缩放后的拖动在四边钳制到舞台边界
   }
 })
 
+test('old/new 图片触屏横竖屏重排保留缩放边界且不滚动页面', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const newContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '群山.png')
+    const image = page.locator('.preview-image')
+    await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(1800)
+    const zoomIn = page.getByRole('button', { name: '放大', exact: true })
+    let zoomSteps = 0
+    while (await zoomIn.isEnabled() && zoomSteps < 24) {
+      await zoomIn.tap()
+      zoomSteps += 1
+    }
+    await expect(zoomIn).toBeDisabled()
+
+    const session = await page.context().newCDPSession(page)
+    async function measure() {
+      return page.evaluate(() => {
+        const stage = document.querySelector('.preview-stage')!.getBoundingClientRect()
+        const image = document.querySelector('.preview-image')!.getBoundingClientRect()
+        const round = (value: number) => Math.round(value * 100) / 100
+        return {
+          stage: { width: stage.width, height: stage.height },
+          edges: {
+            left: round(image.left - stage.left),
+            top: round(image.top - stage.top),
+            right: round(image.right - stage.right),
+            bottom: round(image.bottom - stage.bottom),
+          },
+          zoomPercent: document.querySelector('.preview-actual-size')?.textContent?.trim() ?? '',
+          bodyOverflow: getComputedStyle(document.body).overflow,
+          scrollY: window.scrollY,
+        }
+      })
+    }
+    async function dragVertically(toBottom: boolean) {
+      const rect = await page.locator('.preview-stage').boundingBox()
+      expect(rect).not.toBeNull()
+      const x = Math.round(rect!.x + rect!.width / 2)
+      const fromY = Math.round(rect!.y + rect!.height / 2)
+      const toY = Math.round(toBottom ? rect!.y + rect!.height - 4 : rect!.y + 4)
+      await session.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x, y: fromY, id: 1 }],
+      })
+      await session.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [{ x, y: toY, id: 1 }],
+      })
+      await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    }
+
+    const portraitBefore = await measure()
+    await dragVertically(true)
+    const portraitAfterGesture = await measure()
+    await page.setViewportSize({ width: 844, height: 390 })
+    await expect.poll(() => page.locator('.preview-stage').evaluate(element => element.clientWidth)).toBeGreaterThan(800)
+    await expect.poll(() => page.locator('.preview-stage').evaluate(element => element.clientHeight)).toBeLessThan(400)
+    const landscapeAfterResize = await measure()
+    await dragVertically(false)
+    const landscapeAfterGesture = await measure()
+
+    return { zoomSteps, portraitBefore, portraitAfterGesture, landscapeAfterResize, landscapeAfterGesture }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.zoomSteps).toBeGreaterThan(0)
+    for (const state of [oldResult.portraitBefore, oldResult.portraitAfterGesture, oldResult.landscapeAfterResize, oldResult.landscapeAfterGesture]) {
+      expect(state.scrollY).toBe(0)
+      expect(state.bodyOverflow).toBe('hidden')
+      expect(state.edges.left).toBeLessThanOrEqual(0)
+      expect(state.edges.top).toBeLessThanOrEqual(0)
+      expect(state.edges.right).toBeGreaterThanOrEqual(0)
+      expect(state.edges.bottom).toBeGreaterThanOrEqual(0)
+    }
+    expect(oldResult.landscapeAfterResize.stage.width).toBeGreaterThan(800)
+    expect(oldResult.landscapeAfterResize.stage.height).toBeLessThan(400)
+    expect(newResult, 'Rust 图片触屏重排/滚动行为与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 不支持媒体保留原文件错误分流且不请求转码入口', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
