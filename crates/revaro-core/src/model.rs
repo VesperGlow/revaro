@@ -317,6 +317,7 @@ pub struct BookProgress {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareStatus {
     /// Whether a share link exists.
+    #[serde(default)]
     pub active: bool,
     /// The public URL, present only while active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
