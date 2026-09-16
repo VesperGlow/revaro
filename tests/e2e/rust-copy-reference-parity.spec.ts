@@ -42,8 +42,10 @@ const target = {
 
 const picture = '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="1200" height="800" fill="#789"/><circle cx="840" cy="240" r="120" fill="#eddfb8"/></svg>'
 
-async function mockCopy(page: Page, outcome: 'success' | 'conflict' | 'failure' = 'success') {
+async function mockCopy(page: Page, outcome: 'success' | 'conflict' | 'failure' = 'success', delayRefresh = false) {
   let copied: Record<string, unknown> | null = null
+  let releaseRefresh!: () => void
+  const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve })
   const copyBodies: Array<{ parent_id?: string }> = []
   await page.route('**/api/**', async route => {
     const request = route.request()
@@ -60,6 +62,7 @@ async function mockCopy(page: Page, outcome: 'success' | 'conflict' | 'failure' 
     if (pathname === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: copied ? 2 : 1 })
     if (pathname === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
     if (pathname === `/api/files/${ROOT}/children`) {
+      if (copied && delayRefresh) await refreshGate
       return json({
         items: copied ? [image, target, copied] : [image, target],
         total_bytes: image.size + (copied ? image.size : 0),
@@ -91,11 +94,11 @@ async function mockCopy(page: Page, outcome: 'success' | 'conflict' | 'failure' 
     }
     return json({ items: [] })
   })
-  return { copyBodies, copied: () => copied }
+  return { copyBodies, copied: () => copied, releaseRefresh: () => releaseRefresh() }
 }
 
-async function openCopyDialog(page: Page, baseUrl: string, outcome: 'success' | 'conflict' | 'failure') {
-  const mock = await mockCopy(page, outcome)
+async function openCopyDialog(page: Page, baseUrl: string, outcome: 'success' | 'conflict' | 'failure', delayRefresh = false, submit = true) {
+  const mock = await mockCopy(page, outcome, delayRefresh)
   await page.goto(`${baseUrl}/?copy-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
   await page.locator('.file-card').filter({ hasText: image.name }).click()
@@ -114,7 +117,7 @@ async function openCopyDialog(page: Page, baseUrl: string, outcome: 'success' | 
   // close that nested disclosure through its Escape path before submitting.
   await page.keyboard.press('Escape')
   await expect(picker).toHaveCount(0)
-  await page.locator('.move-copy-dialog').getByRole('button', { name: '复制', exact: true }).click()
+  if (submit) await page.locator('.move-copy-dialog').getByRole('button', { name: '复制', exact: true }).click()
   return mock
 }
 
@@ -154,6 +157,58 @@ test('old/new 媒体更多菜单的复制入口完成目标目录复制并刷新
       toast: '已复制 1 项',
     })
     expect(newResult, 'Rust 媒体复制入口、目标选择或完成反馈与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('媒体复制成功反馈等待 reference 的目录刷新完成', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    const [oldMock, newMock] = await Promise.all([
+      openCopyDialog(oldPage, oldUrl, 'success', true, false),
+      openCopyDialog(newPage, newUrl, 'success', true, false),
+    ])
+    await Promise.all([
+      oldPage.locator('.move-copy-dialog').getByRole('button', { name: '复制', exact: true }).click(),
+      newPage.locator('.move-copy-dialog').getByRole('button', { name: '复制', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.move-copy-dialog')).toHaveCount(0),
+      expect(newPage.locator('.move-copy-dialog')).toHaveCount(0),
+    ])
+    await Promise.all([oldPage.waitForTimeout(120), newPage.waitForTimeout(120)])
+    expect(await oldPage.locator('.toast').count()).toBe(0)
+    expect(await newPage.locator('.toast').count()).toBe(0)
+    expect(await oldPage.locator('.file-card').filter({ hasText: '复制源 (副本).png' }).count()).toBe(0)
+    expect(await newPage.locator('.file-card').filter({ hasText: '复制源 (副本).png' }).count()).toBe(0)
+
+    oldMock.releaseRefresh()
+    newMock.releaseRefresh()
+    await Promise.all([
+      expect(oldPage.locator('.toast')).toHaveText('已复制 1 项'),
+      expect(newPage.locator('.toast')).toHaveText('已复制 1 项'),
+      expect(oldPage.locator('.file-card').filter({ hasText: '复制源 (副本).png' })).toBeVisible(),
+      expect(newPage.locator('.file-card').filter({ hasText: '复制源 (副本).png' })).toBeVisible(),
+    ])
+    const oldResult = {
+      copyBodies: oldMock.copyBodies,
+      copiedParent: oldMock.copied()?.parent_id,
+      toast: await oldPage.locator('.toast').textContent(),
+    }
+    const newResult = {
+      copyBodies: newMock.copyBodies,
+      copiedParent: newMock.copied()?.parent_id,
+      toast: await newPage.locator('.toast').textContent(),
+    }
+    expect(oldResult).toEqual({ copyBodies: [{ parent_id: TARGET_ID }], copiedParent: TARGET_ID, toast: '已复制 1 项' })
+    expect(newResult, 'Rust 复制成功反馈不应早于 reference 的目录刷新').toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
