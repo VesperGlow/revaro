@@ -27,6 +27,12 @@ async function mockShare(page: Page) {
       return route.fulfill({ contentType: 'text/event-stream', body: '' })
     }
     if (path === '/api/tasks') return json({ items: [] })
+    if (path === '/api/auth/totp') return json({ enabled: false, recovery_codes: 0 })
+    if (path === '/api/auth/totp/setup') return json({
+      secret: 'JBSWY3DPEHPK3PXP',
+      uri: 'otpauth://totp/Revaro:admin?secret=JBSWY3DPEHPK3PXP',
+      qr_data_url: 'data:image/png;base64,aGVsbG8=',
+    })
     if (path === '/api/library/all') return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
     if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
     if (path === `/api/files/${ROOT}`) {
@@ -51,6 +57,14 @@ async function openShare(page: Page, baseUrl: string) {
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
   await expect(page.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/modal-history-token/)
+}
+
+async function openAccount(page: Page, baseUrl: string) {
+  await page.goto(`${baseUrl}/?account-history-reference=${Date.now()}`)
+  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await page.locator('button[title="打开账户设置"]').click()
+  await expect(page.locator('.account-modal')).toBeVisible()
+  await expect(page.locator('.account-modal').getByRole('button', { name: '设置', exact: true })).toBeEnabled()
 }
 
 async function layerSnapshot(page: Page) {
@@ -91,5 +105,60 @@ test('分享确认弹窗叠加时浏览器后退保留 reference 的弹层清理
   } finally {
     await oldContext.close()
     await newContext.close()
+  }
+})
+
+test('TOTP 设置子弹窗打开时浏览器后退关闭账户层并在重开后重置', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockShare(page)
+    await openAccount(page, baseUrl)
+    const account = page.locator('.account-modal')
+    await account.getByRole('button', { name: '设置', exact: true }).click()
+    const totp = page.locator('.totp-dialog')
+    await expect(totp.locator('.two-factor-idle')).toBeVisible()
+    await totp.getByLabel('当前密码', { exact: true }).fill('test-current-password')
+    await totp.getByRole('button', { name: '开始设置', exact: true }).click()
+    await expect(totp.locator('.totp-enroll')).toBeVisible()
+
+    await page.goBack()
+    await expect(account).toHaveCount(0)
+    await expect(totp).toHaveCount(0)
+    const afterBack = new URL(page.url()).pathname
+
+    await page.locator('button[title="打开账户设置"]').click()
+    await expect(account).toBeVisible()
+    await account.getByRole('button', { name: '设置', exact: true }).click()
+    await expect(page.locator('.totp-dialog .two-factor-idle')).toBeVisible()
+    await expect(page.locator('.totp-dialog .totp-enroll')).toHaveCount(0)
+
+    return {
+      afterBack,
+      accountReopened: await account.isVisible(),
+      setupReset: await page.locator('.totp-dialog .two-factor-idle').isVisible(),
+      enrollmentCleared: await page.locator('.totp-dialog .totp-enroll').count() === 0,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      afterBack: '/',
+      accountReopened: true,
+      setupReset: true,
+      enrollmentCleared: true,
+    })
+    expect(newResult, 'Rust TOTP 子弹窗后的账户历史状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
