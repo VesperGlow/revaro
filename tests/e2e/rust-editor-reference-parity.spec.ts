@@ -214,6 +214,91 @@ test('old/new 新建空文档保留未保存标记但关闭不触发放弃确认
   }
 })
 
+test('old/new 空目录空状态与窄屏创建菜单进入同一新文档 editor，关闭后不创建文件', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const root = '00000000-0000-0000-0000-000000000000'
+  const suffix = Date.now().toString(36)
+  let oldFolderId = ''
+  let newFolderId = ''
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string, folderName: string, rememberFolderId: (id: string) => void) {
+    await loginAt(page, baseUrl)
+    const created = await page.evaluate(async ({ name, parentId }) => {
+      const response = await fetch('/api/directories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: parentId, name }),
+      })
+      return { status: response.status, body: await response.json() as { id?: string } }
+    }, { name: folderName, parentId: root })
+    expect(created.status, '创建用于验证空状态入口的隔离目录').toBe(201)
+    if (!created.body.id) throw new Error('空目录入口测试夹具缺少 id')
+    rememberFolderId(created.body.id)
+
+    await page.reload()
+    await page.getByTitle('列表视图').click()
+    await page.locator('.file-row').filter({ hasText: folderName }).click()
+    await expect(page.locator('.folder-heading h1')).toHaveText(folderName)
+    await expect(page.locator('.state.empty')).toBeVisible()
+
+    const emptyState = page.locator('.empty-actions')
+    await emptyState.getByRole('button', { name: '新建文档', exact: true }).click()
+    const editor = page.locator('.document-editor')
+    await expect(editor).toBeVisible()
+    await expect(editor.getByRole('textbox', { name: '文档文件名' })).toHaveValue('未命名文档.md')
+    await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await expect(page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' })).toHaveCount(0)
+    await expect(page.locator('.state.empty')).toBeVisible()
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(page.locator('.desktop-create-actions')).toBeHidden()
+    const createMenu = page.locator('.create-menu')
+    await createMenu.locator(':scope > summary').click()
+    await expect.poll(() => createMenu.evaluate(element => (element as HTMLDetailsElement).open)).toBe(true)
+    await createMenu.locator('.create-menu-popover').getByRole('button', { name: /新建文档/ }).click()
+    await expect.poll(() => createMenu.evaluate(element => (element as HTMLDetailsElement).open)).toBe(false)
+    await expect(editor).toBeVisible()
+    await expect(editor.getByRole('textbox', { name: '文档文件名' })).toHaveValue('未命名文档.md')
+    await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await expect(page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' })).toHaveCount(0)
+
+    const children = await page.evaluate(async folderId => {
+      const response = await fetch(`/api/files/${folderId}/children`)
+      return response.ok ? (await response.json() as { items?: unknown[] }).items?.length ?? -1 : -1
+    }, created.body.id)
+    return { folderId: created.body.id, children }
+  }
+
+  async function cleanup(page: Parameters<typeof login>[0], folderId: string) {
+    if (!folderId) return
+    await page.evaluate(async id => {
+      await fetch(`/api/files/${id}`, { method: 'DELETE' })
+      await fetch(`/api/trash/${id}`, { method: 'DELETE' })
+    }, folderId)
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl, `editor-entry-old-${suffix}`, id => { oldFolderId = id }),
+      exercise(newPage, newUrl, `editor-entry-new-${suffix}`, id => { newFolderId = id }),
+    ])
+    oldFolderId = oldResult.folderId
+    newFolderId = newResult.folderId
+    expect(oldResult.children, 'reference 的两个取消入口都不应创建文档').toBe(0)
+    expect(newResult.children, 'Rust 空状态/窄屏菜单取消后不应留下文档').toBe(oldResult.children)
+  } finally {
+    await Promise.all([cleanup(oldPage, oldFolderId), cleanup(newPage, newFolderId)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 新文档创建失败保留编辑器、错误和可重试保存', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

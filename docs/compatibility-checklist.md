@@ -357,7 +357,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[P]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | old/new 已实测打开后输入框自动聚焦；空白输入 disabled 且不发请求、有效名称按 Enter 提交、遮罩/Escape 取消、409 关闭弹窗 + error toast，以及延迟 children 刷新完成后才显示“文件夹已创建”（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；API 层非法名称矩阵（空名、点路径、空白、分隔符、控制字符、超长名）已由 old/new 逐项对照（`897db00`），弹窗层非法名/loading 和完整成功矩阵仍待收口 |
-| `[ ]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | old/new 已验证创建菜单实际动作、默认名、进入 editor、菜单立即关闭和保存重开；取消、失败仍待收口 |
+| `[ ]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | old/new 已验证桌面直接入口、创建菜单、空目录空状态入口和 390×844 窄屏创建菜单均进入同一 editor，默认名一致；空白 editor 关闭不弹放弃确认、菜单动作后立即收起且取消不创建文件（`rust-editor-reference-parity.spec.ts`，old/new 1/1）；409 创建失败后 editor/错误/可重试保存一致；其他失败与完整入口矩阵仍待收口 |
 | `[ ]` | 重命名 | 单选条件、输入初值/扩展名规则、冲突、空白、Enter/Esc、PATCH 结果和列表更新一致。 | old/new 已实际对照初始名称、输入/按钮状态、文案、焦点及弹窗时选择工具栏卸载；尾随空格原样进入 PATCH；空名允许提交、有效输入按 Enter 提交、遮罩关闭且 Escape 保留弹窗；409 冲突保留输入/弹窗并恢复可重试状态；延迟 children 刷新完成后才显示成功反馈；800ms PATCH 进行中标题栏关闭仍按 reference 卸载弹窗（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；完整 PATCH 结果矩阵仍待收口 |
 | `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | old/new 触发器、面板定位/DOM、140ms 进入/退出过渡、路径图标几何、目录源排除自身、目标选中及 `parent_id` 提交、实际移动和清理、PATCH pending 时点击遮罩关闭、延迟 children 刷新完成后才显示成功反馈，以及首次 children 500 后错误态/“重新加载”恢复已对照；排除子目录/冲突和完整结果矩阵仍待验 |
 | `[P]` | 目录选择器浮层定位与过渡 | 打开后 nextTick 定位；popover 在窗口边缘的 fixed/top-bottom/max-height 选择一致；进入/退出 opacity、transform、140ms 时序和关闭后的卸载一致。 | old/new 实际比较进入首帧、50ms 定位、独立退出首帧及 140ms 后卸载；测试监听实际 DOM 过渡 class 并容忍 `<1px` 浏览器亚像素差异；`rust-directory-picker-reference-parity.spec.ts` old/new 3/3，修复提交 `3198ff8`，验证提交 `82cd1b3` |
@@ -373,7 +373,7 @@
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
 | `[ ]` | 编辑器入口 | md/markdown/txt/yaml/yml/json/toml/ini/conf/log/csv 等旧版可编辑扩展名，点击文件打开 editor；回收站内容只读。 | old/new 已逐个验证 11 个扩展名从列表文件行进入 editor，并验证内容、Markdown tabs、保存禁用；回收站 YAML/Markdown 只读分流和 trash TXT 键盘进入 reader 也已验证；网格/完整回收站矩阵仍待验 |
-| `[ ]` | 新文档编辑 | 默认文件名、初始内容、editor modal/页面尺寸、关闭、保存、创建失败和成功返回一致。 | old/new 已验证默认名、空文档未保存标记但关闭不触发放弃确认、编辑、保存、重开、尾随空格扩展名错误、错误后保存按钮保留及创建 409 后 editor/错误/重试状态；创建取消、其他冲突/失败全矩阵仍待收口 |
+| `[ ]` | 新文档编辑 | 默认文件名、初始内容、editor modal/页面尺寸、关闭、保存、创建失败和成功返回一致。 | old/new 已验证默认名、空文档未保存标记但关闭不触发放弃确认、编辑、保存、重开、尾随空格扩展名错误、错误后保存按钮保留及创建 409 后 editor/错误/重试状态；桌面直接入口、空目录空状态与窄屏菜单取消均不创建文件；其他冲突/失败和 editor 完整状态矩阵仍待收口 |
 | `[ ]` | 读取 | `/content`、编码/大文件错误、loading/error、只读提示、滚动和文本保持一致。 | Rust 已有 `/content` caller；old/new 已验证真实 TXT 读取、YAML/Markdown 只读内容和提示，并以延迟 `/content` 实际比较 loading；编码/大文件/error/滚动全矩阵仍待验 |
 | `[ ]` | 编辑模式 | textarea、编辑/分栏/预览 tabs，Markdown 的 GFM 元素与主动 HTML 清理结果、光标/滚动、预览错误和非 Markdown 隐藏 tabs 一致。reference 使用 `marked` + DOMPurify；Rust 使用 `pulldown-cmark` + `ammonia` 对齐可见结果。 | old/new 已逐个验证 11 个扩展名的 textarea 内容、编辑/分栏/预览 tabs、Unicode UTF-8 字节数，以及 GFM 标题/列表/任务项/表格/删除线/链接/图片/下划线、安全 HTML 清理和 hard break/blockquote/嵌套列表/task list/代码围栏/autolink 边界 DOM；Rust `<br>` 后可复制换行已恢复（`1b93087`）；光标/滚动、复杂 Markdown 错误仍待验 |
 | `[ ]` | 保存 | PUT content、etag/冲突、busy/disabled、成功 toast、列表 metadata、关闭后刷新和失败重试一致。 | old/new 已以 Ctrl+S 实际触发保存、409 ETag 冲突后保留 editor/错误/可重试按钮，并验证成功 toast 必须等待目录刷新、持久化重开；busy/普通请求失败和 metadata 全矩阵仍待验 |
