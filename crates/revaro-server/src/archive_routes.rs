@@ -13,12 +13,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
-use axum::extract::{Path as PathParam, State};
+use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::routing::post;
 use axum::{Json, Router};
 use revaro_core::ApiError;
 use revaro_core::api::archive::{Job as ArchiveJob, JobStatus};
-use revaro_core::api::tasks::TaskInputRequest;
 use revaro_core::classify::{self, ARCHIVE_SUFFIXES};
 use revaro_core::ids::ROOT_ID;
 use revaro_core::keys;
@@ -43,6 +42,12 @@ use crate::state::AppState;
 
 const CONTENT_HASH_ALGORITHM: &str = "sha256";
 const ARCHIVE_TASK_TYPE: &str = "archive_extract";
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArchiveTaskInput {
+    password: Option<String>,
+}
 
 /// Routes mounted below the authenticated `/api` subtree.
 pub fn routes() -> Router<Arc<AppState>> {
@@ -70,7 +75,7 @@ async fn task_input(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    JsonBody(request): JsonBody<TaskInputRequest>,
+    request: Request,
 ) -> Result<(http::StatusCode, Json<ArchiveJob>), ApiError> {
     let task = find_task(&state, &id)
         .await?
@@ -79,7 +84,10 @@ async fn task_input(
     if task.source_type != "archive" {
         return Err(ApiError::bad_request("task does not accept input"));
     }
-    if request.password.is_empty() || request.password.len() > MAX_ARCHIVE_PASSWORD_BYTES {
+    let JsonBody(input) =
+        JsonBody::<Option<ArchiveTaskInput>>::from_request(request, &state).await?;
+    let password = input.and_then(|input| input.password).unwrap_or_default();
+    if password.is_empty() || password.len() > MAX_ARCHIVE_PASSWORD_BYTES {
         return Err(ApiError::bad_request("archive password is required"));
     }
 
@@ -108,7 +116,7 @@ async fn task_input(
         Arc::clone(&state),
         Arc::clone(&handle),
         file,
-        Some(request.password),
+        Some(password),
     );
     Ok((http::StatusCode::ACCEPTED, Json(handle.snapshot())))
 }

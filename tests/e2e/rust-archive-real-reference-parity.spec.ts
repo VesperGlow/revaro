@@ -392,6 +392,42 @@ test('old/new 真实加密 ZIP 的等待密码入口保持 reference 行为', as
     expect(newWaiting && { status: newWaiting.status, phase: newWaiting.phase, progress: newWaiting.progress, error: newWaiting.error, name: newWaiting.name })
       .toEqual(oldWaiting && { status: oldWaiting.status, phase: oldWaiting.phase, progress: oldWaiting.progress, error: oldWaiting.error, name: oldWaiting.name })
 
+    const probeTaskInput = (page: Page, id: string, body: string) => page.evaluate(async ({ id, body }) => {
+      const response = await fetch(`/api/tasks/${id}/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      return { status: response.status, body: await response.json() }
+    }, { id, body })
+    const [oldMissing, newMissing] = await Promise.all([
+      probeTaskInput(oldPage, '0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f', '{"password":'),
+      probeTaskInput(newPage, '0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f', '{"password":'),
+    ])
+    expect(newMissing).toEqual(oldMissing)
+    expect(oldMissing).toEqual({
+      status: 409,
+      body: { error: { status: 409, message: 'task is not waiting for input' } },
+    })
+    const [oldEmpty, newEmpty] = await Promise.all([
+      probeTaskInput(oldPage, oldWaiting.id, '{}'),
+      probeTaskInput(newPage, newWaiting.id, '{}'),
+    ])
+    expect(newEmpty).toEqual(oldEmpty)
+    expect(oldEmpty).toEqual({
+      status: 400,
+      body: { error: { status: 400, message: 'archive password is required' } },
+    })
+    const [oldUnknown, newUnknown] = await Promise.all([
+      probeTaskInput(oldPage, oldWaiting.id, '{"password":"x","extra":true}'),
+      probeTaskInput(newPage, newWaiting.id, '{"password":"x","extra":true}'),
+    ])
+    expect(newUnknown).toEqual(oldUnknown)
+    expect(oldUnknown).toEqual({
+      status: 400,
+      body: { error: { status: 400, message: 'invalid JSON request' } },
+    })
+
     const [oldDialog, newDialog] = await Promise.all([
       openPasswordDialog(oldPage, name),
       openPasswordDialog(newPage, name),
