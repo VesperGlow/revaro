@@ -5,6 +5,8 @@
 //! is rejected by the server for exactly the same reason, and so the message the
 //! user sees is produced in one place.
 
+use std::collections::HashMap;
+
 use crate::error::ApiError;
 use crate::limits;
 
@@ -39,26 +41,116 @@ fn is_token_char(byte: u8) -> bool {
 /// MIME types and to decide whether a stored type was safe to deliver.
 #[must_use]
 pub fn parse_media_type(value: &str) -> Option<(String, String)> {
-    let (head, params) = match value.split_once(';') {
-        Some((head, params)) => (head, params),
-        None => (value, ""),
-    };
-    let head = head.trim();
-    let (media_type, subtype) = head.split_once('/')?;
-    if media_type.is_empty() || subtype.is_empty() {
+    // Keep this parser deliberately close to Go's mime.ParseMediaType. The
+    // standard Rust `mime` parser is stricter in a few places where the old
+    // server accepts valid (or historically tolerated) input: whitespace
+    // around `;` and `=`, empty quoted values, and trailing semicolons.
+    let (base, parameters) = value.split_once(';').unwrap_or((value, ""));
+    let media_type = base.trim();
+    let (major, minor) = media_type.split_once('/')?;
+    if !is_token(major) || !is_token(minor) {
         return None;
     }
-    if !media_type.bytes().all(is_token_char) || !subtype.bytes().all(is_token_char) {
-        return None;
+
+    let mut remaining = value.get(base.len()..)?;
+    let mut seen = HashMap::<String, String>::new();
+    loop {
+        remaining = remaining.trim_start_matches(char::is_whitespace);
+        if remaining.is_empty() {
+            break;
+        }
+        let original = remaining;
+        let after_semicolon = remaining.strip_prefix(';')?;
+        let after_semicolon = after_semicolon.trim_start_matches(char::is_whitespace);
+        let (name, after_name) = consume_token(after_semicolon);
+        if name.is_empty() {
+            // Go ignores a final semicolon and any whitespace after it.
+            if original.trim() == ";" {
+                break;
+            }
+            return None;
+        }
+        let after_name = after_name.trim_start_matches(char::is_whitespace);
+        let after_equals = after_name.strip_prefix('=')?;
+        let after_equals = after_equals.trim_start_matches(char::is_whitespace);
+        let (parameter_value, after_value) = consume_media_value(after_equals)?;
+        let key = name.to_ascii_lowercase();
+        if let Some(previous) = seen.insert(key, parameter_value.clone())
+            && previous != parameter_value
+        {
+            return None;
+        }
+        remaining = after_value;
     }
+
     Some((
         format!(
             "{}/{}",
-            media_type.to_ascii_lowercase(),
-            subtype.to_ascii_lowercase()
+            major.to_ascii_lowercase(),
+            minor.to_ascii_lowercase()
         ),
-        params.trim().to_owned(),
+        parameters.trim().to_owned(),
     ))
+}
+
+fn is_token(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(is_token_char)
+}
+
+fn consume_token(value: &str) -> (&str, &str) {
+    let end = value
+        .bytes()
+        .position(|byte| !is_token_char(byte))
+        .unwrap_or(value.len());
+    value.split_at(end)
+}
+
+fn consume_media_value(value: &str) -> Option<(String, &str)> {
+    if let Some(quoted) = value.strip_prefix('"') {
+        let mut output = String::new();
+        let bytes = quoted.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if byte == b'"' {
+                return Some((output, &quoted[index + 1..]));
+            }
+            if byte == b'\r' || byte == b'\n' {
+                return None;
+            }
+            if byte == b'\\' && index + 1 < bytes.len() && is_tspecial(bytes[index + 1]) {
+                output.push(bytes[index + 1] as char);
+                index += 2;
+                continue;
+            }
+            output.push(byte as char);
+            index += 1;
+        }
+        return None;
+    }
+
+    let (token, rest) = consume_token(value);
+    (!token.is_empty()).then(|| (token.to_owned(), rest))
+}
+
+fn is_tspecial(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'(' | b')'
+            | b'<'
+            | b'>'
+            | b'@'
+            | b','
+            | b';'
+            | b':'
+            | b'\\'
+            | b'"'
+            | b'/'
+            | b'['
+            | b']'
+            | b'?'
+            | b'='
+    )
 }
 
 /// Reject a MIME type the product cannot store.
@@ -428,6 +520,32 @@ mod tests {
             parse_media_type("TEXT/Plain; charset=UTF-8"),
             Some(("text/plain".to_owned(), "charset=UTF-8".to_owned()))
         );
+    }
+
+    #[test]
+    fn follows_go_media_parameter_boundaries() {
+        for value in [
+            "text/plain ; charset = utf-8",
+            "text/plain; foo=\"\"",
+            "text/plain; foo=bar; ",
+            "text/plain; foo=\"a\\b\"",
+            "text/plain; foo=one; foo=one",
+        ] {
+            assert!(validate_mime_type(value).is_ok(), "{value}");
+        }
+        for value in [
+            "text/plain; charset",
+            "text/plain; foo=a b",
+            "text/plain; foo=one; foo=two",
+            "text/plain; foo=bar; x",
+            "text/plain; foo=\"unterminated",
+        ] {
+            assert_eq!(
+                validate_mime_type(value).unwrap_err().message,
+                "mime type is invalid",
+                "{value}"
+            );
+        }
     }
 
     #[test]

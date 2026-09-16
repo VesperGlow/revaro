@@ -293,6 +293,74 @@ test('旧版 upload 创建输入校验和错误 envelope 在 Rust 版保持一�
   }
 })
 
+test('旧版 upload 的尺寸和 MIME 边界校验在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const uploadIds: string[][] = [[], []]
+  const fileIds: string[][] = [[], []]
+  const invalidCases: Array<[string, Record<string, unknown>]> = [
+    ['超过最大尺寸', { parent_id: ROOT, name: `upload-size-over-${suffix}`, size: 2 ** 40 + 1, mime_type: 'application/octet-stream' }],
+    ['缺少 MIME 参数值', { parent_id: ROOT, name: `upload-mime-missing-${suffix}`, size: 1, mime_type: 'text/plain; charset' }],
+    ['MIME 参数含空格', { parent_id: ROOT, name: `upload-mime-space-${suffix}`, size: 1, mime_type: 'text/plain; foo=a b' }],
+    ['MIME 参数未闭合引号', { parent_id: ROOT, name: `upload-mime-quote-${suffix}`, size: 1, mime_type: 'text/plain; charset="utf-8' }],
+  ]
+  const validCases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ['零字节', { parent_id: ROOT, name: `upload-size-zero-${suffix}`, size: 0, mime_type: 'application/octet-stream' }, { mode: 'single', part_size: 1, part_count: 0 }],
+    ['单请求上界', { parent_id: ROOT, name: `upload-size-single-${suffix}`, size: 2 ** 24 - 1, mime_type: 'application/octet-stream' }, { mode: 'single', part_size: 2 ** 24 - 1, part_count: 0 }],
+    ['分片下界', { parent_id: ROOT, name: `upload-size-multipart-${suffix}`, size: 2 ** 24, mime_type: 'application/octet-stream' }, { mode: 'multipart', part_size: 2 ** 24, part_count: 1 }],
+    ['逻辑最大值', { parent_id: ROOT, name: `upload-size-max-${suffix}`, size: 2 ** 40, mime_type: 'application/octet-stream' }, { mode: 'multipart', part_size: 110100480, part_count: 9987 }],
+  ]
+
+  try {
+    for (const [label, data] of invalidCases) {
+      const results = await Promise.all(clients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        '/api/uploads',
+        'POST',
+        data,
+      )))
+      await compareTransport(results[0], results[1])
+      expect(results[0].response.status(), `${label} 的 reference 状态异常`).toBe(400)
+      expect(results[1].response.status(), `Rust ${label} 的状态与 reference 不一致`).toBe(400)
+      expect(results[1].json, `Rust ${label} 的错误 envelope 与 reference 不一致`).toEqual(results[0].json)
+    }
+
+    for (const [label, data, expected] of validCases) {
+      const results = await Promise.all(clients.map((client, index) => jsonResponse(
+        client,
+        index === 0 ? oldUrl : newUrl,
+        '/api/uploads',
+        'POST',
+        data,
+      )))
+      await compareTransport(results[0], results[1])
+      for (const result of results) expect(result.response.status(), `${label} 创建失败`).toBe(201)
+      const oldUpload = results[0].json as Record<string, unknown>
+      const newUpload = results[1].json as Record<string, unknown>
+      for (const [key, value] of Object.entries(expected)) {
+        expect(oldUpload[key], `reference ${label}.${key} 不符合边界`).toBe(value)
+        expect(newUpload[key], `Rust ${label}.${key} 不符合边界`).toBe(value)
+      }
+      expect(newUpload.mode, `Rust ${label} mode 与 reference 不一致`).toBe(oldUpload.mode)
+      expect(newUpload.part_size, `Rust ${label} part_size 与 reference 不一致`).toBe(oldUpload.part_size)
+      expect(newUpload.part_count, `Rust ${label} part_count 与 reference 不一致`).toBe(oldUpload.part_count)
+      for (const [index, result] of results.entries()) {
+        uploadIds[index].push(String(objectValue(result.json, 'upload_id')))
+        fileIds[index].push(String(objectValue(result.json, 'file_id')))
+      }
+    }
+  } finally {
+    await Promise.all(clients.map((client, index) => Promise.all([
+      ...uploadIds[index].map(uploadId => client.delete(`/api/uploads/${uploadId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)),
+      ...fileIds[index].map(fileId => client.delete(`/api/files/${fileId}`, { headers: headers(index === 0 ? oldUrl : newUrl) }).catch(() => undefined)),
+    ])))
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
+
 test('旧版文档 API 的创建、读取、保存、下载、分享和回收生命周期保持一致', async () => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
