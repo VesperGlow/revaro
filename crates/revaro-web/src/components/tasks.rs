@@ -730,7 +730,7 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                         <div class="task-list">
                             <Show when=move || active_count.get() != 0 fallback=|| ()>
                                 <section class="task-group active-group">
-                                    <h3>"进行中" <span>{move || active_count.get()}</span></h3>
+                                    <h3>{"进行中 "}<span>{move || active_count.get()}</span></h3>
                                     <For each=move || active.get() key=|task| task.id.clone() let:task>
                                         <TaskRow
                                             task=task
@@ -746,7 +746,7 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                             <Show when=move || completed_count.get() != 0 fallback=|| ()>
                                 <section class="task-group completed-group">
                                     <h3>
-                                        "最近完成" <span>{move || completed_for_rows.get()}</span>
+                                        {"最近完成 "}<span>{move || completed_for_rows.get()}</span>
                                         <button
                                             class="clear-completed"
                                             type="button"
@@ -784,7 +784,7 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                             </Show>
                             <Show when=move || failed_count.get() != 0 fallback=|| ()>
                                 <section class="task-group failed-group">
-                                    <h3>"失败" <span>{move || failed_count.get()}</span></h3>
+                                    <h3>{"失败 "}<span>{move || failed_count.get()}</span></h3>
                                     <For each=move || failed.get() key=|task| task.id.clone() let:task>
                                         <TaskRow
                                             task=task

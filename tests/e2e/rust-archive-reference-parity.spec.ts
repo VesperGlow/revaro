@@ -135,6 +135,34 @@ async function mockArchive(page: Page) {
   return { requests: () => requests }
 }
 
+async function mockRunningArchive(page: Page) {
+  let tasks: unknown[] = [{ ...runningTask }]
+  const requests: string[] = []
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events' || path === '/api/system/status/stream') {
+      return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    }
+    if (path === '/api/tasks') return json({ items: tasks })
+    if (path === `/api/tasks/${runningTask.id}/cancel` && request.method() === 'POST') {
+      requests.push(`${request.method()} ${path}`)
+      tasks = [{ ...runningTask, status: 'cancelled', phase: 'cancelled', finished_at: STAMP }]
+      return route.fulfill({ status: 204, body: '' })
+    }
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+    if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+    return json({ items: [] })
+  })
+  return { requests: () => requests }
+}
+
 async function openArchive(page: Page, url: string) {
   await page.goto(`${url}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
@@ -218,5 +246,49 @@ test('旧版与 Rust 版归档解压入口、密码任务和状态刷新一致',
   } finally {
     await oldContext.close()
     await newContext.close()
+  }
+})
+
+test('old/new 运行中的归档任务取消后进入已取消分组', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mock = await mockRunningArchive(page)
+    await page.goto(`${baseUrl}/?archive-running-cancel=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('任务中心').click()
+    const row = page.locator('.active-group article').filter({ hasText: runningTask.name })
+    await expect(row).toBeVisible()
+    await expect(row.getByRole('button', { name: '取消' })).toBeEnabled()
+    await row.getByRole('button', { name: '取消' }).click()
+    await expect.poll(() => mock.requests().length).toBe(1)
+    await expect(page.locator('.completed-group article').filter({ hasText: runningTask.name })).toBeVisible()
+    return {
+      requests: mock.requests(),
+      snapshot: await taskSnapshot(page),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      requests: ['POST /api/tasks/archive-task-1/cancel'],
+      snapshot: {
+        active: [],
+        completed: '最近完成 1清除完成解压需要密码.zip已取消100%',
+        failed: null,
+      },
+    })
+    expect(newResult, 'Rust 运行中归档任务的取消入口、请求和已取消分组与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
