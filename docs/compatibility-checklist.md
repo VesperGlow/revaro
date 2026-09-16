@@ -356,7 +356,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | old/new 已实际验证空白输入 disabled 且不发请求、有效名称按 Enter 提交、遮罩/Escape 取消、409 关闭弹窗 + error toast，以及延迟 children 刷新完成后才显示“文件夹已创建”（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；API 层非法名称矩阵（空名、点路径、空白、分隔符、控制字符、超长名）已由 old/new 逐项对照（`897db00`），弹窗层非法名/loading 和完整成功矩阵仍待收口 |
+| `[P]` | 新建文件夹 | 入口、输入聚焦、空名/非法名/冲突、Enter/Esc、loading、成功刷新和错误文案一致。 | old/new 已实测打开后输入框自动聚焦；空白输入 disabled 且不发请求、有效名称按 Enter 提交、遮罩/Escape 取消、409 关闭弹窗 + error toast，以及延迟 children 刷新完成后才显示“文件夹已创建”（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；API 层非法名称矩阵（空名、点路径、空白、分隔符、控制字符、超长名）已由 old/new 逐项对照（`897db00`），弹窗层非法名/loading 和完整成功矩阵仍待收口 |
 | `[ ]` | 新建文档 | 桌面直接入口和创建菜单中的“新建文档”、默认名 `未命名文档.md`、创建后进入 editor、取消/失败一致。 | old/new 已验证创建菜单实际动作、默认名、进入 editor、菜单立即关闭和保存重开；取消、失败仍待收口 |
 | `[ ]` | 重命名 | 单选条件、输入初值/扩展名规则、冲突、空白、Enter/Esc、PATCH 结果和列表更新一致。 | old/new 已实际对照初始名称、输入/按钮状态、文案、焦点及弹窗时选择工具栏卸载；尾随空格原样进入 PATCH；空名允许提交、有效输入按 Enter 提交、遮罩关闭且 Escape 保留弹窗；409 冲突保留输入/弹窗并恢复可重试状态；延迟 children 刷新完成后才显示成功反馈；800ms PATCH 进行中标题栏关闭仍按 reference 卸载弹窗（`rust-crud-reference-parity.spec.ts`、`rust-mutation-feedback-order-reference-parity.spec.ts`）；完整 PATCH 结果矩阵仍待收口 |
 | `[ ]` | 移动 | DirectoryPicker 面包屑、实时目录浏览、加载/错误/空、排除自身/子目录、目标选中、确认/取消/冲突和 PATCH 结果一致。 | old/new 触发器、面板定位/DOM、140ms 进入/退出过渡、路径图标几何、目录源排除自身、目标选中及 `parent_id` 提交、实际移动和清理、PATCH pending 时点击遮罩关闭、延迟 children 刷新完成后才显示成功反馈，以及首次 children 500 后错误态/“重新加载”恢复已对照；排除子目录/冲突和完整结果矩阵仍待验 |

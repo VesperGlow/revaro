@@ -489,6 +489,8 @@ test('新建文件夹空输入、取消和冲突失败保持 reference 交互', 
     const dialog = await openCreateFolderFixture(page, baseUrl)
     const input = dialog.locator('input')
     const confirm = dialog.getByRole('button', { name: '创建', exact: true })
+    await expect(input).toBeFocused()
+    const inputFocused = await input.evaluate(element => document.activeElement === element)
     await input.fill('   ')
     const emptyDisabled = await confirm.isDisabled()
     expect(emptyDisabled).toBe(true)
@@ -504,7 +506,7 @@ test('新建文件夹空输入、取消和冲突失败保持 reference 交互', 
     await reopened.getByRole('button', { name: '创建', exact: true }).click()
     await expect(reopened).toHaveCount(0)
     await expect(page.locator('.toast')).toHaveText('folder already exists')
-    return { disabled: emptyDisabled, calls: mock.createCalls }
+    return { disabled: emptyDisabled, inputFocused, calls: mock.createCalls }
   }
 
   try {
@@ -515,6 +517,8 @@ test('新建文件夹空输入、取消和冲突失败保持 reference 交互', 
     expect(newState.calls, 'Rust 新建文件夹空输入/冲突请求时序与 reference 不一致').toEqual(oldState.calls)
     expect(newState.calls).toEqual(['冲突目录'])
     expect(newState.disabled).toBe(oldState.disabled)
+    expect(oldState.inputFocused).toBe(true)
+    expect(newState.inputFocused, 'Rust 新建文件夹打开后输入框焦点与 reference 不一致').toBe(oldState.inputFocused)
   } finally {
     await oldContext.close()
     await newContext.close()
