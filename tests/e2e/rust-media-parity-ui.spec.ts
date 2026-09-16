@@ -359,6 +359,66 @@ test('old/new 自动播放与章节跳转恢复播放静默处理 rejection', as
   }
 })
 
+test('old/new 音频 waiting、canplay 和 pause 的 spinner 与按钮状态一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => !element.paused)).toBe(true)
+    const snapshot = async () => ({
+      playButtonLabel: await page.locator('.audio-play').getAttribute('aria-label'),
+      playButtonDisabled: await page.locator('.audio-play').isDisabled(),
+      spinnerCount: await page.locator('.audio-control-spinner').count(),
+      playbackLabel: await page.locator('.audio-chapter-current > span').innerText(),
+    })
+
+    await audio.evaluate((element: HTMLAudioElement) => element.dispatchEvent(new Event('waiting')))
+    const waiting = await snapshot()
+    await audio.evaluate((element: HTMLAudioElement) => element.dispatchEvent(new Event('canplay')))
+    const canPlay = await snapshot()
+    await audio.evaluate((element: HTMLAudioElement) => element.pause())
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true)
+    const paused = await snapshot()
+    return { waiting, canPlay, paused }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.waiting).toEqual({
+      playButtonLabel: '暂停',
+      playButtonDisabled: false,
+      spinnerCount: 1,
+      playbackLabel: '正在播放',
+    })
+    expect(oldResult.canPlay).toEqual({
+      playButtonLabel: '暂停',
+      playButtonDisabled: false,
+      spinnerCount: 0,
+      playbackLabel: '正在播放',
+    })
+    expect(oldResult.paused).toEqual({
+      playButtonLabel: '播放',
+      playButtonDisabled: false,
+      spinnerCount: 0,
+      playbackLabel: '暂停中',
+    })
+    expect(newResult, 'Rust 音频等待/缓冲/暂停 UI 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频预览慢响应时保留旧 loading/disabled/spinner 状态，加载后恢复', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
