@@ -3101,6 +3101,71 @@ test('old/new 损坏图片与视频重试保持错误层级、禁用状态和请
   }
 })
 
+test('old/new 媒体重试再次失败仍保留错误层和可重试入口', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let imageRequests = 0
+    let videoRequests = 0
+    await page.route('**/api/files/image-1/preview', route => {
+      imageRequests += 1
+      return route.fulfill({ status: 500, body: 'image unavailable' })
+    })
+    await page.route('**/api/files/video-1/preview', route => {
+      videoRequests += 1
+      return route.fulfill({ contentType: 'application/octet-stream', body: 'video unavailable' })
+    })
+
+    await open(page, '群山.png')
+    await expect(page.getByRole('alert')).toHaveText(/图片暂时无法加载/)
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+    await open(page, '群山.png')
+    await expect(page.getByRole('alert')).toHaveText(/图片暂时无法加载/)
+    const imageState = {
+      requests: imageRequests,
+      imageDisplay: await page.locator('.preview-image').evaluate(element => getComputedStyle(element).display),
+      toolDisabled: await page.locator('.preview-image-tools button').evaluateAll(buttons => buttons.map(button => (button as HTMLButtonElement).disabled)),
+    }
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.preview-modal')).toHaveCount(0)
+
+    await open(page, '山间漫步.webm')
+    await expect(page.getByRole('alert')).toContainText('浏览器无法播放此原始格式')
+    await page.getByRole('button', { name: '重新尝试', exact: true }).click()
+    await expect(page.getByRole('alert')).toContainText('浏览器无法播放此原始格式')
+    return {
+      image: imageState,
+      video: {
+        requests: videoRequests,
+        errorCount: await page.locator('.video-error').count(),
+        retryCount: await page.getByRole('button', { name: '重新尝试', exact: true }).count(),
+        paused: await page.locator('.video-player-shell video').evaluate(element => element.paused),
+      },
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      image: { requests: 2, imageDisplay: 'none', toolDisabled: [true, true, true, true, false] },
+      video: { requests: 3, errorCount: 1, retryCount: 1, paused: true },
+    })
+    expect(newResult, 'Rust 媒体重复失败后的错误/重试状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音视频 seek 边界都钳制在媒体时长内', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
