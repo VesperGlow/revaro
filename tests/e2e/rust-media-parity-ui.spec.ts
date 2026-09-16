@@ -234,6 +234,69 @@ test('old/new 点击播放遇到 Promise rejection 时显示旧版错误反馈',
   }
 })
 
+test('old/new 自动播放与章节跳转恢复播放静默处理 rejection', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => {
+      const state = window as unknown as {
+        unhandledPlaybackRejections: number
+        playbackCalls: number
+      }
+      state.unhandledPlaybackRejections = 0
+      state.playbackCalls = 0
+      window.addEventListener('unhandledrejection', event => {
+        state.unhandledPlaybackRejections += 1
+        event.preventDefault()
+      })
+      HTMLMediaElement.prototype.play = function () {
+        state.playbackCalls += 1
+        return Promise.reject(new DOMException('Playback blocked', 'NotAllowedError'))
+      }
+    })
+    await mockMedia(page, baseUrl)
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await audio.evaluate((element: HTMLAudioElement) => element.pause())
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true)
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    await expect(page.locator('.audio-chapter-list button')).toHaveCount(3)
+    await page.locator('[data-chapter-index="1"]').click()
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => Math.floor(element.currentTime))).toBe(40)
+    await page.waitForTimeout(100)
+    return {
+      playbackCalls: await page.evaluate(() =>
+        (window as unknown as { playbackCalls: number }).playbackCalls,
+      ),
+      unhandledPlaybackRejections: await page.evaluate(() =>
+        (window as unknown as { unhandledPlaybackRejections: number }).unhandledPlaybackRejections,
+      ),
+      errorCount: await page.locator('.audio-player-error').count(),
+      paused: await audio.evaluate((element: HTMLAudioElement) => element.paused),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.playbackCalls).toBe(2)
+    expect(oldResult.unhandledPlaybackRejections).toBe(0)
+    expect(oldResult.errorCount).toBe(0)
+    expect(oldResult.paused).toBe(true)
+    expect(newResult, 'Rust 自动播放/章节跳转 rejection 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频预览慢响应时保留旧 loading/disabled/spinner 状态，加载后恢复', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

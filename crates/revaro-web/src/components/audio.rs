@@ -571,7 +571,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                 let _ = element.focus_with_options(&options);
             }
             element.load();
-            let _ = element.play();
+            play_ignoring_rejection(&element);
         });
     }
 
@@ -813,10 +813,18 @@ fn seek_audio(
         element.set_current_time(target);
         current_time.set(safe_time(element.current_time()));
         if play {
-            let _ = element.play();
+            play_ignoring_rejection(&element);
         }
     } else {
         current_time.set(target);
+    }
+}
+
+fn play_ignoring_rejection(element: &HtmlMediaElement) {
+    if let Ok(promise) = element.play() {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        });
     }
 }
 
