@@ -102,7 +102,7 @@ function passwordSnapshot(page: Page) {
   }))
 }
 
-async function mockArchive(page: Page) {
+async function mockArchive(page: Page, options: { emptyExtractResponse?: boolean } = {}) {
   let tasks: unknown[] = []
   const requests: string[] = []
   await page.route('**/api/**', async route => {
@@ -123,7 +123,7 @@ async function mockArchive(page: Page) {
     if (path === `/api/files/${archive.id}/extract`) {
       requests.push(`${request.method()} ${path}`)
       tasks = [waitingTask]
-      return json(job)
+      return json(options.emptyExtractResponse ? {} : job)
     }
     if (path === `/api/tasks/${waitingTask.id}/input`) {
       requests.push(`${request.method()} ${path}`)
@@ -246,6 +246,37 @@ test('旧版与 Rust 版归档解压入口、密码任务和状态刷新一致',
   } finally {
     await oldContext.close()
     await newContext.close()
+  }
+})
+
+test('old/new 归档解压成功响应缺少任务字段时仍保留成功反馈', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const fixture = await mockArchive(page, { emptyExtractResponse: true })
+    await openArchive(page, baseUrl)
+    await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '在线解压' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '开始解压' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('「需要密码.zip」已加入解压队列')
+    await expect(page.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
+    return fixture.requests()
+  }
+
+  try {
+    const [oldRequests, newRequests] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldRequests).toEqual(['POST /api/files/archive-1/extract'])
+    expect(newRequests, 'Rust 归档成功响应缺字段时未保留 reference 反馈').toEqual(oldRequests)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
 

@@ -36,7 +36,7 @@ use revaro_core::api::uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
 };
-use revaro_core::api::{ArchiveJob, BatchDownloadRequest, BatchDownloadTicket};
+use revaro_core::api::{BatchDownloadRequest, BatchDownloadTicket};
 use revaro_core::model::MediaProgress;
 use revaro_core::reader::FlowManifest;
 use revaro_core::{ErrorCode, ErrorEnvelope};
@@ -443,11 +443,11 @@ pub async fn empty_trash() -> Result<(), RequestError> {
 }
 
 /// Start the background extraction job for a ready archive.
-pub async fn extract_archive(id: &str) -> Result<ArchiveJob, RequestError> {
+pub async fn extract_archive(id: &str) -> Result<(), RequestError> {
     let request = api_request(Request::post(&format!("/api/files/{id}/extract")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
-    send_json(request).await
+    send_empty(request).await
 }
 
 /// Read the current public-share state of a file.
