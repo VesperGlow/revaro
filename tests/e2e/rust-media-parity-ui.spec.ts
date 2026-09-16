@@ -107,6 +107,157 @@ async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 }
 
+test('old/new 音频原始预览失败显示旧错误状态，关闭重开后按 reference 恢复播放', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let failedPreviewRequests = 0
+    await page.route('**/api/files/audio-1/preview', async route => {
+      failedPreviewRequests += 1
+      await route.fulfill({ status: 503, contentType: 'audio/wav', body: '' })
+    })
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    const error = page.locator('.audio-player-error')
+    await expect(error).toHaveText('浏览器无法播放此原始格式，请下载后使用本地播放器打开')
+    const playButton = page.getByRole('button', { name: '播放', exact: true })
+    await expect(playButton).toBeEnabled()
+    const failed = {
+      message: await error.innerText(),
+      role: await error.getAttribute('role'),
+      playDisabled: await playButton.isDisabled(),
+      spinnerCount: await page.locator('.audio-control-spinner').count(),
+      dedicatedRetryCount: await page.getByRole('button', { name: /重试/ }).count(),
+      paused: await audio.evaluate((element: HTMLAudioElement) => element.paused),
+      nativeErrorCode: await audio.evaluate((element: HTMLAudioElement) => element.error?.code ?? null),
+      failedPreviewRequests,
+    }
+
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.chapter-audio-player')).toHaveCount(0)
+    await page.unroute('**/api/files/audio-1/preview')
+    await open(page, '山间来信.m4a')
+    const recoveredAudio = page.locator('audio')
+    await expect.poll(() => recoveredAudio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => recoveredAudio.evaluate((element: HTMLAudioElement) => !element.paused)).toBe(true)
+    await expect(page.locator('.audio-player-error')).toHaveCount(0)
+    const recovered = {
+      duration: await recoveredAudio.evaluate((element: HTMLAudioElement) => element.duration),
+      paused: await recoveredAudio.evaluate((element: HTMLAudioElement) => element.paused),
+      errorCount: await page.locator('.audio-player-error').count(),
+      chapterCount: await page.locator('.audio-options [data-panel-trigger="chapters"]').count(),
+    }
+    return { failed, recovered }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.failed.message).toBe('浏览器无法播放此原始格式，请下载后使用本地播放器打开')
+    expect(oldResult.failed.role).toBe('alert')
+    expect(oldResult.failed.playDisabled).toBe(false)
+    expect(oldResult.failed.spinnerCount).toBe(0)
+    expect(oldResult.failed.dedicatedRetryCount).toBe(0)
+    expect(oldResult.failed.paused).toBe(true)
+    expect(oldResult.failed.failedPreviewRequests).toBeGreaterThan(0)
+    expect(oldResult.recovered.duration).toBe(120)
+    expect(oldResult.recovered.paused).toBe(false)
+    expect(oldResult.recovered.errorCount).toBe(0)
+    expect(oldResult.recovered.chapterCount).toBe(1)
+    expect(newResult, 'Rust 音频错误/关闭重开恢复与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 音频预览慢响应时保留旧 loading/disabled/spinner 状态，加载后恢复', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let releasePreview!: () => void
+    const previewGate = new Promise<void>(resolve => { releasePreview = resolve })
+    const body = wav()
+    await page.route('**/api/files/audio-1/preview', async route => {
+      await previewGate
+      const range = route.request().headers().range?.match(/bytes=(\d+)-(\d*)/)
+      if (range) {
+        const start = Number(range[1])
+        const end = Math.min(Number(range[2] || body.length - 1), body.length - 1)
+        await route.fulfill({
+          status: 206,
+          contentType: 'audio/wav',
+          headers: { 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.length}` },
+          body: body.subarray(start, end + 1),
+        })
+      } else {
+        await route.fulfill({ contentType: 'audio/wav', body })
+      }
+    })
+
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    const play = page.locator('.audio-play')
+    const spinner = page.locator('.audio-control-spinner')
+    await expect(spinner).toBeVisible()
+    const loading = {
+      playDisabled: await play.isDisabled(),
+      spinnerVisible: await spinner.isVisible(),
+      readyState: await audio.evaluate((element: HTMLAudioElement) => element.readyState),
+      errorCount: await page.locator('.audio-player-error').count(),
+      progressDisabled: await page.getByRole('slider', { name: '播放进度' }).isDisabled(),
+    }
+
+    releasePreview()
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect(play).toBeEnabled()
+    await expect(spinner).toHaveCount(0)
+    const loaded = {
+      playDisabled: await play.isDisabled(),
+      spinnerCount: await spinner.count(),
+      paused: await audio.evaluate((element: HTMLAudioElement) => element.paused),
+      duration: await audio.evaluate((element: HTMLAudioElement) => element.duration),
+      errorCount: await page.locator('.audio-player-error').count(),
+      progressDisabled: await page.getByRole('slider', { name: '播放进度' }).isDisabled(),
+    }
+    return { loading, loaded }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.loading.playDisabled).toBe(true)
+    expect(oldResult.loading.spinnerVisible).toBe(true)
+    expect(oldResult.loading.readyState).toBeLessThan(4)
+    expect(oldResult.loading.errorCount).toBe(0)
+    expect(oldResult.loading.progressDisabled).toBe(false)
+    expect(oldResult.loaded.playDisabled).toBe(false)
+    expect(oldResult.loaded.spinnerCount).toBe(0)
+    expect(oldResult.loaded.paused).toBe(false)
+    expect(oldResult.loaded.duration).toBe(120)
+    expect(oldResult.loaded.errorCount).toBe(0)
+    expect(oldResult.loaded.progressDisabled).toBe(false)
+    expect(newResult, 'Rust 音频慢加载状态与恢复行为和 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const width of [1440, 390, 320]) {
   test(`音频 ${width}px：章节、秒数跳转、Esc 和焦点恢复`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
