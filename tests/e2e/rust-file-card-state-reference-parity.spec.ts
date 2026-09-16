@@ -23,6 +23,7 @@ const items = [
   base({ id: 'pending', name: '处理中.txt', status: 'pending', mime_type: 'text/plain' }),
   base({ id: 'failed', name: '失败.png', status: 'failed', mime_type: 'image/png' }),
   base({ id: 'future-status', name: '未来状态.txt', status: 'future_status', mime_type: 'text/plain' }),
+  base({ id: 'future-kind', name: '未来类型.bin', kind: 'future_kind', mime_type: 'application/octet-stream' }),
 ]
 
 const cover = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#789"/></svg>'
@@ -191,6 +192,7 @@ test('文件卡与列表行的 hover、focus、selected、muted 状态保持 ref
     expect(await rowState(newPage, '处理中.txt'), 'Rust 列表 pending 状态与 reference 不一致').toEqual(await rowState(oldPage, '处理中.txt'))
     expect(await rowState(newPage, '失败.png'), 'Rust 列表 failed 状态与 reference 不一致').toEqual(await rowState(oldPage, '失败.png'))
     expect(await rowState(newPage, '未来状态.txt'), 'Rust 列表未知 status 状态与 reference 不一致').toEqual(await rowState(oldPage, '未来状态.txt'))
+    expect(await rowState(newPage, '未来类型.bin'), 'Rust 列表未知 kind 状态与 reference 不一致').toEqual(await rowState(oldPage, '未来类型.bin'))
   } finally {
     await oldContext.close()
     await newContext.close()

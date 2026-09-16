@@ -90,13 +90,69 @@ pub struct UnknownEnumValue {
     pub value: String,
 }
 
-string_enum! {
-    /// Whether a row in `files` is a regular file or a directory.
-    #[derive(Default)]
-    FileKind {
-        #[default]
-        File => "file",
-        Directory => "directory",
+/// Whether a row in `files` is a regular file or a directory.
+///
+/// `Unknown` is a response-only value. The historical browser treated a
+/// future kind as a generic, non-directory item, so decoding a children list
+/// must not fail just because the server added a kind. Database parsing stays
+/// strict through [`FromStr`], which accepts only the two persisted values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FileKind {
+    /// A regular file.
+    #[default]
+    File,
+    /// A directory.
+    Directory,
+    /// A kind introduced by a newer server response.
+    Unknown,
+}
+
+impl FileKind {
+    /// Every kind persisted by the database.
+    pub const ALL: &'static [Self] = &[Self::File, Self::Directory];
+
+    /// Canonical wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for FileKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for FileKind {
+    type Err = crate::model::UnknownEnumValue;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "file" => Ok(Self::File),
+            "directory" => Ok(Self::Directory),
+            other => Err(crate::model::UnknownEnumValue {
+                type_name: "FileKind",
+                value: other.to_owned(),
+            }),
+        }
+    }
+}
+
+impl Serialize for FileKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for FileKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -279,6 +335,7 @@ pub struct File {
     /// Display name.
     pub name: String,
     /// File or directory.
+    #[serde(deserialize_with = "deserialize_file_kind")]
     pub kind: FileKind,
     /// Size in bytes; directories report `0`.
     pub size: i64,
@@ -330,6 +387,19 @@ where
         .as_str()
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(FileStatus::Failed))
+}
+
+/// Preserve an unknown response kind as a generic, non-directory item while
+/// keeping persisted database values strict.
+fn deserialize_file_kind<'de, D>(deserializer: D) -> Result<FileKind, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(FileKind::Unknown))
 }
 
 impl File {
@@ -655,6 +725,26 @@ mod tests {
             serde_json::from_value::<File>(non_string).unwrap().status,
             FileStatus::Failed
         );
+    }
+
+    #[test]
+    fn file_responses_treat_unknown_kinds_as_generic_without_relaxing_database_parsing() {
+        let file = serde_json::from_value::<File>(serde_json::json!({
+            "id": "future-kind",
+            "parent_id": null,
+            "name": "future.bin",
+            "kind": "future_kind",
+            "size": 1,
+            "status": "ready",
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z"
+        }))
+        .unwrap();
+        assert_eq!(file.kind, FileKind::Unknown);
+        assert!(!file.is_directory());
+        assert!(!file.is_ready_file());
+        assert!("future_kind".parse::<FileKind>().is_err());
+        assert!(serde_json::from_str::<FileKind>(r#""future_kind""#).is_err());
     }
 
     #[test]
