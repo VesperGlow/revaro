@@ -2693,6 +2693,56 @@ test('视频全屏按钮和全屏状态同步，退出后恢复预览层', async
   await expect(page.getByRole('button', { name: '全屏', exact: true })).toBeVisible()
 })
 
+test('old/new 视频全屏进入和退出后都恢复预览层', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '山间漫步.webm')
+    const supported = await page.evaluate(() => Boolean(document.fullscreenEnabled && document.documentElement.requestFullscreen))
+    if (!supported) return { supported: false, entered: false, exited: true, modalVisible: true, enterVisible: true }
+
+    await page.getByRole('button', { name: '全屏', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement))).toBe(true)
+    const entered = await page.evaluate(() => Boolean(document.fullscreenElement))
+    const exitVisible = await page.getByRole('button', { name: '退出全屏', exact: true }).isVisible()
+    await page.getByRole('button', { name: '退出全屏', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement))).toBe(false)
+    return {
+      supported,
+      entered,
+      exited: !(await page.evaluate(() => Boolean(document.fullscreenElement))),
+      modalVisible: await page.locator('.preview-modal').isVisible(),
+      enterVisible: await page.getByRole('button', { name: '全屏', exact: true }).isVisible(),
+      exitVisible,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.supported).toBe(true)
+    expect(oldResult).toEqual({
+      supported: true,
+      entered: true,
+      exited: true,
+      modalVisible: true,
+      enterVisible: true,
+      exitVisible: true,
+    })
+    expect(newResult, 'Rust 视频全屏进入/退出后的预览层状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const width of [1440, 390, 320]) {
   test(`视频 ${width}px：设置、字幕、自动隐藏和无溢出`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 })
