@@ -297,8 +297,10 @@ pub struct LibraryCounts {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct MediaProgress {
     /// Resume position in seconds.
+    #[serde(default)]
     pub position: f64,
     /// Known duration in seconds.
+    #[serde(default)]
     pub duration: f64,
     /// When the position was last written, omitted when never saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]

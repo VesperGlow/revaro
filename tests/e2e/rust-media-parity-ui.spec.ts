@@ -888,6 +888,42 @@ test('old/new 音频上一章按三秒阈值回退，下一章定位起点并恢
   }
 })
 
+test('old/new 音频进度成功响应缺少 duration 时仍优先恢复服务端位置', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await page.addInitScript(() => localStorage.setItem('revaro-audio-position:audio-1', '25'))
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/audio-1/media/progress', async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ json: { position: 10 } })
+      return route.fallback()
+    })
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await audio.evaluate((element: HTMLAudioElement) => element.pause())
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => Math.floor(element.currentTime))).toBeGreaterThan(0)
+    const result = Math.floor(await audio.evaluate((element: HTMLAudioElement) => element.currentTime))
+    return result
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toBe(10)
+    expect(newResult, 'Rust 音频进度缺少 duration 时未按 reference 恢复服务端位置').toBe(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频进度 GET 失败或无有效服务端位置时回退本机，正服务端位置优先', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
