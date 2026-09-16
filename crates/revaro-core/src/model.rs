@@ -617,7 +617,7 @@ pub struct Profile {
     /// Login name.
     pub username: String,
     /// Whether an avatar image is stored.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub has_avatar: bool,
 }
 
@@ -825,6 +825,17 @@ mod tests {
         assert!(!share.active);
         assert!(share.url.is_none());
         assert!(share.created_at.is_none());
+    }
+
+    #[test]
+    fn profile_responses_treat_nullable_avatar_as_absent() {
+        let profile = serde_json::from_value::<Profile>(serde_json::json!({
+            "username": "admin",
+            "has_avatar": null
+        }))
+        .unwrap();
+        assert_eq!(profile.username, "admin");
+        assert!(!profile.has_avatar);
     }
 
     #[test]

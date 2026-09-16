@@ -4,18 +4,18 @@ import { login } from './helpers'
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
 
-async function mockProfileWithoutAvatar(page: Page, response: 'session' | 'login' = 'session') {
+async function mockProfileWithoutAvatar(page: Page, response: 'session' | 'login' = 'session', nullableAvatar = false) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
     if (path === '/api/auth/me') {
       return response === 'session'
-        ? json({ username: 'admin' })
+        ? json(nullableAvatar ? { username: 'admin', has_avatar: null } : { username: 'admin' })
         : route.fulfill({ status: 401, json: { error: { status: 401, message: 'not signed in' } } })
     }
     if (path === '/api/auth/login') {
       return response === 'login'
-        ? json({ username: 'admin' })
+        ? json(nullableAvatar ? { username: 'admin', has_avatar: null } : { username: 'admin' })
         : route.fulfill({ status: 401, json: { error: { status: 401, message: 'invalid credentials' } } })
     }
     if (path === '/api/events' || path === '/api/system/status/stream') {
@@ -83,6 +83,68 @@ test('old/new 登录成功响应缺少 has_avatar 时仍进入已认证壳层', 
 
   try {
     await Promise.all([mockProfileWithoutAvatar(oldPage, 'login'), mockProfileWithoutAvatar(newPage, 'login')])
+    await Promise.all([oldPage.goto(`${oldUrl}/`), newPage.goto(`${newUrl}/`)])
+    await Promise.all([
+      oldPage.getByLabel('用户名').fill('admin'),
+      newPage.getByLabel('用户名').fill('admin'),
+      oldPage.getByLabel('密码').fill('revaro-e2e-password'),
+      newPage.getByLabel('密码').fill('revaro-e2e-password'),
+    ])
+    await Promise.all([
+      oldPage.getByRole('button', { name: '进入我的网盘' }).click(),
+      newPage.getByRole('button', { name: '进入我的网盘' }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+      expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('old/new 会话成功响应显式 null 的 has_avatar 时仍进入已认证壳层', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockProfileWithoutAvatar(oldPage, 'session', true),
+      mockProfileWithoutAvatar(newPage, 'session', true),
+    ])
+    await Promise.all([oldPage.goto(`${oldUrl}/`), newPage.goto(`${newUrl}/`)])
+    await Promise.all([
+      expect(oldPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+      expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+    ])
+    await Promise.all([
+      expect(oldPage.getByRole('heading', { name: '登录私人空间', exact: true })).toHaveCount(0),
+      expect(newPage.getByRole('heading', { name: '登录私人空间', exact: true })).toHaveCount(0),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('old/new 登录成功响应显式 null 的 has_avatar 时仍进入已认证壳层', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockProfileWithoutAvatar(oldPage, 'login', true),
+      mockProfileWithoutAvatar(newPage, 'login', true),
+    ])
     await Promise.all([oldPage.goto(`${oldUrl}/`), newPage.goto(`${newUrl}/`)])
     await Promise.all([
       oldPage.getByLabel('用户名').fill('admin'),
