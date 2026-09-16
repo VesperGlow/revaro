@@ -630,6 +630,111 @@ test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 E
   }
 })
 
+test('old/new 文档 PUT 普通失败保留修改与 ETag，busy 锁定后可重试保存', async ({ browser }) => {
+  const name = `editor-save-retry-${crypto.randomUUID()}.md`
+  const originalContent = '# retry reference\n'
+  const editedContent = `${originalContent}edited after a server error\n`
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    const id = await createDocument(page, name, originalContent)
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const bodies: Array<{ content: string; etag: string }> = []
+    await page.route(`**/api/files/${id}/content`, async route => {
+      if (route.request().method() === 'GET') {
+        await route.continue()
+        return
+      }
+      bodies.push(route.request().postDataJSON() as { content: string; etag: string })
+      if (bodies.length === 1) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { status: 500, code: 'internal_error', message: 'disk write failed' },
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    await page.locator('.file-row').filter({ hasText: name }).click()
+    const editor = page.locator('.document-editor')
+    const textarea = editor.locator('textarea')
+    await expect(textarea).toHaveValue(originalContent)
+    await textarea.fill(editedContent)
+    const save = editor.locator('.editor-actions button.primary')
+    await save.click()
+    await expect(save).toHaveText('保存中…')
+    await expect(save).toBeDisabled()
+    const error = editor.locator('.editor-header-message.error')
+    await expect(error).toHaveText('disk write failed')
+    await expect(textarea).toHaveValue(editedContent)
+    await expect(editor.locator('.unsaved-dot')).toHaveCount(1)
+    await expect(save).toBeEnabled()
+    const failure = {
+      message: await error.textContent(),
+      content: await textarea.inputValue(),
+      unsaved: await editor.locator('.unsaved-dot').count(),
+      saveEnabled: await save.isEnabled(),
+    }
+
+    await save.click()
+    await expect(page.locator('.toast')).toHaveText('文档已保存')
+    await expect(textarea).toHaveValue(editedContent)
+    await expect(editor.locator('.unsaved-dot')).toHaveCount(0)
+    await expect(save).toBeDisabled()
+    const persisted = await page.evaluate(async fileId => {
+      const response = await fetch(`/api/files/${fileId}/content`)
+      return response.ok ? (await response.json() as { content?: string }).content : undefined
+    }, id)
+
+    return {
+      failure,
+      requestContents: bodies.map(body => body.content),
+      sameEtagOnRetry: bodies.length === 2 && bodies[0].etag === bodies[1].etag,
+      etagsPresent: bodies.length === 2 && bodies.every(body => Boolean(body.etag)),
+      persisted,
+      dirtyAfterSuccess: await editor.locator('.unsaved-dot').count(),
+      saveDisabledAfterSuccess: await save.isDisabled(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      failure: {
+        message: 'disk write failed',
+        content: editedContent,
+        unsaved: 1,
+        saveEnabled: true,
+      },
+      requestContents: [editedContent, editedContent],
+      sameEtagOnRetry: true,
+      etagsPresent: true,
+      persisted: editedContent,
+      dirtyAfterSuccess: 0,
+      saveDisabledAfterSuccess: true,
+    })
+    expect(newResult, 'Rust PUT 普通失败/重试后的 editor 状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('放弃未保存编辑不会清除已有的 reference 全局 toast', async ({ browser }) => {
   const folderName = `editor-toast-${crypto.randomUUID()}`
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
