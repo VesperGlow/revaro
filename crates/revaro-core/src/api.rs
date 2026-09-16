@@ -27,6 +27,26 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Older browser callers treated an unset TOTP flag as falsey. Keep explicit
+/// `null` equivalent to an omitted field while rejecting other malformed
+/// scalar values.
+fn deserialize_nullable_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
+}
+
+/// Older browser callers treated an unset recovery-code count as an empty
+/// count. Keep explicit `null` equivalent to an omitted field while rejecting
+/// other malformed scalar values.
+fn deserialize_nullable_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// The historical upload caller treated every mode other than the literal
 /// `single` as multipart. Keep that response fallback without relaxing the
 /// strict `FromStr` parser used for persisted upload rows.
@@ -143,10 +163,10 @@ pub mod auth {
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct TotpStatus {
         /// Whether TOTP is enabled.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_bool")]
         pub enabled: bool,
         /// Number of unused recovery codes.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub recovery_codes: i64,
     }
 
@@ -751,6 +771,17 @@ mod tests {
         let request: auth::LoginRequest =
             serde_json::from_str(r#"{"username":"a","password":"b"}"#).unwrap();
         assert_eq!(request.second_factor, "");
+    }
+
+    #[test]
+    fn totp_status_treats_nullable_fields_as_disabled_and_empty() {
+        let status: auth::TotpStatus = serde_json::from_value(serde_json::json!({
+            "enabled": null,
+            "recovery_codes": null
+        }))
+        .unwrap();
+        assert!(!status.enabled);
+        assert_eq!(status.recovery_codes, 0);
     }
 
     #[test]

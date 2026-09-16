@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test'
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
 
-async function mockAccount(page: Page, emptyTotpStatus = false) {
+async function mockAccount(page: Page, emptyTotpStatus = false, nullableTotpStatus = false) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -12,7 +12,13 @@ async function mockAccount(page: Page, emptyTotpStatus = false) {
       return route.fulfill({ contentType: 'text/event-stream', body: '' })
     }
     if (path === '/api/tasks') return json({ items: [] })
-    if (path === '/api/auth/totp') return json(emptyTotpStatus ? {} : { enabled: false, recovery_codes: 0 })
+    if (path === '/api/auth/totp') {
+      return json(emptyTotpStatus
+        ? {}
+        : nullableTotpStatus
+          ? { enabled: null, recovery_codes: null }
+          : { enabled: false, recovery_codes: 0 })
+    }
     if (path === '/api/library/all') {
       return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
     }
@@ -108,6 +114,44 @@ test('old/new TOTP 状态成功响应缺少字段时仍显示未启用设置入�
       error: null,
     })
     expect(newResult, 'Rust TOTP 状态缺少字段时与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new TOTP 状态成功响应显式 null 字段时仍显示未启用设置入口', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockAccount(page, false, true)
+    await page.goto(`${baseUrl}/?account-totp-null=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.locator('button[title="打开账户设置"]').click()
+    const account = page.locator('.account-modal')
+    await expect(account).toBeVisible()
+    await expect(account.getByRole('button', { name: '设置', exact: true })).toBeEnabled()
+    const error = account.locator('.account-overview > .form-error')
+    return {
+      security: await account.locator('.security-row').textContent(),
+      error: (await error.count()) > 0 ? await error.textContent() : null,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      security: '两步验证未启用使用 TOTP 验证码保护管理员登录。设置',
+      error: null,
+    })
+    expect(newResult, 'Rust TOTP 状态显式 null 时与 reference 不一致').toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
