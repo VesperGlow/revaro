@@ -22,7 +22,7 @@ function wav() {
   return data
 }
 
-async function mockMedia(page: Page) {
+async function mockMedia(page: Page, nullableAudioMetadata = false) {
   const sound = wav()
   const movie = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
   await page.addInitScript(() => {
@@ -54,7 +54,19 @@ async function mockMedia(page: Page) {
       return json({ file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' }, breadcrumbs: [] })
     }
     if (path === `/api/files/${ROOT}/children`) return json({ items: [audio, video], total_bytes: 200, file_count: 2 })
-    if (path === `/api/files/${audio.id}/audio`) return json({ duration: 4, has_cover: false, cover_url: '', chapters: [] })
+    if (path === `/api/files/${audio.id}/audio`) {
+      return json(nullableAudioMetadata
+        ? {
+            duration: null,
+            has_cover: true,
+            cover_url: null,
+            chapters: [
+              { id: 1, title: '第一章', start: 0, end: 2 },
+              { id: 2, title: '第二章', start: 2, end: 4 },
+            ],
+          }
+        : { duration: 4, has_cover: false, cover_url: '', chapters: [] })
+    }
     if (path === `/api/files/${video.id}/video`) return json({ subtitles: [] })
     if (path.endsWith('/media/progress')) return json({ position: 0, duration: 4 })
     if (path.endsWith('/thumbnail')) return route.fulfill({ status: 404, body: '' })
@@ -96,3 +108,37 @@ for (const [name, selector] of [['音频播放器', '.chapter-audio-player'], ['
     }
   })
 }
+
+test('old/new 音频 metadata 显式 null 时仍保留其他可用字段', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, true)
+    const metadata = page.waitForResponse(response => response.url().endsWith(`/api/files/${audio.id}/audio`))
+    await page.goto(`${baseUrl}/?media-null-metadata=${Date.now()}`)
+    await page.locator('.file-card').filter({ hasText: audio.name }).click()
+    await expect(page.locator('.chapter-audio-player')).toBeVisible()
+    await metadata
+    await page.locator('[data-panel-trigger="chapters"]').click()
+    return {
+      chapters: await page.locator('.audio-chapter-list button').count(),
+      titles: await page.locator('.audio-chapter-list strong').allTextContents(),
+    }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldState).toEqual({ chapters: 2, titles: ['第一章', '第二章'] })
+    expect(newState, 'Rust 音频 metadata 显式 null 时不应丢弃其他可用字段').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})

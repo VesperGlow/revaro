@@ -7,6 +7,35 @@
 
 use serde::{Deserialize, Serialize};
 
+fn deserialize_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_nullable_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
+}
+
+fn deserialize_nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// One chapter mark inside an audio or video file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaChapter {
@@ -117,16 +146,16 @@ pub struct AudioChapter {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioMedia {
     /// Duration in seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
     pub duration: f64,
     /// Chapter marks.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_vec")]
     pub chapters: Vec<AudioChapter>,
     /// Thumbnail URL for the embedded cover, empty when there is none.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub cover_url: String,
     /// Whether an embedded cover exists.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub has_cover: bool,
 }
 
@@ -156,7 +185,7 @@ pub struct VideoSubtitleTrack {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VideoMedia {
     /// Available subtitle tracks.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_vec")]
     pub subtitles: Vec<VideoSubtitleTrack>,
 }
 
@@ -256,5 +285,24 @@ mod tests {
         assert!(media.cover_url.is_empty());
         assert_eq!(media.chapters.len(), 1);
         assert_eq!(media.chapters[0].title, "One");
+    }
+
+    #[test]
+    fn media_responses_treat_nullable_top_level_fields_as_defaults() {
+        let audio: AudioMedia = serde_json::from_value(serde_json::json!({
+            "duration": null,
+            "chapters": null,
+            "cover_url": null,
+            "has_cover": null
+        }))
+        .unwrap();
+        assert_eq!(audio.duration, 0.0);
+        assert!(audio.chapters.is_empty());
+        assert!(audio.cover_url.is_empty());
+        assert!(!audio.has_cover);
+
+        let video: VideoMedia =
+            serde_json::from_value(serde_json::json!({ "subtitles": null })).unwrap();
+        assert!(video.subtitles.is_empty());
     }
 }
