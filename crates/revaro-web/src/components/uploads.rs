@@ -781,7 +781,9 @@ impl UploadController {
             .await;
         active.verifier.borrow_mut().take();
         let committed = result?;
-        if committed.id != resolved.file_id || committed.status != FileStatus::Ready {
+        if (!resolved.file_id.is_empty() && committed.id != resolved.file_id)
+            || committed.status != FileStatus::Ready
+        {
             return Err(local_error("服务端返回的文件状态无效"));
         }
         Ok(())

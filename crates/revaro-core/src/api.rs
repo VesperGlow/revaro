@@ -282,6 +282,7 @@ pub mod uploads {
         /// Upload session id.
         pub upload_id: String,
         /// Placeholder file row created up front.
+        #[serde(default)]
         pub file_id: String,
         /// Single-request or multipart transfer.
         pub mode: UploadMode,
@@ -292,6 +293,7 @@ pub mod uploads {
         /// Number of parts; `0` for single-request uploads.
         pub part_count: usize,
         /// Session expiry.
+        #[serde(default)]
         pub expires_at: Timestamp,
     }
 
