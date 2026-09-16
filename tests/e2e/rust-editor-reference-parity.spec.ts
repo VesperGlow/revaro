@@ -924,6 +924,68 @@ test('old/new 文档内容 GET 首次失败后退出加载态，关闭重开可�
   }
 })
 
+test('old/new 回收站只读 editor 忽略 Escape，遮罩与关闭按钮均不触发放弃确认', async ({ browser }) => {
+  const name = `editor-readonly-close-${crypto.randomUUID()}.yaml`
+  const content = 'message: trash preview\n'
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const id = await createDocument(page, name, content)
+    const removed = await page.evaluate(async fileId => {
+      const response = await fetch(`/api/files/${fileId}`, { method: 'DELETE' })
+      return response.ok
+    }, id)
+    expect(removed, '创建回收站只读 editor fixture').toBe(true)
+    await page.locator('.trash-entry').click()
+    const row = page.locator('.file-row').filter({ hasText: name })
+    await expect(row).toBeVisible()
+    await row.click()
+
+    const editor = page.locator('.document-editor')
+    await expect(editor.locator('.editor-title small')).toHaveText('回收站只读预览')
+    await expect(editor.locator('textarea')).toHaveAttribute('readonly', '')
+    await expect(editor.locator('.editor-tabs')).toHaveCount(0)
+    await expect(editor.getByRole('button', { name: '保存', exact: true })).toHaveCount(0)
+
+    await page.keyboard.press('Escape')
+    await expect(editor).toBeVisible()
+    await expect(page.locator('.app-dialog')).toHaveCount(0)
+    await page.locator('.modal-backdrop.editing').click({ position: { x: 8, y: 8 } })
+    await expect(editor).toHaveCount(0)
+    await expect(page.locator('.app-dialog')).toHaveCount(0)
+
+    await row.click()
+    await expect(editor).toBeVisible()
+    await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await expect(page.locator('.app-dialog')).toHaveCount(0)
+    return {
+      readonly: await editor.count(),
+      discarded: await page.locator('.app-dialog').count(),
+      trashRow: await row.count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ readonly: 0, discarded: 0, trashRow: 1 })
+    expect(newResult, 'Rust 回收站只读 editor 关闭/键盘语义与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([removeByName(oldPage, name), removeByName(newPage, name)])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('放弃未保存编辑不会清除已有的 reference 全局 toast', async ({ browser }) => {
   const folderName = `editor-toast-${crypto.randomUUID()}`
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
@@ -1113,6 +1175,9 @@ test('dirty 编辑器的遮罩关闭与浏览器后退保持 reference 语义', 
   async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
     await mockDirtyEditor(page)
     let editor = await openDirtyEditor(page, baseUrl)
+    await page.keyboard.press('Escape')
+    await expect(editor).toBeVisible()
+    await expect(page.locator('.app-dialog')).toHaveCount(0)
     await editor.getByRole('button', { name: '关闭编辑器' }).click()
     const discard = page.locator('.app-dialog').filter({ hasText: '放弃未保存的修改？' })
     await expect(discard).toBeVisible()
