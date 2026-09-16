@@ -355,6 +355,7 @@ test('旧版媒体进度 API 的 JSON 解码和文件查找顺序在 Rust 版保
       ['malformed', Buffer.from('{"position":'), 400, { error: { status: 400, message: 'invalid JSON request' } }],
       ['缺失文件 malformed', Buffer.from('{"position":'), 404, { error: { status: 404, message: 'ready media file not found' } }, true],
       ['缺省 position', { duration: 2 }, 200],
+      ['显式 null 数值', { position: null, duration: null }, 200],
       ['非法值', { position: 99, duration: 2 }, 400, { error: { status: 400, message: 'media progress values are invalid' } }],
     ]
     for (const [label, data, expectedStatus, expectedError, missing] of cases) {

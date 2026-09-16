@@ -1628,23 +1628,14 @@ updated_at = excluded.updated_at",
                 )
                 .map_err(|error| database_error(DbError::Query(error)))?;
 
-            let stored = connection
-                .query_row(
-                    "SELECT position_ms, duration_ms, updated_at FROM media_progress WHERE file_id = ?1",
-                    [&id],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    },
-                )
-                .map_err(|error| database_error(DbError::Query(error)))?;
+            // The historical handler echoed the decoded request values in
+            // this PUT response, even when the database retained a known
+            // duration because the submitted value was zero. Keep that wire
+            // behavior; GET remains the source of the stored value.
             Ok(progress_response(
-                stored.0,
-                stored.1,
-                Timestamp::parse(&stored.2).ok(),
+                position_ms,
+                duration_ms,
+                Timestamp::parse(&now).ok(),
             ))
         })
         .await
@@ -3187,8 +3178,14 @@ VALUES('v1','00000000-0000-0000-0000-000000000000','clip.mp4','file','blobs/v1',
         assert_eq!(status, StatusCode::OK);
         assert_eq!(saved["position"], 30.0);
         assert_eq!(
-            saved["duration"], 100.0,
-            "a zero duration means unknown, not reset"
+            saved["duration"], 0.0,
+            "the PUT response echoes the submitted unknown duration"
+        );
+        let (status, stored) = call(&state, "/api/files/v1/media/progress").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            stored["duration"], 100.0,
+            "a zero duration must not erase the known value"
         );
 
         // Out-of-range and non-finite values are 400, never a 500 from the
