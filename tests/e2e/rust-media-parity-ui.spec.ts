@@ -525,7 +525,7 @@ test('old/new 音频上一章按三秒阈值回退，下一章定位起点并恢
   }
 })
 
-test('old/new 音频进度 GET 失败时回退本机位置，成功服务端位置优先', async ({ browser }) => {
+test('old/new 音频进度 GET 失败或无有效服务端位置时回退本机，正服务端位置优先', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -537,12 +537,13 @@ test('old/new 音频进度 GET 失败时回退本机位置，成功服务端位�
     await page.addInitScript(() => localStorage.setItem('revaro-audio-position:audio-1', '25'))
     await mockMedia(page, baseUrl)
     let failProgressGet = true
+    let progressPosition = 10
     let getRequests = 0
     await page.route('**/api/files/audio-1/media/progress', async route => {
       if (route.request().method() !== 'GET') return route.fallback()
       getRequests += 1
       if (failProgressGet) return route.fulfill({ status: 503, json: { error: 'progress unavailable' } })
-      return route.fallback()
+      return route.fulfill({ json: { position: progressPosition, duration: 120 } })
     })
 
     await open(page, '山间来信.m4a')
@@ -563,12 +564,37 @@ test('old/new 音频进度 GET 失败时回退本机位置，成功服务端位�
     await expect.poll(() => reopenedAudio.evaluate((element: HTMLAudioElement) => Math.floor(element.currentTime))).toBe(10)
     await reopenedAudio.evaluate((element: HTMLAudioElement) => element.pause())
     const serverPosition = Math.floor(await reopenedAudio.evaluate((element: HTMLAudioElement) => element.currentTime))
+    const serverDisplayedTime = await page.locator('.audio-time span').first().innerText()
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.chapter-audio-player')).toHaveCount(0)
+
+    await page.evaluate(() => localStorage.setItem('revaro-audio-position:audio-1', '35'))
+    progressPosition = 0
+    await open(page, '山间来信.m4a')
+    const zeroPositionAudio = page.locator('audio')
+    await expect.poll(() => zeroPositionAudio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => zeroPositionAudio.evaluate((element: HTMLAudioElement) => Math.floor(element.currentTime))).toBe(35)
+    await zeroPositionAudio.evaluate((element: HTMLAudioElement) => element.pause())
+    const localFallbackOnZero = Math.floor(await zeroPositionAudio.evaluate((element: HTMLAudioElement) => element.currentTime))
+    await page.getByRole('button', { name: '关闭预览', exact: true }).click()
+    await expect(page.locator('.chapter-audio-player')).toHaveCount(0)
+
+    await page.evaluate(() => localStorage.setItem('revaro-audio-position:audio-1', '45'))
+    progressPosition = -7
+    await open(page, '山间来信.m4a')
+    const negativePositionAudio = page.locator('audio')
+    await expect.poll(() => negativePositionAudio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => negativePositionAudio.evaluate((element: HTMLAudioElement) => Math.floor(element.currentTime))).toBe(45)
+    await negativePositionAudio.evaluate((element: HTMLAudioElement) => element.pause())
+    const localFallbackOnNegative = Math.floor(await negativePositionAudio.evaluate((element: HTMLAudioElement) => element.currentTime))
     return {
       getRequests,
       fallbackPosition,
       fallbackDisplayedTime,
       serverPosition,
-      serverDisplayedTime: await page.locator('.audio-time span').first().innerText(),
+      serverDisplayedTime,
+      localFallbackOnZero,
+      localFallbackOnNegative,
     }
   }
 
@@ -577,11 +603,13 @@ test('old/new 音频进度 GET 失败时回退本机位置，成功服务端位�
       exercise(oldPage, oldUrl),
       exercise(newPage, newUrl),
     ])
-    expect(oldResult.getRequests).toBe(2)
+    expect(oldResult.getRequests).toBe(4)
     expect(oldResult.fallbackPosition).toBe(25)
     expect(oldResult.fallbackDisplayedTime).toBe('0:25')
     expect(oldResult.serverPosition).toBe(10)
     expect(oldResult.serverDisplayedTime).toBe('0:10')
+    expect(oldResult.localFallbackOnZero).toBe(35)
+    expect(oldResult.localFallbackOnNegative).toBe(45)
     expect(newResult, 'Rust 音频进度本机 fallback/服务端优先级与 reference 不一致').toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
