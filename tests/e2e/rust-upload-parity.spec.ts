@@ -674,6 +674,157 @@ test('old/new 刷新后任务中心取消上传仍走 reference 的任务取消�
   }
 })
 
+test('old/new 任务中心重试失败上传时沿用本地文件句柄并重新创建 session', async ({ browser }) => {
+  const name = `upload-retry-reference-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload retry reference\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  type RetryState = {
+    uploadIds: string[]
+    failedAttempts: number
+    calls: string[]
+    revealFailedTask: boolean
+    releaseEvents: () => void
+  }
+  const oldState: RetryState = { uploadIds: [], failedAttempts: 0, calls: [], revealFailedTask: false, releaseEvents: () => {} }
+  const newState: RetryState = { uploadIds: [], failedAttempts: 0, calls: [], revealFailedTask: false, releaseEvents: () => {} }
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string, state: RetryState) {
+    let releaseEvents!: () => void
+    const eventsReady = new Promise<void>(resolve => { releaseEvents = resolve })
+    state.releaseEvents = releaseEvents
+
+    page.on('request', request => {
+      const url = new URL(request.url())
+      if (url.pathname.startsWith('/api/uploads')) state.calls.push(`${request.method()} ${url.pathname}`)
+    })
+    await page.route(/\/api\/events$/, async route => {
+      await eventsReady
+      await route.fulfill({ contentType: 'text/event-stream', body: 'event: jobs\ndata: {}\n\n' })
+    })
+    await page.route('**/api/tasks', async route => {
+      if (!state.revealFailedTask) {
+        await route.continue()
+        return
+      }
+      const response = await route.fetch()
+      const payload = await response.json() as { items?: Array<Record<string, unknown>> }
+      const upload = payload.items?.find(item => item.source_type === 'upload' && item.source_id === state.uploadIds[0])
+      if (upload) Object.assign(upload, {
+        status: 'failed',
+        phase: 'failed',
+        progress: 100,
+        error: 'forced upload failure for retry parity',
+      })
+      await route.fulfill({ json: payload })
+    })
+    await page.route(/\/api\/uploads$/, async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
+      const response = await route.fetch()
+      const payload = await response.json() as { upload_id: string }
+      state.uploadIds.push(payload.upload_id)
+      await route.fulfill({ response })
+    })
+    await page.route(/\/api\/uploads\/[^/]+\/data$/, async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue()
+        return
+      }
+      const uploadId = new URL(route.request().url()).pathname.split('/')[3]
+      if (uploadId === state.uploadIds[0]) {
+        state.failedAttempts += 1
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'forced_upload_failure', message: 'forced upload failure' } }),
+        })
+        return
+      }
+      const response = await route.fetch()
+      await route.fulfill({ response })
+    })
+
+    await loginAt(page, baseUrl)
+    await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer })
+    await expect.poll(() => state.uploadIds.length, { timeout: 10_000 }).toBe(1)
+    await expect.poll(() => state.failedAttempts, { timeout: 20_000 }).toBe(5)
+    // Let the final XHR response settle so the hidden local queue is failed
+    // before exposing the durable failed-task row that owns its retry action.
+    await page.waitForTimeout(200)
+    state.revealFailedTask = true
+    state.releaseEvents()
+
+    await page.getByTitle('任务中心').click()
+    const row = page.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name })
+    await expect(row).toBeVisible({ timeout: 10_000 })
+    await expect(row).toContainText('forced upload failure for retry parity')
+    const retry = row.getByRole('button', { name: '重试' })
+    await expect(retry).toBeEnabled()
+    const retryEnabled = await retry.isEnabled()
+    const beforeRetry = state.calls.length
+    await retry.click()
+    await expect.poll(() => state.uploadIds.length, { timeout: 15_000 }).toBe(2)
+    const oldUploadId = state.uploadIds[0]
+    const newUploadId = state.uploadIds[1]
+    await expect.poll(() => state.calls.includes(`PUT /api/uploads/${newUploadId}/data`), { timeout: 10_000 }).toBe(true)
+    await expect.poll(() => page.evaluate(async fileName => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === fileName && item.status === 'ready')
+    }, name), { timeout: 15_000 }).toBe(true)
+    const retryCalls = state.calls.slice(beforeRetry)
+    const deleteIndex = retryCalls.indexOf(`DELETE /api/uploads/${oldUploadId}`)
+    const createIndex = retryCalls.indexOf('POST /api/uploads')
+    const dataIndex = retryCalls.indexOf(`PUT /api/uploads/${newUploadId}/data`)
+    expect(deleteIndex, '重试前应删除失败上传的旧 session').toBeGreaterThanOrEqual(0)
+    expect(createIndex, '重试应创建新的上传 session').toBeGreaterThan(deleteIndex)
+    expect(dataIndex, '重试应使用本地文件句柄重新传输').toBeGreaterThan(createIndex)
+    const originalSession = await page.evaluate(async id => (await fetch(`/api/uploads/${id}`)).status, oldUploadId)
+    expect(originalSession).toBe(404)
+
+    return {
+      failedAttempts: state.failedAttempts,
+      error: await row.locator('small').innerText(),
+      retryEnabled,
+      originalSessionRemoved: originalSession === 404,
+      newSessionCreated: newUploadId !== oldUploadId,
+      fileReady: true,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl, oldState),
+      exercise(newPage, newUrl, newState),
+    ])
+    expect(oldResult).toEqual({
+      failedAttempts: 5,
+      error: 'forced upload failure for retry parity',
+      retryEnabled: true,
+      originalSessionRemoved: true,
+      newSessionCreated: true,
+      fileReady: true,
+    })
+    expect(newResult, 'Rust 上传失败行与重试结果未保持 reference 行为').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      ...oldState.uploadIds.map(id => oldPage.evaluate(async uploadId => { await fetch(`/api/uploads/${uploadId}`, { method: 'DELETE' }) }, id)),
+      ...newState.uploadIds.map(id => newPage.evaluate(async uploadId => { await fetch(`/api/uploads/${uploadId}`, { method: 'DELETE' }) }, id)),
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+    ])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 字节上传连续失败时保留相同的任务中心可见状态', async ({ browser }) => {
   const name = `upload-failure-reference-${crypto.randomUUID()}.txt`
   const buffer = Buffer.from('upload failure reference\n')
