@@ -233,3 +233,87 @@ test('old/new preview、Range、鉴权和 thumbnail 响应保持 reference 行�
     await Promise.all(clients.map(client => client.dispose()))
   }
 })
+
+test('old/new 音视频分段读取和 If-Range 断点续播保持 reference 行为', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const fixtures = [
+    { name: `seek-${suffix}.wav`, mime: 'audio/wav', body: tinyWav() },
+    { name: `seek-${suffix}.webm`, mime: 'video/webm', body: videoFixture },
+  ] as const
+  const clients = await Promise.all([login(oldUrl), login(newUrl)])
+  const created: Array<Array<{ id: string; uploadId: string }>> = [[], []]
+
+  try {
+    for (const fixture of fixtures) {
+      created[0].push(await upload(clients[0], oldUrl, fixture.name, fixture.mime, fixture.body))
+      created[1].push(await upload(clients[1], newUrl, fixture.name, fixture.mime, fixture.body))
+    }
+
+    for (let index = 0; index < fixtures.length; index += 1) {
+      const fixture = fixtures[index]
+      const oldPath = `/api/files/${created[0][index].id}/preview`
+      const newPath = `/api/files/${created[1][index].id}/preview`
+      const [oldFull, newFull] = await Promise.all([
+        responseShape(await clients[0].get(oldPath, { headers: headers(oldUrl) })),
+        responseShape(await clients[1].get(newPath, { headers: headers(newUrl) })),
+      ])
+      expect(newFull.body.equals(oldFull.body), `${fixture.name} 完整媒体内容与 reference 不一致`).toBe(true)
+
+      const size = oldFull.body.length
+      const firstEnd = Math.min(63, size - 1)
+      const secondStart = firstEnd + 1
+      const secondEnd = Math.min(secondStart + 127, size - 1)
+      const ranges = [`bytes=0-${firstEnd}`]
+      if (secondStart < size) ranges.push(`bytes=${secondStart}-${secondEnd}`)
+      ranges.push('bytes=-64')
+
+      const segments: Buffer[] = []
+      for (const range of ranges) {
+        const [oldSegment, newSegment] = await Promise.all([
+          responseShape(await clients[0].get(oldPath, { headers: { ...headers(oldUrl), Range: range } })),
+          responseShape(await clients[1].get(newPath, { headers: { ...headers(newUrl), Range: range } })),
+        ])
+        expect(comparable(newSegment), `${fixture.name} ${range} 响应与 reference 不一致`).toEqual(comparable(oldSegment))
+        expect(newSegment.body.equals(oldSegment.body), `${fixture.name} ${range} 字节与 reference 不一致`).toBe(true)
+        expect(oldSegment.status).toBe(size > 0 ? 206 : 200)
+        segments.push(oldSegment.body)
+      }
+
+      if (secondStart < size) {
+        expect(Buffer.concat(segments.slice(0, 2)).equals(oldFull.body.subarray(0, secondEnd + 1))).toBe(true)
+      }
+
+      const [oldMatching, newMatching] = await Promise.all([
+        responseShape(await clients[0].get(oldPath, {
+          headers: { ...headers(oldUrl), Range: `bytes=${secondStart}-${secondEnd}`, 'If-Range': oldFull.etag },
+        })),
+        responseShape(await clients[1].get(newPath, {
+          headers: { ...headers(newUrl), Range: `bytes=${secondStart}-${secondEnd}`, 'If-Range': newFull.etag },
+        })),
+      ])
+      expect(comparable(newMatching), `${fixture.name} 匹配 If-Range 与 reference 不一致`).toEqual(comparable(oldMatching))
+      expect(newMatching.body.equals(oldMatching.body)).toBe(true)
+
+      const [oldStale, newStale] = await Promise.all([
+        responseShape(await clients[0].get(oldPath, {
+          headers: { ...headers(oldUrl), Range: `bytes=0-${firstEnd}`, 'If-Range': '"stale"' },
+        })),
+        responseShape(await clients[1].get(newPath, {
+          headers: { ...headers(newUrl), Range: `bytes=0-${firstEnd}`, 'If-Range': '"stale"' },
+        })),
+      ])
+      expect(comparable(newStale), `${fixture.name} 失配 If-Range 与 reference 不一致`).toEqual(comparable(oldStale))
+      expect(newStale.body.equals(oldStale.body)).toBe(true)
+      expect(oldStale.status).toBe(200)
+      expect(oldStale.body.equals(oldFull.body)).toBe(true)
+    }
+  } finally {
+    await Promise.all([
+      cleanup(clients[0], created[0].map(item => item.id), created[0].map(item => item.uploadId)),
+      cleanup(clients[1], created[1].map(item => item.id), created[1].map(item => item.uploadId)),
+    ])
+    await Promise.all(clients.map(client => client.dispose()))
+  }
+})
