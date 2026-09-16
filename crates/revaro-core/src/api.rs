@@ -47,6 +47,16 @@ where
     Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Older account callers treated an absent or `null` setup string as empty
+/// while still entering the setup stage. Keep response decoding tolerant while
+/// rejecting other malformed scalar types.
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// The historical upload caller treated every mode other than the literal
 /// `single` as multipart. Keep that response fallback without relaxing the
 /// strict `FromStr` parser used for persisted upload rows.
@@ -174,10 +184,13 @@ pub mod auth {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct TotpSetup {
         /// Base32 shared secret.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub secret: String,
         /// `otpauth://` provisioning URI.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub uri: String,
         /// PNG QR code as a data URL.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub qr_data_url: String,
     }
 
@@ -782,6 +795,19 @@ mod tests {
         .unwrap();
         assert!(!status.enabled);
         assert_eq!(status.recovery_codes, 0);
+    }
+
+    #[test]
+    fn totp_setup_treats_nullable_metadata_as_empty() {
+        let setup: auth::TotpSetup = serde_json::from_value(serde_json::json!({
+            "secret": "JBSWY3DPEHPK3PXP",
+            "uri": null,
+            "qr_data_url": null
+        }))
+        .unwrap();
+        assert_eq!(setup.secret, "JBSWY3DPEHPK3PXP");
+        assert!(setup.uri.is_empty());
+        assert!(setup.qr_data_url.is_empty());
     }
 
     #[test]

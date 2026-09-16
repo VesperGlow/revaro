@@ -5,7 +5,7 @@ const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
 const codes = ['ABCD-1234', 'EFGH-5678', 'JKLM-9012']
 
-async function mockAccount(page: Page) {
+async function mockAccount(page: Page, nullableSetup = false) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -16,7 +16,9 @@ async function mockAccount(page: Page) {
     if (path === '/api/tasks') return json({ items: [] })
     if (path === '/api/auth/totp') return json({ enabled: false, recovery_codes: 0 })
     if (path === '/api/auth/totp/setup') {
-      return json({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/Revaro:admin?secret=JBSWY3DPEHPK3PXP', qr_data_url: 'data:image/png;base64,not-a-real-qr' })
+      return json(nullableSetup
+        ? { secret: 'JBSWY3DPEHPK3PXP', uri: null, qr_data_url: null }
+        : { secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/Revaro:admin?secret=JBSWY3DPEHPK3PXP', qr_data_url: 'data:image/png;base64,not-a-real-qr' })
     }
     if (path === '/api/auth/totp/enable') return json({ enabled: true, recovery_codes: codes })
     if (path === '/api/library/all') {
@@ -94,6 +96,43 @@ test('恢复码下载文本格式保持 reference', async ({ browser }) => {
   } finally {
     await oldContext.close()
     await newContext.close()
+  }
+})
+
+test('old/new TOTP setup 显式 null 元数据时仍进入设置阶段', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockAccount(page, true)
+    await page.goto(`${baseUrl}/?account-totp-null-setup=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.locator('button[title="打开账户设置"]').click()
+    const account = page.locator('.account-modal')
+    await account.getByRole('button', { name: '设置', exact: true }).click()
+    const totp = page.locator('.totp-dialog')
+    await totp.getByLabel('当前密码', { exact: true }).fill('password')
+    await totp.getByRole('button', { name: '开始设置', exact: true }).click()
+    await expect(totp.locator('.totp-enroll')).toBeVisible()
+    return {
+      secret: await totp.locator('.manual-secret code').textContent(),
+      error: (await totp.locator('.two-factor-error').count()) > 0 ? await totp.locator('.two-factor-error').textContent() : null,
+    }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldState).toEqual({ secret: 'JBSWY3DPEHPK3PXP', error: null })
+    expect(newState, 'Rust TOTP setup 不应因未消费的 null 元数据而停在初始阶段').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
 
