@@ -31,7 +31,8 @@ const root = file({ id: ROOT, name: '我的文件', kind: 'directory', parent_id
 const rootChildren = [file({ id: 'root-file', name: '根目录.txt', mime_type: 'text/plain' })]
 const thumbnail = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><rect width="2" height="2" fill="#41628a"/></svg>'
 
-async function mockLibrary(page: Page) {
+async function mockLibrary(page: Page, options: { counts?: unknown } = {}) {
+  const responseCounts = options.counts === undefined ? counts : options.counts
   await page.route('**/api/**', async route => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -41,8 +42,8 @@ async function mockLibrary(page: Page) {
       return route.fulfill({ contentType: 'text/event-stream', body: '' })
     }
     if (path === '/api/tasks') return json({ items: [] })
-    if (path === '/api/library/all') return json({ items: library, counts })
-    if (path === '/api/library/counts') return json(counts)
+    if (path === '/api/library/all') return json({ items: library, counts: responseCounts })
+    if (path === '/api/library/counts') return json(responseCounts)
     if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
     if (path === `/api/files/${ROOT}/children`) return json({ items: rootChildren, total_bytes: 1000, file_count: 1 })
     if (path.endsWith('/audio')) return json({ duration: 125, chapters: [], cover_url: '', has_cover: false })
@@ -51,6 +52,13 @@ async function mockLibrary(page: Page) {
     }
     return json({ items: [] })
   })
+}
+
+async function categoryCountSnapshot(page: Page) {
+  return page.locator('.sidebar-category').evaluateAll(elements => elements.map(element => ({
+    type: element.querySelector('[data-category]')?.getAttribute('data-category') ?? null,
+    count: element.querySelector('.category-count')?.textContent?.trim() ?? null,
+  })))
 }
 
 async function openShell(page: Page, url: string) {
@@ -162,6 +170,39 @@ test('旧版与 Rust 版分类页保留相同内容视图与右键交互', async
     )
 
     await compareCategory(oldPage, newPage, 'video')
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('旧版与 Rust 版分类数量响应中的 null 或缺失字段仍保留分类内容', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const nullableCounts = { book: null, image: 2, video: null, file: 3 }
+
+  try {
+    await Promise.all([
+      mockLibrary(oldPage, { counts: nullableCounts }),
+      mockLibrary(newPage, { counts: nullableCounts }),
+    ])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('[data-category="book"]').click(),
+      newPage.locator('[data-category="book"]').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.shelf-card')).toHaveCount(library.book.length),
+      expect(newPage.locator('.shelf-card')).toHaveCount(library.book.length),
+    ])
+    expect(await itemSnapshot(newPage), 'Rust 分类内容不应因数量 null 丢失').toEqual(await itemSnapshot(oldPage))
+    expect(await categoryCountSnapshot(newPage), 'Rust 分类徽标应按旧版 falsey 规则显示').toEqual(await categoryCountSnapshot(oldPage))
   } finally {
     await oldContext.close()
     await newContext.close()

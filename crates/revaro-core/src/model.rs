@@ -509,14 +509,19 @@ pub struct LibraryItem {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryCounts {
     /// Books.
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub book: i64,
     /// Images.
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub image: i64,
     /// Videos.
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub video: i64,
     /// Audio files.
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub audio: i64,
     /// Everything else.
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub file: i64,
 }
 
@@ -842,6 +847,27 @@ mod tests {
         assert_eq!(file.content_hash, "");
         assert_eq!(file.hash_algorithm, "");
         assert!(!file.has_cover);
+    }
+
+    #[test]
+    fn library_counts_treat_missing_or_null_values_as_zero() {
+        let counts = serde_json::from_value::<LibraryCounts>(serde_json::json!({
+            "book": null,
+            "image": 2,
+            "video": null,
+            "file": 3
+        }))
+        .unwrap();
+        assert_eq!(counts.book, 0);
+        assert_eq!(counts.image, 2);
+        assert_eq!(counts.video, 0);
+        assert_eq!(counts.audio, 0);
+        assert_eq!(counts.file, 3);
+
+        let invalid = serde_json::from_value::<LibraryCounts>(serde_json::json!({
+            "book": "2"
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
