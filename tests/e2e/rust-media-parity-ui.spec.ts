@@ -2061,6 +2061,108 @@ test('old/new 字幕轨道错误不会清除已经显示的 cue', async ({ brows
   }
 })
 
+test('old/new 视频多字幕按 default/forced 优先级选择，关闭后清空 overlay', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const tracks = [
+    { id: 'forced', name: 'forced', label: '强制字幕', language: 'zh', url: '/api/subtitle-forced.vtt', forced: true },
+    { id: 'plain', name: 'plain', label: '普通字幕', language: 'zh', url: '/api/subtitle-plain.vtt' },
+    { id: 'default', name: 'default', label: '默认字幕', language: 'zh', url: '/api/subtitle-default.vtt', default: true },
+  ]
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/video-1/video', route => route.fulfill({ json: { subtitles: tracks } }))
+    await page.route('**/api/subtitle-{forced,plain,default}.vtt', route => {
+      const name = new URL(route.request().url()).pathname.split('/').pop()
+      const label = name?.replace('subtitle-', '').replace('.vtt', '')
+      return route.fulfill({
+        contentType: 'text/vtt',
+        body: `WEBVTT\n\n00:00:00.000 --> 00:00:30.000\n${label} 字幕。\n`,
+      })
+    })
+    await open(page, '山间漫步.webm')
+    await expect(page.locator('.video-subtitle-overlay')).toContainText('default 字幕。')
+    const menu = page.locator('.video-control-row .preview-menu').first()
+    await expect(menu).toBeVisible()
+    await menu.locator('summary').click()
+    const select = page.getByLabel('字幕轨道', { exact: true })
+    const initial = {
+      labels: await select.locator('option').allTextContents(),
+      value: await select.inputValue(),
+      overlay: await page.locator('.video-subtitle-overlay').innerText(),
+    }
+    await select.selectOption('0')
+    await expect(page.locator('.video-subtitle-overlay')).toContainText('forced 字幕。')
+    const switched = await select.inputValue()
+    await select.selectOption('-1')
+    await expect(page.locator('.video-subtitle-overlay')).toHaveCount(0)
+    return {
+      initial,
+      switched,
+      menuAfterDisable: await page.locator('.video-control-row .preview-menu').count(),
+      overlayAfterDisable: await page.locator('.video-subtitle-overlay').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      initial: {
+        labels: ['关闭字幕', '强制字幕', '普通字幕', '默认字幕'],
+        value: '2',
+        overlay: 'default 字幕。',
+      },
+      switched: '0',
+      menuAfterDisable: 2,
+      overlayAfterDisable: 0,
+    })
+    expect(newResult, 'Rust 视频多字幕选择/关闭与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 视频 metadata 没有字幕时不显示字幕菜单和 overlay', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/video-1/video', route => route.fulfill({ json: { subtitles: [] } }))
+    await open(page, '山间漫步.webm')
+    await expect(page.locator('.video-player-shell video')).toHaveJSProperty('readyState', 4)
+    await page.waitForTimeout(100)
+    return {
+      subtitleMenuCount: await page.locator('.video-control-row .preview-menu').count(),
+      overlayCount: await page.locator('.video-subtitle-overlay').count(),
+      playbackErrorCount: await page.locator('.video-error').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ subtitleMenuCount: 1, overlayCount: 0, playbackErrorCount: 0 })
+    expect(newResult, 'Rust 无字幕 metadata 的视频 UI 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 图片滚轮缩放保持鼠标锚点一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
