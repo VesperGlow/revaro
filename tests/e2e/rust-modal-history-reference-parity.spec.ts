@@ -42,6 +42,10 @@ async function mockShare(page: Page) {
       })
     }
     if (path === `/api/files/${ROOT}/children`) return json({ items: [file], total_bytes: file.size, file_count: 1 })
+    if (path === `/api/files/${FILE_ID}` && request.method() === 'PATCH') {
+      const input = request.postDataJSON() as { name?: string }
+      return json({ ...file, name: input.name || file.name })
+    }
     if (path === `/api/files/${FILE_ID}/share` && request.method() === 'GET') {
       return json({ active: true, url: 'http://127.0.0.1:18084/s/modal-history-token', created_at: STAMP })
     }
@@ -158,6 +162,87 @@ test('TOTP 设置子弹窗打开时浏览器后退关闭账户层并在重开后
       enrollmentCleared: true,
     })
     expect(newResult, 'Rust TOTP 子弹窗后的账户历史状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('重命名与移动弹窗打开时浏览器后退关闭弹窗并保留选择', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockShare(page)
+    await page.goto(`${baseUrl}/?file-action-history-reference=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('列表视图').click()
+    const row = page.locator('.file-row').filter({ hasText: file.name })
+    await row.getByRole('button', { name: '选择项目' }).click()
+    const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
+
+    await toolbar.getByRole('button', { name: '重命名' }).click()
+    const rename = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
+    await expect(rename).toBeVisible()
+    await page.goBack()
+    await expect(rename).toHaveCount(0)
+    await expect(toolbar).toBeVisible()
+
+    await toolbar.getByRole('button', { name: '移动' }).click()
+    const move = page.locator('.move-copy-dialog')
+    await expect(move).toBeVisible()
+    await page.goBack()
+    await expect(move).toHaveCount(0)
+    await expect(toolbar).toBeVisible()
+
+    await toolbar.getByRole('button', { name: '重命名' }).click()
+    const cancelRename = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
+    await page.evaluate(() => {
+      const target = window as Window & { __historyPopCount?: number }
+      target.__historyPopCount = 0
+      window.addEventListener('popstate', () => { target.__historyPopCount = (target.__historyPopCount || 0) + 1 })
+    })
+    await cancelRename.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(cancelRename).toHaveCount(0)
+    await expect.poll(() => page.evaluate(() => (window as Window & { __historyPopCount?: number }).__historyPopCount)).toBe(1)
+    await expect(toolbar).toBeVisible()
+
+    await toolbar.getByRole('button', { name: '重命名' }).click()
+    const saveRename = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
+    await saveRename.locator('input').fill('历史重命名成功.txt')
+    await page.evaluate(() => { (window as Window & { __historyPopCount?: number }).__historyPopCount = 0 })
+    await saveRename.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(saveRename).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('已重命名')
+    await expect.poll(() => page.evaluate(() => (window as Window & { __historyPopCount?: number }).__historyPopCount)).toBe(1)
+
+    return {
+      path: new URL(page.url()).pathname,
+      selectedRows: await page.locator('.file-row.selected').count(),
+      renameClosed: await rename.count() === 0,
+      moveClosed: await move.count() === 0,
+      cancelConsumedHistory: true,
+      saveConsumedHistory: true,
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      path: '/',
+      selectedRows: 0,
+      renameClosed: true,
+      moveClosed: true,
+      cancelConsumedHistory: true,
+      saveConsumedHistory: true,
+    })
+    expect(newResult, 'Rust 重命名/移动弹窗的浏览器后退结果与 reference 不一致').toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }

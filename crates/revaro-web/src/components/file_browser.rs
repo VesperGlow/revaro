@@ -969,6 +969,7 @@ pub fn FileBrowser(
         let dialog_error = dialog_error;
         let items = items;
         let selected_ids = selected_ids;
+        let push_overlay = push_overlay.clone();
         Callback::new(move |(): ()| {
             let Some(item) = items
                 .get_untracked()
@@ -977,6 +978,7 @@ pub fn FileBrowser(
             else {
                 return;
             };
+            push_overlay.run(());
             dialog_value.set(item.name);
             dialog_error.set(String::new());
             dialog.set(Some(DialogState::Rename { id: item.id }));
@@ -1273,6 +1275,9 @@ pub fn FileBrowser(
                         dialog.set(None);
                         dialog_value.set(String::new());
                         dialog_error.set(String::new());
+                        if rename_action {
+                            let _ = request_overlay_close(nav_actions, history_suppressed);
+                        }
                         archive_target.set(None);
                         if share_action {
                             // The share dialog remains open; only its link state
@@ -1356,6 +1361,8 @@ pub fn FileBrowser(
         let dialog_value = dialog_value;
         let dialog_error = dialog_error;
         let dialog_busy = dialog_busy;
+        let nav_actions = nav_actions;
+        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
             // The reference rename modal keeps its close button and backdrop
             // active while PATCH is pending. Generic confirmation dialogs are
@@ -1363,6 +1370,9 @@ pub fn FileBrowser(
             // exception to the busy guard.
             let rename_can_close =
                 matches!(dialog.get_untracked(), Some(DialogState::Rename { .. }));
+            if rename_can_close && request_overlay_close(nav_actions, history_suppressed) {
+                return;
+            }
             if !dialog_busy.get_untracked() || rename_can_close {
                 dialog.set(None);
                 dialog_value.set(String::new());
@@ -2074,6 +2084,9 @@ pub fn FileBrowser(
         let share_error = share_error;
         let share_copied = share_copied;
         let account_open = account_open;
+        let dialog = dialog;
+        let dialog_value = dialog_value;
+        let dialog_error = dialog_error;
         let section = section;
         let trash_mode = trash_mode;
         let library_folder_id = library_folder_id;
@@ -2117,6 +2130,11 @@ pub fn FileBrowser(
                             share_error.set(String::new());
                             share_copied.set(false);
                             account_open.set(false);
+                            if matches!(dialog.get_untracked(), Some(DialogState::Rename { .. })) {
+                                dialog.set(None);
+                                dialog_value.set(String::new());
+                                dialog_error.set(String::new());
+                            }
                             if section.get_untracked() == LibraryKind::File {
                                 replace_folder_url(&current_id.get_untracked());
                             } else {
