@@ -12,7 +12,9 @@ use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
 use crate::classify::LibraryKind;
-use crate::model::{File, LibraryCounts, LibraryItem, Task, UploadMode, UploadPart};
+use crate::model::{
+    File, LibraryCounts, LibraryItem, Task, UploadMode, UploadPart, UploadStatus as UploadState,
+};
 use crate::reader::{Anchor, FlowManifest, TocEntry};
 use crate::storage::CompletedPart;
 use crate::time::Timestamp;
@@ -37,6 +39,20 @@ where
         .as_str()
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(UploadMode::Multipart))
+}
+
+/// The historical resume caller only branched on `completed`; every other
+/// status continued the upload using its mode. Treat a newer or malformed
+/// response status as pending while retaining strict storage parsing.
+fn deserialize_upload_status_response<'de, D>(deserializer: D) -> Result<UploadState, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(UploadState::Pending))
 }
 
 /// Health probe response.
@@ -350,7 +366,7 @@ pub mod uploads {
         #[serde(default)]
         pub mime_type: String,
         /// Session state.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_upload_status_response")]
         pub status: UploadStatusKind,
         /// Session expiry.
         #[serde(default)]
@@ -871,6 +887,35 @@ mod tests {
         .unwrap();
         assert_eq!(status.mode, UploadMode::Multipart);
         assert!("future_mode".parse::<UploadMode>().is_err());
+    }
+
+    #[test]
+    fn upload_resume_responses_treat_unknown_statuses_as_pending_without_relaxing_storage_parsing()
+    {
+        let status: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "status": "future_status",
+            "part_size": 16,
+            "part_count": 1
+        }))
+        .unwrap();
+        assert_eq!(status.status, crate::model::UploadStatus::Pending);
+
+        let null: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "status": null,
+            "part_size": 16,
+            "part_count": 1
+        }))
+        .unwrap();
+        assert_eq!(null.status, crate::model::UploadStatus::Pending);
+        assert!(
+            "future_status"
+                .parse::<crate::model::UploadStatus>()
+                .is_err()
+        );
     }
 
     #[test]

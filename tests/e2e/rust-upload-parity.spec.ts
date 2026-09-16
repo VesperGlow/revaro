@@ -2357,3 +2357,102 @@ test('old/new upload 创建响应的未知 mode 仍按 reference 走 multipart',
     ])
   }
 })
+
+test('old/new 断点 GET 的未知 status 仍复用原 session 并继续上传', async ({ browser }) => {
+  const name = `upload-unknown-status-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload unknown status resume\n')
+  const lastModified = 909
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    const created = await page.evaluate(async ({ fileName, size }) => {
+      const response = await fetch('/api/uploads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          parent_id: '00000000-0000-0000-0000-000000000000',
+          name: fileName,
+          size,
+          mime_type: 'text/plain',
+        }),
+      })
+      if (!response.ok) throw new Error(`create upload failed: ${response.status}`)
+      return await response.json() as { upload_id: string; mode: string; url?: string; part_size: number; part_count: number }
+    }, { fileName: name, size: buffer.length })
+    const calls = ['POST /api/uploads']
+    await page.route(/\/api\/uploads(?:\/|$)/, async route => {
+      const request = route.request()
+      const pathname = new URL(request.url()).pathname
+      if (pathname === `/api/uploads/${created.upload_id}` && request.method() === 'GET') {
+        calls.push('GET /api/uploads/:id')
+        return route.fulfill({ json: {
+          upload_id: created.upload_id,
+          mode: created.mode,
+          status: 'future_status',
+          url: created.url,
+          part_size: created.part_size,
+          part_count: created.part_count,
+        } })
+      }
+      if (pathname === '/api/uploads' && request.method() === 'POST') {
+        calls.push('POST /api/uploads (unexpected recreate)')
+        return route.fulfill({ status: 500, body: 'resume must reuse the existing session' })
+      }
+      return route.continue()
+    })
+    page.on('request', request => {
+      const pathname = new URL(request.url()).pathname
+      if (pathname === `/api/uploads/${created.upload_id}/data` && request.method() === 'PUT') calls.push('PUT /api/uploads/:id/data')
+      if (pathname === `/api/uploads/${created.upload_id}/complete` && request.method() === 'POST') calls.push('POST /api/uploads/:id/complete')
+    })
+    await page.evaluate(({ uploadId, fileName, size }) => {
+      localStorage.setItem('revaro.uploads.v1', JSON.stringify([{
+        uploadId,
+        parentId: '00000000-0000-0000-0000-000000000000',
+        name: fileName,
+        size,
+        lastModified: 909,
+      }]))
+    }, { uploadId: created.upload_id, fileName: name, size: buffer.length })
+    await page.evaluate(({ fileName, contents }) => {
+      const input = document.querySelector('input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) throw new Error('file input is missing')
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([contents], fileName, { type: 'text/plain', lastModified: 909 }))
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { fileName: name, contents: buffer.toString() })
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === wanted && item.status === 'ready')
+    }, name), { timeout: 20_000 }).toBe(true)
+    return { calls, saved: await page.evaluate(() => localStorage.getItem('revaro.uploads.v1')) }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      calls: ['POST /api/uploads', 'GET /api/uploads/:id', 'PUT /api/uploads/:id/data', 'POST /api/uploads/:id/complete'],
+      saved: '[]',
+    })
+    expect(newResult, 'Rust 断点 GET 未知 status 未保持 reference 的 session 复用行为').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+      oldContext.close(),
+      newContext.close(),
+    ])
+  }
+})
