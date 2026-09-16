@@ -268,6 +268,71 @@ test('old/new 实际拖放文件按 reference 上传到当前目录并拒绝回�
   }
 })
 
+test('old/new 拖放带相对路径的多个文件仍按 reference 平铺上传', async ({ browser }) => {
+  const suffix = crypto.randomUUID()
+  const names = [`drop-folder-${suffix}-one.txt`, `drop-folder-${suffix}-two.txt`]
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function dropFolder(page: Parameters<typeof login>[0], baseUrl: string) {
+    const uploadResponses: number[] = []
+    const directoryRequests: string[] = []
+    page.on('request', request => {
+      const url = new URL(request.url())
+      if (url.pathname === '/api/uploads' && request.method() === 'POST') uploadResponses.push(0)
+      if (url.pathname === '/api/directories' && request.method() === 'POST') directoryRequests.push(request.postData() || '')
+    })
+    page.on('response', response => {
+      const url = new URL(response.url())
+      if (url.pathname === '/api/uploads' && response.request().method() === 'POST') {
+        const index = uploadResponses.findIndex(status => status === 0)
+        if (index >= 0) uploadResponses[index] = response.status()
+      }
+    })
+    await loginAt(page, baseUrl)
+    const defaultPrevented = await page.locator('.app-shell').evaluate((element, droppedNames) => {
+      const files = droppedNames.map((name, index) => {
+        const file = new File([`drop folder ${index}\n`], name, { type: 'text/plain' })
+        Object.defineProperty(file, 'webkitRelativePath', { value: `dropped-folder/${name}` })
+        return file
+      })
+      const transfer = new DataTransfer()
+      files.forEach(file => transfer.items.add(file))
+      const event = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+      element.dispatchEvent(event)
+      return event.defaultPrevented
+    }, names)
+    await expect.poll(() => uploadResponses.filter(status => status !== 0).length, { timeout: 15_000 }).toBe(2)
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string; kind?: string }> }
+      return wanted.every(name => (payload.items ?? []).some(item => item.name === name && item.status === 'ready' && item.kind === 'file'))
+    }, names), { timeout: 20_000 }).toBe(true)
+    return { defaultPrevented, uploadResponses, directoryRequests }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      dropFolder(oldPage, oldUrl),
+      dropFolder(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ defaultPrevented: true, uploadResponses: [201, 201], directoryRequests: [] })
+    expect(newResult, 'Rust 带相对路径的拖放文件不应额外创建目录').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      removeCreated(oldPage, names),
+      removeCreated(newPage, names),
+      oldContext.close(),
+      newContext.close(),
+    ])
+  }
+})
+
 test('文件夹上传在当前目录刷新完成后才显示成功反馈', async ({ page }, testInfo) => {
   const directory = testInfo.outputPath(`timing-${crypto.randomUUID()}`)
   const rootName = path.basename(directory)
