@@ -476,7 +476,24 @@ pub async fn prepare_batch_download(ids: Vec<String>) -> Result<BatchDownloadTic
     let request = api_request(Request::post("/api/files/batch-download/prepare"))
         .json(&BatchDownloadRequest { ids })
         .map_err(|error| request_transport(error.to_string()))?;
-    send_json(request).await
+    // The reference client validates the token after decoding the response:
+    // a successful `{}`/`{"token":null}` response becomes the explicit
+    // "batch download preparation failed" feedback instead of a JSON parser
+    // error. Keep the wire type strict for callers while preserving that
+    // observable branch.
+    #[derive(serde::Deserialize)]
+    struct Response {
+        token: Option<String>,
+    }
+    let response: Response = send_json(request).await?;
+    let Some(token) = response.token.filter(|token| !token.is_empty()) else {
+        return Err(RequestError {
+            status: 0,
+            code: None,
+            message: "批量下载准备失败".to_owned(),
+        });
+    };
+    Ok(BatchDownloadTicket { token })
 }
 
 /// Sign in, mapping a non-2xx answer to a decoded [`LoginError`].

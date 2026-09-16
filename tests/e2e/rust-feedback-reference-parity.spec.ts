@@ -16,7 +16,7 @@ const files = ['toast-one.txt', 'toast-two.txt'].map((name, index) => ({
   etag: `etag-${index + 1}`,
 }))
 
-async function mockFeedback(page: Page, options: { directoryError?: boolean; directoryForbidden?: boolean; directoryNetworkError?: boolean; directorySequenceError?: boolean } = {}) {
+async function mockFeedback(page: Page, options: { directoryError?: boolean; directoryForbidden?: boolean; directoryNetworkError?: boolean; directorySequenceError?: boolean; batchDownloadMissingToken?: boolean; batchDownloadNetworkError?: boolean } = {}) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -62,7 +62,9 @@ async function mockFeedback(page: Page, options: { directoryError?: boolean; dir
     }
     if (path === `/api/files/${ROOT}/children`) return json({ items: files, total_bytes: 24, file_count: files.length })
     if (path === '/api/files/batch-download/prepare') {
+      if (options.batchDownloadNetworkError) return route.abort('failed')
       await new Promise(resolve => setTimeout(resolve, 600))
+      if (options.batchDownloadMissingToken) return json({})
       return json({ token: 'feedback-parity-token' })
     }
     return json({ items: [] })
@@ -241,6 +243,73 @@ test('全局 toast 的命中区域和最新通知交互保持 reference', async 
       .toEqual(await toastMetrics(oldPage))
 
     await Promise.all([clickToast(oldPage), clickToast(newPage)])
+    await expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
+    await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('批量下载 prepare 缺少 token 时保留 reference 错误反馈和选择', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockFeedback(oldPage, { batchDownloadMissingToken: true }),
+      mockFeedback(newPage, { batchDownloadMissingToken: true }),
+      openFeedbackFixture(oldPage, oldUrl),
+      openFeedbackFixture(newPage, newUrl),
+    ])
+    await Promise.all([
+      oldPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '下载 (2)', exact: true }).click(),
+      newPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '下载 (2)', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.toast')).toHaveText('批量下载准备失败'),
+      expect(newPage.locator('.toast')).toHaveText('批量下载准备失败'),
+    ])
+    await expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
+    await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
+    expect(await newPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '下载 (2)', exact: true }).count())
+      .toBe(await oldPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '下载 (2)', exact: true }).count())
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('批量下载 prepare 断网时保留 reference transport 错误和选择', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function trigger(page: Page, baseUrl: string) {
+    await openFeedbackFixture(page, baseUrl)
+    await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '下载 (2)', exact: true }).click()
+    const toast = page.locator('.toast')
+    await expect(toast).toBeVisible()
+    return { text: await toast.innerText(), metrics: await toastMetrics(page) }
+  }
+
+  try {
+    await Promise.all([
+      mockFeedback(oldPage, { batchDownloadNetworkError: true }),
+      mockFeedback(newPage, { batchDownloadNetworkError: true }),
+    ])
+    const [oldToast, newToast] = await Promise.all([
+      trigger(oldPage, oldUrl),
+      trigger(newPage, newUrl),
+    ])
+    expect(newToast, 'Rust 批量下载 transport toast 与 reference 不一致').toEqual(oldToast)
     await expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
     await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
   } finally {
