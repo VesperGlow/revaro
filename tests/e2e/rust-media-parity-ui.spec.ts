@@ -1996,6 +1996,75 @@ test('old/new 视频用户 seek 与预览关闭的进度持久化时机一致', 
   }
 })
 
+test('old/new 音视频连续 timeupdate 按 reference 写入本机与远端进度', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const requests: Array<{ media: string; body: string | null }> = []
+    page.on('request', request => {
+      const path = new URL(request.url()).pathname
+      if (path.endsWith('/media/progress') && request.method() === 'PUT') {
+        requests.push({ media: path.includes('audio-1') ? 'audio' : 'video', body: request.postData() })
+      }
+    })
+    await mockMedia(page, baseUrl)
+
+    async function observe(name: string, selector: 'audio' | 'video', media: 'audio' | 'video') {
+      await open(page, name)
+      const element = page.locator(selector)
+      await expect(element).toHaveJSProperty('readyState', 4)
+      await element.evaluate(node => (node as HTMLMediaElement).pause())
+      await page.waitForTimeout(150)
+      const start = requests.length
+      await element.evaluate(node => {
+        const mediaElement = node as HTMLMediaElement
+        mediaElement.currentTime = 37
+        mediaElement.dispatchEvent(new Event('timeupdate'))
+      })
+      await expect.poll(
+        () => requests.slice(start).filter(request => request.media === media).length,
+        { timeout: 6_500 },
+      ).toBeGreaterThan(0)
+      const remote = requests.slice(start).find(request => request.media === media)
+      const local = await page.evaluate(key => localStorage.getItem(key), `revaro-${media}-position:${media === 'audio' ? 'audio-1' : 'video-1'}`)
+      const parsed = remote?.body ? JSON.parse(remote.body) as { position?: number; duration?: number } : {}
+      const result = {
+        remotePut: Boolean(remote),
+        remotePositionPositive: Number.isFinite(parsed.position) && (parsed.position ?? 0) > 0,
+        remoteDuration: parsed.duration,
+        localPosition: Number(local),
+      }
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.preview-modal')).toHaveCount(0)
+      return result
+    }
+
+    return {
+      audio: await observe('山间来信.m4a', 'audio', 'audio'),
+      video: await observe('山间漫步.webm', 'video', 'video'),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      audio: { remotePut: true, remotePositionPositive: true, remoteDuration: 120, localPosition: 37 },
+      video: { remotePut: true, remotePositionPositive: true, remoteDuration: 30, localPosition: 30 },
+    })
+    expect(newResult, 'Rust 音视频连续播放进度写入与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 视频刷新和重开时服务端进度失败仍恢复本机位置', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
