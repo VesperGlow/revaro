@@ -1236,9 +1236,8 @@ async fn ensure_upload_directory(parent_id: &str, name: &str) -> Result<ModelFil
     {
         Ok(folder) => Ok(folder),
         Err(error) if error.status == 409 => {
-            let children = api::fetch_children(parent_id).await?;
+            let children = api::fetch_child_items(parent_id).await?;
             if let Some(folder) = children
-                .items
                 .into_iter()
                 .find(|item| item.name == name && item.kind == FileKind::Directory)
             {

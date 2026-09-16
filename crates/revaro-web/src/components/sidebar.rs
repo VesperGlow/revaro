@@ -448,13 +448,13 @@ fn FileTree(
             request_token.set(token);
             loading.set(true);
             leptos::task::spawn_local(async move {
-                let result = api::fetch_children(ROOT_ID).await;
+                let result = api::fetch_child_items(ROOT_ID).await;
                 if request_token.get_untracked() != token {
                     return;
                 }
                 let directories = result
-                    .map(|data| {
-                        data.items
+                    .map(|items| {
+                        items
                             .into_iter()
                             .filter(|item| item.kind == FileKind::Directory)
                             .collect()
@@ -556,13 +556,13 @@ fn DirectoryNode(
             loading.set(true);
             let id = id.clone();
             leptos::task::spawn_local(async move {
-                let result = api::fetch_children(&id).await;
+                let result = api::fetch_child_items(&id).await;
                 if request_token.get_untracked() != token {
                     return;
                 }
                 let directories = result
-                    .map(|data| {
-                        data.items
+                    .map(|items| {
+                        items
                             .into_iter()
                             .filter(|item| item.kind == FileKind::Directory)
                             .collect()

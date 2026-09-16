@@ -50,7 +50,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = false, sourceItem = source) {
+async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = false, sourceItem = source, sparseDestinationChildren = false) {
   let destinationDetailStarted = false
   let destinationChildrenStarted = false
   let failNextRootChildren = false
@@ -90,6 +90,7 @@ async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = 
     }
     if (path === '/api/files/compat-destination/children') {
       if (probeConcurrency) destinationChildrenStarted = true
+      if (sparseDestinationChildren) return json({ items: [] })
       return json({ items: [], total_bytes: 0, file_count: 0 })
     }
     if (path === '/api/files/compat-source' && route.request().method() === 'PATCH') {
@@ -470,6 +471,38 @@ test('目录选择器进入目标目录并发读取详情和子目录', async ({
     await Promise.all([
       expect(oldPage.locator('.directory-trigger')).toHaveAttribute('title', /目标文件夹/),
       expect(newPage.locator('.directory-trigger')).toHaveAttribute('title', /目标文件夹/),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('目录选择器 children 成功响应缺少未使用统计字段时仍进入目标目录', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockPicker(oldPage, false, false, source, true),
+      mockPicker(newPage, false, false, source, true),
+    ])
+    await Promise.all([openPicker(oldPage, oldUrl), openPicker(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.directory-trigger').click(),
+      newPage.locator('.directory-trigger').click(),
+    ])
+    await Promise.all([
+      oldPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+      newPage.getByRole('region', { name: '选择目标目录' }).getByRole('button', { name: '目标文件夹', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.directory-trigger')).toHaveAttribute('title', '我的文件 / 目标文件夹'),
+      expect(newPage.locator('.directory-trigger')).toHaveAttribute('title', '我的文件 / 目标文件夹'),
     ])
   } finally {
     await oldContext.close()

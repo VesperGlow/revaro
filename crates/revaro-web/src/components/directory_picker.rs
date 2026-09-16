@@ -396,11 +396,10 @@ async fn fetch_directory_data(
     // DirectoryPicker.vue starts both requests through Promise.all. Keep the
     // same request concurrency so loading, empty and fallback states are
     // observable at the same point in the interaction.
-    let (detail, children) = futures_util::join!(api::fetch_file(id), api::fetch_children(id));
+    let (detail, children) = futures_util::join!(api::fetch_file(id), api::fetch_child_items(id));
     let detail = detail?;
     let children = children?;
     let folders = children
-        .items
         .into_iter()
         .filter(|item| item.kind == FileKind::Directory && !excluded_ids.contains(&item.id))
         .collect::<Vec<_>>();

@@ -207,6 +207,18 @@ pub mod files {
         pub file_count: i64,
     }
 
+    /// The subset returned to callers that only need directory entries.
+    ///
+    /// The historical browser used this narrow shape in the directory picker,
+    /// upload-folder conflict recovery and sidebar tree. Those callers did not
+    /// read the aggregate counters, so an older successful response may omit
+    /// them while still being usable.
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct ChildItems {
+        /// Directory entries, directories first then case-insensitive by name.
+        pub items: Vec<File>,
+    }
+
     /// `GET /api/files/{id}/content`
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct DocumentContent {
@@ -675,9 +687,9 @@ pub use book::{
     SaveProgressRequest as SaveBookProgressRequest,
 };
 pub use files::{
-    BatchDownloadRequest, BatchDownloadTicket, Children, CopyFileRequest, CreateDirectoryRequest,
-    CreateDocumentRequest, DocumentContent, FileDetail, PatchFileRequest, Trash,
-    UpdateDocumentRequest,
+    BatchDownloadRequest, BatchDownloadTicket, ChildItems, Children, CopyFileRequest,
+    CreateDirectoryRequest, CreateDocumentRequest, DocumentContent, FileDetail, PatchFileRequest,
+    Trash, UpdateDocumentRequest,
 };
 pub use library::{Library, LibraryAll, LibraryBuckets};
 pub use tasks::{TaskInputRequest, TaskList};

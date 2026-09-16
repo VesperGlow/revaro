@@ -25,8 +25,8 @@ use revaro_core::api::auth::{
 };
 use revaro_core::api::book::{Info as BookInfo, Progress as BookProgress, SaveProgressRequest};
 use revaro_core::api::files::{
-    Children, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest, DocumentContent,
-    FileDetail, PatchFileRequest, Trash, UpdateDocumentRequest,
+    ChildItems, Children, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest,
+    DocumentContent, FileDetail, PatchFileRequest, Trash, UpdateDocumentRequest,
 };
 use revaro_core::api::library::LibraryAll;
 use revaro_core::api::media::{AudioMedia, VideoMedia};
@@ -124,6 +124,13 @@ pub async fn fetch_file(id: &str) -> Result<FileDetail, RequestError> {
 /// Fetch the live children and aggregate counters of a directory.
 pub async fn fetch_children(id: &str) -> Result<Children, RequestError> {
     get_json(&format!("/api/files/{id}/children")).await
+}
+
+/// Fetch only the directory entries for callers whose historical contract did
+/// not consume aggregate byte/file counters.
+pub async fn fetch_child_items(id: &str) -> Result<Vec<revaro_core::model::File>, RequestError> {
+    let response: ChildItems = get_json(&format!("/api/files/{id}/children")).await?;
+    Ok(response.items)
 }
 
 /// Fetch the UTF-8 content and optimistic-concurrency ETag of an editable file.
