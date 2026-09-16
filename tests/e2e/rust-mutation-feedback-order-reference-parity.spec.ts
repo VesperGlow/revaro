@@ -171,7 +171,7 @@ async function mockDelete(page: Page) {
   })
 }
 
-async function mockTransferOrder(page: Page) {
+async function mockTransferOrder(page: Page, options: { emptyResponse?: boolean } = {}) {
   let moved = false
   await page.route('**/api/**', async route => {
     const request = route.request()
@@ -193,7 +193,7 @@ async function mockTransferOrder(page: Page) {
     }
     if (path === `/api/files/${mutableFile.id}` && request.method() === 'PATCH') {
       moved = true
-      return json({ ...mutableFile })
+      return json(options.emptyResponse ? {} : { ...mutableFile })
     }
     return json({ items: [] })
   })
@@ -320,7 +320,45 @@ test('移动成功反馈等待 reference 的目录刷新完成', async ({ browse
   }
 })
 
-async function mockRename(page: Page) {
+test('old/new 移动成功响应缺少文件字段时仍保留成功反馈', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, url: string) {
+    await mockTransferOrder(page, { emptyResponse: true })
+    await page.goto(`${url}/?mutation-transfer-empty-response=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('列表视图').click()
+    const row = page.locator('.file-row').filter({ hasText: mutableFile.name })
+    await row.getByRole('button', { name: '选择项目' }).click()
+    await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动', exact: true }).click()
+    const dialog = page.locator('.move-copy-dialog')
+    await dialog.getByRole('button', { name: '移动', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('已移动 1 项')
+    return {
+      toast: await page.locator('.toast').textContent(),
+      visible: await page.locator('.file-card, .file-row').filter({ hasText: mutableFile.name }).count(),
+    }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldState).toEqual({ toast: '已移动 1 项', visible: 0 })
+    expect(newState, 'Rust 移动成功响应缺字段时未保留 reference 反馈').toEqual(oldState)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+async function mockRename(page: Page, options: { emptyResponse?: boolean } = {}) {
   let renamed = false
   const nextName = '已重命名.txt'
   await page.route('**/api/**', async route => {
@@ -343,7 +381,7 @@ async function mockRename(page: Page) {
     }
     if (path === `/api/files/${mutableFile.id}` && request.method() === 'PATCH') {
       renamed = true
-      return json({ ...mutableFile, name: nextName })
+      return json(options.emptyResponse ? {} : { ...mutableFile, name: nextName })
     }
     return json({ items: [] })
   })
@@ -383,6 +421,45 @@ test('重命名成功反馈等待 reference 的目录刷新完成', async ({ bro
     expect(oldState.before.toast).toBeNull()
     expect(newState, 'Rust 重命名成功反馈的刷新时序与 reference 不一致').toEqual(oldState)
     expect(oldState.after).toEqual({ toast: '已重命名', visible: 1 })
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 重命名成功响应缺少文件字段时仍保留成功反馈', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, url: string) {
+    const nextName = await mockRename(page, { emptyResponse: true })
+    await page.goto(`${url}/?mutation-rename-empty-response=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('列表视图').click()
+    const row = page.locator('.file-row').filter({ hasText: mutableFile.name })
+    await row.getByRole('button', { name: '选择项目' }).click()
+    await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '重命名', exact: true }).click()
+    const dialog = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
+    await dialog.locator('input').fill(nextName)
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.toast')).toHaveText('已重命名')
+    return {
+      toast: await page.locator('.toast').textContent(),
+      visible: await page.locator('.file-card, .file-row').filter({ hasText: nextName }).count(),
+    }
+  }
+
+  try {
+    const [oldState, newState] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldState).toEqual({ toast: '已重命名', visible: 1 })
+    expect(newState, 'Rust 重命名成功响应缺字段时未保留 reference 反馈').toEqual(oldState)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }

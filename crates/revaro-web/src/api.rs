@@ -400,26 +400,23 @@ pub async fn create_directory_action(request: &CreateDirectoryRequest) -> Result
     send_empty(request).await
 }
 
-/// Rename or move one live file or directory.
-pub async fn patch_file(
-    id: &str,
-    request: &PatchFileRequest,
-) -> Result<revaro_core::model::File, RequestError> {
+/// Apply a file-browser rename or move.
+///
+/// The historical foreground action only consumed the success status, so the
+/// response body is intentionally ignored here.
+pub async fn patch_file(id: &str, request: &PatchFileRequest) -> Result<(), RequestError> {
     let request = api_request(Request::patch(&format!("/api/files/{id}")))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
-    send_json(request).await
+    send_empty(request).await
 }
 
-/// Copy a live file or directory below another live directory.
-pub async fn copy_file(
-    id: &str,
-    request: &CopyFileRequest,
-) -> Result<revaro_core::model::File, RequestError> {
+/// Copy a file-browser item while consuming only the success status.
+pub async fn copy_file(id: &str, request: &CopyFileRequest) -> Result<(), RequestError> {
     let request = api_request(Request::post(&format!("/api/files/{id}/copy")))
         .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
-    send_json(request).await
+    send_empty(request).await
 }
 
 /// Move a live item into the trash.

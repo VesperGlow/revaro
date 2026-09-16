@@ -1494,23 +1494,25 @@ pub fn FileBrowser(
                 let mut unauthorized = false;
                 for item in targets {
                     let result = match mode {
-                        TransferMode::Move => api::patch_file(
-                            &item.id,
-                            &PatchFileRequest {
-                                name: None,
-                                parent_id: Some(parent_id.clone()),
-                            },
-                        )
-                        .await
-                        .map(|_| ()),
-                        TransferMode::Copy => api::copy_file(
-                            &item.id,
-                            &CopyFileRequest {
-                                parent_id: parent_id.clone(),
-                            },
-                        )
-                        .await
-                        .map(|_| ()),
+                        TransferMode::Move => {
+                            api::patch_file(
+                                &item.id,
+                                &PatchFileRequest {
+                                    name: None,
+                                    parent_id: Some(parent_id.clone()),
+                                },
+                            )
+                            .await
+                        }
+                        TransferMode::Copy => {
+                            api::copy_file(
+                                &item.id,
+                                &CopyFileRequest {
+                                    parent_id: parent_id.clone(),
+                                },
+                            )
+                            .await
+                        }
                     };
                     match result {
                         Ok(()) => completed += 1,
