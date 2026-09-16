@@ -999,6 +999,82 @@ test('old/new 文档内容 GET 首次失败后退出加载态，关闭重开可�
   }
 })
 
+test('过期会话读取文档时保留旧版实测差异并由 Rust 清理敏感 editor 状态', async ({ browser }) => {
+  const name = `editor-expired-session-${crypto.randomUUID()}.md`
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string, isReference: boolean) {
+    await loginAt(page, baseUrl)
+    const id = await createDocument(page, name, 'sensitive content behind an expired session')
+    await page.reload()
+    await page.getByRole('button', { name: '列表', exact: true }).click()
+    await page.route(`**/api/files/${id}/content`, route => route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: { status: 401, code: 'unauthorized', message: 'session expired' },
+      }),
+    }))
+    await page.locator('.file-row').filter({ hasText: name }).click()
+    const editor = page.locator('.document-editor')
+    if (isReference) {
+      await expect(editor.locator('.editor-header-message.error')).toHaveText('session expired')
+      return {
+        editor: await editor.count(),
+        error: await editor.locator('.editor-header-message.error').textContent(),
+        authenticatedShell: await page.locator('.app-shell').count(),
+        loginButton: await page.getByRole('button', { name: '进入我的网盘', exact: true }).count(),
+      }
+    }
+
+    await expect(page.getByRole('button', { name: '进入我的网盘', exact: true })).toBeVisible()
+    return {
+      editor: await editor.count(),
+      error: null,
+      authenticatedShell: await page.locator('.app-shell').count(),
+      loginButton: await page.getByRole('button', { name: '进入我的网盘', exact: true }).count(),
+    }
+  }
+
+  async function cleanup(baseUrl: string) {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    try {
+      await loginAt(page, baseUrl)
+      await removeByName(page, name)
+    } finally {
+      await context.close()
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl, true),
+      exercise(newPage, newUrl, false),
+    ])
+    expect(oldResult).toEqual({
+      editor: 1,
+      error: 'session expired',
+      authenticatedShell: 1,
+      loginButton: 0,
+    })
+    expect(newResult, 'Rust should clear the editor and return to login after a 401').toEqual({
+      editor: 0,
+      error: null,
+      authenticatedShell: 0,
+      loginButton: 1,
+    })
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+    await Promise.all([cleanup(oldUrl), cleanup(newUrl)])
+  }
+})
+
 test('old/new 回收站只读 editor 忽略 Escape，遮罩与关闭按钮均不触发放弃确认', async ({ browser }) => {
   const name = `editor-readonly-close-${crypto.randomUUID()}.yaml`
   const content = 'message: trash preview\n'
