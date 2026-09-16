@@ -3,6 +3,8 @@ import path from 'node:path'
 import { expect, test } from '@playwright/test'
 import { login } from './helpers'
 
+const ROOT = '00000000-0000-0000-0000-000000000000'
+
 async function removeCreated(page: Parameters<typeof login>[0], names: string[]) {
   await page.evaluate(async wanted => {
     const headers = { 'Content-Type': 'application/json' }
@@ -1388,6 +1390,91 @@ test('old/new 创建 upload 成功响应缺少未使用字段时仍完成单文�
       removeCreated(oldPage, [name]),
       removeCreated(newPage, [name]),
     ])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 创建 upload 缺少可选 URL 时保留断点并进入同一本地错误', async ({ browser }) => {
+  const name = `upload-missing-url-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload missing url response\n')
+  const lastModified = 321
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    const calls: string[] = []
+    let uploadId = ''
+    await page.route(/\/api\/uploads(?:\/|$)/, async route => {
+      const request = route.request()
+      const pathname = new URL(request.url()).pathname
+      if (pathname === '/api/uploads' && request.method() === 'POST') {
+        const response = await route.fetch()
+        const payload = await response.json() as Record<string, unknown>
+        uploadId = String(payload.upload_id ?? '')
+        delete payload.url
+        calls.push('POST /api/uploads')
+        return route.fulfill({ status: response.status(), json: payload })
+      }
+      if (pathname.match(/^\/api\/uploads\/[^/]+\/data$/) && request.method() === 'PUT') {
+        calls.push('PUT /api/uploads/:id/data')
+      }
+      if (pathname.match(/^\/api\/uploads\/[^/]+\/complete$/) && request.method() === 'POST') {
+        calls.push('POST /api/uploads/:id/complete')
+      }
+      return route.continue()
+    })
+
+    await loginAt(page, baseUrl)
+    await page.locator('input[type=file]').first().setInputFiles({
+      name,
+      mimeType: 'text/plain',
+      buffer,
+      lastModified,
+    })
+    await expect.poll(() => page.evaluate(fileName => {
+      const raw = localStorage.getItem('revaro.uploads.v1')
+      if (!raw) return false
+      const value = JSON.parse(raw) as Array<{ name?: string }>
+      return value.some(entry => entry.name === fileName)
+    }, name), { timeout: 10_000 }).toBe(true)
+    await page.waitForTimeout(300)
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('revaro.uploads.v1') || '[]')) as Array<Record<string, unknown>>
+    return {
+      uploadId,
+      calls,
+      saved: saved.map(({ lastModified: _lastModified, ...entry }) => ({
+        ...entry,
+        uploadId: ':id',
+        lastModifiedType: typeof _lastModified,
+      })),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.calls).toEqual(['POST /api/uploads'])
+    expect(oldResult.saved).toEqual([{
+      uploadId: ':id',
+      parentId: ROOT,
+      name,
+      size: buffer.length,
+      lastModifiedType: 'number',
+    }])
+    const { uploadId: oldUploadId, ...oldComparable } = oldResult
+    const { uploadId: newUploadId, ...newComparable } = newResult
+    expect(newComparable, 'Rust 创建响应缺少 URL 时未保持 reference 的本地错误和断点记录').toEqual(oldComparable)
+    await Promise.all([
+      oldPage.evaluate(async id => { await fetch(`/api/uploads/${id}`, { method: 'DELETE' }) }, oldUploadId),
+      newPage.evaluate(async id => { await fetch(`/api/uploads/${id}`, { method: 'DELETE' }) }, newUploadId),
+    ])
+  } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })

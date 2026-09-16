@@ -299,6 +299,7 @@ pub mod uploads {
         /// Single-request or multipart transfer.
         pub mode: UploadMode,
         /// Target URL, empty for multipart uploads.
+        #[serde(default)]
         pub url: String,
         /// Part size the client must slice with.
         pub part_size: i64,
@@ -818,6 +819,20 @@ mod tests {
         assert_eq!(json["mode"], "multipart");
         assert_eq!(json["url"], "");
         assert_eq!(json["expires_at"], "2024-05-06T07:08:09Z");
+    }
+
+    #[test]
+    fn create_upload_accepts_a_missing_optional_url() {
+        let body: CreateUpload = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "part_size": 16,
+            "part_count": 0
+        }))
+        .unwrap();
+        assert!(body.url.is_empty());
+        assert!(body.file_id.is_empty());
+        assert_eq!(body.expires_at, Timestamp::default());
     }
 
     #[test]
