@@ -340,16 +340,32 @@ pub struct File {
     /// Size in bytes; directories report `0`.
     pub size: i64,
     /// Stored content type, omitted when unset.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub mime_type: String,
     /// Entity tag used for cache validation, omitted when unset.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub etag: String,
     /// Integrity hash of the committed bytes, omitted when unset.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub content_hash: String,
     /// Algorithm of [`File::content_hash`], omitted when unset.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub hash_algorithm: String,
     /// Lifecycle state.
     #[serde(deserialize_with = "deserialize_file_status")]
@@ -365,13 +381,39 @@ pub struct File {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_parent_id: Option<String>,
     /// Whether a thumbnail or generated cover exists.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_bool",
+        skip_serializing_if = "is_false"
+    )]
     pub has_cover: bool,
     /// Object-store key of the contents.
     ///
     /// Never leaves the server: the browser addresses files by id.
     #[serde(skip)]
     pub object_key: String,
+}
+
+/// Older browser responses typed optional string fields structurally. A
+/// server may therefore send `null` for an unset value, which the Vue caller
+/// treated exactly like an omitted field (`value || ''`). Keep response
+/// decoding tolerant while retaining the concrete string representation used
+/// by the Rust UI and storage layer.
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// The historical `has_cover` check was `=== true`, so an explicit `null`
+/// was the same as a missing/false value. Reject other malformed scalar types
+/// rather than inventing a new truthiness rule.
+fn deserialize_nullable_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
 }
 
 /// The historical browser treated every status other than `ready` as a muted
@@ -745,6 +787,31 @@ mod tests {
         assert!(!file.is_ready_file());
         assert!("future_kind".parse::<FileKind>().is_err());
         assert!(serde_json::from_str::<FileKind>(r#""future_kind""#).is_err());
+    }
+
+    #[test]
+    fn file_responses_treat_nullable_optional_fields_as_empty_without_affecting_required_data() {
+        let file = serde_json::from_value::<File>(serde_json::json!({
+            "id": "nullable-fields",
+            "parent_id": null,
+            "name": "nullable.txt",
+            "kind": "file",
+            "size": 1,
+            "mime_type": null,
+            "etag": null,
+            "content_hash": null,
+            "hash_algorithm": null,
+            "status": "ready",
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z",
+            "has_cover": null
+        }))
+        .unwrap();
+        assert_eq!(file.mime_type, "");
+        assert_eq!(file.etag, "");
+        assert_eq!(file.content_hash, "");
+        assert_eq!(file.hash_algorithm, "");
+        assert!(!file.has_cover);
     }
 
     #[test]
