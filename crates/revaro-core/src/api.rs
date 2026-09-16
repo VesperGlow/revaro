@@ -25,6 +25,20 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// The historical upload caller treated every mode other than the literal
+/// `single` as multipart. Keep that response fallback without relaxing the
+/// strict `FromStr` parser used for persisted upload rows.
+fn deserialize_upload_mode_response<'de, D>(deserializer: D) -> Result<UploadMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(UploadMode::Multipart))
+}
+
 /// Health probe response.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Health {
@@ -297,6 +311,7 @@ pub mod uploads {
         #[serde(default)]
         pub file_id: String,
         /// Single-request or multipart transfer.
+        #[serde(deserialize_with = "deserialize_upload_mode_response")]
         pub mode: UploadMode,
         /// Target URL, empty for multipart uploads.
         #[serde(default)]
@@ -319,6 +334,7 @@ pub mod uploads {
         #[serde(default)]
         pub file_id: String,
         /// Single-request or multipart transfer.
+        #[serde(deserialize_with = "deserialize_upload_mode_response")]
         pub mode: UploadMode,
         /// Target URL, empty for multipart uploads.
         #[serde(default)]
@@ -833,6 +849,28 @@ mod tests {
         assert!(body.url.is_empty());
         assert!(body.file_id.is_empty());
         assert_eq!(body.expires_at, Timestamp::default());
+    }
+
+    #[test]
+    fn upload_responses_treat_unknown_modes_as_multipart_without_relaxing_storage_parsing() {
+        let created: CreateUpload = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "future_mode",
+            "part_size": 16,
+            "part_count": 2
+        }))
+        .unwrap();
+        assert_eq!(created.mode, UploadMode::Multipart);
+
+        let status: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": null,
+            "part_size": 16,
+            "part_count": 2
+        }))
+        .unwrap();
+        assert_eq!(status.mode, UploadMode::Multipart);
+        assert!("future_mode".parse::<UploadMode>().is_err());
     }
 
     #[test]

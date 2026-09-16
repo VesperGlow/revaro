@@ -2306,3 +2306,54 @@ test('old/new upload complete 成功响应缺少文件字段时仍按 HTTP 成�
     ])
   }
 })
+
+test('old/new upload 创建响应的未知 mode 仍按 reference 走 multipart', async ({ browser }) => {
+  const name = `upload-unknown-mode-${crypto.randomUUID()}.bin`
+  const buffer = Buffer.alloc(16 * 1024 * 1024 + 1, 7)
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    let createCalls = 0
+    await page.route('**/api/uploads', async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
+      createCalls += 1
+      const response = await route.fetch()
+      const payload = await response.json() as Record<string, unknown>
+      payload.mode = 'future_mode'
+      await route.fulfill({ status: response.status(), contentType: 'application/json', json: payload })
+    })
+    await loginAt(page, baseUrl)
+    await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'application/octet-stream', buffer })
+    await expect.poll(() => page.evaluate(async wanted => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === wanted && item.status === 'ready')
+    }, name), { timeout: 30_000 }).toBe(true)
+    return { createCalls }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ createCalls: 1 })
+    expect(newResult, 'Rust upload 未知 mode 未保持 reference 的 multipart 回退').toEqual(oldResult)
+  } finally {
+    await Promise.all([
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+      oldContext.close(),
+      newContext.close(),
+    ])
+  }
+})
