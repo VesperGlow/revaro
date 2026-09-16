@@ -301,6 +301,134 @@ test('old/new 音频封面加载失败回退到 Music2 且不中断播放', asyn
   }
 })
 
+test('old/new 音频元数据晚于原始媒体到达时先回退章节且不重载音频', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let releaseMetadata!: () => void
+    let metadataRequests = 0
+    let previewRequests = 0
+    const metadataGate = new Promise<void>(resolve => { releaseMetadata = resolve })
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/files/audio-1/preview') previewRequests += 1
+    })
+    await page.route('**/api/files/audio-1/audio', async route => {
+      metadataRequests += 1
+      await metadataGate
+      await route.fulfill({ json: {
+        duration: 120,
+        has_cover: true,
+        cover_url: '/api/files/image-1/preview',
+        chapters: [
+          { id: 11, title: '第一章 · 风从山谷来', start: 0, end: 40 },
+          { id: 22, title: '第二章 · 在林间停留', start: 40, end: 80 },
+          { id: 33, title: '第三章 · 晚风与归途', start: 80, end: 120 },
+        ],
+      } })
+    })
+
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => metadataRequests).toBe(1)
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => !element.paused)).toBe(true)
+    await expect(page.locator('.audio-chapter-current h1')).toHaveText('山间来信')
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    await expect(page.locator('.audio-chapter-list button')).toHaveCount(1)
+    const previewRequestsBeforeMetadata = previewRequests
+
+    releaseMetadata()
+    await expect(page.locator('.audio-chapter-list button')).toHaveCount(3)
+    await expect(page.locator('.audio-chapter-current h1')).toHaveText('第一章 · 风从山谷来')
+    const result = {
+      metadataRequests,
+      previewRequestsBeforeMetadata,
+      previewRequestsAfterMetadata: previewRequests,
+      currentSourcePath: await audio.evaluate((element: HTMLAudioElement) => new URL(element.currentSrc).pathname),
+      readyState: await audio.evaluate((element: HTMLAudioElement) => element.readyState),
+      paused: await audio.evaluate((element: HTMLAudioElement) => element.paused),
+      chapterCount: await page.locator('.audio-chapter-list button').count(),
+      currentTitle: await page.locator('.audio-chapter-current h1').innerText(),
+    }
+    return result
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.metadataRequests).toBe(1)
+    expect(oldResult.previewRequestsAfterMetadata).toBe(oldResult.previewRequestsBeforeMetadata)
+    expect(oldResult.readyState).toBe(4)
+    expect(oldResult.paused).toBe(false)
+    expect(oldResult.chapterCount).toBe(3)
+    expect(oldResult.currentTitle).toBe('第一章 · 风从山谷来')
+    expect(newResult, 'Rust 音频元数据到达时序与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 音频 metadata 接口失败时回退文件名章节且原始播放不中断', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    let metadataRequests = 0
+    await page.route('**/api/files/audio-1/audio', async route => {
+      metadataRequests += 1
+      await route.fulfill({ status: 500, json: { error: 'metadata unavailable' } })
+    })
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => !element.paused)).toBe(true)
+    await expect(page.locator('.audio-chapter-current h1')).toHaveText('山间来信')
+    await expect(page.locator('.audio-book-title')).toHaveCount(0)
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    await expect(page.locator('.audio-chapter-list button')).toHaveCount(1)
+    const state = {
+      metadataRequests,
+      chapterTitle: await page.locator('.audio-chapter-list button strong').innerText(),
+      chapterCount: await page.locator('.audio-chapter-list button').count(),
+      nextChapterDisabled: await page.locator('.audio-chapter-navigation button').nth(1).isDisabled(),
+      readyState: await audio.evaluate((element: HTMLAudioElement) => element.readyState),
+      paused: await audio.evaluate((element: HTMLAudioElement) => element.paused),
+      playerErrorCount: await page.locator('.audio-player-error').count(),
+    }
+    return state
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.metadataRequests).toBe(1)
+    expect(oldResult.chapterTitle).toBe('山间来信')
+    expect(oldResult.chapterCount).toBe(1)
+    expect(oldResult.nextChapterDisabled).toBe(true)
+    expect(oldResult.readyState).toBe(4)
+    expect(oldResult.paused).toBe(false)
+    expect(oldResult.playerErrorCount).toBe(0)
+    expect(newResult, 'Rust audio metadata API failure fallback 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 for (const width of [1440, 390, 320]) {
   test(`音频 ${width}px：章节、秒数跳转、Esc 和焦点恢复`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
