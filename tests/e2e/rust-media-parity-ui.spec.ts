@@ -730,6 +730,68 @@ test('old/new 音频 metadata 缺少时长和封面字段时保留章节并用�
   }
 })
 
+test('old/new 音频 metadata 缺失章节边界时记录 reference 的不安全章节与 Rust 的安全回退', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/audio-1/audio', async route => {
+      await route.fulfill({ json: {
+        duration: 120,
+        has_cover: false,
+        cover_url: '',
+        // The legacy API type requires start/end, but a malformed response
+        // can still arrive at the browser. Capture the actual old/new result
+        // rather than treating the unsafe legacy rendering as a contract.
+        chapters: [{ id: 11, title: '不完整章节' }],
+      } })
+    })
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await page.waitForTimeout(100)
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    return {
+      heading: await page.locator('.audio-chapter-current h1').innerText(),
+      listTitle: await page.locator('.audio-chapter-list button strong').innerText(),
+      chapterCount: await page.locator('.audio-chapter-list button').count(),
+      nextChapterDisabled: await page.locator('.audio-chapter-navigation button').nth(1).isDisabled(),
+      playerErrorCount: await page.locator('.audio-player-error').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      heading: '不完整章节',
+      listTitle: '不完整章节',
+      chapterCount: 1,
+      nextChapterDisabled: true,
+      playerErrorCount: 0,
+    })
+    // Rust rejects the malformed chapter object and keeps playback usable via
+    // the filename fallback. This is an explicit old-runtime defect boundary,
+    // not a reason to expose undefined seek ranges in the current UI.
+    expect(newResult).toEqual({
+      heading: '山间来信',
+      listTitle: '山间来信',
+      chapterCount: 1,
+      nextChapterDisabled: true,
+      playerErrorCount: 0,
+    })
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频上一章按三秒阈值回退，下一章定位起点并恢复播放', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
