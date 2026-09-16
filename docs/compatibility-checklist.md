@@ -296,6 +296,7 @@
 - `2026-09-17`，实际向 old/new 的 single/multipart 裸 PUT 发送缺失分片路径、单请求误带 part、错误 `Content-Length` 和空分片体；old 的 `upload size mismatch`、`single upload has no parts`、`invalid part number` 与 Rust 初始文案/校验时序不同，已恢复为同一 `400` envelope。`rust-api-reference-parity.spec.ts` old/new 1/1。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的目录/文档创建、文件 PATCH 和复制发送缺省字段、未知字段及 malformed JSON，并覆盖 root PATCH 和缺失 source 的校验顺序；Rust 初始 Axum `Json` 返回 422，空 PATCH/复制的业务分流也晚于旧版，已改为 Go decoder 的零值语义、统一 `400 invalid JSON request` 和旧版校验顺序。`rust-api-reference-parity.spec.ts` 文件变更 API old/new 1/1；CRUD/copy 回归集合通过。
 - `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/content` 发送缺省 `content`、未知字段、malformed JSON、缺失文件 malformed 及缺省 content 的过期 ETag；old 先查 ready 文件再解码，`{}` 保存空内容并返回 200，未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404，过期 ETag 返回 409。Rust 初始 Axum `Json` 先返回 422，已改为 Go decoder 零值语义和旧版查找/解码顺序；`rust-api-reference-parity.spec.ts` old/new 2/2，编辑器保存失败/刷新 metadata 回归 old/new 3/3。
+- `2026-09-17`，实际对 old `18180` / new `18184` 的 `PUT /api/files/{id}/media/progress` 发送缺省字段、未知字段、malformed JSON、缺失媒体文件 malformed、缺省 position 和非法值；old 先查 ready 媒体文件再解码，缺省数值按 0、未知/malformed 返回 `400 invalid JSON request`，缺失文件返回 404。Rust 初始必填 Json 返回 422、未知字段被接受且解析先行，已恢复 Go decoder 零值/拒绝未知字段和校验顺序；`rust-specialized-api-reference-parity.spec.ts` old/new 2/2。
 - `2026-09-16`，old `18180` / new `18184` 实际打开“文件”树并加载目录：旧版 `SidebarFileTree.vue` 缺少 `SidebarDirectoryNode` 注册，DOM 只有未解析的 `<sidebardirectorynode>` 标签，没有可见目录行；Rust 保留可用递归树，验证根节点收合/展开、进入一级/嵌套目录及空目录。另将初始 children 请求延迟到更新请求之后返回：旧 DOM 标签的 `name` 被旧响应覆盖，但页面不可见；Rust 以请求 token 丢弃过期响应，继续显示较新的目录。该旧版组件注册/过期响应行为按用户指示记为缺陷例外。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；`cargo xtask web-build`、`cargo xtask check`、格式检查通过。
 
 ## 2. 启动、认证和全局壳层
@@ -503,7 +504,7 @@
 | `[P]` | `POST /api/files/{id}/media/reanalyze` | 媒体重新分析 | old UI 没有稳定可见入口，但 old/new 对同一实际 WAV 执行 reanalyze，均返回 ready/字幕数量；Rust route 保留；`rust-specialized-api-reference-parity.spec.ts` |
 | `[P]` | `GET /api/files/{id}/video/subtitles/{subtitle}` | 视频字幕文件 | Rust `VideoPlayer` 的 `<track src>` 直接调用；old/new 字幕加载 fixture 已验证 |
 | `[P]` | `GET /api/files/{id}/media/progress` | 音视频进度恢复 | Rust `fetch_media_progress()` 由 Audio/VideoPlayer 调用；old/new 存储探针已验证 |
-| `[P]` | `PUT /api/files/{id}/media/progress` | 音视频进度保存 | Rust 普通定时路径由 `save_media_progress()` 调用，预览卸载路径由 `save_media_progress_keepalive()` 直接构造同源 keepalive 请求；old/new 存储探针与 Request.keepalive 已验证 |
+| `[P]` | `PUT /api/files/{id}/media/progress` | 音视频进度保存 | Rust 普通定时路径由 `save_media_progress()` 调用，预览卸载路径由 `save_media_progress_keepalive()` 直接构造同源 keepalive 请求；old/new 存储探针、Request.keepalive 及缺省/未知/malformed JSON、缺失媒体文件查找顺序已验证 |
 | `[P]` | `GET /api/files/{id}/content` | 文本编辑器读取 | Rust `fetch_document()` 由 `DocumentEditor` 流程调用；old/new TXT/Markdown 读取已验证 |
 | `[P]` | `PUT /api/files/{id}/content` | 文本编辑器保存/etag | Rust `update_document()` 由 `DocumentEditor` 调用；old/new 保存和 Markdown 重开已验证，冲突子项仍待验 |
 | `[P]` | `GET /api/files/{id}/book` | EPUB/TXT metadata | old/new 实际上传同一 EPUB 后查询成功响应，format/title/name/cover/TOC 一致；Rust `fetch_book()` 有；`rust-specialized-api-reference-parity.spec.ts` |

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { expect, request as createRequest, test, type APIRequestContext } from '@playwright/test'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
+const MISSING = '0190f8f0-1c2b-7c3d-9e4f-5a6b7c8d9e0f'
 
 function crc32(data: Buffer) {
   let value = 0xffffffff
@@ -307,6 +308,60 @@ test('旧版专用媒体、阅读器、任务和 upload 成功 API 在 Rust 版�
     await Promise.all([
       cleanup(oldClient, oldCreated.map(({ file }) => String(file.id)), oldCreated.map(({ uploadId }) => uploadId)),
       cleanup(newClient, newCreated.map(({ file }) => String(file.id)), newCreated.map(({ uploadId }) => uploadId)),
+    ])
+    await Promise.all([oldClient.dispose(), newClient.dispose()])
+  }
+})
+
+test('旧版媒体进度 API 的 JSON 解码和文件查找顺序在 Rust 版保持一致', async () => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const suffix = crypto.randomUUID().slice(0, 8)
+  const oldClient = await login(oldUrl)
+  const newClient = await login(newUrl)
+  let oldCreated: { file: Record<string, unknown>; uploadId: string } | undefined
+  let newCreated: { file: Record<string, unknown>; uploadId: string } | undefined
+
+  try {
+    ;[oldCreated, newCreated] = await Promise.all([
+      upload(oldClient, oldUrl, `media-progress-${suffix}.wav`, 'audio/wav', wav()),
+      upload(newClient, newUrl, `media-progress-${suffix}.wav`, 'audio/wav', wav()),
+    ])
+    const oldId = String(oldCreated.file.id)
+    const newId = String(newCreated.file.id)
+    const cases: Array<[string, unknown, number, Record<string, unknown>?, boolean?]> = [
+      ['缺省字段', {}, 200],
+      ['未知字段', { position: 1, duration: 2, extra: true }, 400, { error: { status: 400, message: 'invalid JSON request' } }],
+      ['malformed', Buffer.from('{"position":'), 400, { error: { status: 400, message: 'invalid JSON request' } }],
+      ['缺失文件 malformed', Buffer.from('{"position":'), 404, { error: { status: 404, message: 'ready media file not found' } }, true],
+      ['缺省 position', { duration: 2 }, 200],
+      ['非法值', { position: 99, duration: 2 }, 400, { error: { status: 400, message: 'media progress values are invalid' } }],
+    ]
+    for (const [label, data, expectedStatus, expectedError, missing] of cases) {
+      const [oldResult, newResult] = await Promise.all([
+        json(oldClient, oldUrl, `/api/files/${missing ? MISSING : oldId}/media/progress`, 'PUT', data),
+        json(newClient, newUrl, `/api/files/${missing ? MISSING : newId}/media/progress`, 'PUT', data),
+      ])
+      expect(newResult.status, `Rust ${label} 状态与 reference 不一致`).toBe(oldResult.status)
+      expect(newResult.contentType, `Rust ${label} Content-Type 与 reference 不一致`).toBe(oldResult.contentType)
+      expect(oldResult.status, `reference ${label} 状态异常`).toBe(expectedStatus)
+      if (expectedError) {
+        expect(oldResult.value, `reference ${label} 错误 envelope 异常`).toEqual(expectedError)
+        expect(newResult.value, `Rust ${label} 错误 envelope 与 reference 不一致`).toEqual(oldResult.value)
+      } else {
+        expect(newResult.value.position, `Rust ${label} position 与 reference 不一致`).toBe(oldResult.value.position)
+        expect(newResult.value.duration, `Rust ${label} duration 与 reference 不一致`).toBe(oldResult.value.duration)
+        expect(typeof newResult.value.updated_at, `Rust ${label} updated_at 类型不一致`).toBe(typeof oldResult.value.updated_at)
+      }
+    }
+  } finally {
+    await Promise.all([
+      oldCreated
+        ? cleanup(oldClient, [String(oldCreated.file.id)], [oldCreated.uploadId])
+        : Promise.resolve(),
+      newCreated
+        ? cleanup(newClient, [String(newCreated.file.id)], [newCreated.uploadId])
+        : Promise.resolve(),
     ])
     await Promise.all([oldClient.dispose(), newClient.dispose()])
   }

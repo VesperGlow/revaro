@@ -87,6 +87,13 @@ struct UpdateDocumentInput {
     etag: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MediaProgressInput {
+    position: Option<f64>,
+    duration: Option<f64>,
+}
+
 /// Route table for the read-only file surface.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -1572,8 +1579,28 @@ async fn save_media_progress(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    Json(request): Json<revaro_core::api::progress::Media>,
+    request: Request,
 ) -> Result<Json<revaro_core::api::progress::Media>, ApiError> {
+    // Go checks that the target is a ready media file before decoding the
+    // body. Keep that order so a malformed request for a missing file still
+    // returns the historical 404 rather than the JSON decoder's 400.
+    state
+        .db
+        .call_api({
+            let id = id.clone();
+            move |connection| require_media_file(connection, &id)
+        })
+        .await?;
+
+    let JsonBody(input) =
+        JsonBody::<Option<MediaProgressInput>>::from_request(request, &state).await?;
+    let input = input.unwrap_or_default();
+    let request = revaro_core::api::progress::Media {
+        position: input.position.unwrap_or_default(),
+        duration: input.duration.unwrap_or_default(),
+        ..Default::default()
+    };
+
     // Rejects NaN, infinities, negatives, anything beyond a week, and a position
     // more than five seconds past a known duration. These values become integer
     // milliseconds under a CHECK constraint, so an out-of-range value would
