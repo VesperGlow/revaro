@@ -522,6 +522,83 @@ test('图片预览：从根节点按 Tab 首先进入更多操作菜单', async 
   await expect(page.locator('.preview-commandbar summary')).toBeFocused()
 })
 
+test('old/new 图片双击沿用旧版实测不变焦，缩放控件边界状态一致', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await open(page, '群山.png')
+    const image = page.locator('.preview-image')
+    await expect(image).toBeVisible()
+    const actual = page.locator('.preview-actual-size')
+    const zoomIn = page.getByRole('button', { name: '放大', exact: true })
+    const zoomOut = page.getByRole('button', { name: '缩小', exact: true })
+    const fit = page.getByRole('button', { name: '适应窗口', exact: true })
+    const fitPercent = await actual.innerText()
+    const initial = { fitPercent, zoomInDisabled: await zoomIn.isDisabled(), zoomOutDisabled: await zoomOut.isDisabled() }
+
+    await page.evaluate(() => {
+      document.addEventListener('dblclick', event => {
+        const target = event.target
+        document.documentElement.dataset.compatDblclickTarget = target instanceof Element ? target.className.toString() : ''
+      }, { capture: true, once: true })
+    })
+    await image.dblclick()
+    await expect(actual).toHaveText(fitPercent)
+    const doubleClickTarget = await page.locator('html').getAttribute('data-compat-dblclick-target')
+    expect(doubleClickTarget).toContain('preview-stage')
+    const afterDoubleClick = { percent: await actual.innerText(), zoomOutDisabled: await zoomOut.isDisabled() }
+    await image.dblclick()
+    await expect(actual).toHaveText(fitPercent)
+    const returnedToFit = { percent: await actual.innerText(), zoomOutDisabled: await zoomOut.isDisabled() }
+
+    let zoomSteps = 0
+    while (await zoomIn.isEnabled() && zoomSteps < 24) {
+      await zoomIn.click()
+      zoomSteps += 1
+    }
+    const maximum = {
+      percent: await actual.innerText(),
+      zoomInDisabled: await zoomIn.isDisabled(),
+      zoomOutDisabled: await zoomOut.isDisabled(),
+      zoomSteps,
+    }
+    await fit.click()
+    const reset = {
+      percent: await actual.innerText(),
+      zoomInDisabled: await zoomIn.isDisabled(),
+      zoomOutDisabled: await zoomOut.isDisabled(),
+    }
+    return { initial, afterDoubleClick, returnedToFit, maximum, reset }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.initial.zoomInDisabled).toBe(false)
+    expect(oldResult.initial.zoomOutDisabled).toBe(true)
+    expect(oldResult.afterDoubleClick).toEqual({ percent: oldResult.initial.fitPercent, zoomOutDisabled: true })
+    expect(oldResult.returnedToFit).toEqual({ percent: oldResult.initial.fitPercent, zoomOutDisabled: true })
+    expect(oldResult.maximum.zoomSteps).toBeGreaterThan(0)
+    expect(oldResult.maximum.zoomInDisabled).toBe(true)
+    expect(oldResult.maximum.zoomOutDisabled).toBe(false)
+    expect(oldResult.maximum.zoomSteps).toBeLessThanOrEqual(24)
+    expect(oldResult.reset.percent).toBe(oldResult.initial.fitPercent)
+    expect(oldResult.reset.zoomInDisabled).toBe(false)
+    expect(oldResult.reset.zoomOutDisabled).toBe(true)
+    expect(newResult, 'Rust 图片双击缩放/边界控件状态与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 图片缩略图失败时只回退一次到原图地址', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
