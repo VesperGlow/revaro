@@ -730,6 +730,58 @@ test('old/new 音频 metadata 缺少时长和封面字段时保留章节并用�
   }
 })
 
+test('old/new 音频章节 title 缺失或为 null 时按文件名回退当前标题', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/audio-1/audio', route => route.fulfill({
+      json: {
+        duration: 120,
+        has_cover: false,
+        cover_url: '',
+        chapters: [
+          { id: 11, start: 0, end: 40 },
+          { id: 22, title: null, start: 40, end: 80 },
+        ],
+      },
+    }))
+    await open(page, '山间来信.m4a')
+    const audio = page.locator('audio')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+    await page.getByRole('button', { name: '章节', exact: true }).click()
+    return {
+      heading: await page.locator('.audio-chapter-current h1').innerText(),
+      listTitles: await page.locator('.audio-chapter-list button strong').allTextContents(),
+      chapterCount: await page.locator('.audio-chapter-list button').count(),
+      nextChapterDisabled: await page.locator('.audio-chapter-navigation button').nth(1).isDisabled(),
+      bookTitleCount: await page.locator('.audio-book-title').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      heading: '山间来信',
+      listTitles: ['', ''],
+      chapterCount: 2,
+      nextChapterDisabled: false,
+      bookTitleCount: 1,
+    })
+    expect(newResult, 'Rust 音频章节 title 缺失/null 的回退与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 音频 metadata 缺失章节边界时记录 reference 的不安全章节与 Rust 的安全回退', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

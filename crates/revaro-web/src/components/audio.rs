@@ -620,7 +620,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                         <Show when=move || chapters().len().gt(&1) fallback=|| ()>
                             <p class="audio-book-title">{book_title.clone()}</p>
                         </Show>
-                        <h1>{move || chapters().get(current_chapter_index()).map_or_else(|| heading_title.clone(), |chapter| chapter.title.clone())}</h1>
+                        <h1>{move || chapters().get(current_chapter_index()).map_or_else(|| heading_title.clone(), |chapter| if chapter.title.is_empty() { heading_title.clone() } else { chapter.title.clone() })}</h1>
                         <Show when=move || chapters().len().gt(&1) fallback=|| ()>
                             <small>{move || format!("第 {} / {} 章", current_chapter_index() + 1, chapters().len())}</small>
                         </Show>

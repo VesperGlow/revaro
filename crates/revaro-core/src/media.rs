@@ -134,7 +134,8 @@ impl MediaProbe {
 pub struct AudioChapter {
     /// 1-based chapter number.
     pub id: i32,
-    /// Chapter title.
+    /// Chapter title. The old player renders an empty title when it is absent.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub title: String,
     /// Start offset in seconds.
     pub start: f64,
@@ -277,15 +278,24 @@ mod tests {
     #[test]
     fn audio_metadata_defaults_missing_duration_and_cover_fields() {
         let media: AudioMedia = serde_json::from_value(serde_json::json!({
-            "chapters": [{"id": 1, "title": "One", "start": 0.0, "end": 12.5}]
+            "chapters": [
+                {"id": 1, "start": 0.0, "end": 12.5},
+                {"id": 2, "title": null, "start": 12.5, "end": 25.0}
+            ]
         }))
         .unwrap();
 
         assert_eq!(media.duration, 0.0);
         assert!(!media.has_cover);
         assert!(media.cover_url.is_empty());
-        assert_eq!(media.chapters.len(), 1);
-        assert_eq!(media.chapters[0].title, "One");
+        assert_eq!(media.chapters.len(), 2);
+        assert!(media.chapters[0].title.is_empty());
+        assert!(media.chapters[1].title.is_empty());
+
+        let invalid = serde_json::from_value::<AudioMedia>(serde_json::json!({
+            "chapters": [{"id": 1, "title": 42, "start": 0.0, "end": 12.5}]
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
