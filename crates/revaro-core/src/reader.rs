@@ -213,8 +213,10 @@ fn is_zero_i64(value: &i64) -> bool {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpineMeta {
     /// First block of the chapter.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub block_start: i32,
     /// Number of blocks in the chapter.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub block_count: i32,
 }
 
@@ -810,6 +812,29 @@ mod tests {
             "format": "epub",
             "total_chars": 0,
             "book_key": 42
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn flow_manifest_treats_nullable_spine_ranges_as_zero() {
+        let manifest: FlowManifest = serde_json::from_value(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "spines": [{ "block_start": null, "block_count": null }],
+            "chunks": [],
+            "toc": []
+        }))
+        .unwrap();
+        assert_eq!(manifest.spines[0].block_start, 0);
+        assert_eq!(manifest.spines[0].block_count, 0);
+
+        let invalid = serde_json::from_value::<FlowManifest>(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "spines": [{ "block_start": "0" }]
         }));
         assert!(invalid.is_err());
     }

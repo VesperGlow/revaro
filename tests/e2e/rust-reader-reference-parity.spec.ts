@@ -30,6 +30,7 @@ type ReaderFixture = {
   toc?: TocEntry[]
   flowToc?: TocEntry[] | null
   rawFlowToc?: unknown
+  flowSpines?: unknown
   flowMetadata?: Record<string, unknown>
   flowChunkMetadata?: Record<string, unknown>
   flowFailure?: boolean
@@ -72,7 +73,7 @@ async function mockReader(page: Page, fixture: ReaderFixture = {}) {
     format: 'epub',
     book_key: 'reader-reference-book-key',
     total_chars: 3200,
-    spines: [
+    spines: fixture.flowSpines ?? [
       { block_start: 0, block_count: 20 },
       { block_start: 20, block_count: 20 },
       { block_start: 40, block_count: 20 },
@@ -296,6 +297,38 @@ test('old/new 阅读器 flow 的 TOC 可选字段为 null 时仍保留目录条�
     await Promise.all([
       expect(oldPage.locator('.toc-item')).toHaveText('空值字段章节'),
       expect(newPage.locator('.toc-item')).toHaveText('空值字段章节'),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('old/new 阅读器 flow 的 spine 范围字段为 null 时仍可加载正文', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const fixture = {
+    flowSpines: [
+      { block_start: null, block_count: 20 },
+      { block_start: 20, block_count: 20 },
+      { block_start: 40, block_count: 20 },
+      { block_start: 60, block_count: 20 },
+      { block_start: 80, block_count: null },
+    ],
+  }
+
+  try {
+    await Promise.all([
+      prepare(oldPage, oldUrl, fixture),
+      prepare(newPage, newUrl, fixture),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('#flow .rf-chunk').first()).toBeVisible(),
+      expect(newPage.locator('#flow .rf-chunk').first()).toBeVisible(),
     ])
   } finally {
     await oldContext.close()
