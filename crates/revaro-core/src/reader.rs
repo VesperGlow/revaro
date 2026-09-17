@@ -224,12 +224,15 @@ pub struct SpineMeta {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkMeta {
     /// Chunk index in reading order.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub index: i32,
     /// First block contained in the chunk.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub block_start: i32,
     /// Number of blocks contained in the chunk.
     pub block_count: i32,
     /// UTF-16 code units of text in the chunk, used for progress scaling.
+    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
     pub chars: i64,
     /// Estimated HTML size in bytes, omitted when unknown.
     #[serde(
@@ -835,6 +838,35 @@ mod tests {
             "format": "epub",
             "total_chars": 0,
             "spines": [{ "block_start": "0" }]
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn flow_manifest_treats_nullable_chunk_geometry_as_defaults() {
+        let manifest: FlowManifest = serde_json::from_value(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "spines": [],
+            "chunks": [{
+                "index": null,
+                "block_start": null,
+                "block_count": 1,
+                "chars": null
+            }],
+            "toc": []
+        }))
+        .unwrap();
+        assert_eq!(manifest.chunks[0].index, 0);
+        assert_eq!(manifest.chunks[0].block_start, 0);
+        assert_eq!(manifest.chunks[0].chars, 0);
+
+        let invalid = serde_json::from_value::<FlowManifest>(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "chunks": [{ "index": "0" }]
         }));
         assert!(invalid.is_err());
     }
