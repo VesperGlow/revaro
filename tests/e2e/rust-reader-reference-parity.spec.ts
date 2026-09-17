@@ -203,6 +203,37 @@ test('old/new 阅读器书籍成功响应的未使用元数据为 null 时仍使
   }
 })
 
+test('old/new 阅读器书籍 metadata 的 TOC 条目字段为 null 时仍可加载 flow', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const fixture = {
+    bookMetadata: {
+      name: '服务端书名',
+      toc: [{ label: null, path: null, fragment: null, offset: null, depth: null }],
+    },
+  }
+
+  try {
+    await Promise.all([
+      prepare(oldPage, oldUrl, fixture),
+      prepare(newPage, newUrl, fixture),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('#flow .rf-chunk').first()).toBeVisible(),
+      expect(newPage.locator('#flow .rf-chunk').first()).toBeVisible(),
+      expect(oldPage.locator('#reader-title')).toHaveText('服务端书名'),
+      expect(newPage.locator('#reader-title')).toHaveText('服务端书名'),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
 test('old/new 阅读器 flow 的 toc 为 null 时仍显示空目录', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

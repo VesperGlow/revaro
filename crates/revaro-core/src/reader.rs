@@ -30,6 +30,13 @@ where
     Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn deserialize_nullable_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -170,18 +177,31 @@ impl Ord for Anchor {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocEntry {
     /// Display label.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub label: String,
     /// Source path inside the EPUB, omitted when not applicable.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub path: String,
     /// Source fragment inside the EPUB, omitted when not applicable.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub fragment: String,
     /// Byte offset for plain-text books, omitted for EPUB.
-    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_i64",
+        skip_serializing_if = "is_zero_i64"
+    )]
     pub offset: i64,
     /// Nesting depth, `0` at the top level.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub depth: i32,
 }
 
@@ -790,6 +810,28 @@ mod tests {
             "format": "epub",
             "total_chars": 0,
             "book_key": 42
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn book_toc_treats_nullable_entry_fields_as_defaults() {
+        let entry: TocEntry = serde_json::from_value(serde_json::json!({
+            "label": null,
+            "path": null,
+            "fragment": null,
+            "offset": null,
+            "depth": null
+        }))
+        .unwrap();
+        assert!(entry.label.is_empty());
+        assert!(entry.path.is_empty());
+        assert!(entry.fragment.is_empty());
+        assert_eq!(entry.offset, 0);
+        assert_eq!(entry.depth, 0);
+
+        let invalid = serde_json::from_value::<TocEntry>(serde_json::json!({
+            "label": 42
         }));
         assert!(invalid.is_err());
     }
