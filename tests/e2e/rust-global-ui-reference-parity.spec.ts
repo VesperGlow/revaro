@@ -218,6 +218,65 @@ test('old/new 系统状态 SSE 显式 null 状态仍保留服务卡', async ({ b
   }
 })
 
+test('old/new 系统状态统计字段缺省或为 null 时仍保留服务卡', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+  const sparseStatus = {
+    status: null,
+    database: { status: null },
+    storage: { status: null, bytes: null, file_count: null },
+    cache: {
+      status: null,
+      memory_bytes: null,
+      memory_entries: null,
+      disk_entries: null,
+      classes: { default: { hits: null, loads: null, evictions: null } },
+    },
+  }
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  try {
+    await Promise.all([mockShell(oldPage, sparseStatus), mockShell(newPage, sparseStatus)])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('.system-status > summary').click(),
+      newPage.locator('.system-status > summary').click(),
+    ])
+    const snapshot = async (page: Page) => ({
+      className: await page.locator('.system-status').getAttribute('class'),
+      error: (await page.locator('.status-error').count()) > 0 ? await page.locator('.status-error').textContent() : null,
+      cards: await page.locator('.status-grid .service-card').count(),
+      texts: await page.locator('.status-grid .service-card').allTextContents(),
+    })
+    const oldState = await snapshot(oldPage)
+    const newState = await snapshot(newPage)
+    expect(oldState).toEqual({
+      className: 'system-status pending',
+      error: null,
+      cards: 3,
+      texts: [
+        '正常数据库数据占用 NaN undefined',
+        'NaN undefined网盘存储使用量null 个文件 · 回收站 NaN undefined',
+        '正常服务端缓存内存 NaN undefined · 磁盘 NaN undefined · 暂无读取',
+      ],
+    })
+    expect(newState, 'Rust 不应因状态统计缺省/null 丢弃整条 SSE').toEqual({
+      className: 'system-status pending',
+      error: null,
+      cards: 3,
+      texts: [
+        '正常数据库数据占用 0 B',
+        '0 B网盘存储使用量0 个文件 · 回收站 0 B',
+        '正常服务端缓存内存 0 B · 磁盘 0 B · 暂无读取',
+      ],
+    })
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('桌面与移动顶栏入口保持 reference 的完整分流', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

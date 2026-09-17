@@ -675,7 +675,11 @@ pub mod system {
         #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub status: String,
         /// Size in bytes, omitted when zero.
-        #[serde(default, skip_serializing_if = "is_zero")]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_i64",
+            skip_serializing_if = "is_zero"
+        )]
         pub bytes: i64,
     }
 
@@ -686,10 +690,13 @@ pub mod system {
         #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub status: String,
         /// Bytes held by ready, non-deleted files, counting copies separately.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub bytes: i64,
         /// Bytes held by trashed files.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub trash_bytes: i64,
         /// Number of ready files.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub file_count: i64,
     }
 
@@ -700,12 +707,16 @@ pub mod system {
         #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub status: String,
         /// Bytes held in memory.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub memory_bytes: i64,
         /// Bytes held on disk.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub disk_bytes: i64,
         /// Number of in-memory entries.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub memory_entries: i64,
         /// Number of on-disk entries.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub disk_entries: i64,
         /// Per-class counters, omitted when no classes are registered.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -716,26 +727,47 @@ pub mod system {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct CacheClass {
         /// Lookups served from cache.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub hits: i64,
         /// Lookups that missed.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub misses: i64,
         /// Values produced by a loader.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub loads: i64,
         /// Loader failures.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub load_errors: i64,
         /// Entries evicted under pressure.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub evictions: i64,
         /// Bytes held in memory, omitted when the class is disk-only.
-        #[serde(default, skip_serializing_if = "is_zero")]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_i64",
+            skip_serializing_if = "is_zero"
+        )]
         pub memory_bytes: i64,
         /// In-memory entries, omitted when the class is disk-only.
-        #[serde(default, skip_serializing_if = "is_zero")]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_i64",
+            skip_serializing_if = "is_zero"
+        )]
         pub memory_entries: i64,
         /// Bytes held on disk, omitted when the class is memory-only.
-        #[serde(default, skip_serializing_if = "is_zero")]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_i64",
+            skip_serializing_if = "is_zero"
+        )]
         pub disk_bytes: i64,
         /// On-disk entries, omitted when the class is memory-only.
-        #[serde(default, skip_serializing_if = "is_zero")]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_i64",
+            skip_serializing_if = "is_zero"
+        )]
         pub disk_entries: i64,
     }
 
@@ -1160,6 +1192,51 @@ mod tests {
         assert!(status.database.status.is_empty());
         assert!(status.storage.status.is_empty());
         assert!(status.cache.status.is_empty());
+    }
+
+    #[test]
+    fn system_status_treats_sparse_counters_as_zero() {
+        let status: system::Status = serde_json::from_value(serde_json::json!({
+            "database": { "bytes": null },
+            "storage": { "bytes": null, "file_count": null },
+            "cache": {
+                "memory_bytes": null,
+                "memory_entries": null,
+                "classes": {
+                    "default": {
+                        "hits": null,
+                        "loads": null,
+                        "memory_bytes": null
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(status.database.bytes, 0);
+        assert_eq!(status.storage.bytes, 0);
+        assert_eq!(status.storage.trash_bytes, 0);
+        assert_eq!(status.storage.file_count, 0);
+        assert_eq!(status.cache.memory_bytes, 0);
+        assert_eq!(status.cache.disk_bytes, 0);
+        assert_eq!(status.cache.memory_entries, 0);
+        assert_eq!(status.cache.disk_entries, 0);
+        let class = &status.cache.classes.unwrap()["default"];
+        assert_eq!(class.hits, 0);
+        assert_eq!(class.misses, 0);
+        assert_eq!(class.loads, 0);
+        assert_eq!(class.load_errors, 0);
+        assert_eq!(class.evictions, 0);
+        assert_eq!(class.memory_bytes, 0);
+        assert_eq!(class.memory_entries, 0);
+        assert_eq!(class.disk_bytes, 0);
+        assert_eq!(class.disk_entries, 0);
+
+        let invalid = serde_json::from_value::<system::Status>(serde_json::json!({
+            "database": { "bytes": "one" },
+            "storage": {},
+            "cache": {}
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
