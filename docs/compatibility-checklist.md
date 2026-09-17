@@ -485,7 +485,7 @@
 
 | 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
 |---|---|---|---|
-| `[ ]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | 同一份完整旧版 `reader-flow.spec.ts` 在专用双项目配置 old/new 各 17/17；覆盖书名/进度/返回、窗口预取、分页边界、旋转、L2 复开；2026-09-17 Rust 直接/登录后 TXT 深链 old/new 用例 3/3，恢复旧源码声明意图并记录旧运行时例外；损坏/错误矩阵仍待验 |
+| `[P]` | TXT 打开 | `/read/{id}`、加载、分页/分栏、返回、书名、实时进度、刷新/深链恢复一致。 | 同一份完整旧版 `reader-flow.spec.ts` 在专用双项目配置 old/new 各 17/17；覆盖书名/进度/返回、窗口预取、分页边界、旋转、L2 复开；2026-09-17 Rust 直接/登录后 TXT 深链 old/new 用例 3/3，恢复旧源码声明意图并记录旧运行时例外；本轮普通文件分流、加载文案、打开失败/关闭、无效深链和元数据稀疏响应 old/new 共 10/10 通过 |
 | `[ ]` | EPUB 打开 | manifest/flow/chunk、封面、章节、样式、图片/assets、首屏和错误回退一致。 | old/new 专用 reader-flow 各 17/17，真实 EPUB 各 1/1；书籍成功响应缺少或显式 null 的未使用 format/title/cover/toc 时仍按 `name/title` 显示标题（`rust-reader-reference-parity.spec.ts` old/new 各 1/1）；覆盖 manifest/flow/chunk、目录/图片 NavAnchor、样式重排、缓存和首屏；损坏/错误回退和逐项截图仍待验 |
 | `[P]` | 顶栏 | 返回按钮、居中标题、进度 ring/文字、沉浸式工具显隐、工具不导致正文重排一致。 | old/new reader-flow 的顶栏、标题截断、ring、沉浸式隐藏和恢复均通过；真实 EPUB 另验证页码及 `阅读进度 14.0%` |
 | `[ ]` | 翻页 | 上一页/下一页、中心区域、键盘左右/空格、边界不崩、连续翻页无跳页、横竖屏重排位置保持一致。 | old/new reader-flow 已通过点击翻页、键盘/空格、边界、连续无跳页和旋转；`rust-reader-reference-parity.spec.ts` 在 390×844 通过 Chromium touch 横向翻页、纵向不翻页及 `touchcancel` 恢复当前栏；完整键盘状态仍待独立矩阵 |
