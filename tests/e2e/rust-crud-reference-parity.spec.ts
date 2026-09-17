@@ -875,6 +875,101 @@ test('回收站永久删除冲突关闭确认框并保留项目', async ({ brows
   }
 })
 
+test('回收站永久删除首项失败时按 reference 停止后续项目', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const first = { ...trashFile, id: 'crud-purge-first-failure', name: '先永久删除失败.txt' }
+  const second = { ...trashFile, id: 'crud-purge-second-skipped', name: '后续永久删除不调用.txt' }
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function mock(page: Page) {
+    const calls: string[] = []
+    await page.route('**/api/**', async route => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') {
+        return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+      }
+      if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+      if (path === `/api/files/${ROOT}`) {
+        return json({
+          file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+          breadcrumbs: [],
+        })
+      }
+      if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+      if (path === '/api/trash') return json({ items: [first, second], total_bytes: first.size + second.size, file_count: 2 })
+      const match = path.match(/^\/api\/trash\/(crud-purge-first-failure|crud-purge-second-skipped)$/)
+      if (match && request.method() === 'DELETE') {
+        calls.push(match[1])
+        if (match[1] === first.id) {
+          return route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: { status: 409, message: 'purge conflict' } }),
+          })
+        }
+        return json({})
+      }
+      return json({ items: [] })
+    })
+    return calls
+  }
+
+  async function openFixture(page: Page, baseUrl: string) {
+    await page.goto(`${baseUrl}/?crud-purge-stop-first=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('列表视图').click()
+    await page.getByTitle('回收站').first().click()
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    for (const item of [first, second]) {
+      await page.locator('.file-row').filter({ hasText: item.name }).getByRole('button', { name: '选择项目' }).click()
+    }
+    return page.getByRole('toolbar', { name: '所选项目操作' })
+  }
+
+  try {
+    const [oldCalls, newCalls] = await Promise.all([mock(oldPage), mock(newPage)])
+    const [oldToolbar, newToolbar] = await Promise.all([
+      openFixture(oldPage, oldUrl),
+      openFixture(newPage, newUrl),
+    ])
+    await Promise.all([
+      oldToolbar.getByRole('button', { name: '永久删除', exact: true }).click(),
+      newToolbar.getByRole('button', { name: '永久删除', exact: true }).click(),
+    ])
+    await Promise.all([
+      oldPage.getByRole('dialog').getByRole('button', { name: '永久删除', exact: true }).click(),
+      newPage.getByRole('dialog').getByRole('button', { name: '永久删除', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.app-dialog')).toHaveCount(0),
+      expect(newPage.locator('.app-dialog')).toHaveCount(0),
+      expect(oldPage.locator('.toast')).toHaveText('先永久删除失败.txt：purge conflict'),
+      expect(newPage.locator('.toast')).toHaveText('先永久删除失败.txt：purge conflict'),
+      expect(oldPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
+      expect(newPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
+      expect(oldPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
+      expect(newPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
+      expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
+      expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
+    ])
+    expect(newCalls, 'Rust 永久删除首项失败后的请求顺序与 reference 不一致').toEqual(oldCalls)
+    expect(newCalls).toEqual([first.id])
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('回收站清空的取消与失败结果保持 reference 交互', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
