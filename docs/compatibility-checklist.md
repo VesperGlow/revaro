@@ -467,7 +467,7 @@
 | `[P]` | 回收站查看 | 列表/网格、原路径/删除时间/大小、空状态、打开限制、恢复/永久删除入口一致。 | old/new 空回收站、列表行元信息、TXT 键盘打开分流，以及目录/TXT/Markdown/EPUB/图片/音频/视频/未知文件在方块和列表中的打开策略与只读限制均已对照；`items:null` 的 reference 空白渲染缺陷由专用用例保持可见，Rust 保留可用根视图；本轮回收站/文件浏览/打开分流共 11/11 通过 |
 | `[P]` | 恢复 | 单项/多项恢复、原位置可用/冲突、成功/失败文案、刷新和 selection 一致。 | old/new 直接恢复和清理已实际验证；单项 409 冲突保留项目/选择并显示文件名错误；恢复刷新延迟期间保留多选工具栏、刷新完成后才清选择并显示成功反馈（`rust-mutation-feedback-order-reference-parity.spec.ts` old/new 10/10）；新增两项选择场景，首项恢复冲突时两版均停止后续请求、保留项目和 selection（`rust-crud-reference-parity.spec.ts` old/new 2/2），符合旧版 caller 的顺序语义 |
 | `[P]` | 永久删除 | 单项确认、清空回收站确认、不可恢复警告、loading/失败/成功及列表更新一致。 | old/new 永久删除确认、清理链路和 409 失败文件名文案，以及清空回收站取消/500 后弹窗、列表和按钮状态已对照；永久删除刷新延迟期间保留多选工具栏、刷新完成后才清选择并显示成功反馈（`rust-mutation-feedback-order-reference-parity.spec.ts` old/new 10/10）；新增两项选择场景，首项永久删除冲突时两版均关闭确认框、停止后续请求并保留项目/selection（`rust-crud-reference-parity.spec.ts` old/new 2/2） |
-| `[ ]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | 新建操作的空值、有效输入 Enter、Esc（含 `defaultPrevented=false`）、backdrop、disabled、延迟请求立即关闭及 API 失败关闭/toast 已 old/new 验证；重命名打开时选择工具栏卸载/焦点回退、空名/Enter、遮罩关闭与 Escape 保留弹窗、分享二级确认取消/提交关闭/错误回显、传输 PATCH pending 时遮罩关闭、账户密码 pending 时关闭子弹窗后外层遮罩关闭、重命名 PATCH pending 时标题栏关闭已对照；浏览器后退时分享外层 modal 关闭而外置确认框保留也已对照；分享弹窗 loading 期间关闭按钮/遮罩可用性已恢复并对照，其他确认框错误和焦点回收仍待验 |
+| `[P]` | 对话框通用行为 | backdrop、Esc、焦点、按钮顺序、危险色、空输入 disabled、提交中禁用和错误保留输入一致。 | old/new 弹窗综合专项 24/24 通过：确认/重命名/新建文件夹/分享/移动/永久删除覆盖空输入 disabled、Enter/Escape 与 `defaultPrevented`、backdrop、焦点回收、提交中关闭/禁用、冲突和网络错误保留输入、二级确认、危险操作文案/按钮顺序、手机布局及外层 modal 清理；分享 loading/错误不产生额外 toast，传输 pending 遮罩关闭与 reference 一致 |
 
 ## 9. 文本文档查看与编辑器
 
