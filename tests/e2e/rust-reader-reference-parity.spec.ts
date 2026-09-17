@@ -34,6 +34,7 @@ type ReaderFixture = {
   flowMetadata?: Record<string, unknown>
   flowChunkMetadata?: Record<string, unknown>
   flowFailure?: boolean
+  progressFailure?: boolean
   bookMetadata?: Record<string, unknown>
 }
 
@@ -113,7 +114,14 @@ async function mockReader(page: Page, fixture: ReaderFixture = {}) {
       return json(fixture.bookMetadata ?? { format: 'epub', title: '旧版阅读器对照', name: book.name, cover: false, toc: [] })
     }
     if (path === `/api/files/${BOOK_ID}/book/progress`) {
-      if (request.method() === 'PUT') return route.fulfill({ status: 204, body: '' })
+      if (request.method() === 'PUT') {
+        await page.evaluate(() => {
+          const windowWithProgress = window as unknown as { __readerProgressPuts?: number }
+          windowWithProgress.__readerProgressPuts = (windowWithProgress.__readerProgressPuts ?? 0) + 1
+        })
+        if (fixture.progressFailure) return route.fulfill({ status: 503, json: { error: { status: 503, message: 'progress unavailable' } } })
+        return route.fulfill({ status: 204, body: '' })
+      }
       return json({})
     }
     if (path === `/api/files/${BOOK_ID}/book/flow`) {
@@ -651,6 +659,41 @@ test('old/new 阅读器目录层级、活动项和错误关闭入口一致', asy
     expect(newError, 'Rust 阅读器错误关闭和 reference 不一致').toEqual(oldError)
   } finally {
     await Promise.all([oldContext.close(), newContext.close(), oldErrorContext.close(), newErrorContext.close()])
+  }
+})
+
+test('old/new 阅读进度保存失败时保持阅读器可用且不显示错误层', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await prepare(page, baseUrl, { progressFailure: true })
+    await page.locator('#next-zone').click()
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __readerProgressPuts?: number }).__readerProgressPuts ?? 0), { timeout: 5_000 }).toBeGreaterThan(0)
+    await page.waitForTimeout(100)
+    return {
+      progressPuts: await page.evaluate(() => (window as unknown as { __readerProgressPuts?: number }).__readerProgressPuts ?? 0),
+      readerCount: await page.locator('#reader-view').count(),
+      visibleErrorCount: await page.locator('.reader-loading:visible, .reader-error:visible').count(),
+      flowCount: await page.locator('#flow .rf-chunk').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult.readerCount).toBe(1)
+    expect(oldResult.visibleErrorCount).toBe(0)
+    expect(oldResult.flowCount).toBeGreaterThan(0)
+    expect(newResult, 'Rust 阅读进度保存失败时的静默回退与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
   }
 })
 
