@@ -411,6 +411,29 @@ test('old/new 阅读器 flow chunk 的索引和字符数为 null 时仍可加载
   }
 })
 
+test('old/new 阅读器 flow chunk 的 null block_count 旧版缺陷保持可见', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const fixture = { flowChunkMetadata: { block_count: null } }
+
+  try {
+    await prepare(oldPage, oldUrl, fixture)
+    await mockReader(newPage, fixture)
+    await newPage.goto(`${newUrl}/?reader-reference=${Date.now()}`)
+    await expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await newPage.locator('.file-card').filter({ hasText: book.name }).click()
+    await expect(newPage.locator('body')).toContainText('invalid type: null, expected i32')
+    await expect(oldPage.locator('#flow .rf-chunk').first()).toBeVisible()
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
 async function readerSnapshot(page: Page) {
   return page.evaluate(() => {
     const reader = document.querySelector('#reader-view') as HTMLElement
