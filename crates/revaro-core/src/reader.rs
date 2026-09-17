@@ -23,6 +23,27 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn deserialize_nullable_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_nullable_chunk<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or(-1))
+}
+
 /// A stable reading position inside a book.
 ///
 /// * `spine` — chapter index (EPUB spine item or text chapter).
@@ -213,32 +234,58 @@ fn missing_chunk() -> i32 {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocTarget {
     /// Display label.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub label: String,
     /// Nesting depth.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub depth: i32,
     /// Chapter the target belongs to.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub spine: i32,
     /// Block the target belongs to.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub block: i32,
     /// Synthetic element id for media targets, omitted otherwise.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub nav_anchor: String,
     /// Path to the target text node for text targets, omitted otherwise.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_vec",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub text_path: Vec<i32>,
     /// UTF-16 offset of the first visible character, omitted when zero.
-    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_i32",
+        skip_serializing_if = "is_zero_i32"
+    )]
     pub text_offset: i32,
     /// Chunk containing the target; `-1` means an older manifest omitted it.
     /// `0` is meaningful for the first chunk.
-    #[serde(default = "missing_chunk")]
+    #[serde(
+        default = "missing_chunk",
+        deserialize_with = "deserialize_nullable_chunk"
+    )]
     pub chunk: i32,
     /// Original EPUB path, kept for debugging and client fallback.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub source_path: String,
     /// Original EPUB fragment, kept for debugging and client fallback.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub source_fragment: String,
 }
 
@@ -648,6 +695,51 @@ mod tests {
             "spines": [],
             "chunks": [],
             "toc": 42
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn flow_manifest_treats_nullable_toc_entry_fields_as_defaults() {
+        let manifest: FlowManifest = serde_json::from_value(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "spines": [],
+            "chunks": [],
+            "toc": [{
+                "label": null,
+                "depth": null,
+                "spine": null,
+                "block": null,
+                "nav_anchor": null,
+                "text_path": null,
+                "text_offset": null,
+                "chunk": null,
+                "source_path": null,
+                "source_fragment": null
+            }]
+        }))
+        .unwrap();
+        let entry = &manifest.toc[0];
+        assert!(entry.label.is_empty());
+        assert_eq!(entry.depth, 0);
+        assert_eq!(entry.spine, 0);
+        assert_eq!(entry.block, 0);
+        assert!(entry.nav_anchor.is_empty());
+        assert!(entry.text_path.is_empty());
+        assert_eq!(entry.text_offset, 0);
+        assert_eq!(entry.chunk, -1);
+        assert!(entry.source_path.is_empty());
+        assert!(entry.source_fragment.is_empty());
+
+        let invalid = serde_json::from_value::<FlowManifest>(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "spines": [],
+            "chunks": [],
+            "toc": [{"label": 42}]
         }));
         assert!(invalid.is_err());
     }

@@ -29,6 +29,7 @@ type TocEntry = {
 type ReaderFixture = {
   toc?: TocEntry[]
   flowToc?: TocEntry[] | null
+  rawFlowToc?: unknown
   flowFailure?: boolean
   bookMetadata?: Record<string, unknown>
 }
@@ -76,7 +77,11 @@ async function mockReader(page: Page, fixture: ReaderFixture = {}) {
       { block_start: 60, block_count: 20 },
     ],
     chunks: Array.from({ length: 4 }, (_, index) => ({ index, block_start: index * 20, block_count: 20, chars: 800 })),
-    toc: 'flowToc' in fixture ? fixture.flowToc : fixture.toc ?? defaultToc,
+    toc: 'rawFlowToc' in fixture
+      ? fixture.rawFlowToc
+      : 'flowToc' in fixture
+        ? fixture.flowToc
+        : fixture.toc ?? defaultToc,
   }
 
   await page.route('**/api/**', async route => {
@@ -210,6 +215,47 @@ test('old/new 阅读器 flow 的 toc 为 null 时仍显示空目录', async ({ b
     await Promise.all([
       expect(oldPage.locator('.toc-empty')).toHaveText('这本书没有可用目录。'),
       expect(newPage.locator('.toc-empty')).toHaveText('这本书没有可用目录。'),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('old/new 阅读器 flow 的 TOC 可选字段为 null 时仍保留目录条目', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const fixture = {
+    rawFlowToc: [{
+      label: '空值字段章节',
+      depth: null,
+      spine: 0,
+      block: 0,
+      chunk: null,
+      nav_anchor: null,
+      text_path: null,
+      text_offset: null,
+      source_path: null,
+      source_fragment: null,
+    }],
+  }
+
+  try {
+    await Promise.all([
+      prepare(oldPage, oldUrl, fixture),
+      prepare(newPage, newUrl, fixture),
+    ])
+    await Promise.all([
+      oldPage.locator('#toc-button').click(),
+      newPage.locator('#toc-button').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.toc-item')).toHaveText('空值字段章节'),
+      expect(newPage.locator('.toc-item')).toHaveText('空值字段章节'),
     ])
   } finally {
     await oldContext.close()
