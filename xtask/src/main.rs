@@ -128,6 +128,13 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
     }
 
     let dist = dist_dir(root);
+    // Start from an empty directory: `copy_static_assets` only adds and
+    // overwrites, so a stylesheet deleted from `static/` would otherwise keep
+    // being served from a stale `dist/web` copy.
+    if dist.is_dir() {
+        std::fs::remove_dir_all(&dist)
+            .map_err(|error| format!("could not clear {}: {error}", dist.display()))?;
+    }
     std::fs::create_dir_all(&dist)
         .map_err(|error| format!("could not create {}: {error}", dist.display()))?;
 
