@@ -518,8 +518,10 @@ impl File {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderRef {
     /// Directory id.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub id: String,
     /// Directory name.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub name: String,
 }
 
@@ -1016,6 +1018,35 @@ mod tests {
             "updated_at": "2024-05-06T07:08:09Z",
             "folder_path": [],
             "duration_ms": "125"
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn library_folder_refs_treat_nullable_fields_as_defaults() {
+        let item = serde_json::from_value::<LibraryItem>(serde_json::json!({
+            "id": "book",
+            "parent_id": null,
+            "name": "book.epub",
+            "kind": "file",
+            "size": 1,
+            "status": "ready",
+            "created_at": "2024-05-06T07:08:09Z",
+            "updated_at": "2024-05-06T07:08:09Z",
+            "folder_path": [{ "id": null, "name": "书籍" }]
+        }))
+        .unwrap();
+        assert_eq!(item.folder_path[0].id, "");
+        assert_eq!(item.folder_path[0].name, "书籍");
+
+        let invalid = serde_json::from_value::<LibraryItem>(serde_json::json!({
+            "id": "book",
+            "parent_id": null,
+            "name": "book.epub",
+            "kind": "file",
+            "size": 1,
+            "status": "ready",
+            "folder_path": [{ "id": 1, "name": "书籍" }]
         }));
         assert!(invalid.is_err());
     }

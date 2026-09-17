@@ -31,11 +31,19 @@ const root = file({ id: ROOT, name: '我的文件', kind: 'directory', parent_id
 const rootChildren = [file({ id: 'root-file', name: '根目录.txt', mime_type: 'text/plain' })]
 const thumbnail = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><rect width="2" height="2" fill="#41628a"/></svg>'
 
-async function mockLibrary(page: Page, options: { counts?: unknown; nullableDuration?: boolean } = {}) {
+async function mockLibrary(page: Page, options: { counts?: unknown; nullableDuration?: boolean; nullableFolderId?: boolean } = {}) {
   const responseCounts = options.counts === undefined ? counts : options.counts
-  const responseLibrary = options.nullableDuration
-    ? { ...library, book: library.book.map((item, index) => index === 0 ? { ...item, duration_ms: null } : item) }
-    : library
+  const responseLibrary = {
+    ...library,
+    book: library.book.map((item, index) => {
+      if (index !== 0) return item
+      return {
+        ...item,
+        ...(options.nullableDuration ? { duration_ms: null } : {}),
+        ...(options.nullableFolderId ? { folder_path: [{ id: null, name: '书籍' }] } : {}),
+      }
+    }),
+  }
   await page.route('**/api/**', async route => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -238,6 +246,37 @@ test('旧版与 Rust 版分类条目的 null 时长仍保留媒体库内容', as
     ])
     expect(await itemSnapshot(newPage), 'Rust 分类条目不应因 null 时长丢失').toEqual(await itemSnapshot(oldPage))
     expect(await categoryCountSnapshot(newPage), 'Rust 分类徽标应保持 reference').toEqual(await categoryCountSnapshot(oldPage))
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('旧版与 Rust 版分类条目的 null folder id 仍保留媒体库内容', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await clearPreferences(oldContext)
+  await clearPreferences(newContext)
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockLibrary(oldPage, { nullableFolderId: true }),
+      mockLibrary(newPage, { nullableFolderId: true }),
+    ])
+    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
+    await Promise.all([
+      oldPage.locator('[data-category="book"]').click(),
+      newPage.locator('[data-category="book"]').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.shelf-card')).toHaveCount(library.book.length),
+      expect(newPage.locator('.shelf-card')).toHaveCount(library.book.length),
+    ])
+    expect(await itemSnapshot(newPage), 'Rust 分类条目不应因 folder id null 丢失').toEqual(await itemSnapshot(oldPage))
   } finally {
     await oldContext.close()
     await newContext.close()
