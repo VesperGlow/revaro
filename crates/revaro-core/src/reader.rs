@@ -210,10 +210,18 @@ pub struct ChunkMeta {
     /// UTF-16 code units of text in the chunk, used for progress scaling.
     pub chars: i64,
     /// Estimated HTML size in bytes, omitted when unknown.
-    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_i32",
+        skip_serializing_if = "is_zero_i32"
+    )]
     pub bytes: i32,
     /// URL the chunk can be fetched from, omitted when not addressable yet.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub url: String,
 }
 
@@ -761,12 +769,21 @@ mod tests {
             "book_key": null,
             "generated_at": null,
             "spines": [],
-            "chunks": [],
+            "chunks": [{
+                "index": 0,
+                "block_start": 0,
+                "block_count": 1,
+                "chars": 0,
+                "bytes": null,
+                "url": null
+            }],
             "toc": []
         }))
         .unwrap();
         assert!(manifest.book_key.is_empty());
         assert!(manifest.generated_at.is_empty());
+        assert_eq!(manifest.chunks[0].bytes, 0);
+        assert!(manifest.chunks[0].url.is_empty());
 
         let invalid = serde_json::from_value::<FlowManifest>(serde_json::json!({
             "version": 4,

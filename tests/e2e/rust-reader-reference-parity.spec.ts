@@ -31,6 +31,7 @@ type ReaderFixture = {
   flowToc?: TocEntry[] | null
   rawFlowToc?: unknown
   flowMetadata?: Record<string, unknown>
+  flowChunkMetadata?: Record<string, unknown>
   flowFailure?: boolean
   bookMetadata?: Record<string, unknown>
 }
@@ -77,7 +78,13 @@ async function mockReader(page: Page, fixture: ReaderFixture = {}) {
       { block_start: 40, block_count: 20 },
       { block_start: 60, block_count: 20 },
     ],
-    chunks: Array.from({ length: 4 }, (_, index) => ({ index, block_start: index * 20, block_count: 20, chars: 800 })),
+    chunks: Array.from({ length: 4 }, (_, index) => ({
+      index,
+      block_start: index * 20,
+      block_count: 20,
+      chars: 800,
+      ...(index === 0 ? fixture.flowChunkMetadata : {}),
+    })),
     ...fixture.flowMetadata,
     toc: 'rawFlowToc' in fixture
       ? fixture.rawFlowToc
@@ -273,6 +280,30 @@ test('old/new 阅读器 flow 的可选 book_key/generated_at 为 null 时仍可�
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
   const fixture = { flowMetadata: { book_key: null, generated_at: null } }
+
+  try {
+    await Promise.all([
+      prepare(oldPage, oldUrl, fixture),
+      prepare(newPage, newUrl, fixture),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('#flow .rf-chunk').first()).toBeVisible(),
+      expect(newPage.locator('#flow .rf-chunk').first()).toBeVisible(),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('old/new 阅读器 flow chunk 的可选 bytes/url 为 null 时仍可加载', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const fixture = { flowChunkMetadata: { bytes: null, url: null } }
 
   try {
     await Promise.all([
