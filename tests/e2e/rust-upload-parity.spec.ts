@@ -1395,6 +1395,76 @@ test('old/new 创建 upload 成功响应缺少未使用字段时仍完成单文�
   }
 })
 
+test('old/new 单请求 upload 创建响应的 part_size/part_count 为 null 时仍完成上传', async ({ browser }) => {
+  const name = `upload-null-geometry-${crypto.randomUUID()}.txt`
+  const buffer = Buffer.from('upload nullable geometry response\n')
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const oldState = { uploadId: '' }
+  const newState = { uploadId: '' }
+
+  async function nullGeometry(page: Parameters<typeof login>[0], state: { uploadId: string }) {
+    await page.route(/\/api\/uploads$/, async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
+      const response = await route.fetch()
+      const payload = await response.json() as { upload_id?: string; mode?: string; url?: string }
+      state.uploadId = payload.upload_id || ''
+      await route.fulfill({
+        status: response.status(),
+        json: {
+          upload_id: payload.upload_id,
+          mode: payload.mode,
+          url: payload.url,
+          part_size: null,
+          part_count: null,
+          expires_at: null,
+          status: 'pending',
+          parts: [],
+        },
+      })
+    })
+  }
+
+  async function removeUpload(page: Parameters<typeof login>[0], uploadId: string) {
+    if (uploadId) await page.evaluate(async id => { await fetch(`/api/uploads/${id}`, { method: 'DELETE' }) }, uploadId)
+  }
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await loginAt(page, baseUrl)
+    await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer })
+    await expect.poll(() => page.evaluate(async fileName => {
+      const response = await fetch('/api/files/00000000-0000-0000-0000-000000000000/children')
+      if (!response.ok) return false
+      const payload = await response.json() as { items?: Array<{ name: string; status?: string }> }
+      return (payload.items ?? []).some(item => item.name === fileName && item.status === 'ready')
+    }, name), { timeout: 20_000 }).toBe(true)
+  }
+
+  try {
+    await Promise.all([
+      nullGeometry(oldPage, oldState),
+      nullGeometry(newPage, newState),
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+  } finally {
+    await Promise.all([
+      removeUpload(oldPage, oldState.uploadId),
+      removeUpload(newPage, newState.uploadId),
+      removeCreated(oldPage, [name]),
+      removeCreated(newPage, [name]),
+    ])
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 创建 upload 缺少可选 URL 时保留断点并进入同一本地错误', async ({ browser }) => {
   const name = `upload-missing-url-${crypto.randomUUID()}.txt`
   const buffer = Buffer.from('upload missing url response\n')

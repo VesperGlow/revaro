@@ -47,6 +47,16 @@ where
     Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// The single-request upload caller ignores multipart geometry. Keep a
+/// missing or explicit `null` part count equivalent to zero while rejecting
+/// malformed scalar values.
+fn deserialize_nullable_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<usize>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Older account callers treated an absent or `null` setup string as empty
 /// while still entering the setup stage. Keep response decoding tolerant while
 /// rejecting other malformed scalar types.
@@ -383,9 +393,11 @@ pub mod uploads {
         /// Target URL, empty for multipart uploads.
         #[serde(default)]
         pub url: String,
-        /// Part size the client must slice with.
+        /// Part size the client must slice with; unused by single uploads.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub part_size: i64,
         /// Number of parts; `0` for single-request uploads.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_usize")]
         pub part_count: usize,
         /// Session expiry.
         #[serde(
@@ -409,9 +421,11 @@ pub mod uploads {
         /// Target URL, empty for multipart uploads.
         #[serde(default)]
         pub url: String,
-        /// Part size the client must slice with.
+        /// Part size the client must slice with; unused by single uploads.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
         pub part_size: i64,
         /// Number of parts; `0` for single-request uploads.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_usize")]
         pub part_count: usize,
         /// Declared total size.
         #[serde(default)]
@@ -1064,6 +1078,36 @@ mod tests {
         assert!(body.url.is_empty());
         assert!(body.file_id.is_empty());
         assert_eq!(body.expires_at, Timestamp::default());
+    }
+
+    #[test]
+    fn single_upload_response_treats_unused_geometry_as_zero() {
+        let missing: CreateUpload = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "url": "/upload/u"
+        }))
+        .unwrap();
+        assert_eq!(missing.part_size, 0);
+        assert_eq!(missing.part_count, 0);
+
+        let null: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "url": "/upload/u",
+            "part_size": null,
+            "part_count": null
+        }))
+        .unwrap();
+        assert_eq!(null.part_size, 0);
+        assert_eq!(null.part_count, 0);
+
+        let invalid = serde_json::from_value::<CreateUpload>(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "part_count": "none"
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
