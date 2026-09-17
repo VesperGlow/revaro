@@ -1354,6 +1354,7 @@ test('old/new 创建 upload 成功响应缺少未使用字段时仍完成单文�
           url: payload.url,
           part_size: payload.part_size,
           part_count: payload.part_count,
+          expires_at: null,
           status: 'pending',
           parts: [],
         },
@@ -1529,6 +1530,7 @@ test('old/new 断点 GET upload 成功响应缺少未使用字段时仍完成单
           url: created.url,
           part_size: created.part_size,
           part_count: created.part_count,
+          expires_at: null,
         },
       })
     })

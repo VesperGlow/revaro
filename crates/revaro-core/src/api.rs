@@ -384,7 +384,10 @@ pub mod uploads {
         /// Number of parts; `0` for single-request uploads.
         pub part_count: usize,
         /// Session expiry.
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_timestamp"
+        )]
         pub expires_at: Timestamp,
     }
 
@@ -416,7 +419,10 @@ pub mod uploads {
         #[serde(default, deserialize_with = "deserialize_upload_status_response")]
         pub status: UploadStatusKind,
         /// Session expiry.
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_timestamp"
+        )]
         pub expires_at: Timestamp,
         /// Parts acknowledged so far.
         #[serde(default)]
@@ -990,12 +996,35 @@ mod tests {
             "upload_id": "u",
             "mode": "single",
             "part_size": 16,
-            "part_count": 0
+            "part_count": 0,
+            "expires_at": null
         }))
         .unwrap();
         assert!(body.url.is_empty());
         assert!(body.file_id.is_empty());
         assert_eq!(body.expires_at, Timestamp::default());
+    }
+
+    #[test]
+    fn upload_resume_treats_a_nullable_expiry_as_default() {
+        let body: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "part_size": 16,
+            "part_count": 0,
+            "expires_at": null
+        }))
+        .unwrap();
+        assert_eq!(body.expires_at, Timestamp::default());
+
+        let invalid = serde_json::from_value::<UploadStatus>(serde_json::json!({
+            "upload_id": "u",
+            "mode": "single",
+            "part_size": 16,
+            "part_count": 0,
+            "expires_at": 42
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
