@@ -2557,6 +2557,64 @@ test('old/new 视频字幕轨道 label 缺失或为 null 时仍保留字幕轨�
   }
 })
 
+test('old/new 视频字幕轨道 id/url 缺失或为 null 时仍保留 metadata', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+
+  async function exercise(page: Page, baseUrl: string, mode: 'id' | 'url') {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/video-1/video', route => route.fulfill({
+      json: {
+        subtitles: mode === 'id'
+          ? [
+              { name: 'zh', label: '简体中文', language: 'zh', url: '/api/subtitle.vtt', default: true },
+              { id: null, name: 'en', label: 'English', language: 'en', url: '/api/subtitle.vtt' },
+            ]
+          : [
+              { id: 'zh', name: 'zh', label: '简体中文', language: 'zh', default: true },
+              { id: 'en', name: 'en', label: 'English', language: 'en', url: null },
+            ],
+      },
+    }))
+    await open(page, '山间漫步.webm')
+    await page.waitForTimeout(200)
+    const select = page.getByLabel('字幕轨道', { exact: true })
+    const selectCount = await select.count()
+    return {
+      options: selectCount ? await select.locator('option').allTextContents() : [],
+      value: selectCount ? await select.inputValue() : null,
+      selectCount,
+      overlay: await page.locator('.video-subtitle-overlay').count(),
+      menuCount: await page.locator('.video-control-row .preview-menu').count(),
+      errorCount: await page.locator('.video-error').count(),
+    }
+  }
+
+  for (const mode of ['id', 'url'] as const) {
+    const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const oldPage = await oldContext.newPage()
+    const newPage = await newContext.newPage()
+    try {
+      const [oldResult, newResult] = await Promise.all([
+        exercise(oldPage, oldUrl, mode),
+        exercise(newPage, newUrl, mode),
+      ])
+      expect(oldResult, `old 字幕 ${mode} fixture 未保留可观察 metadata`).toEqual({
+        options: ['关闭字幕', '简体中文', 'English'],
+        value: '0',
+        selectCount: 1,
+        overlay: mode === 'id' ? 1 : 0,
+        menuCount: 2,
+        errorCount: 0,
+      })
+      expect(newResult, `Rust 字幕 ${mode} 缺省/null metadata 与 reference 不一致`).toEqual(oldResult)
+    } finally {
+      await Promise.all([oldContext.close(), newContext.close()])
+    }
+  }
+})
+
 test('old/new 视频 metadata 没有字幕时不显示字幕菜单和 overlay', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

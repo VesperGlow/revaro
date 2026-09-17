@@ -164,6 +164,7 @@ pub struct AudioMedia {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VideoSubtitleTrack {
     /// Stable identifier used in the subtitle URL.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub id: String,
     /// Display name. The historical video caller does not read this field.
     #[serde(default, deserialize_with = "deserialize_nullable_string")]
@@ -176,6 +177,7 @@ pub struct VideoSubtitleTrack {
     #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub language: String,
     /// WebVTT URL.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub url: String,
     /// Whether the track should be selected by default.
     #[serde(default, deserialize_with = "deserialize_nullable_bool")]
@@ -384,6 +386,28 @@ mod tests {
                 .all(|track| track.label.is_empty())
         );
 
+        let sparse_identity: VideoMedia = serde_json::from_value(serde_json::json!({
+            "subtitles": [
+                {
+                    "name": "missing-id",
+                    "label": "缺省 id",
+                    "language": "zh",
+                    "url": "/api/missing-id.vtt"
+                },
+                {
+                    "id": null,
+                    "name": "null-id",
+                    "label": "空 id",
+                    "language": "zh",
+                    "url": null
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(sparse_identity.subtitles[0].id, "");
+        assert_eq!(sparse_identity.subtitles[1].id, "");
+        assert_eq!(sparse_identity.subtitles[1].url, "");
+
         let invalid = serde_json::from_value::<VideoMedia>(serde_json::json!({
             "subtitles": [{
                 "id": "zh",
@@ -405,5 +429,16 @@ mod tests {
             }]
         }));
         assert!(invalid_label.is_err());
+
+        let invalid_identity = serde_json::from_value::<VideoMedia>(serde_json::json!({
+            "subtitles": [{
+                "id": "zh",
+                "name": "zh",
+                "label": "中文",
+                "language": "zh",
+                "url": 42
+            }]
+        }));
+        assert!(invalid_identity.is_err());
     }
 }
