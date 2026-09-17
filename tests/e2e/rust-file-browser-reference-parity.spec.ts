@@ -24,7 +24,7 @@ const trashItems = [
   file({ id: 'deleted-note', name: '已删除.txt', deleted_at: STAMP, size: 512 }),
 ]
 
-async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error' | 'sparse-missing' | 'sparse-null' | 'nullable-breadcrumbs', childrenDelayMs = 0) {
+async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error' | 'sparse-missing' | 'sparse-null' | 'nullable-breadcrumbs' | 'nullable-trash-items', childrenDelayMs = 0) {
   let releaseChildren = () => {}
   const childrenGate = childrenDelayMs
     ? new Promise<void>(resolve => { releaseChildren = resolve })
@@ -57,6 +57,7 @@ async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error' | 'spa
       return json({ items: [], total_bytes: 0, file_count: 0 })
     }
     if (path === '/api/trash') {
+      if (mode === 'nullable-trash-items') return json({ items: null, total_bytes: 0, file_count: 0 })
       if (mode === 'sparse-missing') return json({ items: trashItems })
       if (mode === 'sparse-null') return json({ items: trashItems, total_bytes: null, file_count: null })
       return json({ items: mode === 'empty' ? [] : trashItems, total_bytes: mode === 'empty' ? 0 : 512, file_count: mode === 'empty' ? 0 : 1 })
@@ -183,6 +184,37 @@ test('old/new 文件详情 breadcrumbs 为 null 的旧版缺陷与 Rust 容错�
       .toBe(0)
     expect(await newPage.getByRole('heading', { name: '我的文件', exact: true }).count())
       .toBe(1)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('old/new 回收站 items 为 null 的旧版渲染缺陷保持可见', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockBrowser(oldPage, 'nullable-trash-items'),
+      mockBrowser(newPage, 'nullable-trash-items'),
+    ])
+    await Promise.all([
+      oldPage.goto(`${oldUrl}/?compat-file-browser=${crypto.randomUUID()}`),
+      newPage.goto(`${newUrl}/?compat-file-browser=${crypto.randomUUID()}`),
+    ])
+    await Promise.all([
+      oldPage.getByTitle('回收站').first().click(),
+      newPage.getByTitle('回收站').first().click(),
+    ])
+    await expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    expect(await oldPage.getByRole('heading', { name: '回收站', exact: true }).count()).toBe(0)
+    expect(await oldPage.locator('body').innerText()).toBe('')
+    expect(await newPage.getByRole('heading', { name: '回收站', exact: true }).count()).toBe(0)
   } finally {
     await oldContext.close()
     await newContext.close()
