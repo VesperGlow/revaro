@@ -163,6 +163,57 @@ async function mockRunningArchive(page: Page) {
   return { requests: () => requests }
 }
 
+async function mockCompletingArchive(page: Page) {
+  let tasks: unknown[] = []
+  let outputVisible = false
+  let releaseEvent!: () => void
+  const eventReady = new Promise<void>(resolve => { releaseEvent = resolve })
+  const requests: string[] = []
+  await page.route('**/api/**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ json: value })
+    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+    if (path === '/api/events') {
+      await eventReady
+      await new Promise(resolve => setTimeout(resolve, 300))
+      outputVisible = true
+      tasks = [{ ...runningTask, status: 'completed', phase: 'completed', progress: 100, finished_at: STAMP }]
+      return route.fulfill({ contentType: 'text/event-stream', body: 'event: jobs\ndata: changed\n\n' })
+    }
+    if (path === '/api/system/status/stream') return route.fulfill({ contentType: 'text/event-stream', body: '' })
+    if (path === '/api/tasks') return json({ items: tasks })
+    if (path === '/api/library/all') {
+      return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 1 } })
+    }
+    if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 1 })
+    if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}/children`) {
+      const items = [archive]
+      if (outputVisible) {
+        items.push({
+          ...archive,
+          id: 'archive-output-1',
+          name: '需要密码',
+          kind: 'directory',
+          size: 0,
+          mime_type: '',
+          etag: undefined,
+        })
+      }
+      return json({ items, total_bytes: archive.size, file_count: items.length })
+    }
+    if (path === `/api/files/${archive.id}/extract`) {
+      requests.push(`${request.method()} ${path}`)
+      tasks = [runningTask]
+      releaseEvent()
+      return json({})
+    }
+    return json({ items: [] })
+  })
+  return { requests: () => requests }
+}
+
 async function openArchive(page: Page, url: string) {
   await page.goto(`${url}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
@@ -319,6 +370,37 @@ test('old/new 运行中的归档任务取消后进入已取消分组', async ({ 
       },
     })
     expect(newResult, 'Rust 运行中归档任务的取消入口、请求和已取消分组与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 归档任务完成事件会刷新当前目录并保留完成反馈', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    const mock = await mockCompletingArchive(page)
+    await openArchive(page, `${baseUrl}?archive-completion-refresh=${Date.now()}`)
+    await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '在线解压' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '开始解压' }).click()
+    await expect(page.locator('.toast')).toHaveText('「需要密码.zip」已加入解压队列')
+    await expect(page.locator('.file-row').filter({ hasText: '需要密码' })).toHaveCount(2, { timeout: 10_000 })
+    await expect(page.locator('.toast')).toHaveText('「需要密码.zip」任务完成')
+    return mock.requests()
+  }
+
+  try {
+    const [oldRequests, newRequests] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldRequests).toEqual(['POST /api/files/archive-1/extract'])
+    expect(newRequests, 'Rust 归档完成后未按 reference 刷新当前目录').toEqual(oldRequests)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
