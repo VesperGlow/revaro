@@ -438,7 +438,7 @@
 | `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
 | `[P]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | 旧版没有自定义文件右键菜单，文件/文件夹卡均按 reference 阻止原生菜单；图片、音频、视频的 more/设置菜单已在 1440×900 与 390×844 实际比较初始/展开/hover、尺寸/锚点、空白关闭、Escape 与 summary 焦点，且 reference 菜单本身没有动态边缘翻转或 disabled 项；`rust-preview-menu-reference-parity.spec.ts` 与 `rust-media-menu-reference-parity.spec.ts` 均通过，操作结果由下载/移动/复制/媒体动作矩阵覆盖 |
 | `[P]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | old/new 1440×900 同一 mock 根目录已实际覆盖目录、TXT、EPUB、图片、音频、视频、未知文件的点击分流、pathname 和浏览器后退关闭；回收站方块/列表已逐项覆盖目录、TXT、Markdown、EPUB、图片、音频、视频、未知文件及只读限制，`rust-open-item-reference-parity.spec.ts` old/new 2/2；不支持/损坏 audio、video、图片的错误分流和重试由媒体用例覆盖；本轮普通分流、回收站、编辑器只读和损坏媒体共 13/13 通过 |
-| `[ ]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | old/new 列表实际覆盖目录、TXT、EPUB、图片、ZIP、未知及 TXT+图片多选的按钮分流、摘要、文案和图标路径；390×844 移动端布局及回收站恢复/永久删除已对照；全选→取消全选实际往返并恢复当前列表可见条目计数，`.txt` 阅读分流及弹层隐藏已对照；`rust-selection-toolbar-reference-parity.spec.ts` old/new 3/3，修复提交 `e064296`，disabled/完整状态矩阵仍待验 |
+| `[P]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | old/new 列表实际覆盖目录、TXT、EPUB、图片、ZIP、未知及 TXT+图片多选的按钮分流、摘要、文案和图标路径；390×844 移动端布局及回收站恢复/永久删除已对照；全选→取消全选实际往返并恢复当前列表可见条目计数，`.txt` 阅读分流及弹层隐藏已对照；`rust-selection-toolbar-reference-parity.spec.ts` old/new 3/3，书本图标重叠类型由 `rust-selection-toolbar-icon-reference-parity.spec.ts` 对照；旧版生产工具栏没有 disabled 分支，本轮响应式/工具栏/图标组合 old/new 6/6 通过 |
 
 ## 7. 上传入口、队列和任务联动
 
