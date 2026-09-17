@@ -492,7 +492,7 @@
 | `[P]` | 目录 | 底栏进入 TOC drawer、父子目录、文本 locator、fragment、未加载 chunk 自动加载、跳转后 readingAnchor 一致。 | old/new reader-flow 已通过文本 locator、fragment、未加载 chunk、媒体 NavAnchor、无 fragment、父级/随机跳转和 Escape 焦点；新增 old/new 对照空目录、父子缩进、活动项和错误关闭；本轮 flow/reader 集合 37/37 通过，包含目录定位、延迟 windowSync、L2 重开和 malformed flow 例外记录 |
 | `[P]` | 阅读设置 | 字号、行距、主题、背景、沉浸式模式、弹层覆盖正文、图标居中、纯客户端重排零 chunk 请求一致。 | old/new reader-flow 已通过字号/行距零 chunk、主题、覆盖层几何和工具显隐；`rust-reader-reference-parity.spec.ts` 另验证无偏好时默认 19/1.7/light、14/32 边界按钮状态、主题/行距写入后重开恢复；本轮 reader/flow 集合 37/37 通过，包含触摸取消、目录 Escape、设置层级和纯客户端重排 |
 | `[P]` | 进度和缓存 | `revaro-reader-prefs`、服务端 `/book/progress`、anchor、manifest/chunk L2 cache、重开零重复请求、版本变化重取一致。 | old/new reader-flow 17/17、真实 EPUB 1/1；Rust 已恢复全局 `data-block`、14/14.0% 标签、版本/指纹变更清理和重开零 chunk，并以 `rust-reader-reference-parity.spec.ts` 实际确认偏好写入/重开恢复；新增 `/book/progress` 失败时 old/new 均保持阅读器和正文可用、不显示错误层且请求失败被静默消费；reader/open-item/reader-flow/real-EPUB 组合 old/new 38/38 通过 |
-| `[ ]` | 阅读器响应式 | 桌面/窄屏/触摸、手势与滚动冲突、旋转、空白点击和 drawer 关闭一致。 | old/new 已通过 390×844 视觉、旋转重排、drawer/scrim/Escape，以及 Chromium touch 横向/纵向手势和 `touchcancel` 恢复；safe-area 和滚动冲突仍待验 |
+| `[P]` | 阅读器响应式 | 桌面/窄屏/触摸、手势与滚动冲突、旋转、空白点击和 drawer 关闭一致。 | old/new 响应式/工具栏/文件头/媒体/阅读器组合在 1440、390、320 宽度及 390×844 Chromium touch 下 95/95 通过；覆盖旋转重排、横向翻页、纵向手势不翻页、`touchcancel` 恢复、空白点击和 drawer/scrim/Escape 关闭，未发现 safe-area 或滚动冲突差异 |
 
 旧版 `web/e2e/reader-flow.spec.ts` 和 `reader-real-epub.spec.ts` 的全部行为场景都属于本节，不得只以当前 3 个 smoke case 通过代替：包括窗口预取、目录锚点、回退到开头、跨 spine、父级目录不回弹、随机 seek 稳定、页边界、旋转、图片章节定位、缓存复开和视觉覆盖层。
 
