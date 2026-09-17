@@ -424,6 +424,16 @@ where
     Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Older task callers did not read creation/update timestamps at all. Treat
+/// an omitted or explicit `null` timestamp as the wire default while still
+/// rejecting malformed timestamp values.
+fn deserialize_nullable_timestamp<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Timestamp>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// The historical `has_cover` check was `=== true`, so an explicit `null`
 /// was the same as a missing/false value. Reject other malformed scalar types
 /// rather than inventing a new truthiness rule.
@@ -636,6 +646,7 @@ pub struct Task {
     #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub cancel_requested: bool,
     /// Creation time.
+    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
     pub created_at: Timestamp,
     /// When a worker picked the task up, omitted before that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -644,6 +655,7 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<Timestamp>,
     /// Last state change.
+    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
     pub updated_at: Timestamp,
     /// Display name derived from the task's files or type.
     #[serde(default, deserialize_with = "deserialize_nullable_string")]
@@ -1009,6 +1021,26 @@ mod tests {
         assert!(task.source_id.is_empty());
         assert!(!task.cancel_requested);
         assert!(task.name.is_empty());
+    }
+
+    #[test]
+    fn task_responses_treat_unused_timestamps_as_defaults() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "task",
+            "type": "upload",
+            "status": "completed",
+            "created_at": null
+        }))
+        .unwrap();
+        assert_eq!(task.created_at, Timestamp::default());
+        assert_eq!(task.updated_at, Timestamp::default());
+
+        let invalid = serde_json::from_value::<Task>(serde_json::json!({
+            "id": "task",
+            "type": "upload",
+            "created_at": 42
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
