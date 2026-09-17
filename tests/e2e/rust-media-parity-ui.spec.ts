@@ -2501,6 +2501,62 @@ test('old/new 视频字幕轨道未使用的 name 缺失或为 null 时仍按 la
   }
 })
 
+test('old/new 视频字幕轨道 label 缺失或为 null 时仍保留字幕轨道', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/video-1/video', route => route.fulfill({
+      json: {
+        subtitles: [
+          {
+            id: 'zh',
+            name: 'zh',
+            language: 'zh',
+            url: '/api/subtitle.vtt',
+            default: true,
+          },
+          {
+            id: 'en',
+            name: 'en',
+            label: null,
+            language: 'en',
+            url: '/api/subtitle.vtt',
+          },
+        ],
+      },
+    }))
+    await open(page, '山间漫步.webm')
+    await expect(page.locator('.video-subtitle-overlay')).toContainText('沿着山间的小路，慢慢走。')
+    const select = page.getByLabel('字幕轨道', { exact: true })
+    return {
+      options: await select.locator('option').allTextContents(),
+      value: await select.inputValue(),
+      overlay: await page.locator('.video-subtitle-overlay').innerText(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      options: ['关闭字幕', '', ''],
+      value: '0',
+      overlay: '沿着山间的小路，慢慢走。',
+    })
+    expect(newResult, 'Rust 字幕轨道 label 缺失/null 与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 视频 metadata 没有字幕时不显示字幕菜单和 overlay', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'

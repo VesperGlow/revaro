@@ -168,7 +168,9 @@ pub struct VideoSubtitleTrack {
     /// Display name. The historical video caller does not read this field.
     #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub name: String,
-    /// Short label shown in the track menu.
+    /// Short label shown in the track menu; the old UI renders an empty label
+    /// when it is absent.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub label: String,
     /// ISO language tag, empty when unknown.
     #[serde(default, deserialize_with = "deserialize_nullable_string")]
@@ -357,6 +359,31 @@ mod tests {
         assert_eq!(sparse.subtitles[0].name, "");
         assert_eq!(sparse.subtitles[1].name, "");
 
+        let sparse_labels: VideoMedia = serde_json::from_value(serde_json::json!({
+            "subtitles": [
+                {
+                    "id": "missing-label",
+                    "name": "missing-label",
+                    "language": "zh",
+                    "url": "/api/missing-label.vtt"
+                },
+                {
+                    "id": "null-label",
+                    "name": "null-label",
+                    "label": null,
+                    "language": "zh",
+                    "url": "/api/null-label.vtt"
+                }
+            ]
+        }))
+        .unwrap();
+        assert!(
+            sparse_labels
+                .subtitles
+                .iter()
+                .all(|track| track.label.is_empty())
+        );
+
         let invalid = serde_json::from_value::<VideoMedia>(serde_json::json!({
             "subtitles": [{
                 "id": "zh",
@@ -367,5 +394,16 @@ mod tests {
             }]
         }));
         assert!(invalid.is_err());
+
+        let invalid_label = serde_json::from_value::<VideoMedia>(serde_json::json!({
+            "subtitles": [{
+                "id": "zh",
+                "name": "zh",
+                "label": 42,
+                "language": "zh",
+                "url": "/api/subtitle.vtt"
+            }]
+        }));
+        assert!(invalid_label.is_err());
     }
 }
