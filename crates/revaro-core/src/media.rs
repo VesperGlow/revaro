@@ -28,6 +28,13 @@ where
     Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
 }
 
+fn deserialize_nullable_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 fn deserialize_nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -133,6 +140,7 @@ impl MediaProbe {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioChapter {
     /// 1-based chapter number.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub id: i32,
     /// Chapter title. The old player renders an empty title when it is absent.
     #[serde(default, deserialize_with = "deserialize_nullable_string")]
@@ -296,6 +304,16 @@ mod tests {
         assert!(media.chapters[0].title.is_empty());
         assert!(media.chapters[1].title.is_empty());
 
+        let sparse_ids: AudioMedia = serde_json::from_value(serde_json::json!({
+            "chapters": [
+                {"title": "missing", "start": 0.0, "end": 12.5},
+                {"id": null, "title": "null", "start": 12.5, "end": 25.0}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(sparse_ids.chapters[0].id, 0);
+        assert_eq!(sparse_ids.chapters[1].id, 0);
+
         let invalid = serde_json::from_value::<AudioMedia>(serde_json::json!({
             "chapters": [{"id": 1, "title": 42, "start": 0.0, "end": 12.5}]
         }));
@@ -440,5 +458,10 @@ mod tests {
             }]
         }));
         assert!(invalid_identity.is_err());
+
+        let invalid_chapter_id = serde_json::from_value::<AudioMedia>(serde_json::json!({
+            "chapters": [{"id": "one", "start": 0.0, "end": 12.5}]
+        }));
+        assert!(invalid_chapter_id.is_err());
     }
 }
