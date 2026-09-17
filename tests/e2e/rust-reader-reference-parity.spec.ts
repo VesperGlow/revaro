@@ -28,6 +28,7 @@ type TocEntry = {
 
 type ReaderFixture = {
   toc?: TocEntry[]
+  flowToc?: TocEntry[] | null
   flowFailure?: boolean
   bookMetadata?: Record<string, unknown>
 }
@@ -75,7 +76,7 @@ async function mockReader(page: Page, fixture: ReaderFixture = {}) {
       { block_start: 60, block_count: 20 },
     ],
     chunks: Array.from({ length: 4 }, (_, index) => ({ index, block_start: index * 20, block_count: 20, chars: 800 })),
-    toc: fixture.toc ?? defaultToc,
+    toc: 'flowToc' in fixture ? fixture.flowToc : fixture.toc ?? defaultToc,
   }
 
   await page.route('**/api/**', async route => {
@@ -181,6 +182,34 @@ test('old/new 阅读器书籍成功响应的未使用元数据为 null 时仍使
     await Promise.all([
       expect(oldPage.locator('#reader-title')).toHaveText('服务端书名'),
       expect(newPage.locator('#reader-title')).toHaveText('服务端书名'),
+    ])
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
+
+test('old/new 阅读器 flow 的 toc 为 null 时仍显示空目录', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext()
+  const newContext = await browser.newContext()
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+  const fixture = { flowToc: null }
+
+  try {
+    await Promise.all([
+      prepare(oldPage, oldUrl, fixture),
+      prepare(newPage, newUrl, fixture),
+    ])
+    await Promise.all([
+      oldPage.locator('#toc-button').click(),
+      newPage.locator('#toc-button').click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.toc-empty')).toHaveText('这本书没有可用目录。'),
+      expect(newPage.locator('.toc-empty')).toHaveText('这本书没有可用目录。'),
     ])
   } finally {
     await oldContext.close()

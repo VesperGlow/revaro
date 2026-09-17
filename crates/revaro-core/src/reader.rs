@@ -15,6 +15,14 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+fn deserialize_nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// A stable reading position inside a book.
 ///
 /// * `spine` — chapter index (EPUB spine item or text chapter).
@@ -254,7 +262,7 @@ pub struct FlowManifest {
     #[serde(default)]
     pub chunks: Vec<ChunkMeta>,
     /// Table of contents resolved onto the flow.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_vec")]
     pub toc: Vec<TocTarget>,
     /// Generation time, informational only.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -618,5 +626,29 @@ mod tests {
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json, serde_json::json!({"label": "Chapter", "depth": 1}));
+    }
+
+    #[test]
+    fn flow_manifest_treats_nullable_toc_as_empty() {
+        let manifest: FlowManifest = serde_json::from_value(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "spines": [],
+            "chunks": [],
+            "toc": null
+        }))
+        .unwrap();
+        assert!(manifest.toc.is_empty());
+
+        let invalid = serde_json::from_value::<FlowManifest>(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "spines": [],
+            "chunks": [],
+            "toc": 42
+        }));
+        assert!(invalid.is_err());
     }
 }
