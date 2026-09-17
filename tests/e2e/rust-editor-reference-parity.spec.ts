@@ -1278,7 +1278,11 @@ const DIRTY_FILE = {
   etag: 'dirty-reference-etag',
 }
 
-async function mockDirtyEditor(page: Parameters<typeof login>[0], includeUpdatedAt = true) {
+async function mockDirtyEditor(
+  page: Parameters<typeof login>[0],
+  includeUpdatedAt = true,
+  etag: string | null | undefined = DIRTY_FILE.etag,
+) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -1300,7 +1304,7 @@ async function mockDirtyEditor(page: Parameters<typeof login>[0], includeUpdated
     if (path === `/api/files/${DIRTY_FILE.id}/content`) {
       return json({
         content: '# 原始内容\n',
-        etag: DIRTY_FILE.etag,
+        ...(etag === undefined ? {} : { etag }),
         ...(includeUpdatedAt ? { updated_at: DIRTY_STAMP } : {}),
       })
     }
@@ -1350,6 +1354,43 @@ test('old/new 文档读取成功响应缺少 updated_at 时仍按 content 和 ET
     ])
     expect(oldResult).toEqual({ content: '# 原始内容\n', error: null, busy: 0 })
     expect(newResult, 'Rust 文档读取缺少 updated_at 时与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
+test('old/new 文档读取成功响应的 ETag 为 null 时仍按空 ETag 打开编辑器', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
+    await mockDirtyEditor(page, true, null)
+    await page.goto(`${baseUrl}/?editor-null-etag=${crypto.randomUUID()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.locator('.file-card').filter({ hasText: DIRTY_FILE.name }).click()
+    const editor = page.locator('.document-editor')
+    await expect(editor).toBeVisible()
+    await expect(editor.locator('textarea')).toHaveValue('# 原始内容\n')
+    await page.waitForTimeout(300)
+    const error = editor.locator('.editor-header-message.error')
+    return {
+      content: await editor.locator('textarea').inputValue(),
+      error: (await error.count()) > 0 ? await error.textContent() : null,
+      busy: await editor.locator('.editor-loading').count(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({ content: '# 原始内容\n', error: null, busy: 0 })
+    expect(newResult, 'Rust 文档读取 null ETag 时与 reference 不一致').toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }

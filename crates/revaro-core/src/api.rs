@@ -288,6 +288,7 @@ pub mod files {
         /// UTF-8 contents.
         pub content: String,
         /// ETag the client must send back when writing.
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub etag: String,
         /// Last modification time.
         #[serde(default)]
@@ -836,6 +837,23 @@ mod tests {
             r#"{"anchor":null,"unexpected":true}"#,
         );
         assert!(error.is_err());
+    }
+
+    #[test]
+    fn document_content_treats_a_nullable_etag_as_empty() {
+        let content: DocumentContent = serde_json::from_value(serde_json::json!({
+            "content": "# body\n",
+            "etag": null
+        }))
+        .unwrap();
+        assert_eq!(content.content, "# body\n");
+        assert!(content.etag.is_empty());
+
+        let invalid = serde_json::from_value::<DocumentContent>(serde_json::json!({
+            "content": "# body\n",
+            "etag": 42
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
