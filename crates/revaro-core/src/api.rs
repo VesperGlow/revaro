@@ -57,6 +57,16 @@ where
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Older document callers only consumed the text and ETag. Keep a missing or
+/// explicit `null` modification time equivalent to the serde default while
+/// still rejecting malformed timestamp strings and other scalar types.
+fn deserialize_nullable_timestamp<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<Timestamp>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// The historical upload caller treated every mode other than the literal
 /// `single` as multipart. Keep that response fallback without relaxing the
 /// strict `FromStr` parser used for persisted upload rows.
@@ -291,7 +301,10 @@ pub mod files {
         #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub etag: String,
         /// Last modification time.
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "crate::api::deserialize_nullable_timestamp"
+        )]
         pub updated_at: Timestamp,
     }
 
@@ -852,6 +865,23 @@ mod tests {
         let invalid = serde_json::from_value::<DocumentContent>(serde_json::json!({
             "content": "# body\n",
             "etag": 42
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn document_content_treats_a_nullable_updated_at_as_default() {
+        let content: DocumentContent = serde_json::from_value(serde_json::json!({
+            "content": "# body\n",
+            "updated_at": null
+        }))
+        .unwrap();
+        assert_eq!(content.content, "# body\n");
+        assert_eq!(content.updated_at, Timestamp::default());
+
+        let invalid = serde_json::from_value::<DocumentContent>(serde_json::json!({
+            "content": "# body\n",
+            "updated_at": 42
         }));
         assert!(invalid.is_err());
     }
