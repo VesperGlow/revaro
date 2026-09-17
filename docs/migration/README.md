@@ -439,8 +439,10 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 ## 7. 前端 CSS 级联顺序（契约，勿凭猜测）
 
 样式表的加载顺序是**有语义的**：多个文件对同一选择器竞争，顺序决定胜出者
-（例如 `.app-shell` 的 grid 列宽由 shell.css 定义后又被覆盖）。权威顺序取自
-`crates/revaro-web/static/styles.css` 的 import 序列（最初根据旧 Vue 入口恢复）：
+（例如 `.app-shell` 的 grid 列宽由 shell.css 定义后又由 uploads.css 覆盖为全宽）。
+权威顺序取自 `crates/revaro-web/static/styles.css` 的 import 序列（最初根据旧
+Vue 入口恢复；原第 7 项 `library.css` 及其临时继任者 `file-list.css` 已按产品决定
+随侧栏和列表视图移除，因此现在是 14 项）：
 
 | # | 文件 | 来源 |
 |---|---|---|
@@ -450,17 +452,16 @@ CI 新增 `rust` job，用 `cargo xtask check` 校验整个 workspace；
 | 4 | `styles/dialogs.css` | 同上 |
 | 5 | `styles/media.css` | 同上 |
 | 6 | `styles/responsive.css` | 同上 |
-| 7 | `styles/library.css` | 同上 |
-| 8 | `styles/account.css` | `styles.css` |
-| 9 | `styles/ui.css` | `styles.css`（`:root` 令牌的权威定义在这里，覆盖 responsive.css） |
-| 10 | `styles/selection-toolbar.css` | `styles.css` |
-| 11 | `styles/share-dialog.css` | `styles.css` |
-| 12 | `styles/document-editor.css` | `styles.css` |
-| 13 | `styles/reader-flow.css` | `styles.css` |
-| 14 | `styles/reader-chrome.css` | `styles.css` |
-| 15 | `styles/video-player.css` | `styles.css`（保留原 VideoPlayer 样式的最后优先级） |
+| 7 | `styles/account.css` | `styles.css` |
+| 8 | `styles/ui.css` | `styles.css`（`:root` 令牌的权威定义在这里，覆盖 responsive.css） |
+| 9 | `styles/selection-toolbar.css` | `styles.css` |
+| 10 | `styles/share-dialog.css` | `styles.css` |
+| 11 | `styles/document-editor.css` | `styles.css` |
+| 12 | `styles/reader-flow.css` | `styles.css` |
+| 13 | `styles/reader-chrome.css` | `styles.css` |
+| 14 | `styles/video-player.css` | `styles.css`（保留原 VideoPlayer 样式的最后优先级） |
 
-移植时必须以单个聚合文件（`@import` 或按序拼接）复现这 15 项顺序，并用测试
+移植时必须以单个聚合文件（`@import` 或按序拼接）复现这 14 项顺序，并用测试
 固定，避免后续编辑悄悄改变级联结果。
 
 ## 8. 进度日志

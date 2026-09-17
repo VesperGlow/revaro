@@ -4,12 +4,23 @@
 
 本阶段不新增产品功能。对旧版已有行为，只做兼容恢复；旧版明显的安全缺陷可以修复，但不得改变正常用户路径。
 
+## 变更：移除侧边分类栏、媒体库与列表视图（2026-09-17）
+
+按产品决定，Rust 前端**不再保留侧边分类栏、媒体库视图和列表视图**，壳层回到顶栏加全宽方块文件浏览。这不是兼容回退，而是一次有意的产品裁剪：旧版（reference）确实有侧栏和列表视图，本清单第 4、5、6 节记录的双版本对照证据仍然有效，但对应的兼容要求已被撤销。因此本清单对这些条目一律按 `[-]`（已按产品决定移除）处理，不再要求与旧版对照。
+
+- 删除的前端实现：`crates/revaro-web/src/components/sidebar.rs`、`crates/revaro-web/src/components/library.rs`；`file_browser.rs` 里的分类状态、`/library/{kind}` 路由恢复、分类历史与刷新逻辑、`ViewMode`/网格列表切换状态、`FileRow` 行组件；`logic/routing.rs` 的 `library_route`/`library_url`；`api.rs` 的 `fetch_library_all`；`components/icons.rs` 中只服务于分类/侧栏/视图切换的图标。
+- 选择入口：列表行删除后，选择移到方块卡片左上角的 `.card-select` 按钮（桌面 hover 显示、触屏常驻），单选与多选照旧，批量重命名/移动/删除/分享/下载/解压/恢复/清空回收站入口全部保留。这与带侧栏的 reference 有意的差异是：reference 的方块网格不渲染选择控件，只在列表行提供；新版恢复的是无侧栏旧版的网格选择行为。
+- 样式：`static/styles/library.css` 与临时的 `static/styles/file-list.css` 均删除；`styles.css` 清单回到 14 个全局样式表，`logic::stylesheet` 的计数与顺序断言同步更新；`shell.css`/`browser.css` 中已无 DOM 使用者的 `.sidebar`/`.sidebar-nav`/`.sidebar-note` 规则一并删除。方块卡片选择按钮的 `.card-select` 规则本就在 `shell.css`/`uploads.css`/`responsive.css` 中，未受影响。
+- 测试：删除 `rust-library-ui`、`rust-library-reference-parity`、`rust-library-history-reference-parity`、`rust-sidebar-state-reference-parity`、`rust-sidebar-tree-reference-parity`、`rust-file-view-state-reference-parity`、`rust-file-view-preference` 七个 spec，并从其余 spec 中移除侧栏/分类/列表视图断言与 `revaro:sidebar:*`、`revaro:library:media:file` 键；`/api/library/*` 的 mock 桩保留（无害的死路由桩）。
+- 保留：Rust 后端的 `/api/library`、`/api/library/all`、`/api/library/counts` 端点和 `revaro-core::library` 规则不变，只是前端不再调用。
+
 ## 0. 状态约定
 
 - `[ ]` 尚未完成旧版/新版双向验证。
 - `[R]` 已确认 Rust 版回退，待恢复。
 - `[P]` 已恢复并通过自动化和实际浏览器验证；若差异来自旧版可复现的运行时缺陷，按用户要求保留新版正常行为并明确记录例外后也可标为 `[P]`，不得把差异隐藏在“功能类似”描述里。
 - `[B]` 测试基础设施或测试选择器异常，不能作为功能通过/失败结论；仍需另行手工验证。
+- `[-]` 该项对应的旧版功能已按产品决定从 Rust 前端移除，不再要求兼容对照；相关实现与用例已删除，见上文“变更：移除侧边分类栏与媒体库”。
 - 每个条目都要补充证据：旧版操作结果、新版操作结果、差异、代码位置、测试命令、浏览器验证结果。
 - “旧版确认”可以由旧版源码、旧版运行时和旧版 E2E 共同构成；不能仅凭当前页面推断旧版没有某项功能。
 
@@ -48,6 +59,10 @@
 ### 1.4 已完成的双版本探针记录
 
 以下记录只覆盖已经实际执行过的窄行为，不替代后续各模块的完整验收：
+
+- `2026-09-17`，**产品决定：移除侧边分类栏与媒体库**。Rust 前端删除 `components/sidebar.rs`、`components/library.rs` 及 `file_browser.rs` 中的分类状态、`/library/*` 路由恢复、分类 history 与刷新逻辑，`logic/routing.rs` 的 `library_route`/`library_url`、`api.rs` 的 `fetch_library_all` 和分类/侧栏专用图标；删除 `static/styles/library.css`，文件列表视图与网格/列表切换一度迁到 `static/styles/file-list.css`。删除 5 个侧栏/媒体库 spec，并从其余 spec 移除侧栏/分类断言与 `revaro:sidebar:*` 键；`/api/library/*` 后端端点保留。该决定与旧版 reference 有意不同，本清单对应条目按 `[-]` 记录，不再要求兼容对照。
+- `2026-09-17`，**追加产品决定：移除列表视图**。方块网格成为唯一的文件布局，列表视图与 `ViewMode`/视图偏好一起删除，`file-list.css` 随之删除（`styles.css` 回到 14 个全局样式表），`FileRow` 与 `row_*` 辅助函数从 `file_browser.rs` 删除，`layout_grid` 图标删除；选择入口移到方块卡片左上角的 `.card-select`（恢复无侧栏旧版的网格选择），批量操作保持可用。`uploads.css` 的 `(hover: none)/(pointer: coarse)` 规则同步改为让该按钮常驻可见（原规则是参考版网格不提供选择的遗留）。再删除 `rust-file-view-state-reference-parity.spec.ts`、`rust-file-view-preference.spec.ts`，其余 spec 的列表视图步骤改为新版点 `.file-card .card-select`、旧版仍走 `列表视图` + `.row-select`；`rust-global-focus-reference-parity.spec.ts` 的「桌面全局 Tab 焦点顺序」不再逐项对照 reference（侧栏移除与每张卡片新增选择按钮都会改变序列），改为固定新版顺序：顶栏 5 项 → 内容头 4 项 → 每张卡片「卡片本身 → 左上角选择按钮」，该用例已在真实 Rust 进程上实跑通过。`cargo fmt --all -- --check`、`cargo xtask check`（fmt、clippy `-D warnings`、workspace 测试、wasm32 检查）退出码 0；`npx playwright test --list` 列出 64 文件 379 项（启用 reader-flow 后 66 文件 397 项）。真实 Chromium 实测：无侧栏/无列表切换/无行布局、5 张卡片各带左上角选择按钮、桌面点选两张出现「2 项已选择」工具栏、点击卡片主体仍进入目录且后退回根、390×844 触屏按钮常驻且无横向溢出。
+- `2026-09-17`，**修复浏览器缓存导致重建后仍加载旧 bundle**。`revaro-server` 的 `web.rs` 原本对 `html` 以外的所有静态文件发 `private, max-age=3600` 且不带校验器；bundle 文件名固定（`revaro_web.js`、`revaro_web_bg.wasm`、`styles.css` 都没有内容哈希），因此重新构建并替换 `dist/web` 后，浏览器最多一小时仍然执行旧 wasm——本次「本地实例仍有列表视图」就是该缓存，而不是磁盘或服务端仍是旧产物（`/config/revaro/dist/web` 与两个实例服务的 wasm 中已无「列表视图」字符串）。现在 shell 资产（`html`/`js`/`wasm`/`css`）改为 `no-cache` 并带基于 size+mtime 的强 `ETag`，命中返回 `304`，图片/图标保留 `private, max-age=3600`；新增 3 个单测。实测：`revaro_web_bg.wasm` 返回 `cache-control: no-cache` + `etag`，带匹配 ETag 的请求 `304`/0 字节，陈旧 ETag `200` 全量，`favicon.png` 仍为 `max-age=3600`。已存在的旧缓存条目需要一次强制刷新（Ctrl/Cmd+Shift+R）才会重新校验。
 
 - `2026-09-13`，old `18080` / new `18082`，Chromium 1440×900：任务中心、系统状态、账户设置、回收站入口、侧栏五类入口、侧栏折叠/展开逐项点击；两版均得到同一入口顺序和可见状态。系统状态均显示数据库、网盘存储使用量、服务端缓存三张卡片。
 - `2026-09-13`，old `18080` / new `18082`，Chromium 390×844：移动分类抽屉均为六个一级入口且无目录树；打开后 backdrop 存在，点击右侧空白关闭；账户工具菜单、任务中心/回收站/账户设置三项、新建菜单、上传菜单的文案和 Escape 关闭行为一致。
@@ -398,19 +413,21 @@
 | `[P]` | 回收站入口 | 顶栏回收站图标、title=`回收站`、aria、点击进入 trash 路由、数量/空状态和返回根目录一致。 | old/new 桌面顶栏与侧栏 footer、移动 footer 均可进入回收站；空态/返回根和尺寸已对照，入口按 reference 保持根 URL |
 | `[P]` | 移动端顶栏 | 状态球仍可用；头像/工具菜单包含旧版实际项目：任务中心、回收站、账户设置；不出现旧版明确禁止的 `打开任务与工具菜单` 旧入口；遮罩/外部点击/Esc 一致，退出登录仍从账户设置进入。 | old/new 390×844 实测状态球、工具菜单三项、任务中心跳转、外部点击和 Escape 均通过；旧版工具菜单本身没有独立退出项 |
 
-## 4. 侧栏、分类入口和路径树
+## 4. 侧栏、分类入口和路径树 —— 已按产品决定移除
 
-| 状态 | 条目 | 旧版规范与验收点 | 当前 Rust 初检 |
+本节全部条目在 2026-09-17 由产品决定撤销，状态统一为 `[-]`，不再需要与旧版对照。历史上它们曾通过双版本验证（见 §1.4 的 2026-09-13/14 记录）；这些证据保留，用来说明“旧版确实有该侧栏”，但 Rust 前端已删除该功能，对应实现与用例一并删除。
+
+| 状态 | 条目 | 旧版规范与验收点 | 处理结果 |
 |---|---|---|---|
-| `[P]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | old/new `rust-library-ui.spec.ts` 与导航定向用例确认顺序、文案、active/current、点击切换和返回 |
-| `[P]` | 分类数据 | 分类数量、空状态、刷新/loading/error、书籍/图片/视频/音乐/普通文件各自对应 `/api/library` 视图一致。 | old/new 分类/侧栏集合 17/17；实际切换五类并比较数量、标题、路径树、卡片/行、系列/图库/音乐视图、空态、503→重试 loading→恢复、缺失/null bucket、缺失/null counts、非法音乐视图偏好和分类 history；API `/api/library`、`/api/library/all`、`/api/library/counts` 的传输/顶层字段也已双实例核对 |
-| `[P]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误、点击文件夹进入对应分类路径一致。 | 多级媒体路径树计数、默认展开、展开/过滤、active、展开箭头旋转、根节点 tooltip、空路径提示、刷新保留展开状态、侧栏折叠后重置层级和分类失败/重试 loading old/new 已由 `rust-sidebar-tree-reference-parity.spec.ts`、`rust-library-reference-parity.spec.ts` 对照；文件树根节点收合/展开、递归进入一级/嵌套目录、空目录、loading/空/500 已在 old/new 实测。旧版 `SidebarFileTree.vue` 未注册 `SidebarDirectoryNode`，所以旧版只有不可见 custom element；Rust 保留可用树作为明确缺陷例外，并拒绝旧请求覆盖新目录。`rust-sidebar-tree-reference-parity.spec.ts` old/new 6/6；实现见 `crates/revaro-web/src/components/sidebar.rs` |
-| `[P]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | old/new `rust-navigation-parity.spec.ts` 刷新后分别恢复折叠和 book 手风琴；坏值均回默认状态 |
-| `[P]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复、当前页仍可识别一致。 | old/new `rust-navigation-parity.spec.ts` 实测 rail、`aria-expanded`、刷新恢复、展开恢复和移动端不复用 rail |
-| `[P]` | 移动端分类抽屉 | 宽度 `min(300px,78vw)`；只显示一级入口（书/图/影/音/文件/回收站），不显示树、数量或 chevron；50px 行高；浮动 handle、backdrop、点击空白、Esc、打开/关闭跟随一致，内容不位移。 | old/new 390×844 实际打开、检查六个入口/无目录树、点 backdrop、Escape、重复开关；`rust-library-ui.spec.ts` 3/3 |
-| `[P]` | 侧栏/全局入口图标 | 旧版实际存在的顶栏、系统状态、任务中心、五类侧栏、路径展开、回收站、视图切换、新建/上传、任务操作和移动工具入口，Lucide 几何、stroke、大小、对齐以及 active/hover/折叠状态一致；不虚构旧版不存在的 disabled 规则。 | `rust-icon-reference-parity.spec.ts` 与 `rust-sidebar-state-reference-parity.spec.ts` 在 old/new 浏览器逐项比较 SVG 几何、computed 状态、路径/折叠/回收站和移动抽屉；该子项单独重跑 old/new 3/3 通过。文件类型图标、媒体控制和完整 loading/disabled/触摸状态由后续文件项/媒体项继续验收 |
-| `[P]` | 侧栏 active/hover/折叠/移动状态 | 分类行 active/hover、计数、展开箭头、桌面 rail 与 390×844 抽屉的布局、动画完成后的尺寸和点击状态一致。 | old/new `rust-sidebar-state-reference-parity.spec.ts` 各 1/1；保留 Rust 额外回收站 `aria-label` 作为无障碍增强 |
-| `[P]` | 回收站 footer | 桌面/移动端位置、图标、active、点击和 trash empty 状态一致。 | old/new 桌面尺寸、移动端 footer 点击、回收站空态和移动抽屉保持打开的 reference 语义已实测 |
+| `[-]` | 五个一级分类 | 侧栏入口顺序、图标和文案为：书架、图片、视频、音乐、文件；每项 active/current、点击路由和返回行为一致。 | 删除侧栏与分类入口，前端不再有 `/library/*` 导航；`rust-library-ui.spec.ts` 删除 |
+| `[-]` | 分类数据 | 分类数量、空状态、刷新/loading/error、各分类对应 `/api/library` 视图一致。 | 前端不再调用 `/api/library/all`；后端端点与 `revaro-core::library` 规则保留，`rust-library-reference-parity.spec.ts` 删除 |
+| `[-]` | 分类路径 | 分类主项和展开控制、路径树/文件树、当前路径高亮、展开/收起、加载/空/错误一致。 | `components/sidebar.rs`、`components/library.rs` 与 `rust-sidebar-tree-reference-parity.spec.ts` 删除 |
+| `[-]` | 分类持久化 | `revaro:sidebar:collapsed`、`revaro:sidebar:expanded` 的值、恢复时机和坏值处理一致。 | 两个键不再读写，其他 spec 中的相关清理已移除 |
+| `[-]` | 桌面侧栏折叠 | 折叠 rail、展开按钮、tooltip/aria、内容宽度/动画、刷新后恢复一致。 | `AppSidebar` 与 `.sidebar-collapse` 删除，内容区恢复全宽 |
+| `[-]` | 移动端分类抽屉 | 抽屉宽度 `min(300px,78vw)`、一级入口、handle/backdrop、Esc、内容不位移一致。 | `.sidebar-handle`/`.sidebar-backdrop` 与抽屉 CSS 删除 |
+| `[-]` | 侧栏/全局入口图标 | 五类侧栏、路径展开、折叠状态图标几何、stroke、大小一致。 | 分类/侧栏专用图标从 `components/icons.rs` 删除；顶栏、任务中心、系统状态、文件类型图标仍由 `rust-icon-reference-parity.spec.ts` 覆盖 |
+| `[-]` | 侧栏 active/hover/折叠/移动状态 | 分类行 active/hover、计数、展开箭头、桌面 rail 与移动抽屉状态一致。 | `rust-sidebar-state-reference-parity.spec.ts` 删除 |
+| `[-]` | 回收站 footer | 桌面/移动端 footer 位置、图标、active、点击和 trash empty 状态一致。 | 回收站入口只保留顶栏（桌面 `.topbar .trash-button`、移动工具菜单 `.mobile-trash`），其余 spec 已改用顶栏入口 |
 
 ## 5. 文件浏览、路由和全局内容区
 
@@ -418,14 +435,14 @@
 |---|---|---|---|
 | `[P]` | 根目录内容头 | `我的文件` 标题、当前路径 nav、项目数/文件数/大小三项 metadata 的文案、间距和层级一致。 | old/new 1440×900 实际比较根目录与回收站内容头、统计文案、动作按钮和返回路径；390×844 空态/错误态结构也逐项比较，`rust-file-browser-reference-parity.spec.ts` 2/2 |
 | `[P]` | 面包屑 | `当前路径` nav、根和各级名称、Lucide chevron-right 分隔、当前项样式、点击中间级、超长路径横向滚动、键盘/触摸行为一致。 | old/new 深层路径实际创建并打开，移动端横向滚动、browser back、点击根、`scrollTo({behavior:"smooth"})`、DOM 层级和首末项 margin，以及中间级 click/Enter/tap 均已对照；`rust-breadcrumb-layout-reference-parity.spec.ts` 3/3 |
-| `[P]` | 文件夹路由 | `/`、`/f/{id}`、`/library/{book|image|video|audio|file}`、分类下 `/f/{folder}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | old/new 直达浏览器用例覆盖五类分类、分类路径、文件夹路径和无效 `/f/{id}`；无效地址均回根并加载默认页面 |
+| `[P]` | 文件夹路由 | `/`、`/f/{id}` 的地址、刷新、直接打开、无效 id、权限错误和回退一致。 | old/new 直达浏览器用例覆盖文件夹路径和无效 `/f/{id}`；无效地址均回根并加载默认页面。`/library/*` 路由已随侧栏移除，不再属于前端路由 |
 | `[P]` | 深链接 | 旧版定义的 `/read/{fileId}` 打开 Reader，登录后续接目标；无效目标安全回根。旧版没有独立媒体/普通文件深链 URL，不新增路由。 | 旧版已登录直达及登录后都回根、不读目标（`openRoute()` 改写 pathname、`submitLogin()` 只打开 root）；Rust 两条路径均打开 TXT Reader 并更新为 `/read/{id}`；失效 ID 两版均回根、无 Reader/error toast。old/new mock 浏览器用例 `rust-deep-link-reference-parity.spec.ts` 3/3；按明确旧源码意图保留新版修复，旧版运行时为已记录例外 |
-| `[P]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹/分类；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退/前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分享确认框叠加时关闭外层 modal 但保留 reference 外置 dialog、TOTP enrollment 子状态下后退关闭账户层且重开后重置、重命名/移动弹窗后退关闭并保留选择、重命名取消/保存各消费一条历史、分类筛选后的分类切换/后退/前进、慢/快目录响应竞态，以及两次快速后退按旧版 `popChain` 顺序逐级恢复 loading/内容；新增 Reader 后退关闭、前进只恢复 `/read/{id}` 不重开 Reader 的实际 old/new 对照。历史/导航集合 `rust-history-sequence-reference-parity.spec.ts`、`rust-library-history-reference-parity.spec.ts`、`rust-modal-history-reference-parity.spec.ts`、`rust-open-item-reference-parity.spec.ts` old/new 9/9，历史序列与相关导航 old/new 22/22；Rust RenameDialog 未登记/未消费 history 的回退已恢复 |
-| `[P]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | old/new 1440×900 以 40 个实际 mock 文件比较两种布局的 active/`aria-pressed`/tooltip/icon、可见项、长页面滚动位置、切换后的 localStorage 和非法偏好回退；`rust-file-view-state-reference-parity.spec.ts` old/new 1/1。已有 390×844 切换/刷新/切回和六档断点布局用例继续覆盖移动端 |
+| `[P]` | 浏览器历史 | 文件夹进入 pushState；返回/前进恢复文件夹；先关闭 modal 再回退页面；stale request 不覆盖新路径。 | old/new 已实际覆盖目录进入、后退/前进 URL 现象、账户弹层后退关闭、普通文件/EPUB/媒体弹层后退关闭并恢复当前文件夹、分享确认框叠加时关闭外层 modal 但保留 reference 外置 dialog、TOTP enrollment 子状态下后退关闭账户层且重开后重置、重命名/移动弹窗后退关闭并保留选择、重命名取消/保存各消费一条历史、慢/快目录响应竞态，以及两次快速后退按旧版 `popChain` 顺序逐级恢复 loading/内容；新增 Reader 后退关闭、前进只恢复 `/read/{id}` 不重开 Reader 的实际 old/new 对照。`rust-history-sequence-reference-parity.spec.ts`、`rust-modal-history-reference-parity.spec.ts`、`rust-open-item-reference-parity.spec.ts` 均通过；分类 history 用例已随侧栏移除删除；Rust RenameDialog 未登记/未消费 history 的回退已恢复 |
+| `[-]` | 网格/列表切换 | 默认值、按钮图标/tooltip/active、内容布局、滚动、刷新后状态和移动端响应式行为一致。 | 列表视图与切换按钮已按产品决定删除；方块网格是唯一布局。`rust-file-view-state-reference-parity.spec.ts`、`rust-file-view-preference.spec.ts` 删除，`revaro:library:media:file` 键不再使用 |
 | `[P]` | 文件浏览头菜单状态 | 新建/上传 `<details>` 的初始关闭、summary、popover 定位/尺寸/视觉层级、首项 hover、点击空白关闭和菜单动作后的关闭行为一致；移动端与桌面入口按 reference 呈现。 | old/new 390×844 实测新建/上传两菜单的初始/展开/hover/外部关闭及“新建文档”打开 editor；`rust-file-header-menu-reference-parity.spec.ts` 各 1/1，提交 `6828692` |
-| `[P]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空分类、空回收站、重试按钮、旧内容保留策略和文案一致。 | old/new 390×844 实际对照根目录 loading、空根、目录 loading→完成、目录失败、回收站失败；普通文件/回收站失败保留旧内容并只显示 Toast、不出现错误卡/重试按钮；分类 503→重试→恢复由 `rust-library-reference-parity.spec.ts` 覆盖；`rust-file-loading-state-reference-parity.spec.ts` old/new 3/3（含详情/children 并发）、`rust-file-browser-reference-parity.spec.ts`、`rust-navigation-parity.spec.ts` 均通过 |
+| `[P]` | loading/empty/error | 首次加载、切换路径、网络失败、空根、空回收站、重试按钮、旧内容保留策略和文案一致。 | old/new 390×844 实际对照根目录 loading、空根、目录 loading→完成、目录失败、回收站失败；普通文件/回收站失败保留旧内容并只显示 Toast、不出现错误卡/重试按钮；`rust-file-loading-state-reference-parity.spec.ts` old/new 3/3（含详情/children 并发）、`rust-file-browser-reference-parity.spec.ts`、`rust-navigation-parity.spec.ts` 均通过。空分类与分类 503→重试场景已随侧栏移除删除 |
 | `[P]` | 拖放 | 桌面拖入文件/文件夹、拖动经过/离开/放下、overlay、非法目标、重复文件、取消和上传结果一致。 | old/new 已实际验证含 File 的 drop 默认事件、overlay 显示/关闭、子元素 dragleave 保持 overlay、回收站拒绝 drop、根目录单文件上传并完成 ready；新增两个带 `webkitRelativePath` 的文件夹拖放文件，old/new 均按 reference 平铺上传、不创建目录且均 ready（`rust-upload-parity.spec.ts` 1/1）；文件夹选择嵌套结构 old/new 1/1，重复 `[201,409]`、连续失败 5 次重试、任务中心失败重试、传输中取消先 abort 再删 session 均已 old/new 实测。相关拖放/重试场景 4/4，`rust-upload-cancel-reference-parity.spec.ts` 1/1 |
-| `[P]` | 响应式布局 | 桌面、平板、390px 手机宽度下内容区、侧栏、顶栏、工具栏、对话框和滚动容器的宽高/层级一致。 | old/new `rust-responsive-layout-reference-parity.spec.ts` 已在 1440/1024/851/850/390/320px 对照基础壳层几何、断点入口可见性、网格列和 body 横向溢出；同一 spec 还逐项对照 1440/851/850/390px 对话框和选择工具栏几何。`rust-file-header-menu-reference-parity.spec.ts` 覆盖桌面/390px 上传与新建菜单，`rust-transfer-dialog-reference-parity.spec.ts` 覆盖 390×844 移动弹窗/目录下拉，`rust-media-parity-ui.spec.ts` 覆盖媒体 1440/390/320px 控件、滚动锁定、触摸手势和旋转，`rust-reader-reference-parity.spec.ts` 覆盖 390px 触摸翻页、touchcancel、目录/设置层级；本轮组合 old/new 共 95/95 通过，未出现横向页面溢出 |
+| `[P]` | 响应式布局 | 桌面、平板、390px 手机宽度下内容区、顶栏、工具栏、对话框和滚动容器的宽高/层级一致。 | old/new `rust-responsive-layout-reference-parity.spec.ts` 已在 1440/1024/851/850/390/320px 对照基础壳层几何、断点入口可见性、网格列和 body 横向溢出；同一 spec 还逐项对照 1440/851/850/390px 对话框和选择工具栏几何。`rust-file-header-menu-reference-parity.spec.ts` 覆盖桌面/390px 上传与新建菜单，`rust-transfer-dialog-reference-parity.spec.ts` 覆盖 390×844 移动弹窗/目录下拉，`rust-media-parity-ui.spec.ts` 覆盖媒体 1440/390/320px 控件、滚动锁定、触摸手势和旋转，`rust-reader-reference-parity.spec.ts` 覆盖 390px 触摸翻页、touchcancel、目录/设置层级；本轮组合 old/new 共 95/95 通过，未出现横向页面溢出。侧栏与移动抽屉几何已从该 spec 移除 |
 
 ## 6. 文件项、图标和选择/操作菜单
 
@@ -434,8 +451,8 @@
 | `[P]` | 文件卡/行 | 文件名、大小、类型、更新时间、目录/媒体/文档标识、thumbnail/cover、fallback 和截断规则一致；方块与列表都验证。回收站目录按 Enter 仍阻止默认事件但不打开；目录名带 `.epub` 仍按目录渲染；列表日期使用浏览器本地时区。 | Rust 有 FileTile/rows 基础；old/new 已实际通过类型/状态 7/7 双版本集合及 old/new 各 8/8 交互集合，覆盖 Enter、`.epub` 目录边界、日期时区、12 类卡/行矩阵以及正常/hover/focus/selected/pending/failed 状态；新增延迟缩略图、图片单次原图回退、音频/EPUB 封面失败图标回退并确认两种布局结果（`rust-file-card-reference-parity.spec.ts` old/new 2/2，`bd7e939`）；视频缩略图重试对特殊 ETag 的 URI 编码也已恢复（`5b7451a`）；1440/390px 超长文件名的卡/行单行省略、title 和无横向溢出已 old/new 1/1（`05ad4b8`）；右键、方块 Space/Enter、列表 Space 选择和 390×844 选择模式轻触行已由 `rust-file-card-interaction-reference-parity.spec.ts` old/new 2/2 实测。旧版生产方块没有传 `selectable`，不存在可达的长按选择或 disabled 控件分支；pending/failed 只使用 `mutedrow` 状态，文件项验收通过 |
 | `[P]` | 图标系统 | 文件夹、文本文档、EPUB、图片、音频、视频、归档、未知文件的旧版图标路径、stroke、颜色、尺寸、背景和状态叠加一致。 | 全局 Lucide 几何已在 old/new 浏览器入口中逐项修复并覆盖任务/状态/菜单/媒体控制关键集合；账户用户名编辑铅笔已恢复；文件项 12 类 preview/fallback 图标路径和节点已矩阵对照，且 card/row SVG computed style 与正常/hover/focus/selected/pending/failed 状态均 old/new 2/2；MIME 与扩展名重叠时的 EPUB/可编辑/音频判断顺序也已 old/new 验证并修复（`3b9050f`）；视频缩略图重试的特殊 ETag 编码已恢复（`5b7451a`）；本轮文件卡/列表、全局入口、重叠类型和选择工具栏图标 old/new 8/8 通过 |
 | `[P]` | hover/active/disabled | 卡片 hover、键盘 focus、选中 active、不可用、loading、任务中覆盖层、错误状态和 pointer 行为一致。 | 方块正常/预览 hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的 computed style、伪元素和选择控件已 old/new 1/1；文件项双版本 7/7、交互 old/new 各 8/8 另确认 Space/Enter、右键和选择 pointer；旧版生产方块未启用 selectable，长按和 disabled 控件分支不可达，pending/failed 仅表现为 mutedrow；本轮文件卡/状态/交互集合 old/new 15/15 通过 |
-| `[P]` | 选择入口 | 旧版生产路径只在列表行提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；默认方块网格没有选择控件；内容空白点击清除选择，文件行/按钮/工具栏点击不误清除。 | old/new `rust-file-interaction-parity.spec.ts`、actions parity 实测列表显式选择、清除、空白点击和选择模式；旧版 `FileGrid` 的 `selectable` 未开启 |
-| `[P]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | old/new 390×844 实际验证选择按钮、选择模式轻触不打开编辑器；未将不可达长按代码迁入 Rust |
+| `[P]` | 选择入口 | 每个方块卡片左上角提供 `选择项目` 控件；点击不打开项目，选中后工具栏更新，取消选择/全选和跨项状态一致；内容空白点击清除选择，卡片/按钮/工具栏点击不误清除。 | 列表行删除后选择入口移到方块卡片左上角的 `.card-select`（桌面 hover 显示、触屏常驻），这是恢复无侧栏旧版的网格选择行为；`rust-file-interaction-parity.spec.ts`、actions parity 覆盖显式选择、清除、空白点击与选择模式。有意差异：带侧栏的 reference 方块网格不渲染选择控件，只在列表行提供，因此该项不再逐项对照 reference |
+| `[-]` | 触摸选择 | 旧版生产路径为列表显式选择按钮；进入选择模式后轻触行切换选择，普通轻触打开项目；旧版 tile 的 480ms 长按函数因生产网格 `selectable=false` 不可达，不作为用户行为。 | 列表视图已删除；触屏改为方块卡片左上角常驻的 `.card-select` 按钮完成单选/多选。原 `uploads.css` 的 `(hover: none)/(pointer: coarse)` 规则会把该按钮隐藏（因为参考版网格不提供选择），现已改为常驻可见 |
 | `[P]` | 右键/更多菜单 | 文件/文件夹右键或 more 入口、菜单锚点、菜单项顺序、点空白关闭、Esc、边缘翻转和 item disabled 状态一致。 | 旧版没有自定义文件右键菜单，文件/文件夹卡均按 reference 阻止原生菜单；图片、音频、视频的 more/设置菜单已在 1440×900 与 390×844 实际比较初始/展开/hover、尺寸/锚点、空白关闭、Escape 与 summary 焦点，且 reference 菜单本身没有动态边缘翻转或 disabled 项；`rust-preview-menu-reference-parity.spec.ts` 与 `rust-media-menu-reference-parity.spec.ts` 均通过，操作结果由下载/移动/复制/媒体动作矩阵覆盖 |
 | `[P]` | 打开动作 | 目录进入；可编辑文本进入 editor；EPUB 进入 reader；图片/音频/视频进入 preview；未知类型下载/预览策略、回收站只读行为一致。 | old/new 1440×900 同一 mock 根目录已实际覆盖目录、TXT、EPUB、图片、音频、视频、未知文件的点击分流、pathname 和浏览器后退关闭；回收站方块/列表已逐项覆盖目录、TXT、Markdown、EPUB、图片、音频、视频、未知文件及只读限制，`rust-open-item-reference-parity.spec.ts` old/new 2/2；不支持/损坏 audio、video、图片的错误分流和重试由媒体用例覆盖；本轮普通分流、回收站、编辑器只读和损坏媒体共 13/13 通过 |
 | `[P]` | SelectionToolbar | 选中计数/总大小、清除、全选、打开、下载、分享、重命名、移动、删除、恢复、永久删除、归档解压等按钮的出现条件和文案一致。 | old/new 列表实际覆盖目录、TXT、EPUB、图片、ZIP、未知及 TXT+图片多选的按钮分流、摘要、文案和图标路径；390×844 移动端布局及回收站恢复/永久删除已对照；全选→取消全选实际往返并恢复当前列表可见条目计数，`.txt` 阅读分流及弹层隐藏已对照；`rust-selection-toolbar-reference-parity.spec.ts` old/new 3/3，书本图标重叠类型由 `rust-selection-toolbar-icon-reference-parity.spec.ts` 对照；旧版生产工具栏没有 disabled 分支，本轮响应式/工具栏/图标组合 old/new 6/6 通过 |
@@ -612,11 +629,11 @@
 以下旧版组件均必须有 Rust 等价入口或明确证明其行为已由等价组件覆盖，不得因为 Rust 版合并为单文件就从清单移除：
 
 - `[ ]` `App.vue`：启动、认证、路由、history、拖放、modal stack、toast、reader/media 分流。
-- `[ ]` `AppTopbar.vue`、`AppSidebar.vue`、`TaskCenter.vue`、`SystemStatus.vue`：全局壳层、任务、状态、分类导航。
+- `[-]` `AppTopbar.vue`、`TaskCenter.vue`、`SystemStatus.vue`：全局壳层、任务、状态。`AppSidebar.vue` 已按产品决定移除，不再要求 Rust 等价入口。
 - `[ ]` `LoginPage.vue`：登录、TOTP、错误和 loading。
 - `[ ]` `FileBrowserHeader.vue`、`SelectionToolbar.vue`：路径、统计、视图、新建、上传、选择后动作。
 - `[ ]` `FileGrid.vue`、`FileRows.vue`、`FileCard.vue`：两种布局、图标、缩略图、选择和 touch。
-- `[ ]` `LibraryView.vue`、`BookShelf.vue`、`GalleryGrid.vue`、`BookCover.vue`：书架、系列、图片/视频 gallery、相册、音乐/文件分类。
+- `[-]` `LibraryView.vue`、`BookShelf.vue`、`GalleryGrid.vue`、`BookCover.vue`：书架、系列、图片/视频 gallery、相册、音乐/文件分类。已按产品决定移除，不再要求 Rust 等价入口；后端 `/api/library/*` 端点保留。
 - `[ ]` `DocumentEditor.vue`：文本查看/编辑/Markdown 分栏预览/保存/冲突。
 - `[ ]` `MoveCopyDialog.vue`、`DirectoryPicker.vue`：移动/复制目标选择和排除规则。
 - `[ ]` `AppDialog.vue`：确认/输入通用弹窗行为。
@@ -671,7 +688,7 @@
 | 移动端分类抽屉键盘语义 | 2、4、15 | `b4147c6` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际打开分类抽屉，比较 Escape 的关闭结果与 window 阶段 `defaultPrevented=false` | 局部 PASS |
 | 文件浏览头下拉键盘语义 | 5、7、15 | `75426a5` | `rust-navigation-parity.spec.ts` old/new 各 1/1 | 390×844 实际分别打开新建/上传菜单，比较 Escape 关闭结果与 window 阶段 `defaultPrevented=false` | 局部 PASS |
 | 顶栏/状态 badge 与命中率 | 3、4、15 | `8f5356f`、`1108947` | `rust-global-ui-reference-parity.spec.ts` old/new 各 1/1；聚合导航/任务/图标集合 old/new 各 15/15 | 同一 mock 数据逐项比较任务 header、服务卡 badge 的 class/尺寸/padding/文字，并用 2/3 fixture 验证 67% 四舍五入；系统状态异常 class/重连已由独立模块覆盖 | 局部 PASS |
-| 文件浏览头视图与断点状态 | 5、15 | `93ae4cf`、本模块视图偏好修复 | `rust-global-ui-reference-parity.spec.ts` old/new 双上下文 6/6；`rust-responsive-layout-reference-parity.spec.ts` old/new 2/2；`rust-file-view-state-reference-parity.spec.ts` old/new 1/1 | 1440/390px 实际比较标题/统计、方块/列表 active、`aria-pressed`、断点可见性、布局、长页面滚动、切换后的存储值和非法偏好回退；Rust 初始首次 Effect 覆写 localStorage 的差异已恢复 | PASS |
+| 文件浏览头视图与断点状态 | 5、15 | `93ae4cf`、本模块视图偏好修复 | `rust-global-ui-reference-parity.spec.ts` old/new 双上下文 6/6；`rust-responsive-layout-reference-parity.spec.ts` old/new 2/2 | 1440/390px 实际比较标题/统计、断点可见性、布局和长页面滚动；方块/列表 active、`aria-pressed`、切换后的存储值和非法偏好回退随列表视图删除而移除，`rust-file-view-state-reference-parity.spec.ts` 删除 | PARTIAL（列表视图按产品决定移除） |
 | 根目录/回收站内容头与空错误态 | 5、15 | `50b8f3c`、`0123689`（目录并发加载） | `rust-file-browser-reference-parity.spec.ts` old/new 2/2；`rust-file-loading-state-reference-parity.spec.ts` old/new 3/3 | 1440×900 实际比较根目录卡片、列表行、统计和回收站返回；390×844 比较空根、目录 loading→空完成、children 500、回收站 500 的旧内容保留、Toast 和无重试错误卡；另以延迟详情响应探测进入目录时详情/children 并发 | PASS |
 | 文件项键盘、类型边界与日期格式 | 6、15 | `31a8ce7`、`3d50af0`、`33a4052`、`5b7451a` | `rust-file-interaction-parity.spec.ts` old/new 定向各 2/2；`rust-file-card-reference-parity.spec.ts` old/new 矩阵 1/1；`cargo test -p revaro-web` 51/51；WASM/web build | 实际验证回收站目录 Enter、目录名 `.epub` 的 thumbnail/fallback、12 类卡/行节点、浏览器本地时区日期及包含特殊字符 ETag 的视频缩略图重试 URL | 局部 PASS |
 | 文件卡/行状态视觉 | 6、15 | `aa96e6a` | `rust-file-card-state-reference-parity.spec.ts` old/new 双上下文 1/1 | 1440×1000 实际比较方块正常/hover/focus/fallback、列表正常/hover/focus/selected/selected-hover/pending/failed 的状态 class、computed style、预览伪元素和选择控件；完整 loading/disabled/触摸状态未完 | 局部 PASS |
