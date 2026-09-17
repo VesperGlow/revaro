@@ -29,7 +29,17 @@ const items = [
 
 const cover = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#789"/></svg>'
 
-async function mockFileBrowser(page: Page) {
+async function mockFileBrowser(page: Page, options: { sparseTimestamps?: boolean } = {}) {
+  const sparseItems = options.sparseTimestamps
+    ? items.map((item, index) => {
+        if (index === 0) {
+          const { created_at: _createdAt, updated_at: _updatedAt, ...withoutTimestamps } = item
+          return withoutTimestamps
+        }
+        if (index === 1) return { ...item, created_at: null, updated_at: null }
+        return item
+      })
+    : items
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     const json = (value: unknown) => route.fulfill({ json: value })
@@ -48,11 +58,32 @@ async function mockFileBrowser(page: Page) {
         breadcrumbs: [],
       })
     }
-    if (path === `/api/files/${ROOT}/children`) return json({ items, total_bytes: 4096, file_count: items.filter(item => item.kind === 'file').length })
+    if (path === `/api/files/${ROOT}/children`) return json({ items: sparseItems, total_bytes: 4096, file_count: items.filter(item => item.kind === 'file').length })
     if (path.endsWith('/thumbnail')) return route.fulfill({ contentType: 'image/svg+xml', body: cover })
     return json({ items: [] })
   })
 }
+
+test('old/new 文件列表在未使用的时间字段缺失或为 null 时仍保留条目', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockFileBrowser(oldPage, { sparseTimestamps: true }),
+      mockFileBrowser(newPage, { sparseTimestamps: true }),
+    ])
+    await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
+    expect(await oldPage.locator('.file-card').filter({ hasText: '普通目录' }).count()).toBe(1)
+    expect(await newPage.locator('.file-card').filter({ hasText: '普通目录' }).count(), 'Rust 不应因未消费的文件时间字段丢失整个列表').toBe(1)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
 
 async function openBrowser(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)

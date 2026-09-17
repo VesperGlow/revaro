@@ -371,8 +371,10 @@ pub struct File {
     #[serde(deserialize_with = "deserialize_file_status")]
     pub status: FileStatus,
     /// Creation time.
+    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
     pub created_at: Timestamp,
     /// Last metadata change.
+    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
     pub updated_at: Timestamp,
     /// Soft-deletion time, omitted while the row is live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -863,6 +865,38 @@ mod tests {
         assert_eq!(file.content_hash, "");
         assert_eq!(file.hash_algorithm, "");
         assert!(!file.has_cover);
+    }
+
+    #[test]
+    fn file_responses_treat_unused_timestamps_as_defaults() {
+        let mut missing = serde_json::json!({
+            "id": "missing-time",
+            "parent_id": null,
+            "name": "missing-time.txt",
+            "kind": "file",
+            "size": 1,
+            "status": "ready"
+        });
+        let file = serde_json::from_value::<File>(missing.clone()).unwrap();
+        assert_eq!(file.created_at, Timestamp::default());
+        assert_eq!(file.updated_at, Timestamp::default());
+
+        missing["created_at"] = serde_json::Value::Null;
+        missing["updated_at"] = serde_json::Value::Null;
+        let nullable = serde_json::from_value::<File>(missing).unwrap();
+        assert_eq!(nullable.created_at, Timestamp::default());
+        assert_eq!(nullable.updated_at, Timestamp::default());
+
+        let invalid = serde_json::from_value::<File>(serde_json::json!({
+            "id": "invalid-time",
+            "parent_id": null,
+            "name": "invalid-time.txt",
+            "kind": "file",
+            "size": 1,
+            "status": "ready",
+            "created_at": 123
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
