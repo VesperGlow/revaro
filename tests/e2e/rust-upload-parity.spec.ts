@@ -1669,7 +1669,7 @@ test('old/new 断点 GET upload 成功响应缺少未使用字段时仍完成单
   }
 })
 
-test('old/new multipart 断点 parts 缺少尺寸和哈希字段时仍复用已确认分片', async ({ browser }) => {
+test('old/new multipart 断点 parts 缺少尺寸、哈希或标识字段时仍复用已确认分片', async ({ browser }) => {
   const name = `upload-sparse-parts-${crypto.randomUUID()}.bin`
   const partSize = 8 * 1024 * 1024
   const fileSize = partSize * 2 + 5
@@ -1712,6 +1712,7 @@ test('old/new multipart 断点 parts 缺少尺寸和哈希字段时仍复用已�
             parts: [
               { part_number: 1, etag: 'saved-etag-1' },
               { part_number: 2, etag: 'saved-etag-2' },
+              { size: partSize },
             ],
           },
         })

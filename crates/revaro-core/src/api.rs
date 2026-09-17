@@ -1346,6 +1346,27 @@ mod tests {
             serde_json::to_value(sparse).unwrap(),
             serde_json::json!({"part_number": 2, "etag": "saved"})
         );
+        let malformed: UploadPart = serde_json::from_value(serde_json::json!({
+            "size": 16,
+            "content_hash": null,
+        }))
+        .unwrap();
+        assert_eq!(malformed.part_number, 0);
+        assert_eq!(malformed.etag, "");
+        assert!(
+            serde_json::from_value::<UploadPart>(serde_json::json!({
+                "part_number": "two",
+                "etag": "saved"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<UploadPart>(serde_json::json!({
+                "part_number": 2,
+                "etag": 7
+            }))
+            .is_err()
+        );
     }
 
     #[test]

@@ -432,6 +432,16 @@ where
     Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Older upload callers ignored resume parts whose number was omitted or
+/// `null`. Keep that response tolerance while rejecting malformed scalar
+/// values.
+fn deserialize_nullable_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Older task callers did not read creation/update timestamps at all. Treat
 /// an omitted or explicit `null` timestamp as the wire default while still
 /// rejecting malformed timestamp values.
@@ -591,11 +601,13 @@ pub struct ShareStatus {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UploadPart {
     /// 1-based part number.
+    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
     pub part_number: i32,
     /// Part size in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
     /// Entity tag returned when the part was stored.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub etag: String,
     /// Optional per-part integrity hash.
     ///
