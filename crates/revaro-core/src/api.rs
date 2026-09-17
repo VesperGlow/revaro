@@ -592,19 +592,19 @@ pub mod book {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Info {
         /// `epub` or `txt`.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub format: String,
         /// Book title as parsed from the source.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub title: String,
         /// File name on disk.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
         pub name: String,
         /// Whether an embedded cover exists.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_bool")]
         pub cover: bool,
         /// Table of contents.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
         pub toc: Vec<TocEntry>,
     }
 
@@ -852,6 +852,28 @@ mod tests {
         let invalid = serde_json::from_value::<DocumentContent>(serde_json::json!({
             "content": "# body\n",
             "etag": 42
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn book_info_treats_nullable_metadata_as_defaults() {
+        let info: book::Info = serde_json::from_value(serde_json::json!({
+            "format": null,
+            "title": null,
+            "name": "book.epub",
+            "cover": null,
+            "toc": null
+        }))
+        .unwrap();
+        assert!(info.format.is_empty());
+        assert!(info.title.is_empty());
+        assert_eq!(info.name, "book.epub");
+        assert!(!info.cover);
+        assert!(info.toc.is_empty());
+
+        let invalid = serde_json::from_value::<book::Info>(serde_json::json!({
+            "format": 1
         }));
         assert!(invalid.is_err());
     }
