@@ -300,7 +300,11 @@ pub struct FlowManifest {
     pub total_chars: i64,
     /// Short content fingerprint of the book blob, used to isolate cached
     /// chunks on the client when a file id is reused for different content.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub book_key: String,
     /// One entry per chapter, in reading order.
     #[serde(default)]
@@ -312,7 +316,11 @@ pub struct FlowManifest {
     #[serde(default, deserialize_with = "deserialize_nullable_vec")]
     pub toc: Vec<TocTarget>,
     /// Generation time, informational only.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub generated_at: String,
 }
 
@@ -740,6 +748,31 @@ mod tests {
             "spines": [],
             "chunks": [],
             "toc": [{"label": 42}]
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn flow_manifest_treats_nullable_optional_metadata_as_empty() {
+        let manifest: FlowManifest = serde_json::from_value(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "book_key": null,
+            "generated_at": null,
+            "spines": [],
+            "chunks": [],
+            "toc": []
+        }))
+        .unwrap();
+        assert!(manifest.book_key.is_empty());
+        assert!(manifest.generated_at.is_empty());
+
+        let invalid = serde_json::from_value::<FlowManifest>(serde_json::json!({
+            "version": 4,
+            "format": "epub",
+            "total_chars": 0,
+            "book_key": 42
         }));
         assert!(invalid.is_err());
     }
