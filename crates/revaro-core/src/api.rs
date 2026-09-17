@@ -443,7 +443,7 @@ pub mod uploads {
         )]
         pub expires_at: Timestamp,
         /// Parts acknowledged so far.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
         pub parts: Vec<UploadPart>,
     }
 
@@ -1367,6 +1367,13 @@ mod tests {
             }))
             .is_err()
         );
+        let null_parts: UploadStatus = serde_json::from_value(serde_json::json!({
+            "upload_id": "u",
+            "mode": "multipart",
+            "parts": null,
+        }))
+        .unwrap();
+        assert!(null_parts.parts.is_empty());
     }
 
     #[test]

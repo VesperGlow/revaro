@@ -1811,6 +1811,152 @@ test('old/new multipart 断点 parts 缺少尺寸、哈希或标识字段时仍�
   }
 })
 
+test('old/new multipart 断点 parts 为 null 时按空列表继续上传', async ({ browser }) => {
+  const name = `upload-null-parts-${crypto.randomUUID()}.bin`
+  const partSize = 8 * 1024 * 1024
+  const fileSize = partSize * 2 + 5
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  type ResumeState = {
+    getCalls: number
+    createCalls: number
+    partRequests: number[][]
+    data: Array<{ part: number; size: number }>
+    records: Array<{ part_number: number; etag: string; size: number }>
+    complete: Array<{ part_number: number; etag: string }> | null
+  }
+
+  async function exercise(page: Parameters<typeof login>[0], baseUrl: string, uploadId: string) {
+    const state: ResumeState = { getCalls: 0, createCalls: 0, partRequests: [], data: [], records: [], complete: null }
+    await page.route(/\/api\/uploads(?:\/|$)/, async route => {
+      const request = route.request()
+      const pathname = new URL(request.url()).pathname
+      if (pathname === '/api/uploads' && request.method() === 'POST') {
+        state.createCalls += 1
+        return route.fulfill({ status: 500, body: 'null parts must reuse the session' })
+      }
+      if (pathname === `/api/uploads/${uploadId}` && request.method() === 'GET') {
+        state.getCalls += 1
+        return route.fulfill({
+          json: {
+            upload_id: uploadId,
+            mode: 'multipart',
+            url: '',
+            part_size: partSize,
+            part_count: 3,
+            expected_size: fileSize,
+            status: 'pending',
+            parts: null,
+          },
+        })
+      }
+      if (pathname === `/api/uploads/${uploadId}/parts` && request.method() === 'POST') {
+        const body = request.postDataJSON() as { part_numbers?: number[] }
+        const numbers = body.part_numbers ?? []
+        state.partRequests.push(numbers)
+        return route.fulfill({
+          json: { parts: numbers.map(part => ({ part_number: part, url: `/api/uploads/${uploadId}/data/${part}` })) },
+        })
+      }
+      const dataMatch = pathname.match(new RegExp(`^/api/uploads/${uploadId}/data/(\\d+)$`))
+      if (dataMatch && request.method() === 'PUT') {
+        const part = Number(dataMatch[1])
+        state.data.push({ part, size: request.postDataBuffer()?.length ?? 0 })
+        return route.fulfill({ status: 200, headers: { ETag: `null-parts-etag-${part}` }, body: '' })
+      }
+      const recordMatch = pathname.match(new RegExp(`^/api/uploads/${uploadId}/parts/(\\d+)$`))
+      if (recordMatch && request.method() === 'PUT') {
+        const body = request.postDataJSON() as { etag?: string; size?: number }
+        state.records.push({
+          part_number: Number(recordMatch[1]),
+          etag: body.etag ?? '',
+          size: body.size ?? 0,
+        })
+        return route.fulfill({ status: 204, body: '' })
+      }
+      if (pathname === `/api/uploads/${uploadId}/complete` && request.method() === 'POST') {
+        state.complete = request.postDataJSON()?.parts ?? null
+        return route.fulfill({
+          json: {
+            id: `file-${uploadId}`,
+            parent_id: ROOT,
+            name,
+            kind: 'file',
+            size: fileSize,
+            mime_type: 'application/octet-stream',
+            status: 'ready',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        })
+      }
+      return route.continue()
+    })
+
+    await loginAt(page, baseUrl)
+    await page.evaluate(({ uploadId: id, uploadName, size }) => {
+      localStorage.setItem('revaro.uploads.v1', JSON.stringify([{
+        uploadId: id,
+        parentId: '00000000-0000-0000-0000-000000000000',
+        name: uploadName,
+        size,
+        lastModified: 654,
+      }]))
+    }, { uploadId, uploadName: name, size: fileSize })
+    await page.evaluate(({ uploadName, size }) => {
+      const input = document.querySelector('input[type="file"]')
+      if (!(input instanceof HTMLInputElement)) throw new Error('file input is missing')
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([new Uint8Array(size)], uploadName, {
+        type: 'application/octet-stream',
+        lastModified: 654,
+      }))
+      input.files = transfer.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }, { uploadName: name, size: fileSize })
+    await expect.poll(() => state.complete, { timeout: 30_000 }).not.toBeNull()
+    return {
+      getCalls: state.getCalls,
+      createCalls: state.createCalls,
+      partRequests: state.partRequests,
+      data: [...state.data].sort((a, b) => a.part - b.part),
+      records: [...state.records].sort((a, b) => a.part_number - b.part_number),
+      complete: [...(state.complete ?? [])].sort((a, b) => a.part_number - b.part_number),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl, 'null-parts-old'),
+      exercise(newPage, newUrl, 'null-parts-new'),
+    ])
+    expect(oldResult).toEqual({
+      getCalls: 1,
+      createCalls: 0,
+      partRequests: [[1, 2, 3]],
+      data: [{ part: 1, size: partSize }, { part: 2, size: partSize }, { part: 3, size: 5 }],
+      records: [
+        { part_number: 1, etag: 'null-parts-etag-1', size: partSize },
+        { part_number: 2, etag: 'null-parts-etag-2', size: partSize },
+        { part_number: 3, etag: 'null-parts-etag-3', size: 5 },
+      ],
+      complete: [
+        { part_number: 1, etag: 'null-parts-etag-1' },
+        { part_number: 2, etag: 'null-parts-etag-2' },
+        { part_number: 3, etag: 'null-parts-etag-3' },
+      ],
+    })
+    expect(newResult, 'Rust null multipart parts 未按 reference 视为空列表').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new multipart 上传按 reference 请求分片、记录校验并按序完成', async ({ browser }) => {
   const name = 'upload-multipart-reference-' + crypto.randomUUID() + '.bin'
   const partSize = 8 * 1024 * 1024
