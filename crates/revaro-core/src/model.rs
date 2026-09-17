@@ -555,10 +555,10 @@ pub struct LibraryCounts {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct MediaProgress {
     /// Resume position in seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
     pub position: f64,
     /// Known duration in seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
     pub duration: f64,
     /// When the position was last written, omitted when never saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1004,6 +1004,24 @@ mod tests {
             "updated_at": "2024-05-06T07:08:09Z",
             "folder_path": [],
             "duration_ms": "125"
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn media_progress_treats_nullable_numbers_as_zero() {
+        let progress = serde_json::from_value::<MediaProgress>(serde_json::json!({
+            "position": null,
+            "duration": null,
+            "updated_at": null
+        }))
+        .unwrap();
+        assert_eq!(progress.position, 0.0);
+        assert_eq!(progress.duration, 0.0);
+        assert!(progress.updated_at.is_none());
+
+        let invalid = serde_json::from_value::<MediaProgress>(serde_json::json!({
+            "position": "ten"
         }));
         assert!(invalid.is_err());
     }
