@@ -54,7 +54,7 @@ function zip(entries: Array<[string, Buffer]>) {
 }
 
 async function selectRow(page: Parameters<typeof login>[0], name: string) {
-  const row = page.locator('.file-row').filter({ hasText: name })
+  const row = page.locator('.file-card').filter({ hasText: name })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
 }
@@ -119,7 +119,6 @@ test('单文件下载与分享链接生命周期保持 reference 行为', async 
     await login(page)
     await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(content) })
     await expect(page.locator('.file-card').filter({ hasText: name })).toBeVisible({ timeout: 20_000 })
-    await page.getByRole('button', { name: '列表' }).click()
     await selectRow(page, name)
 
     const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
@@ -195,7 +194,6 @@ test('在线解压通过任务中心完成并显示解压目录', async ({ page 
       buffer: zip([[entry, Buffer.from(`archive parity ${suffix}\n`)]]) ,
     })
     await expect(page.locator('.file-card').filter({ hasText: archive })).toBeVisible({ timeout: 20_000 })
-    await page.getByRole('button', { name: '列表' }).click()
     await selectRow(page, archive)
     const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
     await toolbar.getByRole('button', { name: '在线解压' }).click()
@@ -212,11 +210,11 @@ test('在线解压通过任务中心完成并显示解压目录', async ({ page 
 
     await page.reload()
     await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
-    const outputEntry = page.locator('.file-card, .file-row').filter({ hasText: output }).last()
+    const outputEntry = page.locator('.file-card').filter({ hasText: output }).last()
     await expect(outputEntry).toBeVisible({ timeout: 20_000 })
     await outputEntry.click()
     await expect(page.getByRole('heading', { name: output })).toBeVisible()
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: entry })).toBeVisible()
+    await expect(page.locator('.file-card').filter({ hasText: entry })).toBeVisible()
   } finally {
     await removeCreated(page, [archive, output])
   }
@@ -229,15 +227,14 @@ test('回收站中的 TXT 仍可通过键盘 Enter 打开 reference 阅读器', 
   try {
     await login(page)
     await page.locator('input[type=file]').first().setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('trash keyboard parity\n') })
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: name })).toBeVisible({ timeout: 20_000 })
-    await page.getByRole('button', { name: '列表' }).click()
+    await expect(page.locator('.file-card').filter({ hasText: name })).toBeVisible({ timeout: 20_000 })
     await selectRow(page, name)
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '删除' }).click()
     await page.getByRole('dialog').getByRole('button', { name: '移入回收站' }).click()
-    await expect(page.locator('.file-row').filter({ hasText: name })).toHaveCount(0)
+    await expect(page.locator('.file-card').filter({ hasText: name })).toHaveCount(0)
 
-    await page.locator('.trash-entry').click()
-    const trashRow = page.locator('.file-row').filter({ hasText: name })
+    await page.locator('.topbar .trash-button').click()
+    const trashRow = page.locator('.file-card').filter({ hasText: name })
     await expect(trashRow).toBeVisible()
     await trashRow.focus()
     await page.keyboard.press('Enter')
@@ -314,7 +311,7 @@ test('新建文件夹弹窗保留空值禁用、Enter、Escape 和点击空白�
     await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
     await page.locator('.app-dialog input').fill(name)
     await page.locator('.app-dialog input').press('Enter')
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: name })).toBeVisible()
+    await expect(page.locator('.file-card').filter({ hasText: name })).toBeVisible()
   } finally {
     await removeCreated(page, [name])
   }
@@ -370,7 +367,7 @@ async function createFolder(page: Parameters<typeof login>[0], name: string) {
   await expect(dialog).toBeVisible()
   await dialog.locator('input').fill(name)
   await dialog.getByRole('button', { name: '创建' }).click()
-  await expect(page.locator('.file-card, .file-row').filter({ hasText: name })).toBeVisible()
+  await expect(page.locator('.file-card').filter({ hasText: name })).toBeVisible()
 }
 
 async function chooseDirectory(page: Parameters<typeof login>[0], name: string) {
@@ -389,7 +386,7 @@ async function chooseDirectory(page: Parameters<typeof login>[0], name: string) 
   await expect(picker).toHaveCount(0)
 }
 
-test('列表模式覆盖新建、重命名、移动、恢复和永久删除', async ({ page }) => {
+test('文件浏览覆盖新建、重命名、移动、恢复和永久删除', async ({ page }) => {
   const suffix = crypto.randomUUID()
   const sourceFolder = `parity-crud-source-${suffix}`
   const targetFolder = `parity-crud-target-${suffix}`
@@ -407,7 +404,6 @@ test('列表模式覆盖新建、重命名、移动、恢复和永久删除', as
       buffer: Buffer.from('crud parity\n'),
     })
     await expect(page.locator('.file-card').filter({ hasText: sourceFile })).toBeVisible({ timeout: 20_000 })
-    await page.getByRole('button', { name: '列表', exact: true }).click()
 
     await selectRow(page, sourceFile)
     let toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
@@ -415,7 +411,7 @@ test('列表模式覆盖新建、重命名、移动、恢复和永久删除', as
     const rename = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
     await rename.locator('input').fill(renamedFile)
     await rename.getByRole('button', { name: '保存' }).click()
-    await expect(page.locator('.file-row').filter({ hasText: renamedFile })).toBeVisible()
+    await expect(page.locator('.file-card').filter({ hasText: renamedFile })).toBeVisible()
 
     await selectRow(page, renamedFile)
     toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
@@ -424,10 +420,10 @@ test('列表模式覆盖新建、重命名、移动、恢复和永久删除', as
     await chooseDirectory(page, sourceFolder)
     await page.locator('.move-copy-dialog').getByRole('button', { name: '移动', exact: true }).click()
     await page.locator('.move-copy-dialog').waitFor({ state: 'detached' })
-    await expect(page.locator('.file-row').filter({ hasText: renamedFile })).toHaveCount(0)
+    await expect(page.locator('.file-card').filter({ hasText: renamedFile })).toHaveCount(0)
 
-    await page.locator('.file-row').filter({ hasText: sourceFolder }).click()
-    const movedInSource = page.locator('.file-row').filter({ hasText: renamedFile })
+    await page.locator('.file-card').filter({ hasText: sourceFolder }).click()
+    const movedInSource = page.locator('.file-card').filter({ hasText: renamedFile })
     await expect(movedInSource).toBeVisible()
     await selectRow(page, renamedFile)
     toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
@@ -437,8 +433,8 @@ test('列表模式覆盖新建、重命名、移动、恢复和永久删除', as
     await expect(page.locator('.move-copy-dialog')).toHaveCount(0)
 
     await page.getByRole('button', { name: '回到我的文件' }).click()
-    await page.locator('.file-row').filter({ hasText: targetFolder }).click()
-    const movedInTarget = page.locator('.file-row').filter({ hasText: renamedFile })
+    await page.locator('.file-card').filter({ hasText: targetFolder }).click()
+    const movedInTarget = page.locator('.file-card').filter({ hasText: renamedFile })
     await expect(movedInTarget).toBeVisible()
     movedName = await movedInTarget.locator('strong').innerText()
 
@@ -446,16 +442,16 @@ test('列表模式覆盖新建、重命名、移动、恢复和永久删除', as
     toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
     await toolbar.getByRole('button', { name: '删除' }).click()
     await page.getByRole('dialog').getByRole('button', { name: '移入回收站' }).click()
-    await expect(page.locator('.file-row').filter({ hasText: movedName })).toHaveCount(0)
+    await expect(page.locator('.file-card').filter({ hasText: movedName })).toHaveCount(0)
 
     await page.getByRole('button', { name: '打开回收站' }).click()
     await selectRow(page, movedName)
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '恢复' }).click()
-    await expect(page.locator('.file-row').filter({ hasText: movedName })).toHaveCount(0)
+    await expect(page.locator('.file-card').filter({ hasText: movedName })).toHaveCount(0)
 
     await page.getByRole('button', { name: '回到我的文件' }).click()
-    await page.locator('.file-row').filter({ hasText: targetFolder }).click()
-    await expect(page.locator('.file-row').filter({ hasText: movedName })).toBeVisible()
+    await page.locator('.file-card').filter({ hasText: targetFolder }).click()
+    await expect(page.locator('.file-card').filter({ hasText: movedName })).toBeVisible()
     await selectRow(page, movedName)
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '删除' }).click()
     await page.getByRole('dialog').getByRole('button', { name: '移入回收站' }).click()
@@ -463,13 +459,13 @@ test('列表模式覆盖新建、重命名、移动、恢复和永久删除', as
     await selectRow(page, movedName)
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '永久删除' }).click()
     await page.getByRole('dialog').getByRole('button', { name: '永久删除' }).click()
-    await expect(page.locator('.file-row').filter({ hasText: movedName })).toHaveCount(0)
+    await expect(page.locator('.file-card').filter({ hasText: movedName })).toHaveCount(0)
   } finally {
     await removeCreated(page, [sourceFolder, targetFolder, sourceFile, renamedFile])
   }
 })
 
-test('列表模式多选文件通过一次 ZIP 下载并保留 frame CSP', async ({ page }) => {
+test('多选文件通过一次 ZIP 下载并保留 frame CSP', async ({ page }) => {
   const suffix = crypto.randomUUID()
   const names = [`parity-batch-one-${suffix}.txt`, `parity-batch-two-${suffix}.txt`]
 
@@ -483,7 +479,6 @@ test('列表模式多选文件通过一次 ZIP 下载并保留 frame CSP', async
     for (const name of names) {
       await expect(page.locator('.file-card').filter({ hasText: name })).toBeVisible({ timeout: 20_000 })
     }
-    await page.getByRole('button', { name: '列表', exact: true }).click()
     for (const name of names) await selectRow(page, name)
     await expect(page.locator('iframe')).toHaveCount(0)
 

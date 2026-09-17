@@ -66,7 +66,7 @@ async function openDeepPath(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
   for (const folder of folders) {
-    await page.locator('.file-card, .file-row').filter({ hasText: folder.name }).click()
+    await page.locator('.file-card').filter({ hasText: folder.name }).click()
     await expect(page.getByRole('heading', { name: folder.name, exact: true })).toBeVisible()
   }
   await expect(page.locator('nav.breadcrumbs')).toBeVisible()

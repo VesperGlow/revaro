@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_ID = 'transfer-dialog-file'
@@ -113,8 +114,8 @@ async function mockMultiTransfer(page: Page) {
 async function startTransfer(page: Page, baseUrl: string, waitForBusy = true) {
   await page.goto(`${baseUrl}/?transfer-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  const row = page.locator('.file-row').filter({ hasText: file.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: file.name })
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动' }).click()
   await expect(page.locator('.move-copy-dialog')).toBeVisible()
@@ -126,8 +127,8 @@ async function startTransfer(page: Page, baseUrl: string, waitForBusy = true) {
 async function openTransferOnly(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?transfer-mobile-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  const row = page.locator('.file-row').filter({ hasText: file.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: file.name })
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动' }).click()
   await expect(page.locator('.move-copy-dialog')).toBeVisible()
@@ -312,9 +313,9 @@ test('多选移动部分失败时继续处理并保留 reference 反馈', async 
     const mock = await mockMultiTransfer(page)
     await page.goto(`${baseUrl}/?transfer-multi-reference=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
+    const useListView = await useReferenceListView(page)
     for (const item of [file, secondFile]) {
-      const row = page.locator('.file-row').filter({ hasText: item.name })
+      const row = listingEntries(page, useListView).filter({ hasText: item.name })
       await expect(row).toBeVisible()
       await row.getByRole('button', { name: '选择项目' }).click()
     }
@@ -324,14 +325,14 @@ test('多选移动部分失败时继续处理并保留 reference 反馈', async 
     await page.locator('.move-copy-dialog').getByRole('button', { name: '移动', exact: true }).click()
     await expect(page.locator('.move-copy-dialog')).toHaveCount(0)
     await expect(page.locator('.toast')).toHaveText('已移动 1 项，1 项失败：传输中的文件.txt：first move failed')
-    await expect(page.locator('.file-row').filter({ hasText: secondFile.name })).toHaveCount(0)
-    await expect(page.locator('.file-row').filter({ hasText: file.name })).toHaveCount(1)
+    await expect(listingEntries(page, useListView).filter({ hasText: secondFile.name })).toHaveCount(0)
+    await expect(listingEntries(page, useListView).filter({ hasText: file.name })).toHaveCount(1)
     await expect(toolbar).toHaveCount(0)
     return {
       transferCalls: mock.transferCalls,
       toast: await page.locator('.toast').textContent(),
-      failedVisible: await page.locator('.file-row').filter({ hasText: file.name }).count(),
-      succeededVisible: await page.locator('.file-row').filter({ hasText: secondFile.name }).count(),
+      failedVisible: await listingEntries(page, useListView).filter({ hasText: file.name }).count(),
+      succeededVisible: await listingEntries(page, useListView).filter({ hasText: secondFile.name }).count(),
       toolbarCount: await page.getByRole('toolbar', { name: '所选项目操作' }).count(),
     }
   }

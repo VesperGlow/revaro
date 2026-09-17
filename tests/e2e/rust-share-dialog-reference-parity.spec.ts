@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_ID = 'share-dialog-file'
@@ -75,8 +76,8 @@ async function openShare(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
   await expect(page.locator('.file-card')).toHaveCount(1)
-  await page.getByTitle('列表视图').click()
-  const row = page.locator('.file-row').filter({ hasText: file.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: file.name })
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
   await expect(page.locator('.share-modal .state.small')).toBeVisible()
@@ -277,8 +278,8 @@ async function mockShareConfirmation(page: Page) {
 async function openActiveShare(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  const row = page.locator('.file-row').filter({ hasText: file.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: file.name })
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
   await expect(page.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/\/s\//)

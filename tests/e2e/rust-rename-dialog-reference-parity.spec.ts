@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_ID = 'rename-dialog-file'
@@ -46,8 +47,8 @@ async function mockBrowser(page: Page) {
 async function openRename(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '列表', exact: true }).click()
-  const row = page.locator('.file-row').filter({ hasText: file.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: file.name })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '重命名' }).click()

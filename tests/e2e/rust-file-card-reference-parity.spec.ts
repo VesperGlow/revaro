@@ -113,56 +113,7 @@ async function cardMetrics(page: Page) {
   }))
 }
 
-async function rowMetrics(page: Page) {
-  return page.locator('.file-row').evaluateAll(rows => rows.map(row => {
-    const preview = row.querySelector('.row-preview')
-    const icon = preview?.querySelector('svg')
-    const image = preview?.querySelector('img')
-    const iconStyle = icon ? getComputedStyle(icon) : null
-    const iconChildStyles = icon
-      ? Array.from(icon.querySelectorAll('path, ellipse, circle')).map(element => {
-        const style = getComputedStyle(element)
-        return {
-          className: element.getAttribute('class'),
-          fill: style.fill,
-          stroke: style.stroke,
-          strokeWidth: style.strokeWidth,
-          lineCap: style.strokeLinecap,
-          lineJoin: style.strokeLinejoin,
-          opacity: style.opacity,
-        }
-      })
-      : []
-    return {
-      name: row.querySelector('.row-info strong')?.textContent?.trim(),
-      classes: Array.from(row.classList).sort(),
-      cannotOpen: preview?.classList.contains('cannot-open'),
-      previewTag: preview?.firstElementChild?.tagName.toLowerCase(),
-      previewClass: preview?.firstElementChild?.getAttribute('class'),
-      imageSrc: image?.getAttribute('src'),
-      iconClass: icon?.getAttribute('class'),
-      iconStyle: iconStyle && {
-        color: iconStyle.color,
-        fill: iconStyle.fill,
-        stroke: iconStyle.stroke,
-        strokeWidth: iconStyle.strokeWidth,
-        width: iconStyle.width,
-        height: iconStyle.height,
-        opacity: iconStyle.opacity,
-      },
-      iconChildStyles,
-      iconPaths: Array.from(preview?.querySelectorAll('path, ellipse, circle') ?? []).map(element => ({
-        tag: element.tagName.toLowerCase(),
-        className: element.getAttribute('class'),
-        d: element.getAttribute('d'),
-      })),
-      meta: row.querySelector('.row-info small')?.textContent?.replace(/\s+/g, ' ').trim(),
-      select: row.querySelector('.row-select') !== null,
-    }
-  }))
-}
-
-test('文件卡与列表行全类型、状态和预览节点保持 reference', async ({ browser }) => {
+test('文件卡全类型、状态和预览节点保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
@@ -174,14 +125,6 @@ test('文件卡与列表行全类型、状态和预览节点保持 reference', a
     await Promise.all([mockFileBrowser(oldPage), mockFileBrowser(newPage)])
     await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
     expect(await cardMetrics(newPage), 'Rust 方块文件项与 reference 不一致').toEqual(await cardMetrics(oldPage))
-
-    await oldPage.getByTitle('列表视图').click()
-    await newPage.getByTitle('列表视图').click()
-    await expect(oldPage.locator('.file-row')).toHaveCount(items.length)
-    await expect(newPage.locator('.file-row')).toHaveCount(items.length)
-    await oldPage.waitForTimeout(150)
-    await newPage.waitForTimeout(150)
-    expect(await rowMetrics(newPage), 'Rust 列表文件项与 reference 不一致').toEqual(await rowMetrics(oldPage))
   } finally {
     await oldContext.close()
     await newContext.close()
@@ -309,18 +252,6 @@ test('文件卡缩略图 loading 与各类失败回退保持 reference', async (
     expect(newMock.brokenAudioThumbRequests()).toBe(1)
     expect(oldMock.brokenEpubThumbRequests()).toBe(1)
     expect(newMock.brokenEpubThumbRequests()).toBe(1)
-
-    await Promise.all([oldPage.getByTitle('列表视图').click(), newPage.getByTitle('列表视图').click()])
-    await expect(oldPage.locator('.file-row')).toHaveCount(fallbackItems.length)
-    await expect(newPage.locator('.file-row')).toHaveCount(fallbackItems.length)
-    await expect.poll(() => oldPage.locator('.file-row').filter({ hasText: '回退图片.png' }).locator('img').getAttribute('src')).toContain('/preview')
-    await expect.poll(() => newPage.locator('.file-row').filter({ hasText: '回退图片.png' }).locator('img').getAttribute('src')).toContain('/preview')
-    expect(
-      await newPage.locator('.file-row').filter({ hasText: '损坏封面.mp3' }).locator('.audio-type-icon').count(),
-    ).toBe(await oldPage.locator('.file-row').filter({ hasText: '损坏封面.mp3' }).locator('.audio-type-icon').count())
-    expect(
-      await newPage.locator('.file-row').filter({ hasText: '损坏封面.epub' }).locator('.book-type-icon').count(),
-    ).toBe(await oldPage.locator('.file-row').filter({ hasText: '损坏封面.epub' }).locator('.book-type-icon').count())
   } finally {
     await oldContext.close()
     await newContext.close()
@@ -387,16 +318,11 @@ async function longNameMetrics(page: Page) {
         name: measure('.file-card .card-info strong'),
         meta: measure('.file-card .card-info small'),
       },
-      row: {
-        info: measure('.file-row .row-info'),
-        name: measure('.file-row .row-info strong'),
-        meta: measure('.file-row .row-info small'),
-      },
     }
   })
 }
 
-test('长文件名在方块与列表布局中保持 reference 截断和溢出行为', async ({ browser }) => {
+test('长文件名在方块布局中保持 reference 截断和溢出行为', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
 
@@ -413,17 +339,6 @@ test('长文件名在方块与列表布局中保持 reference 截断和溢出行
         openBrowser(newPage, newUrl, 1),
       ])
       expect(await longNameMetrics(newPage), 'Rust 方块长文件名截断与 reference 不一致')
-        .toEqual(await longNameMetrics(oldPage))
-
-      await Promise.all([
-        oldPage.getByTitle('列表视图').click(),
-        newPage.getByTitle('列表视图').click(),
-      ])
-      await Promise.all([
-        expect(oldPage.locator('.file-row')).toHaveCount(1),
-        expect(newPage.locator('.file-row')).toHaveCount(1),
-      ])
-      expect(await longNameMetrics(newPage), 'Rust 列表长文件名截断与 reference 不一致')
         .toEqual(await longNameMetrics(oldPage))
     } finally {
       await Promise.all([oldContext.close(), newContext.close()])

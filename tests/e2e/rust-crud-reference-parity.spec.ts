@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -85,9 +86,9 @@ async function mockDelete(page: Page) {
 async function openDeleteFixture(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?crud-delete-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
+  const useListView = await useReferenceListView(page)
   for (const file of [failedFile, deletedFile]) {
-    const row = page.locator('.file-row').filter({ hasText: file.name })
+    const row = listingEntries(page, useListView).filter({ hasText: file.name })
     await expect(row).toBeVisible()
     await row.getByRole('button', { name: '选择项目' }).click()
   }
@@ -117,7 +118,7 @@ test('多选删除部分失败时继续处理并保留 reference 反馈', async 
     await expect(newPage.locator('.toast')).toHaveText('已移入 1 项，1 项失败：删除失败.txt：delete failed')
     expect(newMock.deleteCalls, 'Rust 未继续处理部分失败后的后续项目').toEqual(oldMock.deleteCalls)
     await expect(oldPage.locator('.file-row').filter({ hasText: deletedFile.name })).toHaveCount(0)
-    await expect(newPage.locator('.file-row').filter({ hasText: deletedFile.name })).toHaveCount(0)
+    await expect(newPage.locator('.file-card').filter({ hasText: deletedFile.name })).toHaveCount(0)
     await expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
     await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
   } finally {
@@ -173,8 +174,8 @@ test('目录删除的取消、确认文案和成功刷新保持 reference 行为
     const mock = await mockDirectoryDelete(page)
     await page.goto(`${baseUrl}/?crud-directory-delete-reference=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
-    const row = page.locator('.file-row').filter({ hasText: deletedDirectory.name })
+    const useListView = await useReferenceListView(page)
+    const row = listingEntries(page, useListView).filter({ hasText: deletedDirectory.name })
     await expect(row).toBeVisible()
     await row.getByRole('button', { name: '选择项目' }).click()
 
@@ -189,7 +190,7 @@ test('目录删除的取消、确认文案和成功刷新保持 reference 行为
 
     await toolbar.getByRole('button', { name: '删除', exact: true }).click()
     await page.getByRole('dialog').filter({ hasText: '移入回收站？' }).getByRole('button', { name: '移入回收站', exact: true }).click()
-    await expect(page.locator('.file-row').filter({ hasText: deletedDirectory.name })).toHaveCount(0)
+    await expect(listingEntries(page, useListView).filter({ hasText: deletedDirectory.name })).toHaveCount(0)
     await expect(page.locator('.toast')).toHaveText('已将 1 项移入回收站')
     return mock.deleteCalls
   }
@@ -266,8 +267,8 @@ async function mockRename(page: Page, failure = false, delayMs = 0) {
 async function openRenameFixture(page: Page, baseUrl: string, fileName = '重命名之前.txt') {
   await page.goto(`${baseUrl}/?crud-rename-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  const row = page.locator('.file-row').filter({ hasText: fileName })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: fileName })
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '重命名' }).click()
   const dialog = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
@@ -305,7 +306,7 @@ test('重命名保留 reference 的原始空白输入', async ({ browser }) => {
     expect(newMock.renameValues, 'Rust 重命名不应擅自 trim reference 输入').toEqual(oldMock.renameValues)
     expect(oldMock.renameValues).toEqual([renamed])
     await expect(oldPage.locator('.file-row').filter({ hasText: renamed })).toBeVisible()
-    await expect(newPage.locator('.file-row').filter({ hasText: renamed })).toBeVisible()
+    await expect(newPage.locator('.file-card').filter({ hasText: renamed })).toBeVisible()
   } finally {
     await oldContext.close()
     await newContext.close()
@@ -589,7 +590,7 @@ test('新建文件夹有效输入支持 Enter，遮罩与 Escape 取消保持 re
     await dialog.locator('input').fill('Enter 创建目录')
     await dialog.locator('input').press('Enter')
     await expect(dialog).toHaveCount(0)
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: 'Enter 创建目录' })).toBeVisible()
+    await expect(page.locator('.file-card').filter({ hasText: 'Enter 创建目录' })).toBeVisible()
 
     await page.getByRole('button', { name: '新建文件夹', exact: true }).first().click()
     await expect(page.locator('.app-dialog')).toBeVisible()
@@ -711,13 +712,13 @@ async function mockTrashFailure(page: Page, action: 'restore' | 'purge') {
 async function openTrashFailureFixture(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?crud-trash-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
+  const useListView = await useReferenceListView(page)
   await page.getByTitle('回收站').first().click()
   await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
-  const row = page.locator('.file-row').filter({ hasText: trashFile.name })
+  const row = listingEntries(page, useListView).filter({ hasText: trashFile.name })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
-  return page.getByRole('toolbar', { name: '所选项目操作' })
+  return { toolbar: page.getByRole('toolbar', { name: '所选项目操作' }), useListView }
 }
 
 test('回收站恢复冲突保留项目与选择状态', async ({ browser }) => {
@@ -730,10 +731,10 @@ test('回收站恢复冲突保留项目与选择状态', async ({ browser }) => 
 
   async function exercise(page: Page, baseUrl: string) {
     const mock = await mockTrashFailure(page, 'restore')
-    const toolbar = await openTrashFailureFixture(page, baseUrl)
+    const { toolbar, useListView } = await openTrashFailureFixture(page, baseUrl)
     await toolbar.getByRole('button', { name: '恢复', exact: true }).click()
     await expect(page.locator('.toast')).toHaveText('回收站失败.txt：restore conflict')
-    await expect(page.locator('.file-row').filter({ hasText: trashFile.name })).toBeVisible()
+    await expect(listingEntries(page, useListView).filter({ hasText: trashFile.name })).toBeVisible()
     await expect(page.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
     return mock.calls
   }
@@ -804,11 +805,11 @@ test('回收站恢复首项失败时按 reference 停止后续项目', async ({ 
   async function openFixture(page: Page, baseUrl: string) {
     await page.goto(`${baseUrl}/?crud-trash-stop-first=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
+    const useListView = await useReferenceListView(page)
     await page.getByTitle('回收站').first().click()
     await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
     for (const item of [first, second]) {
-      await page.locator('.file-row').filter({ hasText: item.name }).getByRole('button', { name: '选择项目' }).click()
+      await listingEntries(page, useListView).filter({ hasText: item.name }).getByRole('button', { name: '选择项目' }).click()
     }
     return page.getByRole('toolbar', { name: '所选项目操作' })
   }
@@ -827,9 +828,9 @@ test('回收站恢复首项失败时按 reference 停止后续项目', async ({ 
       expect(oldPage.locator('.toast')).toHaveText('先失败.txt：restore conflict'),
       expect(newPage.locator('.toast')).toHaveText('先失败.txt：restore conflict'),
       expect(oldPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
-      expect(newPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
+      expect(newPage.locator('.file-card').filter({ hasText: first.name })).toBeVisible(),
       expect(oldPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
-      expect(newPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
+      expect(newPage.locator('.file-card').filter({ hasText: second.name })).toBeVisible(),
       expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
       expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
     ])
@@ -850,14 +851,14 @@ test('回收站永久删除冲突关闭确认框并保留项目', async ({ brows
 
   async function exercise(page: Page, baseUrl: string) {
     const mock = await mockTrashFailure(page, 'purge')
-    const toolbar = await openTrashFailureFixture(page, baseUrl)
+    const { toolbar, useListView } = await openTrashFailureFixture(page, baseUrl)
     await toolbar.getByRole('button', { name: '永久删除', exact: true }).click()
     const dialog = page.locator('.app-dialog')
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: '永久删除', exact: true }).click()
     await expect(dialog).toHaveCount(0)
     await expect(page.locator('.toast')).toHaveText('回收站失败.txt：purge conflict')
-    await expect(page.locator('.file-row').filter({ hasText: trashFile.name })).toBeVisible()
+    await expect(listingEntries(page, useListView).filter({ hasText: trashFile.name })).toBeVisible()
     await expect(page.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
     return mock.calls
   }
@@ -928,11 +929,11 @@ test('回收站永久删除首项失败时按 reference 停止后续项目', asy
   async function openFixture(page: Page, baseUrl: string) {
     await page.goto(`${baseUrl}/?crud-purge-stop-first=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
+    const useListView = await useReferenceListView(page)
     await page.getByTitle('回收站').first().click()
     await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
     for (const item of [first, second]) {
-      await page.locator('.file-row').filter({ hasText: item.name }).getByRole('button', { name: '选择项目' }).click()
+      await listingEntries(page, useListView).filter({ hasText: item.name }).getByRole('button', { name: '选择项目' }).click()
     }
     return page.getByRole('toolbar', { name: '所选项目操作' })
   }
@@ -957,9 +958,9 @@ test('回收站永久删除首项失败时按 reference 停止后续项目', asy
       expect(oldPage.locator('.toast')).toHaveText('先永久删除失败.txt：purge conflict'),
       expect(newPage.locator('.toast')).toHaveText('先永久删除失败.txt：purge conflict'),
       expect(oldPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
-      expect(newPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
+      expect(newPage.locator('.file-card').filter({ hasText: first.name })).toBeVisible(),
       expect(oldPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
-      expect(newPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
+      expect(newPage.locator('.file-card').filter({ hasText: second.name })).toBeVisible(),
       expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
       expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
     ])
@@ -1048,7 +1049,7 @@ test('回收站清空的取消与失败结果保持 reference 交互', async ({ 
     await page.getByRole('dialog').getByRole('button', { name: '清空回收站', exact: true }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
     await expect(page.locator('.toast')).toHaveText('empty trash failed')
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: item.name })).toBeVisible()
+    await expect(page.locator('.file-card').filter({ hasText: item.name })).toBeVisible()
     await expect(empty).toBeEnabled()
     return mockState.calls
   }

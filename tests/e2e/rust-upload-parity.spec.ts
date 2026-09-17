@@ -46,13 +46,13 @@ test('上传文件夹保留旧版的相对目录结构并通过任务状态完�
       () => page.evaluate(() => (window as typeof window & { __folderUploadToastMarks?: string[] }).__folderUploadToastMarks?.includes('已保留目录结构，开始上传 2 个文件') ?? false),
       { timeout: 15_000 },
     ).toBe(true)
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('.file-card').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 })
 
-    await page.locator('.file-card, .file-row').filter({ hasText: rootName }).click()
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: 'nested' })).toBeVisible({ timeout: 20_000 })
-    await page.locator('.file-card, .file-row').filter({ hasText: 'nested' }).click()
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: 'first.txt' })).toBeVisible({ timeout: 20_000 })
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: 'second.txt' })).toBeVisible({ timeout: 20_000 })
+    await page.locator('.file-card').filter({ hasText: rootName }).click()
+    await expect(page.locator('.file-card').filter({ hasText: 'nested' })).toBeVisible({ timeout: 20_000 })
+    await page.locator('.file-card').filter({ hasText: 'nested' }).click()
+    await expect(page.locator('.file-card').filter({ hasText: 'first.txt' })).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('.file-card').filter({ hasText: 'second.txt' })).toBeVisible({ timeout: 20_000 })
   } finally {
     await removeCreated(page, [rootName])
   }
@@ -92,7 +92,7 @@ test('old/new 文件夹上传按 reference 保留同层目录的创建顺序', a
       input.dispatchEvent(new Event('change', { bubbles: true }))
     }, { root: rootName })
     await expect.poll(() => directoryNames.length, { timeout: 15_000 }).toBe(5)
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('.file-card').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 })
     return directoryNames
   }
 
@@ -430,15 +430,15 @@ test('old/new 文件夹上传保留相同反馈与嵌套目录结果', async ({ 
       expect.poll(() => newPage.evaluate(() => (window as typeof window & { __folderUploadToastMarks?: string[] }).__folderUploadToastMarks?.includes('已保留目录结构，开始上传 2 个文件') ?? false), { timeout: 15_000 }).toBe(true),
     ])
     await Promise.all([
-      expect(oldPage.locator('.file-card, .file-row').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
-      expect(newPage.locator('.file-card, .file-row').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
+      expect(oldPage.locator('.file-card').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
+      expect(newPage.locator('.file-card').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
     ])
     for (const page of [oldPage, newPage]) {
-      await page.locator('.file-card, .file-row').filter({ hasText: rootName }).click()
-      await expect(page.locator('.file-card, .file-row').filter({ hasText: 'nested' })).toBeVisible({ timeout: 20_000 })
-      await page.locator('.file-card, .file-row').filter({ hasText: 'nested' }).click()
-      await expect(page.locator('.file-card, .file-row').filter({ hasText: 'first.txt' })).toBeVisible({ timeout: 20_000 })
-      await expect(page.locator('.file-card, .file-row').filter({ hasText: 'second.txt' })).toBeVisible({ timeout: 20_000 })
+      await page.locator('.file-card').filter({ hasText: rootName }).click()
+      await expect(page.locator('.file-card').filter({ hasText: 'nested' })).toBeVisible({ timeout: 20_000 })
+      await page.locator('.file-card').filter({ hasText: 'nested' }).click()
+      await expect(page.locator('.file-card').filter({ hasText: 'first.txt' })).toBeVisible({ timeout: 20_000 })
+      await expect(page.locator('.file-card').filter({ hasText: 'second.txt' })).toBeVisible({ timeout: 20_000 })
     }
   } finally {
     await Promise.all([removeCreated(oldPage, [rootName]), removeCreated(newPage, [rootName])])
@@ -2058,7 +2058,7 @@ test('old/new multipart 上传按 reference 请求分片、记录校验并按序
       lastModified: 123,
     })
     await expect.poll(() => state.complete !== null, { timeout: 30_000 }).toBe(true)
-    await expect.poll(() => page.locator('.file-card, .file-row').filter({ hasText: name }).count(), { timeout: 2_000 }).toBe(0)
+    await expect.poll(() => page.locator('.file-card').filter({ hasText: name }).count(), { timeout: 2_000 }).toBe(0)
     return {
       create: state.create,
       partRequests: state.partRequests,

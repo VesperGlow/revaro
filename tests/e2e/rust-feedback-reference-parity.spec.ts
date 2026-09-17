@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -74,9 +75,9 @@ async function mockFeedback(page: Page, options: { directoryError?: boolean; dir
 async function openFeedbackFixture(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '列表', exact: true }).click()
+  const useListView = await useReferenceListView(page)
   for (const file of files) {
-    const row = page.locator('.file-row').filter({ hasText: file.name })
+    const row = listingEntries(page, useListView).filter({ hasText: file.name })
     await expect(row).toBeVisible()
     await row.getByRole('button', { name: '选择项目' }).click()
   }
@@ -538,7 +539,7 @@ test('401 会话过期保留 reference 结果并明确记录 Rust 安全强化',
     await mockExpired(page)
     await page.goto(`${baseUrl}/?toast-session-expired=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.locator('.file-card, .file-row').filter({ hasText: folder.name }).click()
+    await page.locator('.file-card').filter({ hasText: folder.name }).click()
   }
 
   try {

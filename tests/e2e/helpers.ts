@@ -13,3 +13,19 @@ export async function selectCard(page:Page,name:string){
   await expect(card).toBeVisible()
   await card.getByRole('button',{name:'选择项目'}).click()
 }
+
+// The reference app still exposes a grid/list switch, while the Rust app only
+// renders the grid. Detect the reference switch so dual-version specs can enter
+// through each app's own listing layout instead of assuming a shared one.
+export async function useReferenceListView(page:Page){
+  const toggle=page.getByTitle('列表视图')
+  if(await toggle.count()){
+    await toggle.click()
+    return true
+  }
+  return false
+}
+
+export function listingEntries(page:Page,useListView:boolean){
+  return page.locator(useListView ? '.file-row' : '.file-card')
+}

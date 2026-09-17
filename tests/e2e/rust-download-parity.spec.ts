@@ -64,8 +64,8 @@ test('真实上传文件的下载、预览和 Range 响应保持 reference 行�
       { name, mimeType: 'text/plain', buffer: Buffer.from(content) },
       { name: imageName, mimeType: 'image/png', buffer: image },
     ])
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: name })).toBeVisible({ timeout: 20_000 })
-    await expect(page.locator('.file-card, .file-row').filter({ hasText: imageName })).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('.file-card').filter({ hasText: name })).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('.file-card').filter({ hasText: imageName })).toBeVisible({ timeout: 20_000 })
 
     const id = await fileId(page, name)
     const full = await responseShape(await page.request.get(`/api/files/${id}/download`))

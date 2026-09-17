@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const FILE_ID = 'modal-history-file'
@@ -56,8 +57,8 @@ async function mockShare(page: Page) {
 async function openShare(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?modal-history-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  const row = page.locator('.file-row').filter({ hasText: file.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: file.name })
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
   await expect(page.locator('.share-modal input[aria-label="分享链接"]')).toHaveValue(/modal-history-token/)
@@ -179,8 +180,8 @@ test('重命名与移动弹窗打开时浏览器后退关闭弹窗并保留选�
     await mockShare(page)
     await page.goto(`${baseUrl}/?file-action-history-reference=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
-    const row = page.locator('.file-row').filter({ hasText: file.name })
+    const useListView = await useReferenceListView(page)
+    const row = listingEntries(page, useListView).filter({ hasText: file.name })
     await row.getByRole('button', { name: '选择项目' }).click()
     const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
 
@@ -221,7 +222,7 @@ test('重命名与移动弹窗打开时浏览器后退关闭弹窗并保留选�
 
     return {
       path: new URL(page.url()).pathname,
-      selectedRows: await page.locator('.file-row.selected').count(),
+      selectedRows: await page.locator(useListView ? '.file-row.selected' : '.file-card.selected').count(),
       renameClosed: await rename.count() === 0,
       moveClosed: await move.count() === 0,
       cancelConsumedHistory: true,

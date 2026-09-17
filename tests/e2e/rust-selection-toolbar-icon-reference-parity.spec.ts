@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -53,8 +54,8 @@ async function mockSelection(page: Page) {
 async function openTextSelection(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '列表', exact: true }).click()
-  const row = page.locator('.file-row').filter({ hasText: textFile.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: textFile.name })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
   const open = page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '阅读', exact: true })

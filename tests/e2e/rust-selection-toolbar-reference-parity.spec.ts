@@ -60,11 +60,17 @@ async function mockToolbar(page: Page) {
   })
 }
 
-async function openBrowser(page: Page, baseUrl: string) {
+async function openBrowser(page: Page, baseUrl: string, useListView: boolean) {
   await page.goto(`${baseUrl}/?selection-toolbar-parity=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  await expect(page.locator('.file-row')).toHaveCount(items.length)
+  if (useListView) {
+    // The reference app still selects through its list view.
+    await page.getByTitle('列表视图').click()
+    await expect(page.locator('.file-row')).toHaveCount(items.length)
+  } else {
+    // The Rust app selects directly on the grid cards.
+    await expect(page.locator('.file-card')).toHaveCount(items.length)
+  }
 }
 
 async function toolbarMetrics(page: Page) {
@@ -92,12 +98,15 @@ async function toolbarMetrics(page: Page) {
   })
 }
 
-async function select(page: Page, name: string) {
-  await page.locator('.file-row').filter({ hasText: name }).getByRole('button', { name: '选择项目' }).click()
+async function select(page: Page, name: string, useListView: boolean) {
+  const target = useListView
+    ? page.locator('.file-row').filter({ hasText: name })
+    : page.locator('.file-card').filter({ hasText: name })
+  await target.getByRole('button', { name: '选择项目' }).click()
   await expect(page.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible()
 }
 
-test('列表选择工具栏按文件类型保持 reference 的完整按钮分流', async ({ browser }) => {
+test('选择工具栏按文件类型保持 reference 的完整按钮分流', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -107,10 +116,10 @@ test('列表选择工具栏按文件类型保持 reference 的完整按钮分流
 
   try {
     await Promise.all([mockToolbar(oldPage), mockToolbar(newPage)])
-    await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
+    await Promise.all([openBrowser(oldPage, oldUrl, true), openBrowser(newPage, newUrl, false)])
 
     for (const name of items.map(item => item.name)) {
-      await Promise.all([select(oldPage, name), select(newPage, name)])
+      await Promise.all([select(oldPage, name, true), select(newPage, name, false)])
       expect(await toolbarMetrics(newPage), `Rust ${name} 选择工具栏与 reference 不一致`)
         .toEqual(await toolbarMetrics(oldPage))
       await Promise.all([
@@ -121,11 +130,11 @@ test('列表选择工具栏按文件类型保持 reference 的完整按钮分流
       await expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toHaveCount(0)
     }
 
-    await select(oldPage, '笔记.txt')
-    await select(newPage, '笔记.txt')
+    await select(oldPage, '笔记.txt', true)
+    await select(newPage, '笔记.txt', false)
     await Promise.all([
       oldPage.locator('.file-row').filter({ hasText: '图片.png' }).getByRole('button', { name: '选择项目' }).click(),
-      newPage.locator('.file-row').filter({ hasText: '图片.png' }).getByRole('button', { name: '选择项目' }).click(),
+      newPage.locator('.file-card').filter({ hasText: '图片.png' }).getByRole('button', { name: '选择项目' }).click(),
     ])
     expect(await toolbarMetrics(newPage), 'Rust 多选工具栏与 reference 不一致')
       .toEqual(await toolbarMetrics(oldPage))
@@ -145,8 +154,8 @@ test('移动端和回收站选择工具栏保持 reference 的布局与操作分
 
   try {
     await Promise.all([mockToolbar(oldPage), mockToolbar(newPage)])
-    await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
-    await Promise.all([select(oldPage, '笔记.txt'), select(newPage, '笔记.txt')])
+    await Promise.all([openBrowser(oldPage, oldUrl, true), openBrowser(newPage, newUrl, false)])
+    await Promise.all([select(oldPage, '笔记.txt', true), select(newPage, '笔记.txt', false)])
     expect(await toolbarMetrics(newPage), 'Rust 移动端选择工具栏与 reference 不一致')
       .toEqual(await toolbarMetrics(oldPage))
 
@@ -164,7 +173,7 @@ test('移动端和回收站选择工具栏保持 reference 的布局与操作分
     ])
     await expect(oldPage.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
     await expect(newPage.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
-    await Promise.all([select(oldPage, trashItem.name), select(newPage, trashItem.name)])
+    await Promise.all([select(oldPage, trashItem.name, true), select(newPage, trashItem.name, false)])
     expect(await toolbarMetrics(newPage), 'Rust 回收站选择工具栏与 reference 不一致')
       .toEqual(await toolbarMetrics(oldPage))
   } finally {
@@ -183,8 +192,8 @@ test('全选与取消全选按 reference 只计算当前列表中的项目', asy
 
   try {
     await Promise.all([mockToolbar(oldPage), mockToolbar(newPage)])
-    await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
-    await Promise.all([select(oldPage, '笔记.txt'), select(newPage, '笔记.txt')])
+    await Promise.all([openBrowser(oldPage, oldUrl, true), openBrowser(newPage, newUrl, false)])
+    await Promise.all([select(oldPage, '笔记.txt', true), select(newPage, '笔记.txt', false)])
 
     await Promise.all([
       oldPage.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '全选', exact: true }).click(),

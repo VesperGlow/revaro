@@ -73,36 +73,70 @@ async function tabSequence(page: Page, count: number) {
   return sequence
 }
 
-test('桌面全局 Tab 焦点顺序保持 reference', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+// 产品决定：Rust 前端移除了侧边分类栏和列表视图，网格成为唯一布局，并在每张
+// 方块卡片上新增了左上角选择按钮。桌面 Tab 顺序因此与带侧栏的 reference 有意
+// 不同，本用例改为固定新版顺序：顶栏 → 内容头动作 → 每张卡片（卡片本身 →
+// 左上角选择按钮），并验证顺序稳定、没有隐藏或 body 焦点。
+test('桌面 Tab 焦点顺序符合无侧栏方块网格', async ({ browser }) => {
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  await oldContext.addInitScript(() => {
-    localStorage.removeItem('revaro:sidebar:collapsed')
-    localStorage.removeItem('revaro:sidebar:expanded')
-    localStorage.removeItem('revaro:view-mode')
-  })
-  await newContext.addInitScript(() => {
-    localStorage.removeItem('revaro:sidebar:collapsed')
-    localStorage.removeItem('revaro:sidebar:expanded')
-    localStorage.removeItem('revaro:view-mode')
-  })
-  const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
   try {
-    await Promise.all([mockShell(oldPage), mockShell(newPage)])
-    await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
-    await Promise.all([oldPage.evaluate(() => (document.activeElement as HTMLElement | null)?.blur()), newPage.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())])
+    await mockShell(newPage)
+    await openShell(newPage, newUrl)
+    await newPage.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
 
-    const oldSequence = await tabSequence(oldPage, 24)
-    const newSequence = await tabSequence(newPage, 24)
-    expect(newSequence, 'Rust 桌面 Tab 焦点顺序与 reference 不一致').toEqual(oldSequence)
-    expect(oldSequence).not.toContain('HIDDEN')
-    expect(oldSequence).not.toContain('BODY')
+    const stopsPerShell = 9
+    const stopCount = stopsPerShell + files.length * 2
+    const sequence = await tabSequence(newPage, stopCount)
+    expect(sequence).not.toContain('HIDDEN')
+    expect(sequence).not.toContain('BODY')
+
+    const label = (entry: unknown) => {
+      if (typeof entry === 'string') return entry
+      const descriptor = entry as { title?: string | null; text?: string }
+      return descriptor.title ?? descriptor.text ?? ''
+    }
+    const expectedLabels = [
+      '回到我的文件',
+      '任务中心',
+      '系统状态',
+      '回收站',
+      '打开账户设置',
+      '我的文件',
+      '新建文档',
+      '新建文件夹',
+      '上传',
+    ]
+    expect(sequence.slice(0, stopsPerShell).map(label)).toEqual(expectedLabels)
+
+    for (let index = 0; index < files.length; index += 1) {
+      const card = sequence[stopsPerShell + index * 2] as {
+        tag: string
+        className: string[]
+      }
+      const select = sequence[stopsPerShell + index * 2 + 1] as {
+        tag: string
+        title: string | null
+        className: string[]
+      }
+      expect(card.tag, `第 ${index + 1} 张卡片本身应可聚焦`).toBe('article')
+      expect(card.className).toContain('file-card')
+      expect(select.tag, `第 ${index + 1} 张卡片的选择控件应可聚焦`).toBe('button')
+      expect(select.className).toContain('card-select')
+      expect(select.title).toBe('选择项目')
+    }
+
+    // The order must be stable across a fresh mount, not incidental to the
+    // first pass: reload resets the browser's sequential-focus start point.
+    await newPage.reload()
+    await expect(newPage.locator('.file-card')).toHaveCount(files.length)
+    await newPage.waitForTimeout(180)
+    await newPage.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    const secondPass = await tabSequence(newPage, stopCount)
+    expect(secondPass).toEqual(sequence)
   } finally {
-    await oldContext.close()
     await newContext.close()
   }
 })

@@ -1584,9 +1584,9 @@ test('old/new 图片未达到翻页阈值时保留拖动中的水平跟手位移
     const initialX = await image.evaluate(element => new DOMMatrix(getComputedStyle(element).transform).e)
     await page.mouse.move(centerX, centerY)
     await page.mouse.down()
-    // Keep the movement below the 60px gallery-switch threshold. The
-    // reference still moves the fitted image with the pointer during this
-    // live gesture, even though pointer-up does not change the item.
+    // Keep the movement below the 60px threshold for changing the previewed
+    // item. The reference still moves the fitted image with the pointer during
+    // this live gesture, even though pointer-up does not change the item.
     await page.mouse.move(centerX + 24, centerY + 5)
     await page.waitForTimeout(40)
     const result = await image.evaluate(element => {

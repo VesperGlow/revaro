@@ -154,23 +154,11 @@ async function compareIcons(oldPage: Page, newPage: Page, selector: string, labe
   expect(newGeometry, `${label} 的 Rust SVG 几何应保持 reference`).toEqual(oldGeometry)
 }
 
-async function cssTransform(page: Page, selector: string) {
-  return page.locator(selector).first().evaluate(element => getComputedStyle(element).transform)
-}
-
 test('旧版与 Rust 版全局入口、任务中心和文件操作图标保持 reference 几何', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 950 } })
-  await oldContext.addInitScript(() => {
-    localStorage.removeItem('revaro:sidebar:collapsed')
-    localStorage.removeItem('revaro:sidebar:expanded')
-  })
-  await newContext.addInitScript(() => {
-    localStorage.removeItem('revaro:sidebar:collapsed')
-    localStorage.removeItem('revaro:sidebar:expanded')
-  })
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
@@ -179,42 +167,13 @@ test('旧版与 Rust 版全局入口、任务中心和文件操作图标保持 r
     await Promise.all([openShell(oldPage, oldUrl), openShell(newPage, newUrl)])
 
     await compareIcons(oldPage, newPage, '.task-center > summary[title="任务中心"] svg', '任务中心入口')
-    await compareIcons(oldPage, newPage, '.app-sidebar .sidebar-collapse svg', '侧栏折叠入口')
-    await compareIcons(oldPage, newPage, '.app-sidebar .category-icon svg', '侧栏分类入口')
-    await compareIcons(oldPage, newPage, '.app-sidebar .category-expand svg', '侧栏路径展开入口')
-    await compareIcons(oldPage, newPage, '.app-sidebar .trash-entry svg', '侧栏回收站入口')
-    await compareIcons(oldPage, newPage, '.file-view-switch svg', '文件视图切换')
+    // The Rust grid is now the only listing layout, so the reference's
+    // grid/list switch icons no longer have a counterpart to compare.
     await compareIcons(oldPage, newPage, '.desktop-create-actions svg', '快速新建操作')
     await compareIcons(oldPage, newPage, '.create-menu summary svg', '新建菜单入口')
     await compareIcons(oldPage, newPage, '.create-menu .create-menu-popover svg', '新建菜单项')
     await compareIcons(oldPage, newPage, '.upload-menu summary svg', '上传菜单入口')
     await compareIcons(oldPage, newPage, '.upload-menu .upload-menu-popover svg', '上传菜单项')
-
-    await oldPage.locator('.sidebar-nav [data-category="image"]').click()
-    await newPage.locator('.sidebar-nav [data-category="image"]').click()
-    const oldImagePaths = oldPage.locator('.sidebar-category:has([data-category="image"]) .category-paths .path-label')
-    const newImagePaths = newPage.locator('.sidebar-category:has([data-category="image"]) .category-paths .path-label')
-    await expect(oldImagePaths).toHaveCount(2)
-    await expect(newImagePaths).toHaveCount(2)
-    await oldPage.waitForTimeout(250)
-    await newPage.waitForTimeout(250)
-    expect(
-      await cssTransform(oldPage, '.sidebar-nav [data-category="image"] ~ .category-expand svg'),
-      'reference 分类展开箭头应旋转',
-    ).not.toBe('none')
-    expect(
-      await cssTransform(newPage, '.sidebar-nav [data-category="image"] ~ .category-expand svg'),
-      'Rust 分类展开箭头应保持 reference 旋转状态',
-    ).toBe(await cssTransform(oldPage, '.sidebar-nav [data-category="image"] ~ .category-expand svg'))
-    expect(
-      await cssTransform(oldPage, '.sidebar-category:has([data-category="image"]) .category-paths button.path-toggle svg'),
-      'reference 路径树根箭头应旋转',
-    ).not.toBe('none')
-    expect(
-      await cssTransform(newPage, '.sidebar-category:has([data-category="image"]) .category-paths button.path-toggle svg'),
-      'Rust 路径树根箭头应保持 reference 旋转状态',
-    ).toBe(await cssTransform(oldPage, '.sidebar-category:has([data-category="image"]) .category-paths button.path-toggle svg'))
-    await compareIcons(oldPage, newPage, '.sidebar-category:has([data-category="image"]) .category-paths .path-label svg', '媒体路径文件夹')
 
     await oldPage.locator('.task-center > summary[title="任务中心"]').click()
     await newPage.locator('.task-center > summary[title="任务中心"]').click()
@@ -235,7 +194,6 @@ test('旧版与 Rust 版全局入口、任务中心和文件操作图标保持 r
     await newPage.setViewportSize({ width: 390, height: 844 })
     await oldPage.waitForTimeout(200)
     await newPage.waitForTimeout(200)
-    await compareIcons(oldPage, newPage, '.sidebar-handle svg', '移动端分类抽屉')
     await compareIcons(oldPage, newPage, '.mobile-account-menu .mobile-tool-item:first-of-type svg', '移动端任务中心')
     await compareIcons(oldPage, newPage, '.mobile-account-menu .mobile-trash svg', '移动端回收站')
     await compareIcons(oldPage, newPage, '.mobile-account-menu .mobile-tool-item:last-of-type svg', '移动端账户设置')

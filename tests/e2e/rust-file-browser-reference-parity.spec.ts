@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -109,10 +109,6 @@ test('目录切换期间的 loading 文案和完成后的内容保持 reference'
   }
 })
 
-async function clearPreferences(context: BrowserContext) {
-  await context.addInitScript(() => localStorage.removeItem('revaro:library:media:file'))
-}
-
 async function openRoot(page: Page, url: string) {
   await page.goto(`${url}/?compat-file-browser=${crypto.randomUUID()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
@@ -124,7 +120,9 @@ async function headerSnapshot(page: Page) {
     titleClass: element.querySelector('h1')?.className,
     breadcrumb: element.querySelector('nav.breadcrumbs')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
     meta: element.querySelector('.folder-meta')?.textContent?.replace(/\s+/g, ' ').trim(),
-    actions: Array.from(element.querySelectorAll(':scope > .actions button, .file-view-switch button')).map(button => ({
+    // The Rust header no longer renders the grid/list switch, so the compared
+    // snapshot only covers the shared action buttons.
+    actions: Array.from(element.querySelectorAll(':scope > .actions button')).map(button => ({
       text: button.textContent?.replace(/\s+/g, ' ').trim(),
       className: button.className,
       title: button.getAttribute('title'),
@@ -142,11 +140,6 @@ async function contentSnapshot(page: Page) {
       name: card.querySelector('.card-info strong')?.textContent?.trim(),
       className: Array.from(card.classList).sort().join(' '),
       meta: card.querySelector('.card-info small')?.textContent?.replace(/\s+/g, ' ').trim(),
-    })),
-    rows: Array.from(element.querySelectorAll('.file-row')).map(row => ({
-      name: row.querySelector('.row-info strong')?.textContent?.trim(),
-      className: Array.from(row.classList).sort().join(' '),
-      meta: row.querySelector('.row-info small')?.textContent?.replace(/\s+/g, ' ').trim(),
     })),
   }))
 }
@@ -221,13 +214,11 @@ test('old/new 回收站 items 为 null 的旧版渲染缺陷保持可见', async
   }
 })
 
-test('根目录、列表/方块和回收站内容头保持 reference', async ({ browser }) => {
+test('根目录和回收站内容头保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  await clearPreferences(oldContext)
-  await clearPreferences(newContext)
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
@@ -238,11 +229,6 @@ test('根目录、列表/方块和回收站内容头保持 reference', async ({ 
     await expect(newPage.locator('.file-card')).toHaveCount(rootItems.length)
     expect(await headerSnapshot(newPage), 'Rust 根目录内容头与 reference 不一致').toEqual(await headerSnapshot(oldPage))
     expect(await contentSnapshot(newPage), 'Rust 根目录方块内容与 reference 不一致').toEqual(await contentSnapshot(oldPage))
-
-    await oldPage.getByTitle('列表视图').click()
-    await newPage.getByTitle('列表视图').click()
-    expect(await headerSnapshot(newPage), 'Rust 列表模式内容头与 reference 不一致').toEqual(await headerSnapshot(oldPage))
-    expect(await contentSnapshot(newPage), 'Rust 列表内容与 reference 不一致').toEqual(await contentSnapshot(oldPage))
 
     await oldPage.getByTitle('回收站').first().click()
     await newPage.getByTitle('回收站').first().click()
@@ -270,8 +256,6 @@ test('空目录与目录读取失败保留 reference 的页面结构和反馈', 
   for (const mode of cases) {
     const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
     const newContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
-    await clearPreferences(oldContext)
-    await clearPreferences(newContext)
     const oldPage = await oldContext.newPage()
     const newPage = await newContext.newPage()
     try {

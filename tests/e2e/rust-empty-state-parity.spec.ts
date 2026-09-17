@@ -63,7 +63,7 @@ test('空目录和空回收站保留 reference 的文案与快捷入口', async 
   await page.getByRole('button', { name: '关闭编辑器' }).click()
   await expect(page.locator('.document-editor')).toHaveCount(0)
 
-  await page.locator('.trash-entry').click()
+  await page.locator('.topbar .trash-button').click()
   await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
   const trash = page.locator('.state.empty')
   await expect(trash.locator('h3')).toHaveText('回收站是空的')

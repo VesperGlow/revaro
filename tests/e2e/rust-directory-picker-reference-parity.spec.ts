@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -113,8 +114,8 @@ async function mockPicker(page: Page, delayTransfer = false, probeConcurrency = 
 async function openPicker(page: Page, baseUrl: string, beforeTransfer?: () => void) {
   await page.goto(`${baseUrl}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '列表', exact: true }).click()
-  const row = page.locator('.file-row').filter({ hasText: '待移动.txt' })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: '待移动.txt' })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
   beforeTransfer?.()
@@ -267,8 +268,8 @@ test('移动/复制目录选择器的路径图标和展开关闭行为保持 ref
 async function openDirectoryMoveFixture(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?directory-picker-exclusion-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '列表', exact: true }).click()
-  const row = page.locator('.file-row').filter({ hasText: sourceDirectory.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: sourceDirectory.name })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
   await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动', exact: true }).click()

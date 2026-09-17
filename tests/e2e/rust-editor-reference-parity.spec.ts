@@ -62,6 +62,22 @@ async function createDocument(page: Parameters<typeof login>[0], name: string, c
   }, { name, content })
 }
 
+// The reference app still exposes a grid/list switch, while the Rust app only
+// renders the grid. Detect the reference switch so dual-version exercises can
+// enter through each app's own listing layout.
+async function useReferenceListView(page: Parameters<typeof login>[0]) {
+  const toggle = page.getByTitle('列表视图')
+  if (await toggle.count()) {
+    await toggle.click()
+    return true
+  }
+  return false
+}
+
+function fileEntries(page: Parameters<typeof login>[0], useListView: boolean) {
+  return page.locator(useListView ? '.file-row' : '.file-card')
+}
+
 test('新文档扩展名校验保留原始输入的尾随空格行为', async ({ page }) => {
   const trimmedName = `editor-trailing-${Date.now().toString(36)}.md`
   const typedName = `${trimmedName} `
@@ -90,22 +106,21 @@ test('回收站可编辑文档按 reference 保持只读编辑器分流', async 
     await createDocument(page, textName, 'message: 回收站 YAML 内容')
     await createDocument(page, markdownName, '# 回收站 Markdown')
     await page.reload()
-    await page.getByRole('button', { name: '列表' }).click()
-    await expect(page.locator('.file-row').filter({ hasText: textName })).toBeVisible()
-    await expect(page.locator('.file-row').filter({ hasText: markdownName })).toBeVisible()
+    await expect(page.locator('.file-card').filter({ hasText: textName })).toBeVisible()
+    await expect(page.locator('.file-card').filter({ hasText: markdownName })).toBeVisible()
 
     for (const name of [textName, markdownName]) {
-      const row = page.locator('.file-row').filter({ hasText: name })
-      await row.getByRole('button', { name: '选择项目' }).click()
+      const card = page.locator('.file-card').filter({ hasText: name })
+      await card.getByRole('button', { name: '选择项目' }).click()
     }
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '删除' }).click()
     const confirm = page.getByRole('dialog').filter({ hasText: '移入回收站？' })
     await confirm.getByRole('button', { name: '移入回收站' }).click()
-    await expect(page.locator('.file-row').filter({ hasText: textName })).toHaveCount(0)
+    await expect(page.locator('.file-card').filter({ hasText: textName })).toHaveCount(0)
 
-    await page.locator('.trash-entry').click()
-    const textRow = page.locator('.file-row').filter({ hasText: textName })
-    const markdownRow = page.locator('.file-row').filter({ hasText: markdownName })
+    await page.locator('.topbar .trash-button').click()
+    const textRow = page.locator('.file-card').filter({ hasText: textName })
+    const markdownRow = page.locator('.file-card').filter({ hasText: markdownName })
     await expect(textRow).toBeVisible()
     await textRow.click()
     const textEditor = page.locator('.document-editor')
@@ -241,8 +256,8 @@ test('old/new 空目录空状态与窄屏创建菜单进入同一新文档 edito
     rememberFolderId(created.body.id)
 
     await page.reload()
-    await page.getByTitle('列表视图').click()
-    await page.locator('.file-row').filter({ hasText: folderName }).click()
+    const useListView = await useReferenceListView(page)
+    await fileEntries(page, useListView).filter({ hasText: folderName }).click()
     await expect(page.locator('.folder-heading h1')).toHaveText(folderName)
     await expect(page.locator('.state.empty')).toBeVisible()
 
@@ -359,11 +374,11 @@ test('old/new 全部旧版可编辑扩展名都从文件入口进入相同 edito
     await loginAt(page, baseUrl)
     await Promise.all(documents.map(document => createDocument(page, document.name, document.content)))
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const useListView = await useReferenceListView(page)
 
     const result: Array<{ extension: string; label: string; tabs: boolean; saveDisabled: boolean }> = []
     for (const document of documents) {
-      const row = page.locator('.file-row').filter({ hasText: document.name })
+      const row = fileEntries(page, useListView).filter({ hasText: document.name })
       await expect(row).toBeVisible({ timeout: 20_000 })
       await row.click()
       const editor = page.locator('.document-editor')
@@ -414,8 +429,8 @@ test('编辑器输入与原值相同仍保持 reference 的未修改状态', asy
     await loginAt(page, baseUrl)
     await createDocument(page, name, content)
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
-    await page.locator('.file-row').filter({ hasText: name }).click()
+    const useListView = await useReferenceListView(page)
+    await fileEntries(page, useListView).filter({ hasText: name }).click()
 
     const editor = page.locator('.document-editor')
     await expect(editor.locator('textarea')).toHaveValue(content)
@@ -464,8 +479,8 @@ test('old/new Markdown 编辑模式、分栏预览和安全渲染状态一致', 
     await loginAt(page, baseUrl)
     await createDocument(page, name, content)
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
-    await page.locator('.file-row').filter({ hasText: name }).click()
+    const useListView = await useReferenceListView(page)
+    await fileEntries(page, useListView).filter({ hasText: name }).click()
 
     const editor = page.locator('.document-editor')
     await expect(editor.locator('textarea')).toHaveValue(content)
@@ -556,8 +571,8 @@ test('old/new Markdown edit/split 保留 textarea 光标滚动，preview 切换�
     await loginAt(page, baseUrl)
     await createDocument(page, name, content)
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
-    await page.locator('.file-row').filter({ hasText: name }).click()
+    const useListView = await useReferenceListView(page)
+    await fileEntries(page, useListView).filter({ hasText: name }).click()
     const editor = page.locator('.document-editor')
     const textarea = editor.locator('textarea')
     await expect(textarea).toHaveValue(content)
@@ -653,7 +668,7 @@ test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 E
     await loginAt(page, baseUrl)
     const id = await createDocument(page, name, content)
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const useListView = await useReferenceListView(page)
     await page.route(`**/api/files/${id}/content`, async route => {
       if (route.request().method() === 'GET') {
         await new Promise(resolve => setTimeout(resolve, 900))
@@ -673,7 +688,7 @@ test('old/new editor 保留加载态、未保存关闭确认、快捷保存和 E
       })
     })
 
-    await page.locator('.file-row').filter({ hasText: name }).click()
+    await fileEntries(page, useListView).filter({ hasText: name }).click()
     const editor = page.locator('.document-editor')
     await expect(editor.locator('.editor-loading')).toBeVisible()
     await expect(editor.locator('textarea')).toHaveValue(content, { timeout: 10_000 })
@@ -744,7 +759,7 @@ test('old/new 文档 PUT 普通失败保留修改与 ETag，busy 锁定后可重
     await loginAt(page, baseUrl)
     const id = await createDocument(page, name, originalContent)
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const useListView = await useReferenceListView(page)
     const bodies: Array<{ content: string; etag: string }> = []
     await page.route(`**/api/files/${id}/content`, async route => {
       if (route.request().method() === 'GET') {
@@ -766,7 +781,7 @@ test('old/new 文档 PUT 普通失败保留修改与 ETag，busy 锁定后可重
       await route.continue()
     })
 
-    await page.locator('.file-row').filter({ hasText: name }).click()
+    await fileEntries(page, useListView).filter({ hasText: name }).click()
     const editor = page.locator('.document-editor')
     const textarea = editor.locator('textarea')
     await expect(textarea).toHaveValue(originalContent)
@@ -849,8 +864,8 @@ test('old/new 文档保存后列表大小/本地时间 metadata 随目录刷新�
     await loginAt(page, baseUrl)
     const id = await createDocument(page, name, originalContent)
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
-    const row = page.locator('.file-row').filter({ hasText: name })
+    const useListView = await useReferenceListView(page)
+    const row = fileEntries(page, useListView).filter({ hasText: name })
     await expect(row).toBeVisible()
     const initialMeta = await row.locator('small').first().innerText()
 
@@ -923,7 +938,7 @@ test('old/new 文档内容 GET 首次失败后退出加载态，关闭重开可�
     await loginAt(page, baseUrl)
     const id = await createDocument(page, name, content)
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const useListView = await useReferenceListView(page)
     let reads = 0
     await page.route(`**/api/files/${id}/content`, async route => {
       if (route.request().method() !== 'GET') {
@@ -945,7 +960,7 @@ test('old/new 文档内容 GET 首次失败后退出加载态，关闭重开可�
       await route.continue()
     })
 
-    const row = page.locator('.file-row').filter({ hasText: name })
+    const row = fileEntries(page, useListView).filter({ hasText: name })
     await row.click()
     const editor = page.locator('.document-editor')
     await expect(editor.locator('.editor-loading')).toBeVisible()
@@ -1012,7 +1027,7 @@ test('过期会话读取文档时保留旧版实测差异并由 Rust 清理敏�
     await loginAt(page, baseUrl)
     const id = await createDocument(page, name, 'sensitive content behind an expired session')
     await page.reload()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const useListView = await useReferenceListView(page)
     await page.route(`**/api/files/${id}/content`, route => route.fulfill({
       status: 401,
       contentType: 'application/json',
@@ -1020,7 +1035,7 @@ test('过期会话读取文档时保留旧版实测差异并由 Rust 清理敏�
         error: { status: 401, code: 'unauthorized', message: 'session expired' },
       }),
     }))
-    await page.locator('.file-row').filter({ hasText: name }).click()
+    await fileEntries(page, useListView).filter({ hasText: name }).click()
     const editor = page.locator('.document-editor')
     if (isReference) {
       await expect(editor.locator('.editor-header-message.error')).toHaveText('session expired')
@@ -1087,15 +1102,15 @@ test('old/new 回收站只读 editor 忽略 Escape，遮罩与关闭按钮均不
 
   async function exercise(page: Parameters<typeof login>[0], baseUrl: string) {
     await loginAt(page, baseUrl)
-    await page.getByRole('button', { name: '列表', exact: true }).click()
+    const useListView = await useReferenceListView(page)
     const id = await createDocument(page, name, content)
     const removed = await page.evaluate(async fileId => {
       const response = await fetch(`/api/files/${fileId}`, { method: 'DELETE' })
       return response.ok
     }, id)
     expect(removed, '创建回收站只读 editor fixture').toBe(true)
-    await page.locator('.trash-entry').click()
-    const row = page.locator('.file-row').filter({ hasText: name })
+    await page.locator('.topbar .trash-button').click()
+    const row = fileEntries(page, useListView).filter({ hasText: name })
     await expect(row).toBeVisible()
     await row.click()
 
@@ -1223,8 +1238,8 @@ test('old/new Markdown 边界语义保持 reference 的 DOM 结构和安全清�
     await loginAt(page, baseUrl)
     await createDocument(page, name, content)
     await page.reload()
-    await page.getByRole('button', { name: '列表' }).click()
-    await page.locator('.file-row').filter({ hasText: name }).click()
+    const useListView = await useReferenceListView(page)
+    await fileEntries(page, useListView).filter({ hasText: name }).click()
     const editor = page.locator('.document-editor')
     await expect(editor.locator('textarea')).toHaveValue(content)
     await editor.getByRole('button', { name: '预览' }).click()

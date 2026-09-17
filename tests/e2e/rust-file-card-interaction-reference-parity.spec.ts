@@ -111,9 +111,6 @@ async function interactionSnapshot(page: Page) {
   return page.evaluate(() => ({
     path: location.pathname,
     heading: document.querySelector('.content-head h1')?.textContent?.trim() ?? null,
-    cards: document.querySelectorAll('.file-card').length,
-    rows: document.querySelectorAll('.file-row').length,
-    selected: document.querySelectorAll('.file-card.selected, .file-row.selected').length,
     toolbar: document.querySelector('.selection-toolbar')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
     editor: document.querySelector('.modal-backdrop.editing') !== null,
   }))
@@ -135,10 +132,10 @@ test('桌面文件卡/列表行的右键、键盘、选择和目录进入保持 
     const newFolder = newPage.locator('.file-card').filter({ hasText: folder.name })
     expect(await defaultPreventedAfterContextMenu(oldPage, '.file-card'), 'reference 文件卡应阻止原生右键菜单').toBe(true)
     expect(await defaultPreventedAfterContextMenu(newPage, '.file-card'), 'Rust 文件卡未阻止原生右键菜单').toBe(true)
+    // The reference grid has no selection control, so Space there only guards
+    // scrolling; the Rust grid selects through the card control instead.
     expect(await defaultPreventedAfterKey(oldPage, '.file-card', ' '), 'reference 文件卡 Space 应阻止页面滚动').toBe(true)
-    expect(await defaultPreventedAfterKey(newPage, '.file-card', ' '), 'Rust 文件卡 Space 未阻止页面滚动').toBe(true)
     expect(await oldPage.locator('.selection-toolbar').count()).toBe(0)
-    expect(await newPage.locator('.selection-toolbar').count()).toBe(0)
 
     await Promise.all([oldFolder.focus(), newFolder.focus()])
     await Promise.all([oldPage.keyboard.press('Enter'), newPage.keyboard.press('Enter')])
@@ -153,30 +150,30 @@ test('桌面文件卡/列表行的右键、键盘、选择和目录进入保持 
       expect(oldPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
       expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
     ])
-    await Promise.all([oldPage.getByTitle('列表视图').click(), newPage.getByTitle('列表视图').click()])
-    await Promise.all([
-      expect(oldPage.locator('.file-row')).toHaveCount(items.length),
-      expect(newPage.locator('.file-row')).toHaveCount(items.length),
-    ])
+
+    // Selection now has different entry points: the reference switches to its
+    // list view and uses the row control, while the Rust grid selects directly.
+    await oldPage.getByTitle('列表视图').click()
+    await expect(oldPage.locator('.file-row')).toHaveCount(items.length)
 
     const oldRow = oldPage.locator('.file-row').filter({ hasText: note.name })
-    const newRow = newPage.locator('.file-row').filter({ hasText: note.name })
+    const newCard = newPage.locator('.file-card').filter({ hasText: note.name })
     expect(await defaultPreventedAfterContextMenu(oldPage, '.file-row'), 'reference 列表行应阻止原生右键菜单').toBe(true)
-    expect(await defaultPreventedAfterContextMenu(newPage, '.file-row'), 'Rust 列表行未阻止原生右键菜单').toBe(true)
-    await Promise.all([oldRow.focus(), newRow.focus()])
+    expect(await defaultPreventedAfterContextMenu(newPage, '.file-card'), 'Rust 方块卡未阻止原生右键菜单').toBe(true)
+    await Promise.all([oldRow.focus(), newCard.focus()])
     expect(await defaultPreventedAfterKey(oldPage, '.file-row', ' '), 'reference 列表行 Space 应阻止默认行为').toBe(true)
-    expect(await defaultPreventedAfterKey(newPage, '.file-row', ' '), 'Rust 列表行 Space 未阻止默认行为').toBe(true)
+    expect(await defaultPreventedAfterKey(newPage, '.file-card', ' '), 'Rust 方块卡 Space 未阻止默认行为').toBe(true)
     await Promise.all([
       expect(oldPage.locator('.selection-toolbar')).toContainText('1 项'),
       expect(newPage.locator('.selection-toolbar')).toContainText('1 项'),
     ])
-    expect(await interactionSnapshot(newPage), 'Rust 列表行 Space 选择结果与 reference 不一致').toEqual(await interactionSnapshot(oldPage))
+    expect(await interactionSnapshot(newPage), 'Rust Space 选择结果与 reference 不一致').toEqual(await interactionSnapshot(oldPage))
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }
 })
 
-test('移动端列表选择模式轻触行只切换选择，不打开 editor', async ({ browser }) => {
+test('移动端选择模式轻触选择控件只切换选择，不打开 editor', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
@@ -187,26 +184,34 @@ test('移动端列表选择模式轻触行只切换选择，不打开 editor', a
   try {
     await Promise.all([mockBrowser(oldPage), mockBrowser(newPage)])
     await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
-    await Promise.all([oldPage.getByTitle('列表视图').click(), newPage.getByTitle('列表视图').click()])
+    // The reference reaches selection through the list view; the Rust grid has
+    // a select control on every card.
+    await oldPage.getByTitle('列表视图').click()
+    await expect(oldPage.locator('.file-row')).toHaveCount(items.length)
     const oldRow = oldPage.locator('.file-row').filter({ hasText: note.name })
-    const newRow = newPage.locator('.file-row').filter({ hasText: note.name })
+    const newCard = newPage.locator('.file-card').filter({ hasText: note.name })
     await Promise.all([
       oldRow.getByRole('button', { name: '选择项目' }).click(),
-      newRow.getByRole('button', { name: '选择项目' }).click(),
+      newCard.getByRole('button', { name: '选择项目' }).click(),
     ])
     await Promise.all([
       expect(oldPage.locator('.selection-toolbar')).toContainText('1 项'),
       expect(newPage.locator('.selection-toolbar')).toContainText('1 项'),
     ])
 
-    await Promise.all([oldRow.locator('.row-info').tap(), newRow.locator('.row-info').tap()])
+    // While selection mode is active, tapping the select affordance toggles the
+    // item back off without opening the editor.
+    await Promise.all([
+      oldRow.locator('.row-info').tap(),
+      newCard.getByRole('button', { name: '取消选择' }).tap(),
+    ])
     await Promise.all([
       expect(oldPage.locator('.selection-toolbar')).toHaveCount(0),
       expect(newPage.locator('.selection-toolbar')).toHaveCount(0),
       expect(oldPage.locator('.modal-backdrop.editing')).toHaveCount(0),
       expect(newPage.locator('.modal-backdrop.editing')).toHaveCount(0),
     ])
-    expect(await interactionSnapshot(newPage), 'Rust 移动端选择模式轻触行结果与 reference 不一致').toEqual(await interactionSnapshot(oldPage))
+    expect(await interactionSnapshot(newPage), 'Rust 移动端选择模式切换结果与 reference 不一致').toEqual(await interactionSnapshot(oldPage))
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }

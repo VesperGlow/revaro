@@ -67,7 +67,7 @@ function iconEpub() {
   ])
 }
 
-test('移动端列表在选择模式下轻触行只切换选择，不打开文件', async ({ browser }) => {
+test('移动端选择模式下轻触选择控件只切换选择，不打开文件', async ({ browser }) => {
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     isMobile: true,
@@ -91,17 +91,16 @@ test('移动端列表在选择模式下轻触行只切换选择，不打开文�
     }, { name, root: ROOT })
 
     await page.reload()
-    await page.getByRole('button', { name: '列表' }).click()
-    const row = page.locator('.file-row').filter({ hasText: name })
-    await expect(row).toBeVisible()
-    await row.getByRole('button', { name: '选择项目' }).click()
+    const card = page.locator('.file-card').filter({ hasText: name })
+    await expect(card).toBeVisible()
+    await card.getByRole('button', { name: '选择项目' }).click()
     await expect(page.locator('.selection-toolbar')).toContainText('1 项')
 
-    await row.locator('.row-info').click()
+    await card.getByRole('button', { name: '取消选择' }).click()
     await expect(page.locator('.selection-toolbar')).toHaveCount(0)
     await expect(page.locator('.modal-backdrop.editing')).toHaveCount(0)
 
-    await row.getByRole('button', { name: '选择项目' }).click()
+    await card.getByRole('button', { name: '选择项目' }).click()
     await expect(page.locator('.selection-toolbar')).toContainText('1 项')
   } finally {
     if (id) {
@@ -132,10 +131,9 @@ test('点击内容空白处会清除文件选择', async ({ page }) => {
     }, { name, root: ROOT })
 
     await page.reload()
-    await page.getByRole('button', { name: '列表' }).click()
-    const row = page.locator('.file-row').filter({ hasText: name })
-    await expect(row).toBeVisible()
-    await row.getByRole('button', { name: '选择项目' }).click()
+    const card = page.locator('.file-card').filter({ hasText: name })
+    await expect(card).toBeVisible()
+    await card.getByRole('button', { name: '选择项目' }).click()
     await expect(page.locator('.selection-toolbar')).toContainText('1 项')
 
     await page.evaluate(() => window.scrollTo(0, 0))
@@ -295,7 +293,7 @@ test('方块文件卡聚焦后按空格不会滚动页面', async ({ page }) => 
   }
 })
 
-test('回收站目录行按 Enter 保留 reference 的默认事件处理', async ({ page }) => {
+test('回收站目录卡片按 Enter 保留 reference 的默认事件处理', async ({ page }) => {
   const name = `compat-trash-folder-key-${crypto.randomUUID()}`
   let id = ''
 
@@ -317,7 +315,7 @@ test('回收站目录行按 Enter 保留 reference 的默认事件处理', async
 
     await page.getByTitle('回收站').first().click()
     await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
-    const row = page.locator('.file-card, .file-row').filter({ hasText: name })
+    const row = page.locator('.file-card').filter({ hasText: name })
     await expect(row).toBeVisible()
     await row.focus()
     await page.evaluate(() => {

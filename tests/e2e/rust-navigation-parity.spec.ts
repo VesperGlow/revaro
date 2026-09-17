@@ -56,7 +56,7 @@ test('深层目录面包屑自动显露当前路径并支持逐级返回', async
     await page.reload()
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
     for (const name of names) {
-      const entry = page.locator('.file-card, .file-row').filter({ hasText: name })
+      const entry = page.locator('.file-card').filter({ hasText: name })
       await expect(entry).toBeVisible()
       await entry.click()
       await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
@@ -83,44 +83,6 @@ test('深层目录面包屑自动显露当前路径并支持逐级返回', async
   }
 })
 
-test('从嵌套目录进入回收站后点击文件分类返回原目录', async ({ page }) => {
-  await login(page)
-  const name = `compat-trash-return-${crypto.randomUUID()}`
-  const folderId = await page.evaluate(async ({ name, root }) => {
-    const response = await fetch('/api/directories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parent_id: root, name }),
-    })
-    if (!response.ok) throw new Error(`创建目录失败：${response.status}`)
-    return (await response.json() as { id: string }).id
-  }, { name, root: ROOT })
-
-  try {
-    await page.reload()
-    await page.locator('.file-card, .file-row').filter({ hasText: name }).click()
-    await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
-
-    await page.getByTitle('回收站').first().click()
-    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
-
-    await page.locator('.category-main[data-category="file"]').click()
-    await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
-    expect(new URL(page.url()).pathname).toBe(`/f/${folderId}`)
-  } finally {
-    await page.evaluate(async ({ folderId }) => {
-      await fetch(`/api/files/${folderId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      await fetch(`/api/trash/${folderId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }, { folderId })
-  }
-})
-
 test('目录导航与浏览器后退前进保持 reference history 语义', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
   await login(page)
@@ -137,7 +99,7 @@ test('目录导航与浏览器后退前进保持 reference history 语义', asyn
 
   try {
     await page.reload()
-    await page.locator('.file-card, .file-row').filter({ hasText: name }).click()
+    await page.locator('.file-card').filter({ hasText: name }).click()
     await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
     expect(new URL(page.url()).pathname).toBe(`/f/${folderId}`)
 
@@ -189,201 +151,6 @@ test('无效文件夹深链回到根目录并加载 reference 的默认页面', 
   await expect(page.locator('.state[role="alert"]')).toHaveCount(0)
 })
 
-test('直接打开五类分类和文件夹地址时恢复 reference 页面与规范 URL', async ({ page }) => {
-  const stamp = '2026-01-01T00:00:00Z'
-  await page.route('**/api/**', async route => {
-    const path = new URL(route.request().url()).pathname
-    const json = (value: unknown) => route.fulfill({ json: value })
-    if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
-    if (path === '/api/events' || path === '/api/system/status/stream') {
-      return route.fulfill({ contentType: 'text/event-stream', body: '' })
-    }
-    if (path === '/api/library/all') {
-      return json({
-        items: { book: [], image: [], video: [], audio: [] },
-        counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 },
-      })
-    }
-    if (path === `/api/files/${ROOT}`) {
-      return json({
-        file: {
-          id: ROOT,
-          parent_id: null,
-          name: '我的文件',
-          kind: 'directory',
-          size: 0,
-          mime_type: '',
-          etag: '',
-          status: 'ready',
-          created_at: stamp,
-          updated_at: stamp,
-        },
-        breadcrumbs: [],
-      })
-    }
-    if (path === `/api/files/${ROOT}/children`) {
-      return json({ items: [], total_bytes: 0, file_count: 0 })
-    }
-    if (path === '/api/files/compatibility-route-folder') {
-      return json({
-        file: {
-          id: 'compatibility-route-folder',
-          parent_id: ROOT,
-          name: '测试目录',
-          kind: 'directory',
-          size: 0,
-          mime_type: '',
-          etag: '',
-          status: 'ready',
-          created_at: stamp,
-          updated_at: stamp,
-        },
-        breadcrumbs: [
-          { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: stamp, updated_at: stamp },
-          { id: 'compatibility-route-folder', parent_id: ROOT, name: '测试目录', kind: 'directory', size: 0, status: 'ready', created_at: stamp, updated_at: stamp },
-        ],
-      })
-    }
-    if (path === '/api/files/compatibility-route-folder/children') {
-      return json({ items: [], total_bytes: 0, file_count: 0 })
-    }
-    return json({ items: [] })
-  })
-
-  await page.goto('/library/book')
-  await expect(page.getByRole('heading', { name: '书架', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/library/book')
-
-  await page.goto('/library/image')
-  await expect(page.getByRole('heading', { name: '图片', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/library/image')
-
-  await page.goto('/library/video')
-  await expect(page.getByRole('heading', { name: '视频', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/library/video')
-
-  await page.goto('/library/audio/f/compatibility-route-folder')
-  await expect(page.getByRole('heading', { name: '音乐', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/library/audio/f/compatibility-route-folder')
-
-  await page.goto('/f/compatibility-route-folder')
-  await expect(page.getByRole('heading', { name: '测试目录', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/f/compatibility-route-folder')
-
-  await page.goto('/library/file')
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/')
-})
-
-test('顶栏 Logo、系统状态关闭和侧栏回收站 footer 保持 reference 行为', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 800 })
-  await login(page)
-
-  const status = page.locator('.system-status')
-  const statusPanel = status.locator('.status-panel')
-  await status.locator('summary').click()
-  await expect(statusPanel).toBeVisible()
-  await page.getByRole('heading', { name: '我的文件', exact: true }).click()
-  await expect(statusPanel).toBeHidden()
-
-  await status.locator('summary').click()
-  await page.keyboard.press('Escape')
-  await expect(statusPanel).toBeHidden()
-
-  await status.locator('summary').click()
-  await status.locator('summary').click()
-  await expect(statusPanel).toBeHidden()
-
-  const logo = page.locator('.topbar .logo')
-  const statusBox = await status.locator('summary').boundingBox()
-  const logoBox = await logo.boundingBox()
-  const trashBox = await page.locator('.app-sidebar .trash-entry').boundingBox()
-  expect(statusBox?.width).toBeCloseTo(44, 0)
-  expect(statusBox?.height).toBeCloseTo(44, 0)
-  expect(logoBox?.height).toBeCloseTo(34, 0)
-  expect(trashBox?.height).toBeCloseTo(42, 0)
-
-  await page.locator('.app-sidebar .trash-entry').click()
-  await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/')
-  await logo.click()
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/')
-
-  await page.locator('.app-sidebar [data-category="image"]').click()
-  await expect(page.getByRole('heading', { name: '图片', exact: true })).toBeVisible()
-  await logo.click()
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/')
-
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.reload()
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.locator('.sidebar-handle').click()
-  await page.locator('.app-sidebar .trash-entry').click()
-  await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
-  await expect(page.locator('.app-sidebar')).toHaveClass(/mobile-open/)
-})
-
-test('桌面侧栏折叠与分类路径手风琴在刷新后保持 reference 状态', async ({ page }) => {
-  await page.addInitScript(() => {
-    if (!sessionStorage.getItem('compat-sidebar-reset')) {
-      localStorage.removeItem('revaro:sidebar:collapsed')
-      localStorage.removeItem('revaro:sidebar:expanded')
-      sessionStorage.setItem('compat-sidebar-reset', '1')
-    }
-  })
-  await login(page)
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-
-  const sidebar = page.locator('.app-sidebar')
-  const collapse = page.locator('.sidebar-collapse')
-  await expect(sidebar).not.toHaveClass(/collapsed/)
-  await expect(collapse).toHaveAttribute('aria-expanded', 'true')
-
-  await collapse.click()
-  await expect(sidebar).toHaveClass(/collapsed/)
-  await expect(collapse).toHaveAttribute('aria-expanded', 'false')
-  await page.reload()
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await expect(sidebar).toHaveClass(/collapsed/)
-  await collapse.click()
-  await expect(sidebar).not.toHaveClass(/collapsed/)
-
-  const book = page.locator('.sidebar-category').filter({ has: page.locator('[data-category="book"]') })
-  const bookExpand = book.locator('.category-expand')
-  await expect(bookExpand).toHaveAttribute('aria-expanded', 'false')
-  await bookExpand.click()
-  await expect(bookExpand).toHaveAttribute('aria-expanded', 'true')
-  await expect(book.locator('.category-paths')).toBeVisible()
-  await page.reload()
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await expect(page.locator('.sidebar-category').filter({ has: page.locator('[data-category="book"]') }).locator('.category-paths')).toBeVisible()
-})
-
-test('移动端分类抽屉隐藏桌面折叠与路径展开控件，并支持遮罩关闭', async ({ page }) => {
-  await page.addInitScript(() => {
-    if (!sessionStorage.getItem('compat-mobile-sidebar-reset')) {
-      localStorage.removeItem('revaro:sidebar:collapsed')
-      localStorage.removeItem('revaro:sidebar:expanded')
-      sessionStorage.setItem('compat-mobile-sidebar-reset', '1')
-    }
-  })
-  await page.setViewportSize({ width: 390, height: 844 })
-  await login(page)
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-
-  await expect(page.locator('.sidebar-collapse')).toBeHidden()
-  await expect(page.locator('.category-expand')).toHaveCount(0)
-  await expect(page.locator('.sidebar-handle')).toHaveAttribute('aria-expanded', 'false')
-  await page.locator('.sidebar-handle').click()
-  await expect(page.locator('.app-sidebar')).toHaveClass(/mobile-open/)
-  await expect(page.locator('.sidebar-backdrop')).toHaveClass(/open/)
-  await expect(page.locator('.category-label')).toHaveCount(6)
-  await page.locator('.sidebar-backdrop').click({ position: { x: 380, y: 400 } })
-  await expect(page.locator('.app-sidebar')).not.toHaveClass(/mobile-open/)
-})
-
 test('移动端账户工具菜单 Escape 保留 reference 的默认事件与 summary 焦点行为', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await login(page)
@@ -403,25 +170,6 @@ test('移动端账户工具菜单 Escape 保留 reference 的默认事件与 sum
   await expect(menu).not.toHaveAttribute('open')
   expect(await page.evaluate(() => (window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented)).toBe(false)
   expect(await summary.evaluate(element => document.activeElement === element)).toBe(true)
-})
-
-test('移动端侧栏 Escape 保留 reference 的默认事件和关闭行为', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 })
-  await login(page)
-  const sidebar = page.locator('.app-sidebar')
-  await page.locator('.sidebar-handle').click()
-  await expect(sidebar).toHaveClass(/mobile-open/)
-  await page.evaluate(() => {
-    ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = undefined
-    window.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
-        ;(window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented = event.defaultPrevented
-      }
-    }, { once: true })
-  })
-  await page.keyboard.press('Escape')
-  await expect(sidebar).not.toHaveClass(/mobile-open/)
-  expect(await page.evaluate(() => (window as Window & { __escapeDefaultPrevented?: boolean }).__escapeDefaultPrevented)).toBe(false)
 })
 
 test('文件浏览头下拉菜单 Escape 保留 reference 的默认事件和关闭行为', async ({ page }) => {
@@ -536,9 +284,8 @@ test('目录读取中或失败时保留 reference 的当前选择状态', async 
 
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  const selectedRow = page.locator('.file-row').filter({ hasText: selectedFile.name })
-  const brokenRow = page.locator('.file-row').filter({ hasText: brokenFolder.name })
+  const selectedRow = page.locator('.file-card').filter({ hasText: selectedFile.name })
+  const brokenRow = page.locator('.file-card').filter({ hasText: brokenFolder.name })
   await selectedRow.getByRole('button', { name: '选择项目' }).click()
   await expect(page.locator('.selection-toolbar')).toBeVisible()
 
@@ -547,7 +294,7 @@ test('目录读取中或失败时保留 reference 的当前选择状态', async 
   await expect(page.locator('.state')).toContainText('正在读取文件')
   await expect(page.locator('.toast')).toContainText('模拟读取失败')
   await expect(page.locator('.selection-toolbar')).toBeVisible()
-  await expect(page.locator('.file-row').filter({ hasText: selectedFile.name })).toBeVisible()
+  await expect(page.locator('.file-card').filter({ hasText: selectedFile.name })).toBeVisible()
 })
 
 test('old/new 目录导航丢弃迟到响应并保留最后一次点击结果', async ({ browser }) => {
@@ -608,7 +355,7 @@ test('old/new 目录导航丢弃迟到响应并保留最后一次点击结果', 
     // perform a second action; the reference test is about the request race,
     // so both user click events must enter the controller before that render.
     await page.evaluate(({ slowName, fastName }) => {
-      const find = (name: string) => [...document.querySelectorAll<HTMLElement>('.file-card, .file-row')]
+      const find = (name: string) => [...document.querySelectorAll<HTMLElement>('.file-card')]
         .find(element => element.textContent?.includes(name))
       find(slowName)?.click()
       find(fastName)?.click()

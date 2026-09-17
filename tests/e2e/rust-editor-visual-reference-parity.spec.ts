@@ -98,8 +98,12 @@ async function openEditor(page: Page, baseUrl: string, name: string) {
   await loginAt(page, baseUrl)
   await createDocument(page, name)
   await page.reload()
-  await page.getByTitle('列表视图').click()
-  await page.locator('.file-row').filter({ hasText: name }).click()
+  // The reference app opens documents through its list view; the Rust app only
+  // has the grid, where the card itself opens the document.
+  const toggle = page.getByTitle('列表视图')
+  const useListView = (await toggle.count()) > 0
+  if (useListView) await toggle.click()
+  await page.locator(useListView ? '.file-row' : '.file-card').filter({ hasText: name }).click()
   await expect(page.locator('.document-editor')).toBeVisible()
   await expect(page.locator('.document-editor textarea')).toHaveValue('# visual parity\n\n编辑器布局检查')
 }

@@ -100,7 +100,6 @@ async function snapshot(page: Page) {
     stateText: document.querySelector('.content .state')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
     stateButtons: Array.from(document.querySelectorAll('.content .state button')).map(button => button.textContent?.trim()),
     cards: Array.from(document.querySelectorAll('.content .file-card')).map(card => card.textContent?.replace(/\s+/g, ' ').trim()),
-    rows: Array.from(document.querySelectorAll('.content .file-row')).map(row => row.textContent?.replace(/\s+/g, ' ').trim()),
     toast: Array.from(document.querySelectorAll('.toast')).map(element => ({
       text: element.textContent?.replace(/\s+/g, ' ').trim(),
       className: element.className,
@@ -187,12 +186,12 @@ test('回收站读取失败保留当前目录并只显示 reference Toast', asyn
     await Promise.all([mockShell(oldPage, 'trash-error'), mockShell(newPage, 'trash-error')])
     await Promise.all([openRoot(oldPage, oldUrl), openRoot(newPage, newUrl)])
     await Promise.all([
-      oldPage.locator('.sidebar-handle').click(),
-      newPage.locator('.sidebar-handle').click(),
+      oldPage.locator('.mobile-account-menu summary').click(),
+      newPage.locator('.mobile-account-menu summary').click(),
     ])
     await Promise.all([
-      oldPage.locator('.app-sidebar .trash-entry').click(),
-      newPage.locator('.app-sidebar .trash-entry').click(),
+      oldPage.locator('.mobile-trash').click(),
+      newPage.locator('.mobile-trash').click(),
     ])
     await Promise.all([
       expect(oldPage.locator('.toast')).toContainText('回收站读取失败'),

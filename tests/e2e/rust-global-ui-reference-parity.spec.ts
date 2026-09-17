@@ -123,12 +123,6 @@ async function fileHeaderMetrics(page: Page) {
     return {
       title: element.querySelector('h1')?.textContent?.trim(),
       meta: element.querySelector('.folder-meta')?.textContent?.replace(/\s+/g, ' ').trim(),
-      viewButtons: Array.from(element.querySelectorAll('.file-view-switch button')).map(button => ({
-        text: button.textContent?.replace(/\s+/g, ' ').trim(),
-        className: button.className,
-        pressed: button.getAttribute('aria-pressed'),
-        title: button.getAttribute('title'),
-      })),
       desktopCreateActions: styleOf('.desktop-create-actions'),
       createMenu: styleOf('.create-menu'),
       uploadMenu: styleOf('.upload-menu'),
@@ -462,7 +456,7 @@ test('顶栏 disclosure 互相切换、外部关闭和重复操作保持 referen
   }
 })
 
-test('文件浏览头视图切换与断点布局保持 reference', async ({ browser }) => {
+test('文件浏览头断点布局保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -479,13 +473,6 @@ test('文件浏览头视图切换与断点布局保持 reference', async ({ brow
       await expect(oldPage.locator('.content-head')).toBeVisible()
       await expect(newPage.locator('.content-head')).toBeVisible()
       expect(await fileHeaderMetrics(newPage)).toEqual(await fileHeaderMetrics(oldPage))
-
-      for (const mode of ['列表', '方块']) {
-        const title = mode === '列表' ? '列表视图' : '方块视图'
-        await oldPage.getByTitle(title).click()
-        await newPage.getByTitle(title).click()
-        expect(await fileHeaderMetrics(newPage)).toEqual(await fileHeaderMetrics(oldPage))
-      }
     }
   } finally {
     await oldContext.close()

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -217,10 +218,11 @@ async function mockCompletingArchive(page: Page) {
 async function openArchive(page: Page, url: string) {
   await page.goto(`${url}/`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '列表' }).click()
-  const row = page.locator('.file-row').filter({ hasText: archive.name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: archive.name })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
+  return useListView
 }
 
 test('旧版与 Rust 版归档解压入口、密码任务和状态刷新一致', async ({ browser }) => {
@@ -385,11 +387,11 @@ test('old/new 归档任务完成事件会刷新当前目录并保留完成反馈
 
   async function exercise(page: Page, baseUrl: string) {
     const mock = await mockCompletingArchive(page)
-    await openArchive(page, `${baseUrl}?archive-completion-refresh=${Date.now()}`)
+    const useListView = await openArchive(page, `${baseUrl}?archive-completion-refresh=${Date.now()}`)
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '在线解压' }).click()
     await page.getByRole('dialog').getByRole('button', { name: '开始解压' }).click()
     await expect(page.locator('.toast')).toHaveText('「需要密码.zip」已加入解压队列')
-    await expect(page.locator('.file-row').filter({ hasText: '需要密码' })).toHaveCount(2, { timeout: 10_000 })
+    await expect(listingEntries(page, useListView).filter({ hasText: '需要密码' })).toHaveCount(2, { timeout: 10_000 })
     await expect(page.locator('.toast')).toHaveText('「需要密码.zip」任务完成')
     return mock.requests()
   }

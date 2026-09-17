@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { expect, test, type Page } from '@playwright/test'
+import { listingEntries, useReferenceListView } from './helpers'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const ZIP_BASE64 = 'UEsDBAoACQAAAEOnL13hAghUKAAAABwAAAAKABwAc2VjcmV0LnR4dFVUCQAD3UCpat1AqWp1eAsAAQToAwAABOgDAAA7bIAwEhh2wIhc1ASfiwu6IsLgqdhIZ6CutzDXLbC7vkM9w7BuLbRxUEsHCOECCFQoAAAAHAAAAFBLAQIeAwoACQAAAEOnL13hAghUKAAAABwAAAAKABgAAAAAAAEAAACkgQAAAABzZWNyZXQudHh0VVQFAAPdQKlqdXgLAAEE6AMAAAToAwAAUEsFBgAAAAABAAEAUAAAAHwAAAAAAA=='
@@ -230,8 +231,8 @@ async function startExtraction(page: Page, name: string) {
   await waitForRootItem(page, name)
   await page.reload()
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '列表' }).click()
-  const row = page.locator('.file-row').filter({ hasText: name })
+  const useListView = await useReferenceListView(page)
+  const row = listingEntries(page, useListView).filter({ hasText: name })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: '选择项目' }).click()
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })

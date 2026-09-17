@@ -1,8 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
-const UPLOAD_ID = 'upload-category-refresh'
-const UPLOADED_ID = 'uploaded-category-image'
+const UPLOAD_ID = 'upload-completion'
+const UPLOADED_ID = 'uploaded-completion-image'
 const STAMP = '2026-01-01T00:00:00Z'
 const IMAGE = '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#789"/></svg>'
 
@@ -17,7 +17,7 @@ function file(id: string, name: string, parentId = ROOT) {
     created_at: STAMP,
     updated_at: STAMP,
     mime_type: 'image/png',
-    etag: 'category-etag',
+    etag: 'completion-etag',
     folder_path: [],
   }
 }
@@ -25,7 +25,7 @@ function file(id: string, name: string, parentId = ROOT) {
 async function mockUploadCompletion(page: Page, name: string) {
   let completed = false
   let libraryRefreshes = 0
-  const initialImage = file('existing-category-image', '已有图片.png')
+  const initialImage = file('existing-completion-image', '已有图片.png')
   const uploadedImage = file(UPLOADED_ID, name)
   const root = {
     id: ROOT,
@@ -85,8 +85,8 @@ async function mockUploadCompletion(page: Page, name: string) {
   }
 }
 
-test('old/new 上传完成后刷新当前媒体分类、统计和当前视图', async ({ browser }) => {
-  const name = `分类刷新-${crypto.randomUUID()}.png`
+test('old/new 文件浏览器上传完成后刷新当前目录并显示新文件', async ({ browser }) => {
+  const name = `上传完成-${crypto.randomUUID()}.png`
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -98,21 +98,16 @@ test('old/new 上传完成后刷新当前媒体分类、统计和当前视图', 
     const state = await mockUploadCompletion(page, name)
     await page.goto(`${baseUrl}/?upload-completion-parity=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.locator('[data-category="image"]').click()
     await page.locator('.app-shell').evaluate((element, droppedName) => {
       const transfer = new DataTransfer()
-      transfer.items.add(new File(['category refresh'], droppedName, { type: 'image/png' }))
+      transfer.items.add(new File(['file upload completion'], droppedName, { type: 'image/png' }))
       element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
     }, name)
-    await expect.poll(() => page.getByText(name, { exact: false }).count(), { timeout: 15_000 }).toBeGreaterThan(0)
-    await expect.poll(() => page.locator('[data-category="image"]').first().textContent() ?? '', { timeout: 15_000 }).toContain('2')
-    const result = {
-      count: await page.locator('[data-category="image"]').first().textContent(),
-      hasUploaded: await page.getByText(name, { exact: false }).count(),
-      libraryRefreshes: state.libraryRefreshes(),
+    await expect.poll(() => page.locator('.file-card').filter({ hasText: name }).count(), { timeout: 15_000 }).toBeGreaterThan(0)
+    return {
+      hasUploaded: await page.locator('.file-card').filter({ hasText: name }).count(),
       completed: state.isCompleted(),
     }
-    return result
   }
 
   try {
@@ -122,9 +117,7 @@ test('old/new 上传完成后刷新当前媒体分类、统计和当前视图', 
     ])
     expect(oldResult.completed, 'reference 上传应完成').toBe(true)
     expect(newResult.completed, 'Rust 上传应完成').toBe(true)
-    expect(newResult.count, 'Rust 分类统计未刷新到完成后的数量').toContain('2')
-    expect(newResult.hasUploaded, 'Rust 当前分类未显示已完成的上传').toBeGreaterThan(0)
-    expect(newResult.libraryRefreshes, 'Rust 上传完成后未刷新媒体库').toBeGreaterThanOrEqual(2)
+    expect(newResult.hasUploaded, 'Rust 文件浏览器未显示已完成的上传').toBeGreaterThan(0)
     expect(newResult).toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])

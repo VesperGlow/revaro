@@ -57,9 +57,9 @@ async function mockHistorySequence(page: Page, marks: RequestMark[]) {
 async function openNestedPath(page: Page, baseUrl: string) {
   await page.goto(`${baseUrl}/?history-sequence-reference=${Date.now()}`)
   await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.locator('.file-card, .file-row').filter({ hasText: first.name }).click()
+  await page.locator('.file-card').filter({ hasText: first.name }).click()
   await expect(page.getByRole('heading', { name: first.name, exact: true })).toBeVisible()
-  await page.locator('.file-card, .file-row').filter({ hasText: second.name }).click()
+  await page.locator('.file-card').filter({ hasText: second.name }).click()
   await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible()
 }
 

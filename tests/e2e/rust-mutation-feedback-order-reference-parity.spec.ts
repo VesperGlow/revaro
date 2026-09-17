@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 const ROOT = '00000000-0000-0000-0000-000000000000'
 const STAMP = '2026-01-01T00:00:00Z'
@@ -53,12 +53,20 @@ async function mockCreateFolder(page: Page, options: { emptyResponse?: boolean }
   })
 }
 
-async function clearPreferences(context: BrowserContext) {
-  await context.addInitScript(() => {
-    localStorage.removeItem('revaro:sidebar:collapsed')
-    localStorage.removeItem('revaro:sidebar:expanded')
-    localStorage.removeItem('revaro:view-mode')
-  })
+// The reference app still exposes a grid/list switch, while the Rust app only
+// renders the grid. Detect the reference switch so dual-version exercises can
+// enter through each app's own listing layout.
+async function useReferenceListView(page: Page) {
+  const toggle = page.getByTitle('列表视图')
+  if (await toggle.count()) {
+    await toggle.click()
+    return true
+  }
+  return false
+}
+
+function fileEntries(page: Page, useListView: boolean) {
+  return page.locator(useListView ? '.file-row' : '.file-card')
 }
 
 async function exercise(page: Page, url: string) {
@@ -74,9 +82,9 @@ async function exercise(page: Page, url: string) {
   const toastCount = await toast.count()
   const beforeRefresh = {
     toast: toastCount ? await toast.textContent() : null,
-    folderVisible: await page.locator('.file-card, .file-row').filter({ hasText: folder.name }).count(),
+    folderVisible: await page.locator('.file-card').filter({ hasText: folder.name }).count(),
   }
-  await expect(page.locator('.file-card, .file-row').filter({ hasText: folder.name })).toBeVisible()
+  await expect(page.locator('.file-card').filter({ hasText: folder.name })).toBeVisible()
   return { beforeRefresh, afterRefresh: await page.locator('.toast').textContent() }
 }
 
@@ -85,8 +93,6 @@ test('新建目录成功反馈等待 reference 的目录刷新完成', async ({ 
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
-  await clearPreferences(oldContext)
-  await clearPreferences(newContext)
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
@@ -109,8 +115,6 @@ test('old/new 新建目录成功响应缺少文件字段时仍保留成功反馈
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
-  await clearPreferences(oldContext)
-  await clearPreferences(newContext)
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
@@ -238,12 +242,12 @@ async function mockTrashMutation(page: Page, action: 'restore' | 'purge' | 'empt
   return trashFile
 }
 
-async function sampleMutationState(page: Page, name: string) {
+async function sampleMutationState(page: Page, name: string, useListView: boolean) {
   const toast = page.locator('.toast')
   const toastCount = await toast.count()
   return {
     toast: toastCount ? await toast.textContent() : null,
-    visible: await page.locator('.file-card, .file-row').filter({ hasText: name }).count(),
+    visible: await fileEntries(page, useListView).filter({ hasText: name }).count(),
   }
 }
 
@@ -252,24 +256,22 @@ test('删除成功反馈等待 reference 的目录刷新完成', async ({ browse
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
-  await clearPreferences(oldContext)
-  await clearPreferences(newContext)
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
   async function exercise(page: Page, url: string) {
     await page.goto(`${url}/?mutation-delete-order=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '列表', exact: true }).click()
-    const row = page.locator('.file-row').filter({ hasText: mutableFile.name })
+    const useListView = await useReferenceListView(page)
+    const row = fileEntries(page, useListView).filter({ hasText: mutableFile.name })
     await row.getByRole('button', { name: '选择项目' }).click()
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '删除', exact: true }).click()
     await page.getByRole('dialog').getByRole('button', { name: '移入回收站', exact: true }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
     await page.waitForTimeout(180)
-    const before = await sampleMutationState(page, mutableFile.name)
+    const before = await sampleMutationState(page, mutableFile.name, useListView)
     await expect(page.locator('.toast')).toHaveText('已将 1 项移入回收站')
-    return { before, after: await sampleMutationState(page, mutableFile.name) }
+    return { before, after: await sampleMutationState(page, mutableFile.name, useListView) }
   }
 
   try {
@@ -288,8 +290,6 @@ test('移动成功反馈等待 reference 的目录刷新完成', async ({ browse
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
-  await clearPreferences(oldContext)
-  await clearPreferences(newContext)
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
@@ -297,17 +297,17 @@ test('移动成功反馈等待 reference 的目录刷新完成', async ({ browse
     await mockTransferOrder(page)
     await page.goto(`${url}/?mutation-transfer-order=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
-    const row = page.locator('.file-row').filter({ hasText: mutableFile.name })
+    const useListView = await useReferenceListView(page)
+    const row = fileEntries(page, useListView).filter({ hasText: mutableFile.name })
     await row.getByRole('button', { name: '选择项目' }).click()
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动', exact: true }).click()
     const dialog = page.locator('.move-copy-dialog')
     await dialog.getByRole('button', { name: '移动', exact: true }).click()
     await expect(dialog).toHaveCount(0)
     await page.waitForTimeout(180)
-    const before = await sampleMutationState(page, mutableFile.name)
+    const before = await sampleMutationState(page, mutableFile.name, useListView)
     await expect(page.locator('.toast')).toHaveText('已移动 1 项')
-    return { before, after: await sampleMutationState(page, mutableFile.name) }
+    return { before, after: await sampleMutationState(page, mutableFile.name, useListView) }
   }
 
   try {
@@ -332,8 +332,8 @@ test('old/new 移动成功响应缺少文件字段时仍保留成功反馈', asy
     await mockTransferOrder(page, { emptyResponse: true })
     await page.goto(`${url}/?mutation-transfer-empty-response=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
-    const row = page.locator('.file-row').filter({ hasText: mutableFile.name })
+    const useListView = await useReferenceListView(page)
+    const row = fileEntries(page, useListView).filter({ hasText: mutableFile.name })
     await row.getByRole('button', { name: '选择项目' }).click()
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '移动', exact: true }).click()
     const dialog = page.locator('.move-copy-dialog')
@@ -342,7 +342,7 @@ test('old/new 移动成功响应缺少文件字段时仍保留成功反馈', asy
     await expect(page.locator('.toast')).toHaveText('已移动 1 项')
     return {
       toast: await page.locator('.toast').textContent(),
-      visible: await page.locator('.file-card, .file-row').filter({ hasText: mutableFile.name }).count(),
+      visible: await fileEntries(page, useListView).filter({ hasText: mutableFile.name }).count(),
     }
   }
 
@@ -393,8 +393,6 @@ test('重命名成功反馈等待 reference 的目录刷新完成', async ({ bro
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
-  await clearPreferences(oldContext)
-  await clearPreferences(newContext)
   const oldPage = await oldContext.newPage()
   const newPage = await newContext.newPage()
 
@@ -402,8 +400,8 @@ test('重命名成功反馈等待 reference 的目录刷新完成', async ({ bro
     const nextName = await mockRename(page)
     await page.goto(`${url}/?mutation-rename-order=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
-    const row = page.locator('.file-row').filter({ hasText: mutableFile.name })
+    const useListView = await useReferenceListView(page)
+    const row = fileEntries(page, useListView).filter({ hasText: mutableFile.name })
     await row.getByRole('button', { name: '选择项目' }).click()
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '重命名', exact: true }).click()
     const dialog = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
@@ -411,9 +409,9 @@ test('重命名成功反馈等待 reference 的目录刷新完成', async ({ bro
     await dialog.getByRole('button', { name: '保存', exact: true }).click()
     await expect(dialog).toHaveCount(0)
     await page.waitForTimeout(180)
-    const before = await sampleMutationState(page, nextName)
+    const before = await sampleMutationState(page, nextName, useListView)
     await expect(page.locator('.toast')).toHaveText('已重命名')
-    return { before, after: await sampleMutationState(page, nextName) }
+    return { before, after: await sampleMutationState(page, nextName, useListView) }
   }
 
   try {
@@ -438,8 +436,8 @@ test('old/new 重命名成功响应缺少文件字段时仍保留成功反馈', 
     const nextName = await mockRename(page, { emptyResponse: true })
     await page.goto(`${url}/?mutation-rename-empty-response=${Date.now()}`)
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-    await page.getByTitle('列表视图').click()
-    const row = page.locator('.file-row').filter({ hasText: mutableFile.name })
+    const useListView = await useReferenceListView(page)
+    const row = fileEntries(page, useListView).filter({ hasText: mutableFile.name })
     await row.getByRole('button', { name: '选择项目' }).click()
     await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '重命名', exact: true }).click()
     const dialog = page.locator('.modal-backdrop > .modal').filter({ hasText: '重命名' })
@@ -449,7 +447,7 @@ test('old/new 重命名成功响应缺少文件字段时仍保留成功反馈', 
     await expect(page.locator('.toast')).toHaveText('已重命名')
     return {
       toast: await page.locator('.toast').textContent(),
-      visible: await page.locator('.file-card, .file-row').filter({ hasText: nextName }).count(),
+      visible: await fileEntries(page, useListView).filter({ hasText: nextName }).count(),
     }
   }
 
@@ -471,8 +469,6 @@ for (const action of ['restore', 'purge', 'empty'] as const) {
     const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
     const oldContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
     const newContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
-    await clearPreferences(oldContext)
-    await clearPreferences(newContext)
     const oldPage = await oldContext.newPage()
     const newPage = await newContext.newPage()
 
@@ -482,14 +478,14 @@ for (const action of ['restore', 'purge', 'empty'] as const) {
       await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
       // Trash has no own view switch. The reference uses the persisted file
       // view, so enter list mode before opening the trash page.
-      await page.getByTitle('列表视图').click()
-      await page.locator('.app-sidebar .trash-entry').click()
+      const useListView = await useReferenceListView(page)
+      await page.locator('.topbar .trash-button').click()
       await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
       if (action === 'empty') {
         await page.getByRole('button', { name: '清空回收站', exact: true }).click()
         await page.getByRole('dialog').getByRole('button', { name: '清空回收站', exact: true }).click()
       } else {
-        const row = page.locator('.file-row').filter({ hasText: trashFile.name })
+        const row = fileEntries(page, useListView).filter({ hasText: trashFile.name })
         await row.getByRole('button', { name: '选择项目' }).click()
         const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
         if (action === 'restore') {
@@ -501,11 +497,11 @@ for (const action of ['restore', 'purge', 'empty'] as const) {
       }
       await expect(page.getByRole('dialog')).toHaveCount(0)
       await page.waitForTimeout(180)
-      const before = await sampleMutationState(page, trashFile.name)
+      const before = await sampleMutationState(page, trashFile.name, useListView)
       const selectionToolbarDuringRefresh = await page.getByRole('toolbar', { name: '所选项目操作' }).count()
       const success = action === 'restore' ? '所选项目已恢复' : action === 'purge' ? '已永久删除所选项目' : '回收站已清空'
       await expect(page.locator('.toast')).toHaveText(success)
-      return { before, selectionToolbarDuringRefresh, after: await sampleMutationState(page, trashFile.name) }
+      return { before, selectionToolbarDuringRefresh, after: await sampleMutationState(page, trashFile.name, useListView) }
     }
 
     try {

@@ -385,25 +385,10 @@ async function exerciseTrashOpening(page: Page, baseUrl: string) {
   await expect(page.locator('.preview-modal, #reader-view, .document-editor')).toHaveCount(0)
   states.unknown = await trashOverlaySnapshot(page)
 
-  await page.getByRole('button', { name: '返回我的文件', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
-  await page.getByTitle('列表视图').click()
-  await page.getByRole('button', { name: '打开回收站' }).click()
-  await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
-  await expect(page.locator('.file-row')).toHaveCount(trashItems.length)
-  await page.locator('.file-row').filter({ hasText: trashFolder.name }).click()
-  await expect(page.locator('.preview-modal, #reader-view, .document-editor')).toHaveCount(0)
-  states.listFolder = await trashOverlaySnapshot(page)
-
-  await page.locator('.file-row').filter({ hasText: trashText.name }).click()
-  await expect(page.locator('#reader-view')).toBeVisible()
-  states.listText = await trashOverlaySnapshot(page)
-  await closeTrashOverlay(page, 'reader')
-
   return states
 }
 
-test('旧版与 Rust 版回收站在方块/列表视图保持完整打开分流和只读限制', async ({ browser }) => {
+test('旧版与 Rust 版回收站在方块视图保持完整打开分流和只读限制', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
   const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -417,13 +402,11 @@ test('旧版与 Rust 版回收站在方块/列表视图保持完整打开分流�
       exerciseTrashOpening(oldPage, oldUrl),
       exerciseTrashOpening(newPage, newUrl),
     ])
-    expect(newState, 'Rust 回收站文件打开分流或列表/方块行为与 reference 不一致').toEqual(oldState)
+    expect(newState, 'Rust 回收站文件打开分流或方块行为与 reference 不一致').toEqual(oldState)
     expect(oldState.folder).toEqual({ path: '/', preview: null, reader: null, editor: null, readonly: null })
     expect(oldState[trashText.id]).toMatchObject({ path: '/read/trash-text', reader: 'reader-shell' })
     expect(oldState[trashMarkdown.id]).toMatchObject({ path: '/', editor: 'document-editor', readonly: true })
     expect(oldState.unknown).toEqual({ path: '/', preview: null, reader: null, editor: null, readonly: null })
-    expect(oldState.listFolder).toEqual(oldState.folder)
-    expect(oldState.listText).toMatchObject({ path: '/read/trash-text', reader: 'reader-shell' })
   } finally {
     await oldContext.close()
     await newContext.close()
