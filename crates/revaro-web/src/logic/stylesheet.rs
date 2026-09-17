@@ -8,21 +8,20 @@
 //!
 //! The order is not cosmetic. Roughly 200 rules are last-wins overrides, and the
 //! clearest example is `.app-shell`'s `grid-template-columns`, declared as
-//! `230px 1fr` by `shell.css`, `1fr` by `uploads.css` and
-//! `236px minmax(0,1fr)` by `library.css`; the desktop layout only matches Vue
-//! while `library.css` wins. A future edit that reorders the imports would
-//! change layouts with no visible error, so the sequence is asserted below
-//! against [`CASCADE`] + [`COMPONENT_SHEETS`].
+//! `230px 1fr` by `shell.css` and `1fr` by `uploads.css`; the full-width
+//! desktop layout only holds while `uploads.css` wins. A future edit that
+//! reorders the imports would change layouts with no visible error, so the
+//! sequence is asserted below against [`CASCADE`] + [`COMPONENT_SHEETS`].
 
 /// The manifest text, embedded so the order test runs without touching the
 /// filesystem (and so it compiles for wasm like the rest of `logic`).
 pub const MANIFEST: &str = include_str!("../../static/styles.css");
 
-/// The fifteen global stylesheets, in the exact cascade order Vue produced.
+/// The fourteen global stylesheets, in the exact cascade order Vue produced.
 ///
 /// This is the list a reorder must not violate; the purpose strings document
 /// why each sheet exists and therefore why its position matters.
-pub const CASCADE: [Stylesheet; 15] = [
+pub const CASCADE: [Stylesheet; 14] = [
     Stylesheet::new(
         "styles/shell.css",
         "reset, splash, login, .app-shell grid, topbar, cards, modals, toast",
@@ -43,10 +42,6 @@ pub const CASCADE: [Stylesheet; 15] = [
     Stylesheet::new(
         "styles/responsive.css",
         "viewport/intrinsic-size guards and breakpoint re-theming",
-    ),
-    Stylesheet::new(
-        "styles/library.css",
-        "sidebar/drawer, categories, path trees, bookshelf, albums, rows",
     ),
     Stylesheet::new(
         "styles/account.css",
@@ -157,7 +152,7 @@ pub fn imported_paths() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// The full expected import list: the fifteen globals, then the component
+    /// The full expected import list: the fourteen globals, then the component
     /// sheets, concatenated in order.
     fn expected_paths() -> Vec<&'static str> {
         CASCADE
@@ -168,11 +163,12 @@ mod tests {
     }
 
     #[test]
-    fn the_global_cascade_keeps_its_fifteen_entries() {
-        // The audit's "15-file cascade order": 13 sheets under `styles/` plus
-        // `account.css` and `ui.css`. `style.css` only held the `@import`s and
+    fn the_global_cascade_keeps_its_fourteen_entries() {
+        // The recovered Vue cascade had 15 entries; the media-library sheet
+        // (and later its file-list successor) was removed with the category
+        // sidebar and the list view. `style.css` only held the `@import`s and
         // became this manifest.
-        assert_eq!(CASCADE.len(), 15);
+        assert_eq!(CASCADE.len(), 14);
     }
 
     #[test]
@@ -181,9 +177,10 @@ mod tests {
     }
 
     #[test]
-    fn library_css_still_loads_after_shell_and_uploads() {
-        // The specific trap the audit calls out: all three declare
-        // `.app-shell { grid-template-columns }` and library.css must win.
+    fn uploads_css_loads_after_shell_so_the_browser_is_full_width() {
+        // The specific trap the audit calls out: both declare
+        // `.app-shell { grid-template-columns }`. With the category sidebar
+        // removed, uploads.css's single-column value must win.
         let paths = imported_paths();
         let index = |needle: &str| {
             paths
@@ -192,7 +189,6 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} missing from static/styles.css"))
         };
         assert!(index("styles/shell.css") < index("styles/uploads.css"));
-        assert!(index("styles/uploads.css") < index("styles/library.css"));
     }
 
     #[test]

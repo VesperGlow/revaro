@@ -8,7 +8,6 @@ use wasm_bindgen::closure::Closure;
 use crate::browser;
 use crate::logic::format::format_size;
 
-use super::file_browser::ViewMode;
 use super::icons;
 
 /// The reference file-browser header, including its two disclosure menus.
@@ -20,7 +19,6 @@ pub fn FileBrowserHeader(
     total_bytes: RwSignal<i64>,
     file_count: RwSignal<i64>,
     trash_mode: RwSignal<bool>,
-    view_mode: RwSignal<ViewMode>,
     on_open_folder: Callback<String>,
     on_new_document: Callback<()>,
     on_create_folder: Callback<()>,
@@ -202,10 +200,6 @@ pub fn FileBrowserHeader(
                 when=move || trash_mode.get()
                 fallback=move || view! {
                     <div class="actions">
-                        <div class="view-switch file-view-switch" role="group" aria-label="文件视图切换">
-                            <button type="button" class:active=move || view_mode.get() == ViewMode::Grid aria-pressed=move || if view_mode.get() == ViewMode::Grid { "true" } else { "false" } title="方块视图" on:click=move |_| view_mode.set(ViewMode::Grid)>{icons::layout_grid()}<span>"方块"</span></button>
-                            <button type="button" class:active=move || view_mode.get() == ViewMode::List aria-pressed=move || if view_mode.get() == ViewMode::List { "true" } else { "false" } title="列表视图" on:click=move |_| view_mode.set(ViewMode::List)>{icons::list()}<span>"列表"</span></button>
-                        </div>
                         <div class="desktop-create-actions">
                             <button class="secondary" type="button" on:click=move |_| on_new_document.run(())>{icons::file_plus()}"新建文档"</button>
                             <button class="secondary" type="button" on:click=move |_| on_create_folder.run(())>{icons::folder_plus()}"新建文件夹"</button>

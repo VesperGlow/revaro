@@ -28,7 +28,6 @@ use revaro_core::api::files::{
     ChildItems, Children, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest,
     DocumentContent, FileDetail, PatchFileRequest, Trash, UpdateDocumentRequest,
 };
-use revaro_core::api::library::LibraryAll;
 use revaro_core::api::media::{AudioMedia, VideoMedia};
 use revaro_core::api::share::Status as ShareStatus;
 use revaro_core::api::tasks::{TaskInputRequest, TaskList};
@@ -162,11 +161,6 @@ pub async fn update_document(
 /// Fetch the top-level entries in the trash.
 pub async fn fetch_trash() -> Result<Trash, RequestError> {
     get_json("/api/trash").await
-}
-
-/// Fetch every media bucket and its sidebar counts in one request.
-pub async fn fetch_library_all() -> Result<LibraryAll, RequestError> {
-    get_json("/api/library/all").await
 }
 
 /// Fetch the optional chapter and cover metadata for an audio file.

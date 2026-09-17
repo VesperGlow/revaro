@@ -1,16 +1,15 @@
 //! The authenticated file browser and its basic lifecycle actions.
 //!
-//! This slice owns folder navigation, breadcrumbs, the grid/list choice,
-//! selection, file and folder mutations, and the trash view. Media previews
-//! are mounted in the same authenticated shell so their session and gallery
-//! state stay attached to the listing.
+//! This slice owns folder navigation, breadcrumbs, the folder grid, selection,
+//! file and folder mutations, and the trash view. Media previews are mounted in
+//! the same authenticated shell so their session and gallery state stay
+//! attached to the listing.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
 use futures_channel::oneshot;
-use futures_util::{StreamExt, stream};
 use leptos::prelude::*;
 use revaro_core::api::auth::Session;
 use revaro_core::api::files::{
@@ -18,9 +17,8 @@ use revaro_core::api::files::{
     PatchFileRequest, UpdateDocumentRequest,
 };
 use revaro_core::classify;
-use revaro_core::classify::LibraryKind;
 use revaro_core::ids::ROOT_ID;
-use revaro_core::model::{File, FileKind, FileStatus, LibraryCounts, LibraryItem};
+use revaro_core::model::{File, FileKind, FileStatus};
 use revaro_core::time::Timestamp;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -29,30 +27,20 @@ use crate::api;
 use crate::browser;
 use crate::logic::feedback::{Feedback, FeedbackKind};
 use crate::logic::format::{format_date, format_size};
-use crate::logic::routing::{folder_id, folder_url, library_route, library_url, reader_id};
+use crate::logic::routing::{folder_id, folder_url, reader_id};
 
 use super::account::AccountSettings;
 use super::dialogs::{ActionDialog, RenameDialog};
 use super::editor::{DocumentEditor, EditorMode};
 use super::file_browser_header::FileBrowserHeader;
-use super::library::{self, LibraryView};
 use super::media::MediaPreview;
 use super::reader::ReaderView;
 use super::selection_toolbar::SelectionToolbar;
 use super::share::ShareDialog;
-use super::sidebar::{AppSidebar, LibraryTrees};
 use super::tasks::TaskController;
 use super::topbar::AppTopbar;
 use super::transfer::{TransferDialog, TransferMode};
 use super::uploads::{UploadController, UploadRefresh, UploadSurface};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ViewMode {
-    Grid,
-    List,
-}
-
-const FILE_VIEW_MODE_KEY: &str = "revaro:library:media:file";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DialogState {
@@ -71,11 +59,6 @@ enum DialogState {
 enum NavAction {
     /// The folder to restore when the browser moves one level back.
     Folder { id: String },
-    /// The section and folder context to restore after a category switch.
-    Section {
-        section: LibraryKind,
-        folder_id: String,
-    },
     /// A modal/disclosure surface that should be closed by the browser back
     /// button before leaving the current page.
     Overlay,
@@ -129,54 +112,6 @@ pub fn FileBrowser(
     let loading = RwSignal::new(false);
     let error = RwSignal::new(String::new());
     let trash_mode = RwSignal::new(false);
-    let view_mode = RwSignal::new(
-        match browser::local_storage_get(FILE_VIEW_MODE_KEY).as_deref() {
-            Some("list") => ViewMode::List,
-            _ => ViewMode::Grid,
-        },
-    );
-    let view_mode_initialized = RwSignal::new(false);
-    {
-        let view_mode = view_mode;
-        let view_mode_initialized = view_mode_initialized;
-        Effect::new(move |_| {
-            let mode = view_mode.get();
-            // Vue's persistent-mode watcher is not immediate: a missing or
-            // invalid stored value selects the default without rewriting it
-            // until the user actually changes the view.
-            if view_mode_initialized.get_untracked() {
-                browser::local_storage_set(
-                    FILE_VIEW_MODE_KEY,
-                    if mode == ViewMode::List {
-                        "list"
-                    } else {
-                        "grid"
-                    },
-                );
-            } else {
-                view_mode_initialized.set(true);
-            }
-        });
-    }
-    let section = RwSignal::new(LibraryKind::File);
-    let sidebar_collapsed = RwSignal::new(
-        crate::browser::local_storage_get("revaro:sidebar:collapsed").as_deref() == Some("1"),
-    );
-    let sidebar_mobile_open = RwSignal::new(false);
-    let library_folder_id = RwSignal::new(None::<String>);
-    let library_items = RwSignal::new(Vec::<LibraryItem>::new());
-    let library_items_by_type =
-        RwSignal::new(std::collections::HashMap::<LibraryKind, Vec<LibraryItem>>::new());
-    let library_gallery_mode = RwSignal::new(None::<String>);
-    let library_gallery_key = RwSignal::new(None::<String>);
-    let library_counts = RwSignal::new(LibraryCounts::default());
-    let library_trees = RwSignal::new(LibraryTrees::new());
-    let library_loading = RwSignal::new(false);
-    let library_error = RwSignal::new(String::new());
-    let library_filter_label = RwSignal::new("全部位置".to_owned());
-    let library_sequence = RwSignal::new(0_u64);
-    let library_loaded = RwSignal::new(false);
-    let tree_token = RwSignal::new(0_u64);
     let request_sequence = RwSignal::new(0_u64);
     let selected_ids = RwSignal::new(HashSet::<String>::new());
     let dialog = RwSignal::new(None::<DialogState>);
@@ -286,7 +221,6 @@ pub fn FileBrowser(
         let selected_ids = selected_ids;
         let notify = notify.clone();
         let preview_items = preview_items;
-        let tree_token = tree_token;
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
         let initial_route_pending = initial_route_pending;
@@ -357,7 +291,6 @@ pub fn FileBrowser(
                         file_count.set(children.file_count);
                         selected_ids.set(HashSet::new());
                         trash_mode.set(false);
-                        tree_token.update(|token| *token = token.wrapping_add(1));
                         replace_folder_url(&requested_id);
                         loading.set(false);
                         if pending_editor_refresh.get_untracked().as_deref()
@@ -427,8 +360,6 @@ pub fn FileBrowser(
         let request_sequence = request_sequence;
         let selected_ids = selected_ids;
         let notify = notify.clone();
-        let section = section;
-        let library_folder_id = library_folder_id;
         let preview_items = preview_items;
         let on_logout = on_logout.clone();
         Callback::new(move |request: TrashLoadRequest| {
@@ -451,8 +382,6 @@ pub fn FileBrowser(
                         file_count.set(trash.file_count);
                         selected_ids.set(HashSet::new());
                         trash_mode.set(true);
-                        section.set(LibraryKind::File);
-                        library_folder_id.set(None);
                         loading.set(false);
                         success = true;
                     }
@@ -480,212 +409,21 @@ pub fn FileBrowser(
         })
     };
 
-    let apply_library_view = {
-        let library_items = library_items;
-        let library_items_by_type = library_items_by_type;
-        let library_folder_id = library_folder_id;
-        let preview_items = preview_items;
-        let library_filter_label = library_filter_label;
-        Callback::new(move |kind: LibraryKind| {
-            let selected_folder = library_folder_id.get_untracked();
-            let all = library_items_by_type
-                .get_untracked()
-                .get(&kind)
-                .cloned()
-                .unwrap_or_default();
-            library_filter_label.set(library::filter_label(&all, selected_folder.as_deref()));
-            let filtered = library::filter_folder(&all, selected_folder.as_deref());
-            preview_items.set(filtered.iter().map(|item| item.file.clone()).collect());
-            library_items.set(filtered);
-        })
-    };
-
-    let load_library = {
-        let section = section;
-        let library_items = library_items;
-        let library_items_by_type = library_items_by_type;
-        let library_counts = library_counts;
-        let library_trees = library_trees;
-        let library_loading = library_loading;
-        let library_error = library_error;
-        let library_folder_id = library_folder_id;
-        let preview_items = preview_items;
-        let library_filter_label = library_filter_label;
-        let library_sequence = library_sequence;
-        let library_loaded = library_loaded;
-        let apply_library_view = apply_library_view.clone();
-        let on_logout = on_logout.clone();
-        Callback::new(move |(kind, force): (LibraryKind, bool)| {
-            if kind == LibraryKind::File {
-                return;
-            }
-            if library_loaded.get_untracked() && !force {
-                apply_library_view.run(kind);
-                return;
-            }
-            let sequence = library_sequence.get_untracked().wrapping_add(1);
-            library_sequence.set(sequence);
-            section.set(kind);
-            library_loading.set(true);
-            library_error.set(String::new());
-            let logout = on_logout.clone();
-            leptos::task::spawn_local(async move {
-                match api::fetch_library_all().await {
-                    Ok(response) if library_sequence.get_untracked() == sequence => {
-                        let mut by_type = std::collections::HashMap::new();
-                        by_type.insert(LibraryKind::Book, response.items.book);
-                        by_type.insert(LibraryKind::Image, response.items.image);
-                        by_type.insert(LibraryKind::Video, response.items.video);
-                        by_type.insert(LibraryKind::Audio, response.items.audio);
-                        let mut trees = LibraryTrees::new();
-                        for kind in [
-                            LibraryKind::Book,
-                            LibraryKind::Image,
-                            LibraryKind::Video,
-                            LibraryKind::Audio,
-                        ] {
-                            if let Some(items) = by_type.get(&kind)
-                                && !items.is_empty()
-                            {
-                                trees.insert(kind, library::build_folder_tree(items));
-                            }
-                        }
-                        library_counts.set(response.counts);
-                        library_items_by_type.set(by_type.clone());
-                        library_trees.set(trees);
-                        library_loaded.set(true);
-                        apply_library_view.run(kind);
-                        library_loading.set(false);
-
-                        // The reference fills in audio durations that the
-                        // library projection does not yet know in the
-                        // background. Keep its three-request bound and make
-                        // each completed probe update the visible list.
-                        let missing_audio = by_type
-                            .get(&LibraryKind::Audio)
-                            .into_iter()
-                            .flat_map(|items| items.iter())
-                            .filter(|item| item.duration_ms <= 0)
-                            .map(|item| item.file.id.clone())
-                            .collect::<Vec<_>>();
-                        if !missing_audio.is_empty() {
-                            let library_items_by_type = library_items_by_type;
-                            let library_items = library_items;
-                            let preview_items = preview_items;
-                            let library_filter_label = library_filter_label;
-                            let library_folder_id = library_folder_id;
-                            let section = section;
-                            let library_sequence = library_sequence;
-                            leptos::task::spawn_local(async move {
-                                let _ = stream::iter(missing_audio)
-                                    .map(|id| async move {
-                                        let duration = api::fetch_audio_media(&id)
-                                            .await
-                                            .ok()
-                                            .filter(|media| {
-                                                media.duration.is_finite() && media.duration > 0.0
-                                            })
-                                            .map(|media| (media.duration * 1000.0).round() as i64);
-                                        (id, duration)
-                                    })
-                                    .buffer_unordered(3)
-                                    .for_each(|(id, duration)| {
-                                        let library_items_by_type = library_items_by_type;
-                                        let library_items = library_items;
-                                        let preview_items = preview_items;
-                                        let library_filter_label = library_filter_label;
-                                        let library_folder_id = library_folder_id;
-                                        let section = section;
-                                        let library_sequence = library_sequence;
-                                        async move {
-                                            let Some(duration) = duration else {
-                                                return;
-                                            };
-                                            if library_sequence.get_untracked() != sequence {
-                                                return;
-                                            }
-                                            library_items_by_type.update(|buckets| {
-                                                if let Some(items) =
-                                                    buckets.get_mut(&LibraryKind::Audio)
-                                                    && let Some(item) = items
-                                                        .iter_mut()
-                                                        .find(|item| item.file.id == id)
-                                                {
-                                                    item.duration_ms = duration;
-                                                }
-                                            });
-                                            if section.get_untracked() == LibraryKind::Audio {
-                                                let all = library_items_by_type
-                                                    .get_untracked()
-                                                    .get(&LibraryKind::Audio)
-                                                    .cloned()
-                                                    .unwrap_or_default();
-                                                let folder = library_folder_id.get_untracked();
-                                                let filtered =
-                                                    library::filter_folder(&all, folder.as_deref());
-                                                library_filter_label.set(library::filter_label(
-                                                    &all,
-                                                    folder.as_deref(),
-                                                ));
-                                                preview_items.set(
-                                                    filtered
-                                                        .iter()
-                                                        .map(|item| item.file.clone())
-                                                        .collect(),
-                                                );
-                                                library_items.set(filtered);
-                                            }
-                                        }
-                                    })
-                                    .await;
-                            });
-                        }
-                    }
-                    Err(request_error)
-                        if library_sequence.get_untracked() == sequence
-                            && request_error.is_unauthorized() =>
-                    {
-                        library_loading.set(false);
-                        logout.run(());
-                    }
-                    Err(request_error) if library_sequence.get_untracked() == sequence => {
-                        library_loading.set(false);
-                        library_error.set(request_error.message);
-                    }
-                    Ok(_) | Err(_) => {}
-                }
-            });
-        })
-    };
-
-    let force_load_library = {
-        let load_library = load_library.clone();
-        Callback::new(move |kind: LibraryKind| {
-            load_library.run((kind, true));
-        })
-    };
-
     let file_input = NodeRef::<leptos::html::Input>::new();
     let folder_input = NodeRef::<leptos::html::Input>::new();
     let upload_refresh = {
         let current_id = current_id;
         let trash_mode = trash_mode;
         let load_folder_request = load_folder_request.clone();
-        let section = section;
-        let force_load_library = force_load_library.clone();
         Callback::new(move |request: UploadRefresh| {
-            let current_file_folder = !trash_mode.get_untracked()
-                && section.get_untracked() == LibraryKind::File
-                && current_id.get_untracked() == request.parent_id;
-            if current_file_folder {
+            let current_folder =
+                !trash_mode.get_untracked() && current_id.get_untracked() == request.parent_id;
+            if current_folder {
                 load_folder_request.run(FolderLoadRequest {
                     id: request.parent_id,
                     completion: request.completion,
                 });
                 return;
-            }
-            if !trash_mode.get_untracked() && section.get_untracked() != LibraryKind::File {
-                force_load_library.run(section.get_untracked());
             }
             request.finish();
         })
@@ -927,7 +665,7 @@ pub fn FileBrowser(
                 return;
             };
             if target
-                .closest("button,a,input,textarea,select,[role=\"toolbar\"],.file-card,.file-row")
+                .closest("button,a,input,textarea,select,[role=\"toolbar\"],.file-card")
                 .ok()
                 .flatten()
                 .is_some()
@@ -1832,152 +1570,6 @@ pub fn FileBrowser(
         })
     };
 
-    let open_library_item = {
-        let media_file = media_file;
-        let reader_file = reader_file;
-        let preview_items = preview_items;
-        let library_items = library_items;
-        let on_logout = on_logout.clone();
-        let push_overlay = push_overlay.clone();
-        Callback::new(move |item: File| {
-            if classify::is_book(&item) {
-                push_overlay.run(());
-                replace_reader_url(&item.id);
-                reader_file.set(Some(item));
-            } else if classify::is_image(&item)
-                || classify::is_audio(&item)
-                || classify::is_video(&item)
-            {
-                preview_items.set(
-                    library_items
-                        .get_untracked()
-                        .into_iter()
-                        .map(|item| item.file)
-                        .collect(),
-                );
-                push_overlay.run(());
-                media_file.set(Some(item));
-            } else {
-                // Library buckets currently contain media only. Keep an
-                // unauthorized response on the same session boundary as the
-                // ordinary browser if a future server snapshot includes a
-                // plain file.
-                let item_id = item.id;
-                leptos::task::spawn_local(async move {
-                    match api::fetch_file(&item_id).await {
-                        Ok(_) => {}
-                        Err(error) if error.is_unauthorized() => on_logout.run(()),
-                        Err(_) => {}
-                    }
-                });
-            }
-        })
-    };
-
-    let select_category = {
-        let load_library = load_library.clone();
-        let load_folder = load_folder.clone();
-        let current_id = current_id;
-        let section = section;
-        let trash_mode = trash_mode;
-        let library_folder_id = library_folder_id;
-        let library_filter_label = library_filter_label;
-        let sidebar_mobile_open = sidebar_mobile_open;
-        let selected_ids = selected_ids;
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
-        Callback::new(move |kind: LibraryKind| {
-            sidebar_mobile_open.set(false);
-            library_folder_id.set(None);
-            library_filter_label.set("全部位置".to_owned());
-            selected_ids.set(HashSet::new());
-            let previous = section.get_untracked();
-            if previous == kind {
-                if kind == LibraryKind::File && trash_mode.get_untracked() {
-                    trash_mode.set(false);
-                    // The reference keeps the last live folder in
-                    // `current_id` while the trash is displayed, so leaving
-                    // the trash through the file category returns there.
-                    load_folder.run(current_id.get_untracked());
-                }
-                return;
-            }
-            if previous != kind && !history_suppressed.get_untracked() {
-                nav_actions.update(|actions| {
-                    actions.push(NavAction::Section {
-                        section: previous,
-                        folder_id: current_id.get_untracked(),
-                    });
-                });
-                push_browser_history();
-            }
-            if kind == LibraryKind::File {
-                section.set(LibraryKind::File);
-                trash_mode.set(false);
-                load_folder.run(current_id.get_untracked());
-            } else {
-                section.set(kind);
-                trash_mode.set(false);
-                replace_library_url(kind, None);
-                load_library.run((kind, false));
-            }
-        })
-    };
-
-    let select_library_folder = {
-        let section = section;
-        let library_folder_id = library_folder_id;
-        let library_items = library_items;
-        let library_items_by_type = library_items_by_type;
-        let library_filter_label = library_filter_label;
-        let preview_items = preview_items;
-        Callback::new(move |folder: Option<String>| {
-            if section.get_untracked() == LibraryKind::File {
-                return;
-            }
-            library_folder_id.set(folder.clone());
-            let kind = section.get_untracked();
-            let all = library_items_by_type
-                .get_untracked()
-                .get(&kind)
-                .cloned()
-                .unwrap_or_default();
-            library_filter_label.set(library::filter_label(&all, folder.as_deref()));
-            let filtered = library::filter_folder(&all, folder.as_deref());
-            preview_items.set(filtered.iter().map(|item| item.file.clone()).collect());
-            library_items.set(filtered);
-        })
-    };
-
-    let navigate_directory = {
-        let section = section;
-        let sidebar_mobile_open = sidebar_mobile_open;
-        let load_folder = load_folder.clone();
-        Callback::new(move |id: String| {
-            section.set(LibraryKind::File);
-            sidebar_mobile_open.set(false);
-            load_folder.run(id);
-        })
-    };
-
-    let toggle_sidebar = {
-        let sidebar_collapsed = sidebar_collapsed;
-        Callback::new(move |(): ()| {
-            sidebar_collapsed.update(|collapsed| *collapsed = !*collapsed);
-            crate::browser::local_storage_set(
-                "revaro:sidebar:collapsed",
-                if sidebar_collapsed.get_untracked() {
-                    "1"
-                } else {
-                    "0"
-                },
-            );
-        })
-    };
-    let toggle_mobile_sidebar = Callback::new(move |(): ()| {
-        sidebar_mobile_open.update(|open| *open = !*open);
-    });
-
     let open_account = {
         let account_open = account_open;
         let push_overlay = push_overlay.clone();
@@ -1989,7 +1581,6 @@ pub fn FileBrowser(
     let pathname = web_sys::window()
         .and_then(|window| window.location().pathname().ok())
         .unwrap_or_default();
-    let initial_route = library_route(&pathname);
     let initial_reader = reader_id(&pathname).and_then(|encoded| {
         js_sys::decode_uri_component(&encoded)
             .ok()
@@ -1997,42 +1588,34 @@ pub fn FileBrowser(
             .filter(|id| !id.contains('/'))
     });
     history_suppressed.set(true);
-    if let Some((kind, folder)) = initial_route
-        && kind != LibraryKind::File
-    {
-        library_folder_id.set(folder);
-        section.set(kind);
-        load_library.run((kind, false));
-    } else {
-        let initial_folder = folder_id(&pathname, ROOT_ID);
-        initial_route_pending.set(initial_folder != ROOT_ID && pathname.starts_with("/f/"));
-        if initial_folder == ROOT_ID && pathname != "/" {
-            replace_folder_url(&initial_folder);
-        }
-        if let Some(reader_id) = initial_reader {
-            let (sender, receiver) = oneshot::channel();
-            load_folder_request.run(FolderLoadRequest {
-                id: initial_folder,
-                completion: Some(sender),
-            });
-            let reader_file = reader_file;
-            let push_overlay = push_overlay.clone();
-            let logout = on_logout.clone();
-            leptos::task::spawn_local(async move {
-                let _ = receiver.await;
-                match api::fetch_file(&reader_id).await {
-                    Ok(detail) if classify::is_book(&detail.file) => {
-                        push_overlay.run(());
-                        replace_reader_url(&detail.file.id);
-                        reader_file.set(Some(detail.file));
-                    }
-                    Err(error) if error.is_unauthorized() => logout.run(()),
-                    _ => {}
+    let initial_folder = folder_id(&pathname, ROOT_ID);
+    initial_route_pending.set(initial_folder != ROOT_ID && pathname.starts_with("/f/"));
+    if initial_folder == ROOT_ID && pathname != "/" {
+        replace_folder_url(&initial_folder);
+    }
+    if let Some(reader_id) = initial_reader {
+        let (sender, receiver) = oneshot::channel();
+        load_folder_request.run(FolderLoadRequest {
+            id: initial_folder,
+            completion: Some(sender),
+        });
+        let reader_file = reader_file;
+        let push_overlay = push_overlay.clone();
+        let logout = on_logout.clone();
+        leptos::task::spawn_local(async move {
+            let _ = receiver.await;
+            match api::fetch_file(&reader_id).await {
+                Ok(detail) if classify::is_book(&detail.file) => {
+                    push_overlay.run(());
+                    replace_reader_url(&detail.file.id);
+                    reader_file.set(Some(detail.file));
                 }
-            });
-        } else {
-            load_folder.run(initial_folder);
-        }
+                Err(error) if error.is_unauthorized() => logout.run(()),
+                _ => {}
+            }
+        });
+    } else {
+        load_folder.run(initial_folder);
     }
     history_suppressed.set(false);
     let username = RwSignal::new(session.username.clone());
@@ -2040,24 +1623,9 @@ pub fn FileBrowser(
     let avatar_version = RwSignal::new(0_u64);
     let return_home = {
         let load_folder = load_folder.clone();
-        let section = section;
         let trash_mode = trash_mode;
-        let library_folder_id = library_folder_id;
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
-            if section.get_untracked() != LibraryKind::File && !history_suppressed.get_untracked() {
-                nav_actions.update(|actions| {
-                    actions.push(NavAction::Section {
-                        section: section.get_untracked(),
-                        folder_id: current_id.get_untracked(),
-                    });
-                });
-                push_browser_history();
-            }
-            section.set(LibraryKind::File);
             trash_mode.set(false);
-            library_folder_id.set(None);
             load_folder.run(ROOT_ID.to_owned());
         })
     };
@@ -2067,25 +1635,10 @@ pub fn FileBrowser(
     let shell_upload_leave = uploads_for_view.clone();
     let shell_upload_drop = uploads_for_view.clone();
     let upload_surface = uploads_for_view.clone();
-    let library_upload = uploads_for_view.clone();
-    let upload_library = Callback::new(move |(): ()| library_upload.choose_files());
     let file_upload = uploads_for_view.clone();
     let upload_files = Callback::new(move |(): ()| file_upload.choose_files());
     let folder_upload = uploads_for_view.clone();
     let upload_folder = Callback::new(move |(): ()| folder_upload.choose_folder());
-    let refresh_library = {
-        let force_load_library = force_load_library.clone();
-        let section = section;
-        Callback::new(move |(): ()| {
-            if let kind @ (LibraryKind::Book
-            | LibraryKind::Image
-            | LibraryKind::Video
-            | LibraryKind::Audio) = section.get_untracked()
-            {
-                force_load_library.run(kind);
-            }
-        })
-    };
     let close_media = {
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
@@ -2140,14 +1693,8 @@ pub fn FileBrowser(
         let dialog = dialog;
         let dialog_value = dialog_value;
         let dialog_error = dialog_error;
-        let section = section;
-        let trash_mode = trash_mode;
-        let library_folder_id = library_folder_id;
-        let library_filter_label = library_filter_label;
         let current_id = current_id;
         let load_folder_request = load_folder_request.clone();
-        let load_library = load_library.clone();
-        let library_loading = library_loading;
         let popstate_queue = popstate_queue.clone();
         let popstate_processing = popstate_processing.clone();
         browser::on_popstate(move |_| {
@@ -2164,7 +1711,6 @@ pub fn FileBrowser(
             let popstate_queue = popstate_queue.clone();
             let popstate_processing = popstate_processing.clone();
             let load_folder_request = load_folder_request.clone();
-            let load_library = load_library.clone();
             leptos::task::spawn_local(async move {
                 loop {
                     let Some(action) = popstate_queue.borrow_mut().pop() else {
@@ -2188,14 +1734,7 @@ pub fn FileBrowser(
                                 dialog_value.set(String::new());
                                 dialog_error.set(String::new());
                             }
-                            if section.get_untracked() == LibraryKind::File {
-                                replace_folder_url(&current_id.get_untracked());
-                            } else {
-                                replace_library_url(
-                                    section.get_untracked(),
-                                    library_folder_id.get_untracked().as_deref(),
-                                );
-                            }
+                            replace_folder_url(&current_id.get_untracked());
                         }
                         NavAction::Folder { id } => {
                             let (sender, receiver) = oneshot::channel();
@@ -2204,27 +1743,6 @@ pub fn FileBrowser(
                                 completion: Some(sender),
                             });
                             let _ = receiver.await;
-                        }
-                        NavAction::Section {
-                            section: previous,
-                            folder_id,
-                        } => {
-                            section.set(previous);
-                            trash_mode.set(false);
-                            library_folder_id.set(None);
-                            library_filter_label.set("全部位置".to_owned());
-                            if previous == LibraryKind::File {
-                                let (sender, receiver) = oneshot::channel();
-                                load_folder_request.run(FolderLoadRequest {
-                                    id: folder_id,
-                                    completion: Some(sender),
-                                });
-                                let _ = receiver.await;
-                            } else {
-                                replace_library_url(previous, None);
-                                load_library.run((previous, false));
-                                wait_for_signal_clear(library_loading).await;
-                            }
                         }
                     }
                     history_suppressed.set(false);
@@ -2238,8 +1756,6 @@ pub fn FileBrowser(
     view! {
         <div
             class="app-shell"
-            class:sidebar-collapsed=move || sidebar_collapsed.get()
-            class:library-mode=move || section.get() != LibraryKind::File
             on:dragover=move |event: web_sys::DragEvent| shell_upload.on_drag_over(event)
             on:dragleave=move |event: web_sys::DragEvent| shell_upload_leave.on_drag_leave(event)
             on:drop=move |event: web_sys::DragEvent| shell_upload_drop.on_drop(event)
@@ -2254,48 +1770,10 @@ pub fn FileBrowser(
                 on_account=open_account.clone()
             />
 
-            <AppSidebar
-                section=section
-                collapsed=sidebar_collapsed
-                mobile_open=sidebar_mobile_open
-                counts=library_counts
-                trees=library_trees
-                active_folder_id=library_folder_id
-                current_id=current_id
-                reload_token=tree_token
-                on_select_category=select_category.clone()
-                on_select_folder=select_library_folder.clone()
-                on_navigate_directory=navigate_directory.clone()
-                on_toggle_collapse=toggle_sidebar.clone()
-                on_toggle_mobile=toggle_mobile_sidebar.clone()
-                on_open_trash=load_trash.clone()
-            />
-
             <section
                 class="content"
                 on:click=move |event: web_sys::MouseEvent| clear_selection_from_blank.run(event)
             >
-                <Show
-                    when=move || section.get() == LibraryKind::File
-                    fallback=move || {
-                        let kind = section.get();
-                        view! {
-                            <LibraryView
-                                kind=kind
-                                items=library_items
-                                loading=library_loading
-                                error=library_error
-                                filter_label_signal=library_filter_label
-                                gallery_mode=library_gallery_mode
-                                gallery_key=library_gallery_key
-                                on_open=open_library_item.clone()
-                                on_refresh=refresh_library.clone()
-                                on_upload=upload_library.clone()
-                            />
-                        }
-                        .into_any()
-                    }
-                >
                 <FileBrowserHeader
                     breadcrumbs=breadcrumbs
                     current=current
@@ -2303,7 +1781,6 @@ pub fn FileBrowser(
                     total_bytes=total_bytes
                     file_count=file_count
                     trash_mode=trash_mode
-                    view_mode=view_mode
                     on_open_folder=load_folder.clone()
                     on_new_document=new_document.clone()
                     on_create_folder=show_create_folder.clone()
@@ -2448,29 +1925,17 @@ pub fn FileBrowser(
                             </div>
                         }
                         .into_any()
-                    } else if view_mode.get() == ViewMode::Grid {
+                    } else {
+                        // Grid-only since the list view was removed. Selection
+                        // lives on each card's top-left control so the batch
+                        // toolbar stays reachable.
                         view! {
                             <div class="file-grid" class:selection-mode=move || !selected_ids.get().is_empty()>
                                 <For each=move || items.get() key=|item| item.id.clone() let:item>
                                     <FileTile
                                         item=item
                                         trash_mode=trash_mode
-                                        selectable=false
-                                        selected_ids=selected_ids
-                                        on_select=toggle_selection.clone()
-                                        on_open=open_item.clone()
-                                    />
-                                </For>
-                            </div>
-                        }
-                        .into_any()
-                    } else {
-                        view! {
-                            <div class="file-rows">
-                                <For each=move || items.get() key=|item| item.id.clone() let:item>
-                                    <FileRow
-                                        item=item
-                                        trash_mode=trash_mode
+                                        selectable=true
                                         selected_ids=selected_ids
                                         on_select=toggle_selection.clone()
                                         on_open=open_item.clone()
@@ -2481,7 +1946,6 @@ pub fn FileBrowser(
                         .into_any()
                     }
                 }}
-                </Show>
             </section>
             <Show when=move || feedback.get().is_some() fallback=|| ()>
                 <div
@@ -2828,97 +2292,6 @@ fn FileTile(
     }
 }
 
-#[component]
-fn FileRow(
-    item: File,
-    trash_mode: RwSignal<bool>,
-    selected_ids: RwSignal<HashSet<String>>,
-    on_select: Callback<File>,
-    on_open: Callback<File>,
-) -> impl IntoView {
-    let name = item.name.clone();
-    let name_for_aria = name.clone();
-    let item_for_click = item.clone();
-    let item_for_key = item.clone();
-    let item_for_select_click = item.clone();
-    let item_for_select_key = item.clone();
-    let item_for_meta = item.clone();
-    let item_for_preview = item.clone();
-    let item_id_for_class = item.id.clone();
-    let item_id_for_aria = item.id.clone();
-    let item_id_for_title = item.id.clone();
-    let item_id_for_label = item.id.clone();
-    let item_id_for_pressed = item.id.clone();
-    let item_id_for_active = item.id.clone();
-    let class = row_class(&item);
-    let on_select_click = on_select.clone();
-    let on_select_touch = on_select.clone();
-    let on_open_click = on_open.clone();
-    let on_open_key = on_open;
-    view! {
-        <article
-            class=class
-            class:selected=move || selected_ids.get().contains(&item_id_for_class)
-            role="button"
-            tabindex="0"
-            aria-label=move || format!("{}，{}", name_for_aria, if selected_ids.get().contains(&item_id_for_aria) { "已选择" } else { "未选择" })
-            on:click=move |_| {
-                // The reference list uses a tap to toggle selection once a
-                // touch selection mode is active; desktop clicks continue to
-                // open the row. The selection button remains the explicit
-                // control for mouse/keyboard users.
-                if is_coarse_pointer() && !selected_ids.get_untracked().is_empty() {
-                    on_select_touch.run(item_for_click.clone());
-                } else if !trash_mode.get_untracked() || item_for_click.kind == FileKind::File {
-                    on_open_click.run(item_for_click.clone());
-                }
-            }
-            on:keydown=move |event: web_sys::KeyboardEvent| {
-                if event.key() == "Enter" {
-                    event.prevent_default();
-                    if !trash_mode.get_untracked() || item_for_key.kind == FileKind::File {
-                        on_open_key.run(item_for_key.clone());
-                    }
-                } else if event.key() == " " {
-                    event.prevent_default();
-                    on_select.run(item_for_select_key.clone());
-                }
-            }
-            on:contextmenu=move |event: web_sys::MouseEvent| event.prevent_default()
-        >
-            <button
-                class="row-select"
-                type="button"
-                title=move || if selected_ids.get().contains(&item_id_for_title) { "取消选择" } else { "选择项目" }
-                aria-label=move || if selected_ids.get().contains(&item_id_for_label) { "取消选择" } else { "选择项目" }
-                aria-pressed=move || if selected_ids.get().contains(&item_id_for_pressed) { "true" } else { "false" }
-                class:active=move || selected_ids.get().contains(&item_id_for_active)
-                on:click=move |event: web_sys::MouseEvent| {
-                    event.stop_propagation();
-                    on_select_click.run(item_for_select_click.clone());
-                }
-                on:keydown=move |event: web_sys::KeyboardEvent| event.stop_propagation()
-            >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m5 12 4 4L19 6"></path>
-                </svg>
-            </button>
-            <div
-                class="row-preview"
-                class:cannot-open=move || {
-                    trash_mode.get() && item_for_preview.kind == FileKind::Directory
-                }
-            >
-                {file_preview(&item)}
-            </div>
-            <div class="row-info">
-                <strong title=name.clone()>{name.clone()}</strong>
-                <small>{move || row_meta(&item_for_meta)}</small>
-            </div>
-        </article>
-    }
-}
-
 fn tile_class(file: &File, preview_available: bool) -> String {
     let mut class = String::from("file-card");
     if file.kind == FileKind::Directory {
@@ -2952,14 +2325,6 @@ fn is_epub_file(file: &File) -> bool {
     file.kind == FileKind::File && classify::is_epub_name(&file.name)
 }
 
-fn row_class(file: &File) -> String {
-    if file.status == FileStatus::Ready {
-        "file-row selectable".to_owned()
-    } else {
-        "file-row selectable mutedrow".to_owned()
-    }
-}
-
 fn display_meta(file: &File, trash_mode: bool) -> String {
     if file.kind == FileKind::Directory {
         if trash_mode {
@@ -2984,35 +2349,12 @@ fn display_meta(file: &File, trash_mode: bool) -> String {
     }
 }
 
-fn row_meta(file: &File) -> String {
-    if file.kind == FileKind::Directory {
-        "文件夹".to_owned()
-    } else {
-        format!(
-            "{} · {}",
-            format_size(non_negative(file.size)),
-            format_file_date(file.updated_at)
-        )
-    }
-}
-
 fn format_file_date(value: Timestamp) -> String {
     if value.is_missing() {
         "—".to_owned()
     } else {
         format_date(&value.to_rfc3339())
     }
-}
-
-fn is_coarse_pointer() -> bool {
-    web_sys::window()
-        .and_then(|window| {
-            window
-                .match_media("(hover: none), (pointer: coarse)")
-                .ok()
-                .flatten()
-        })
-        .is_some_and(|query| query.matches())
 }
 
 fn preview_title(file: &File, trash_mode: bool) -> String {
@@ -3046,14 +2388,7 @@ fn is_markdown_name(name: &str) -> bool {
     extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
 }
 
-pub(crate) fn file_preview(file: &File) -> AnyView {
-    file_preview_with_state(file, None)
-}
-
-pub(crate) fn file_preview_with_state(
-    file: &File,
-    preview_available: Option<RwSignal<bool>>,
-) -> AnyView {
+fn file_preview_with_state(file: &File, preview_available: Option<RwSignal<bool>>) -> AnyView {
     view! { <FilePreview file=file.clone() preview_available=preview_available /> }.into_any()
 }
 
@@ -3304,27 +2639,6 @@ fn push_browser_history() {
     }
 }
 
-async fn wait_for_signal_clear(signal: RwSignal<bool>) {
-    while signal.get_untracked() {
-        let (sender, receiver) = oneshot::channel();
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let callback = Closure::once_into_js(move || {
-            let _ = sender.send(());
-        });
-        if window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0)
-            .is_err()
-        {
-            return;
-        }
-        if receiver.await.is_err() {
-            return;
-        }
-    }
-}
-
 fn request_overlay_close(
     nav_actions: RwSignal<Vec<NavAction>>,
     history_suppressed: RwSignal<bool>,
@@ -3359,16 +2673,6 @@ fn replace_folder_url(id: &str) {
         return;
     };
     let url = folder_url(id, ROOT_ID);
-    if let Ok(history) = window.history() {
-        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&url));
-    }
-}
-
-fn replace_library_url(kind: LibraryKind, folder_id: Option<&str>) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let url = library_url(kind, folder_id);
     if let Ok(history) = window.history() {
         let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&url));
     }

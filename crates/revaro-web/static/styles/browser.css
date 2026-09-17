@@ -116,14 +116,6 @@
 }
 
 /* Storage card */
-.sidebar-note span.sidebar-label {
-  display: block;
-  font-size: 11px;
-  font-weight: 800;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-}
 .storage-total {
   margin-top: 10px;
 }
@@ -200,11 +192,6 @@
   text-transform: none;
   letter-spacing: 0;
   font-weight: 400;
-}
-.sidebar-note p {
-  font-size: 11px;
-  line-height: 1.6;
-  color: #94a3b8;
 }
 
 /* Mobile-only storage summary under the folder title */

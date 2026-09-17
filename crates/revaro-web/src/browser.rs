@@ -15,11 +15,11 @@ use web_sys::MediaQueryListEvent;
 
 /// A reactive `matchMedia(query).matches`.
 ///
-/// `AppSidebar` and `AppTopbar` both switch layout at 850 px by reading
-/// `window.matchMedia`, and both must react when the window crosses the
-/// breakpoint rather than only at startup. The listener is installed once and
-/// released with the component that owns the signal, matching the Vue
-/// components' `onMounted`/`onBeforeUnmount` pair.
+/// `AppTopbar` switches layout at 850 px by reading `window.matchMedia`, and it
+/// must react when the window crosses the breakpoint rather than only at
+/// startup. The listener is installed once and released with the component that
+/// owns the signal, matching the Vue component's `onMounted`/`onBeforeUnmount`
+/// pair.
 #[allow(dead_code)]
 pub fn media_query_signal(query: &str) -> RwSignal<bool> {
     let signal = RwSignal::new(media_query_matches(query));

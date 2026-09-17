@@ -93,58 +93,6 @@ pub fn rotate_ccw() -> impl IntoView {
     }
 }
 
-/// Lucide `book-open` — the 书架 category.
-pub fn book_open() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 5v16"></path>
-            <path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"></path>
-        </svg>
-    }
-}
-
-/// Lucide `image` — the 图片 category.
-pub fn image() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect>
-            <circle cx="9" cy="9" r="2"></circle>
-            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path>
-        </svg>
-    }
-}
-
-/// Lucide `film` — the 视频 category.
-pub fn film() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="18" height="18" x="3" y="3" rx="2"></rect>
-            <path d="M7 3v18"></path>
-            <path d="M3 7.5h4"></path>
-            <path d="M3 12h18"></path>
-            <path d="M3 16.5h4"></path>
-            <path d="M17 3v18"></path>
-            <path d="M17 7.5h4"></path>
-            <path d="M17 16.5h4"></path>
-        </svg>
-    }
-}
-
-/// Lucide `music` — the 音乐 category.
-pub fn music() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9 18V5l12-2v13"></path>
-            <circle cx="6" cy="18" r="3"></circle>
-            <circle cx="18" cy="16" r="3"></circle>
-        </svg>
-    }
-}
-
 /// Lucide `music-2` — the audio-player fallback artwork.
 pub fn music_2() -> impl IntoView {
     view! {
@@ -229,30 +177,6 @@ pub fn breadcrumb_separator() -> impl IntoView {
             stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
             aria-hidden="true">
             <path d="m9 18 6-6-6-6"></path>
-        </svg>
-    }
-}
-
-/// Lucide `panel-left-open` — expand the collapsed sidebar rail.
-pub fn panel_left_open() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="18" height="18" x="3" y="3" rx="2"></rect>
-            <path d="M9 3v18"></path>
-            <path d="m14 9 3 3-3 3"></path>
-        </svg>
-    }
-}
-
-/// Lucide `panel-left-close` — collapse the sidebar to its icon rail.
-pub fn panel_left_close() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="18" height="18" x="3" y="3" rx="2"></rect>
-            <path d="M9 3v18"></path>
-            <path d="m16 15-3-3 3-3"></path>
         </svg>
     }
 }
@@ -650,45 +574,6 @@ pub fn hard_drive() -> impl IntoView {
             <path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
             <path d="M21.946 12.013H2.054"></path>
             <path d="M6 16h.01"></path>
-        </svg>
-    }
-}
-
-/// Lucide `layout-grid` — a grid view switch.
-pub fn layout_grid() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="7" height="7" x="3" y="3" rx="1"></rect>
-            <rect width="7" height="7" x="14" y="3" rx="1"></rect>
-            <rect width="7" height="7" x="14" y="14" rx="1"></rect>
-            <rect width="7" height="7" x="3" y="14" rx="1"></rect>
-        </svg>
-    }
-}
-
-/// Lucide `images` — the album view switch.
-pub fn images() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16"></path>
-            <path d="M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2"></path>
-            <circle cx="13" cy="7" r="1" fill="currentColor"></circle>
-            <rect x="8" y="2" width="14" height="14" rx="2"></rect>
-        </svg>
-    }
-}
-
-/// Lucide `refresh-cw` — reload a library view.
-pub fn refresh_cw() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
-            <path d="M21 3v5h-5"></path>
-            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
-            <path d="M8 16H3v5"></path>
         </svg>
     }
 }

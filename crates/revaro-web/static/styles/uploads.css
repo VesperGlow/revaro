@@ -624,11 +624,12 @@ button img,
 }
 
 @media (hover: none), (pointer: coarse) {
+  /* The grid is the only listing now, so its top-left select control has to be
+   * reachable without hover. The reference could hide it on touch because
+   * selection lived in the list view. */
   .card-select,
   .file-card:hover .card-select,
-  .card-select:focus-visible {
-    opacity: 0;
-  }
+  .card-select:focus-visible,
   .card-select.active,
   .selection-mode .card-select {
     opacity: 1;

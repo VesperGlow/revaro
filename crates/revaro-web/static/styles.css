@@ -8,27 +8,26 @@
  *
  * THE ORDER BELOW IS LOAD-BEARING. About 200 rules are last-wins overrides and
  * the product's layout depends on them. In particular `.app-shell`'s
- * `grid-template-columns` is declared three times — `230px 1fr` in `shell.css`,
- * `1fr` in `uploads.css`, and `236px minmax(0,1fr)` in `library.css` — and
- * library.css must win on desktop, exactly as it did in Vue. Do not reorder,
+ * `grid-template-columns` is declared twice — `230px 1fr` in `shell.css` and
+ * `1fr` in `uploads.css` — and `uploads.css` must win so the browser content
+ * spans the full width now that the category sidebar is gone. Do not reorder,
  * merge or flatten these imports; `logic::stylesheet` has a unit test that
  * pins the sequence.
  *
  * Effective cascade order recovered from the Vue entry point:
- *   1  styles/shell.css              7  styles/library.css
- *   2  styles/browser.css            8  account.css
- *   3  styles/uploads.css            9  ui.css
- *   4  styles/dialogs.css           10  styles/selection-toolbar.css
- *   5  styles/media.css             11  styles/share-dialog.css
- *   6  styles/responsive.css        12  styles/document-editor.css
- *                                   13  styles/reader-flow.css
- *                                   14  styles/reader-chrome.css
- *                                   15  styles/video-player.css
+ *   1  styles/shell.css              7  account.css
+ *   2  styles/browser.css            8  ui.css
+ *   3  styles/uploads.css            9  styles/selection-toolbar.css
+ *   4  styles/dialogs.css           10  styles/share-dialog.css
+ *   5  styles/media.css             11  styles/document-editor.css
+ *   6  styles/responsive.css        12  styles/reader-flow.css
+ *                                   13  styles/reader-chrome.css
+ *                                   14  styles/video-player.css
  *
  * `video-player.css` is last because Vue loaded it from
  * `VideoPlayer.vue`'s `<style src>`, i.e. after every module-level import.
  *
- * Appended after those fifteen are the ported `<style scoped>` component
+ * Appended after those fourteen are the ported `<style scoped>` component
  * blocks. Vue emitted them with an extra `[data-v-*]` attribute, so they
  * outranked the global sheets on equal specificity; the port keeps that by
  * loading them after every global sheet and by anchoring their generic class
@@ -41,7 +40,6 @@
 @import "styles/dialogs.css";
 @import "styles/media.css";
 @import "styles/responsive.css";
-@import "styles/library.css";
 @import "styles/account.css";
 @import "styles/ui.css";
 @import "styles/selection-toolbar.css";
