@@ -169,15 +169,15 @@ pub struct VideoSubtitleTrack {
     /// Short label shown in the track menu.
     pub label: String,
     /// ISO language tag, empty when unknown.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub language: String,
     /// WebVTT URL.
     pub url: String,
     /// Whether the track should be selected by default.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub default: bool,
     /// Whether the track only covers forced-narrative sections.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub forced: bool,
 }
 
@@ -304,5 +304,36 @@ mod tests {
         let video: VideoMedia =
             serde_json::from_value(serde_json::json!({ "subtitles": null })).unwrap();
         assert!(video.subtitles.is_empty());
+    }
+
+    #[test]
+    fn video_subtitle_tracks_treat_nullable_optional_metadata_as_defaults() {
+        let video: VideoMedia = serde_json::from_value(serde_json::json!({
+            "subtitles": [{
+                "id": "zh",
+                "name": "zh",
+                "label": "中文",
+                "language": null,
+                "url": "/api/subtitle.vtt",
+                "default": null,
+                "forced": null
+            }]
+        }))
+        .unwrap();
+        let track = &video.subtitles[0];
+        assert!(track.language.is_empty());
+        assert!(!track.default);
+        assert!(!track.forced);
+
+        let invalid = serde_json::from_value::<VideoMedia>(serde_json::json!({
+            "subtitles": [{
+                "id": "zh",
+                "name": "zh",
+                "label": "中文",
+                "language": 42,
+                "url": "/api/subtitle.vtt"
+            }]
+        }));
+        assert!(invalid.is_err());
     }
 }

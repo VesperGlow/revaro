@@ -2344,6 +2344,55 @@ test('old/new 视频多字幕按 default/forced 优先级选择，关闭后清�
   }
 })
 
+test('old/new 视频字幕轨道的可选元数据为 null 时仍按首条字幕显示', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function exercise(page: Page, baseUrl: string) {
+    await mockMedia(page, baseUrl)
+    await page.route('**/api/files/video-1/video', route => route.fulfill({
+      json: {
+        subtitles: [{
+          id: 'zh',
+          name: 'zh',
+          label: '简体中文',
+          language: null,
+          url: '/api/subtitle.vtt',
+          default: null,
+          forced: null,
+        }],
+      },
+    }))
+    await open(page, '山间漫步.webm')
+    await expect(page.locator('.video-subtitle-overlay')).toContainText('沿着山间的小路，慢慢走。')
+    const select = page.getByLabel('字幕轨道', { exact: true })
+    return {
+      options: await select.locator('option').allTextContents(),
+      value: await select.inputValue(),
+      overlay: await page.locator('.video-subtitle-overlay').innerText(),
+    }
+  }
+
+  try {
+    const [oldResult, newResult] = await Promise.all([
+      exercise(oldPage, oldUrl),
+      exercise(newPage, newUrl),
+    ])
+    expect(oldResult).toEqual({
+      options: ['关闭字幕', '简体中文'],
+      value: '0',
+      overlay: '沿着山间的小路，慢慢走。',
+    })
+    expect(newResult, 'Rust 字幕轨道 nullable 可选元数据与 reference 不一致').toEqual(oldResult)
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('old/new 视频 metadata 没有字幕时不显示字幕菜单和 overlay', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
