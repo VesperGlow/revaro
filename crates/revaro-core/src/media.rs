@@ -164,7 +164,8 @@ pub struct AudioMedia {
 pub struct VideoSubtitleTrack {
     /// Stable identifier used in the subtitle URL.
     pub id: String,
-    /// Display name.
+    /// Display name. The historical video caller does not read this field.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub name: String,
     /// Short label shown in the track menu.
     pub label: String,
@@ -324,6 +325,27 @@ mod tests {
         assert!(track.language.is_empty());
         assert!(!track.default);
         assert!(!track.forced);
+
+        let sparse: VideoMedia = serde_json::from_value(serde_json::json!({
+            "subtitles": [
+                {
+                    "id": "missing-name",
+                    "label": "缺省名称",
+                    "language": "zh",
+                    "url": "/api/missing-name.vtt"
+                },
+                {
+                    "id": "null-name",
+                    "name": null,
+                    "label": "空名称",
+                    "language": "zh",
+                    "url": "/api/null-name.vtt"
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(sparse.subtitles[0].name, "");
+        assert_eq!(sparse.subtitles[1].name, "");
 
         let invalid = serde_json::from_value::<VideoMedia>(serde_json::json!({
             "subtitles": [{
