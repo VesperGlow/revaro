@@ -24,7 +24,7 @@ const trashItems = [
   file({ id: 'deleted-note', name: '已删除.txt', deleted_at: STAMP, size: 512 }),
 ]
 
-async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error' | 'sparse-missing' | 'sparse-null', childrenDelayMs = 0) {
+async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error' | 'sparse-missing' | 'sparse-null' | 'nullable-breadcrumbs', childrenDelayMs = 0) {
   let releaseChildren = () => {}
   const childrenGate = childrenDelayMs
     ? new Promise<void>(resolve => { releaseChildren = resolve })
@@ -41,7 +41,7 @@ async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error' | 'spa
       return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: rootItems.length } })
     }
     if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: rootItems.length })
-    if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: [] })
+    if (path === `/api/files/${ROOT}`) return json({ file: root, breadcrumbs: mode === 'nullable-breadcrumbs' ? null : [] })
     if (path === `/api/files/${ROOT}/children`) {
       if (mode === 'error') {
         return route.fulfill({ status: 500, json: { error: { status: 500, message: '模拟读取失败' } } })
@@ -156,6 +156,38 @@ async function toastSnapshot(page: Page) {
     className: element.className,
   })))
 }
+
+test('old/new 文件详情 breadcrumbs 为 null 的旧版缺陷与 Rust 容错保持可见', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  try {
+    await Promise.all([
+      mockBrowser(oldPage, 'nullable-breadcrumbs'),
+      mockBrowser(newPage, 'nullable-breadcrumbs'),
+    ])
+    await Promise.all([
+      oldPage.goto(`${oldUrl}/?compat-file-browser=${crypto.randomUUID()}`),
+      newPage.goto(`${newUrl}/?compat-file-browser=${crypto.randomUUID()}`),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.file-card')).toHaveCount(rootItems.length),
+      expect(newPage.locator('.file-card')).toHaveCount(rootItems.length),
+      expect(newPage.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible(),
+    ])
+    expect(await oldPage.getByRole('heading', { name: '我的文件', exact: true }).count())
+      .toBe(0)
+    expect(await newPage.getByRole('heading', { name: '我的文件', exact: true }).count())
+      .toBe(1)
+  } finally {
+    await oldContext.close()
+    await newContext.close()
+  }
+})
 
 test('根目录、列表/方块和回收站内容头保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'

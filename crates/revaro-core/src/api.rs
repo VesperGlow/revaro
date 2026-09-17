@@ -276,6 +276,7 @@ pub mod files {
         /// The requested file.
         pub file: File,
         /// Path from the root, outermost first.
+        #[serde(default, deserialize_with = "deserialize_vec_or_default")]
         pub breadcrumbs: Vec<File>,
     }
 
@@ -905,6 +906,22 @@ mod tests {
         let invalid = serde_json::from_value::<files::Children>(serde_json::json!({
             "items": [],
             "total_bytes": "1024"
+        }));
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn file_detail_treats_nullable_breadcrumbs_as_empty() {
+        let detail: files::FileDetail = serde_json::from_value(serde_json::json!({
+            "file": File::default(),
+            "breadcrumbs": null
+        }))
+        .unwrap();
+        assert!(detail.breadcrumbs.is_empty());
+
+        let invalid = serde_json::from_value::<files::FileDetail>(serde_json::json!({
+            "file": File::default(),
+            "breadcrumbs": "root"
         }));
         assert!(invalid.is_err());
     }
