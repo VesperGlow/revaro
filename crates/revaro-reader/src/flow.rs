@@ -301,9 +301,16 @@ fn is_media(node: &Handle) -> bool {
     matches!(tag_name(node).as_deref(), Some("img" | "svg" | "video"))
 }
 
-fn resolve_nav_target(start: &Handle) -> Option<NavTarget> {
-    let mut pending = vec![start.clone()];
-    while let Some(node) = pending.pop() {
+/// Resolve the first actually visible navigation target at or after `start`,
+/// walking in document order to the end of `root` (the containing block).
+///
+/// The walk deliberately continues past `start`'s own subtree, matching the Go
+/// builder's `docNextIn`: a TOC fragment often points at an empty inline anchor
+/// (`<span id="…"></span>`) whose visible content starts in a following sibling.
+/// Stopping at the subtree boundary leaves such an entry without any locator, so
+/// the client falls back to the block start and lands on the previous page.
+fn resolve_nav_target(root: &Handle, start: &Handle) -> Option<NavTarget> {
+    for node in document_order_from(root, start) {
         if is_media(&node) {
             return Some(NavTarget::Media(node));
         }
@@ -312,17 +319,31 @@ fn resolve_nav_target(start: &Handle) -> Option<NavTarget> {
             let offset = first_visible_offset(&text);
             drop(text);
             if let Some(offset) = offset {
-                return Some(NavTarget::Text {
-                    node: node.clone(),
-                    offset,
-                });
+                return Some(NavTarget::Text { node, offset });
             }
+        }
+    }
+    None
+}
+
+/// Pre-order (document order) nodes from `start` through the end of `root`'s
+/// subtree, inclusive. Empty when `start` is not inside `root`.
+fn document_order_from(root: &Handle, start: &Handle) -> Vec<Handle> {
+    let mut ordered = Vec::new();
+    let mut pending = vec![root.clone()];
+    let mut reached = false;
+    while let Some(node) = pending.pop() {
+        if !reached && std::rc::Rc::ptr_eq(&node, start) {
+            reached = true;
+        }
+        if reached {
+            ordered.push(node.clone());
         }
         let mut descendants = children(&node);
         descendants.reverse();
         pending.extend(descendants);
     }
-    None
+    ordered
 }
 
 fn first_visible_offset(text: &str) -> Option<i32> {
@@ -405,7 +426,7 @@ fn resolve_toc(
                         let root = block.node.as_ref()?;
                         let start = find_fragment_element(root, &entry.fragment)
                             .unwrap_or_else(|| root.clone());
-                        let target = resolve_nav_target(&start)?;
+                        let target = resolve_nav_target(root, &start)?;
                         let id = format!("rvn-{nav_sequence}");
                         nav_sequence += 1;
                         match target {
@@ -1138,5 +1159,38 @@ mod tests {
         assert_eq!(built.manifest.total_blocks(), 1);
         assert_eq!(built.manifest.chunks[0].block_count, 1);
         assert!(built.chunks[0].html.contains("data-block=\"0\""));
+    }
+
+    #[test]
+    fn epub_empty_anchor_targets_resolve_forward_in_document_order() {
+        // A TOC fragment often points at an empty inline anchor whose visible
+        // content starts in a following sibling. The locator walk must continue
+        // past the anchor's own subtree (the Go builder's docNextIn does). If it
+        // stops there the entry ends up with no locator at all and the client
+        // falls back to the block start, landing on the previous page.
+        let book = Book {
+            format: Format::Epub,
+            chapters: vec![Chapter {
+                source_path: "ch.xhtml".into(),
+                html: r#"<p>图后文字<span id="empty-t"></span>锚点后正文。</p>"#.into(),
+            }],
+            toc: vec![TocEntry {
+                label: "空锚".into(),
+                path: "ch.xhtml".into(),
+                fragment: "empty-t".into(),
+                ..TocEntry::default()
+            }],
+            ..Book::default()
+        };
+        let built = build(&book).unwrap();
+        let target = &built.manifest.toc[0];
+        assert_eq!(
+            target.text_path,
+            vec![2],
+            "empty-anchor TOC target must resolve forward to the next visible text: {:?}",
+            built.manifest
+        );
+        assert_eq!(target.text_offset, 0);
+        assert!(target.nav_anchor.is_empty());
     }
 }

@@ -998,6 +998,57 @@ test('阅读器视觉：菜单覆盖满屏正文，图标居中，明暗与工�
   await page.keyboard.press('Escape'); await expect(page.locator('#reader-view')).toHaveCount(0)
 })
 
+test('目录片段回退：容器首 fragment 留在上一栏时按首个可见内容定栏', async ({ page }) => {
+  // Entry without text_path / nav_anchor: only the source_fragment fallback can
+  // place it. The target <p> opens with a &nbsp; line whose whole-page image is
+  // pushed (break-inside:avoid) into the next column, so measuring the container
+  // box lands one page early; the first actually visible content is the image.
+  const fragmentToc: TocFixture[] = [
+    {
+      label: '烛林片段',
+      depth: 0,
+      spine: 0,
+      block: 1 * BLOCKS_PER_CHUNK + 3,
+      chunk: 1,
+      source_fragment: 'id-a002',
+      source_path: 'OEBPS/Text/p-005.xhtml',
+    },
+  ]
+  await openReader(page, { toc: fragmentToc, chunkHTML: imagePageChunkHTML })
+
+  await page.locator('#toc-button').click()
+  await page.locator('.toc-item', { hasText: '烛林片段' }).click()
+  await expect.poll(() => elInViewport(page, '#title-img'), { timeout: 8000 }).toBe(true)
+  expect(await elInViewport(page, '#nan-img')).toBe(false)
+
+  // Discriminating fixture check: the container box sits in an earlier column
+  // than its first actually visible content, so a bounding-box based landing
+  // (or re-alignment) would be one page early.
+  const geometry = await page.evaluate(() => {
+    const flow = document.getElementById('flow')!
+    const flowRect = flow.getBoundingClientRect()
+    const style = getComputedStyle(flow)
+    const side = Number.parseFloat(style.paddingLeft) || 0
+    const pitch = flow.clientWidth || 1
+    const column = (r: DOMRect) => Math.floor((r.left - flowRect.left - side + 1) / pitch)
+    const target = document.querySelector('#id-a002')!
+    const image = document.querySelector('#title-img')!
+    return {
+      containerBox: column(target.getBoundingClientRect()),
+      imageBox: column(image.getBoundingClientRect()),
+    }
+  })
+  expect(geometry.imageBox).toBeGreaterThan(geometry.containerBox)
+
+  // The later windowSync and the font relayout re-align to the same content.
+  await page.waitForTimeout(1500)
+  expect(await elInViewport(page, '#title-img')).toBe(true)
+  await page.locator('#font-button').click()
+  await page.locator('#font-larger').click()
+  await page.waitForTimeout(700)
+  expect(await elInViewport(page, '#title-img')).toBe(true)
+})
+
 } else {
   test('reader-flow parity suite requires E2E_READER_FLOW=1', ({}, testInfo) => {
     testInfo.skip(true, 'Run with rust-reader-flow-parity.config.ts to execute old/new reader-flow parity');

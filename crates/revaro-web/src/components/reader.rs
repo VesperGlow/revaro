@@ -1656,11 +1656,16 @@ fn col_for_anchor(
         }
     }
     let element = node.dyn_ref::<Element>().unwrap_or(&block);
-    Some(col_from_rect(
-        runtime,
-        &flow,
-        &element.get_bounding_client_rect(),
-    ))
+    // Measure the element's first actually visible content, not its container
+    // box: when a block's first fragment is stranded in the previous column
+    // (break-inside:avoid media pushed whole into the next one) the raw box
+    // resolves one column -- one page -- early. Mirrors the reference
+    // `colForAnchor` (visualStartRect -> first client rect -> bounding box).
+    let rect = visual_start(element)
+        .map(|start| start.rect)
+        .or_else(|| element.get_client_rects().item(0))
+        .unwrap_or_else(|| element.get_bounding_client_rect());
+    Some(col_from_rect(runtime, &flow, &rect))
 }
 
 fn collapsed_range_rect(node: &Node, offset: i32) -> Option<DomRect> {
@@ -2319,26 +2324,34 @@ fn resolve_fragment_target(
     let decoded = decode_fragment(&entry.source_fragment);
     let candidates = block.query_selector_all("[id], [data-frag-ids]").ok()?;
     let manifest = runtime.borrow().manifest.clone()?;
-    let block_node: Node = block.clone().unchecked_into();
-    if fragment_matches(&block, &entry.source_fragment, &decoded) {
-        let rect = block.get_bounding_client_rect();
-        if rect_has_box(&rect) {
-            return Some((anchor_from_node(&manifest, &block, &block_node, -1), rect));
+    // The fragment names the block itself or, failing that, the first matching
+    // descendant in document order. Like the reference fallback, the landing
+    // position is that match's first actually visible content: both the column
+    // and the committed anchor come from the hit node, so the later window sync
+    // and relayout re-align to the same content instead of the container box
+    // (whose first fragment can stay in the previous column).
+    let target = if fragment_matches(&block, &entry.source_fragment, &decoded) {
+        block.clone()
+    } else {
+        let mut found = None;
+        for index in 0..candidates.length() {
+            let element = candidates.item(index)?.dyn_into::<Element>().ok()?;
+            if fragment_matches(&element, &entry.source_fragment, &decoded) {
+                found = Some(element);
+                break;
+            }
         }
-    }
-    for index in 0..candidates.length() {
-        let element = candidates.item(index)?.dyn_into::<Element>().ok()?;
-        if !fragment_matches(&element, &entry.source_fragment, &decoded) {
-            continue;
-        }
-        let rect = element.get_bounding_client_rect();
-        if !rect_has_box(&rect) {
-            continue;
-        }
-        let node: Node = element.clone().unchecked_into();
-        return Some((anchor_from_node(&manifest, &block, &node, -1), rect));
-    }
-    None
+        found?
+    };
+    let start = visual_start(&target)?;
+    let node: Node = start
+        .node
+        .clone()
+        .unwrap_or_else(|| target.clone().unchecked_into());
+    Some((
+        anchor_from_node(&manifest, &block, &node, start.offset),
+        start.rect,
+    ))
 }
 
 fn spawn_toc_jump(
