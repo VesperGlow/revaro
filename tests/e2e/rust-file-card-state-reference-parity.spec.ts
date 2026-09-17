@@ -37,6 +37,10 @@ async function mockFileBrowser(page: Page, options: { sparseTimestamps?: boolean
           return withoutTimestamps
         }
         if (index === 1) return { ...item, created_at: null, updated_at: null }
+        if (index === 2) {
+          const { created_at: _createdAt, updated_at: _updatedAt, ...withoutTimestamps } = item
+          return withoutTimestamps
+        }
         return item
       })
     : items
@@ -80,6 +84,16 @@ test('old/new 文件列表在未使用的时间字段缺失或为 null 时仍保
     await Promise.all([openBrowser(oldPage, oldUrl), openBrowser(newPage, newUrl)])
     expect(await oldPage.locator('.file-card').filter({ hasText: '普通目录' }).count()).toBe(1)
     expect(await newPage.locator('.file-card').filter({ hasText: '普通目录' }).count(), 'Rust 不应因未消费的文件时间字段丢失整个列表').toBe(1)
+    await Promise.all([oldPage.getByTitle('列表视图').click(), newPage.getByTitle('列表视图').click()])
+    await expect(oldPage.locator('.file-row')).toHaveCount(items.length)
+    await expect(newPage.locator('.file-row')).toHaveCount(items.length)
+    const oldSubtitle = await oldPage.locator('.file-row').filter({ hasText: '图片.png' }).locator('small').last().textContent()
+    const newSubtitle = await newPage.locator('.file-row').filter({ hasText: '图片.png' }).locator('small').last().textContent()
+    expect(newSubtitle, 'Rust 文件时间缺失/null 时的列表日期回退与 reference 不一致').toBe(oldSubtitle)
+    expect(
+      await newPage.locator('.file-row').filter({ hasText: '未知.pdf' }).innerText(),
+      'Rust 稀疏文件列表行与 reference 的日期回退不一致',
+    ).toBe(await oldPage.locator('.file-row').filter({ hasText: '未知.pdf' }).innerText())
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
   }

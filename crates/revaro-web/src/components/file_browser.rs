@@ -21,6 +21,7 @@ use revaro_core::classify;
 use revaro_core::classify::LibraryKind;
 use revaro_core::ids::ROOT_ID;
 use revaro_core::model::{File, FileKind, FileStatus, LibraryCounts, LibraryItem};
+use revaro_core::time::Timestamp;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -2964,7 +2965,7 @@ fn display_meta(file: &File, trash_mode: bool) -> String {
         if trash_mode {
             return format!(
                 "文件夹 · 删除于 {}",
-                format_date(&file.deleted_at.unwrap_or(file.updated_at).to_rfc3339())
+                format_file_date(file.deleted_at.unwrap_or(file.updated_at))
             );
         }
         return "文件夹".to_owned();
@@ -2973,7 +2974,7 @@ fn display_meta(file: &File, trash_mode: bool) -> String {
     if trash_mode {
         format!(
             "{size} · 删除于 {}",
-            format_date(&file.deleted_at.unwrap_or(file.updated_at).to_rfc3339())
+            format_file_date(file.deleted_at.unwrap_or(file.updated_at))
         )
     } else {
         // FileGrid.vue's card fallback only renders the formatted size. The
@@ -2990,8 +2991,16 @@ fn row_meta(file: &File) -> String {
         format!(
             "{} · {}",
             format_size(non_negative(file.size)),
-            format_date(&file.updated_at.to_rfc3339())
+            format_file_date(file.updated_at)
         )
+    }
+}
+
+fn format_file_date(value: Timestamp) -> String {
+    if value.is_missing() {
+        "—".to_owned()
+    } else {
+        format_date(&value.to_rfc3339())
     }
 }
 

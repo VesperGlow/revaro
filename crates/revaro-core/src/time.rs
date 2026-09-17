@@ -47,6 +47,23 @@ impl Timestamp {
         Self(DateTime::<Utc>::from_timestamp(0, 0).expect("epoch is a valid instant"))
     }
 
+    /// Sentinel used when a legacy file response omits a timestamp entirely.
+    ///
+    /// The old browser renders an omitted date as `—`, while an explicit JSON
+    /// `null` is coerced by JavaScript to the Unix epoch. Keeping a dedicated
+    /// value lets the response decoder preserve that distinction without
+    /// making persisted timestamps optional.
+    #[must_use]
+    pub fn missing() -> Self {
+        Self(DateTime::<Utc>::MIN_UTC)
+    }
+
+    /// Whether this value is the legacy-response missing-date sentinel.
+    #[must_use]
+    pub fn is_missing(self) -> bool {
+        self.0 == DateTime::<Utc>::MIN_UTC
+    }
+
     /// Build from milliseconds since the Unix epoch, saturating at the
     /// representable range.
     #[must_use]

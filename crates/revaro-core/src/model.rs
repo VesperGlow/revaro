@@ -371,10 +371,16 @@ pub struct File {
     #[serde(deserialize_with = "deserialize_file_status")]
     pub status: FileStatus,
     /// Creation time.
-    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
+    #[serde(
+        default = "missing_file_timestamp",
+        deserialize_with = "deserialize_nullable_timestamp"
+    )]
     pub created_at: Timestamp,
     /// Last metadata change.
-    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
+    #[serde(
+        default = "missing_file_timestamp",
+        deserialize_with = "deserialize_nullable_timestamp"
+    )]
     pub updated_at: Timestamp,
     /// Soft-deletion time, omitted while the row is live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -434,6 +440,10 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(Option::<Timestamp>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn missing_file_timestamp() -> Timestamp {
+    Timestamp::missing()
 }
 
 /// The historical `has_cover` check was `=== true`, so an explicit `null`
@@ -878,8 +888,8 @@ mod tests {
             "status": "ready"
         });
         let file = serde_json::from_value::<File>(missing.clone()).unwrap();
-        assert_eq!(file.created_at, Timestamp::default());
-        assert_eq!(file.updated_at, Timestamp::default());
+        assert!(file.created_at.is_missing());
+        assert!(file.updated_at.is_missing());
 
         missing["created_at"] = serde_json::Value::Null;
         missing["updated_at"] = serde_json::Value::Null;
