@@ -751,6 +751,95 @@ test('回收站恢复冲突保留项目与选择状态', async ({ browser }) => 
   }
 })
 
+test('回收站恢复首项失败时按 reference 停止后续项目', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
+  const first = { ...trashFile, id: 'crud-trash-first-failure', name: '先失败.txt' }
+  const second = { ...trashFile, id: 'crud-trash-second-skipped', name: '后续不调用.txt' }
+  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const oldPage = await oldContext.newPage()
+  const newPage = await newContext.newPage()
+
+  async function mock(page: Page) {
+    const calls: string[] = []
+    await page.route('**/api/**', async route => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      const json = (value: unknown) => route.fulfill({ json: value })
+      if (path === '/api/auth/me') return json({ username: 'admin', has_avatar: false })
+      if (path === '/api/events' || path === '/api/system/status/stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      }
+      if (path === '/api/tasks') return json({ items: [] })
+      if (path === '/api/library/all') {
+        return json({ items: { book: [], image: [], video: [], audio: [] }, counts: { book: 0, image: 0, video: 0, audio: 0, file: 0 } })
+      }
+      if (path === '/api/library/counts') return json({ book: 0, image: 0, video: 0, audio: 0, file: 0 })
+      if (path === `/api/files/${ROOT}`) {
+        return json({
+          file: { id: ROOT, parent_id: null, name: '我的文件', kind: 'directory', size: 0, status: 'ready', created_at: STAMP, updated_at: STAMP, mime_type: '' },
+          breadcrumbs: [],
+        })
+      }
+      if (path === `/api/files/${ROOT}/children`) return json({ items: [], total_bytes: 0, file_count: 0 })
+      if (path === '/api/trash') return json({ items: [first, second], total_bytes: first.size + second.size, file_count: 2 })
+      const match = path.match(/^\/api\/trash\/(crud-trash-first-failure|crud-trash-second-skipped)\/restore$/)
+      if (match && request.method() === 'POST') {
+        calls.push(match[1])
+        if (match[1] === first.id) {
+          return route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: { status: 409, message: 'restore conflict' } }),
+          })
+        }
+        return json({})
+      }
+      return json({ items: [] })
+    })
+    return calls
+  }
+
+  async function openFixture(page: Page, baseUrl: string) {
+    await page.goto(`${baseUrl}/?crud-trash-stop-first=${Date.now()}`)
+    await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    await page.getByTitle('列表视图').click()
+    await page.getByTitle('回收站').first().click()
+    await expect(page.getByRole('heading', { name: '回收站', exact: true })).toBeVisible()
+    for (const item of [first, second]) {
+      await page.locator('.file-row').filter({ hasText: item.name }).getByRole('button', { name: '选择项目' }).click()
+    }
+    return page.getByRole('toolbar', { name: '所选项目操作' })
+  }
+
+  try {
+    const [oldCalls, newCalls] = await Promise.all([mock(oldPage), mock(newPage)])
+    const [oldToolbar, newToolbar] = await Promise.all([
+      openFixture(oldPage, oldUrl),
+      openFixture(newPage, newUrl),
+    ])
+    await Promise.all([
+      oldToolbar.getByRole('button', { name: '恢复', exact: true }).click(),
+      newToolbar.getByRole('button', { name: '恢复', exact: true }).click(),
+    ])
+    await Promise.all([
+      expect(oldPage.locator('.toast')).toHaveText('先失败.txt：restore conflict'),
+      expect(newPage.locator('.toast')).toHaveText('先失败.txt：restore conflict'),
+      expect(oldPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
+      expect(newPage.locator('.file-row').filter({ hasText: first.name })).toBeVisible(),
+      expect(oldPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
+      expect(newPage.locator('.file-row').filter({ hasText: second.name })).toBeVisible(),
+      expect(oldPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
+      expect(newPage.getByRole('toolbar', { name: '所选项目操作' })).toBeVisible(),
+    ])
+    expect(newCalls, 'Rust 恢复首项失败后的请求顺序与 reference 不一致').toEqual(oldCalls)
+    expect(newCalls).toEqual([first.id])
+  } finally {
+    await Promise.all([oldContext.close(), newContext.close()])
+  }
+})
+
 test('回收站永久删除冲突关闭确认框并保留项目', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
