@@ -275,8 +275,10 @@ pub mod files {
         /// Directory entries, directories first then case-insensitive by name.
         pub items: Vec<File>,
         /// Total bytes of the ready files directly inside.
+        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
         pub total_bytes: i64,
         /// Number of ready files directly inside.
+        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
         pub file_count: i64,
     }
 
@@ -325,8 +327,10 @@ pub mod files {
         /// Trashed root items, most recently deleted first.
         pub items: Vec<File>,
         /// Bytes held by trashed files.
+        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
         pub total_bytes: i64,
         /// Number of trashed files.
+        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
         pub file_count: i64,
     }
 
@@ -832,6 +836,31 @@ mod tests {
         assert_eq!(setup.secret, "JBSWY3DPEHPK3PXP");
         assert!(setup.uri.is_empty());
         assert!(setup.qr_data_url.is_empty());
+    }
+
+    #[test]
+    fn file_listing_stats_treat_missing_or_null_values_as_zero() {
+        let children: files::Children = serde_json::from_value(serde_json::json!({
+            "items": [],
+            "total_bytes": null,
+            "file_count": null
+        }))
+        .unwrap();
+        assert_eq!(children.total_bytes, 0);
+        assert_eq!(children.file_count, 0);
+
+        let trash: files::Trash = serde_json::from_value(serde_json::json!({
+            "items": []
+        }))
+        .unwrap();
+        assert_eq!(trash.total_bytes, 0);
+        assert_eq!(trash.file_count, 0);
+
+        let invalid = serde_json::from_value::<files::Children>(serde_json::json!({
+            "items": [],
+            "total_bytes": "1024"
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]

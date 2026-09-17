@@ -24,7 +24,7 @@ const trashItems = [
   file({ id: 'deleted-note', name: '已删除.txt', deleted_at: STAMP, size: 512 }),
 ]
 
-async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error', childrenDelayMs = 0) {
+async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error' | 'sparse-missing' | 'sparse-null', childrenDelayMs = 0) {
   let releaseChildren = () => {}
   const childrenGate = childrenDelayMs
     ? new Promise<void>(resolve => { releaseChildren = resolve })
@@ -47,6 +47,8 @@ async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error', child
         return route.fulfill({ status: 500, json: { error: { status: 500, message: '模拟读取失败' } } })
       }
       const items = mode === 'empty' ? [] : rootItems
+      if (mode === 'sparse-missing') return json({ items })
+      if (mode === 'sparse-null') return json({ items, total_bytes: null, file_count: null })
       return json({ items, total_bytes: mode === 'empty' ? 0 : 3072, file_count: mode === 'empty' ? 0 : 1 })
     }
     if (path === '/api/files/folder') return json({ file: rootItems[0], breadcrumbs: [root] })
@@ -55,6 +57,8 @@ async function mockBrowser(page: Page, mode: 'normal' | 'empty' | 'error', child
       return json({ items: [], total_bytes: 0, file_count: 0 })
     }
     if (path === '/api/trash') {
+      if (mode === 'sparse-missing') return json({ items: trashItems })
+      if (mode === 'sparse-null') return json({ items: trashItems, total_bytes: null, file_count: null })
       return json({ items: mode === 'empty' ? [] : trashItems, total_bytes: mode === 'empty' ? 0 : 512, file_count: mode === 'empty' ? 0 : 1 })
     }
     return json({ items: [] })
@@ -218,6 +222,33 @@ test('空目录与目录读取失败保留 reference 的页面结构和反馈', 
         await expect(newPage.locator('.toast')).toContainText('模拟读取失败')
         expect(await toastSnapshot(newPage), 'Rust 目录失败反馈与 reference 不一致').toEqual(await toastSnapshot(oldPage))
       }
+    } finally {
+      await oldContext.close()
+      await newContext.close()
+    }
+  }
+})
+
+test('old/new 文件列表在 children 统计缺失或为 null 时仍保留条目', async ({ browser }) => {
+  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
+  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+  for (const mode of ['sparse-missing', 'sparse-null'] as const) {
+    const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const oldPage = await oldContext.newPage()
+    const newPage = await newContext.newPage()
+    try {
+      await Promise.all([mockBrowser(oldPage, mode), mockBrowser(newPage, mode)])
+      await Promise.all([openRoot(oldPage, oldUrl), openRoot(newPage, newUrl)])
+      await expect(oldPage.locator('.file-card')).toHaveCount(rootItems.length)
+      await expect(newPage.locator('.file-card'), `Rust ${mode} 不应因未使用统计字段丢失整个列表`).toHaveCount(rootItems.length)
+      expect(await contentSnapshot(newPage), `Rust ${mode} 条目与 reference 不一致`).toEqual(await contentSnapshot(oldPage))
+
+      await oldPage.getByTitle('回收站').first().click()
+      await newPage.getByTitle('回收站').first().click()
+      await expect(oldPage.locator('.file-card')).toHaveCount(trashItems.length)
+      await expect(newPage.locator('.file-card'), `Rust ${mode} 不应因回收站统计字段丢失条目`).toHaveCount(trashItems.length)
+      expect(await contentSnapshot(newPage), `Rust ${mode} 回收站条目与 reference 不一致`).toEqual(await contentSnapshot(oldPage))
     } finally {
       await oldContext.close()
       await newContext.close()
