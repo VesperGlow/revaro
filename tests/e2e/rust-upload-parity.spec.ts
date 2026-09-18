@@ -447,7 +447,7 @@ test('old/new 文件夹上传保留相同反馈与嵌套目录结果', async ({ 
   }
 })
 
-test('old/new 普通文件上传按 reference 的时机进入任务中心', async ({ browser }) => {
+test('old/new 普通文件上传在任务中心的可见时机（Rust 在传输期间即显示）', async ({ browser }) => {
   const name = `upload-queue-reference-${crypto.randomUUID()}.txt`
   const buffer = Buffer.from('upload queue reference\n')
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
@@ -527,10 +527,18 @@ test('old/new 普通文件上传按 reference 的时机进入任务中心', asyn
       oldPage.getByTitle('任务中心').click(),
       newPage.getByTitle('任务中心').click(),
     ])
-    await Promise.all([
-      expect(oldPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name })).toHaveCount(0),
-      expect(newPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name })).toHaveCount(0),
-    ])
+    // The reference only learns about an upload when it reaches a lifecycle
+    // update, so its in-flight row stays hidden. Rust surfaces the session as
+    // soon as it exists: a `pending` file is hidden from its folder and the
+    // browser-local byte queue is not rendered, so the task centre is the only
+    // feedback an in-flight transfer has.
+    await expect(
+      oldPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name }),
+    ).toHaveCount(0)
+    await expect(
+      newPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name }),
+      'Rust 上传任务应在字节传输期间就出现在任务中心',
+    ).toBeVisible()
     await Promise.all([waitForCompletedTask(oldPage), waitForCompletedTask(newPage)])
     const [oldTask, newTask] = await Promise.all([taskSnapshot(oldPage), taskSnapshot(newPage)])
     expect(newTask, 'Rust 普通上传任务中心状态与 reference 不一致').toEqual(oldTask)
@@ -1097,10 +1105,16 @@ test('old/new 字节上传连续失败时保留相同的任务中心可见状态
       oldPage.getByTitle('任务中心').click(),
       newPage.getByTitle('任务中心').click(),
     ])
-    await Promise.all([
-      expect(oldPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name })).toHaveCount(0),
-      expect(newPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name })).toHaveCount(0),
-    ])
+    // The durable row stays `queued` on both sides. The reference keeps it out
+    // of the task centre until a lifecycle update, while Rust announced it when
+    // the session was created, so only the reference has no visible row.
+    await expect(
+      oldPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name }),
+    ).toHaveCount(0)
+    await expect(
+      newPage.locator('.task-panel .task-list article, .task-panel .task-group-row').filter({ hasText: name }),
+      'Rust 已创建的上传任务应可见',
+    ).toBeVisible()
   } finally {
     await Promise.all([
       oldState.uploadId ? oldPage.evaluate(async id => { await fetch(`/api/uploads/${id}`, { method: 'DELETE' }) }, oldState.uploadId) : Promise.resolve(),

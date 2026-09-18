@@ -992,12 +992,13 @@ async fn abort_pending_upload(
     Ok(())
 }
 
-/// Create the durable task row used by the reference client's TaskCenter.
+/// Create the durable task row shown in the browser's task centre.
 ///
-/// The reference server does not emit a jobs event at creation time. The row
-/// becomes visible to the client when the upload reaches a lifecycle update
-/// (normally completion), so an in-flight byte transfer stays out of the task
-/// centre just as it did before the Rust migration.
+/// The task centre is the only feedback an in-flight upload has: the `pending`
+/// file is not listed in its folder, and the browser-local byte queue is not
+/// rendered. The row is committed here, so announce it immediately. Otherwise
+/// nothing at all appears until the byte transfer finishes, which makes a slow
+/// upload look like it never started.
 async fn create_upload_task(
     state: &Arc<AppState>,
     upload_id: &str,
@@ -1032,6 +1033,7 @@ async fn create_upload_task(
             Ok(())
         })
         .await?;
+    state.jobs.changed();
     Ok(())
 }
 
