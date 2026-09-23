@@ -877,7 +877,7 @@ test('old/new 文档保存后列表大小/本地时间 metadata 随目录刷新�
     await expect(page.locator('.toast')).toHaveText('文档已保存')
     await editor.getByRole('button', { name: '关闭编辑器', exact: true }).click()
     await expect(editor).toHaveCount(0)
-    await expect(row.locator('small').first()).toContainText(' · ')
+    await expect(row.locator('small').first()).toContainText('4.0 KB')
     const updatedMeta = await row.locator('small').first().innerText()
     const server = await page.evaluate(async ({ fileId, rootId }) => {
       const listing = await fetch(`/api/files/${rootId}/children`)
@@ -895,12 +895,14 @@ test('old/new 文档保存后列表大小/本地时间 metadata 随目录刷新�
     }, { fileId: id, rootId: '00000000-0000-0000-0000-000000000000' })
     const initialParts = initialMeta.split(' · ')
     const updatedParts = updatedMeta.split(' · ')
+    // Dates belong to the reference list view. The current grid-only layout
+    // intentionally shows only size; still verify date accuracy where shown.
+    expect(initialParts).toHaveLength(useListView ? 2 : 1)
+    expect(updatedParts).toHaveLength(useListView ? 2 : 1)
+    if (useListView) expect(updatedParts[1]).toBe(server.date)
     return {
       initialSize: initialParts[0],
-      initialHasDate: initialParts.length === 2,
       updatedSize: updatedParts[0],
-      updatedHasDate: updatedParts.length === 2,
-      updatedDateMatchesServer: updatedParts[1] === server.date,
       serverSize: server.size,
       savedContent: server.content === editedContent,
     }
@@ -911,10 +913,7 @@ test('old/new 文档保存后列表大小/本地时间 metadata 随目录刷新�
       exercise(oldPage, oldUrl),
       exercise(newPage, newUrl),
     ])
-    expect(oldResult.initialHasDate).toBe(true)
     expect(oldResult.initialSize).not.toBe(oldResult.updatedSize)
-    expect(oldResult.updatedHasDate).toBe(true)
-    expect(oldResult.updatedDateMatchesServer).toBe(true)
     expect(oldResult.serverSize).toBe(editedContent.length)
     expect(oldResult.savedContent).toBe(true)
     expect(newResult, 'Rust 文档保存后的列表 metadata/目录刷新与 reference 不一致').toEqual(oldResult)
@@ -1327,6 +1326,131 @@ async function mockDirtyEditor(
     return json({ items: [] })
   })
 }
+
+test('Rust 保存期间继续输入的内容仍标记为未保存', async ({ page }) => {
+  await mockDirtyEditor(page)
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const saved: string[] = []
+  await page.route(`**/api/files/${DIRTY_FILE.id}/content`, async route => {
+    if (route.request().method() !== 'PUT') return route.fallback()
+    saved.push(route.request().postDataJSON().content)
+    await pending
+    await route.fulfill({ json: { ...DIRTY_FILE, etag: 'saved-etag' } })
+  })
+  try {
+    const editor = await openDirtyEditor(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+    await editor.getByRole('button', { name: '保存', exact: true }).click()
+    await expect.poll(() => saved.length).toBe(1)
+    await editor.locator('textarea').fill('# 保存请求发出后继续写的内容')
+    release()
+    const save = editor.getByRole('button', { name: '保存', exact: true })
+    await expect(save).toBeEnabled()
+    await expect(editor.locator('.unsaved-dot')).toHaveText('未保存')
+    await save.click()
+    await expect.poll(() => saved).toEqual(['# 修改后的内容\n', '# 保存请求发出后继续写的内容'])
+    await expect(editor.locator('.unsaved-dot')).toHaveCount(0)
+  } finally {
+    release()
+  }
+})
+
+test('Rust 创建请求期间锁定文件名并保留继续输入的正文', async ({ page }) => {
+  await mockDirtyEditor(page)
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let submitted: { name: string; content: string } | undefined
+  await page.route('**/api/documents', async route => {
+    submitted = route.request().postDataJSON()
+    await pending
+    await route.fulfill({ json: { ...DIRTY_FILE, name: submitted!.name } })
+  })
+  try {
+    await page.goto(process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+    await page.getByRole('button', { name: '新建文档', exact: true }).click()
+    const editor = page.locator('.document-editor')
+    const name = editor.getByRole('textbox', { name: '文档文件名' })
+    await name.fill('保存中的草稿.md')
+    await editor.locator('textarea').fill('# 提交的正文')
+    await editor.getByRole('button', { name: '保存', exact: true }).click()
+    await expect.poll(() => submitted).toEqual({ parent_id: DIRTY_ROOT, name: '保存中的草稿.md', content: '# 提交的正文' })
+    await expect(name).toBeDisabled()
+    await editor.locator('textarea').fill('# 提交后继续输入')
+    release()
+    await expect(editor.locator('#editor-title')).toHaveText('保存中的草稿.md')
+    await expect(editor.locator('textarea')).toHaveValue('# 提交后继续输入')
+    await expect(editor.locator('.unsaved-dot')).toHaveText('未保存')
+    await expect(editor.getByRole('button', { name: '保存', exact: true })).toBeEnabled()
+  } finally {
+    release()
+  }
+})
+
+test('Rust 已关闭编辑器的保存响应不会修改新建草稿', async ({ page }) => {
+  await mockDirtyEditor(page)
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let requested = false
+  let completed = false
+  await page.route(`**/api/files/${DIRTY_FILE.id}/content`, async route => {
+    if (route.request().method() !== 'PUT') return route.fallback()
+    requested = true
+    await pending
+    await route.fulfill({ json: { ...DIRTY_FILE, etag: 'saved-etag' } })
+    completed = true
+  })
+  try {
+    const editor = await openDirtyEditor(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+    await editor.getByRole('button', { name: '保存', exact: true }).click()
+    await expect.poll(() => requested).toBe(true)
+    await editor.getByRole('button', { name: '关闭编辑器' }).click()
+    await page.getByRole('button', { name: '放弃修改', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await page.getByRole('button', { name: '新建文档', exact: true }).click()
+    await editor.getByRole('textbox', { name: '文档文件名' }).fill('新草稿.md')
+    await editor.locator('textarea').fill('# 另一个草稿')
+    release()
+    await expect.poll(() => completed).toBe(true)
+    await page.waitForTimeout(200)
+    await expect(editor.getByRole('textbox', { name: '文档文件名' })).toHaveValue('新草稿.md')
+    await expect(editor.locator('textarea')).toHaveValue('# 另一个草稿')
+    await expect(editor.locator('.unsaved-dot')).toHaveText('未保存')
+  } finally {
+    release()
+  }
+})
+
+test('Rust 新建文档不会被已关闭编辑器的迟到内容覆盖', async ({ page }) => {
+  await mockDirtyEditor(page)
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let requested = false
+  let completed = false
+  await page.route(`**/api/files/${DIRTY_FILE.id}/content`, async route => {
+    requested = true
+    await pending
+    await route.fallback()
+    completed = true
+  })
+  try {
+    await page.goto(process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+    await page.locator('.file-card').filter({ hasText: DIRTY_FILE.name }).click()
+    await expect.poll(() => requested).toBe(true)
+    await page.getByRole('button', { name: '关闭编辑器' }).click()
+    await expect(page.locator('.document-editor')).toHaveCount(0)
+    await page.getByRole('button', { name: '新建文档', exact: true }).click()
+    const editor = page.locator('.document-editor')
+    await editor.locator('textarea').fill('# 新文档草稿')
+    release()
+    await expect.poll(() => completed).toBe(true)
+    await page.waitForTimeout(200)
+    await expect(editor.locator('textarea')).toHaveValue('# 新文档草稿')
+    await expect(editor.locator('.unsaved-dot')).toHaveText('未保存')
+    await expect(editor.getByRole('button', { name: '保存', exact: true })).toBeEnabled()
+  } finally {
+    release()
+  }
+})
 
 async function openDirtyEditor(page: Parameters<typeof login>[0], baseUrl: string) {
   await page.goto(`${baseUrl}/?editor-dirty-reference=${crypto.randomUUID()}`)

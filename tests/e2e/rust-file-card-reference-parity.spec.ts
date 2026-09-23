@@ -303,9 +303,11 @@ async function longNameMetrics(page: Page) {
         display: style.display,
         minWidth: style.minWidth,
         maxWidth: style.maxWidth,
-        width: Math.round(rect.width * 100) / 100,
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth,
+        // Removing the sidebar changes grid column widths. Compare actual
+        // truncation and viewport containment, not that obsolete geometry.
+        hasWidth: rect.width > 0,
+        withinViewport: rect.left >= 0 && rect.right <= window.innerWidth,
+        truncated: element.scrollWidth > element.clientWidth,
         overflow: style.overflow,
         textOverflow: style.textOverflow,
         whiteSpace: style.whiteSpace,

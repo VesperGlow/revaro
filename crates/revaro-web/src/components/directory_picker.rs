@@ -66,6 +66,12 @@ pub fn DirectoryPicker(
             let excluded_ids = excluded_ids.clone();
             leptos::task::spawn_local(async move {
                 let result = fetch_directory_data(&id, &excluded_ids).await;
+                // A closed picker has no request signal anymore. Treat that
+                // exactly like a superseded navigation, before any fallback
+                // request or callbacks can affect a newly opened dialog.
+                if request_sequence.try_get_untracked() != Some(sequence) {
+                    return;
+                }
 
                 // The Vue picker returned to the virtual root when a stale
                 // non-root target disappeared (for example after a move or
@@ -79,7 +85,7 @@ pub fn DirectoryPicker(
                     result => (id.clone(), result),
                 };
 
-                if request_sequence.get_untracked() != sequence {
+                if request_sequence.try_get_untracked() != Some(sequence) {
                     return;
                 }
                 loading.set(false);

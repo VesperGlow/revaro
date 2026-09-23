@@ -101,6 +101,34 @@ async function dialogSnapshot(page: Page) {
   }))
 }
 
+test('Rust 分享弹窗重开后忽略上次读取的迟到状态', async ({ page }) => {
+  const mock = await mockShare(page)
+  await openShare(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+  await page.locator('.share-modal header button').click()
+  await page.route(`**/api/files/${FILE_ID}/share`, route => route.fulfill({
+    json: { active: true, url: 'http://127.0.0.1:18084/s/current-token', created_at: STAMP },
+  }))
+  await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
+  await expect(page.getByLabel('分享链接')).toHaveValue('http://127.0.0.1:18084/s/current-token')
+  mock.readGate.resolve()
+  await page.waitForTimeout(300)
+  await expect(page.getByLabel('分享链接')).toHaveValue('http://127.0.0.1:18084/s/current-token')
+})
+
+test('Rust 分享弹窗重开后忽略上次创建请求的迟到状态', async ({ page }) => {
+  const mock = await mockShare(page)
+  await openShare(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+  mock.readGate.resolve()
+  await page.getByRole('button', { name: '创建公开链接' }).click()
+  await expect(page.locator('.share-modal .state.small')).toBeVisible()
+  await page.locator('.share-modal header button').click()
+  await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
+  await expect(page.getByRole('button', { name: '创建公开链接' })).toBeVisible()
+  mock.createGate.resolve()
+  await page.waitForTimeout(300)
+  await expect(page.getByRole('button', { name: '创建公开链接' })).toBeVisible()
+})
+
 test('分享弹窗 loading 与 active 状态保持 reference', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
@@ -309,6 +337,42 @@ async function mockShareRegenerate(page: Page) {
       return json({ active: true, url: 'http://127.0.0.1:18084/s/new-share-token', created_at: STAMP })
     }
     return json({ items: [] })
+  })
+}
+
+for (const action of ['regenerate', 'revoke'] as const) {
+  test(`Rust 分享弹窗重开后忽略上次 ${action} 的迟到状态`, async ({ page }) => {
+    await mockShareRegenerate(page)
+    const gate = deferred()
+    let requested = false
+    let completed = false
+    await page.route(`**/api/files/${FILE_ID}/share`, async route => {
+      if (route.request().method() === 'GET') return route.fallback()
+      requested = true
+      await gate.promise
+      await route.fulfill(action === 'regenerate'
+        ? { json: { active: true, url: 'http://127.0.0.1:18084/s/late-token', created_at: STAMP } }
+        : { status: 204, body: '' })
+      completed = true
+    })
+    try {
+      await openActiveShare(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+      await page.locator('.share-modal').getByRole('button', { name: action === 'regenerate' ? '重新生成链接' : '停止分享' }).click()
+      await page.locator('.app-dialog').getByRole('button', { name: action === 'regenerate' ? '重新生成' : '停止分享' }).click()
+      await expect.poll(() => requested).toBe(true)
+      await page.locator('.share-modal header button').click()
+      await page.getByRole('toolbar', { name: '所选项目操作' }).getByRole('button', { name: '分享' }).click()
+      await expect(page.getByLabel('分享链接')).toHaveValue(/old-share-token/)
+      gate.resolve()
+      await expect.poll(() => completed).toBe(true)
+      await page.waitForTimeout(300)
+      await expect(page.getByLabel('分享链接')).toHaveValue(/old-share-token/)
+      // A completed old mutation must not leave the shared confirmation busy.
+      await page.locator('.share-modal').getByRole('button', { name: '停止分享' }).click()
+      await expect(page.locator('.app-dialog').getByRole('button', { name: '停止分享' })).toBeEnabled()
+    } finally {
+      gate.resolve()
+    }
   })
 }
 

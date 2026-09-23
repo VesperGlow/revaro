@@ -58,6 +58,67 @@ test('上传文件夹保留旧版的相对目录结构并通过任务状态完�
   }
 })
 
+for (const destination of ['folder', 'trash'] as const) {
+  test(`上传完成刷新不能打断进行中的 ${destination} 导航`, async ({ page }) => {
+    const folderName = `upload-navigation-${crypto.randomUUID()}`
+    const fileName = `upload-navigation-${crypto.randomUUID()}.txt`
+    let releaseComplete!: () => void
+    const completeGate = new Promise<void>(resolve => { releaseComplete = resolve })
+    let releaseNavigation!: () => void
+    const navigationGate = new Promise<void>(resolve => { releaseNavigation = resolve })
+    let completeWaiting = false
+    let navigationWaiting = false
+    let rootRefreshes = 0
+    try {
+      await login(page)
+      const folder = await page.evaluate(async ({ parentId, name }) => {
+        const response = await fetch('/api/directories', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent_id: parentId, name }),
+        })
+        if (!response.ok) throw new Error(await response.text())
+        return await response.json() as { id: string }
+      }, { parentId: ROOT, name: folderName })
+      await page.reload()
+      await expect(page.locator('.file-card').filter({ hasText: folderName })).toBeVisible()
+      await page.route('**/api/uploads/*/complete', async route => {
+        completeWaiting = true
+        await completeGate
+        await route.continue()
+      })
+      await page.route(destination === 'folder' ? `**/api/files/${folder.id}/children` : '**/api/trash', async route => {
+        navigationWaiting = true
+        await navigationGate
+        await route.continue()
+      })
+      page.on('request', request => {
+        if (navigationWaiting && new URL(request.url()).pathname === `/api/files/${ROOT}/children`) rootRefreshes += 1
+      })
+      await page.locator('input[type=file]').first().setInputFiles({
+        name: fileName, mimeType: 'text/plain', buffer: Buffer.from('upload navigation regression'),
+      })
+      await expect.poll(() => completeWaiting).toBe(true)
+      if (destination === 'folder') await page.locator('.file-card').filter({ hasText: folderName }).click()
+      else await page.getByRole('button', { name: '打开回收站' }).click()
+      await expect.poll(() => navigationWaiting).toBe(true)
+      const completed = page.waitForResponse(response => response.url().endsWith('/complete') && response.ok())
+      releaseComplete()
+      await completed
+      // Keep navigation pending past the upload controller's 250 ms debounce.
+      await page.waitForTimeout(700)
+      expect(rootRefreshes, '后台上传刷新不应抢占用户的目录导航').toBe(0)
+      releaseNavigation()
+      await expect(page.getByRole('heading', { name: destination === 'folder' ? folderName : '回收站', exact: true })).toBeVisible()
+      if (destination === 'folder') await expect(page).toHaveURL(new RegExp(`/f/${folder.id}$`))
+    } finally {
+      releaseComplete()
+      releaseNavigation()
+      await page.unrouteAll({ behavior: 'wait' })
+      await removeCreated(page, [folderName, fileName])
+    }
+  })
+}
+
 test('old/new 文件夹上传按 reference 保留同层目录的创建顺序', async ({ browser }) => {
   const rootName = `upload-order-${crypto.randomUUID()}`
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
@@ -421,6 +482,17 @@ test('old/new 文件夹上传保留相同反馈与嵌套目录结果', async ({ 
   try {
     await Promise.all([loginAt(oldPage, oldUrl), loginAt(newPage, newUrl)])
     await Promise.all([watchFolderUploadFeedback(oldPage), watchFolderUploadFeedback(newPage)])
+    // The reference refreshes root 250 ms after upload completion, even if a
+    // navigation has just started. Wait for that refresh here: this comparison
+    // verifies the final directory structure. The Rust-only navigation tests
+    // above separately verify that background refresh cannot cancel navigation.
+    let oldCompletions = 0
+    oldPage.on('response', response => {
+      if (response.url().endsWith('/complete') && response.ok()) oldCompletions += 1
+    })
+    const oldFinalRefresh = oldPage.waitForResponse(response =>
+      oldCompletions === 2 && new URL(response.url()).pathname === `/api/files/${ROOT}/children` && response.ok(),
+    )
     await Promise.all([
       oldPage.locator('input[webkitdirectory]').setInputFiles(directory),
       newPage.locator('input[webkitdirectory]').setInputFiles(directory),
@@ -433,6 +505,8 @@ test('old/new 文件夹上传保留相同反馈与嵌套目录结果', async ({ 
       expect(oldPage.locator('.file-card').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
       expect(newPage.locator('.file-card').filter({ hasText: rootName })).toBeVisible({ timeout: 20_000 }),
     ])
+    await (await oldFinalRefresh).finished()
+    await expect(oldPage.locator('.file-card').filter({ hasText: rootName })).toBeVisible()
     for (const page of [oldPage, newPage]) {
       await page.locator('.file-card').filter({ hasText: rootName }).click()
       await expect(page.locator('.file-card').filter({ hasText: 'nested' })).toBeVisible({ timeout: 20_000 })
@@ -697,7 +771,6 @@ test('old/new 刷新后重新选择同一文件复用 reference pending session'
     let uploadId = ''
     let firstPutStarted!: () => void
     const firstPut = new Promise<void>(resolve => { firstPutStarted = resolve })
-    let firstPutAborted = false
     let initialPut = true
 
     page.on('request', request => {
@@ -709,10 +782,6 @@ test('old/new 刷新后重新选择同一文件复用 reference pending session'
       if (request.method() === 'PUT' && url.pathname.match(/^\/api\/uploads\/[^/]+\/data$/)) {
         firstPutStarted()
       }
-    })
-    page.on('requestfailed', request => {
-      const url = new URL(request.url())
-      if (uploadId && url.pathname === `/api/uploads/${uploadId}/data`) firstPutAborted = true
     })
     await page.route(/\/api\/uploads$/, async route => {
       if (route.request().method() !== 'POST') {
@@ -750,6 +819,11 @@ test('old/new 刷新后重新选择同一文件复用 reference pending session'
 
     await page.reload()
     await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+    // A request paused in Playwright routing need not emit requestfailed on
+    // navigation. Verify the durable contract directly before resuming it.
+    const pendingSession = await page.request.get(`${baseUrl}/api/uploads/${uploadId}`)
+    expect(pendingSession.ok()).toBe(true)
+    const pendingStatus = (await pendingSession.json()).status
     initialPut = false
     await page.evaluate(({ fileName, contents, lastModified }) => {
       const input = document.querySelector('input[type="file"]')
@@ -771,7 +845,7 @@ test('old/new 刷新后重新选择同一文件复用 reference pending session'
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('revaro.uploads.v1') || '[]'))
     return {
       calls: calls.map(call => call.replace(/[0-9a-f-]{36}/g, ':id')),
-      firstPutAborted,
+      pendingStatus,
       saved,
     }
   }
@@ -781,7 +855,7 @@ test('old/new 刷新后重新选择同一文件复用 reference pending session'
       exercise(oldPage, oldUrl),
       exercise(newPage, newUrl),
     ])
-    expect(oldResult.firstPutAborted).toBe(true)
+    expect(oldResult.pendingStatus).toBe('pending')
     expect(oldResult.saved).toEqual([])
     expect(oldResult.calls).toEqual([
       'POST /api/uploads',

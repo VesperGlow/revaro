@@ -107,6 +107,144 @@ async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 }
 
+for (const kind of ['audio', 'video'] as const) {
+  test(`Rust ${kind} 预览关闭后迟到的元数据和进度响应不会访问已销毁组件`, async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await mockMedia(page)
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    let requests = 0
+    let completed = 0
+    await page.route(`**/api/files/${kind}-1/{${kind},media/progress}`, async route => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      requests += 1
+      await pending
+      await route.fulfill({ json: route.request().url().endsWith('/progress')
+        ? { position: 30, duration: 120 }
+        : kind === 'audio' ? { duration: 120, chapters: [] } : { subtitles: [] } })
+      completed += 1
+    })
+    try {
+      await open(page, kind === 'audio' ? '山间来信.m4a' : '山间漫步.webm')
+      await expect.poll(() => requests).toBe(2)
+      await page.getByRole('button', { name: kind === 'audio' ? '关闭预览' : '退出播放', exact: true }).click()
+      await expect(page.locator('.preview-modal')).toHaveCount(0)
+      release()
+      await expect.poll(() => completed).toBe(2)
+      await page.waitForTimeout(200)
+      expect(errors).toEqual([])
+      await open(page, '群山.png')
+      await expect(page.locator('.preview-image')).toBeVisible()
+    } finally {
+      release()
+    }
+  })
+}
+
+test('Rust 目录选择器关闭后忽略迟到的目录响应', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await mockMedia(page)
+  await open(page, '群山.png')
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let requested = false
+  let completed = false
+  await page.route(`**/api/files/${ROOT}/children`, async route => {
+    requested = true
+    await pending
+    await route.fulfill({ json: { items: [], total_bytes: 0, file_count: 0 } })
+    completed = true
+  })
+  try {
+    await page.locator('.preview-commandbar summary').click()
+    await page.getByRole('button', { name: '移动', exact: true }).click()
+    await expect.poll(() => requested).toBe(true)
+    await page.locator('.move-copy-dialog').getByRole('button', { name: '取消', exact: true }).click()
+    await expect(page.locator('.move-copy-dialog')).toHaveCount(0)
+    release()
+    await expect.poll(() => completed).toBe(true)
+    await page.waitForTimeout(200)
+    expect(errors).toEqual([])
+  } finally {
+    release()
+  }
+})
+
+test('Rust 音频进度条在桌面和手机上铺满控制区，轨道和拖动位置一致', async ({ page }) => {
+  await mockMedia(page)
+  await open(page, '山间来信.m4a')
+  const audio = page.locator('audio')
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
+  await audio.evaluate((element: HTMLAudioElement) => element.pause())
+  const slider = page.getByRole('slider', { name: '播放进度' })
+
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 568 }]) {
+    await page.setViewportSize(viewport)
+    await slider.scrollIntoViewIfNeeded()
+    const playback = await page.locator('.audio-playback').boundingBox()
+    const input = await slider.boundingBox()
+    const track = await page.locator('.full-bleed-progress__track').boundingBox()
+    expect(playback).not.toBeNull()
+    expect(input).not.toBeNull()
+    expect(track).not.toBeNull()
+    expect(input!.width).toBeCloseTo(playback!.width, 0)
+    expect(input!.x).toBeCloseTo(playback!.x, 0)
+    expect(input!.height).toBe(44)
+    expect(track!.width).toBeCloseTo(playback!.width, 0)
+    expect(track!.height).toBe(3)
+
+    await slider.click({ position: { x: input!.width / 2, y: input!.height / 2 } })
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeCloseTo(60, 0)
+    await expect.poll(() => page.locator('.full-bleed-progress__played').evaluate(element =>
+      element.getBoundingClientRect().width / element.parentElement!.getBoundingClientRect().width,
+    )).toBeCloseTo(0.5, 2)
+    const thumb = await page.locator('.full-bleed-progress__thumb').boundingBox()
+    expect(thumb!.width).toBe(12)
+    expect(thumb!.x + thumb!.width / 2).toBeCloseTo(input!.x + input!.width / 2, 0)
+    await expect(page.locator('.full-bleed-progress__tooltip')).toHaveText('1:00')
+    await expect(page.locator('.full-bleed-progress__track > i')).toHaveCount(2)
+
+    // Exercise native mouse dragging, including both ends of the range.
+    await page.mouse.move(input!.x + input!.width / 2, input!.y + input!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(input!.x + input!.width, input!.y + input!.height / 2, { steps: 5 })
+    await page.mouse.up()
+    await expect.poll(() => slider.inputValue()).toBe('120')
+    await slider.focus()
+    await page.keyboard.press('Home')
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBe(0)
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(() => slider.inputValue()).toBe('0.1')
+    await noOverflow(page)
+  }
+
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.getByRole('button', { name: '章节', exact: true }).click()
+  await expect(page.locator('.audio-panel')).toBeVisible()
+  const widths = await page.locator('.audio-playback').evaluate(element => ({
+    control: element.getBoundingClientRect().width,
+    slider: element.querySelector('input')!.getBoundingClientRect().width,
+  }))
+  expect(widths.slider).toBeCloseTo(widths.control, 0)
+  await noOverflow(page)
+})
+
+test('Rust 移动复制对话框在手机断点保持内边距', async ({ page }) => {
+  await mockMedia(page)
+  await open(page, '群山.png')
+  await page.locator('.preview-commandbar summary').click()
+  await page.getByRole('button', { name: '移动', exact: true }).click()
+  const body = page.locator('.move-copy-body')
+  await expect(body).toBeVisible()
+  for (const width of [1440, 601, 600, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(body).toHaveCSS('padding', width <= 600 ? '14px' : '18px 20px')
+    await noOverflow(page)
+  }
+})
+
 test('old/new 音频原始预览失败显示旧错误状态，关闭重开后按 reference 恢复播放', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
@@ -1161,6 +1299,18 @@ test('old/new 音频恢复进度只接受严格早于结束前五秒的位置', 
   const newPage = await newContext.newPage()
 
   async function exercise(page: Page, baseUrl: string) {
+    // Observe the requested seek rather than elapsed autoplay time: playback
+    // can cross 115 between assertions even when 114.9 was restored correctly.
+    await page.addInitScript(() => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')!
+      Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+        ...descriptor,
+        set(value: number) {
+          if (this instanceof HTMLAudioElement) this.dataset.restoredSeek = String(value)
+          descriptor.set!.call(this, value)
+        },
+      })
+    })
     await mockMedia(page, baseUrl)
     await page.evaluate(() => localStorage.setItem('revaro-audio-position:audio-1', '114.9'))
     await page.route('**/api/files/audio-1/media/progress', async route => {
@@ -1174,7 +1324,8 @@ test('old/new 音频恢复进度只接受严格早于结束前五秒的位置', 
     const firstAudio = page.locator('audio')
     await expect.poll(() => firstAudio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
     await expect.poll(() => firstAudio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThanOrEqual(114.9)
-    const nearEndRestored = Math.floor(await firstAudio.evaluate((element: HTMLAudioElement) => element.currentTime))
+    await expect(firstAudio).toHaveAttribute('data-restored-seek', '114.9')
+    const nearEndRestored = Number(await firstAudio.getAttribute('data-restored-seek'))
     await firstAudio.evaluate((element: HTMLAudioElement) => element.pause())
     await page.getByRole('button', { name: '关闭预览', exact: true }).click()
     await expect(page.locator('.chapter-audio-player')).toHaveCount(0)
@@ -1184,7 +1335,7 @@ test('old/new 音频恢复进度只接受严格早于结束前五秒的位置', 
     const boundaryAudio = page.locator('audio')
     await expect.poll(() => boundaryAudio.evaluate((element: HTMLAudioElement) => element.readyState)).toBe(4)
     await expect.poll(() => boundaryAudio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeLessThan(5)
-    const boundaryIgnored = Math.floor(await boundaryAudio.evaluate((element: HTMLAudioElement) => element.currentTime))
+    const boundaryIgnored = await boundaryAudio.getAttribute('data-restored-seek') === null
     await boundaryAudio.evaluate((element: HTMLAudioElement) => element.pause())
     return { nearEndRestored, boundaryIgnored }
   }
@@ -1194,8 +1345,8 @@ test('old/new 音频恢复进度只接受严格早于结束前五秒的位置', 
       exercise(oldPage, oldUrl),
       exercise(newPage, newUrl),
     ])
-    expect(oldResult.nearEndRestored).toBe(114)
-    expect(oldResult.boundaryIgnored).toBe(0)
+    expect(oldResult.nearEndRestored).toBe(114.9)
+    expect(oldResult.boundaryIgnored).toBe(true)
     expect(newResult, 'Rust 音频恢复位置结尾阈值与 reference 不一致').toEqual(oldResult)
   } finally {
     await Promise.all([oldContext.close(), newContext.close()])
@@ -1771,6 +1922,9 @@ test('old/new 图片缩略图失败时只回退一次到原图地址', async ({ 
     await open(page, '群山.png')
     await page.getByRole('button', { name: '缩略图', exact: true }).click()
     const thumbnail = page.getByRole('button', { name: '查看 远山.png' }).locator('img')
+    // The grid already decoded this URL before the failure route was added.
+    // Force a fresh failing request so memory-cache reuse cannot bypass error.
+    await thumbnail.evaluate((image: HTMLImageElement) => { image.src += '&fallback-regression=1' })
     await expect.poll(() => thumbnail.getAttribute('src'), { timeout: 10_000 }).toContain('/api/files/image-2/preview')
     await page.waitForTimeout(300)
     const src = await thumbnail.getAttribute('src')

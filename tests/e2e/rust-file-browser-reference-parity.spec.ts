@@ -122,7 +122,8 @@ async function headerSnapshot(page: Page) {
     meta: element.querySelector('.folder-meta')?.textContent?.replace(/\s+/g, ' ').trim(),
     // The Rust header no longer renders the grid/list switch, so the compared
     // snapshot only covers the shared action buttons.
-    actions: Array.from(element.querySelectorAll(':scope > .actions button')).map(button => ({
+    actions: Array.from(element.querySelectorAll(':scope > .actions button'))
+      .filter(button => !button.closest('.file-view-switch')).map(button => ({
       text: button.textContent?.replace(/\s+/g, ' ').trim(),
       className: button.className,
       title: button.getAttribute('title'),

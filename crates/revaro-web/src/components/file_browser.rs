@@ -110,6 +110,10 @@ pub fn FileBrowser(
     let total_bytes = RwSignal::new(0_i64);
     let file_count = RwSignal::new(0_i64);
     let loading = RwSignal::new(false);
+    // `current_id` changes only once navigation succeeds. Background refreshes
+    // must also check the in-flight destination, or they can supersede a user
+    // navigating away from the still-current folder (including into trash).
+    let loading_folder = RwSignal::new(None::<String>);
     let error = RwSignal::new(String::new());
     let trash_mode = RwSignal::new(false);
     let request_sequence = RwSignal::new(0_u64);
@@ -156,6 +160,7 @@ pub fn FileBrowser(
     let preview_items = RwSignal::new(Vec::<File>::new());
     let archive_target = RwSignal::new(None::<File>);
     let share_file = RwSignal::new(None::<File>);
+    let share_sequence = RwSignal::new(0_u64);
     let share_active = RwSignal::new(false);
     let share_url = RwSignal::new(String::new());
     let share_created_at = RwSignal::new(String::new());
@@ -235,6 +240,7 @@ pub fn FileBrowser(
             } = request;
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
+            loading_folder.set(Some(requested_id.clone()));
             loading.set(true);
             error.set(String::new());
             if pending_editor_refresh
@@ -266,10 +272,11 @@ pub fn FileBrowser(
                 }
                 .await;
 
-                if request_sequence.get_untracked() != sequence {
+                if request_sequence.try_get_untracked() != Some(sequence) {
                     finish_folder_load(&mut completion);
                     return;
                 }
+                loading_folder.set(None);
 
                 match result {
                     Ok((detail, children)) => {
@@ -366,6 +373,7 @@ pub fn FileBrowser(
             let mut completion = request.completion;
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
+            loading_folder.set(None);
             loading.set(true);
             error.set(String::new());
             let logout = on_logout.clone();
@@ -373,7 +381,7 @@ pub fn FileBrowser(
             leptos::task::spawn_local(async move {
                 let mut success = false;
                 match api::fetch_trash().await {
-                    Ok(trash) if request_sequence.get_untracked() == sequence => {
+                    Ok(trash) if request_sequence.try_get_untracked() == Some(sequence) => {
                         current.set(None);
                         breadcrumbs.set(Vec::new());
                         preview_items.set(trash.items.clone());
@@ -386,13 +394,15 @@ pub fn FileBrowser(
                         success = true;
                     }
                     Err(request_error)
-                        if request_sequence.get_untracked() == sequence
+                        if request_sequence.try_get_untracked() == Some(sequence)
                             && request_error.is_unauthorized() =>
                     {
                         loading.set(false);
                         logout.run(());
                     }
-                    Err(request_error) if request_sequence.get_untracked() == sequence => {
+                    Err(request_error)
+                        if request_sequence.try_get_untracked() == Some(sequence) =>
+                    {
                         loading.set(false);
                         notify.run(Feedback::error(request_error.message));
                     }
@@ -416,8 +426,11 @@ pub fn FileBrowser(
         let trash_mode = trash_mode;
         let load_folder_request = load_folder_request.clone();
         Callback::new(move |request: UploadRefresh| {
-            let current_folder =
-                !trash_mode.get_untracked() && current_id.get_untracked() == request.parent_id;
+            let current_folder = !trash_mode.get_untracked()
+                && current_id.get_untracked() == request.parent_id
+                && (!loading.get_untracked()
+                    || loading_folder.get_untracked().as_deref()
+                        == Some(request.parent_id.as_str()));
             if current_folder {
                 load_folder_request.run(FolderLoadRequest {
                     id: request.parent_id,
@@ -445,8 +458,12 @@ pub fn FileBrowser(
         let trash_mode = trash_mode;
         let load_folder = load_folder.clone();
         Callback::new(move |(): ()| {
-            if !trash_mode.get_untracked() {
-                load_folder.run(current_id.get_untracked());
+            let id = current_id.get_untracked();
+            if !trash_mode.get_untracked()
+                && (!loading.get_untracked()
+                    || loading_folder.get_untracked().as_deref() == Some(id.as_str()))
+            {
+                load_folder.run(id);
             }
         })
     };
@@ -523,6 +540,9 @@ pub fn FileBrowser(
             }
             push_overlay.run(());
             let id = file.id.clone();
+            // Reopening even the same file starts a distinct dialog session.
+            let sequence = share_sequence.get_untracked().wrapping_add(1);
+            share_sequence.set(sequence);
             share_file.set(Some(file));
             share_active.set(false);
             share_url.set(String::new());
@@ -532,7 +552,13 @@ pub fn FileBrowser(
             share_busy.set(true);
             let on_logout = on_logout.clone();
             leptos::task::spawn_local(async move {
-                match api::fetch_share(&id).await {
+                let result = api::fetch_share(&id).await;
+                if share_sequence.try_get_untracked() != Some(sequence)
+                    || share_file.try_with_untracked(Option::is_some) != Some(true)
+                {
+                    return;
+                }
+                match result {
                     Ok(status) => {
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
@@ -576,9 +602,16 @@ pub fn FileBrowser(
             share_error.set(String::new());
             share_copied.set(false);
             let id = file.id;
+            let sequence = share_sequence.get_untracked();
             let on_logout = on_logout.clone();
             leptos::task::spawn_local(async move {
-                match api::create_share(&id).await {
+                let result = api::create_share(&id).await;
+                if share_sequence.try_get_untracked() != Some(sequence)
+                    || share_file.try_with_untracked(Option::is_some) != Some(true)
+                {
+                    return;
+                }
+                match result {
                     Ok(status) => {
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
@@ -866,6 +899,11 @@ pub fn FileBrowser(
                 &state,
                 DialogState::RegenerateShare | DialogState::RevokeShare
             );
+            let share_session = share_sequence.get_untracked();
+            let share_is_current = move || {
+                share_sequence.try_get_untracked() == Some(share_session)
+                    && share_file.try_with_untracked(Option::is_some) == Some(true)
+            };
             let selected = selected_ids.get_untracked();
             let delete_targets = items
                 .get_untracked()
@@ -931,6 +969,9 @@ pub fn FileBrowser(
                             };
                             share_busy.set(true);
                             let result = api::create_share(&file.id).await;
+                            if !share_is_current() {
+                                return Ok(String::new());
+                            }
                             match result {
                                 Ok(status) => {
                                     share_active.set(status.active);
@@ -958,6 +999,9 @@ pub fn FileBrowser(
                             };
                             share_busy.set(true);
                             api::revoke_share(&file.id).await?;
+                            if !share_is_current() {
+                                return Ok(String::new());
+                            }
                             share_active.set(false);
                             share_url.set(String::new());
                             share_created_at.set(String::new());
@@ -1026,6 +1070,9 @@ pub fn FileBrowser(
                 .await;
 
                 dialog_busy.set(false);
+                if share_action && !share_is_current() {
+                    return;
+                }
                 share_busy.set(false);
                 match result {
                     Ok(message) => {
@@ -1358,8 +1405,12 @@ pub fn FileBrowser(
             let id = file.id;
             let on_logout = on_logout.clone();
             leptos::task::spawn_local(async move {
-                match api::fetch_document(&id).await {
-                    Ok(document) if editor_sequence.get_untracked() == sequence => {
+                let result = api::fetch_document(&id).await;
+                if editor_open.try_get_untracked() != Some(true) {
+                    return;
+                }
+                match result {
+                    Ok(document) if editor_sequence.try_get_untracked() == Some(sequence) => {
                         editor_content.set(document.content.clone());
                         editor_original.set(document.content);
                         editor_etag.set(document.etag);
@@ -1367,14 +1418,14 @@ pub fn FileBrowser(
                         editor_busy.set(false);
                     }
                     Err(error)
-                        if editor_sequence.get_untracked() == sequence
+                        if editor_sequence.try_get_untracked() == Some(sequence)
                             && error.is_unauthorized() =>
                     {
                         editor_busy.set(false);
                         editor_open.set(false);
                         on_logout.run(());
                     }
-                    Err(error) if editor_sequence.get_untracked() == sequence => {
+                    Err(error) if editor_sequence.try_get_untracked() == Some(sequence) => {
                         editor_busy.set(false);
                         editor_error.set(error.message);
                     }
@@ -1400,6 +1451,9 @@ pub fn FileBrowser(
         let push_overlay = push_overlay.clone();
         Callback::new(move |(): ()| {
             push_overlay.run(());
+            // A new draft is a new editor session too. A read from the
+            // previously closed document must never replace its contents.
+            editor_sequence.update(|sequence| *sequence = sequence.wrapping_add(1));
             editor_open.set(true);
             editor_is_new.set(true);
             editor_readonly.set(false);
@@ -1462,6 +1516,7 @@ pub fn FileBrowser(
                 return;
             }
             editor_busy.set(true);
+            let sequence = editor_sequence.get_untracked();
             let is_new = editor_is_new.get_untracked();
             let file_id = editor_file_id.get_untracked();
             let parent_id = current_id.get_untracked();
@@ -1482,6 +1537,19 @@ pub fn FileBrowser(
                 } else {
                     api::update_document(&file_id, &request).await
                 };
+                if editor_sequence.try_get_untracked() != Some(sequence)
+                    || editor_open.try_get_untracked() != Some(true)
+                {
+                    // The write may have succeeded after closing the editor.
+                    // Refresh its directory if still visible, without changing
+                    // any newer draft or navigating away from another folder.
+                    if result.is_ok()
+                        && current_id.try_get_untracked().as_deref() == Some(parent_id.as_str())
+                    {
+                        refresh.run(parent_id);
+                    }
+                    return;
+                }
                 match result {
                     Ok(saved) => {
                         editor_is_new.set(false);
@@ -1489,8 +1557,10 @@ pub fn FileBrowser(
                         editor_name.set(saved.name.clone());
                         editor_original_name.set(saved.name);
                         editor_etag.set(saved.etag);
-                        editor_original.set(editor_content.get_untracked());
-                        editor_dirty.set(false);
+                        // Only the submitted snapshot was persisted. Typing
+                        // while the request is in flight remains unsaved.
+                        editor_dirty.set(editor_content.get_untracked() != request.content);
+                        editor_original.set(request.content);
                         refresh.run(parent_id);
                         pending_editor_refresh.set(Some(current_id.get_untracked()));
                     }

@@ -74,6 +74,60 @@ async function openShell(page: Page, baseUrl: string) {
   await expect(page.locator('.file-card')).toHaveCount(items.length)
 }
 
+for (const view of ['folder', 'trash']) {
+  test(`Rust ${view} 请求在退出登录后完成不会访问已销毁页面`, async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await mockShell(page)
+    await openShell(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    let requested = false
+    let completed = false
+    await page.route(view === 'folder' ? `**/api/files/${ROOT}/children` : '**/api/trash', async route => {
+      requested = true
+      await pending
+      await route.fallback()
+      completed = true
+    })
+    try {
+      await page.getByRole('button', { name: view === 'folder' ? '回到我的文件' : '打开回收站', exact: true }).click()
+      await expect.poll(() => requested).toBe(true)
+      await page.getByTitle('打开账户设置').click()
+      await page.getByRole('button', { name: '退出登录', exact: true }).click()
+      await expect(page.getByRole('button', { name: '进入我的网盘' })).toBeVisible()
+      release()
+      await expect.poll(() => completed).toBe(true)
+      await page.waitForTimeout(200)
+      expect(errors).toEqual([])
+    } finally {
+      release()
+    }
+  })
+}
+
+test('Rust 清空回收站按钮保留危险操作样式和禁用状态', async ({ page }) => {
+  await mockShell(page)
+  await openShell(page, process.env.E2E_NEW_URL!)
+  await page.getByRole('button', { name: '打开回收站', exact: true }).click()
+  const button = page.getByRole('button', { name: '清空回收站', exact: true })
+  await expect(button).toBeDisabled()
+  await expect(button).toHaveCSS('color', 'rgb(220, 38, 38)')
+  await expect(button).toHaveCSS('background-color', 'rgb(255, 245, 245)')
+  await expect(button).toHaveCSS('min-height', '40px')
+  await expect(button).toHaveCSS('opacity', '0.45')
+
+  await page.route('**/api/trash', route => route.fulfill({ json: { items, total_bytes: 2048, file_count: 1 } }))
+  await page.getByRole('button', { name: '返回我的文件', exact: true }).click()
+  await page.getByRole('button', { name: '打开回收站', exact: true }).click()
+  await expect(button).toBeEnabled()
+  await button.hover()
+  await expect(button).toHaveCSS('background-color', 'rgb(254, 226, 226)')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(button).toBeVisible()
+  expect(await button.evaluate(element => element.getBoundingClientRect().right <= innerWidth)).toBe(true)
+})
+
 async function layoutSnapshot(page: Page) {
   return page.evaluate(() => {
     const rect = (selector: string) => {
@@ -189,12 +243,15 @@ async function dialogSnapshot(page: Page) {
 
 async function selectionSnapshot(page: Page) {
   return page.locator('.selection-toolbar').evaluate(toolbar => {
+    const origin = toolbar.getBoundingClientRect()
     const rect = (element: Element | null) => {
       if (!(element instanceof HTMLElement)) return null
       const box = element.getBoundingClientRect()
       return {
-        x: Math.round(box.x * 100) / 100,
-        y: Math.round(box.y * 100) / 100,
+        // Header view-switch removal changes the toolbar's page offset, not
+        // its internal layout. Hidden nodes retain their zero-size snapshot.
+        x: box.width ? Math.round((box.x - origin.x) * 100) / 100 : 0,
+        y: box.height ? Math.round((box.y - origin.y) * 100) / 100 : 0,
         width: Math.round(box.width * 100) / 100,
         height: Math.round(box.height * 100) / 100,
       }

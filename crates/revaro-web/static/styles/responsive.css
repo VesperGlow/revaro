@@ -456,6 +456,26 @@ button:disabled {
   background: var(--accent);
   color: #fff;
 }
+@media (hover: none), (pointer: coarse) {
+  /* Keep the triangular decoration, but make the entire 44px button a touch
+     target. Clipping the button itself lets rounded touch coordinates on the
+     diagonal fall through to the file and open it instead of selecting it. */
+  .card-select, .card-select:hover, .card-select.active {
+    clip-path: none;
+    background: transparent;
+  }
+  .card-select::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+    background: #fffffff2;
+    pointer-events: none;
+  }
+  .card-select:hover::before { background: #eef5ff; }
+  .card-select.active::before { background: var(--accent); }
+  .card-select svg { z-index: 1; }
+}
 .storage-fill{
   background: var(--accent);
 }

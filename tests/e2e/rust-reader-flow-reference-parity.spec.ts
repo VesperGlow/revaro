@@ -912,6 +912,10 @@ test('持久 L2：重开同一本书零 chunk 请求，manifest 版本变化才�
   await page.waitForTimeout(600) // 等待 L2 写入完成
 
   // 重开（页面上下文保持 → IndexedDB L2 保留）
+  // Close first: Rust intentionally restores /read/{id} on reload, unlike
+  // the reference route bug. Cache reuse must not depend on that difference.
+  await page.locator('#reader-back').click()
+  await expect(page.locator('#reader-view')).toHaveCount(0)
   await page.unroute('**/*')
   await mockAPI(page)
   await page.reload()
@@ -924,6 +928,8 @@ test('持久 L2：重开同一本书零 chunk 请求，manifest 版本变化才�
   expect(Object.keys(flowRequests)).toHaveLength(0)
 
   // 服务端 flow 版本升级 → sameLayout 失败 → L2 chunk 失效重取
+  await page.locator('#reader-back').click()
+  await expect(page.locator('#reader-view')).toHaveCount(0)
   await page.unroute('**/*')
   await mockAPI(page, { manifestVersion: 5 })
   await page.reload()
@@ -1054,4 +1060,3 @@ test('目录片段回退：容器首 fragment 留在上一栏时按首个可见�
     testInfo.skip(true, 'Run with rust-reader-flow-parity.config.ts to execute old/new reader-flow parity');
   });
 }
-

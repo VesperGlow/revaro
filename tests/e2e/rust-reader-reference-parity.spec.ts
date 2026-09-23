@@ -162,6 +162,84 @@ async function prepare(page: Page, baseUrl: string, fixture: ReaderFixture = {},
   }
 }
 
+test('Rust 阅读器翻页动画中关闭不会访问已销毁的页面', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await prepare(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+  await page.locator('#next-zone').click()
+  await page.locator('#reader-back').click()
+  await expect(page.locator('#reader-view')).toHaveCount(0)
+  await page.waitForTimeout(400)
+  expect(errors).toEqual([])
+})
+
+test('Rust 阅读器目录跳转等待远端章节时关闭不会访问已销毁的页面', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await prepare(page, process.env.E2E_NEW_URL || 'http://127.0.0.1:18084', {
+    flowSpines: Array.from({ length: 12 }, (_, index) => ({ block_start: index * 20, block_count: 20 })),
+    flowMetadata: { total_chars: 9600, chunks: Array.from({ length: 12 }, (_, index) => ({ index, block_start: index * 20, block_count: 20, chars: 800 })) },
+    toc: [defaultToc[0], { ...defaultToc[1], spine: 11, block: 220, chunk: 11 }],
+  })
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let requested = false
+  let completed = false
+  await page.route(`**/api/files/${BOOK_ID}/book/flow/chunks/11`, async route => {
+    requested = true
+    await pending
+    await route.fallback()
+    completed = true
+  })
+  try {
+    await page.locator('#toc-button').click()
+    await page.locator('#toc-list .toc-item').nth(1).click()
+    await expect.poll(() => requested).toBe(true)
+    await page.locator('#reader-back').click()
+    await expect(page.locator('#reader-view')).toHaveCount(0)
+    release()
+    await expect.poll(() => completed).toBe(true)
+    await page.waitForTimeout(300)
+    expect(errors).toEqual([])
+  } finally {
+    release()
+  }
+})
+
+for (const endpoint of ['book', 'book/flow', 'book/flow/chunks/0']) {
+  test(`Rust 阅读器关闭后忽略迟到的 ${endpoint} 响应`, async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await mockReader(page)
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    let requested = false
+    let completed = false
+    await page.route(`**/api/files/${BOOK_ID}/${endpoint}`, async route => {
+      requested = true
+      await pending
+      await route.fallback()
+      completed = true
+    })
+    try {
+      await page.goto(process.env.E2E_NEW_URL || 'http://127.0.0.1:18084')
+      await page.locator('.file-card').filter({ hasText: book.name }).click()
+      await expect.poll(() => requested).toBe(true)
+      await page.locator('#reader-back').click()
+      await expect(page.locator('#reader-view')).toHaveCount(0)
+      release()
+      await expect.poll(() => completed).toBe(true)
+      await page.waitForTimeout(300)
+      expect(errors).toEqual([])
+      await page.locator('.file-card').filter({ hasText: book.name }).click()
+      await expect(page.locator('#loading')).toBeHidden()
+      await expect(page.locator('#flow .rf-chunk').first()).toBeVisible()
+    } finally {
+      release()
+    }
+  })
+}
+
 test('old/new 阅读器书籍成功响应缺少未使用元数据字段时仍使用 name/title', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
@@ -507,7 +585,11 @@ test('old/new 阅读器的排版、明暗、工具显隐和空目录行为一致
     await page.locator('#toc-button').click()
     await expect(page.locator('.toc-empty')).toHaveText('这本书没有可用目录。')
     const emptyOpen = await readerSnapshot(page)
-    await page.mouse.click(5, 400)
+    await expect(page.locator('#toc-drawer')).toHaveCSS('transform', 'none')
+    // The reference's obsolete mobile sidebar handle overlaps the scrim at
+    // mid-screen. Click above it to exercise the reader's own backdrop.
+    await page.mouse.click(5, 100)
+    await expect(page.locator('#toc-drawer')).not.toHaveClass(/open/)
     const emptyClosed = await readerSnapshot(page)
     return { initial, fontOpen, changed, changedPrefs, hidden, shown, emptyOpen, emptyClosed }
   }

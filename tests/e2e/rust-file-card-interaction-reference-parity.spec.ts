@@ -191,8 +191,8 @@ test('移动端选择模式轻触选择控件只切换选择，不打开 editor'
     const oldRow = oldPage.locator('.file-row').filter({ hasText: note.name })
     const newCard = newPage.locator('.file-card').filter({ hasText: note.name })
     await Promise.all([
-      oldRow.getByRole('button', { name: '选择项目' }).click(),
-      newCard.getByRole('button', { name: '选择项目' }).click(),
+      oldRow.getByRole('button', { name: '选择项目' }).tap(),
+      newCard.getByRole('button', { name: '选择项目' }).tap(),
     ])
     await Promise.all([
       expect(oldPage.locator('.selection-toolbar')).toContainText('1 项'),
@@ -202,7 +202,7 @@ test('移动端选择模式轻触选择控件只切换选择，不打开 editor'
     // While selection mode is active, tapping the select affordance toggles the
     // item back off without opening the editor.
     await Promise.all([
-      oldRow.locator('.row-info').tap(),
+      oldRow.getByRole('button', { name: '取消选择' }).tap(),
       newCard.getByRole('button', { name: '取消选择' }).tap(),
     ])
     await Promise.all([

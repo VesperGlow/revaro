@@ -518,11 +518,12 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let leave_seek = move |_| seek_hover.set(None);
     // Load durable progress and metadata independently. Either may arrive
     // first; `restore_position` only acts after both media duration and the
-    // server response are available.
+    // server response are available. These reads belong to the player: unlike
+    // durable progress writes, they must stop when its reactive owner is gone.
     {
         let id = item.id.clone();
         let restore_position = restore_position.clone();
-        leptos::task::spawn_local(async move {
+        leptos::task::spawn_local_scoped_with_cancellation(async move {
             if let Ok(progress) = api::fetch_media_progress(&id).await {
                 server_position.set(safe_time(progress.position));
             }
@@ -532,7 +533,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     }
     {
         let id = item.id.clone();
-        leptos::task::spawn_local(async move {
+        leptos::task::spawn_local_scoped_with_cancellation(async move {
             if let Ok(value) = api::fetch_audio_media(&id).await {
                 media.set(Some(value));
                 restore_position();

@@ -78,7 +78,7 @@ pub const CASCADE: [Stylesheet; 14] = [
 /// global sheets at equal specificity; loading them last and anchoring their
 /// generic class names under each component root reproduces that. They are
 /// listed separately because they are not part of the original 15-file cascade.
-pub const COMPONENT_SHEETS: [Stylesheet; 8] = [
+pub const COMPONENT_SHEETS: [Stylesheet; 9] = [
     Stylesheet::new(
         "styles/components/app-topbar.css",
         "AppTopbar scoped block; :deep() resolved",
@@ -110,6 +110,10 @@ pub const COMPONENT_SHEETS: [Stylesheet; 8] = [
     Stylesheet::new(
         "styles/components/file-browser-header.css",
         "FileBrowserHeader breadcrumbs and responsive path styling",
+    ),
+    Stylesheet::new(
+        "styles/components/full-bleed-progress.css",
+        "FullBleedProgress track, buffer, chapter markers and native range overlay",
     ),
 ];
 

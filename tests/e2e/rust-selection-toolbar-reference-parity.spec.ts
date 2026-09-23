@@ -91,7 +91,8 @@ async function toolbarMetrics(page: Page) {
         gap: style.gap,
         minHeight: style.minHeight,
         padding: style.padding,
-        width: Math.round(rect.width * 100) / 100,
+        // Available content width intentionally differs without the sidebar.
+        withinViewport: rect.left >= 0 && rect.right <= window.innerWidth,
         height: Math.round(rect.height * 100) / 100,
       },
     }

@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
 const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
+const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH
 
 export default defineConfig({
   testDir: '.',
@@ -14,6 +15,7 @@ export default defineConfig({
   use: {
     trace: 'retain-on-failure',
     video: 'off',
+    ...(executablePath ? { launchOptions: { executablePath } } : {}),
   },
   projects: [
     { name: 'old-reference', use: { ...devices['Desktop Chrome'], baseURL: oldUrl } },

@@ -747,10 +747,12 @@ pub fn VideoPlayer(
     });
 
     // Discover metadata and progress independently, just as the audio player
-    // does. A metadata failure leaves native video playback available.
+    // does. A metadata failure leaves native video playback available. Cancel
+    // these component-owned reads on close so late responses cannot restore a
+    // disposed player or start a detached video element.
     {
         let id = item.id.clone();
-        leptos::task::spawn_local(async move {
+        leptos::task::spawn_local_scoped_with_cancellation(async move {
             if let Ok(progress) = api::fetch_media_progress(&id).await {
                 server_position.set(if progress.position.is_finite() {
                     progress.position.max(0.0)
@@ -765,7 +767,7 @@ pub fn VideoPlayer(
     {
         let id = item.id.clone();
         let video_for_start = video;
-        leptos::task::spawn_local(async move {
+        leptos::task::spawn_local_scoped_with_cancellation(async move {
             if let Ok(value) = api::fetch_video_media(&id).await {
                 let defaults: Vec<_> = value
                     .subtitles

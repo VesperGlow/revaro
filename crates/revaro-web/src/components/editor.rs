@@ -52,6 +52,7 @@ pub fn DocumentEditor(
                                 aria-label="文档文件名"
                                 maxlength="1024"
                                 prop:value=move || name.get()
+                                prop:disabled=move || busy.get()
                                 on:input=move |event| name.set(event_target_value(&event))
                             />
                         </Show>

@@ -322,7 +322,9 @@ pub fn ReaderView(
     let open_error_text = error_text;
     let open_on_unauthorized = on_unauthorized.clone();
     let open_prefs = prefs;
-    leptos::task::spawn_local(async move {
+    // Opening can await metadata, a manifest and multiple chunks. None of
+    // those continuations may touch the reader after its view is closed.
+    leptos::task::spawn_local_scoped_with_cancellation(async move {
         open_reader(
             open_runtime,
             open_file_id,
@@ -1349,6 +1351,9 @@ async fn ensure_window(
     first: i32,
     last: i32,
 ) -> Result<bool, String> {
+    if runtime.borrow().closing {
+        return Ok(false);
+    }
     let Some(flow) = flow_element(flow) else {
         return Ok(false);
     };
@@ -1417,7 +1422,7 @@ async fn ensure_window(
         .buffer_unordered(concurrency)
         .collect()
         .await;
-    if runtime.borrow().generation != generation {
+    if runtime.borrow().closing || runtime.borrow().generation != generation {
         return Ok(false);
     }
     let mut html = HashMap::new();
@@ -2382,7 +2387,7 @@ async fn jump_to_toc(
     percent: RwSignal<f64>,
     entry: TocTarget,
 ) {
-    if stage.get_untracked() != ReaderStage::Reading {
+    if runtime.borrow().closing || stage.try_get_untracked() != Some(ReaderStage::Reading) {
         return;
     }
     let old_timer = runtime.borrow_mut().sync_timer.take();
@@ -2399,6 +2404,7 @@ async fn jump_to_toc(
     if ensure_window(&runtime, &file_id, &manifest, flow, first, last)
         .await
         .is_err()
+        || runtime.borrow().closing
     {
         return;
     }
@@ -2438,7 +2444,7 @@ async fn jump_to_block(
     percent: RwSignal<f64>,
     block: i32,
 ) {
-    if stage.get_untracked() != ReaderStage::Reading {
+    if runtime.borrow().closing || stage.try_get_untracked() != Some(ReaderStage::Reading) {
         return;
     }
     let Some(manifest) = runtime.borrow().manifest.clone() else {
@@ -2450,6 +2456,7 @@ async fn jump_to_block(
     if ensure_window(&runtime, &file_id, &manifest, flow, first, last)
         .await
         .is_err()
+        || runtime.borrow().closing
     {
         return;
     }
@@ -2475,6 +2482,9 @@ async fn move_to_column(
     column: i32,
     animated: bool,
 ) {
+    if runtime.borrow().closing {
+        return;
+    }
     {
         let mut state = runtime.borrow_mut();
         state.current_col = column.clamp(0, state.cols.saturating_sub(1));
@@ -2483,6 +2493,10 @@ async fn move_to_column(
     set_x(runtime, flow, animated);
     if animated {
         pause(ANIMATION_MS).await;
+        // Closing disposes the NodeRef while the animation timer is pending.
+        if runtime.borrow().closing {
+            return;
+        }
         if let Some(flow) = flow_html_element(flow) {
             let _ = flow.style().set_property("transition", "none");
         }
@@ -2641,7 +2655,7 @@ async fn window_sync(
     toc_active: RwSignal<i32>,
     percent: RwSignal<f64>,
 ) {
-    if stage.get_untracked() != ReaderStage::Reading {
+    if runtime.borrow().closing || stage.try_get_untracked() != Some(ReaderStage::Reading) {
         return;
     }
     {
@@ -2733,7 +2747,10 @@ async fn turn(
     percent: RwSignal<f64>,
     direction: i32,
 ) {
-    if stage.get_untracked() != ReaderStage::Reading || direction == 0 {
+    if runtime.borrow().closing
+        || stage.try_get_untracked() != Some(ReaderStage::Reading)
+        || direction == 0
+    {
         return;
     }
     {
@@ -2775,6 +2792,9 @@ async fn turn(
                     .await
                     .is_ok()
                 {
+                    if runtime.borrow().closing {
+                        return;
+                    }
                     measure_cols(&runtime, flow);
                     if let Some(anchor) = runtime.borrow().top_anchor.clone() {
                         let column = col_for_anchor(&runtime, flow, &anchor).unwrap_or(0);
