@@ -13,8 +13,7 @@
    transfer-ring, transfer-popover, transfer-list, download-center,
    download-ring, download-popover, download-list, download-empty,
    download-backdrop, download-dialog, merge-center, merge-ring, merge-popover,
-   merge-list, merge-empty, archive-center, archive-ring, archive-popover,
-   archive-list, archive-password-backdrop, archive-password-dialog, task-icon,
+   merge-list, merge-empty, task-icon,
    task-direction and task-actions. Rules that mixed live and dead selectors were
    split so the live half survives; nothing that a current component uses was
    removed. */

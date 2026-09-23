@@ -2,10 +2,9 @@
 //!
 //! Revaro has several kinds of derived data with different lifetimes: parsed
 //! books are objects owned by the reader crate, flow bytes are immutable
-//! memory entries, source books are useful across restarts, and converted
-//! subtitles expire. Keeping the policy here makes those choices visible in
-//! one place and lets every managed class share the same memory and disk
-//! budgets.
+//! memory entries, and source books are useful across restarts. Keeping the
+//! policy here makes those choices visible in one place and lets every managed
+//! class share the same memory and disk budgets.
 //!
 //! The disk tier is deliberately a rebuildable cache. Each data file has a
 //! sibling `.meta` file containing `class\0key\n<expires-unix-nanos>`; a
@@ -38,8 +37,6 @@ pub const READER_FLOW_CHUNK: &str = "reader/flow-chunk";
 pub const READER_SOURCE: &str = "reader/source";
 /// External parsed-book cache class.
 pub const READER_BOOKS: &str = "reader/books";
-/// Converted subtitle cache class.
-pub const MEDIA_SUBTITLE: &str = "media/subtitle";
 
 /// The tier and eviction policy for one cache namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +58,7 @@ pub struct CacheClass {
 
 /// Why a loader failed. The cache does not know feature-specific error types,
 /// but callers still need to preserve important HTTP distinctions such as a
-/// missing reader object or an oversized subtitle.
+/// missing reader object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheLoadKind {
     /// The source object is absent.
@@ -298,9 +295,9 @@ impl CacheManager {
     /// Create the production class registry and register the parsed-book LRU
     /// as an external memory provider.
     #[must_use]
-    pub fn for_app(work_dir: impl AsRef<Path>, disk_limit: i64, books: Arc<BookCache>) -> Self {
+    pub fn for_app(caches_dir: impl AsRef<Path>, disk_limit: i64, books: Arc<BookCache>) -> Self {
         let manager = Self::new_with_external(
-            work_dir.as_ref().join("cache"),
+            caches_dir.as_ref().join("cache"),
             MEMORY_LIMIT,
             disk_limit,
             Some(books),
@@ -337,14 +334,6 @@ impl CacheManager {
                 memory: true,
                 disk: false,
                 max_entry: None,
-            },
-            CacheClass {
-                name: MEDIA_SUBTITLE.to_owned(),
-                priority: 20,
-                soft_quota: 64 << 20,
-                memory: true,
-                disk: true,
-                max_entry: Some(32 << 20),
             },
         ];
         for class in classes {
@@ -1786,10 +1775,11 @@ mod tests {
     }
 
     #[test]
-    fn production_registry_reports_healthy_classes_for_a_writable_work_dir() {
-        let work_dir = std::env::temp_dir().join(format!("revaro-cache-{}", crate::ids::new_id()));
+    fn production_registry_reports_healthy_classes_for_a_writable_caches_dir() {
+        let caches_dir =
+            std::env::temp_dir().join(format!("revaro-cache-{}", crate::ids::new_id()));
         let manager =
-            CacheManager::for_app(&work_dir, 1 << 20, Arc::new(BookCache::new(4, 128 << 20)));
+            CacheManager::for_app(&caches_dir, 1 << 20, Arc::new(BookCache::new(4, 128 << 20)));
         let status = manager.system_status();
         assert_eq!(status.status, "ok");
         let classes = status.classes.unwrap();
@@ -1797,7 +1787,6 @@ mod tests {
         assert!(classes.contains_key(READER_FLOW_CHUNK));
         assert!(classes.contains_key(READER_SOURCE));
         assert!(classes.contains_key(READER_BOOKS));
-        assert!(classes.contains_key(MEDIA_SUBTITLE));
     }
 
     impl CacheManager {

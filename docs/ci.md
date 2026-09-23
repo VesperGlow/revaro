@@ -16,9 +16,9 @@
 基址和两种情况下的空 Cookie 覆盖值，防止宿主端口调整后 Origin 守卫拒绝登录，
 或示例配置意外关闭 HTTPS Cookie 安全属性。
 
-同一配置检查还固定生产 Compose 的部署边界：回环端口绑定、`/data` 持久卷、只读根
-文件系统、tmpfs 工作目录、`no-new-privileges`、丢弃全部 capabilities、非缓存健康
-检查和 `/data`、`/data/work`、`/opt/revaro/web` 路径。配置回归会在镜像构建前失败。
+同一配置检查还固定生产 Compose 的部署边界：回环端口绑定、`/data`、`/objects` 和 `/caches` 三个独立卷、只读根
+文件系统、`/tmp` tmpfs、`no-new-privileges`、丢弃全部 capabilities、非缓存健康
+检查和 `/data`、`/objects`、`/caches`、`/opt/revaro/web` 路径。配置回归会在镜像构建前失败。
 
 容器 job 是 `revaro-image-amd64-v3` BuildKit 缓存的唯一写入者。主分支和版本标签
 在 E2E 通过后还会把已加载的 amd64 镜像导出为保留 1 天的 artifact；发布 job 下载

@@ -67,12 +67,6 @@ async function mockMedia(page: Page, baseUrl?: string) {
         ],
       })
     }
-    if (path === '/api/files/video-1/video') {
-      return json({ subtitles: [{ id: 'zh', name: 'zh', label: '简体中文', language: 'zh', url: '/api/subtitle.vtt', default: true }] })
-    }
-    if (path === '/api/subtitle.vtt') {
-      return route.fulfill({ contentType: 'text/vtt', body: 'WEBVTT\n\n00:00:00.000 --> 00:00:30.000\n沿着山间的小路，慢慢走。\n' })
-    }
     if (path.endsWith('/thumbnail') || path.startsWith('/api/files/image-')) {
       return route.fulfill({ contentType: 'image/svg+xml', body: landscape(path.includes('image-2')) })
     }
@@ -107,7 +101,7 @@ async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 }
 
-for (const kind of ['audio', 'video'] as const) {
+for (const kind of ['audio'] as const) {
   test(`Rust ${kind} 预览关闭后迟到的元数据和进度响应不会访问已销毁组件`, async ({ page }) => {
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
@@ -122,7 +116,7 @@ for (const kind of ['audio', 'video'] as const) {
       await pending
       await route.fulfill({ json: route.request().url().endsWith('/progress')
         ? { position: 30, duration: 120 }
-        : kind === 'audio' ? { duration: 120, chapters: [] } : { subtitles: [] } })
+        : { duration: 120, chapters: [] } })
       completed += 1
     })
     try {
@@ -1414,7 +1408,6 @@ for (const width of [1440, 390, 320]) {
     await open(page, '山间来信.m4a')
     await expect(page.locator('audio')).toHaveJSProperty('readyState', 4)
     await expect(page.locator('.audio-panel')).toHaveCount(0)
-    await expect(page.locator('.audio-main')).not.toContainText('没有内嵌字幕')
     await page.getByRole('button', { name: '章节', exact: true }).click()
     await page.locator('[data-chapter-index="1"]').click()
     await expect(page.locator('.audio-chapter-current h1')).toHaveText('第二章 · 在林间停留')
@@ -2484,409 +2477,6 @@ test('old/new 视频 preview 慢响应期间的初始 loading 控件一致', asy
   }
 })
 
-test('old/new 视频字幕 cue 文本的实体解码与分行一致', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const oldPage = await oldContext.newPage()
-  const newPage = await newContext.newPage()
-
-  async function exercise(page: Page, baseUrl: string) {
-    await mockMedia(page, baseUrl)
-    await page.route('**/api/subtitle.vtt', route => route.fulfill({
-      contentType: 'text/vtt',
-      body: 'WEBVTT\n\n00:00:00.000 --> 00:00:30.000 line:10%\n第一行 &nbsp; &amp; &#x2014; <b>加粗</b>\n第二行 &lt;标签&gt;\n',
-    }))
-    await open(page, '山间漫步.webm')
-    await expect(page.locator('.video-subtitle-overlay')).toBeVisible()
-    return page.locator('.video-subtitle-overlay').evaluate(element => ({
-      text: element.textContent,
-      lines: Array.from(element.querySelectorAll('span')).map(line => ({ text: line.textContent, className: line.className })),
-      className: element.className,
-    }))
-  }
-
-  try {
-    const [oldResult, newResult] = await Promise.all([
-      exercise(oldPage, oldUrl),
-      exercise(newPage, newUrl),
-    ])
-    expect(oldResult).toEqual({
-      text: '第一行   & — 加粗第二行 <标签>',
-      lines: [
-        { text: '第一行   & — 加粗', className: '' },
-        { text: '第二行 <标签>', className: 'video-subtitle-secondary-line' },
-      ],
-      className: 'video-subtitle-overlay top',
-    })
-    expect(newResult, 'Rust 视频字幕 cue 文本/实体/分行与 reference 不一致').toEqual(oldResult)
-  } finally {
-    await Promise.all([oldContext.close(), newContext.close()])
-  }
-})
-
-test('old/new 字幕轨道错误不会清除已经显示的 cue', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const oldPage = await oldContext.newPage()
-  const newPage = await newContext.newPage()
-
-  async function exercise(page: Page, baseUrl: string) {
-    await mockMedia(page, baseUrl)
-    await open(page, '山间漫步.webm')
-    await expect(page.locator('.video-subtitle-overlay')).toBeVisible()
-    const track = page.locator('track').first()
-    await track.evaluate(element => element.dispatchEvent(new Event('error')))
-    await page.waitForTimeout(100)
-    const overlay = page.locator('.video-subtitle-overlay')
-    if (await overlay.count() === 0) return { count: 0, text: null, lines: [] }
-    return overlay.evaluate(element => ({
-      count: 1,
-      text: element.textContent,
-      lines: Array.from(element.querySelectorAll('span')).map(line => line.textContent),
-    }))
-  }
-
-  try {
-    const [oldResult, newResult] = await Promise.all([
-      exercise(oldPage, oldUrl),
-      exercise(newPage, newUrl),
-    ])
-    expect(oldResult).toEqual({
-      count: 1,
-      text: '沿着山间的小路，慢慢走。',
-      lines: ['沿着山间的小路，慢慢走。'],
-    })
-    expect(newResult, 'Rust 字幕轨道错误时错误地清除了 reference 已显示 cue').toEqual(oldResult)
-  } finally {
-    await Promise.all([oldContext.close(), newContext.close()])
-  }
-})
-
-test('old/new 视频多字幕按 default/forced 优先级选择，关闭后清空 overlay', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  const tracks = [
-    { id: 'forced', name: 'forced', label: '强制字幕', language: 'zh', url: '/api/subtitle-forced.vtt', forced: true },
-    { id: 'plain', name: 'plain', label: '普通字幕', language: 'zh', url: '/api/subtitle-plain.vtt' },
-    { id: 'default', name: 'default', label: '默认字幕', language: 'zh', url: '/api/subtitle-default.vtt', default: true },
-  ]
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const oldPage = await oldContext.newPage()
-  const newPage = await newContext.newPage()
-
-  async function exercise(page: Page, baseUrl: string) {
-    await mockMedia(page, baseUrl)
-    await page.route('**/api/files/video-1/video', route => route.fulfill({ json: { subtitles: tracks } }))
-    await page.route('**/api/subtitle-{forced,plain,default}.vtt', route => {
-      const name = new URL(route.request().url()).pathname.split('/').pop()
-      const label = name?.replace('subtitle-', '').replace('.vtt', '')
-      return route.fulfill({
-        contentType: 'text/vtt',
-        body: `WEBVTT\n\n00:00:00.000 --> 00:00:30.000\n${label} 字幕。\n`,
-      })
-    })
-    await open(page, '山间漫步.webm')
-    await expect(page.locator('.video-subtitle-overlay')).toContainText('default 字幕。')
-    const menu = page.locator('.video-control-row .preview-menu').first()
-    await expect(menu).toBeVisible()
-    await menu.locator('summary').click()
-    const select = page.getByLabel('字幕轨道', { exact: true })
-    const initial = {
-      labels: await select.locator('option').allTextContents(),
-      value: await select.inputValue(),
-      overlay: await page.locator('.video-subtitle-overlay').innerText(),
-    }
-    await select.selectOption('0')
-    await expect(page.locator('.video-subtitle-overlay')).toContainText('forced 字幕。')
-    const switched = await select.inputValue()
-    await select.selectOption('-1')
-    await expect(page.locator('.video-subtitle-overlay')).toHaveCount(0)
-    return {
-      initial,
-      switched,
-      menuAfterDisable: await page.locator('.video-control-row .preview-menu').count(),
-      overlayAfterDisable: await page.locator('.video-subtitle-overlay').count(),
-    }
-  }
-
-  try {
-    const [oldResult, newResult] = await Promise.all([
-      exercise(oldPage, oldUrl),
-      exercise(newPage, newUrl),
-    ])
-    expect(oldResult).toEqual({
-      initial: {
-        labels: ['关闭字幕', '强制字幕', '普通字幕', '默认字幕'],
-        value: '2',
-        overlay: 'default 字幕。',
-      },
-      switched: '0',
-      menuAfterDisable: 2,
-      overlayAfterDisable: 0,
-    })
-    expect(newResult, 'Rust 视频多字幕选择/关闭与 reference 不一致').toEqual(oldResult)
-  } finally {
-    await Promise.all([oldContext.close(), newContext.close()])
-  }
-})
-
-test('old/new 视频字幕轨道的可选元数据为 null 时仍按首条字幕显示', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const oldPage = await oldContext.newPage()
-  const newPage = await newContext.newPage()
-
-  async function exercise(page: Page, baseUrl: string) {
-    await mockMedia(page, baseUrl)
-    await page.route('**/api/files/video-1/video', route => route.fulfill({
-      json: {
-        subtitles: [{
-          id: 'zh',
-          name: 'zh',
-          label: '简体中文',
-          language: null,
-          url: '/api/subtitle.vtt',
-          default: null,
-          forced: null,
-        }],
-      },
-    }))
-    await open(page, '山间漫步.webm')
-    await expect(page.locator('.video-subtitle-overlay')).toContainText('沿着山间的小路，慢慢走。')
-    const select = page.getByLabel('字幕轨道', { exact: true })
-    return {
-      options: await select.locator('option').allTextContents(),
-      value: await select.inputValue(),
-      overlay: await page.locator('.video-subtitle-overlay').innerText(),
-    }
-  }
-
-  try {
-    const [oldResult, newResult] = await Promise.all([
-      exercise(oldPage, oldUrl),
-      exercise(newPage, newUrl),
-    ])
-    expect(oldResult).toEqual({
-      options: ['关闭字幕', '简体中文'],
-      value: '0',
-      overlay: '沿着山间的小路，慢慢走。',
-    })
-    expect(newResult, 'Rust 字幕轨道 nullable 可选元数据与 reference 不一致').toEqual(oldResult)
-  } finally {
-    await Promise.all([oldContext.close(), newContext.close()])
-  }
-})
-
-test('old/new 视频字幕轨道未使用的 name 缺失或为 null 时仍按 label 显示', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const oldPage = await oldContext.newPage()
-  const newPage = await newContext.newPage()
-
-  async function exercise(page: Page, baseUrl: string) {
-    await mockMedia(page, baseUrl)
-    await page.route('**/api/files/video-1/video', route => route.fulfill({
-      json: {
-        subtitles: [
-          {
-            id: 'zh',
-            label: '简体中文',
-            language: 'zh',
-            url: '/api/subtitle.vtt',
-            default: true,
-          },
-          {
-            id: 'en',
-            name: null,
-            label: 'English',
-            language: 'en',
-            url: '/api/subtitle.vtt',
-          },
-        ],
-      },
-    }))
-    await open(page, '山间漫步.webm')
-    await expect(page.locator('.video-subtitle-overlay')).toContainText('沿着山间的小路，慢慢走。')
-    const select = page.getByLabel('字幕轨道', { exact: true })
-    return {
-      options: await select.locator('option').allTextContents(),
-      value: await select.inputValue(),
-      overlay: await page.locator('.video-subtitle-overlay').innerText(),
-    }
-  }
-
-  try {
-    const [oldResult, newResult] = await Promise.all([
-      exercise(oldPage, oldUrl),
-      exercise(newPage, newUrl),
-    ])
-    expect(oldResult).toEqual({
-      options: ['关闭字幕', '简体中文', 'English'],
-      value: '0',
-      overlay: '沿着山间的小路，慢慢走。',
-    })
-    expect(newResult, 'Rust 字幕轨道未使用 name 缺失/null 与 reference 不一致').toEqual(oldResult)
-  } finally {
-    await Promise.all([oldContext.close(), newContext.close()])
-  }
-})
-
-test('old/new 视频字幕轨道 label 缺失或为 null 时仍保留字幕轨道', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const oldPage = await oldContext.newPage()
-  const newPage = await newContext.newPage()
-
-  async function exercise(page: Page, baseUrl: string) {
-    await mockMedia(page, baseUrl)
-    await page.route('**/api/files/video-1/video', route => route.fulfill({
-      json: {
-        subtitles: [
-          {
-            id: 'zh',
-            name: 'zh',
-            language: 'zh',
-            url: '/api/subtitle.vtt',
-            default: true,
-          },
-          {
-            id: 'en',
-            name: 'en',
-            label: null,
-            language: 'en',
-            url: '/api/subtitle.vtt',
-          },
-        ],
-      },
-    }))
-    await open(page, '山间漫步.webm')
-    await expect(page.locator('.video-subtitle-overlay')).toContainText('沿着山间的小路，慢慢走。')
-    const select = page.getByLabel('字幕轨道', { exact: true })
-    return {
-      options: await select.locator('option').allTextContents(),
-      value: await select.inputValue(),
-      overlay: await page.locator('.video-subtitle-overlay').innerText(),
-    }
-  }
-
-  try {
-    const [oldResult, newResult] = await Promise.all([
-      exercise(oldPage, oldUrl),
-      exercise(newPage, newUrl),
-    ])
-    expect(oldResult).toEqual({
-      options: ['关闭字幕', '', ''],
-      value: '0',
-      overlay: '沿着山间的小路，慢慢走。',
-    })
-    expect(newResult, 'Rust 字幕轨道 label 缺失/null 与 reference 不一致').toEqual(oldResult)
-  } finally {
-    await Promise.all([oldContext.close(), newContext.close()])
-  }
-})
-
-test('old/new 视频字幕轨道 id/url 缺失或为 null 时仍保留 metadata', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18180'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18184'
-
-  async function exercise(page: Page, baseUrl: string, mode: 'id' | 'url') {
-    await mockMedia(page, baseUrl)
-    await page.route('**/api/files/video-1/video', route => route.fulfill({
-      json: {
-        subtitles: mode === 'id'
-          ? [
-              { name: 'zh', label: '简体中文', language: 'zh', url: '/api/subtitle.vtt', default: true },
-              { id: null, name: 'en', label: 'English', language: 'en', url: '/api/subtitle.vtt' },
-            ]
-          : [
-              { id: 'zh', name: 'zh', label: '简体中文', language: 'zh', default: true },
-              { id: 'en', name: 'en', label: 'English', language: 'en', url: null },
-            ],
-      },
-    }))
-    await open(page, '山间漫步.webm')
-    await page.waitForTimeout(200)
-    const select = page.getByLabel('字幕轨道', { exact: true })
-    const selectCount = await select.count()
-    return {
-      options: selectCount ? await select.locator('option').allTextContents() : [],
-      value: selectCount ? await select.inputValue() : null,
-      selectCount,
-      overlay: await page.locator('.video-subtitle-overlay').count(),
-      menuCount: await page.locator('.video-control-row .preview-menu').count(),
-      errorCount: await page.locator('.video-error').count(),
-    }
-  }
-
-  for (const mode of ['id', 'url'] as const) {
-    const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-    const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-    const oldPage = await oldContext.newPage()
-    const newPage = await newContext.newPage()
-    try {
-      const [oldResult, newResult] = await Promise.all([
-        exercise(oldPage, oldUrl, mode),
-        exercise(newPage, newUrl, mode),
-      ])
-      expect(oldResult, `old 字幕 ${mode} fixture 未保留可观察 metadata`).toEqual({
-        options: ['关闭字幕', '简体中文', 'English'],
-        value: '0',
-        selectCount: 1,
-        overlay: mode === 'id' ? 1 : 0,
-        menuCount: 2,
-        errorCount: 0,
-      })
-      expect(newResult, `Rust 字幕 ${mode} 缺省/null metadata 与 reference 不一致`).toEqual(oldResult)
-    } finally {
-      await Promise.all([oldContext.close(), newContext.close()])
-    }
-  }
-})
-
-test('old/new 视频 metadata 没有字幕时不显示字幕菜单和 overlay', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  const oldContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const newContext = await browser.newContext({ viewport: { width: 1440, height: 900 } })
-  const oldPage = await oldContext.newPage()
-  const newPage = await newContext.newPage()
-
-  async function exercise(page: Page, baseUrl: string) {
-    await mockMedia(page, baseUrl)
-    await page.route('**/api/files/video-1/video', route => route.fulfill({ json: { subtitles: [] } }))
-    await open(page, '山间漫步.webm')
-    await expect(page.locator('.video-player-shell video')).toHaveJSProperty('readyState', 4)
-    await page.waitForTimeout(100)
-    return {
-      subtitleMenuCount: await page.locator('.video-control-row .preview-menu').count(),
-      overlayCount: await page.locator('.video-subtitle-overlay').count(),
-      playbackErrorCount: await page.locator('.video-error').count(),
-    }
-  }
-
-  try {
-    const [oldResult, newResult] = await Promise.all([
-      exercise(oldPage, oldUrl),
-      exercise(newPage, newUrl),
-    ])
-    expect(oldResult).toEqual({ subtitleMenuCount: 1, overlayCount: 0, playbackErrorCount: 0 })
-    expect(newResult, 'Rust 无字幕 metadata 的视频 UI 与 reference 不一致').toEqual(oldResult)
-  } finally {
-    await Promise.all([oldContext.close(), newContext.close()])
-  }
-})
-
 test('old/new 图片滚轮缩放保持鼠标锚点一致', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
@@ -3359,7 +2949,7 @@ test('old/new 视频全屏进入和退出后都恢复预览层', async ({ browse
 })
 
 for (const width of [1440, 390, 320]) {
-  test(`视频 ${width}px：设置、字幕、自动隐藏和无溢出`, async ({ page }) => {
+  test(`视频 ${width}px：设置、自动隐藏和无溢出`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 })
     await mockMedia(page)
     await open(page, '山间漫步.webm')
@@ -3368,8 +2958,6 @@ for (const width of [1440, 390, 320]) {
     const video = shell.locator('video')
     await shell.hover()
     await expect(page.locator('.video-time')).toBeVisible()
-    await expect(page.locator('.video-subtitle-overlay')).toBeVisible()
-    const subtitleBefore = await page.locator('.video-subtitle-overlay').boundingBox()
     await page.getByLabel('播放设置', { exact: true }).click()
     await page.getByLabel('播放速度', { exact: true }).selectOption('1.5')
     await expect(video).toHaveJSProperty('playbackRate', 1.5)
@@ -3381,8 +2969,6 @@ for (const width of [1440, 390, 320]) {
     await page.evaluate(() => (document.activeElement as HTMLElement)?.blur())
     await page.waitForTimeout(3000)
     await expect(page.locator('.video-controls')).toBeHidden()
-    const subtitleAfter = await page.locator('.video-subtitle-overlay').boundingBox()
-    expect(subtitleAfter!.y).toBeCloseTo(subtitleBefore!.y, 0)
     await shell.hover()
     await expect(page.locator('.video-time')).toBeVisible()
     const row = await page.locator('.video-control-row').boundingBox()

@@ -307,8 +307,6 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
- "log",
- "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -429,15 +427,6 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
-]
-
-[[package]]
-name = "cmake"
-version = "0.1.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
-dependencies = [
- "cc",
 ]
 
 [[package]]
@@ -1654,28 +1643,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libarchive2"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02ab6760325ab94299414f6e65b8c5671d9e723c64bce7205c73d6e3e487102d"
-dependencies = [
- "libarchive2-sys",
- "libc",
-]
-
-[[package]]
-name = "libarchive2-sys"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b49440cb50346bb332d41b9fcd991a6aa57f05a8ac7271d84de8e5d1217e6c4b"
-dependencies = [
- "bindgen",
- "cc",
- "cmake",
- "which",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2457,12 +2424,10 @@ version = "1.0.0"
 dependencies = [
  "ffmpeg-next",
  "image",
- "libarchive2",
  "revaro-core",
  "thiserror 2.0.20",
  "tokio-util",
  "uuid",
- "zip",
 ]
 
 [[package]]
@@ -3574,15 +3539,6 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
-
-[[package]]
-name = "which"
-version = "8.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bae2f2b2b816647a1cab1acc91f5bd20812d53cb344382635ec2181940c8034f"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "winapi-util"

@@ -55,12 +55,14 @@ impl Harness {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
             "APP_DATA_DIR" => Some(scratch.0.display().to_string()),
+            "APP_OBJECTS_DIR" => Some(scratch.0.join("objects").display().to_string()),
+            "APP_CACHES_DIR" => Some(scratch.0.join("work").display().to_string()),
             _ => None,
         })
         .expect("configuration is valid");
 
         let database = Database::open_in_memory().expect("in-memory database");
-        let store = LocalStore::open(scratch.0.join("objects"))
+        let store = LocalStore::open(config.objects_dir())
             .await
             .expect("object store");
         let auth = auth::AuthService::new(database.clone());

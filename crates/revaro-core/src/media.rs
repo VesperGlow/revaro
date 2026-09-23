@@ -1,9 +1,7 @@
 //! Media metadata: the probe result the media engine produces, how it is
 //! persisted in `media_metadata`, and the response bodies the player consumes.
 //!
-//! `chapters_json` and `subtitles_json` columns are exactly the JSON encoding of
-//! [`MediaChapter`] and [`EmbeddedSubtitle`] respectively, so the shared crate
-//! owns their shape too.
+//! `chapters_json` stores the JSON encoding of [`MediaChapter`].
 
 use serde::{Deserialize, Serialize};
 
@@ -57,29 +55,6 @@ pub struct MediaChapter {
     pub end_ms: i64,
 }
 
-/// One subtitle stream embedded in a container.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EmbeddedSubtitle {
-    /// Zero-based stream index inside the container.
-    #[serde(default)]
-    pub index: i32,
-    /// Codec short name, for example `subrip` or `ass`.
-    #[serde(default)]
-    pub codec: String,
-    /// ISO language tag, omitted when the container does not declare one.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub language: String,
-    /// Stream title, omitted when the container does not declare one.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub title: String,
-    /// Whether the container marks this stream as the default.
-    #[serde(default)]
-    pub default: bool,
-    /// Whether this stream only covers forced-narrative sections.
-    #[serde(default)]
-    pub forced: bool,
-}
-
 /// Everything the media engine learns about one file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaProbe {
@@ -116,9 +91,6 @@ pub struct MediaProbe {
     /// Chapter marks.
     #[serde(default)]
     pub chapters: Vec<MediaChapter>,
-    /// Embedded subtitle streams.
-    #[serde(default)]
-    pub subtitles: Vec<EmbeddedSubtitle>,
 }
 
 impl MediaProbe {
@@ -168,48 +140,11 @@ pub struct AudioMedia {
     pub has_cover: bool,
 }
 
-/// One selectable subtitle track for the video player.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VideoSubtitleTrack {
-    /// Stable identifier used in the subtitle URL.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
-    pub id: String,
-    /// Display name. The historical video caller does not read this field.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
-    pub name: String,
-    /// Short label shown in the track menu; the old UI renders an empty label
-    /// when it is absent.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
-    pub label: String,
-    /// ISO language tag, empty when unknown.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
-    pub language: String,
-    /// WebVTT URL.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
-    pub url: String,
-    /// Whether the track should be selected by default.
-    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
-    pub default: bool,
-    /// Whether the track only covers forced-narrative sections.
-    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
-    pub forced: bool,
-}
-
-/// Body of `GET /api/files/{id}/video`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VideoMedia {
-    /// Available subtitle tracks.
-    #[serde(default, deserialize_with = "deserialize_nullable_vec")]
-    pub subtitles: Vec<VideoSubtitleTrack>,
-}
-
 /// Body of `POST /api/files/{id}/media/reanalyze`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReanalyzeResult {
     /// Always `ready` on success.
     pub status: String,
-    /// Number of subtitle streams found.
-    pub subtitles: usize,
 }
 
 #[cfg(test)]
@@ -234,14 +169,6 @@ mod tests {
                 start_ms: 0,
                 end_ms: 1500,
             }],
-            subtitles: vec![EmbeddedSubtitle {
-                index: 2,
-                codec: "subrip".into(),
-                language: "eng".into(),
-                title: String::new(),
-                default: true,
-                forced: false,
-            }],
         };
         let json = serde_json::to_value(&probe).unwrap();
         assert_eq!(json["duration_ms"], 1500);
@@ -249,9 +176,6 @@ mod tests {
             json["chapters"][0],
             serde_json::json!({"title": "Intro", "start_ms": 0, "end_ms": 1500})
         );
-        // Empty optional strings are omitted, matching the historical tags.
-        assert!(json["subtitles"][0].get("title").is_none());
-        assert_eq!(json["subtitles"][0]["language"], "eng");
     }
 
     #[test]
@@ -333,135 +257,5 @@ mod tests {
         assert!(audio.chapters.is_empty());
         assert!(audio.cover_url.is_empty());
         assert!(!audio.has_cover);
-
-        let video: VideoMedia =
-            serde_json::from_value(serde_json::json!({ "subtitles": null })).unwrap();
-        assert!(video.subtitles.is_empty());
-    }
-
-    #[test]
-    fn video_subtitle_tracks_treat_nullable_optional_metadata_as_defaults() {
-        let video: VideoMedia = serde_json::from_value(serde_json::json!({
-            "subtitles": [{
-                "id": "zh",
-                "name": "zh",
-                "label": "中文",
-                "language": null,
-                "url": "/api/subtitle.vtt",
-                "default": null,
-                "forced": null
-            }]
-        }))
-        .unwrap();
-        let track = &video.subtitles[0];
-        assert!(track.language.is_empty());
-        assert!(!track.default);
-        assert!(!track.forced);
-
-        let sparse: VideoMedia = serde_json::from_value(serde_json::json!({
-            "subtitles": [
-                {
-                    "id": "missing-name",
-                    "label": "缺省名称",
-                    "language": "zh",
-                    "url": "/api/missing-name.vtt"
-                },
-                {
-                    "id": "null-name",
-                    "name": null,
-                    "label": "空名称",
-                    "language": "zh",
-                    "url": "/api/null-name.vtt"
-                }
-            ]
-        }))
-        .unwrap();
-        assert_eq!(sparse.subtitles[0].name, "");
-        assert_eq!(sparse.subtitles[1].name, "");
-
-        let sparse_labels: VideoMedia = serde_json::from_value(serde_json::json!({
-            "subtitles": [
-                {
-                    "id": "missing-label",
-                    "name": "missing-label",
-                    "language": "zh",
-                    "url": "/api/missing-label.vtt"
-                },
-                {
-                    "id": "null-label",
-                    "name": "null-label",
-                    "label": null,
-                    "language": "zh",
-                    "url": "/api/null-label.vtt"
-                }
-            ]
-        }))
-        .unwrap();
-        assert!(
-            sparse_labels
-                .subtitles
-                .iter()
-                .all(|track| track.label.is_empty())
-        );
-
-        let sparse_identity: VideoMedia = serde_json::from_value(serde_json::json!({
-            "subtitles": [
-                {
-                    "name": "missing-id",
-                    "label": "缺省 id",
-                    "language": "zh",
-                    "url": "/api/missing-id.vtt"
-                },
-                {
-                    "id": null,
-                    "name": "null-id",
-                    "label": "空 id",
-                    "language": "zh",
-                    "url": null
-                }
-            ]
-        }))
-        .unwrap();
-        assert_eq!(sparse_identity.subtitles[0].id, "");
-        assert_eq!(sparse_identity.subtitles[1].id, "");
-        assert_eq!(sparse_identity.subtitles[1].url, "");
-
-        let invalid = serde_json::from_value::<VideoMedia>(serde_json::json!({
-            "subtitles": [{
-                "id": "zh",
-                "name": "zh",
-                "label": "中文",
-                "language": 42,
-                "url": "/api/subtitle.vtt"
-            }]
-        }));
-        assert!(invalid.is_err());
-
-        let invalid_label = serde_json::from_value::<VideoMedia>(serde_json::json!({
-            "subtitles": [{
-                "id": "zh",
-                "name": "zh",
-                "label": 42,
-                "language": "zh",
-                "url": "/api/subtitle.vtt"
-            }]
-        }));
-        assert!(invalid_label.is_err());
-
-        let invalid_identity = serde_json::from_value::<VideoMedia>(serde_json::json!({
-            "subtitles": [{
-                "id": "zh",
-                "name": "zh",
-                "label": "中文",
-                "language": "zh",
-                "url": 42
-            }]
-        }));
-        assert!(invalid_identity.is_err());
-
-        let invalid_chapter_id = serde_json::from_value::<AudioMedia>(serde_json::json!({
-            "chapters": [{"id": "one", "start": 0.0, "end": 12.5}]
-        }));
-        assert!(invalid_chapter_id.is_err());
     }
 }

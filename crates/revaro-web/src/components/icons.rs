@@ -71,17 +71,6 @@ pub fn close_square() -> impl IntoView {
     }
 }
 
-/// Lucide `key-round` — supply an archive password.
-pub fn key_round() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"></path>
-            <circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle>
-        </svg>
-    }
-}
-
 /// Lucide `rotate-ccw` — retry a failed background task.
 pub fn rotate_ccw() -> impl IntoView {
     view! {
@@ -489,17 +478,6 @@ pub fn skip_forward() -> impl IntoView {
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 4v16"></path>
             <path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"></path>
-        </svg>
-    }
-}
-
-/// Lucide `captions` — subtitle settings.
-pub fn captions() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect width="18" height="14" x="3" y="5" rx="2" ry="2"></rect>
-            <path d="M7 15h4M15 15h2M7 11h2M13 11h4"></path>
         </svg>
     }
 }

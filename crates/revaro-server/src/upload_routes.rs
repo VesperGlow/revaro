@@ -402,7 +402,7 @@ VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,?10)",
         return Err(error);
     }
 
-    // Uploads are visible in the same background-task centre as archive jobs.
+    // Uploads are visible in the background-task centre.
     // Keep this separate from the metadata transaction: the reference server
     // treats a task-row failure as non-fatal to an otherwise valid upload.
     if let Err(error) = create_upload_task(&state, &upload_id, &file_id).await {

@@ -47,7 +47,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends clang cmake pkg-config \
             libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev \
             libavutil-dev libswresample-dev libswscale-dev \
-            zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev libssl-dev libxml2-dev libacl1-dev
+            zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev libssl-dev
       - name: Check the workspace
         # fmt + clippy (-D warnings) + the full test suite + wasm32 type-check.
         run: cargo xtask check
@@ -104,7 +104,9 @@ jobs:
           jq -e '.services.revaro.cap_drop | index("ALL") != null' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.tmpfs | any(.[]; startswith("/tmp:size=1g"))' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.volumes | any(.[]; .type == "volume" and .target == "/data")' <<<"$compose_json" >/dev/null
-          jq -e '.services.revaro.environment.APP_DATA_DIR == "/data" and .services.revaro.environment.APP_WORK_DIR == "/data/work" and .services.revaro.environment.APP_WEB_DIR == "/opt/revaro/web"' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.volumes | any(.[]; .type == "volume" and .target == "/objects")' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.volumes | any(.[]; .type == "volume" and .target == "/caches")' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.environment.APP_DATA_DIR == "/data" and .services.revaro.environment.APP_OBJECTS_DIR == "/objects" and .services.revaro.environment.APP_CACHES_DIR == "/caches" and .services.revaro.environment.APP_WEB_DIR == "/opt/revaro/web"' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.healthcheck.test == ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.ports | length == 1 and .[0].host_ip == "127.0.0.1" and .[0].target == 8080 and .[0].protocol == "tcp"' <<<"$compose_json" >/dev/null
       - name: Generate tested image metadata

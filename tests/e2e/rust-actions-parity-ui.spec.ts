@@ -1,58 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { login } from './helpers'
 
-function crc32(data: Buffer) {
-  let value = 0xffffffff
-  for (const byte of data) {
-    value ^= byte
-    for (let bit = 0; bit < 8; bit += 1) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0)
-  }
-  return value ^ 0xffffffff
-}
-
-/** Build a small stored ZIP for the real online-extraction flow. */
-function zip(entries: Array<[string, Buffer]>) {
-  const local: Buffer[] = []
-  const central: Buffer[] = []
-  let offset = 0
-
-  for (const [name, data] of entries) {
-    const nameBytes = Buffer.from(name)
-    const checksum = crc32(data) >>> 0
-    const localHeader = Buffer.alloc(30)
-    localHeader.writeUInt32LE(0x04034b50, 0)
-    localHeader.writeUInt16LE(20, 4)
-    localHeader.writeUInt16LE(0x800, 6)
-    localHeader.writeUInt32LE(checksum, 14)
-    localHeader.writeUInt32LE(data.length, 18)
-    localHeader.writeUInt32LE(data.length, 22)
-    localHeader.writeUInt16LE(nameBytes.length, 26)
-    local.push(Buffer.concat([localHeader, nameBytes, data]))
-
-    const centralHeader = Buffer.alloc(46)
-    centralHeader.writeUInt32LE(0x02014b50, 0)
-    centralHeader.writeUInt16LE(20, 4)
-    centralHeader.writeUInt16LE(20, 6)
-    centralHeader.writeUInt16LE(0x800, 8)
-    centralHeader.writeUInt32LE(checksum, 16)
-    centralHeader.writeUInt32LE(data.length, 20)
-    centralHeader.writeUInt32LE(data.length, 24)
-    centralHeader.writeUInt16LE(nameBytes.length, 28)
-    centralHeader.writeUInt32LE(offset, 42)
-    central.push(Buffer.concat([centralHeader, nameBytes]))
-    offset += localHeader.length + nameBytes.length + data.length
-  }
-
-  const centralDirectory = Buffer.concat(central)
-  const end = Buffer.alloc(22)
-  end.writeUInt32LE(0x06054b50, 0)
-  end.writeUInt16LE(entries.length, 8)
-  end.writeUInt16LE(entries.length, 10)
-  end.writeUInt32LE(centralDirectory.length, 12)
-  end.writeUInt32LE(offset, 16)
-  return Buffer.concat([...local, centralDirectory, end])
-}
-
 async function selectRow(page: Parameters<typeof login>[0], name: string) {
   const row = page.locator('.file-card').filter({ hasText: name })
   await expect(row).toBeVisible()
@@ -177,46 +125,6 @@ test('单文件下载与分享链接生命周期保持 reference 行为', async 
     expect((await downloadPromise).suggestedFilename()).toBe(name)
   } finally {
     await removeCreated(page, [name])
-  }
-})
-
-test('在线解压通过任务中心完成并显示解压目录', async ({ page }) => {
-  const suffix = crypto.randomUUID()
-  const archive = `parity-archive-${suffix}.zip`
-  const output = archive.replace(/\.zip$/i, '')
-  const entry = `entry-${suffix}.txt`
-
-  try {
-    await login(page)
-    await page.locator('input[type=file]').first().setInputFiles({
-      name: archive,
-      mimeType: 'application/zip',
-      buffer: zip([[entry, Buffer.from(`archive parity ${suffix}\n`)]]) ,
-    })
-    await expect(page.locator('.file-card').filter({ hasText: archive })).toBeVisible({ timeout: 20_000 })
-    await selectRow(page, archive)
-    const toolbar = page.getByRole('toolbar', { name: '所选项目操作' })
-    await toolbar.getByRole('button', { name: '在线解压' }).click()
-    const confirm = page.getByRole('dialog').filter({ hasText: '在线解压' })
-    await expect(confirm).toContainText('解压到当前目录中的新文件夹')
-    await confirm.getByRole('button', { name: '开始解压' }).click()
-
-    await expect.poll(async () => page.evaluate(async fileName => {
-      const response = await fetch('/api/tasks')
-      if (!response.ok) return false
-      const payload = await response.json() as { items?: Array<{ type: string; status: string; name: string }> }
-      return (payload.items ?? []).some(task => task.type === 'archive_extract' && task.name === fileName && task.status === 'completed')
-    }, archive), { timeout: 45_000 }).toBe(true)
-
-    await page.reload()
-    await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
-    const outputEntry = page.locator('.file-card').filter({ hasText: output }).last()
-    await expect(outputEntry).toBeVisible({ timeout: 20_000 })
-    await outputEntry.click()
-    await expect(page.getByRole('heading', { name: output })).toBeVisible()
-    await expect(page.locator('.file-card').filter({ hasText: entry })).toBeVisible()
-  } finally {
-    await removeCreated(page, [archive, output])
   }
 })
 

@@ -28,9 +28,9 @@ use revaro_core::api::files::{
     ChildItems, Children, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest,
     DocumentContent, FileDetail, PatchFileRequest, Trash, UpdateDocumentRequest,
 };
-use revaro_core::api::media::{AudioMedia, VideoMedia};
+use revaro_core::api::media::AudioMedia;
 use revaro_core::api::share::Status as ShareStatus;
-use revaro_core::api::tasks::{TaskInputRequest, TaskList};
+use revaro_core::api::tasks::TaskList;
 use revaro_core::api::uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
@@ -168,11 +168,6 @@ pub async fn fetch_audio_media(id: &str) -> Result<AudioMedia, RequestError> {
     get_json(&format!("/api/files/{id}/audio")).await
 }
 
-/// Fetch the subtitle tracks advertised for a video file.
-pub async fn fetch_video_media(id: &str) -> Result<VideoMedia, RequestError> {
-    get_json(&format!("/api/files/{id}/video")).await
-}
-
 /// Fetch the parsed title and table of contents for a book.
 pub async fn fetch_book(id: &str) -> Result<BookInfo, RequestError> {
     get_json(&format!("/api/files/{id}/book")).await
@@ -295,14 +290,6 @@ pub async fn cancel_task(id: &str) -> Result<(), RequestError> {
 pub async fn retry_task(id: &str) -> Result<(), RequestError> {
     let request = api_request(Request::post(&format!("/api/tasks/{id}/retry")))
         .build()
-        .map_err(|error| request_transport(error.to_string()))?;
-    send_empty(request).await
-}
-
-/// Supply input to a task waiting for it, currently an archive password.
-pub async fn submit_task_input(id: &str, request: &TaskInputRequest) -> Result<(), RequestError> {
-    let request = api_request(Request::post(&format!("/api/tasks/{id}/input")))
-        .json(request)
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await
 }
@@ -449,14 +436,6 @@ pub async fn purge_trash(id: &str) -> Result<(), RequestError> {
 /// Permanently remove every item currently in the trash.
 pub async fn empty_trash() -> Result<(), RequestError> {
     let request = api_request(Request::delete("/api/trash"))
-        .build()
-        .map_err(|error| request_transport(error.to_string()))?;
-    send_empty(request).await
-}
-
-/// Start the background extraction job for a ready archive.
-pub async fn extract_archive(id: &str) -> Result<(), RequestError> {
-    let request = api_request(Request::post(&format!("/api/files/{id}/extract")))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
     send_empty(request).await

@@ -2,9 +2,7 @@
    Generic selectors (`.actions`, `.expand`, `.empty`, `.error`, `.kind`,
    `.task-list`, ...) collide with the global sheets when pasted unprefixed, so
    every selector is anchored under `.task-center` (the component root). That
-   also reproduces the specificity Vue's `[data-v-*]` selector used to add. The
-   archive-password dialog is `Teleport`ed to `<body>`, so `.input-backdrop` and
-   `.input-dialog` stay global — their names are unique to this component. */
+   also reproduces the specificity Vue's `[data-v-*]` selector used to add. */
 .task-center{position:relative}
 .task-center>summary{position:relative;display:grid;place-items:center;width:44px;height:44px;border-radius:50%;cursor:pointer;list-style:none}
 .task-center>summary.task-trigger-hidden{display:none}
@@ -48,14 +46,6 @@
 .task-center .expand{display:block;margin:5px auto 8px;padding:6px 12px;border:0;border-radius:8px;background:#f1f5f9;color:#52657b;font-size:10px}
 .task-center .empty,.task-center .error{padding:25px;text-align:center;color:#94a3b8}
 .task-center .error{color:#b91c1c}
-.input-backdrop{position:fixed;z-index:140;inset:0;display:grid;place-items:center;background:#0f172a80}
-.input-dialog{display:flex;width:min(400px,calc(100vw - 30px));flex-direction:column;gap:10px;padding:22px;border-radius:18px;background:#fff}
-.input-dialog small{color:#64748b}
-.input-dialog input{padding:11px;border:1px solid #d8e1ea;border-radius:9px}
-.input-dialog p{color:#b91c1c}
-.input-dialog footer{display:flex;justify-content:flex-end;gap:8px}
-.input-dialog button{padding:8px 12px;border-radius:9px;border:1px solid #d8e1ea;background:#fff}
-.input-dialog button:last-child{border:0;background:#1677b8;color:#fff}
 @media(max-width:850px){.task-center .task-panel{position:fixed;top:calc(66px + env(safe-area-inset-top,0px));right:max(10px,env(safe-area-inset-right,0px));bottom:max(10px,env(safe-area-inset-bottom,0px));width:calc(100vw - 20px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px));max-height:min(70vh,640px)}.task-center .task-list article{grid-template-columns:62px minmax(0,1fr) auto}}
 .task-center .task-panel{z-index:25;isolation:isolate;background:#fff}
 .task-center .task-list{background:#fff}

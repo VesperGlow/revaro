@@ -289,14 +289,6 @@ test('旧版专用媒体、阅读器、任务和 upload 成功 API 在 Rust 版�
     expect(newAudio.contentType).toBe(oldAudio.contentType)
     expect(newAudio.value).toEqual(oldAudio.value)
 
-    const [oldVideo, newVideo] = await Promise.all([
-      json(oldClient, oldUrl, `/api/files/${oldCreated[1].file.id}/video`),
-      json(newClient, newUrl, `/api/files/${newCreated[1].file.id}/video`),
-    ])
-    expect(newVideo.status).toBe(oldVideo.status)
-    expect(newVideo.contentType).toBe(oldVideo.contentType)
-    expect(newVideo.value).toEqual(oldVideo.value)
-
     const [oldBook, newBook] = await Promise.all([
       json(oldClient, oldUrl, `/api/files/${oldCreated[2].file.id}/book`),
       json(newClient, newUrl, `/api/files/${newCreated[2].file.id}/book`),
@@ -311,7 +303,7 @@ test('旧版专用媒体、阅读器、任务和 upload 成功 API 在 Rust 版�
     ])
     expect(newReanalyze.status).toBe(oldReanalyze.status)
     expect(newReanalyze.contentType).toBe(oldReanalyze.contentType)
-    expect(newReanalyze.value).toEqual(oldReanalyze.value)
+    expect(newReanalyze.value).toEqual({ status: 'ready' })
 
     const [oldTaskId, newTaskId] = await Promise.all([
       waitForUploadTask(oldClient, oldCreated[0].uploadId),

@@ -44,8 +44,8 @@ async fn main() -> ExitCode {
     };
     tracing::info!(path = %database.path().display(), "database ready");
 
-    if let Err(error) = prepare_work_directory(&config) {
-        tracing::error!(%error, path = %config.work_dir.display(), "work directory startup check failed");
+    if let Err(error) = prepare_caches_directory(&config) {
+        tracing::error!(%error, path = %config.caches_dir.display(), "cache directory startup check failed");
         return ExitCode::FAILURE;
     }
 
@@ -94,10 +94,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Recover archive tasks only after the listener is bound. A failed bind
-    // must not leave background extraction workers running in a process that
-    // is about to exit.
-    revaro_server::archive_routes::recover(state.clone()).await;
     state
         .status
         .start(state.db.clone(), state.store.clone(), state.cache.clone());
@@ -119,7 +115,6 @@ async fn main() -> ExitCode {
     .await;
     state.maintenance.close().await;
     state.status.shutdown();
-    state.archive.shutdown();
     state.cache.close().await;
     match result {
         Ok(()) => {
@@ -138,19 +133,17 @@ fn open_database(config: &Config) -> Result<Database, revaro_server::db::DbError
     Database::open(config.database_path())
 }
 
-/// Create the work directory and prove it is writable.
+/// Create the cache directory and prove it is writable.
 ///
-/// The Go server refused to start when the work directory could not hold a
-/// probe file, because archive extraction and reader caches would fail later
-/// anyway — and failing at startup is far easier to diagnose.
-fn prepare_work_directory(config: &Config) -> std::io::Result<()> {
-    std::fs::create_dir_all(&config.work_dir)?;
+/// Fail at startup if the cache directory cannot hold its on-disk entries.
+fn prepare_caches_directory(config: &Config) -> std::io::Result<()> {
+    std::fs::create_dir_all(&config.caches_dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&config.work_dir, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(&config.caches_dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let probe = config.work_dir.join(".revaro-write-check");
+    let probe = config.caches_dir.join(".revaro-write-check");
     std::fs::write(&probe, b"")?;
     std::fs::remove_file(&probe)?;
     Ok(())

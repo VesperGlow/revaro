@@ -1,32 +1,22 @@
-//! Native video playback with subtitle tracks and resume progress.
-//!
-//! The server advertises subtitle URLs and serves the original bytes through a
-//! Range aware endpoint. The component leaves decoding to the browser, while
-//! keeping controls, the custom subtitle overlay and progress persistence in a
-//! small lifecycle owned by this player.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! Native video playback with resume progress and browser decoding.
 
 use js_sys::{Function, Object, Reflect};
 use leptos::ev::{Event, MouseEvent, PointerEvent};
 use leptos::prelude::*;
-use revaro_core::media::VideoSubtitleTrack;
 use revaro_core::model::{File, MediaProgress};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use web_sys::{
-    Element, HtmlInputElement, HtmlMediaElement, HtmlSelectElement, HtmlTrackElement,
-    HtmlVideoElement, KeyboardEvent, TextTrack, TextTrackMode, VttCue,
+    Element, HtmlInputElement, HtmlMediaElement, HtmlSelectElement, HtmlVideoElement, KeyboardEvent,
 };
 
 use crate::api;
 use crate::browser;
 use crate::logic::format::format_media_time;
 use crate::logic::media::{
-    authoritative_seek_target, contained_video_insets, initial_subtitle_index, media_element_time,
-    should_hide_video_cursor, should_sync_media_clock, subtitle_line_is_secondary,
+    authoritative_seek_target, media_element_time, should_hide_video_cursor,
+    should_sync_media_clock,
 };
 
 use super::icons;
@@ -51,17 +41,6 @@ pub fn VideoPlayer(
 ) -> impl IntoView {
     let shell = NodeRef::<leptos::html::Div>::new();
     let video = NodeRef::<leptos::html::Video>::new();
-    let subtitle_element = NodeRef::<leptos::html::Track>::new();
-    let subtitles = RwSignal::new(Vec::<VideoSubtitleTrack>::new());
-    let active_subtitle = RwSignal::new(None::<usize>);
-    let cue_track = RwSignal::new(None::<TextTrack>);
-    let active_subtitle_lines = RwSignal::new(Vec::<String>::new());
-    let subtitle_placement = RwSignal::new(SubtitlePlacement::Bottom);
-    let subtitle_bottom = RwSignal::new(0.0_f64);
-    let subtitle_inset = RwSignal::new(0.0_f64);
-    let cue_listener: Rc<RefCell<Option<Closure<dyn FnMut(Event)>>>> = Rc::new(RefCell::new(None));
-    let track_loaded = RwSignal::new(false);
-
     let starting = RwSignal::new(true);
     let buffering = RwSignal::new(false);
     let playing = RwSignal::new(false);
@@ -134,67 +113,6 @@ pub fn VideoPlayer(
         )
     };
 
-    let update_subtitle_bounds = move || {
-        let Some(video) = video_element(video) else {
-            return;
-        };
-        let (bottom, inset) = contained_video_insets(
-            f64::from(video.client_width().max(0)),
-            f64::from(video.client_height().max(0)),
-            f64::from(video.video_width()),
-            f64::from(video.video_height()),
-        );
-        subtitle_bottom.set(bottom);
-        subtitle_inset.set(inset);
-    };
-    let mut resize_listener = {
-        let update_subtitle_bounds = update_subtitle_bounds.clone();
-        browser::on_resize(move |_| update_subtitle_bounds())
-    };
-
-    // A cuechange callback belongs to the selected TextTrack rather than the
-    // video element. The callback is replaced when the selected track changes.
-    let apply_subtitle = {
-        let cue_listener = cue_listener.clone();
-        move || {
-            let Some(media) = video_media_element(video) else {
-                return;
-            };
-            disable_tracks(&media);
-            if active_subtitle.get_untracked().is_some()
-                && let Some(track) = subtitle_element
-                    .get()
-                    .and_then(|element| element.unchecked_into::<HtmlTrackElement>().track())
-            {
-                track.set_mode(TextTrackMode::Hidden);
-                install_cue_listener(
-                    track,
-                    cue_track,
-                    active_subtitle_lines,
-                    subtitle_placement,
-                    &cue_listener,
-                );
-            } else {
-                cue_track.set(None);
-                active_subtitle_lines.set(Vec::new());
-            }
-        }
-    };
-    let on_track_load = move |_| track_loaded.set(true);
-    // The Vue reference treats a track error as a diagnostic event only. Keep
-    // the last cue overlay visible until the browser emits the next cuechange
-    // or the user explicitly changes/disables the track; clearing it here
-    // causes a visible flash that the reference does not produce.
-    let on_track_error = move |_| {};
-    {
-        let apply_subtitle = apply_subtitle.clone();
-        Effect::new(move |_| {
-            active_subtitle.get();
-            track_loaded.get();
-            apply_subtitle();
-        });
-    }
-
     let restore_item_id = item_id.clone();
     let restore_position = move || {
         if !progress_loaded.get_untracked()
@@ -252,8 +170,6 @@ pub fn VideoPlayer(
 
     let on_loaded_metadata = {
         let restore_position = restore_position.clone();
-        let apply_subtitle = apply_subtitle.clone();
-        let update_subtitle_bounds = update_subtitle_bounds.clone();
         move |_| {
             if let Some(video) = video_element(video) {
                 duration.set(safe_duration(video.duration()));
@@ -262,8 +178,6 @@ pub fn VideoPlayer(
                 video.set_playback_rate(rate.get_untracked());
                 starting.set(false);
             }
-            apply_subtitle();
-            update_subtitle_bounds();
             restore_position();
         }
     };
@@ -765,23 +679,8 @@ pub fn VideoPlayer(
         });
     }
     {
-        let id = item.id.clone();
         let video_for_start = video;
         leptos::task::spawn_local_scoped_with_cancellation(async move {
-            if let Ok(value) = api::fetch_video_media(&id).await {
-                let defaults: Vec<_> = value
-                    .subtitles
-                    .iter()
-                    .map(|track| (track.default, track.forced))
-                    .collect();
-                active_subtitle.set(initial_subtitle_index(&defaults));
-                subtitles.set(value.subtitles);
-            }
-
-            // The Vue reference lets the element's initial `src` load first,
-            // then explicitly starts it after subtitle discovery completes.
-            // Keeping this second load in the same async lifecycle preserves
-            // the reference retry/error timing for native media failures.
             if let Some(video) = video_element(video_for_start) {
                 video.set_volume(volume.get_untracked());
                 video.set_muted(muted.get_untracked());
@@ -800,7 +699,6 @@ pub fn VideoPlayer(
         clear_timer(volume_timer);
         clear_timer(save_timer);
         clear_timer(remote_save_timer);
-        resize_listener.release();
         fullscreen_listener.release();
         cleanup_save(false);
         let position = current_time.get_untracked().max(0.0);
@@ -814,10 +712,6 @@ pub fn VideoPlayer(
                 },
             );
         }
-        if let Some(track) = cue_track.get_untracked() {
-            track.set_oncuechange(None);
-            track.set_mode(TextTrackMode::Disabled);
-        }
         if let Some(video) = video_media_element(video) {
             let _ = video.pause();
             video.set_src("");
@@ -828,15 +722,6 @@ pub fn VideoPlayer(
     let download_for_menu = on_download.clone();
     let move_for_menu = on_move.clone();
     let copy_for_menu = on_copy.clone();
-    let subtitle_rows = move || {
-        active_subtitle_lines
-            .get()
-            .into_iter()
-            .enumerate()
-            .collect::<Vec<_>>()
-    };
-    let subtitle_options = move || subtitles.get().into_iter().enumerate().collect::<Vec<_>>();
-
     view! {
         <div
             node_ref=shell
@@ -868,26 +753,8 @@ pub fn VideoPlayer(
                 on:ended=on_pause
                 on:error=on_error
             >
-                {move || active_subtitle.get().and_then(|index| subtitles.get().get(index).cloned()).map(|track| view! {
-                    <track
-                        node_ref=subtitle_element
-                        kind="subtitles"
-                        src=track.url
-                        srclang=track.language
-                        label=track.label
-                        on:load=on_track_load
-                        on:error=on_track_error
-                    />
-                })}
                 "你的浏览器不支持这个视频格式。"
             </video>
-            <Show when=move || !active_subtitle_lines.get().is_empty() fallback=|| ()>
-                <div class="video-subtitle-overlay" class:top=move || subtitle_placement.get() == SubtitlePlacement::Top class:middle=move || subtitle_placement.get() == SubtitlePlacement::Middle style=move || format!("--subtitle-image-bottom:{}px;--subtitle-image-inset:{}px;", subtitle_bottom.get(), subtitle_inset.get()) aria-live="off">
-                    <For each=subtitle_rows key=|(index, _)| *index let:line>
-                        <span class:video-subtitle-secondary-line=move || subtitle_line_is_secondary(line.0)>{line.1.clone()}</span>
-                    </For>
-                </div>
-            </Show>
             <div class="video-top-shade" class:visible=move || controls_visible.get() || !playing.get() inert=move || !controls_visible.get() && playing.get()>
                 <div class="video-title-group">
                     <button class="video-back" type="button" aria-label="退出播放" on:click={
@@ -932,21 +799,6 @@ pub fn VideoPlayer(
                         <input class="video-volume" type="range" min="0" max="1" step="0.01" aria-label="音量" aria-valuetext=move || format!("{}%", (effective_volume() * 100.0).round() as i64) prop:value=move || effective_volume().to_string() on:input=change_volume />
                     </div>
                     <span class="video-control-spacer"></span>
-                    <Show when=move || !subtitles.get().is_empty() fallback=|| ()>
-                        <PreviewMenu label="字幕".to_owned() icon=MenuIcon::Captions on_toggle=menu_interact.clone()>
-                            <label class="video-setting"><span>"字幕"</span><select aria-label="字幕轨道" prop:value=move || active_subtitle.get().map_or_else(|| "-1".to_owned(), |index| index.to_string()) on:change={move |event: Event| {
-                                let Some(select) = event.target().and_then(|target| target.dyn_into::<HtmlSelectElement>().ok()) else { return; };
-                                active_subtitle.set(select.value().parse::<usize>().ok().filter(|index| *index < subtitles.get_untracked().len()));
-                            }}>
-                                <option value="-1">"关闭字幕"</option>
-                                <For each=subtitle_options key=|entry| entry.1.id.clone() let:entry>
-                                    <option value=entry.0.to_string()>
-                                        {entry.1.label.clone()}
-                                    </option>
-                                </For>
-                            </select></label>
-                        </PreviewMenu>
-                    </Show>
                     <PreviewMenu label="播放设置".to_owned() icon=MenuIcon::Settings on_toggle=menu_interact>
                         <label class="video-setting"><span>"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=change_rate>
                             <option value="0.5">"0.5×"</option><option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
@@ -997,13 +849,6 @@ fn request_fullscreen(element: &Element, video: &HtmlVideoElement) -> bool {
         .ok()
         .and_then(|value| value.dyn_into::<Function>().ok())
         .is_some_and(|enter| enter.call0(video.as_ref()).is_ok())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubtitlePlacement {
-    Top,
-    Middle,
-    Bottom,
 }
 
 fn video_element(node: NodeRef<leptos::html::Video>) -> Option<HtmlVideoElement> {
@@ -1058,96 +903,6 @@ fn thumbnail_url(file: &File) -> String {
             .as_string()
             .unwrap_or_default()
     )
-}
-
-fn disable_tracks(media: &HtmlMediaElement) {
-    if let Some(tracks) = media.text_tracks() {
-        for index in 0..tracks.length() {
-            if let Some(track) = tracks.get(index) {
-                track.set_mode(TextTrackMode::Disabled);
-            }
-        }
-    }
-}
-
-fn install_cue_listener(
-    track: TextTrack,
-    cue_track: RwSignal<Option<TextTrack>>,
-    lines: RwSignal<Vec<String>>,
-    placement: RwSignal<SubtitlePlacement>,
-    listener: &Rc<RefCell<Option<Closure<dyn FnMut(Event)>>>>,
-) {
-    if let Some(old) = cue_track.get_untracked() {
-        old.set_oncuechange(None);
-    }
-    cue_track.set(Some(track.clone()));
-    if listener.borrow().is_none() {
-        let callback = Closure::<dyn FnMut(Event)>::new(move |_| {
-            update_active_cues(cue_track, lines, placement);
-        });
-        *listener.borrow_mut() = Some(callback);
-    }
-    if let Some(callback) = listener.borrow().as_ref() {
-        track.set_oncuechange(Some(callback.as_ref().unchecked_ref()));
-    }
-    update_active_cues(cue_track, lines, placement);
-}
-
-fn update_active_cues(
-    cue_track: RwSignal<Option<TextTrack>>,
-    lines: RwSignal<Vec<String>>,
-    placement: RwSignal<SubtitlePlacement>,
-) {
-    let Some(track) = cue_track.get_untracked() else {
-        lines.set(Vec::new());
-        return;
-    };
-    let Some(cues) = track.active_cues() else {
-        lines.set(Vec::new());
-        return;
-    };
-    let mut output = Vec::new();
-    let mut first_line = 100.0;
-    for index in 0..cues.length() {
-        let Some(cue) = cues.get(index) else {
-            continue;
-        };
-        if index == 0 && !cue.snap_to_lines() {
-            first_line = cue.line().as_f64().unwrap_or(100.0);
-        }
-        output.extend(clean_cue_text(&cue));
-    }
-    placement.set(if first_line <= 25.0 {
-        SubtitlePlacement::Top
-    } else if first_line < 75.0 {
-        SubtitlePlacement::Middle
-    } else {
-        SubtitlePlacement::Bottom
-    });
-    lines.set(output);
-}
-
-fn clean_cue_text(cue: &VttCue) -> Vec<String> {
-    cue.text()
-        .split('\n')
-        .map(strip_cue_markup)
-        .filter(|line| !line.is_empty())
-        .collect()
-}
-
-fn strip_cue_markup(value: &str) -> String {
-    // The reference runs each cue line through DOMParser and reads
-    // `body.textContent`. That decodes the full HTML entity set (not just the
-    // five common entities) and removes cue markup before trimming it.
-    let decoded = web_sys::window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.create_element("div").ok())
-        .map(|container| {
-            container.set_inner_html(value);
-            container.text_content().unwrap_or_default()
-        })
-        .unwrap_or_else(|| value.to_owned());
-    decoded.trim().to_owned()
 }
 
 fn clear_timer(signal: RwSignal<Option<i32>>) {

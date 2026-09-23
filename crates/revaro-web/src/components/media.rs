@@ -28,8 +28,6 @@ use super::video::VideoPlayer;
 pub enum MenuIcon {
     /// An overflow action menu.
     More,
-    /// Subtitle selection.
-    Captions,
     /// Playback settings.
     Settings,
     /// Volume controls.
@@ -897,7 +895,6 @@ struct DragState {
 fn menu_icon(icon: MenuIcon) -> AnyView {
     match icon {
         MenuIcon::More => icons::more_horizontal().into_any(),
-        MenuIcon::Captions => icons::captions().into_any(),
         MenuIcon::Settings => icons::settings_2().into_any(),
         MenuIcon::Volume => icons::volume_2().into_any(),
     }

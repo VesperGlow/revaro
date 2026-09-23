@@ -1,4 +1,4 @@
-//! Media metadata, thumbnails and subtitle HTTP endpoints.
+//! Media metadata and thumbnail HTTP endpoints.
 //!
 //! The handler layer owns file permissions, cache keys and SQLite persistence;
 //! [`revaro_media`] only sees an already-open object and performs bounded native
@@ -6,25 +6,22 @@
 //! future media engine replacement independent of the HTTP contract.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Path as PathParam, State};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use http::header;
 use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderValue};
 use revaro_core::classify;
-use revaro_core::media::{MediaProbe, VideoSubtitleTrack};
+use revaro_core::media::MediaProbe;
 use revaro_core::model::{File, FileKind, FileStatus};
 use revaro_core::{Timestamp, keys};
-use revaro_media::{MAX_SUBTITLE_BYTES, MediaEngine, MediaError};
+use revaro_media::{MediaEngine, MediaError};
 use rusqlite::OptionalExtension;
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::extract::AuthUser;
-use crate::cache::{CacheError, CacheLoadError, CacheLoadKind, MEDIA_SUBTITLE};
 use crate::file_routes;
 use crate::state::AppState;
 
@@ -32,24 +29,11 @@ const MAX_THUMB_BYTES: usize = 512 << 10;
 const MAX_THUMB_SOURCE: usize = 64 << 20;
 const THUMB_MAX_DIMENSION: u32 = 640;
 const MEDIA_PROBE_VERSION: i64 = 2;
-const EMPTY_PROBE_TTL_SECONDS: i64 = 24 * 60 * 60;
-const SUBTITLE_CACHE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
-
-/// The file columns used by the external-subtitle query.
-const FILE_COLUMNS: &str = "files.id,files.parent_id,files.name,files.kind,\
-COALESCE(files.object_key,''),files.size,files.mime_type,files.etag,files.content_hash,\
-files.hash_algorithm,files.status,files.created_at,files.updated_at,files.deleted_at,\
-files.restore_parent_id";
 
 /// Routes mounted below the authenticated API subtree.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/files/{id}/audio", get(audio_media_info))
-        .route("/files/{id}/video", get(video_media_info))
-        .route(
-            "/files/{id}/video/subtitles/{subtitle}",
-            get(video_subtitle),
-        )
         .route("/files/{id}/media/reanalyze", post(reanalyze_media))
         .route("/files/{id}/thumbnail", get(thumbnail))
 }
@@ -57,7 +41,6 @@ pub fn routes() -> Router<Arc<AppState>> {
 #[derive(Debug, Clone)]
 struct StoredMetadata {
     probe: MediaProbe,
-    analyzed_at: String,
     source_etag: String,
     version: i64,
 }
@@ -79,7 +62,6 @@ async fn ready_media_file(
                 && match kind {
                     MediaKind::Any => true,
                     MediaKind::Audio => classify::is_audio(&file),
-                    MediaKind::Video => classify::is_video(&file),
                 };
             if !valid {
                 return Err(revaro_core::ApiError::not_found(message));
@@ -93,7 +75,6 @@ async fn ready_media_file(
 enum MediaKind {
     Any,
     Audio,
-    Video,
 }
 
 fn not_found_or(error: crate::db::DbError, message: &'static str) -> revaro_core::ApiError {
@@ -112,12 +93,11 @@ fn read_metadata(
     connection
         .query_row(
             "SELECT duration_ms,container,video_codec,audio_codec,width,height,bitrate,\
-chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,\
+chapters_json,frame_rate,video_profile,video_level,\
 source_etag,probe_version FROM media_metadata WHERE file_id = ?1",
             [file_id],
             |row| {
                 let chapters_json: String = row.get(7)?;
-                let subtitles_json: String = row.get(12)?;
                 Ok(StoredMetadata {
                     probe: MediaProbe {
                         duration_ms: row.get(0)?,
@@ -127,15 +107,13 @@ source_etag,probe_version FROM media_metadata WHERE file_id = ?1",
                         width: row.get(4)?,
                         height: row.get(5)?,
                         bitrate: row.get(6)?,
-                        frame_rate: row.get(9)?,
-                        video_profile: row.get(10)?,
-                        video_level: row.get(11)?,
+                        frame_rate: row.get(8)?,
+                        video_profile: row.get(9)?,
+                        video_level: row.get(10)?,
                         chapters: serde_json::from_str(&chapters_json).unwrap_or_default(),
-                        subtitles: serde_json::from_str(&subtitles_json).unwrap_or_default(),
                     },
-                    analyzed_at: row.get(8)?,
-                    source_etag: row.get(13)?,
-                    version: row.get(14)?,
+                    source_etag: row.get(11)?,
+                    version: row.get(12)?,
                 })
             },
         )
@@ -143,19 +121,7 @@ source_etag,probe_version FROM media_metadata WHERE file_id = ?1",
 }
 
 fn metadata_is_fresh(metadata: &StoredMetadata, file: &File) -> bool {
-    if metadata.source_etag != file.etag || metadata.version != MEDIA_PROBE_VERSION {
-        return false;
-    }
-    if !metadata.probe.subtitles.is_empty() {
-        return true;
-    }
-    let Ok(analyzed_at) = Timestamp::parse(&metadata.analyzed_at) else {
-        return false;
-    };
-    analyzed_at.unix_seconds()
-        >= Timestamp::now()
-            .unix_seconds()
-            .saturating_sub(EMPTY_PROBE_TTL_SECONDS)
+    metadata.source_etag == file.etag && metadata.version == MEDIA_PROBE_VERSION
 }
 
 /// Ensure one current metadata row exists, with one probe in flight per file.
@@ -192,8 +158,6 @@ async fn persist_metadata(
 ) -> Result<(), revaro_core::ApiError> {
     let chapters = serde_json::to_string(&probe.chapters)
         .map_err(|_| revaro_core::ApiError::internal("could not serialize media metadata"))?;
-    let subtitles = serde_json::to_string(&probe.subtitles)
-        .map_err(|_| revaro_core::ApiError::internal("could not serialize media metadata"))?;
     let file_id = file.id.clone();
     let source_etag = file.etag.clone();
     let analyzed_at = Timestamp::now().to_rfc3339();
@@ -214,15 +178,15 @@ async fn persist_metadata(
                 .execute(
                     "INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,\
 audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,\
-video_level,subtitles_json,source_etag,probe_version) VALUES \
-                    (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) \
+video_level,source_etag,probe_version) VALUES \
+                    (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) \
                     ON CONFLICT(file_id) DO UPDATE SET duration_ms=excluded.duration_ms,\
 container=excluded.container,video_codec=excluded.video_codec,\
 audio_codec=excluded.audio_codec,width=excluded.width,height=excluded.height,\
 bitrate=excluded.bitrate,chapters_json=excluded.chapters_json,\
 analyzed_at=excluded.analyzed_at,frame_rate=excluded.frame_rate,\
 video_profile=excluded.video_profile,video_level=excluded.video_level,\
-subtitles_json=excluded.subtitles_json,source_etag=excluded.source_etag,\
+source_etag=excluded.source_etag,\
 probe_version=excluded.probe_version",
                     rusqlite::params![
                         file_id,
@@ -238,7 +202,6 @@ probe_version=excluded.probe_version",
                         frame_rate,
                         video_profile,
                         video_level,
-                        subtitles,
                         source_etag,
                         MEDIA_PROBE_VERSION,
                     ],
@@ -350,393 +313,6 @@ async fn audio_media_info(
     }))
 }
 
-/// `GET /api/files/{id}/video`.
-async fn video_media_info(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    PathParam(id): PathParam<String>,
-) -> Result<Json<revaro_core::api::media::VideoMedia>, revaro_core::ApiError> {
-    let file = ready_media_file(
-        state.clone(),
-        id,
-        MediaKind::Video,
-        "ready video file not found",
-    )
-    .await?;
-    schedule_media_analysis(state.clone(), file.clone());
-    let mut tracks = match ensure_media_metadata(state.clone(), file.clone()).await {
-        Ok(probe) => embedded_tracks(&file.id, &probe),
-        Err(error) => {
-            tracing::warn!(file = %file.id, %error, "embedded subtitle probe failed");
-            Vec::new()
-        }
-    };
-    let external = find_external_subtitles(&state, &file).await?;
-    tracks.extend(external.into_iter().map(|subtitle| {
-        let (language, language_label) = video_subtitle_language(&file.name, &subtitle.name);
-        let label = if language_label.is_empty() {
-            subtitle.name.clone()
-        } else {
-            format!("{language_label} · {}", subtitle.name)
-        };
-        VideoSubtitleTrack {
-            id: subtitle.id.clone(),
-            name: subtitle.name,
-            label,
-            language,
-            url: format!("/api/files/{}/video/subtitles/{}", file.id, subtitle.id),
-            default: false,
-            forced: false,
-        }
-    }));
-    Ok(Json(revaro_core::api::media::VideoMedia {
-        subtitles: tracks,
-    }))
-}
-
-fn embedded_tracks(file_id: &str, probe: &MediaProbe) -> Vec<VideoSubtitleTrack> {
-    probe
-        .subtitles
-        .iter()
-        .filter(|subtitle| supported_embedded_codec(&subtitle.codec))
-        .map(|subtitle| {
-            let (language, language_label) = embedded_subtitle_language(&subtitle.language);
-            let mut label = subtitle.title.trim().to_owned();
-            if label.is_empty() {
-                label = if language_label.is_empty() {
-                    format!("内嵌字幕 {}", subtitle.index.saturating_add(1))
-                } else {
-                    language_label.to_owned()
-                };
-            }
-            if subtitle.forced {
-                label.push_str(" · 强制");
-            } else if subtitle.default {
-                label.push_str(" · 默认");
-            }
-            let id = format!("embedded-{}", subtitle.index);
-            VideoSubtitleTrack {
-                id: id.clone(),
-                name: label.clone(),
-                label,
-                language,
-                url: format!("/api/files/{file_id}/video/subtitles/{id}"),
-                default: subtitle.default,
-                forced: subtitle.forced,
-            }
-        })
-        .collect()
-}
-
-fn embedded_subtitle_language(value: &str) -> (String, String) {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "zh" | "chi" | "zho" | "chs" | "zh-cn" | "zh-hans" => {
-            ("zh-CN".to_owned(), "简体中文".to_owned())
-        }
-        "cht" | "zh-tw" | "zh-hant" => ("zh-TW".to_owned(), "繁體中文".to_owned()),
-        "en" | "eng" => ("en".to_owned(), "English".to_owned()),
-        "ja" | "jpn" => ("ja".to_owned(), "日本語".to_owned()),
-        "ko" | "kor" => ("ko".to_owned(), "한국어".to_owned()),
-        "" => ("und".to_owned(), String::new()),
-        _ => (value.to_owned(), value.to_ascii_uppercase()),
-    }
-}
-
-fn supported_embedded_codec(codec: &str) -> bool {
-    matches!(
-        codec.to_ascii_lowercase().as_str(),
-        "ass" | "ssa" | "subrip" | "srt" | "webvtt" | "text" | "mov_text"
-    )
-}
-
-async fn find_external_subtitles(
-    state: &Arc<AppState>,
-    video: &File,
-) -> Result<Vec<File>, revaro_core::ApiError> {
-    let Some(parent_id) = video.parent_id.clone() else {
-        return Ok(Vec::new());
-    };
-    let video_name = video.name.clone();
-    state
-        .db
-        .call_api(move |connection| {
-            let mut statement = connection
-                .prepare(&format!(
-                    "WITH RECURSIVE subtitle_dirs(id,depth) AS (\
-SELECT ?1,0 UNION ALL SELECT child.id,subtitle_dirs.depth+1 \
-FROM files AS child JOIN subtitle_dirs ON child.parent_id=subtitle_dirs.id \
-WHERE child.kind='directory' AND child.status='ready' AND child.deleted_at IS NULL \
-AND subtitle_dirs.depth<2) SELECT {FILE_COLUMNS} FROM files \
-JOIN subtitle_dirs ON files.parent_id=subtitle_dirs.id \
-WHERE files.kind='file' AND files.status='ready' AND files.deleted_at IS NULL"
-                ))
-                .map_err(crate::db::DbError::Query)
-                .map_err(file_routes::database_error)?;
-            let rows = statement
-                .query_map([parent_id], file_routes::scan_file)
-                .map_err(crate::db::DbError::Query)
-                .map_err(file_routes::database_error)?;
-            let mut matches = Vec::new();
-            for row in rows {
-                let file = row
-                    .map_err(crate::db::DbError::Query)
-                    .map_err(file_routes::database_error)?;
-                if let Some(priority) = video_subtitle_match_priority(&video_name, &file.name) {
-                    matches.push((priority, file));
-                }
-            }
-            matches.sort_by(|(left_priority, left), (right_priority, right)| {
-                left_priority
-                    .cmp(right_priority)
-                    .then_with(|| {
-                        left.name
-                            .to_ascii_lowercase()
-                            .cmp(&right.name.to_ascii_lowercase())
-                    })
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-            Ok(matches.into_iter().map(|(_, file)| file).collect())
-        })
-        .await
-}
-
-fn extension_stem(name: &str) -> (&str, String) {
-    let extension = classify::extension(name);
-    if extension.is_empty() {
-        (name, String::new())
-    } else {
-        (
-            &name[..name.len() - extension.len() - 1],
-            extension.to_ascii_lowercase(),
-        )
-    }
-}
-
-fn video_subtitle_match_priority(video_name: &str, subtitle_name: &str) -> Option<u8> {
-    let (video_stem, _) = extension_stem(video_name);
-    let (subtitle_stem, extension) = extension_stem(subtitle_name);
-    if !matches!(extension.as_str(), "vtt" | "srt" | "ass" | "ssa") {
-        return None;
-    }
-    let video_stem_lower = video_stem.to_ascii_lowercase();
-    let subtitle_stem_lower = subtitle_stem.to_ascii_lowercase();
-    if subtitle_stem_lower == video_stem_lower {
-        return Some(0);
-    }
-    if subtitle_stem_lower == video_name.to_ascii_lowercase() {
-        return Some(1);
-    }
-    let suffix = subtitle_stem_lower.strip_prefix(&video_stem_lower)?;
-    suffix
-        .chars()
-        .next()
-        .filter(|character| " ._-[(".contains(*character))
-        .map(|_| 2)
-}
-
-fn video_subtitle_language(video_name: &str, subtitle_name: &str) -> (String, String) {
-    let (video_stem, _) = extension_stem(video_name);
-    let (subtitle_stem, _) = extension_stem(subtitle_name);
-    let video_stem_lower = video_stem.to_ascii_lowercase();
-    let subtitle_stem_lower = subtitle_stem.to_ascii_lowercase();
-    let suffix = subtitle_stem_lower
-        .strip_prefix(&video_stem_lower)
-        .unwrap_or_default();
-    let normalized: String = suffix
-        .chars()
-        .map(|character| match character {
-            '_' | '.' | '[' | ']' | '(' | ')' | ' ' => '-',
-            other => other,
-        })
-        .collect();
-    if normalized.contains("zh-tw") || normalized.contains("zh-hant") {
-        return ("zh-TW".to_owned(), "繁體中文".to_owned());
-    }
-    if normalized.contains("zh-cn") || normalized.contains("zh-hans") {
-        return ("zh-CN".to_owned(), "简体中文".to_owned());
-    }
-    for token in suffix.split(|character: char| "._-[]() ".contains(character)) {
-        match token {
-            "zh" | "chi" | "zho" | "chs" | "sc" | "zhcn" => {
-                return ("zh-CN".to_owned(), "简体中文".to_owned());
-            }
-            "cht" | "tc" | "zhtw" => return ("zh-TW".to_owned(), "繁體中文".to_owned()),
-            "en" | "eng" | "english" => return ("en".to_owned(), "English".to_owned()),
-            "ja" | "jpn" | "jp" | "japanese" => {
-                return ("ja".to_owned(), "日本語".to_owned());
-            }
-            "ko" | "kor" | "kr" | "korean" => {
-                return ("ko".to_owned(), "한국어".to_owned());
-            }
-            _ => {}
-        }
-    }
-    ("und".to_owned(), String::new())
-}
-
-/// `GET /api/files/{id}/video/subtitles/{subtitle}`.
-async fn video_subtitle(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    PathParam((id, subtitle_id)): PathParam<(String, String)>,
-) -> Result<Response, revaro_core::ApiError> {
-    let video = ready_media_file(
-        state.clone(),
-        id,
-        MediaKind::Video,
-        "ready video file not found",
-    )
-    .await?;
-    if let Some(raw_index) = subtitle_id.strip_prefix("embedded-") {
-        let index = raw_index
-            .parse::<i32>()
-            .ok()
-            .filter(|index| *index >= 0)
-            .ok_or_else(|| revaro_core::ApiError::not_found("embedded subtitle not found"))?;
-        let probe = ensure_media_metadata(state.clone(), video.clone())
-            .await
-            .map_err(|_| {
-                revaro_core::ApiError::unprocessable(
-                    "embedded subtitle could not be converted to WebVTT",
-                )
-            })?;
-        if !probe
-            .subtitles
-            .iter()
-            .any(|subtitle| subtitle.index == index && supported_embedded_codec(&subtitle.codec))
-        {
-            return Err(revaro_core::ApiError::not_found(
-                "embedded subtitle not found",
-            ));
-        }
-        let cache_key = format!(
-            "embedded-v2:{}:{}:{}:{index}",
-            video.id, video.etag, video.updated_at,
-        );
-        let converted = convert_cached_subtitle(
-            &state,
-            &video,
-            cache_key,
-            None,
-            Some(usize::try_from(index).unwrap_or(usize::MAX)),
-        )
-        .await
-        .map_err(|error| subtitle_api_error(error, true))?;
-        return Ok(vtt_response(converted));
-    }
-
-    let subtitles = find_external_subtitles(&state, &video).await?;
-    let subtitle = subtitles
-        .into_iter()
-        .find(|candidate| candidate.id == subtitle_id)
-        .ok_or_else(|| revaro_core::ApiError::not_found("matching subtitle not found"))?;
-    let cache_key = format!(
-        "external-v2:{}:{}:{}",
-        subtitle.id, subtitle.etag, subtitle.updated_at
-    );
-    let format = classify::extension(&subtitle.name).to_owned();
-    let converted = convert_cached_subtitle(&state, &subtitle, cache_key, Some(format), None)
-        .await
-        .map_err(|error| subtitle_api_error(error, false))?;
-    Ok(vtt_response(converted))
-}
-
-async fn convert_cached_subtitle(
-    state: &Arc<AppState>,
-    file: &File,
-    cache_key: String,
-    format: Option<String>,
-    stream_index: Option<usize>,
-) -> Result<Vec<u8>, MediaError> {
-    let task_state = Arc::clone(state);
-    let task_file = file.clone();
-    state
-        .cache
-        .load(
-            MEDIA_SUBTITLE,
-            &cache_key,
-            SUBTITLE_CACHE_TTL,
-            move || async move {
-                let converted = run_engine(
-                    &task_state,
-                    &task_file,
-                    Arc::clone(&task_state.media.light_slots),
-                    move |engine, reader, cancel| {
-                        engine.subtitle(reader, format.as_deref(), stream_index, cancel)
-                    },
-                )
-                .await
-                .map_err(subtitle_cache_load_error)?;
-                if converted.len() > MAX_SUBTITLE_BYTES.saturating_mul(2) {
-                    return Err(CacheLoadError::too_large(
-                        MediaError::ConvertedSubtitleTooLarge.to_string(),
-                    ));
-                }
-                Ok(converted)
-            },
-        )
-        .await
-        .map_err(subtitle_cache_error)
-}
-
-fn subtitle_cache_load_error(error: MediaError) -> CacheLoadError {
-    let kind = if matches!(
-        &error,
-        MediaError::SubtitleTooLarge | MediaError::ConvertedSubtitleTooLarge
-    ) {
-        CacheLoadKind::TooLarge
-    } else {
-        CacheLoadKind::Other
-    };
-    CacheLoadError::new(kind, error.to_string())
-}
-
-fn subtitle_cache_error(error: CacheError) -> MediaError {
-    match error {
-        CacheError::Loader(error) if error.kind() == CacheLoadKind::TooLarge => {
-            if error.message() == MediaError::SubtitleTooLarge.to_string() {
-                MediaError::SubtitleTooLarge
-            } else {
-                MediaError::ConvertedSubtitleTooLarge
-            }
-        }
-        CacheError::Loader(error) => MediaError::Input(error.to_string()),
-        error => MediaError::Input(error.to_string()),
-    }
-}
-
-fn subtitle_api_error(error: MediaError, embedded: bool) -> revaro_core::ApiError {
-    if matches!(error, MediaError::SubtitleTooLarge) {
-        return revaro_core::ApiError::payload_too_large("subtitle is too large");
-    }
-    if embedded {
-        revaro_core::ApiError::unprocessable("embedded subtitle could not be converted to WebVTT")
-    } else {
-        revaro_core::ApiError::unprocessable("subtitle could not be converted to WebVTT")
-    }
-}
-
-fn vtt_response(data: Vec<u8>) -> Response {
-    let mut response = Response::new(Body::from(data.clone()));
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/vtt; charset=utf-8"),
-    );
-    response.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=3600"),
-    );
-    response.headers_mut().insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    response.headers_mut().insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&data.len().to_string()).expect("length is a valid header"),
-    );
-    response
-}
-
 /// `POST /api/files/{id}/media/reanalyze`.
 async fn reanalyze_media(
     State(state): State<Arc<AppState>>,
@@ -766,21 +342,12 @@ async fn reanalyze_media(
                 .map_err(file_routes::database_error)
         })
         .await?;
-    state
-        .cache
-        .invalidate(&format!("{MEDIA_SUBTITLE}\0embedded-v2:{}:", file.id))
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, file = %file.id, "could not invalidate embedded subtitle cache");
-            revaro_core::ApiError::internal("could not invalidate subtitle cache")
-        })?;
     let probe = probe_file(&state, &file)
         .await
         .map_err(|_| revaro_core::ApiError::unprocessable("media re-analysis failed"))?;
     persist_metadata(&state, &file, &probe).await?;
     Ok(Json(revaro_core::api::media::ReanalyzeResult {
         status: "ready".to_owned(),
-        subtitles: probe.subtitles.len(),
     }))
 }
 
@@ -939,19 +506,6 @@ fn thumbnail_response(data: Vec<u8>) -> Response {
     response
 }
 
-fn schedule_media_analysis(state: Arc<AppState>, file: File) {
-    if !state.media.claim_analysis(&file.id) {
-        return;
-    }
-    tokio::spawn(async move {
-        let result = ensure_media_metadata(state.clone(), file.clone()).await;
-        if let Err(error) = result {
-            tracing::warn!(file = %file.id, %error, "background media analysis failed");
-        }
-        state.media.release_analysis(&file.id);
-    });
-}
-
 fn schedule_video_thumbnail(state: Arc<AppState>, file: File, key: String) {
     if !state.media.claim_video_thumbnail(&key) {
         return;
@@ -1008,7 +562,7 @@ mod tests {
         let config = crate::config::Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
-            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
+            "APP_CACHES_DIR" => Some(root.join("caches").display().to_string()),
             _ => None,
         })
         .expect("test configuration is valid");
@@ -1148,56 +702,6 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn subtitle_matching_keeps_priority_and_language_rules() {
-        assert_eq!(
-            video_subtitle_match_priority("Movie.mkv", "Movie.srt"),
-            Some(0)
-        );
-        assert_eq!(
-            video_subtitle_match_priority("Movie.mkv", "Movie.zh-CN.srt"),
-            Some(2)
-        );
-        assert_eq!(
-            video_subtitle_match_priority("Movie.mkv", "Other.srt"),
-            None
-        );
-        assert_eq!(
-            video_subtitle_language("Movie.mkv", "Movie.zh-TW.srt"),
-            ("zh-TW".to_owned(), "繁體中文".to_owned())
-        );
-        assert_eq!(
-            video_subtitle_language("Movie.mkv", "Movie.en.srt"),
-            ("en".to_owned(), "English".to_owned())
-        );
-    }
-
-    #[test]
-    fn embedded_labels_and_thumbnail_keys_are_stable() {
-        let probe = MediaProbe {
-            subtitles: vec![revaro_core::media::EmbeddedSubtitle {
-                index: 3,
-                codec: "subrip".to_owned(),
-                language: "eng".to_owned(),
-                default: true,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let tracks = embedded_tracks("file", &probe);
-        assert_eq!(tracks[0].id, "embedded-3");
-        assert_eq!(tracks[0].label, "English · 默认");
-        let file = File {
-            id: "file".to_owned(),
-            name: "movie.mp4".to_owned(),
-            kind: FileKind::File,
-            status: FileStatus::Ready,
-            object_key: "blobs/file".to_owned(),
-            ..Default::default()
-        };
-        assert!(thumbnail_key(&file).starts_with("thumbs/"));
-    }
-
     #[tokio::test]
     async fn image_thumbnail_route_generates_and_reuses_a_persistent_jpeg() {
         let state = state().await;
@@ -1234,76 +738,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_subtitle_routes_convert_srt_and_cache_the_result() {
-        let state = state().await;
-        insert_ready_file(
-            &state,
-            "video-1",
-            "Movie.mkv",
-            "video/x-matroska",
-            b"metadata fixture",
-        )
-        .await;
-        insert_ready_file(
-            &state,
-            "subtitle-1",
-            "Movie.zh-CN.srt",
-            "text/plain",
-            b"1\r\n00:00:01,250 --> 00:00:02,500\r\n\xe4\xbd\xa0\xe5\xa5\xbd\r\n",
-        )
-        .await;
-        let analyzed_at = Timestamp::now().to_rfc3339();
-        state
-            .db
-            .call(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO media_metadata(file_id,chapters_json,analyzed_at,subtitles_json,source_etag,probe_version) \
-                         VALUES(?1,'[]',?2,'[]',?3,?4)",
-                        rusqlite::params!["video-1", analyzed_at, "etag-video-1", MEDIA_PROBE_VERSION],
-                    )
-                    .map_err(crate::db::DbError::Query)?;
-                Ok(())
-            })
-            .await
-            .expect("metadata row inserts");
-
-        let (status, _, body) = request(&state, "GET", "/api/files/video-1/video").await;
-        assert_eq!(status, StatusCode::OK);
-        let value: serde_json::Value = serde_json::from_slice(&body).expect("video json");
-        assert_eq!(value["subtitles"][0]["id"], "subtitle-1");
-        assert_eq!(value["subtitles"][0]["language"], "zh-CN");
-        assert_eq!(value["subtitles"][0]["label"], "简体中文 · Movie.zh-CN.srt");
-
-        let uri = value["subtitles"][0]["url"].as_str().unwrap().to_owned();
-        let (status, headers, first) = request(&state, "GET", &uri).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            headers.get(CONTENT_TYPE).unwrap(),
-            "text/vtt; charset=utf-8"
-        );
-        assert_eq!(headers.get(CACHE_CONTROL).unwrap(), "private, max-age=3600");
-        assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
-        let first_text = String::from_utf8(first.clone()).expect("vtt is utf8");
-        assert!(first_text.contains("00:00:01.250 --> 00:00:02.500"));
-        assert!(first_text.contains("你好"));
-
-        state
-            .store
-            .delete("blobs/subtitle-1")
-            .await
-            .expect("subtitle deletion succeeds");
-        let (status, _, second) = request(&state, "GET", &uri).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(second, first, "the converted subtitle remains cached");
-        let stats = state.cache.stats();
-        let subtitle = &stats.classes[MEDIA_SUBTITLE];
-        assert_eq!(subtitle.loads, 1);
-        assert_eq!(subtitle.memory_entries, 1);
-        assert_eq!(subtitle.disk_entries, 1);
-    }
-
-    #[tokio::test]
     async fn reanalyze_route_probes_a_real_audio_object_and_persists_metadata() {
         let state = state().await;
         insert_ready_file(&state, "audio-1", "tone.wav", "audio/wav", &wav_fixture()).await;
@@ -1311,10 +745,7 @@ mod tests {
         let (status, _, body) = request(&state, "POST", "/api/files/audio-1/media/reanalyze").await;
         assert_eq!(status, StatusCode::OK);
         let result: serde_json::Value = serde_json::from_slice(&body).expect("reanalyze json");
-        assert_eq!(
-            result,
-            serde_json::json!({"status": "ready", "subtitles": 0})
-        );
+        assert_eq!(result, serde_json::json!({"status": "ready"}));
 
         let (status, _, body) = request(&state, "GET", "/api/files/audio-1/audio").await;
         assert_eq!(status, StatusCode::OK);

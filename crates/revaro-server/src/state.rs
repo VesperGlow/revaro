@@ -163,10 +163,8 @@ pub struct AppState {
     pub auth: AuthService,
     /// Process-wide L1/L2 cache policy and statistics.
     pub cache: CacheManager,
-    /// Native media probing, thumbnail and subtitle coordination.
+    /// Native media probing and thumbnail coordination.
     pub media: crate::media_runtime::MediaRuntime,
-    /// Native archive extraction and task lifecycle coordination.
-    pub archive: crate::archive_runtime::ArchiveRuntime,
     /// Short-lived tickets for streaming batch downloads.
     pub batch_download: crate::batch_download::BatchDownloadRuntime,
     /// Process-wide system status snapshot and SSE subscribers.
@@ -192,7 +190,7 @@ impl AppState {
     ) -> Arc<Self> {
         let reader = ReaderRuntime::new();
         let cache = CacheManager::for_app(
-            &config.work_dir,
+            &config.caches_dir,
             config.media_cache_capacity,
             Arc::clone(&reader.books),
         );
@@ -204,7 +202,6 @@ impl AppState {
             auth,
             cache,
             media: crate::media_runtime::MediaRuntime::new(),
-            archive: crate::archive_runtime::ArchiveRuntime::new(),
             batch_download: crate::batch_download::BatchDownloadRuntime::new(),
             status: crate::status_routes::StatusRuntime::new(),
             jobs: JobBus::new(256),

@@ -67,7 +67,6 @@ async function mockMedia(page: Page, nullableAudioMetadata = false) {
           }
         : { duration: 4, has_cover: false, cover_url: '', chapters: [] })
     }
-    if (path === `/api/files/${video.id}/video`) return json({ subtitles: [] })
     if (path.endsWith('/media/progress')) return json({ position: 0, duration: 4 })
     if (path.endsWith('/thumbnail')) return route.fulfill({ status: 404, body: '' })
     if (path.endsWith('/preview')) {

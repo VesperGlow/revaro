@@ -26,8 +26,11 @@ pub const DEFAULT_ADDR: &str = ":8080";
 /// Default data directory inside the container image.
 pub const DEFAULT_DATA_DIR: &str = "/data";
 
-/// Default temporary work directory.
-pub const DEFAULT_WORK_DIR: &str = "/work";
+/// Default local object storage directory.
+pub const DEFAULT_OBJECTS_DIR: &str = "/objects";
+
+/// Default rebuildable cache directory.
+pub const DEFAULT_CACHES_DIR: &str = "/caches";
 
 /// Default public base URL.
 pub const DEFAULT_BASE_URL: &str = "http://localhost:8080";
@@ -60,10 +63,12 @@ impl ConfigError {
 pub struct Config {
     /// Listen address, in Go's `:8080` or a full `host:port` form.
     pub addr: String,
-    /// Root of the persistent data directory.
+    /// Root of the persistent database and configuration directory.
     pub data_dir: PathBuf,
-    /// Scratch space for extraction and derived caches.
-    pub work_dir: PathBuf,
+    /// Root of the persistent local object store.
+    pub objects_dir: PathBuf,
+    /// Root for rebuildable on-disk caches.
+    pub caches_dir: PathBuf,
     /// Browser bundle directory served for non-API routes.
     pub web_dir: PathBuf,
     /// Public base URL, used for share links and the same-origin check.
@@ -127,9 +132,9 @@ impl Config {
             _ => base_url.starts_with("https://"),
         };
 
-        let work_dir_raw = value("APP_WORK_DIR", DEFAULT_WORK_DIR);
-        if work_dir_raw.trim().is_empty() {
-            return Err(ConfigError::new("APP_WORK_DIR must not be empty"));
+        let caches_dir_raw = value("APP_CACHES_DIR", DEFAULT_CACHES_DIR);
+        if caches_dir_raw.trim().is_empty() {
+            return Err(ConfigError::new("APP_CACHES_DIR must not be empty"));
         }
 
         let media_cache_capacity =
@@ -178,7 +183,8 @@ impl Config {
         Ok(Self {
             addr: value("APP_ADDR", DEFAULT_ADDR),
             data_dir,
-            work_dir: PathBuf::from(work_dir_raw),
+            objects_dir: PathBuf::from(value("APP_OBJECTS_DIR", DEFAULT_OBJECTS_DIR)),
+            caches_dir: PathBuf::from(caches_dir_raw),
             web_dir: PathBuf::from(value("APP_WEB_DIR", DEFAULT_WEB_DIR)),
             base_url,
             cookie_secure,
@@ -203,7 +209,7 @@ impl Config {
     /// Root of the local object store.
     #[must_use]
     pub fn objects_dir(&self) -> PathBuf {
-        self.data_dir.join("objects")
+        self.objects_dir.clone()
     }
 
     /// The listen address as a socket address.
@@ -231,10 +237,11 @@ impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "addr={} data={} work={} web={} base_url={} secure_cookie={}",
+            "addr={} data={} objects={} work={} web={} base_url={} secure_cookie={}",
             self.addr,
             self.data_dir.display(),
-            self.work_dir.display(),
+            self.objects_dir.display(),
+            self.caches_dir.display(),
             self.web_dir.display(),
             self.base_url,
             self.cookie_secure
@@ -372,7 +379,8 @@ mod tests {
         let config = config_from(&[]).unwrap();
         assert_eq!(config.addr, DEFAULT_ADDR);
         assert_eq!(config.data_dir, PathBuf::from(DEFAULT_DATA_DIR));
-        assert_eq!(config.work_dir, PathBuf::from(DEFAULT_WORK_DIR));
+        assert_eq!(config.objects_dir, PathBuf::from(DEFAULT_OBJECTS_DIR));
+        assert_eq!(config.caches_dir, PathBuf::from(DEFAULT_CACHES_DIR));
         assert_eq!(config.web_dir, PathBuf::from(DEFAULT_WEB_DIR));
         assert_eq!(config.base_url, DEFAULT_BASE_URL);
         assert!(!config.cookie_secure);
@@ -455,13 +463,17 @@ mod tests {
     }
 
     #[test]
-    fn database_and_objects_live_under_the_data_directory() {
-        let config = config_from(&[("APP_DATA_DIR", "/srv/revaro")]).unwrap();
+    fn database_and_objects_can_live_on_different_volumes() {
+        let config = config_from(&[
+            ("APP_DATA_DIR", "/srv/revaro"),
+            ("APP_OBJECTS_DIR", "/mnt/objects"),
+        ])
+        .unwrap();
         assert_eq!(
             config.database_path(),
             PathBuf::from("/srv/revaro/revaro.db")
         );
-        assert_eq!(config.objects_dir(), PathBuf::from("/srv/revaro/objects"));
+        assert_eq!(config.objects_dir(), PathBuf::from("/mnt/objects"));
     }
 
     #[test]

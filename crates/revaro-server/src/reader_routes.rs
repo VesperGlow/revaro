@@ -608,7 +608,7 @@ mod tests {
         let config = crate::config::Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent-web-dir".to_owned()),
-            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
+            "APP_CACHES_DIR" => Some(root.join("caches").display().to_string()),
             _ => None,
         })
         .expect("test configuration is valid");

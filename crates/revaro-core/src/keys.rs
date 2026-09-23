@@ -1,7 +1,7 @@
 //! Object keys inside the local object store.
 //!
 //! The on-disk layout is part of the product's compatibility surface and must
-//! not change: `APP_DATA_DIR/objects/` holds
+//! not change: `APP_OBJECTS_DIR/` holds
 //!
 //! ```text
 //! blobs/<file-uuid>                       original file contents

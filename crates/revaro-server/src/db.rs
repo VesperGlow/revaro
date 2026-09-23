@@ -59,6 +59,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "002_file_cleanup.sql",
         sql: include_str!("../migrations/002_file_cleanup.sql"),
     },
+    Migration {
+        version: 3,
+        name: "003_remove_subtitles.sql",
+        sql: include_str!("../migrations/003_remove_subtitles.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -534,6 +539,67 @@ mod tests {
                 "missing table {expected}"
             );
         }
+    }
+
+    #[test]
+    fn upgrading_existing_media_metadata_preserves_the_record() {
+        let directory =
+            std::env::temp_dir().join(format!("revaro-upgrade-{}", crate::ids::new_id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("revaro.db");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+                )
+                .unwrap();
+            for migration in &MIGRATIONS[..2] {
+                connection.execute_batch(migration.sql).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES(?1, '2024-01-01T00:00:00Z')",
+                        [migration.version],
+                    )
+                    .unwrap();
+            }
+            connection
+                .execute(
+                    "INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) \
+                     VALUES('f1',?1,'movie.mp4','file','blobs/f1',3,'ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z')",
+                    [ROOT_ID],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO media_metadata(file_id,duration_ms,container,chapters_json,analyzed_at,subtitles_json) \
+                     VALUES('f1',1234,'mp4','[]','2024-01-01T00:00:00Z','[{\"id\":\"old\"}]')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let database = Database::open(&path).unwrap();
+        let connection = database.acquire().unwrap();
+        let media: (i64, String) = connection
+            .query_row(
+                "SELECT duration_ms, container FROM media_metadata WHERE file_id='f1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(media, (1234, "mp4".to_owned()));
+        let columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(media_metadata)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(!columns.iter().any(|column| column == "subtitles_json"));
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

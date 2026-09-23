@@ -127,7 +127,7 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
 - flow manifest/chunk 以 `flows/{object_key}/f{version}/` 持久化到本地对象存储，
   manifest 最后写入；缺失 chunk 会触发单飞重建。`FLOW_CACHE_TTL` 和
   `FLOW_CACHE_CAPACITY` 由后台回收逻辑约束。
-- 媒体派生结果使用 `MediaRuntime` 的并发限制、按源版本的锁和有界字幕缓存；
+- 媒体派生结果使用 `MediaRuntime` 的并发限制和按源版本的锁；
   原文件 Range 直接从本地对象读取，不经过远程对象服务或 HLS 工作区。
 - `LocalStore` 的临时文件、fsync、原子替换和只创建派生对象语义保证崩溃与并发
   下不会暴露半成品。

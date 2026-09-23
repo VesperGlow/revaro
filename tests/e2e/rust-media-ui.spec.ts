@@ -64,7 +64,6 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   const second = `rust-e2e-second-${suffix}.png`
   const audio = `rust-e2e-audio-${suffix}.wav`
   const video = `rust-e2e-video-${suffix}.webm`
-  const subtitle = video.replace(/\.webm$/, '.vtt')
   const videoBytes = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
 
   await login(page)
@@ -79,9 +78,8 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
     { name: second, mimeType: 'image/png', buffer: png(900, 1400, [[81, 45, 101], [161, 88, 107], [224, 177, 115]]) },
     { name: audio, mimeType: 'audio/wav', buffer: wav() },
     { name: video, mimeType: 'video/webm', buffer: videoBytes },
-    { name: subtitle, mimeType: 'text/vtt', buffer: Buffer.from('WEBVTT\n\n00:00:00.000 --> 00:00:30.000\nRust media data plane\n') },
   ])
-  for (const name of [first, second, audio, video, subtitle]) {
+  for (const name of [first, second, audio, video]) {
     await page.locator('.file-card').filter({ hasText: name }).waitFor({ timeout: 20_000 })
   }
   const firstCard = page.locator('.file-card').filter({ hasText: first })
@@ -150,7 +148,6 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   await page.getByLabel('播放设置', { exact: true }).click()
   await page.getByLabel('播放速度', { exact: true }).selectOption('1.5')
   await expect(videoElement).toHaveJSProperty('playbackRate', 1.5)
-  await page.locator('.video-subtitle-overlay').waitFor()
   await page.getByRole('button', { name: '退出播放', exact: true }).click()
   await page.locator('.preview-modal').waitFor({ state: 'detached' })
 })

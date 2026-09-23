@@ -22,7 +22,6 @@ pub fn SelectionToolbar(
     on_restore: Callback<()>,
     on_purge: Callback<()>,
     on_open: Callback<File>,
-    on_extract: Callback<File>,
     on_download: Callback<()>,
     on_share: Callback<File>,
 ) -> impl IntoView {
@@ -71,7 +70,6 @@ pub fn SelectionToolbar(
     let restore = on_restore;
     let purge = on_purge;
     let open = on_open;
-    let extract = on_extract;
     let download = on_download;
     let share = on_share;
 
@@ -140,25 +138,6 @@ pub fn SelectionToolbar(
                                         <button type="button" on:click=move |_| open.run(item.clone())>
                                             {open_icon(&item)}
                                             <span>{label}</span>
-                                        </button>
-                                    }
-                                    .into_any()
-                                },
-                            )
-                        }}
-                    </Show>
-                    <Show
-                        when=move || single_item().is_some_and(|item| classify::is_archive(&item))
-                        fallback=|| ()
-                    >
-                        {move || {
-                            single_item().map_or_else(
-                                || ().into_any(),
-                                |item| {
-                                    view! {
-                                        <button type="button" on:click=move |_| extract.run(item.clone())>
-                                            {archive_icon()}
-                                            <span>"在线解压"</span>
                                         </button>
                                     }
                                     .into_any()
@@ -269,14 +248,6 @@ fn open_icon(file: &File) -> AnyView {
             </svg>
         }
         .into_any()
-    }
-}
-
-fn archive_icon() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 4h14v6H5zM5 14h14v6H5zM12 4v16M9 8h3m-3 4h3m-3 4h3"></path>
-        </svg>
     }
 }
 

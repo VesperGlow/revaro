@@ -211,7 +211,7 @@ pub enum TaskStatus {
     Queued,
     /// A worker is executing.
     Running,
-    /// The task needs input (for example an archive password).
+    /// The task needs additional user input.
     WaitingInput,
     /// A failed task was retried.
     Retrying,
@@ -319,10 +319,6 @@ impl TaskStatus {
 pub mod task_type {
     /// A file upload.
     pub const UPLOAD: &str = "upload";
-    /// An archive extraction.
-    pub const ARCHIVE_EXTRACT: &str = "archive_extract";
-    /// Subtitle preparation and extraction.
-    pub const SUBTITLE: &str = "subtitle";
 }
 
 /// A row of the `files` table as the API exposes it.

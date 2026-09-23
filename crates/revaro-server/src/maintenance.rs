@@ -181,16 +181,6 @@ impl MaintenanceRuntime {
         let minute = Duration::from_secs(60);
 
         self.register(
-            "archive-password",
-            minute,
-            minute,
-            false,
-            state_job(state.clone(), |state| async move {
-                cleanup_expired_password_tasks(&state).await
-            }),
-        )
-        .expect("production maintenance job names are unique");
-        self.register(
             "cache",
             minute.saturating_mul(5),
             minute,
@@ -508,37 +498,6 @@ struct References {
     storage_keys: HashSet<String>,
     /// Original object keys that can own a reader flow directory.
     book_keys: HashSet<String>,
-}
-
-async fn cleanup_expired_password_tasks(state: &Arc<AppState>) -> Result<(), String> {
-    let cutoff = Timestamp::from_system_time(
-        SystemTime::now()
-            .checked_sub(crate::archive_runtime::PASSWORD_WAIT_TTL)
-            .unwrap_or(UNIX_EPOCH),
-    )
-    .to_rfc3339();
-    let now = Timestamp::now().to_rfc3339();
-    let changed = state
-        .db
-        .call(move |connection| {
-            connection
-                .execute(
-                    "UPDATE tasks SET status='failed',phase='failed',progress=0,error=?1,finished_at=?2,updated_at=?2 \
-                     WHERE type='archive_extract' AND status='waiting_input' AND julianday(updated_at) <= julianday(?3)",
-                    rusqlite::params![
-                        "解压失败：30 分钟内未输入密码，任务已超时",
-                        now,
-                        cutoff
-                    ],
-                )
-                .map_err(DbError::Query)
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    if changed > 0 {
-        state.jobs.changed();
-    }
-    Ok(())
 }
 
 async fn load_expired_uploads(
@@ -1036,7 +995,7 @@ mod tests {
             std::env::temp_dir().join(format!("revaro-maintenance-{}", uuid::Uuid::new_v4()));
         let config = Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
-            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
+            "APP_CACHES_DIR" => Some(root.join("caches").display().to_string()),
             "APP_WEB_DIR" => Some(root.join("web").display().to_string()),
             _ => None,
         })

@@ -3,7 +3,7 @@
 //! The server deliberately keeps [`/api/events`](crate::api) opaque: an SSE
 //! notification only says that jobs changed, and the browser reads the durable
 //! task projection again. This component owns that refresh lifecycle, the
-//! archive-password dialog and the actions for terminal task history. Uploads
+//! actions for terminal task history. Uploads
 //! remain in their own byte-transfer queue because their progress and
 //! cancellation are browser-local.
 
@@ -13,8 +13,7 @@ use std::rc::Rc;
 
 use futures_util::future::join_all;
 use leptos::prelude::*;
-use revaro_core::api::tasks::TaskInputRequest;
-use revaro_core::model::{Task, TaskStatus, task_type};
+use revaro_core::model::{Task, TaskStatus};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Event, EventSource};
@@ -80,14 +79,10 @@ pub struct TaskController {
     tasks: RwSignal<Vec<Task>>,
     loading: RwSignal<bool>,
     error: RwSignal<String>,
-    password_task: RwSignal<Option<Task>>,
-    password: RwSignal<String>,
-    password_error: RwSignal<String>,
     show_all_completed: RwSignal<bool>,
     center: NodeRef<leptos::html::Details>,
     runtime: Rc<TaskRuntime>,
     on_logout: Callback<()>,
-    on_refresh_folder: Callback<()>,
     feedback: Callback<Feedback>,
     on_upload_cancel: Option<Callback<String, bool>>,
     on_upload_retry: Option<Callback<String, bool>>,
@@ -123,23 +118,15 @@ pub type UiTaskController = leptos::__reexports::send_wrapper::SendWrapper<TaskC
 
 impl TaskController {
     /// Create a task centre bound to the authenticated shell.
-    pub fn new(
-        on_logout: Callback<()>,
-        on_refresh_folder: Callback<()>,
-        feedback: Callback<Feedback>,
-    ) -> Self {
+    pub fn new(on_logout: Callback<()>, feedback: Callback<Feedback>) -> Self {
         Self {
             tasks: RwSignal::new(Vec::new()),
             loading: RwSignal::new(true),
             error: RwSignal::new(String::new()),
-            password_task: RwSignal::new(None),
-            password: RwSignal::new(String::new()),
-            password_error: RwSignal::new(String::new()),
             show_all_completed: RwSignal::new(false),
             center: NodeRef::new(),
             runtime: Rc::new(TaskRuntime::new()),
             on_logout,
-            on_refresh_folder,
             feedback,
             on_upload_cancel: None,
             on_upload_retry: None,
@@ -188,9 +175,6 @@ impl TaskController {
             if event.key() != "Escape" {
                 return;
             }
-            if escape_controller.close_password() {
-                return;
-            }
             if escape_controller.is_center_open() {
                 escape_controller.close_center();
                 escape_controller.focus_center_summary();
@@ -223,12 +207,6 @@ impl TaskController {
         if let Some(details) = self.center.get() {
             details.set_open(true);
         }
-    }
-
-    /// Refresh the durable task projection after a foreground action starts a
-    /// job (for example archive extraction).
-    pub fn refresh_now(&self) {
-        self.refresh_coalesced();
     }
 
     /// Expose the reactive snapshot to the mobile account/tools summary.
@@ -333,55 +311,6 @@ impl TaskController {
         });
     }
 
-    /// Open the archive-password dialog for a task waiting for input.
-    pub fn open_password(&self, task: Task) {
-        if task.status != TaskStatus::WaitingInput || task.task_type != task_type::ARCHIVE_EXTRACT {
-            return;
-        }
-        self.close_center();
-        self.password.set(String::new());
-        self.password_error.set(String::new());
-        self.password_task.set(Some(task));
-    }
-
-    fn close_password(&self) -> bool {
-        if self.password_task.get_untracked().is_none() {
-            return false;
-        }
-        self.password_task.set(None);
-        self.password.set(String::new());
-        self.password_error.set(String::new());
-        true
-    }
-
-    /// Submit the password currently shown in the dialog.
-    pub fn submit_password(&self) {
-        let Some(task) = self.password_task.get_untracked() else {
-            return;
-        };
-        let password = self.password.get_untracked();
-        if password.is_empty() {
-            return;
-        }
-
-        self.password_error.set(String::new());
-        let controller = self.clone();
-        leptos::task::spawn_local(async move {
-            let result = api::submit_task_input(&task.id, &TaskInputRequest { password }).await;
-            match result {
-                Ok(()) => {
-                    controller.password_task.set(None);
-                    controller.password.set(String::new());
-                    controller.refresh_coalesced();
-                }
-                Err(error) if error.is_unauthorized() => {
-                    controller.on_logout.run(());
-                }
-                Err(error) => controller.password_error.set(error.message),
-            }
-        });
-    }
-
     fn find_task(&self, id: &str) -> Option<Task> {
         self.tasks
             .get_untracked()
@@ -459,9 +388,6 @@ impl TaskController {
                 TaskStatus::Completed => {
                     self.feedback
                         .run(Feedback::success(format!("「{}」任务完成", task.name)));
-                    if task.task_type == task_type::ARCHIVE_EXTRACT {
-                        self.on_refresh_folder.run(());
-                    }
                 }
                 TaskStatus::Failed => {
                     self.feedback.run(Feedback::error(if task.error.is_empty() {
@@ -599,7 +525,7 @@ impl TaskController {
     }
 }
 
-/// Render the task trigger, panel and archive input dialog.
+/// Render the task trigger and panel.
 #[component]
 pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl IntoView {
     let listeners = controller.mount();
@@ -658,29 +584,12 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
         let controller = controller.clone();
         Callback::new(move |id: String| controller.retry(id))
     };
-    let password = {
-        let controller = controller.clone();
-        Callback::new(move |task: Task| controller.open_password(task))
-    };
     let clear = {
         let controller = controller.clone();
         Callback::new(move |_: ()| controller.clear_finished())
     };
     let completed_for_rows = completed_count;
     let show_all = controller.show_all_completed;
-    let password_task = controller.password_task;
-    let password_value = controller.password;
-    let password_error = controller.password_error;
-    let submit_password = {
-        let controller = controller.clone();
-        Callback::new(move |_: ()| controller.submit_password())
-    };
-    let close_password = {
-        let controller = controller.clone();
-        Callback::new(move |_: ()| {
-            controller.close_password();
-        })
-    };
 
     view! {
         <details node_ref=center class="task-center">
@@ -739,7 +648,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                             group=TaskGroup::Active
                                             on_cancel=cancel
                                             on_retry=retry
-                                            on_password=password
                                         />
                                     </For>
                                 </section>
@@ -770,7 +678,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                             group=TaskGroup::Completed
                                             on_cancel=cancel
                                             on_retry=retry
-                                            on_password=password
                                         />
                                     </For>
                                     <Show when=move || { completed_count.get() > MAX_COMPLETED_DISPLAY } fallback=|| ()>
@@ -793,7 +700,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                                             group=TaskGroup::Failed
                                             on_cancel=cancel
                                             on_retry=retry
-                                            on_password=password
                                         />
                                     </For>
                                 </section>
@@ -802,46 +708,6 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                 </Show>
             </section>
         </details>
-        <Show when=move || password_task.get().is_some() fallback=|| ()>
-            <div class="input-backdrop" on:pointerdown=move |event: web_sys::PointerEvent| {
-                if event.target() == event.current_target() {
-                    close_password.run(());
-                }
-            }>
-                <form
-                    class="input-dialog"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby="task-password-title"
-                    on:pointerdown=move |event: web_sys::PointerEvent| event.stop_propagation()
-                    on:submit=move |event: web_sys::SubmitEvent| {
-                        event.prevent_default();
-                        submit_password.run(());
-                    }
-                >
-                    <strong id="task-password-title">"输入压缩包密码"</strong>
-                    <small>{move || password_task.get().map(|task| task.name).unwrap_or_default()}</small>
-                    <input
-                        type="password"
-                        maxlength="1024"
-                        autofocus
-                        prop:value=move || password_value.get()
-                        on:input=move |event| password_value.set(event_target_value(&event))
-                    />
-                    <Show when=move || !password_error.get().is_empty() fallback=|| ()>
-                        <p>{move || password_error.get()}</p>
-                    </Show>
-                    <footer>
-                        <button type="button" on:click=move |_| close_password.run(())>
-                            "取消"
-                        </button>
-                        <button type="submit" prop:disabled=move || password_value.get().is_empty()>
-                            "继续任务"
-                        </button>
-                    </footer>
-                </form>
-            </div>
-        </Show>
     }
 }
 
@@ -852,7 +718,6 @@ fn TaskRow(
     group: TaskGroup,
     on_cancel: Callback<String>,
     on_retry: Callback<String>,
-    on_password: Callback<Task>,
 ) -> impl IntoView {
     let id = task.id.clone();
     let name = task_display_name(&task.name, &task.task_type, &task.id);
@@ -895,7 +760,6 @@ fn TaskRow(
     });
     let cancel_id = task_id.clone();
     let retry_id = task_id.clone();
-    let password_task = task.clone();
     let cancel = {
         let cancel_id = cancel_id.clone();
         Callback::new(move |_: ()| on_cancel.run(cancel_id.clone()))
@@ -903,10 +767,6 @@ fn TaskRow(
     let retry = {
         let retry_id = retry_id.clone();
         Callback::new(move |_: ()| on_retry.run(retry_id.clone()))
-    };
-    let password = {
-        let password_task = password_task.clone();
-        Callback::new(move |_: ()| on_password.run(password_task.clone()))
     };
     let row_class = match group {
         TaskGroup::Active => "task-group-row active-task-row",
@@ -927,26 +787,8 @@ fn TaskRow(
     });
     let show_cancel = group == TaskGroup::Active;
     let show_retry = group == TaskGroup::Failed;
-    let show_password = Signal::derive_local({
-        let id = task_id.clone();
-        move || {
-            let task = current_task(tasks, &id);
-            show_cancel
-                && task.status == TaskStatus::WaitingInput
-                && task.task_type == task_type::ARCHIVE_EXTRACT
-        }
-    });
-    let open_row = {
-        let password = password.clone();
-        move || {
-            if show_password.get_untracked() {
-                password.run(());
-            }
-        }
-    };
-
     view! {
-        <article class=row_class on:click=move |_| open_row()>
+        <article class=row_class>
             <span class="kind">{kind}</span>
             <div>
                 <strong title=title>{name.clone()}</strong>
@@ -972,19 +814,6 @@ fn TaskRow(
                     >
                         {crate::components::icons::close_square()}
                     </button>
-                    <Show when=move || show_password.get() fallback=|| ()>
-                        <button
-                            type="button"
-                            title="输入密码"
-                            aria-label="输入压缩包密码"
-                            on:click=move |event: web_sys::MouseEvent| {
-                                event.stop_propagation();
-                                password.run(())
-                            }
-                        >
-                            {crate::components::icons::key_round()}
-                        </button>
-                    </Show>
                 </Show>
                 <Show
                     when=move || {

@@ -362,7 +362,7 @@ mod tests {
         let config = crate::config::Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
-            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
+            "APP_CACHES_DIR" => Some(root.join("caches").display().to_string()),
             _ => None,
         })
         .unwrap();
@@ -449,7 +449,6 @@ mod tests {
         assert_eq!(status.cache.status, "ok");
         let classes = status.cache.classes.as_ref().unwrap();
         assert!(classes.contains_key(crate::cache::READER_FLOW_MANIFEST));
-        assert!(classes.contains_key(crate::cache::MEDIA_SUBTITLE));
 
         state
             .db

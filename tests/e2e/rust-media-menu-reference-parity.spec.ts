@@ -63,10 +63,6 @@ async function mockMedia(page: Page) {
         ],
       })
     }
-    if (path === '/api/files/menu-video/video') {
-      return json({ subtitles: [{ id: 'zh', name: 'zh', label: '简体中文', language: 'zh', url: '/api/menu-subtitle.vtt', default: true }] })
-    }
-    if (path === '/api/menu-subtitle.vtt') return route.fulfill({ contentType: 'text/vtt', body: 'WEBVTT\n\n00:00:00.000 --> 00:00:30.000\n菜单测试字幕。\n' })
     if (path.endsWith('/media/progress')) return json({ position: 10, duration: 120 })
     if (path.endsWith('/thumbnail') || path.endsWith('/preview')) {
       const body = path.includes('menu-audio') ? sound : video
@@ -163,53 +159,6 @@ async function exerciseAudio(page: Page, baseUrl: string) {
   }
 }
 
-async function exerciseVideo(page: Page, baseUrl: string) {
-  await page.addInitScript(() => {
-    localStorage.setItem('revaro-video-volume', '0.73')
-  })
-  await mockMedia(page)
-  await open(page, baseUrl, '菜单视频.webm')
-  await expect(page.locator('video')).toHaveJSProperty('readyState', 4)
-  const settingsSelector = '.video-controls .preview-menu:has(summary[aria-label="播放设置"])'
-  const captionsSelector = '.video-controls .preview-menu:has(summary[aria-label="字幕"])'
-  const settings = page.locator(settingsSelector)
-  const captions = page.locator(captionsSelector)
-  await expect(settings.locator('summary')).toBeVisible()
-  await page.mouse.move(0, 0)
-  await page.waitForTimeout(220)
-  const initial = {
-    settings: await menuMetrics(page, settingsSelector),
-    captions: await menuMetrics(page, captionsSelector),
-  }
-  await captions.locator('summary').click()
-  await expect(captions).toHaveAttribute('open', '')
-  await page.waitForTimeout(220)
-  const captionsOpen = await menuMetrics(page, captionsSelector)
-  await captions.getByLabel('字幕轨道', { exact: true }).selectOption('-1')
-  await captions.locator('summary').click()
-  await settings.locator('summary').click()
-  await expect(settings).toHaveAttribute('open', '')
-  await page.waitForTimeout(220)
-  const settingsOpen = await menuMetrics(page, settingsSelector)
-  await settings.getByLabel('播放速度', { exact: true }).selectOption('1.5')
-  const changed = await page.locator('video').evaluate(element => ({
-    rate: (element as HTMLVideoElement).playbackRate,
-    storedRate: localStorage.getItem('revaro-video-rate'),
-  }))
-  await page.locator('body').dispatchEvent('pointerdown', { bubbles: true })
-  await expect(settings).not.toHaveAttribute('open', '')
-  await settings.locator('summary').click()
-  await page.keyboard.press('Escape')
-  await expect(settings).not.toHaveAttribute('open', '')
-  return {
-    initial,
-    captionsOpen,
-    settingsOpen,
-    changed,
-    focused: await settings.locator('summary').evaluate(element => document.activeElement === element),
-  }
-}
-
 test('音频音量菜单在桌面与移动端保持 reference 的状态、定位和焦点', async ({ browser }) => {
   const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
   const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
@@ -227,29 +176,6 @@ test('音频音量菜单在桌面与移动端保持 reference 的状态、定位
         exerciseAudio(newPage, newUrl),
       ])
       expect(newResult, `Rust 音频音量菜单 ${mobile ? '移动端' : '桌面'} 与 reference 不一致`).toEqual(oldResult)
-    } finally {
-      await Promise.all([oldContext.close(), newContext.close()])
-    }
-  }
-})
-
-test('视频字幕与播放设置菜单在桌面与移动端保持 reference 的状态、定位和焦点', async ({ browser }) => {
-  const oldUrl = process.env.E2E_REFERENCE_URL || 'http://127.0.0.1:18080'
-  const newUrl = process.env.E2E_NEW_URL || 'http://127.0.0.1:18084'
-  for (const mobile of [false, true]) {
-    const options = mobile
-      ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }
-      : { viewport: { width: 1440, height: 900 } }
-    const oldContext = await browser.newContext(options)
-    const newContext = await browser.newContext(options)
-    const oldPage = await oldContext.newPage()
-    const newPage = await newContext.newPage()
-    try {
-      const [oldResult, newResult] = await Promise.all([
-        exerciseVideo(oldPage, oldUrl),
-        exerciseVideo(newPage, newUrl),
-      ])
-      expect(newResult, `Rust 视频菜单 ${mobile ? '移动端' : '桌面'} 与 reference 不一致`).toEqual(oldResult)
     } finally {
       await Promise.all([oldContext.close(), newContext.close()])
     }

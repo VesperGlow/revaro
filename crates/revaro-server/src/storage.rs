@@ -1,6 +1,6 @@
 //! The local object store, ported from Go's `internal/storage/local.go`.
 //!
-//! This is the layer that owns `APP_DATA_DIR/objects`. It is deliberately dumb:
+//! This is the layer that owns `APP_OBJECTS_DIR`. It is deliberately dumb:
 //! it maps opaque string keys to bytes and knows nothing about files, metadata
 //! or media. Everything above it addresses content only through a key produced
 //! by [`revaro_core::keys`], so the on-disk layout stays a single decision.
@@ -20,9 +20,9 @@
 //!
 //! ## Deliberate differences from the Go implementation
 //!
-//! * The Go type embedded a `*DataPlane` client for media and archive work. Media
-//!   decoding and archive extraction now run in the in-process `revaro-media`
-//!   library; this store remains responsible only for object bytes.
+//! * The Go type embedded a `*DataPlane` client for media work. Media
+//!   decoding runs in the in-process `revaro-media` library; this store
+//!   remains responsible only for object bytes.
 //! * `walk_prefix` is gone. Go streamed batches to bound memory during garbage
 //!   collection; here [`LocalStore::list_prefix`] returns the full list and the
 //!   caller processes it in chunks. The store is single-user and local, so the

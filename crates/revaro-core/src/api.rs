@@ -550,76 +550,6 @@ pub mod tasks {
         /// Active tasks plus recently finished ones, newest first.
         pub items: Vec<Task>,
     }
-
-    /// `POST /api/tasks/{id}/input`
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct TaskInputRequest {
-        /// Archive password supplied by the user.
-        pub password: String,
-    }
-}
-
-/// Archive extraction payloads.
-pub mod archive {
-    use super::*;
-
-    /// Extraction lifecycle as reported to the task centre.
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    pub enum JobStatus {
-        /// Waiting for a worker.
-        #[default]
-        Queued,
-        /// Fetching the source archive.
-        Downloading,
-        /// Validating entries.
-        Checking,
-        /// Writing entries.
-        Extracting,
-        /// Committing metadata.
-        Importing,
-        /// Waiting for the user to supply a password.
-        WaitingPassword,
-        /// Finished successfully.
-        Done,
-        /// Finished unsuccessfully.
-        Failed,
-        /// Cancelled by the user or by process shutdown.
-        Cancelled,
-    }
-
-    /// Snapshot returned by `POST /api/files/{id}/extract` and by task input.
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Job {
-        /// Job identifier.
-        pub id: String,
-        /// Source archive file.
-        pub file_id: String,
-        /// Directory the output is written into.
-        pub parent_id: String,
-        /// Source archive name.
-        pub name: String,
-        /// Current phase.
-        pub status: JobStatus,
-        /// Completion percentage.
-        pub progress: i32,
-        /// Human-readable progress message.
-        pub message: String,
-        /// Created output directory, omitted until committed.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        pub output_id: String,
-        /// Created output directory name, omitted until committed.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        pub output_name: String,
-        /// Failure message, omitted while healthy.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        pub error: String,
-        /// Creation time.
-        pub created_at: Timestamp,
-        /// Last state change.
-        pub updated_at: Timestamp,
-    }
 }
 
 /// Book and reader payloads.
@@ -672,7 +602,7 @@ pub mod book {
 
 /// Media payloads.
 pub mod media {
-    pub use crate::media::{AudioMedia, VideoMedia};
+    pub use crate::media::AudioMedia;
 
     /// Response of `POST /api/files/{id}/media/reanalyze`.
     pub use crate::media::ReanalyzeResult;
@@ -822,7 +752,6 @@ pub mod progress {
 }
 
 /// Convenience re-exports of the payload modules.
-pub use archive::Job as ArchiveJob;
 pub use book::{
     Flow, Info as BookInfo, Progress as BookProgress,
     SaveProgressRequest as SaveBookProgressRequest,
@@ -833,7 +762,7 @@ pub use files::{
     Trash, UpdateDocumentRequest,
 };
 pub use library::{Library, LibraryAll, LibraryBuckets};
-pub use tasks::{TaskInputRequest, TaskList};
+pub use tasks::TaskList;
 pub use uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, PartUrl, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
@@ -1314,18 +1243,6 @@ mod tests {
     }
 
     #[test]
-    fn archive_job_statuses_use_snake_case() {
-        assert_eq!(
-            serde_json::to_value(archive::JobStatus::WaitingPassword).unwrap(),
-            "waiting_password"
-        );
-        assert_eq!(
-            serde_json::to_value(archive::JobStatus::Done).unwrap(),
-            "done"
-        );
-    }
-
-    #[test]
     fn upload_status_serializes_the_parts_array() {
         let body = UploadStatus {
             upload_id: "u".into(),
@@ -1395,16 +1312,11 @@ mod tests {
 
     #[test]
     fn media_payloads_re_export_the_shared_media_types() {
-        use crate::media::{AudioMedia, VideoMedia};
+        use crate::media::AudioMedia;
 
         let audio = AudioMedia::default();
-        let video = VideoMedia::default();
         assert_eq!(
             serde_json::to_value(&audio).unwrap()["chapters"],
-            serde_json::json!([])
-        );
-        assert_eq!(
-            serde_json::to_value(&video).unwrap()["subtitles"],
             serde_json::json!([])
         );
     }

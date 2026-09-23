@@ -30,7 +30,7 @@ RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     ca-certificates curl clang cmake pkg-config \
     zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
-    libssl-dev libxml2-dev libacl1-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add wasm32-unknown-unknown \
     && rustup component add rustfmt clippy
@@ -75,17 +75,16 @@ RUN CARGO_INCREMENTAL=0 cargo xtask build
 
 # ---- Runtime ----
 FROM debian:bookworm-slim
-# libarchive2-sys links its bounded static archive engine against these system
-# libraries; FFmpeg itself is copied below as the only media-specific runtime.
+# FFmpeg itself is copied below as the only media-specific runtime.
 RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     ca-certificates tzdata wget libstdc++6 libgcc-s1 \
-    libxml2 libssl3 libacl1 zlib1g libbz2-1.0 liblzma5 libzstd1 liblz4-1 \
+    libssl3 zlib1g libbz2-1.0 liblzma5 libzstd1 liblz4-1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \
-    && mkdir -p /opt/revaro/web /data/.cache /data/work \
-    && chown -R revaro:revaro /data
+    && mkdir -p /opt/revaro/web /data /objects /caches/.cache \
+    && chown -R revaro:revaro /data /objects /caches
 
 COPY --from=rust-build /src/target/release/revaro /usr/local/bin/revaro
 COPY --from=rust-build /src/dist/web /opt/revaro/web
@@ -96,11 +95,12 @@ RUN strip --strip-unneeded /usr/local/lib/libav*.so* /usr/local/lib/libsw*.so* 2
     && ldconfig
 
 ENV HOME=/data \
-    XDG_CACHE_HOME=/data/.cache \
-    APP_WORK_DIR=/data/work \
+    XDG_CACHE_HOME=/caches/.cache \
+    APP_OBJECTS_DIR=/objects \
+    APP_CACHES_DIR=/caches \
     APP_WEB_DIR=/opt/revaro/web
 WORKDIR /data
 USER revaro
-VOLUME ["/data"]
+VOLUME ["/data", "/objects", "/caches"]
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/revaro"]

@@ -7,7 +7,8 @@ services:
     environment:
       APP_ADDR: ":8080"
       APP_DATA_DIR: /data
-      APP_WORK_DIR: /data/work
+      APP_OBJECTS_DIR: /objects
+      APP_CACHES_DIR: /caches
       APP_WEB_DIR: /opt/revaro/web
       APP_BASE_URL: "${APP_BASE_URL:-http://localhost:${APP_PORT:-8080}}"
       COOKIE_SECURE: "${COOKIE_SECURE:-}"
@@ -22,6 +23,8 @@ services:
       FLOW_CACHE_CAPACITY: "${FLOW_CACHE_CAPACITY:-1073741824}"
     volumes:
       - revaro-data:/data
+      - revaro-objects:/objects
+      - revaro-caches:/caches
     read_only: true
     tmpfs:
       - /tmp:size=1g,mode=1777
@@ -38,3 +41,5 @@ services:
 
 volumes:
   revaro-data:
+  revaro-objects:
+  revaro-caches:

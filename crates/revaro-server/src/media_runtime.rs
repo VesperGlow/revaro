@@ -1,7 +1,7 @@
 //! Process-wide coordination for native media work.
 //!
 //! FFmpeg is deliberately kept behind a small amount of scheduling state. A
-//! request can ask for metadata, a thumbnail and a subtitle at the same time;
+//! request can ask for metadata and a thumbnail at the same time;
 //! bounded permits keep those blocking operations from consuming every worker
 //! thread, while keyed locks make one source produce one durable result.
 
@@ -15,14 +15,13 @@ use revaro_media::MediaEngine;
 pub struct MediaRuntime {
     /// The native FFmpeg/image engine.
     pub engine: MediaEngine,
-    /// Maximum simultaneous probe/video/subtitle operations.
+    /// Maximum simultaneous probe/video operations.
     pub light_slots: Arc<tokio::sync::Semaphore>,
     /// Maximum simultaneous still-image/EPUB thumbnail decodes.
     pub image_slots: Arc<tokio::sync::Semaphore>,
     metadata_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     thumbnail_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     video_thumbnail_jobs: Mutex<HashSet<String>>,
-    analysis_jobs: Mutex<HashSet<String>>,
 }
 
 impl MediaRuntime {
@@ -36,7 +35,6 @@ impl MediaRuntime {
             metadata_locks: Mutex::new(HashMap::new()),
             thumbnail_locks: Mutex::new(HashMap::new()),
             video_thumbnail_jobs: Mutex::new(HashSet::new()),
-            analysis_jobs: Mutex::new(HashSet::new()),
         }
     }
 
@@ -64,22 +62,6 @@ impl MediaRuntime {
     /// Release a video thumbnail job after it has settled.
     pub fn release_video_thumbnail(&self, key: &str) {
         self.video_thumbnail_jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(key);
-    }
-
-    /// Claim a background metadata analysis for one file.
-    pub fn claim_analysis(&self, key: &str) -> bool {
-        self.analysis_jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key.to_owned())
-    }
-
-    /// Release a background metadata analysis after it settles.
-    pub fn release_analysis(&self, key: &str) {
-        self.analysis_jobs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(key);

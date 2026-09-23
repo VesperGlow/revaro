@@ -98,7 +98,7 @@ async function mockOpening(page: Page, flowGate?: FlowGate, flowFailure = false)
     if (path === `/api/files/${epub.id}/book/flow/chunks/0`) {
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<p data-block="0">兼容阅读内容</p>' })
     }
-    if (path.endsWith('/audio') || path.endsWith('/video')) return json({ subtitles: [], chapters: [] })
+    if (path.endsWith('/audio')) return json({ chapters: [] })
     if (path.endsWith('/media/progress')) {
       if (request.method() === 'PUT') return route.fulfill({ status: 204, body: '' })
       return json({ position: 0 })
@@ -145,7 +145,7 @@ async function mockTrashOpening(page: Page) {
     if (/\/book\/flow\/chunks\/0$/.test(path)) {
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<p data-block="0">回收站阅读内容</p>' })
     }
-    if (path.endsWith('/audio') || path.endsWith('/video')) return json({ subtitles: [], chapters: [] })
+    if (path.endsWith('/audio')) return json({ chapters: [] })
     if (path.endsWith('/media/progress')) {
       if (request.method() === 'PUT') return route.fulfill({ status: 204, body: '' })
       return json({ position: 0 })

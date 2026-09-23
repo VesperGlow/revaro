@@ -1,6 +1,6 @@
 [package]
 name = "revaro-media"
-description = "In-process media probing, thumbnail generation and subtitle conversion"
+description = "In-process media probing and thumbnail generation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,10 +12,8 @@ authors.workspace = true
 revaro-core.workspace = true
 ffmpeg-next.workspace = true
 image = { workspace = true, features = ["bmp", "gif", "png", "webp"] }
-libarchive2.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true
-zip.workspace = true

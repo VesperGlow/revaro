@@ -32,7 +32,7 @@ use revaro_core::classify::LibraryKind;
 use revaro_core::keys;
 use revaro_core::library as aggregation;
 use revaro_core::model::{
-    File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats, Task,
+    File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats,
 };
 use revaro_core::time::Timestamp;
 use rusqlite::{Connection, Row};
@@ -1210,16 +1210,13 @@ fn progress_response(
 
 /// `POST /api/tasks/{id}/cancel`
 ///
-/// Durable state is updated first, then the archive runtime receives the same
-/// cancellation request. The database write wins races with a worker finishing
-/// at the same time, while the runtime token lets a large extraction stop at a
-/// bounded read boundary.
+/// Durable task state is updated first; upload cancellation then stops the
+/// corresponding transfer.
 async fn cancel_task(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
-    let task_id = id.clone();
     let jobs = state.jobs.clone();
     let (_, source_type, source_id) = state
         .db
@@ -1268,8 +1265,6 @@ WHERE id = ?2 AND status NOT IN ('completed','failed','cancelled')",
         .await?;
     if source_type == "upload" {
         crate::upload_routes::cancel_upload_task(&state, &source_id).await;
-    } else {
-        crate::archive_routes::cancel_task_runtime(&state, &task_id).await;
     }
     Ok(http::StatusCode::NO_CONTENT)
 }
@@ -1280,7 +1275,6 @@ async fn retry_task(
     _user: AuthUser,
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
-    let task_id = id.clone();
     let jobs = state.jobs.clone();
     state
         .db
@@ -1318,7 +1312,6 @@ WHERE id = ?2 AND status = 'failed' AND retry_count < max_retries",
             Ok(http::StatusCode::ACCEPTED)
         })
         .await?;
-    crate::archive_routes::retry_task_runtime(&state, &task_id).await;
     Ok(http::StatusCode::ACCEPTED)
 }
 
@@ -1329,21 +1322,13 @@ async fn delete_task(
     PathParam(id): PathParam<String>,
 ) -> Result<http::StatusCode, ApiError> {
     let jobs = state.jobs.clone();
-    let (status_code, source_type, source_id) = state
+    let status_code = state
         .db
         .call_api(move |connection| {
-            let (status, source_type, source_id) = connection
-                .query_row(
-                    "SELECT status,source_type,source_id FROM tasks WHERE id = ?1",
-                    [&id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                            row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                        ))
-                    },
-                )
+            let status = connection
+                .query_row("SELECT status FROM tasks WHERE id = ?1", [&id], |row| {
+                    row.get::<_, String>(0)
+                })
                 .map_err(|error| not_found_or(DbError::Query(error), "task not found"))?;
             // Removing a live task would strand its worker, so only finished
             // records may be dismissed.
@@ -1359,20 +1344,9 @@ async fn delete_task(
                     ApiError::internal("could not remove task")
                 })?;
             jobs.changed();
-            Ok((http::StatusCode::NO_CONTENT, source_type, source_id))
+            Ok(http::StatusCode::NO_CONTENT)
         })
         .await?;
-    if source_type == "archive" {
-        crate::archive_routes::delete_task_runtime(
-            &state,
-            &Task {
-                source_type,
-                source_id,
-                ..Task::default()
-            },
-        )
-        .await;
-    }
     Ok(status_code)
 }
 
@@ -1478,7 +1452,7 @@ pub fn scan_task(row: &Row<'_>) -> rusqlite::Result<revaro_core::model::Task> {
 ///
 /// Other types exist in the table for internal bookkeeping and are deliberately
 /// not surfaced, matching Go's filter.
-const VISIBLE_TASK_TYPES: &str = "('upload','archive_extract','subtitle')";
+const VISIBLE_TASK_TYPES: &str = "('upload')";
 
 /// `GET /api/tasks`
 async fn list_tasks(
@@ -2554,9 +2528,9 @@ AND deleted_at IS NULL)",
             transaction
                 .execute(
                     "INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,\
-width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,\
+width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,\
 source_etag,probe_version) SELECT ?1,duration_ms,container,video_codec,audio_codec,width,height,\
-bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,\
+bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,source_etag,\
 probe_version FROM media_metadata WHERE file_id = ?2",
                     rusqlite::params![copy_id, id],
                 )
@@ -2628,7 +2602,7 @@ mod tests {
         let config = Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
-            "APP_WORK_DIR" => Some(root.join("work").display().to_string()),
+            "APP_CACHES_DIR" => Some(root.join("caches").display().to_string()),
             _ => None,
         })
         .unwrap();
@@ -3027,9 +3001,9 @@ INSERT INTO task_files(task_id,file_id,role) VALUES('t1','f1','input');";
 VALUES('a1','00000000-0000-0000-0000-000000000000','song.flac','file','blobs/a1',10,'audio/flac','e1','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
 ('a2','00000000-0000-0000-0000-000000000000','other.flac','file','blobs/a2',10,'audio/flac','e2','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
 ('a3','00000000-0000-0000-0000-000000000000','plain.mp3','file','blobs/a3',10,'audio/mpeg','e3','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'); \
-INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES \
-('a1',12345,'flac','mjpeg','flac',0,0,0,'{}', '{}','','',0,'[]','e1',2), \
-('a2',9999,'flac','','flac',0,0,0,'[]','2024-01-01T00:00:00Z','','',0,'[]','STALE',2);",
+INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,source_etag,probe_version) VALUES \
+('a1',12345,'flac','mjpeg','flac',0,0,0,'{}', '{}','','',0,'e1',2), \
+('a2',9999,'flac','','flac',0,0,0,'[]','2024-01-01T00:00:00Z','','',0,'STALE',2);",
             chapters, analyzed_at
         ).into_boxed_str());
         seed(&state, sql).await;
@@ -3081,7 +3055,7 @@ UPDATE files SET deleted_at='2024-01-01T00:00:00Z', trash_root_id='b' WHERE id='
         assert_eq!(body["storage"]["trash_bytes"], 60);
         assert_eq!(body["storage"]["file_count"], 2);
         assert!(body["database"]["bytes"].as_i64().unwrap() > 0);
-        // The test state uses an isolated writable work directory, so the
+        // The test state uses an isolated writable cache directory, so the
         // process-wide cache manager has completed its real startup probe.
         assert_eq!(body["cache"]["status"], "ok");
         assert_eq!(body["status"], "ok");
@@ -3455,9 +3429,9 @@ VALUES('f1','00000000-0000-0000-0000-000000000000','notes.md','file','blobs/f1',
         let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES \
 ('a1','00000000-0000-0000-0000-000000000000','song.flac','file','blobs/a1',10,'audio/flac','e1','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
 ('v1','00000000-0000-0000-0000-000000000000','clip.mp4','file','blobs/v1',20,'video/mp4','e2','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'); \
-INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,subtitles_json,source_etag,probe_version) VALUES \
-('a1',1000,'flac','mjpeg','flac',0,0,0,'[]','2024-01-01T00:00:00Z','','',0,'[]','e1',2), \
-('v1',2000,'mp4','h264','aac',1920,1080,0,'[]','2024-01-01T00:00:00Z','','',0,'[]','e2',2);";
+INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,source_etag,probe_version) VALUES \
+('a1',1000,'flac','mjpeg','flac',0,0,0,'[]','2024-01-01T00:00:00Z','','',0,'e1',2), \
+('v1',2000,'mp4','h264','aac',1920,1080,0,'[]','2024-01-01T00:00:00Z','','',0,'e2',2);";
         seed(&state, sql).await;
 
         let (status, body) = call(&state, &format!("/api/files/{ROOT_ID}/children")).await;

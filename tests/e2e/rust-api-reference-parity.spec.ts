@@ -210,7 +210,6 @@ test('旧版 API 路由、响应字段和错误分流在 Rust 版仍可达', asy
       [`/api/files/${MISSING}/download`, 'GET'],
       [`/api/files/${MISSING}/preview`, 'GET'],
       [`/api/files/${MISSING}/audio`, 'GET'],
-      [`/api/files/${MISSING}/video`, 'GET'],
       [`/api/files/${MISSING}/thumbnail`, 'GET'],
       [`/api/files/${MISSING}/media/progress`, 'GET'],
       [`/api/files/${MISSING}/content`, 'GET'],
@@ -222,11 +221,9 @@ test('旧版 API 路由、响应字段和错误分流在 Rust 版仍可达', asy
       [`/api/files/${MISSING}/book/flow/chunks/0`, 'GET'],
       [`/api/files/${MISSING}/share`, 'GET'],
       [`/api/files/${MISSING}/media/reanalyze`, 'POST'],
-      [`/api/files/${MISSING}/extract`, 'POST'],
       [`/api/tasks/${MISSING}`, 'GET'],
       [`/api/tasks/${MISSING}/cancel`, 'POST'],
       [`/api/tasks/${MISSING}/retry`, 'POST'],
-      [`/api/tasks/${MISSING}/input`, 'POST', { password: 'x' }],
       [`/api/uploads/${MISSING}`, 'GET'],
     ]
     for (const [path, method, data] of missingProbes) {

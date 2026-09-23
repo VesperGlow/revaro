@@ -1,8 +1,8 @@
 # Revaro
 
-轻量、自托管的本地文件管理器。Rust 管理账户、文件目录和 SQLite 元数据，普通文件以 UUID blob 存储在服务器硬盘；`revaro-media` 在进程内提供媒体信息、缩略图、字幕提取和压缩包解压。
+轻量、自托管的本地文件管理器。Rust 管理账户、文件目录和 SQLite 元数据，普通文件以 UUID blob 存储在服务器硬盘；`revaro-media` 在进程内提供媒体信息和缩略图。
 
-支持文件及文件夹上传、大文件分片续传、下载、分享、回收站、文本编辑、EPUB/TXT 阅读、原文件音视频播放、字幕和播放进度。界面是单一的顶栏加全宽方块文件浏览：顶栏回到我的文件、打开回收站、查看服务状态与任务中心、进入账户设置；每个方块卡片左上角的选择按钮支持单选与多选，选中后出现批量工具栏。不提供侧边分类栏、列表视图、离线下载、音频合并或音视频格式转换。
+支持文件及文件夹上传、大文件分片续传、下载、分享、回收站、文本编辑、EPUB/TXT 阅读、原文件音视频播放和播放进度。界面是单一的顶栏加全宽方块文件浏览：顶栏回到我的文件、打开回收站、查看服务状态与任务中心、进入账户设置；每个方块卡片左上角的选择按钮支持单选与多选，选中后出现批量工具栏。不提供侧边分类栏、列表视图、离线下载、音频合并或音视频格式转换。
 
 ## 部署
 
@@ -19,24 +19,42 @@ docker compose up -d
 本地目录：
 
 - `/data/revaro.db`：SQLite 元数据。
-- `/data/objects/blobs/<UUID>`：普通文件内容。
-- `/data/objects/profile/`、`thumbs/` 及阅读对象：持久化附属内容。
-- `/data/objects/.multipart/`：正在上传的分片。
-- `/data/work/`：解压和可回收缓存。
+- `/objects/blobs/<UUID>`：普通文件内容。
+- `/objects/profile/`、`thumbs/` 及阅读对象：持久化附属内容。
+- `/objects/.multipart/`：正在上传的分片。
+- `/caches/`：可重建的媒体和阅读缓存。
 
-这是面向全新安装的本地产品，使用空的数据目录启动，不提供旧版本迁移或兼容逻辑。务必持久化整个 `/data`；数据库和文件均只保存在本机。应用不提供自动数据库备份，请在停服后自行备份完整数据卷。
+`/data`、`/objects`、`/caches` 是三个平级目录。务必持久化 `/data` 和 `/objects`；`/caches` 可清空重建。数据库和文件均只保存在本机。应用不提供自动数据库备份，请在停服后自行备份数据库和对象卷。
+
+Compose 默认创建三个独立的命名卷；若要把文件实际放到另一块磁盘，应将 `revaro-objects` 卷映射到宿主机该磁盘上的目录，并确保 UID/GID 10001 可写。仅分成三个命名卷不保证它们位于不同磁盘。
+
+已有安装从单卷布局升级时，先停服并备份旧的 `revaro-data` 卷，再把旧卷中的 `objects/` 内容复制到新的 `revaro-objects` 卷：
+
+```sh
+docker compose stop revaro
+docker compose run --rm --no-deps --user 0 --entrypoint sh revaro -ec '
+  test -d /data/objects
+  test -z "$(find /objects -mindepth 1 -maxdepth 1 -print -quit)"
+  cp -a /data/objects/. /objects/
+  chown -R 10001:10001 /objects
+'
+docker compose up -d
+```
+
+确认文件能正常浏览、下载后，旧的 `/data/objects` 才可清理。旧的 `/data/work`、`/objects/.work` 和 `/work` 仅用于临时文件或缓存，无需迁移；确认旧实例已停止后即可清理。请勿在复制前启动新布局，否则新对象卷可能已有内容，迁移命令会拒绝覆盖。
 
 ## 播放
 
-浏览器直接读取原文件，支持 HTTP Range、拖动定位、音量、倍速、字幕及进度同步。播放能力取决于浏览器支持的容器和编解码器；无法解码时可下载到本地播放器。服务端不再做视频或音频转码、兼容流封装或音频合并。保留媒体探测、封面/缩略图和 WebVTT 字幕提取。
+浏览器直接读取原文件，支持 HTTP Range、拖动定位、音量、倍速及进度同步。播放能力取决于浏览器支持的容器和编解码器；无法解码时可下载到本地播放器。服务端保留媒体探测和封面/缩略图生成。
 
 ## 配置
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
 | `APP_ADDR` | `:8080` | 应用监听地址 |
-| `APP_DATA_DIR` | `/data` | 数据库和本地对象根目录 |
-| `APP_WORK_DIR` | `/work`，镜像内为 `/data/work` | 临时工作目录 |
+| `APP_DATA_DIR` | `/data` | 数据库和配置目录 |
+| `APP_OBJECTS_DIR` | `/objects` | 持久对象和上传分片根目录 |
+| `APP_CACHES_DIR` | `/caches` | 可重建的媒体和阅读缓存目录 |
 | `APP_BASE_URL` | `http://localhost:8080`（Compose 会随 `APP_PORT` 推导） | 公网访问地址、同源检查和分享链接 |
 | `COOKIE_SECURE` | 随 HTTPS 地址启用 | Cookie Secure |
 | `UPLOAD_EXPIRES` | `24h` | 上传会话有效期 |
@@ -69,8 +87,8 @@ cargo xtask build         # release 服务端 + 前端产物
 构建或运行。CI 会对 Rust 镜像执行 `cargo xtask build`，并在真实容器中运行 Rust
 媒体与阅读器 E2E。
 
-Rust 本地编译需要 FFmpeg 开发库、clang、cmake 和 libarchive 相关构建依赖；Dockerfile 包含完整构建环境。生产 FFmpeg 只保留媒体读取所需库，不包含转码命令或编码器。
+Rust 本地编译需要 FFmpeg 开发库、clang 和 cmake；Dockerfile 包含完整构建环境。生产 FFmpeg 只保留媒体读取所需库，不包含转码命令或编码器。
 
 `main` 推送会触发 GitHub Actions：Rust workspace 检查、依赖扫描、镜像构建和 Chromium E2E 通过后发布 GHCR 镜像。浏览器测试使用 `compose.e2e.yml` 启动全新本地存储服务。
 
-媒体与归档边界见 [data-plane.md](docs/data-plane.md)。
+媒体与存储边界见 [data-plane.md](docs/data-plane.md)。

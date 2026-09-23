@@ -104,12 +104,6 @@ pub const EDITABLE_EXTENSIONS: &[&str] = &[
     "md", "markdown", "txt", "yaml", "yml", "json", "toml", "ini", "conf", "log", "csv",
 ];
 
-/// Archive suffixes, longest first so `.tar.gz` wins over `.gz`.
-pub const ARCHIVE_SUFFIXES: &[&str] = &[
-    "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tgz", "tbz2", "tbz", "txz", "tzst", "zip", "7z",
-    "rar", "tar", "gz", "bz2", "xz", "zst",
-];
-
 /// The lowercase extension of `name`, without the dot.
 ///
 /// A leading dot is not an extension (`.bashrc` has none), matching Go's
@@ -202,15 +196,6 @@ pub fn is_epub_name(name: &str) -> bool {
     extension(name).eq_ignore_ascii_case("epub")
 }
 
-/// True when `name` looks like an archive.
-#[must_use]
-pub fn is_archive_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    ARCHIVE_SUFFIXES
-        .iter()
-        .any(|suffix| lower.ends_with(&format!(".{suffix}")))
-}
-
 /// True when the file is a ready, editable text document within the size cap.
 #[must_use]
 pub fn is_editable(file: &File) -> bool {
@@ -263,12 +248,6 @@ pub fn is_audio(file: &File) -> bool {
         .to_ascii_lowercase()
         .starts_with("audio/")
         || has_extension(&file.name, AUDIO_EXTENSIONS)
-}
-
-/// True when the file is a ready archive.
-#[must_use]
-pub fn is_archive(file: &File) -> bool {
-    is_ready_file(file) && is_archive_name(&file.name)
 }
 
 /// True when the file belongs to `kind`.
@@ -408,7 +387,6 @@ mod tests {
         assert!(is_video(&file("clip.MKV", "application/octet-stream")));
         assert!(is_audio(&file("song.flac", "")));
         assert!(is_book(&file("novel.epub", "")));
-        assert!(is_archive(&file("bundle.tar.gz", "")));
         assert!(!is_image(&file("notes.md", "")));
         assert!(!is_image(&file("bitmap.bmp", "")));
     }
@@ -467,15 +445,6 @@ mod tests {
         };
         assert!(!is_editable(&large));
         assert!(!is_editable(&file("photo.png", "")));
-    }
-
-    #[test]
-    fn archive_suffixes_prefer_the_longest_match() {
-        assert!(is_archive_name("a.tar.gz"));
-        assert!(is_archive_name("a.TGZ"));
-        assert!(is_archive_name("a.zip"));
-        assert!(!is_archive_name("a.gz.txt"));
-        assert!(!is_archive_name("a.txt"));
     }
 
     #[test]

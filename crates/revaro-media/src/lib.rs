@@ -7,10 +7,8 @@
 //! conversion.  The server runs the blocking methods on a worker thread and
 //! supplies a cancellation token for request disconnects and shutdown.
 
-mod archive;
 mod image;
 mod probe;
-mod subtitle;
 mod thumbnail;
 
 use std::io::{Read, Seek};
@@ -19,12 +17,8 @@ use std::sync::OnceLock;
 use ffmpeg_next as ffmpeg;
 use tokio_util::sync::CancellationToken;
 
-pub use archive::{
-    ArchiveEngine, ArchiveError, ArchivePhase, ArchiveProgress, ArchiveResult, MAX_ARCHIVE_ENTRIES,
-    MAX_ARCHIVE_PASSWORD_BYTES, expanded_limit,
-};
 pub use image::resize_image_to_jpeg;
-pub use revaro_core::media::{EmbeddedSubtitle, MediaChapter, MediaProbe};
+pub use revaro_core::media::{MediaChapter, MediaProbe};
 
 /// Maximum source dimensions accepted by the still-image thumbnail path.
 pub const MAX_IMAGE_PIXELS: u64 = 40_000_000;
@@ -32,10 +26,6 @@ pub const MAX_IMAGE_PIXELS: u64 = 40_000_000;
 pub const MAX_IMAGE_SIDE: u32 = 30_000;
 /// Maximum encoded thumbnail returned by the media engine.
 pub const MAX_THUMBNAIL_BYTES: usize = 8 << 20;
-/// Maximum source read by the external subtitle converter.
-pub const MAX_SUBTITLE_BYTES: usize = 16 << 20;
-/// Maximum converted subtitle returned by the engine.
-pub const MAX_CONVERTED_SUBTITLE_BYTES: usize = 32 << 20;
 
 /// Errors that can be surfaced by a media operation.
 #[derive(Debug, thiserror::Error)]
@@ -55,24 +45,6 @@ pub enum MediaError {
     /// A video did not yield a usable decoded frame.
     #[error("video produced no usable thumbnail frame")]
     NoUsableFrame,
-    /// The source subtitle exceeded the bounded input limit.
-    #[error("subtitle is too large")]
-    SubtitleTooLarge,
-    /// Conversion would exceed the bounded output limit.
-    #[error("converted subtitle is too large")]
-    ConvertedSubtitleTooLarge,
-    /// The source subtitle was not UTF-8.
-    #[error("subtitle is not valid UTF-8")]
-    SubtitleNotUtf8,
-    /// A WebVTT source did not contain the required header.
-    #[error("invalid WebVTT header")]
-    InvalidWebVtt,
-    /// The requested external subtitle format is not supported.
-    #[error("unsupported subtitle format")]
-    UnsupportedSubtitleFormat,
-    /// The requested stream is not a usable subtitle stream.
-    #[error("{0}")]
-    InvalidSubtitleStream(String),
     /// A decoded image or media frame was structurally invalid.
     #[error("invalid media data: {0}")]
     InvalidData(String),
@@ -91,7 +63,7 @@ impl MediaError {
 pub struct MediaEngine;
 
 impl MediaEngine {
-    /// Probe container, stream, chapter and embedded-subtitle metadata.
+    /// Probe container, stream and chapter metadata.
     pub fn probe<R: Read + Seek + Send + 'static>(
         &self,
         reader: R,
@@ -109,17 +81,6 @@ impl MediaEngine {
         cancel: CancellationToken,
     ) -> Result<Vec<u8>, MediaError> {
         thumbnail::thumbnail(reader, max_dimension, attached_picture_only, cancel)
-    }
-
-    /// Convert an external subtitle or an embedded subtitle stream to WebVTT.
-    pub fn subtitle<R: Read + Seek + Send + 'static>(
-        &self,
-        reader: R,
-        format: Option<&str>,
-        stream_index: Option<usize>,
-        cancel: CancellationToken,
-    ) -> Result<Vec<u8>, MediaError> {
-        subtitle::subtitle(reader, format, stream_index, cancel)
     }
 }
 

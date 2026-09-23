@@ -7,7 +7,8 @@ services:
     environment:
       APP_ADDR: ":8080"
       APP_DATA_DIR: /data
-      APP_WORK_DIR: /data/work
+      APP_OBJECTS_DIR: /objects
+      APP_CACHES_DIR: /caches
       APP_WEB_DIR: /opt/revaro/web
       APP_BASE_URL: http://127.0.0.1:18080
       COOKIE_SECURE: "false"
@@ -15,6 +16,10 @@ services:
       ADMIN_PASSWORD: revaro-e2e-password
     volumes:
       - revaro-e2e-data:/data
+      - revaro-e2e-objects:/objects
+      - revaro-e2e-caches:/caches
 
 volumes:
   revaro-e2e-data:
+  revaro-e2e-objects:
+  revaro-e2e-caches:

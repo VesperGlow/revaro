@@ -26,10 +26,10 @@ const task = (value: Record<string, unknown>) => ({
 async function mockTasks(page: Page) {
   let taskRequests = 0
   const tasks = [
-    task({ id: 'waiting-archive', type: 'archive_extract', status: 'waiting_input', phase: 'waiting_input', progress: 42, name: '需要密码.zip' }),
+    task({ id: 'active-upload', status: 'running', phase: '上传中', progress: 42, name: '正在上传.bin' }),
     ...Array.from({ length: 5 }, (_, index) => task({ id: `completed-${index}`, name: `已完成 ${index + 1}` })),
-    task({ id: 'failed-task', status: 'failed', phase: 'failed', progress: 100, retry_count: 0, max_retries: 2, error: '解压失败', name: '失败任务.zip' }),
-    task({ id: 'maxed-task', status: 'failed', phase: 'failed', progress: 100, retry_count: 3, max_retries: 3, error: '重试次数已用尽', name: '不可重试.zip' }),
+    task({ id: 'failed-task', status: 'failed', phase: 'failed', progress: 100, retry_count: 0, max_retries: 2, error: '上传失败', name: '失败任务.bin' }),
+    task({ id: 'maxed-task', status: 'failed', phase: 'failed', progress: 100, retry_count: 3, max_retries: 3, error: '重试次数已用尽', name: '不可重试.bin' }),
   ]
 
   await page.route('**/api/**', async route => {
@@ -54,7 +54,7 @@ async function mockTasks(page: Page) {
   return { taskRequests: () => taskRequests }
 }
 
-test('任务中心保留等待输入、分组、展开和关闭行为', async ({ page }) => {
+test('任务中心保留分组、展开和关闭行为', async ({ page }) => {
   await mockTasks(page)
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
@@ -63,23 +63,18 @@ test('任务中心保留等待输入、分组、展开和关闭行为', async ({
   const panel = page.locator('.task-panel')
   await expect(panel).toBeVisible()
   await expect(panel).toContainText('进行中')
-  await expect(panel).toContainText('等待输入密码')
-  await expect(panel.locator('.active-group article')).toContainText('需要密码.zip')
+  await expect(panel.locator('.active-group article')).toContainText('正在上传.bin')
   await expect(panel.locator('.completed-group article')).toHaveCount(4)
-  await expect(panel.locator('.failed-group article').filter({ hasText: '失败任务.zip' })).toContainText('失败任务.zip')
+  await expect(panel.locator('.failed-group article').filter({ hasText: '失败任务.bin' })).toContainText('失败任务.bin')
   await expect(panel.locator('.failed-group button[title="重试"]')).toBeVisible()
-  await expect(panel.locator('.failed-group article').filter({ hasText: '不可重试.zip' }).getByRole('button', { name: '重试' })).toHaveCount(0)
+  await expect(panel.locator('.failed-group article').filter({ hasText: '不可重试.bin' }).getByRole('button', { name: '重试' })).toHaveCount(0)
   await expect(panel.getByRole('button', { name: /展开其余 1 项/ })).toBeVisible()
 
   await panel.getByRole('button', { name: /展开其余 1 项/ }).click()
   await expect(panel.locator('.completed-group article')).toHaveCount(5)
   await expect(panel.getByRole('button', { name: '收起' })).toBeVisible()
 
-  await panel.locator('.active-group article').click()
-  await expect(page.locator('.input-dialog')).toBeVisible()
-  await expect(page.locator('.input-dialog')).toContainText('需要密码.zip')
   await page.keyboard.press('Escape')
-  await expect(page.locator('.input-dialog')).toHaveCount(0)
   await expect(panel).toBeHidden()
 
   await page.getByTitle('任务中心').click()
@@ -104,20 +99,19 @@ test('桌面与移动任务中心切换不重置共享任务流', async ({ page 
   expect(fixture.taskRequests()).toBe(1)
   await page.locator('summary[aria-label="打开账户与工具菜单"]').click()
   await page.getByRole('button', { name: '任务中心' }).click()
-  await expect(page.locator('.task-panel')).toContainText('需要密码.zip')
+  await expect(page.locator('.task-panel')).toContainText('正在上传.bin')
 
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.waitForTimeout(250)
   expect(fixture.taskRequests()).toBe(1)
   await page.getByTitle('任务中心').click()
-  await expect(page.locator('.task-panel')).toContainText('需要密码.zip')
+  await expect(page.locator('.task-panel')).toContainText('正在上传.bin')
 })
 
-test('任务中心的取消、重试、密码输入和清除完成操作保持可用', async ({ page }) => {
+test('任务中心的取消、重试和清除完成操作保持可用', async ({ page }) => {
   const state = [
     task({ id: 'active-task', status: 'running', phase: '上传中', progress: 30, name: '活动任务.bin' }),
-    task({ id: 'waiting-password', type: 'archive_extract', status: 'waiting_input', phase: 'waiting_input', progress: 42, name: '密码归档.zip' }),
-    task({ id: 'failed-action', status: 'failed', phase: 'failed', progress: 100, retry_count: 0, max_retries: 2, error: '解压失败', name: '失败归档.zip' }),
+    task({ id: 'failed-action', status: 'failed', phase: 'failed', progress: 100, retry_count: 0, max_retries: 2, error: '上传失败', name: '失败上传.bin' }),
     task({ id: 'completed-action', name: '已完成任务.txt' }),
   ]
   const requests: string[] = []
@@ -132,13 +126,12 @@ test('任务中心的取消、重试、密码输入和清除完成操作保持�
       return route.fulfill({ contentType: 'text/event-stream', body: '' })
     }
     if (path === '/api/tasks' && request.method() === 'GET') return json({ items: state })
-    const action = path.match(/^\/api\/tasks\/([^/]+)\/(cancel|retry|input)$/)
+    const action = path.match(/^\/api\/tasks\/([^/]+)\/(cancel|retry)$/)
     if (action) {
       requests.push(`${request.method()} ${path}`)
       const item = state.find(value => value.id === action[1])
       if (item && action[2] === 'cancel') Object.assign(item, { status: 'cancelled', phase: 'cancelled' })
       if (item && action[2] === 'retry') Object.assign(item, { status: 'retrying', phase: 'retrying', retry_count: item.retry_count + 1 })
-      if (item && action[2] === 'input') Object.assign(item, { status: 'running', phase: '解压中', error: '' })
       return route.fulfill({ status: 204, body: '' })
     }
     const deletion = path.match(/^\/api\/tasks\/([^/]+)$/)
@@ -165,23 +158,12 @@ test('任务中心的取消、重试、密码输入和清除完成操作保持�
   await expect(panel.locator('.completed-group article').filter({ hasText: '活动任务.bin' })).toBeVisible()
   expect(requests).toContain('POST /api/tasks/active-task/cancel')
 
-  const failedRow = panel.locator('.failed-group article').filter({ hasText: '失败归档.zip' })
+  const failedRow = panel.locator('.failed-group article').filter({ hasText: '失败上传.bin' })
   await failedRow.getByRole('button', { name: '重试' }).click()
-  await expect(panel.locator('.active-group article').filter({ hasText: '失败归档.zip' })).toBeVisible()
-  await expect(panel.locator('.active-group article').filter({ hasText: '失败归档.zip' })).toContainText('等待重试')
+  await expect(panel.locator('.active-group article').filter({ hasText: '失败上传.bin' })).toBeVisible()
+  await expect(panel.locator('.active-group article').filter({ hasText: '失败上传.bin' })).toContainText('等待重试')
   expect(requests).toContain('POST /api/tasks/failed-action/retry')
 
-  const waitingRow = panel.locator('.active-group article').filter({ hasText: '密码归档.zip' })
-  await waitingRow.click()
-  const input = page.locator('.input-dialog')
-  await expect(input).toBeVisible()
-  await input.locator('input').fill('correct-password')
-  await input.getByRole('button', { name: '继续任务' }).click()
-  await expect(input).toHaveCount(0)
-  await expect(panel.locator('.active-group article').filter({ hasText: '密码归档.zip' })).toContainText('解压中')
-  expect(requests).toContain('POST /api/tasks/waiting-password/input')
-
-  await page.getByTitle('任务中心').click()
   await panel.getByRole('button', { name: '清除完成' }).click()
   await expect(panel.locator('.completed-group')).toHaveCount(0)
   expect(requests).toContain('DELETE /api/tasks/completed-action')
@@ -459,7 +441,6 @@ test('old/new 任务中心未使用的时间字段缺失或为 null 时仍保留
 test('任务中心动作等待期间保留 reference 的按钮状态', async ({ page }) => {
   const tasks = [
     task({ id: 'cancel-action', status: 'running', phase: '上传中', progress: 42, name: '取消.bin' }),
-    task({ id: 'password-action', type: 'archive_extract', status: 'waiting_input', phase: 'waiting_input', progress: 42, name: '密码.zip', finished_at: null }),
     task({ id: 'clear-action', name: '完成.txt' }),
   ]
 
@@ -473,7 +454,7 @@ test('任务中心动作等待期间保留 reference 的按钮状态', async ({ 
       return route.fulfill({ contentType: 'text/event-stream', body: '' })
     }
     if (path === '/api/tasks' && request.method() === 'GET') return json({ items: tasks })
-    if (path === '/api/tasks/cancel-action/cancel' || path === '/api/tasks/password-action/input' || (path === '/api/tasks/clear-action' && request.method() === 'DELETE')) {
+    if (path === '/api/tasks/cancel-action/cancel' || (path === '/api/tasks/clear-action' && request.method() === 'DELETE')) {
       await delay()
       return route.fulfill({ status: 204, body: '' })
     }
@@ -493,18 +474,6 @@ test('任务中心动作等待期间保留 reference 的按钮状态', async ({ 
   await page.waitForTimeout(100)
   await expect(cancel).toBeEnabled()
 
-  const waiting = page.locator('.active-group article').filter({ hasText: '密码.zip' })
-  await waiting.click()
-  const dialog = page.locator('.input-dialog')
-  await dialog.locator('input').fill('password')
-  await dialog.getByRole('button', { name: '继续任务' }).click()
-  await page.waitForTimeout(100)
-  await expect(dialog.getByRole('button', { name: '取消' })).toBeEnabled()
-  await expect(dialog.getByRole('button', { name: '继续任务' })).toBeEnabled()
-  await expect(dialog.getByRole('button', { name: '继续任务' })).toHaveText('继续任务')
-
-  await page.keyboard.press('Escape')
-  await page.getByTitle('任务中心').click()
   const clear = page.getByRole('button', { name: '清除完成' })
   await clear.click()
   await page.waitForTimeout(100)

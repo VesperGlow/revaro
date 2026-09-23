@@ -40,7 +40,6 @@ async function mock(page: Page, baseUrl: string) {
     }
     if (path === `/api/files/${ROOT}/children`) return json({ items: [video], total_bytes: video.size, file_count: 1 })
     if (path === `/api/files/${video.id}`) return json({ file: video, breadcrumbs: [] })
-    if (path === `/api/files/${video.id}/video`) return json({ subtitles: [] })
     if (path === `/api/files/${video.id}/media/progress`) return json({ position: 0, duration: 0 })
     if (path.endsWith('/thumbnail')) {
       return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#456"/></svg>' })

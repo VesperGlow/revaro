@@ -4,9 +4,7 @@ use ffmpeg::{Rational, media::Type};
 use ffmpeg_next as ffmpeg;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    EmbeddedSubtitle, MediaChapter, MediaError, MediaProbe, check_cancel, init_ffmpeg, open_input,
-};
+use crate::{MediaChapter, MediaError, MediaProbe, check_cancel, init_ffmpeg, open_input};
 
 pub fn probe<R: Read + Seek + Send + 'static>(
     reader: R,
@@ -40,18 +38,6 @@ pub fn probe<R: Read + Seek + Send + 'static>(
                 }
             }
             Type::Audio if result.audio_codec.is_empty() => result.audio_codec = codec,
-            Type::Subtitle => {
-                let metadata = stream.metadata();
-                let disposition = stream.disposition();
-                result.subtitles.push(EmbeddedSubtitle {
-                    index: i32::try_from(stream.index()).unwrap_or(i32::MAX),
-                    codec,
-                    language: metadata.get("language").unwrap_or_default().to_owned(),
-                    title: metadata.get("title").unwrap_or_default().to_owned(),
-                    default: disposition.contains(ffmpeg::format::stream::Disposition::DEFAULT),
-                    forced: disposition.contains(ffmpeg::format::stream::Disposition::FORCED),
-                });
-            }
             _ => {}
         }
     }

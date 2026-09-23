@@ -54,7 +54,6 @@ const status = {
 async function mockShell(page: Page) {
   const tasks = [
     task({ id: 'active', status: 'running', phase: '上传中', progress: 42, name: '活动任务.bin' }),
-    task({ id: 'waiting', type: 'archive_extract', status: 'waiting_input', phase: 'waiting_input', progress: 12, name: '密码归档.zip' }),
     ...Array.from({ length: 5 }, (_, index) => task({ id: `done-${index}`, name: `已完成 ${index + 1}` })),
     task({ id: 'failed', status: 'failed', phase: 'failed', progress: 100, name: '失败任务.zip', error: '失败' }),
   ]

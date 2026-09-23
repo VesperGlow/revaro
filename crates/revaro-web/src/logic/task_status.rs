@@ -71,14 +71,12 @@ pub const fn task_status_tone(status: TaskStatus) -> TaskTone {
 
 /// The Chinese label for a task type, falling back to the raw type string.
 ///
-/// `TaskCenter`'s `labels` map covered upload/archive/subtitle; unknown types
+/// `TaskCenter`'s labels map covers uploads; unknown types
 /// (a newer server) are displayed verbatim rather than hidden.
 #[must_use]
 pub fn task_type_label(value: &str) -> String {
     match value {
         task_type::UPLOAD => "上传".to_owned(),
-        task_type::ARCHIVE_EXTRACT => "解压".to_owned(),
-        task_type::SUBTITLE => "字幕处理".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -95,9 +93,7 @@ pub fn task_display_name(name: &str, kind: &str, id: &str) -> String {
         return name.to_owned();
     }
     match kind {
-        task_type::UPLOAD | task_type::ARCHIVE_EXTRACT | task_type::SUBTITLE => {
-            task_type_label(kind)
-        }
+        task_type::UPLOAD => task_type_label(kind),
         _ => id.to_owned(),
     }
 }
@@ -108,15 +104,9 @@ pub fn task_display_name(name: &str, kind: &str, id: &str) -> String {
 /// the task's own `phase` (which the server localises), a failure shows the
 /// server error when there is one, and an empty error falls back to `失败`.
 #[must_use]
-pub fn task_status_label(status: TaskStatus, kind: &str, phase: &str, error: &str) -> String {
+pub fn task_status_label(status: TaskStatus, _kind: &str, phase: &str, error: &str) -> String {
     match status {
-        TaskStatus::WaitingInput => {
-            if kind == task_type::ARCHIVE_EXTRACT {
-                "等待输入密码".to_owned()
-            } else {
-                "等待输入".to_owned()
-            }
-        }
+        TaskStatus::WaitingInput => "等待输入".to_owned(),
         TaskStatus::Retrying => "等待重试".to_owned(),
         TaskStatus::Queued => "排队中".to_owned(),
         TaskStatus::Running => phase.to_owned(),
@@ -223,8 +213,6 @@ mod tests {
     #[test]
     fn labels_known_task_types_and_passes_unknown_ones_through() {
         assert_eq!(task_type_label("upload"), "上传");
-        assert_eq!(task_type_label("archive_extract"), "解压");
-        assert_eq!(task_type_label("subtitle"), "字幕处理");
         assert_eq!(task_type_label("future_type"), "future_type");
     }
 
@@ -235,16 +223,11 @@ mod tests {
             "报告.txt"
         );
         assert_eq!(task_display_name("", "upload", "id-2"), "上传");
-        assert_eq!(task_display_name("", "archive_extract", "id-3"), "解压");
         assert_eq!(task_display_name("", "future_type", "id-4"), "id-4");
     }
 
     #[test]
     fn renders_status_lines_like_the_task_center() {
-        assert_eq!(
-            task_status_label(TaskStatus::WaitingInput, "archive_extract", "", ""),
-            "等待输入密码"
-        );
         assert_eq!(
             task_status_label(TaskStatus::WaitingInput, "upload", "", ""),
             "等待输入"

@@ -48,7 +48,6 @@ enum DialogState {
     DiscardEditor,
     Rename { id: String },
     Delete,
-    ExtractArchive { name: String },
     RegenerateShare,
     RevokeShare,
     Purge,
@@ -158,7 +157,6 @@ pub fn FileBrowser(
     };
     let media_file = RwSignal::new(None::<File>);
     let preview_items = RwSignal::new(Vec::<File>::new());
-    let archive_target = RwSignal::new(None::<File>);
     let share_file = RwSignal::new(None::<File>);
     let share_sequence = RwSignal::new(0_u64);
     let share_active = RwSignal::new(false);
@@ -453,21 +451,7 @@ pub fn FileBrowser(
         on_logout.clone(),
     );
 
-    let task_refresh = {
-        let current_id = current_id;
-        let trash_mode = trash_mode;
-        let load_folder = load_folder.clone();
-        Callback::new(move |(): ()| {
-            let id = current_id.get_untracked();
-            if !trash_mode.get_untracked()
-                && (!loading.get_untracked()
-                    || loading_folder.get_untracked().as_deref() == Some(id.as_str()))
-            {
-                load_folder.run(id);
-            }
-        })
-    };
-    let mut task_center = TaskController::new(on_logout.clone(), task_refresh, upload_feedback);
+    let mut task_center = TaskController::new(on_logout.clone(), upload_feedback);
     let uploads_for_task_cancel =
         leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
     let uploads_for_task_retry = uploads_for_task_cancel.clone();
@@ -508,22 +492,6 @@ pub fn FileBrowser(
         })
     };
 
-    let show_extract = {
-        let archive_target = archive_target;
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
-        Callback::new(move |file: File| {
-            if !classify::is_archive(&file) {
-                return;
-            }
-            let name = file.name.clone();
-            archive_target.set(Some(file));
-            dialog_value.set(String::new());
-            dialog_error.set(String::new());
-            dialog.set(Some(DialogState::ExtractArchive { name }));
-        })
-    };
     let show_share = {
         let share_file = share_file;
         let share_active = share_active;
@@ -869,7 +837,6 @@ pub fn FileBrowser(
         let load_trash_request = load_trash_request.clone();
         let on_logout = on_logout.clone();
         let editor_open = editor_open;
-        let archive_target = archive_target;
         let share_file = share_file;
         let share_active = share_active;
         let share_url = share_url;
@@ -879,7 +846,6 @@ pub fn FileBrowser(
         let share_copied = share_copied;
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
-        let task_center = leptos::__reexports::send_wrapper::SendWrapper::new(task_center.clone());
         let load_folder_request = load_folder_request.clone();
         Callback::new(move |value: String| {
             let Some(state) = dialog.get_untracked() else {
@@ -891,7 +857,6 @@ pub fn FileBrowser(
             dialog_busy.set(true);
             dialog_error.set(String::new());
             let discard_editor = matches!(&state, DialogState::DiscardEditor);
-            let extract_archive = matches!(&state, DialogState::ExtractArchive { .. });
             let rename_action = matches!(&state, DialogState::Rename { .. });
             let delete_action = matches!(&state, DialogState::Delete);
             let regenerate_share = matches!(&state, DialogState::RegenerateShare);
@@ -915,7 +880,6 @@ pub fn FileBrowser(
             let refresh_parent_id = parent_id.clone();
             let in_trash = trash_mode.get_untracked();
             let logout = on_logout.clone();
-            let task_center = task_center.clone();
 
             // The reference `confirmDialog`/`promptDialog` resolves and
             // removes AppDialog synchronously. The mutation continues after
@@ -948,17 +912,6 @@ pub fn FileBrowser(
                             }
                         }
                         DialogState::DiscardEditor => Ok(String::new()),
-                        DialogState::ExtractArchive { .. } => {
-                            let Some(file) = archive_target.get_untracked() else {
-                                return Err(api::RequestError {
-                                    status: 0,
-                                    code: None,
-                                    message: "没有可解压的文件".to_owned(),
-                                });
-                            };
-                            api::extract_archive(&file.id).await?;
-                            Ok(format!("「{}」已加入解压队列", file.name))
-                        }
                         DialogState::RegenerateShare => {
                             let Some(file) = share_file.get_untracked() else {
                                 return Err(api::RequestError {
@@ -1082,7 +1035,6 @@ pub fn FileBrowser(
                         if rename_action {
                             let _ = request_overlay_close(nav_actions, history_suppressed);
                         }
-                        archive_target.set(None);
                         if share_action {
                             // The share dialog remains open; only its link state
                             // changes after the confirmation is dismissed.
@@ -1091,9 +1043,6 @@ pub fn FileBrowser(
                             if !request_overlay_close(nav_actions, history_suppressed) {
                                 editor_open.set(false);
                             }
-                        } else if extract_archive {
-                            selected_ids.set(HashSet::new());
-                            task_center.refresh_now();
                         } else if in_trash {
                             let (sender, receiver) = oneshot::channel();
                             load_trash_request.run(TrashLoadRequest {
@@ -1885,7 +1834,6 @@ pub fn FileBrowser(
                         on_restore=restore_selected.clone()
                         on_purge=show_purge.clone()
                         on_open=open_item.clone()
-                        on_extract=show_extract.clone()
                         on_download=Callback::new({
                             let items = items;
                             let selected_ids = selected_ids;
@@ -2198,14 +2146,6 @@ fn dialog_config(
             "关闭后，本次修改将无法恢复。".to_owned(),
             "放弃修改".to_owned(),
             true,
-            false,
-            None,
-        ),
-        DialogState::ExtractArchive { name } => (
-            "在线解压".to_owned(),
-            format!("将“{name}”解压到当前目录中的新文件夹。大压缩包会在后台继续处理。"),
-            "开始解压".to_owned(),
-            false,
             false,
             None,
         ),

@@ -1,9 +1,8 @@
 //! Target-independent media-player rules.
 //!
 //! The DOM components are responsible for event wiring and playback APIs. The
-//! rules that decide which chapter is active, how a subtitle is placed inside
-//! a letterboxed video, and how a seek competes with saved progress stay here
-//! so native tests can exercise the edge cases without a browser.
+//! rules that decide which chapter is active and how a seek competes with saved
+//! progress stay here so native tests can exercise edge cases without a browser.
 
 use revaro_core::media::AudioChapter;
 
@@ -32,51 +31,6 @@ pub fn active_chapter_index(chapters: &[AudioChapter], time: f64) -> usize {
             time >= chapter.start && (time < chapter.end || *index == chapters.len() - 1)
         })
         .map_or(0, |(index, _)| index)
-}
-
-/// Calculate the inset around a contained video image.
-///
-/// `bottom` is the vertical letterbox on a landscape video and `horizontal`
-/// is the horizontal letterbox on a portrait video. Invalid measurements are
-/// deliberately neutral because browsers report zero dimensions before media
-/// metadata has loaded.
-#[must_use]
-pub fn contained_video_insets(
-    container_width: f64,
-    container_height: f64,
-    video_width: f64,
-    video_height: f64,
-) -> (f64, f64) {
-    if container_width <= 0.0
-        || container_height <= 0.0
-        || video_width <= 0.0
-        || video_height <= 0.0
-    {
-        return (0.0, 0.0);
-    }
-    let container_ratio = container_width / container_height;
-    let video_ratio = video_width / video_height;
-    if video_ratio > container_ratio {
-        (
-            (container_height - container_width / video_ratio) / 2.0,
-            0.0,
-        )
-    } else {
-        (
-            0.0,
-            (container_width - container_height * video_ratio) / 2.0,
-        )
-    }
-}
-
-/// Select the server's preferred subtitle track.
-#[must_use]
-pub fn initial_subtitle_index(defaults: &[(bool, bool)]) -> Option<usize> {
-    defaults
-        .iter()
-        .position(|(is_default, _)| *is_default)
-        .or_else(|| defaults.iter().position(|(_, forced)| *forced))
-        .or_else(|| (!defaults.is_empty()).then_some(0))
 }
 
 /// Resolve the first seek that wins over a stored resume position.
@@ -129,12 +83,6 @@ pub fn should_continue_media_clock(element_present: bool) -> bool {
     element_present
 }
 
-/// The first subtitle line receives the normal size; later lines are smaller.
-#[must_use]
-pub fn subtitle_line_is_secondary(index: usize) -> bool {
-    index > 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,39 +115,6 @@ mod tests {
     }
 
     #[test]
-    fn computes_contain_letterboxes() {
-        assert_eq!(
-            contained_video_insets(1000.0, 1000.0, 1920.0, 1080.0),
-            (218.75, 0.0)
-        );
-        assert_eq!(
-            contained_video_insets(1200.0, 600.0, 1080.0, 1920.0),
-            (0.0, 431.25)
-        );
-        assert_eq!(
-            contained_video_insets(0.0, 600.0, 1920.0, 1080.0),
-            (0.0, 0.0)
-        );
-    }
-
-    #[test]
-    fn honours_default_then_forced_then_first_subtitle() {
-        assert_eq!(
-            initial_subtitle_index(&[(false, false), (true, false)]),
-            Some(1)
-        );
-        assert_eq!(
-            initial_subtitle_index(&[(false, false), (false, true)]),
-            Some(1)
-        );
-        assert_eq!(
-            initial_subtitle_index(&[(false, false), (false, false)]),
-            Some(0)
-        );
-        assert_eq!(initial_subtitle_index(&[]), None);
-    }
-
-    #[test]
     fn explicit_zero_seek_beats_saved_resume_position() {
         assert_eq!(authoritative_seek_target(0.0, 86.0, true), 0.0);
         assert_eq!(authoritative_seek_target(0.0, 86.0, false), 86.0);
@@ -218,7 +133,5 @@ mod tests {
         assert!(!should_continue_media_clock(false));
         assert!(should_hide_video_cursor(true, false, false, false, false));
         assert!(!should_hide_video_cursor(true, true, false, false, false));
-        assert!(subtitle_line_is_secondary(1));
-        assert!(!subtitle_line_is_secondary(0));
     }
 }

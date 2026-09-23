@@ -67,7 +67,7 @@ pub const CASCADE: [Stylesheet; 14] = [
     ),
     Stylesheet::new(
         "styles/video-player.css",
-        "video shell, subtitles, controls and range styling",
+        "video shell, controls and range styling",
     ),
 ];
 
