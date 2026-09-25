@@ -140,13 +140,6 @@ pub struct AudioMedia {
     pub has_cover: bool,
 }
 
-/// Body of `POST /api/files/{id}/media/reanalyze`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReanalyzeResult {
-    /// Always `ready` on success.
-    pub status: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

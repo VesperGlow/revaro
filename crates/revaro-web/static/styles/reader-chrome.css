@@ -48,7 +48,6 @@
   width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%;
   background: transparent; color: var(--ink); cursor: pointer;
 }
-.reader-back-icon { width: 24px; height: 24px; stroke-width: 1.7; }
 .reader-progress-ring { position: relative; display: grid; place-items: center; justify-self: center; width: 44px; height: 44px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .reader-progress-ring svg { position: absolute; inset: 5px; width: 34px; height: 34px; fill: none; transform: rotate(-90deg); }
 .reader-progress-ring circle { stroke-width: 1.8; }

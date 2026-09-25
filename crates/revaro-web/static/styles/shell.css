@@ -380,42 +380,6 @@ button {
 .drop-zone p {
   color: #64748b;
 }
-.upload-panel {
-  position: fixed;
-  z-index: 14;
-  right: 28px;
-  bottom: 25px;
-  width: min(420px, calc(100vw - 30px));
-  max-height: 50vh;
-  background: #fff;
-  border: 1px solid var(--line);
-  border-radius: 15px;
-  box-shadow: 0 22px 60px #0f172a26;
-  overflow: hidden;
-}
-.upload-panel > header {
-  height: 53px;
-  padding: 0 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--line);
-}
-.upload-panel header div {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.upload-panel header span {
-  font-size: 11px;
-  color: #94a3b8;
-}
-.upload-panel header button {
-  border: 0;
-  background: transparent;
-  color: #64748b;
-  font-size: 11px;
-}
 .task-list {
   overflow: auto;
   max-height: calc(50vh - 53px);
@@ -423,40 +387,6 @@ button {
 .task-list article {
   padding: 13px 15px;
   border-bottom: 1px solid #eef2f6;
-}
-.task-top {
-  display: grid;
-  grid-template-columns: 32px 1fr auto auto;
-  gap: 9px;
-  align-items: center;
-}
-.task-top > div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-}
-.task-top strong {
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  font-size: 12px;
-}
-.task-top small {
-  font-size: 10px;
-  color: #94a3b8;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
-}
-.task-top b {
-  font-size: 11px;
-  color: #64748b;
-}
-.task-top button {
-  border: 0;
-  background: transparent;
-  color: #64748b;
 }
 .task-icon {
   width: 29px;
@@ -524,33 +454,6 @@ button {
   gap: 10px;
   margin-top: 24px;
 }
-.folder-modal {
-  padding: 24px 0;
-}
-.folder-modal > header {
-  padding: 0 24px;
-}
-.folder-list {
-  max-height: 390px;
-  overflow: auto;
-  border-top: 1px solid var(--line);
-}
-.folder-list button {
-  width: 100%;
-  border: 0;
-  background: #fff;
-  text-align: left;
-  padding-top: 12px;
-  padding-bottom: 12px;
-  color: #334155;
-}
-.folder-list button:hover {
-  background: #eff6ff;
-}
-.folder-list span {
-  color: #d99b25;
-  margin-right: 10px;
-}
 .toast {
   position: fixed;
   z-index: 50;
@@ -602,10 +505,6 @@ button {
   }
   .connection {
     display: none;
-  }
-  .upload-panel {
-    right: 15px;
-    bottom: 15px;
   }
 }
 
@@ -754,10 +653,6 @@ button {
   .card-preview {
     height: 112px;
   }
-  .top-logout {
-    padding-left: 4px;
-    padding-right: 4px;
-  }
 }
 
 /* Calm, full-screen image lightbox */
@@ -844,8 +739,7 @@ button {
 }
 
 /* Unified media viewer */
-.large-video,
-.large-audio {
+.large-video{
   display: grid;
   place-items: center;
   width: 76px;
@@ -855,9 +749,4 @@ button {
   color: #4e6fb3;
   font-size: 34px;
   line-height: 1;
-}
-.large-audio {
-  background: #f2ecff;
-  color: #7656b5;
-  font-size: 42px;
 }

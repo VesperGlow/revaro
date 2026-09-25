@@ -1,17 +1,6 @@
 
 
 /* 视频/电子书缩略图 */
-.video-thumb {
-  position: relative;
-  width: 100%;
-  height: 100%;
-}
-.video-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
 /* 视频缩略图占位居中：wrapper 用 grid 居中占位符号，img 绝对定位铺满 */
 .video-thumb {
   position: relative;
@@ -175,20 +164,6 @@ button img,
 .upload-menu summary::-webkit-details-marker {
   display: none;
 }
-.upload-chevron {
-  width: 14px;
-  height: 14px;
-  margin-left: 2px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform 0.18s ease;
-}
-.upload-menu[open] .upload-chevron {
-  transform: rotate(180deg);
-}
 .upload-menu-popover {
   position: absolute;
   z-index: 12;
@@ -240,20 +215,6 @@ button img,
 .upload-menu-popover small {
   color: #94a3b8;
   font-size: 10px;
-}
-
-/* Keep long move targets inside the dialog and trash actions visually icon-only. */
-.folder-modal > header > div {
-  min-width: 0;
-}
-.move-target {
-  max-width: 100%;
-  margin: 5px 0 0;
-  overflow-wrap: anywhere;
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 650;
-  line-height: 1.45;
 }
 
 @media (max-width: 850px) {

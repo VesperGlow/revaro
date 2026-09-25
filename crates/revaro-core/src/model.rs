@@ -521,44 +521,6 @@ pub struct FolderRef {
     pub name: String,
 }
 
-/// A library entry: a file plus where it lives and how long it plays.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LibraryItem {
-    /// The underlying file.
-    #[serde(flatten)]
-    pub file: File,
-    /// Path from the root to the containing directory.
-    #[serde(default)]
-    pub folder_path: Vec<FolderRef>,
-    /// Media duration in milliseconds, omitted when unknown or not media.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_nullable_i64",
-        skip_serializing_if = "is_zero_i64"
-    )]
-    pub duration_ms: i64,
-}
-
-/// Per-bucket entry counts for the sidebar badges.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LibraryCounts {
-    /// Books.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub book: i64,
-    /// Images.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub image: i64,
-    /// Videos.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub video: i64,
-    /// Audio files.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub audio: i64,
-    /// Everything else.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub file: i64,
-}
-
 /// Playback position for one audio or video file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct MediaProgress {
@@ -694,21 +656,8 @@ pub struct Profile {
     pub has_avatar: bool,
 }
 
-/// Aggregate size of the logical library.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageStats {
-    /// Sum of the sizes of every counted file.
-    pub total_bytes: i64,
-    /// Number of counted files.
-    pub file_count: i64,
-}
-
 fn is_false(value: &bool) -> bool {
     !*value
-}
-
-fn is_zero_i64(value: &i64) -> bool {
-    *value == 0
 }
 
 #[cfg(test)]
@@ -920,27 +869,6 @@ mod tests {
     }
 
     #[test]
-    fn library_counts_treat_missing_or_null_values_as_zero() {
-        let counts = serde_json::from_value::<LibraryCounts>(serde_json::json!({
-            "book": null,
-            "image": 2,
-            "video": null,
-            "file": 3
-        }))
-        .unwrap();
-        assert_eq!(counts.book, 0);
-        assert_eq!(counts.image, 2);
-        assert_eq!(counts.video, 0);
-        assert_eq!(counts.audio, 0);
-        assert_eq!(counts.file, 3);
-
-        let invalid = serde_json::from_value::<LibraryCounts>(serde_json::json!({
-            "book": "2"
-        }));
-        assert!(invalid.is_err());
-    }
-
-    #[test]
     fn share_responses_treat_nullable_fields_as_an_inactive_share() {
         let share = serde_json::from_value::<ShareStatus>(serde_json::json!({
             "active": null,
@@ -962,89 +890,6 @@ mod tests {
         .unwrap();
         assert_eq!(profile.username, "admin");
         assert!(!profile.has_avatar);
-    }
-
-    #[test]
-    fn library_items_flatten_their_file() {
-        let item = LibraryItem {
-            file: File {
-                id: "id".into(),
-                name: "clip.mp4".into(),
-                kind: FileKind::File,
-                status: FileStatus::Ready,
-                ..File::default()
-            },
-            folder_path: vec![FolderRef {
-                id: "root".into(),
-                name: "Movies".into(),
-            }],
-            duration_ms: 1500,
-        };
-        let json = serde_json::to_value(&item).unwrap();
-        assert_eq!(json["name"], "clip.mp4");
-        assert_eq!(json["duration_ms"], 1500);
-        assert_eq!(json["folder_path"][0]["name"], "Movies");
-    }
-
-    #[test]
-    fn library_items_treat_nullable_duration_as_unknown() {
-        let item = serde_json::from_value::<LibraryItem>(serde_json::json!({
-            "id": "audio",
-            "parent_id": null,
-            "name": "track.mp3",
-            "kind": "file",
-            "size": 1,
-            "status": "ready",
-            "created_at": "2024-05-06T07:08:09Z",
-            "updated_at": "2024-05-06T07:08:09Z",
-            "folder_path": [],
-            "duration_ms": null
-        }))
-        .unwrap();
-        assert_eq!(item.duration_ms, 0);
-
-        let invalid = serde_json::from_value::<LibraryItem>(serde_json::json!({
-            "id": "audio",
-            "parent_id": null,
-            "name": "track.mp3",
-            "kind": "file",
-            "size": 1,
-            "status": "ready",
-            "created_at": "2024-05-06T07:08:09Z",
-            "updated_at": "2024-05-06T07:08:09Z",
-            "folder_path": [],
-            "duration_ms": "125"
-        }));
-        assert!(invalid.is_err());
-    }
-
-    #[test]
-    fn library_folder_refs_treat_nullable_fields_as_defaults() {
-        let item = serde_json::from_value::<LibraryItem>(serde_json::json!({
-            "id": "book",
-            "parent_id": null,
-            "name": "book.epub",
-            "kind": "file",
-            "size": 1,
-            "status": "ready",
-            "created_at": "2024-05-06T07:08:09Z",
-            "updated_at": "2024-05-06T07:08:09Z",
-            "folder_path": [{ "id": null, "name": "书籍" }]
-        }))
-        .unwrap();
-        assert_eq!(item.folder_path[0].id, "");
-        assert_eq!(item.folder_path[0].name, "书籍");
-
-        let invalid = serde_json::from_value::<LibraryItem>(serde_json::json!({
-            "id": "book",
-            "parent_id": null,
-            "name": "book.epub",
-            "kind": "file",
-            "size": 1,
-            "status": "ready",
-            "folder_path": [{ "id": 1, "name": "书籍" }]
-        }));
-        assert!(invalid.is_err());
     }
 
     #[test]

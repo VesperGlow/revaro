@@ -29,7 +29,6 @@ pub mod error;
 pub mod hash;
 pub mod ids;
 pub mod keys;
-pub mod library;
 pub mod limits;
 pub mod media;
 pub mod model;

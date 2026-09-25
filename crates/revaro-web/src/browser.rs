@@ -20,7 +20,6 @@ use web_sys::MediaQueryListEvent;
 /// startup. The listener is installed once and released with the component that
 /// owns the signal, matching the Vue component's `onMounted`/`onBeforeUnmount`
 /// pair.
-#[allow(dead_code)]
 pub fn media_query_signal(query: &str) -> RwSignal<bool> {
     let signal = RwSignal::new(media_query_matches(query));
     let Some(window) = web_sys::window() else {
@@ -45,7 +44,6 @@ pub fn media_query_signal(query: &str) -> RwSignal<bool> {
 
 /// One-shot `matchMedia(query).matches`, false when the API is unavailable.
 #[must_use]
-#[allow(dead_code)]
 pub fn media_query_matches(query: &str) -> bool {
     web_sys::window()
         .and_then(|window| window.match_media(query).ok().flatten())
@@ -58,7 +56,6 @@ pub fn media_query_matches(query: &str) -> bool {
 /// `try/catch` for the same reason, and a missing preference must never break
 /// startup.
 #[must_use]
-#[allow(dead_code)]
 pub fn local_storage_get(key: &str) -> Option<String> {
     web_sys::window()?
         .local_storage()
@@ -70,22 +67,11 @@ pub fn local_storage_get(key: &str) -> Option<String> {
 }
 
 /// Write a `localStorage` value, ignoring a throwing storage.
-#[allow(dead_code)]
 pub fn local_storage_set(key: &str, value: &str) {
     if let Some(storage) =
         web_sys::window().and_then(|window| window.local_storage().ok().flatten())
     {
         let _ = storage.set_item(key, value);
-    }
-}
-
-/// Remove a `localStorage` value, ignoring a throwing storage.
-#[allow(dead_code)]
-pub fn local_storage_remove(key: &str) {
-    if let Some(storage) =
-        web_sys::window().and_then(|window| window.local_storage().ok().flatten())
-    {
-        let _ = storage.remove_item(key);
     }
 }
 

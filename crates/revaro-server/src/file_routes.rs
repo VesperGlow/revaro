@@ -1,8 +1,6 @@
-//! File browsing, the storage summary and the library aggregation.
+//! File browsing and file operations.
 //!
-//! This module owns the read side of `internal/server/server_files.go` plus all
-//! of `library.go`. The mutating endpoints (create, rename, copy, delete) and
-//! the trash are the next slice.
+//! This module owns file, task, and trash endpoints.
 //!
 //! ## One scanner, one column list
 //!
@@ -12,28 +10,17 @@
 //! keeping: `files` has fifteen columns and a hand-written scan per query would
 //! eventually disagree with the `SELECT` and mis-decode a row rather than fail.
 //!
-//! ## Aggregation lives in the shared crate
-//!
-//! The bucket counts and the folder-path resolution are pure functions and live
-//! in `revaro_core::library`, because the browser needs the same rules to render
-//! counts from a cached listing. This module only fetches rows and joins them.
-
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{FromRequest, Path as PathParam, Query, Request, State};
+use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::routing::{MethodFilter, get};
 use axum::{Json, Router};
 use bytes::Bytes;
 use revaro_core::ApiError;
-use revaro_core::api::{Children, FileDetail, Library, LibraryAll, LibraryBuckets};
-use revaro_core::classify::LibraryKind;
+use revaro_core::api::{Children, FileDetail};
 use revaro_core::keys;
-use revaro_core::library as aggregation;
-use revaro_core::model::{
-    File, FileKind, FileStatus, FolderRef, LibraryCounts, LibraryItem, StorageStats,
-};
+use revaro_core::model::{File, FileKind, FileStatus};
 use revaro_core::time::Timestamp;
 use rusqlite::{Connection, Row};
 use serde::Deserialize;
@@ -99,15 +86,11 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/files/{id}", get(get_file))
         .route("/files/{id}/children", get(children))
-        .route("/storage/stats", get(storage_stats))
         .route("/tasks", get(list_tasks))
         .route("/tasks/{id}", get(get_task).delete(delete_task))
         .route("/tasks/{id}/cancel", axum::routing::post(cancel_task))
         .route("/tasks/{id}/retry", axum::routing::post(retry_task))
         .route("/events", get(job_events))
-        .route("/library", get(library))
-        .route("/library/all", get(library_all))
-        .route("/library/counts", get(library_counts))
         .route("/directories", axum::routing::post(create_directory))
         .route(
             "/files/{id}",
@@ -385,83 +368,6 @@ AND m.video_codec <> ''",
     Ok(())
 }
 
-/// `GET /api/storage/stats`
-async fn storage_stats(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-) -> Result<Json<StorageStats>, ApiError> {
-    state
-        .db
-        .call_api(|connection| {
-            connection
-                .query_row(
-                    "SELECT COALESCE(SUM(size),0), COUNT(*) FROM files \
-WHERE kind = 'file' AND status = 'ready' AND deleted_at IS NULL",
-                    [],
-                    |row| {
-                        Ok(StorageStats {
-                            total_bytes: row.get(0)?,
-                            file_count: row.get(1)?,
-                        })
-                    },
-                )
-                .map_err(|error| database_error(DbError::Query(error)))
-        })
-        .await
-        .map(Json)
-}
-
-/// Everything the library views need, loaded once.
-struct LibraryData {
-    files: Vec<File>,
-    paths: std::collections::BTreeMap<String, Vec<FolderRef>>,
-    durations: HashMap<String, i64>,
-}
-
-fn load_library(connection: &rusqlite::Connection) -> Result<LibraryData, DbError> {
-    let directories = query_files(
-        connection,
-        "SELECT ".to_owned()
-            + FILE_COLUMNS
-            + " FROM files WHERE kind = 'directory' AND deleted_at IS NULL",
-        [],
-    )?;
-    let paths = aggregation::folder_paths(&directories);
-
-    let mut durations = HashMap::new();
-    {
-        let mut statement = connection
-            .prepare(
-                "SELECT m.file_id, m.duration_ms FROM media_metadata m JOIN files f ON f.id = m.file_id \
-WHERE m.source_etag = f.etag",
-            )
-            .map_err(DbError::Query)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(DbError::Query)?;
-        for row in rows {
-            let (id, duration) = row.map_err(DbError::Query)?;
-            durations.insert(id, duration);
-        }
-    }
-
-    let files = query_files(
-        connection,
-        "SELECT ".to_owned()
-            + FILE_COLUMNS
-            + " FROM files WHERE kind = 'file' AND status = 'ready' AND deleted_at IS NULL \
-ORDER BY name COLLATE NOCASE",
-        [],
-    )?;
-    Ok(LibraryData {
-        files,
-        paths,
-        durations,
-    })
-}
-
 fn query_files<P: rusqlite::Params>(
     connection: &rusqlite::Connection,
     sql: String,
@@ -476,79 +382,6 @@ fn query_files<P: rusqlite::Params>(
         out.push(row.map_err(DbError::Query)?);
     }
     Ok(out)
-}
-
-impl LibraryData {
-    fn items(&self, kind: LibraryKind) -> Vec<LibraryItem> {
-        self.files
-            .iter()
-            .filter(|file| revaro_core::classify::matches_library_kind(file, kind))
-            .map(|file| aggregation::item(file, &self.paths, &self.durations))
-            .collect()
-    }
-}
-
-/// Query string of `GET /api/library`.
-#[derive(Debug, serde::Deserialize)]
-struct LibraryQuery {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-}
-
-/// `GET /api/library?type=…`
-async fn library(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    Query(query): Query<LibraryQuery>,
-) -> Result<Json<Library>, ApiError> {
-    let requested = query.kind.unwrap_or_else(|| "file".to_owned());
-    let kind: LibraryKind = requested
-        .parse()
-        .map_err(|()| ApiError::bad_request("unknown library type"))?;
-
-    let data = state
-        .db
-        .call_api(|connection| load_library(connection).map_err(database_error))
-        .await?;
-    let counts = aggregation::bucket_counts(&data.files);
-    Ok(Json(Library {
-        kind,
-        items: data.items(kind),
-        counts,
-    }))
-}
-
-/// `GET /api/library/all`
-async fn library_all(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-) -> Result<Json<LibraryAll>, ApiError> {
-    let data = state
-        .db
-        .call_api(|connection| load_library(connection).map_err(database_error))
-        .await?;
-    let counts = aggregation::bucket_counts(&data.files);
-    // `file` is deliberately absent: it is the plain browser's job, and the Go
-    // handler grouped only the four media buckets.
-    let items = LibraryBuckets {
-        book: data.items(LibraryKind::Book),
-        image: data.items(LibraryKind::Image),
-        video: data.items(LibraryKind::Video),
-        audio: data.items(LibraryKind::Audio),
-    };
-    Ok(Json(LibraryAll { items, counts }))
-}
-
-/// `GET /api/library/counts`
-async fn library_counts(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-) -> Result<Json<LibraryCounts>, ApiError> {
-    let data = state
-        .db
-        .call_api(|connection| load_library(connection).map_err(database_error))
-        .await?;
-    Ok(Json(aggregation::bucket_counts(&data.files)))
 }
 
 /// `POST /api/directories`
@@ -3050,7 +2883,6 @@ UPDATE files SET deleted_at='2024-01-01T00:00:00Z', trash_root_id='b' WHERE id='
 
         let (status, body) = call(&state, "/api/system/status").await;
         assert_eq!(status, StatusCode::OK);
-        // Storage figures deliberately include trash, unlike /storage/stats.
         assert_eq!(body["storage"]["bytes"], 160);
         assert_eq!(body["storage"]["trash_bytes"], 60);
         assert_eq!(body["storage"]["file_count"], 2);
@@ -3059,12 +2891,6 @@ UPDATE files SET deleted_at='2024-01-01T00:00:00Z', trash_root_id='b' WHERE id='
         // process-wide cache manager has completed its real startup probe.
         assert_eq!(body["cache"]["status"], "ok");
         assert_eq!(body["status"], "ok");
-
-        // The live-bytes endpoint answers the other question and must exclude
-        // the trashed file.
-        let (_, live) = call(&state, "/api/storage/stats").await;
-        assert_eq!(live["total_bytes"], 100);
-        assert_eq!(live["file_count"], 1);
     }
 
     #[tokio::test]
@@ -3804,39 +3630,6 @@ VALUES('bin1','00000000-0000-0000-0000-000000000000','photo.png','file','blobs/b
     }
 
     #[tokio::test]
-    async fn storage_stats_totals_ready_files_only() {
-        let state = state().await;
-        let sql: &'static str = Box::leak(
-            format!(
-                "{}{}{}",
-                file_row(
-                    "a",
-                    ROOT_ID,
-                    "a.bin",
-                    "file",
-                    10,
-                    "application/octet-stream"
-                ),
-                file_row(
-                    "b",
-                    ROOT_ID,
-                    "b.bin",
-                    "file",
-                    32,
-                    "application/octet-stream"
-                ),
-                file_row("d", ROOT_ID, "dir", "directory", 0, "")
-            )
-            .into_boxed_str(),
-        );
-        seed(&state, sql).await;
-        let (status, body) = call(&state, "/api/storage/stats").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["total_bytes"], 42);
-        assert_eq!(body["file_count"], 2);
-    }
-
-    #[tokio::test]
     async fn children_orders_directories_first_and_reports_stats() {
         let state = state().await;
         let sql: &'static str = Box::leak(
@@ -3932,58 +3725,5 @@ VALUES('bin1','00000000-0000-0000-0000-000000000000','photo.png','file','blobs/b
             .map(|c| c["name"].as_str().unwrap())
             .collect();
         assert_eq!(crumbs, vec!["", "movies", "clip.mp4"]);
-    }
-
-    #[tokio::test]
-    async fn library_filters_by_type_and_counts_files_as_the_total() {
-        let state = state().await;
-        let sql: &'static str = Box::leak(
-            format!(
-                "{}{}{}",
-                file_row("v1", ROOT_ID, "clip.mp4", "file", 3, "video/mp4"),
-                file_row("i1", ROOT_ID, "photo.png", "file", 4, "image/png"),
-                file_row(
-                    "t1",
-                    ROOT_ID,
-                    "book.epub",
-                    "file",
-                    5,
-                    "application/epub+zip"
-                )
-            )
-            .into_boxed_str(),
-        );
-        seed(&state, sql).await;
-
-        let (status, body) = call(&state, "/api/library?type=video").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["type"], "video");
-        assert_eq!(body["items"].as_array().unwrap().len(), 1);
-        assert_eq!(body["items"][0]["name"], "clip.mp4");
-        // `file` counts every ready file, not the unclassified leftovers.
-        assert_eq!(body["counts"]["file"], 3);
-        assert_eq!(body["counts"]["video"], 1);
-        assert_eq!(body["counts"]["image"], 1);
-        assert_eq!(body["counts"]["book"], 1);
-
-        let (status, body) = call(&state, "/api/library?type=nonsense").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"]["message"], "unknown library type");
-
-        // The default bucket is `file`.
-        let (status, body) = call(&state, "/api/library").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["type"], "file");
-        assert_eq!(body["items"].as_array().unwrap().len(), 3);
-
-        let (status, body) = call(&state, "/api/library/all").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["items"]["video"].as_array().unwrap().len(), 1);
-        assert_eq!(body["items"]["audio"].as_array().unwrap().len(), 0);
-        assert!(body["items"].get("file").is_none());
-
-        let (status, body) = call(&state, "/api/library/counts").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["file"], 3);
     }
 }

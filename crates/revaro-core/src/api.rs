@@ -11,10 +11,7 @@
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
-use crate::classify::LibraryKind;
-use crate::model::{
-    File, LibraryCounts, LibraryItem, Task, UploadMode, UploadPart, UploadStatus as UploadState,
-};
+use crate::model::{File, Task, UploadMode, UploadPart, UploadStatus as UploadState};
 use crate::reader::{Anchor, FlowManifest, TocEntry};
 use crate::storage::CompletedPart;
 use crate::time::Timestamp;
@@ -132,18 +129,6 @@ pub mod auth {
 
     /// Body of a successful login and of `GET /api/auth/me`.
     pub type Session = Profile;
-
-    /// `PATCH /api/auth/credentials`
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct ChangeCredentialsRequest {
-        /// Current password, re-verified before the change.
-        pub current_password: String,
-        /// New login name.
-        pub username: String,
-        /// New password.
-        pub password: String,
-    }
 
     /// `PATCH /api/auth/password`
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,49 +482,6 @@ pub mod uploads {
     }
 }
 
-/// Library aggregation payloads.
-pub mod library {
-    use super::*;
-
-    /// Response of `GET /api/library`.
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Library {
-        /// The requested bucket.
-        #[serde(rename = "type")]
-        pub kind: LibraryKind,
-        /// Matching files across every directory.
-        pub items: Vec<LibraryItem>,
-        /// Counts for every bucket.
-        pub counts: LibraryCounts,
-    }
-
-    /// Response of `GET /api/library/all`.
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct LibraryAll {
-        /// Items grouped by bucket.
-        pub items: LibraryBuckets,
-        /// Counts for every bucket.
-        pub counts: LibraryCounts,
-    }
-
-    /// The four media buckets the sidebar tree uses.
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct LibraryBuckets {
-        /// Books.
-        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
-        pub book: Vec<LibraryItem>,
-        /// Images.
-        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
-        pub image: Vec<LibraryItem>,
-        /// Videos.
-        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
-        pub video: Vec<LibraryItem>,
-        /// Audio files.
-        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
-        pub audio: Vec<LibraryItem>,
-    }
-}
-
 /// Task-centre payloads.
 pub mod tasks {
     use super::*;
@@ -603,9 +545,6 @@ pub mod book {
 /// Media payloads.
 pub mod media {
     pub use crate::media::AudioMedia;
-
-    /// Response of `POST /api/files/{id}/media/reanalyze`.
-    pub use crate::media::ReanalyzeResult;
 }
 
 /// System status payloads.
@@ -761,7 +700,6 @@ pub use files::{
     CreateDirectoryRequest, CreateDocumentRequest, DocumentContent, FileDetail, PatchFileRequest,
     Trash, UpdateDocumentRequest,
 };
-pub use library::{Library, LibraryAll, LibraryBuckets};
 pub use tasks::TaskList;
 pub use uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, PartUrl, RecordUploadPartRequest,
@@ -942,56 +880,6 @@ mod tests {
         assert_eq!(patch.parent_id, None);
         let json = serde_json::to_value(&patch).unwrap();
         assert_eq!(json, serde_json::json!({"name": "new.txt"}));
-    }
-
-    #[test]
-    fn library_response_uses_the_type_key() {
-        let body = Library {
-            kind: LibraryKind::Video,
-            items: Vec::new(),
-            counts: LibraryCounts::default(),
-        };
-        let json = serde_json::to_value(&body).unwrap();
-        assert_eq!(json["type"], "video");
-        assert_eq!(json["items"], serde_json::json!([]));
-        assert_eq!(json["counts"]["book"], 0);
-    }
-
-    #[test]
-    fn library_all_groups_the_four_media_buckets() {
-        let body = LibraryAll::default();
-        let json = serde_json::to_value(&body).unwrap();
-        for bucket in ["book", "image", "video", "audio"] {
-            assert_eq!(json["items"][bucket], serde_json::json!([]), "{bucket}");
-        }
-    }
-
-    #[test]
-    fn library_all_treats_missing_or_null_media_buckets_as_empty() {
-        let counts = serde_json::to_value(LibraryCounts::default()).unwrap();
-        let missing: LibraryAll = serde_json::from_value(serde_json::json!({
-            "items": {
-                "book": [],
-                "image": [],
-                "video": []
-            },
-            "counts": counts
-        }))
-        .unwrap();
-        assert!(missing.items.audio.is_empty());
-
-        let null: LibraryAll = serde_json::from_value(serde_json::json!({
-            "items": {
-                "book": null,
-                "image": [],
-                "video": [],
-                "audio": null
-            },
-            "counts": serde_json::to_value(LibraryCounts::default()).unwrap()
-        }))
-        .unwrap();
-        assert!(null.items.book.is_empty());
-        assert!(null.items.audio.is_empty());
     }
 
     #[test]

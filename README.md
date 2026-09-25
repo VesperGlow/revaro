@@ -67,12 +67,7 @@ docker compose up -d
 
 ## 开发与检查
 
-> **迁移收尾中**：生产镜像与运行时已经是单一 Rust Cargo workspace
->（Axum 后端 + Leptos 前端 + 共享 core crate）。浏览器行为测试位于独立的
-> `tests/e2e/` 包，不参与生产构建或运行。迁移计划、阶段划分与审计结论见
-> [docs/migration/README.md](docs/migration/README.md)。
-
-新的 Rust 工作区：
+Rust 工作区：
 
 ```sh
 cargo xtask web-build     # 构建 Leptos 前端到 dist/web

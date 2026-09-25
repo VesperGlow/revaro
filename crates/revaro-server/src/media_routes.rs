@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::{Path as PathParam, State};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderValue};
 use revaro_core::classify;
@@ -34,7 +34,6 @@ const MEDIA_PROBE_VERSION: i64 = 2;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/files/{id}/audio", get(audio_media_info))
-        .route("/files/{id}/media/reanalyze", post(reanalyze_media))
         .route("/files/{id}/thumbnail", get(thumbnail))
 }
 
@@ -310,44 +309,6 @@ async fn audio_media_info(
             String::new()
         },
         has_cover,
-    }))
-}
-
-/// `POST /api/files/{id}/media/reanalyze`.
-async fn reanalyze_media(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    PathParam(id): PathParam<String>,
-) -> Result<Json<revaro_core::api::media::ReanalyzeResult>, revaro_core::ApiError> {
-    let file = ready_media_file(
-        state.clone(),
-        id,
-        MediaKind::Any,
-        "ready media file not found",
-    )
-    .await?;
-    if !classify::is_audio(&file) && !classify::is_video(&file) {
-        return Err(revaro_core::ApiError::not_found(
-            "ready media file not found",
-        ));
-    }
-    let _lock = state.media.metadata_lock(&file.id).await;
-    let file_id = file.id.clone();
-    state
-        .db
-        .call_api(move |connection| {
-            connection
-                .execute("DELETE FROM media_metadata WHERE file_id = ?1", [&file_id])
-                .map_err(crate::db::DbError::Query)
-                .map_err(file_routes::database_error)
-        })
-        .await?;
-    let probe = probe_file(&state, &file)
-        .await
-        .map_err(|_| revaro_core::ApiError::unprocessable("media re-analysis failed"))?;
-    persist_metadata(&state, &file, &probe).await?;
-    Ok(Json(revaro_core::api::media::ReanalyzeResult {
-        status: "ready".to_owned(),
     }))
 }
 
@@ -738,14 +699,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reanalyze_route_probes_a_real_audio_object_and_persists_metadata() {
+    async fn audio_route_probes_a_real_object_and_persists_metadata() {
         let state = state().await;
         insert_ready_file(&state, "audio-1", "tone.wav", "audio/wav", &wav_fixture()).await;
-
-        let (status, _, body) = request(&state, "POST", "/api/files/audio-1/media/reanalyze").await;
-        assert_eq!(status, StatusCode::OK);
-        let result: serde_json::Value = serde_json::from_slice(&body).expect("reanalyze json");
-        assert_eq!(result, serde_json::json!({"status": "ready"}));
 
         let (status, _, body) = request(&state, "GET", "/api/files/audio-1/audio").await;
         assert_eq!(status, StatusCode::OK);

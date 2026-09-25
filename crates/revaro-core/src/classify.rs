@@ -1,4 +1,4 @@
-//! File classification shared by the server's library views and the browser UI.
+//! File classification shared by the server and browser UI.
 //!
 //! Before the migration these rules existed twice: once in Go
 //! (`isImageSource`, `isVideoSource`, `isAudioSource`, `isBookSource`,
@@ -8,79 +8,6 @@
 //! functions.
 
 use crate::model::{File, FileKind, FileStatus};
-
-/// The five buckets the sidebar groups the library into.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum LibraryKind {
-    /// EPUB and plain-text books.
-    Book,
-    /// Still images.
-    Image,
-    /// Video files.
-    Video,
-    /// Audio files.
-    Audio,
-    /// Everything else.
-    #[default]
-    File,
-}
-
-impl LibraryKind {
-    /// Every bucket, in the order the sidebar presents them.
-    pub const ALL: [LibraryKind; 5] = [
-        LibraryKind::Book,
-        LibraryKind::Image,
-        LibraryKind::Video,
-        LibraryKind::Audio,
-        LibraryKind::File,
-    ];
-    /// The wire and query-string name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            LibraryKind::Book => "book",
-            LibraryKind::Image => "image",
-            LibraryKind::Video => "video",
-            LibraryKind::Audio => "audio",
-            LibraryKind::File => "file",
-        }
-    }
-}
-
-impl std::str::FromStr for LibraryKind {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "book" => Ok(LibraryKind::Book),
-            "image" => Ok(LibraryKind::Image),
-            "video" => Ok(LibraryKind::Video),
-            "audio" => Ok(LibraryKind::Audio),
-            "file" => Ok(LibraryKind::File),
-            _ => Err(()),
-        }
-    }
-}
-
-impl std::fmt::Display for LibraryKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl serde::Serialize for LibraryKind {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for LibraryKind {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = <String as serde::Deserialize>::deserialize(deserializer)?;
-        raw.parse()
-            .map_err(|()| serde::de::Error::custom(format!("unknown library type {raw:?}")))
-    }
-}
 
 /// Extensions treated as video regardless of the stored MIME type.
 pub const VIDEO_EXTENSIONS: &[&str] = &[
@@ -250,18 +177,6 @@ pub fn is_audio(file: &File) -> bool {
         || has_extension(&file.name, AUDIO_EXTENSIONS)
 }
 
-/// True when the file belongs to `kind`.
-#[must_use]
-pub fn matches_library_kind(file: &File, kind: LibraryKind) -> bool {
-    match kind {
-        LibraryKind::Book => is_book(file),
-        LibraryKind::Image => is_image(file),
-        LibraryKind::Video => is_video(file),
-        LibraryKind::Audio => is_audio(file),
-        LibraryKind::File => is_ready_file(file),
-    }
-}
-
 /// True when a ready file's bytes can be rendered inline by the browser.
 #[must_use]
 pub fn is_previewable(file: &File) -> bool {
@@ -367,14 +282,6 @@ mod tests {
     }
 
     #[test]
-    fn library_kinds_round_trip_through_their_names() {
-        for kind in LibraryKind::ALL {
-            assert_eq!(kind.as_str().parse::<LibraryKind>(), Ok(kind));
-        }
-        assert!("nope".parse::<LibraryKind>().is_err());
-    }
-
-    #[test]
     fn classification_prefers_the_stored_mime_type() {
         assert!(is_image(&file("photo.bin", "image/png")));
         assert!(is_video(&file("clip.bin", "video/mp4")));
@@ -400,7 +307,6 @@ mod tests {
         let mut pending = file("photo.png", "");
         pending.status = FileStatus::Pending;
         assert!(!is_image(&pending));
-        assert!(!matches_library_kind(&pending, LibraryKind::File));
     }
 
     #[test]

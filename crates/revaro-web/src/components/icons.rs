@@ -11,8 +11,6 @@
 //! Each helper returns `impl IntoView` rather than being a component: there is
 //! no state to own and no props to thread.
 
-#![allow(dead_code)]
-
 use leptos::prelude::*;
 
 /// Lucide `activity` — the task-centre trigger.
@@ -89,52 +87,6 @@ pub fn music_2() -> impl IntoView {
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="8" cy="18" r="4"></circle>
             <path d="M12 18V2l7 4"></path>
-        </svg>
-    }
-}
-
-/// Lucide `folder` — a folder in a path tree.
-pub fn folder() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-        </svg>
-    }
-}
-
-/// Lucide `folder-closed` — the 文件 category.
-pub fn folder_closed() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-            <path d="M2 10h20"></path>
-        </svg>
-    }
-}
-
-/// Lucide `file-text` — a generic text document.
-pub fn file_text() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"></path>
-            <path d="M14 2v5a1 1 0 0 0 1 1h5"></path>
-            <path d="M10 9H8"></path>
-            <path d="M16 13H8"></path>
-            <path d="M16 17H8"></path>
-        </svg>
-    }
-}
-
-/// Lucide `file` — a fallback for files without a specialised type.
-pub fn file() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"></path>
-            <path d="M14 2v5a1 1 0 0 0 1 1h5"></path>
         </svg>
     }
 }

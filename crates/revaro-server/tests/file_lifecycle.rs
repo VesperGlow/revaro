@@ -333,19 +333,15 @@ async fn a_file_can_be_created_uploaded_browsed_copied_shared_trashed_and_purged
         .to_owned();
     assert_eq!(token.len(), 43);
 
-    // Library and storage views see the file.
-    let (_, counts) = harness
-        .json("GET", "/api/library/counts", serde_json::Value::Null)
+    // Both the original and its copy are visible in the folder.
+    let (_, children) = harness
+        .json(
+            "GET",
+            &format!("/api/files/{folder_id}/children"),
+            serde_json::Value::Null,
+        )
         .await;
-    assert_eq!(counts["file"], 2, "the copy counts too");
-    assert_eq!(
-        counts["book"], 2,
-        "both the file and its copy are .txt books"
-    );
-    let (_, stats) = harness
-        .json("GET", "/api/storage/stats", serde_json::Value::Null)
-        .await;
-    assert_eq!(stats["file_count"], 2);
+    assert_eq!(children["items"].as_array().unwrap().len(), 2);
 
     // Trashing detaches both files from the directory and hides them.
     let (status, _) = harness
@@ -372,11 +368,7 @@ async fn a_file_can_be_created_uploaded_browsed_copied_shared_trashed_and_purged
         1,
         "only the trash root is listed"
     );
-    // Live bytes are gone; the status view still counts the trashed bytes.
-    let (_, live) = harness
-        .json("GET", "/api/storage/stats", serde_json::Value::Null)
-        .await;
-    assert_eq!(live["file_count"], 0);
+    // The status view still counts the trashed bytes.
     let (_, status_view) = harness
         .json("GET", "/api/system/status", serde_json::Value::Null)
         .await;
@@ -460,7 +452,7 @@ async fn unauthenticated_and_cross_origin_requests_are_refused() {
         .router()
         .oneshot(
             Request::builder()
-                .uri("/api/storage/stats")
+                .uri("/api/tasks")
                 .body(Body::empty())
                 .unwrap(),
         )

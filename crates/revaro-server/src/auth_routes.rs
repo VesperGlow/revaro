@@ -25,8 +25,8 @@ use http::StatusCode;
 use http::header::{self, HeaderValue};
 use http::request::Parts;
 use revaro_core::api::auth::{
-    AvatarRequest, ChangeCredentialsRequest, ChangePasswordRequest, ChangeUsernameRequest,
-    LoginRequest, PasswordCodeRequest, PasswordRequest, TotpRecovery, TotpSetup,
+    AvatarRequest, ChangePasswordRequest, ChangeUsernameRequest, LoginRequest, PasswordCodeRequest,
+    PasswordRequest, TotpRecovery, TotpSetup,
 };
 use revaro_core::keys::AVATAR_KEY;
 use revaro_core::model::Profile;
@@ -47,14 +47,6 @@ struct LoginInput {
     username: Option<String>,
     password: Option<String>,
     second_factor: Option<String>,
-}
-
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CredentialsInput {
-    current_password: Option<String>,
-    username: Option<String>,
-    password: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -95,7 +87,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/auth/login", routing::post(login))
         .route("/auth/logout", routing::post(logout))
         .route("/auth/me", routing::get(me))
-        .route("/auth/credentials", routing::patch(change_credentials))
         .route("/auth/password", routing::patch(change_password))
         .route("/auth/totp", routing::get(totp_status).delete(disable_totp))
         .route("/auth/totp/setup", routing::post(begin_totp_setup))
@@ -295,57 +286,6 @@ async fn me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<Json<P
         username: user.username,
         has_avatar: state.auth.has_avatar().await.unwrap_or(false),
     }))
-}
-
-/// `PATCH /api/auth/credentials`
-async fn change_credentials(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-    request: Request,
-) -> Result<Response, ApiError> {
-    let JsonBody(input) =
-        JsonBody::<Option<CredentialsInput>>::from_request(request, &state).await?;
-    let input = input.unwrap_or_default();
-    let body = ChangeCredentialsRequest {
-        current_password: input.current_password.unwrap_or_default(),
-        username: input.username.unwrap_or_default(),
-        password: input.password.unwrap_or_default(),
-    };
-    if body.username.is_empty()
-        || body.username.len() > 128
-        || body.password.len() < 12
-        || body.password.len() > 1024
-        || body.current_password.len() > 1024
-    {
-        return Err(ApiError::bad_request(
-            "username is required and password must be between 12 and 1024 characters",
-        ));
-    }
-    match state
-        .auth
-        .change_credentials(
-            &user.username,
-            &body.current_password,
-            &body.username,
-            &body.password,
-        )
-        .await
-    {
-        Ok(()) => {
-            tracing::info!(previous_user = %user.username, user = %body.username, "administrator credentials changed");
-            Ok(with_cookie(
-                StatusCode::NO_CONTENT.into_response(),
-                clear_session_cookie(&state.config),
-            ))
-        }
-        Err(AuthError::InvalidCredentials) => {
-            Err(ApiError::unauthorized("current password is incorrect"))
-        }
-        Err(error) => {
-            tracing::error!(%error, "credential change failed");
-            Err(ApiError::internal("could not update credentials"))
-        }
-    }
 }
 
 /// `PATCH /api/auth/password`

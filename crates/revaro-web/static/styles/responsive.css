@@ -47,7 +47,7 @@ body {
 /* File names must never contribute an unbounded intrinsic width. */
 .card-info,
 .editor-title > div,
-.task-top > div,
+
 .folder-heading,
 .title-row{
   min-width: 0;
@@ -55,9 +55,8 @@ body {
 }
 .card-info strong,
 .editor-title strong,
-.task-top strong,
-.folder-heading h1,
-.move-target {
+
+.folder-heading h1{
   display: block;
   min-width: 0;
   max-width: 100%;
@@ -242,13 +241,6 @@ button:disabled {
   stroke: currentColor;
   stroke-width: 1.8;
 }
-.menu-chevron {
-  width: 14px !important;
-  height: 14px !important;
-}
-.create-menu[open] .menu-chevron {
-  transform: rotate(180deg);
-}
 .file-card {
   border-color: var(--line);
   border-radius: var(--radius-sm);
@@ -402,17 +394,12 @@ button:disabled {
   color: var(--accent);
 }
 .create-menu-popover button:hover > span,
-.upload-menu-popover button:hover > span,
-.folder-list button:hover {
+.upload-menu-popover button:hover > span{
   background: var(--accent-faint);
   color: var(--accent-hover);
 }
-.progress i,
-.upload-progress i {
+.progress i{
   background: var(--accent);
-}
-.folder-list span {
-  color: var(--accent);
 }
 .account-modal > header {
   align-items: center;
@@ -429,7 +416,7 @@ button:disabled {
   backdrop-filter: none;
 }
 .avatar,
-.account-avatar,
+
 .nav.active,
 .nav:hover {
   background: var(--accent-soft);
@@ -475,7 +462,4 @@ button:disabled {
   .card-select:hover::before { background: #eef5ff; }
   .card-select.active::before { background: var(--accent); }
   .card-select svg { z-index: 1; }
-}
-.storage-fill{
-  background: var(--accent);
 }
