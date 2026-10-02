@@ -484,3 +484,14 @@ pub fn upload() -> impl IntoView {
         </svg>
     }
 }
+
+/// A magnifying glass for the expandable file search in the top bar.
+pub fn search() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="6.5"></circle>
+            <path d="m15.5 15.5 5 5"></path>
+        </svg>
+    }
+}

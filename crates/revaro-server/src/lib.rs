@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admin;
 pub mod auth;
 pub mod auth_routes;
 pub mod batch_download;
@@ -21,6 +22,7 @@ pub mod db;
 pub mod error;
 pub mod file_routes;
 pub mod ids;
+pub mod listing_routes;
 pub mod maintenance;
 pub mod media_routes;
 pub mod media_runtime;
@@ -28,9 +30,13 @@ pub mod middleware;
 pub mod proxy;
 pub mod reader_routes;
 pub mod router;
+pub mod share_routes;
 pub mod state;
 pub mod storage;
+pub mod system_routes;
+pub mod transfer;
 pub mod upload_routes;
+pub mod version_routes;
 pub mod web;
 
 pub use config::Config;

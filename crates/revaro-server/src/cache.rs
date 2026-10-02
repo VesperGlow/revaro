@@ -164,7 +164,7 @@ impl CacheError {
 }
 
 /// Cumulative counters and current usage for one namespace.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CacheClassStats {
     /// Number of lookups served by either tier.
     pub hits: i64,
@@ -187,7 +187,7 @@ pub struct CacheClassStats {
 }
 
 /// A consistent snapshot of cache counters and tier usage.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CacheStats {
     /// Per-class snapshots, in deterministic name order.
     pub classes: BTreeMap<String, CacheClassStats>,

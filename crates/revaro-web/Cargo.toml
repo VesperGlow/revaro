@@ -37,6 +37,10 @@ wasm-bindgen-futures.workspace = true
 # already enable many `web-sys` features; these are the ones this crate names
 # itself, so a dependency bump cannot silently take them away.
 web-sys = { workspace = true, features = [
+    "Headers",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "IntersectionObserverInit",
     "Document",
     "DomRect",
     "DomRectList",

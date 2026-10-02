@@ -546,6 +546,9 @@ pub struct BookProgress {
 /// Public share state of a single file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareStatus {
+    /// The expiration instant; absent for a permanent link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
     /// Whether a share link exists.
     #[serde(default, deserialize_with = "deserialize_nullable_bool")]
     pub active: bool,

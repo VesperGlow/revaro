@@ -257,7 +257,9 @@ impl TaskController {
         let Some(task) = self.find_task(&id) else {
             return;
         };
-        if task.status != TaskStatus::Failed || task.retry_count >= task.max_retries {
+        if !matches!(task.status, TaskStatus::Failed | TaskStatus::WaitingInput)
+            || task.retry_count >= task.max_retries
+        {
             return;
         }
         if task.source_type == "upload"
@@ -271,7 +273,12 @@ impl TaskController {
         leptos::task::spawn_local(async move {
             let result = api::retry_task(&id).await;
             match result {
-                Ok(()) => controller.refresh_coalesced(),
+                Ok(()) => {
+                    controller.refresh_coalesced();
+                    controller
+                        .feedback
+                        .run(Feedback::success("请选择原文件以继续上传"));
+                }
                 Err(error) => controller.handle_action_error(&error),
             }
         });
@@ -818,14 +825,14 @@ fn TaskRow(
                 <Show
                     when=move || {
                         let (retry_count, max_retries) = current_retry.get();
-                        show_retry && retry_count < max_retries
+                        (show_retry || current_status.get() == TaskStatus::WaitingInput) && retry_count < max_retries
                     }
                     fallback=|| ()
                 >
                     <button
                         type="button"
-                        title="重试"
-                        aria-label="重试任务"
+                        title=move || if current_status.get() == TaskStatus::WaitingInput { "选择原文件" } else { "重试" }
+                        aria-label=move || if current_status.get() == TaskStatus::WaitingInput { "选择原文件" } else { "重试任务" }
                         on:click=move |event: web_sys::MouseEvent| {
                             event.stop_propagation();
                             retry.run(())

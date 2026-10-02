@@ -52,6 +52,8 @@ hmac = "0.12"
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 sha1 = "0.10"
 time = "0.3"
+fs2 = "0.4.3"
+url = "2"
 
 # The workspace default enables only `jpeg`; the avatar sniffer and the TOTP QR
 # code both need PNG encoding, so the feature is added here rather than globally.

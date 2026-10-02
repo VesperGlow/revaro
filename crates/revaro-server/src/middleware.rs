@@ -109,24 +109,17 @@ use axum::response::IntoResponse as _;
 /// comparison is case-insensitive because hosts are.
 #[must_use]
 pub fn same_origin(base_url: &str, origin: &str) -> bool {
-    match (
-        split_scheme_authority(base_url),
-        split_scheme_authority(origin),
-    ) {
-        (Some((base_scheme, base_host)), Some((scheme, host))) => {
-            base_scheme.eq_ignore_ascii_case(scheme) && base_host.eq_ignore_ascii_case(host)
+    match (url::Url::parse(base_url), url::Url::parse(origin)) {
+        (Ok(base), Ok(other)) => {
+            matches!(base.scheme(), "http" | "https")
+                && base.origin() == other.origin()
+                && other.username().is_empty()
+                && other.password().is_none()
+                && other.query().is_none()
+                && other.fragment().is_none()
         }
         _ => false,
     }
-}
-
-fn split_scheme_authority(value: &str) -> Option<(&str, &str)> {
-    let (scheme, rest) = value.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    if scheme.is_empty() || authority.is_empty() {
-        return None;
-    }
-    Some((scheme, authority))
 }
 
 /// The status code the origin guard uses, named so tests can assert on it.

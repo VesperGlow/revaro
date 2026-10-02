@@ -64,6 +64,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "003_remove_subtitles.sql",
         sql: include_str!("../migrations/003_remove_subtitles.sql"),
     },
+    Migration {
+        version: 4,
+        name: "004_history_and_shares.sql",
+        sql: include_str!("../migrations/004_history_and_shares.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

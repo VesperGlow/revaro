@@ -16,6 +16,9 @@ pub enum EditorMode {
 /// browser controller; this component owns only the visual/editor state.
 #[component]
 pub fn DocumentEditor(
+    file_id: RwSignal<String>,
+    etag: RwSignal<String>,
+    on_restored: Callback<()>,
     is_new: RwSignal<bool>,
     readonly: RwSignal<bool>,
     name: RwSignal<String>,
@@ -27,6 +30,7 @@ pub fn DocumentEditor(
     on_save: Callback<()>,
     on_close: Callback<()>,
 ) -> impl IntoView {
+    let history_open = RwSignal::new(false);
     let markdown = Signal::derive_local(move || {
         revaro_core::classify::is_editable_name(&name.get())
             && matches!(
@@ -76,6 +80,9 @@ pub fn DocumentEditor(
                     >
                         <span class="editor-header-message error">{move || error.get()}</span>
                     </Show>
+                    <Show when=move || !readonly.get() && !is_new.get() fallback=|| ()>
+                        <button type="button" prop:disabled=move ||busy.get() on:click=move |_|history_open.set(true)>"版本历史"</button>
+                    </Show>
                     <Show when=move || !readonly.get() fallback=|| ()>
                         <Show when=move || is_new.get() || dirty.get() fallback=|| ()><span class="unsaved-dot">"未保存"</span></Show>
                         <button class="primary" type="button" prop:disabled=move || busy.get() || (!is_new.get() && !dirty.get()) on:click=move |_| save.run(())>{move || if busy.get() { "保存中…" } else { "保存" }}</button>
@@ -83,6 +90,9 @@ pub fn DocumentEditor(
                     <button class="editor-close" type="button" aria-label="关闭编辑器" on:click=move |_| close.run(())>"×"</button>
                 </div>
             </header>
+            <Show when=move || history_open.get() fallback=|| ()>
+                <super::version_history::VersionHistory file_id=file_id.get_untracked() etag=etag content=content dirty=dirty on_restored=on_restored on_close=Callback::new(move |_|history_open.set(false))/>
+            </Show>
             <Show
                 when=move || !(busy.get() && content.get().is_empty())
                 fallback=|| view! { <div class="state editor-loading"><div class="spinner"></div><p>"正在打开文档…"</p></div> }

@@ -83,6 +83,12 @@ pub struct Config {
     pub media_cache_capacity: i64,
     /// How long an unfinished upload may stay pending.
     pub upload_expires: Duration,
+    /// Maximum gap between upload body frames.
+    pub upload_idle_timeout: Duration,
+    /// Maximum duration of a single upload request.
+    pub upload_request_timeout: Duration,
+    /// Free space to keep after accepting bytes.
+    pub upload_min_free_bytes: i64,
     /// How long deleted files stay in the trash.
     pub trash_retention: Duration,
     /// Interval between orphan-blob sweeps; zero disables the sweep.
@@ -119,6 +125,7 @@ impl Config {
 
         let data_dir = PathBuf::from(value("APP_DATA_DIR", DEFAULT_DATA_DIR));
         let base_url = value("APP_BASE_URL", DEFAULT_BASE_URL)
+            .trim()
             .trim_end_matches('/')
             .to_owned();
         if !is_absolute_http_url(&base_url) {
@@ -127,6 +134,11 @@ impl Config {
             ));
         }
 
+        let base_url = url::Url::parse(&base_url)
+            .map_err(|_| ConfigError::new("invalid APP_BASE_URL"))?
+            .as_str()
+            .trim_end_matches('/')
+            .to_owned();
         let cookie_secure = match lookup("COOKIE_SECURE") {
             Some(raw) if !raw.is_empty() => parse_bool("COOKIE_SECURE", &raw)?,
             _ => base_url.starts_with("https://"),
@@ -154,11 +166,6 @@ impl Config {
 
         let flow_cache_ttl =
             parse_duration_env("FLOW_CACHE_TTL", lookup, Duration::from_secs(720 * 3600))?;
-        if flow_cache_ttl.is_zero()
-            && lookup("FLOW_CACHE_TTL").is_some_and(|raw| raw.starts_with('-'))
-        {
-            return Err(ConfigError::new("FLOW_CACHE_TTL must not be negative"));
-        }
 
         let upload_expires =
             parse_duration_env("UPLOAD_EXPIRES", lookup, Duration::from_secs(24 * 3600))?;
@@ -166,6 +173,22 @@ impl Config {
             return Err(ConfigError::new("UPLOAD_EXPIRES must be positive"));
         }
 
+        let upload_idle_timeout =
+            parse_duration_env("UPLOAD_IDLE_TIMEOUT", lookup, Duration::from_secs(60))?;
+        let upload_request_timeout = parse_duration_env(
+            "UPLOAD_REQUEST_TIMEOUT",
+            lookup,
+            Duration::from_secs(24 * 3600),
+        )?;
+        let upload_min_free_bytes = parse_int("UPLOAD_MIN_FREE_BYTES", lookup, 64 << 20)?;
+        if upload_idle_timeout.is_zero()
+            || upload_request_timeout.is_zero()
+            || upload_min_free_bytes < 0
+        {
+            return Err(ConfigError::new(
+                "upload timeouts must be positive and free-space reserve nonnegative",
+            ));
+        }
         let trash_retention = parse_duration_env(
             "TRASH_RETENTION",
             lookup,
@@ -192,6 +215,9 @@ impl Config {
             admin_password: lookup("ADMIN_PASSWORD").unwrap_or_default(),
             media_cache_capacity,
             upload_expires,
+            upload_idle_timeout,
+            upload_request_timeout,
+            upload_min_free_bytes,
             trash_retention,
             gc_interval,
             flow_cache_ttl,
@@ -251,14 +277,15 @@ impl fmt::Display for Config {
 
 /// True when `value` is an absolute `http(s)` URL with a host.
 fn is_absolute_http_url(value: &str) -> bool {
-    let Some(rest) = value
-        .strip_prefix("http://")
-        .or_else(|| value.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    !authority.is_empty()
+    url::Url::parse(value).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https")
+            && u.host_str().is_some()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.query().is_none()
+            && u.fragment().is_none()
+            && u.path() == "/"
+    })
 }
 
 fn parse_bool(name: &str, raw: &str) -> Result<bool, ConfigError> {
@@ -298,8 +325,7 @@ fn parse_duration_env(
 
 /// Parse a Go-style duration such as `24h`, `720h`, `1h30m`, `300ms`, `1.5h`.
 ///
-/// Negative durations are accepted here and rejected by the individual
-/// validators, mirroring how the Go server reported them.
+/// Negative durations are rejected; explicit zero is checked by each setting.
 ///
 /// # Errors
 /// Returns a human-readable reason when the value cannot be parsed.
@@ -308,10 +334,10 @@ pub fn parse_duration(value: &str) -> Result<Duration, String> {
     if raw.is_empty() {
         return Err("empty duration".to_owned());
     }
-    let (negative, body) = match raw.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, raw.strip_prefix('+').unwrap_or(raw)),
-    };
+    if raw.starts_with('-') {
+        return Err("duration must not be negative".to_owned());
+    }
+    let body = raw.strip_prefix('+').unwrap_or(raw);
     if body == "0" {
         return Ok(Duration::ZERO);
     }
@@ -358,8 +384,7 @@ pub fn parse_duration(value: &str) -> Result<Duration, String> {
     if nanos > u64::MAX as f64 {
         return Err(format!("duration {value:?} is out of range"));
     }
-    let duration = Duration::from_nanos(nanos as u64);
-    Ok(if negative { Duration::ZERO } else { duration })
+    Ok(Duration::from_nanos(nanos as u64))
 }
 
 #[cfg(test)]
@@ -446,13 +471,20 @@ mod tests {
     }
 
     #[test]
-    fn accepts_negative_trash_and_gc_values_when_the_duration_parses() {
-        // These are documented as "must not be negative" in the Go server, which
-        // it enforced by parsing the sign itself; the important compatibility
-        // property is that a negative value never silently becomes a huge
-        // positive one.
-        let config = config_from(&[("TRASH_RETENTION", "-1h")]).unwrap();
-        assert_eq!(config.trash_retention, Duration::ZERO);
+    fn rejects_negative_durations_for_every_setting() {
+        for name in [
+            "TRASH_RETENTION",
+            "GC_INTERVAL",
+            "FLOW_CACHE_TTL",
+            "UPLOAD_EXPIRES",
+        ] {
+            for raw in ["-1h", " -1h ", "-0"] {
+                assert!(config_from(&[(name, raw)]).is_err(), "{name}={raw}");
+            }
+        }
+        for name in ["TRASH_RETENTION", "GC_INTERVAL", "FLOW_CACHE_TTL"] {
+            assert!(config_from(&[(name, "0")]).is_ok());
+        }
     }
 
     #[test]
@@ -516,8 +548,24 @@ mod tests {
 
     #[test]
     fn negative_durations_never_wrap_around() {
-        assert_eq!(parse_duration("-1h").unwrap(), Duration::ZERO);
+        assert!(parse_duration("-1h").is_err());
         // A trailing minus is not a sign and must be rejected outright.
         assert!(parse_duration("1h-").is_err());
+    }
+    #[test]
+    fn url_validation_normalizes_origin_and_rejects_ambiguous_settings() {
+        let config = config_from(&[("APP_BASE_URL", "  HTTPS://Example.COM:443/  ")]).unwrap();
+        assert_eq!(config.base_url, "https://example.com");
+        assert!(config.cookie_secure);
+        for raw in [
+            "http://example.com:invalid",
+            "http://user:pass@example.com",
+            "https://example.com/path",
+            "https://example.com?query=1",
+            "https://example.com#fragment",
+        ] {
+            assert!(config_from(&[("APP_BASE_URL", raw)]).is_err(), "{raw}");
+        }
+        assert!(config_from(&[("APP_BASE_URL", "http://[::1]:8080")]).is_ok());
     }
 }

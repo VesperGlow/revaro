@@ -13,8 +13,8 @@ use futures_channel::oneshot;
 use leptos::prelude::*;
 use revaro_core::api::auth::Session;
 use revaro_core::api::files::{
-    Children, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest, FileDetail,
-    PatchFileRequest, UpdateDocumentRequest,
+    CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest, FileDetail, PatchFileRequest,
+    UpdateDocumentRequest,
 };
 use revaro_core::classify;
 use revaro_core::ids::ROOT_ID;
@@ -106,8 +106,20 @@ pub fn FileBrowser(
     let current = RwSignal::new(None::<File>);
     let breadcrumbs = RwSignal::new(Vec::<File>::new());
     let items = RwSignal::new(Vec::<File>::new());
+    let listing_empty = Memo::new(move |_| items.with(Vec::is_empty));
     let total_bytes = RwSignal::new(0_i64);
     let file_count = RwSignal::new(0_i64);
+    let search_text = RwSignal::new(String::new());
+    let search_query = RwSignal::new(String::new());
+    let search_global = RwSignal::new(false);
+    let search_scope_global = RwSignal::new(false);
+    let sort_order = RwSignal::new("name".to_owned());
+    let listing_next_offset = RwSignal::new(0_i64);
+    let loading_more = RwSignal::new(false);
+    let loading_more_error = RwSignal::new(String::new());
+    let listing_end = NodeRef::<leptos::html::Div>::new();
+    let listing_end_visible = RwSignal::new(false);
+    let listing_total = RwSignal::new(0_i64);
     let loading = RwSignal::new(false);
     // `current_id` changes only once navigation succeeds. Background refreshes
     // must also check the in-flight destination, or they can supersede a user
@@ -162,6 +174,8 @@ pub fn FileBrowser(
     let share_active = RwSignal::new(false);
     let share_url = RwSignal::new(String::new());
     let share_created_at = RwSignal::new(String::new());
+    let share_expires_at = RwSignal::new(String::new());
+    let share_expiry = RwSignal::new("604800".to_owned());
     let share_busy = RwSignal::new(false);
     let share_error = RwSignal::new(String::new());
     let share_copied = RwSignal::new(false);
@@ -240,6 +254,8 @@ pub fn FileBrowser(
             request_sequence.set(sequence);
             loading_folder.set(Some(requested_id.clone()));
             loading.set(true);
+            loading_more.set(false);
+            loading_more_error.set(String::new());
             error.set(String::new());
             if pending_editor_refresh
                 .get_untracked()
@@ -252,6 +268,16 @@ pub fn FileBrowser(
             initial_route_pending.set(false);
             let logout = on_logout.clone();
 
+            if requested_id != current_id.get_untracked() {
+                search_query.set(String::new());
+                search_text.set(String::new());
+                search_global.set(false);
+                search_scope_global.set(false);
+            }
+            let offset = 0;
+            let query = search_query.get_untracked();
+            let sort = sort_order.get_untracked();
+            let global = search_scope_global.get_untracked();
             let mut completion = completion;
             leptos::task::spawn_local(async move {
                 let result = async {
@@ -262,11 +288,18 @@ pub fn FileBrowser(
                     // listing.
                     let (detail, children) = futures_util::join!(
                         api::fetch_file(&requested_id),
-                        api::fetch_children(&requested_id),
+                        api::fetch_listing(
+                            if global { None } else { Some(&requested_id) },
+                            &query,
+                            &sort,
+                            offset
+                        ),
                     );
                     let detail = detail?;
                     let children = children?;
-                    Ok::<(FileDetail, Children), api::RequestError>((detail, children))
+                    Ok::<(FileDetail, revaro_core::features::Listing), api::RequestError>((
+                        detail, children,
+                    ))
                 }
                 .await;
 
@@ -290,6 +323,8 @@ pub fn FileBrowser(
                         current_id.set(requested_id.clone());
                         current.set(Some(detail.file));
                         breadcrumbs.set(detail.breadcrumbs);
+                        listing_total.set(children.total);
+                        listing_next_offset.set(children.items.len() as i64);
                         preview_items.set(children.items.clone());
                         items.set(children.items);
                         total_bytes.set(children.total_bytes);
@@ -345,6 +380,148 @@ pub fn FileBrowser(
         })
     };
 
+    // Appending a batch never replaces the grid or clears its selection. A
+    // navigation/refresh invalidates the request before it can append stale files.
+    let load_more = {
+        let on_logout = on_logout.clone();
+        Callback::new(move |(): ()| {
+            if loading.get_untracked()
+                || loading_more.get_untracked()
+                || trash_mode.get_untracked()
+                || listing_next_offset.get_untracked() >= listing_total.get_untracked()
+            {
+                return;
+            }
+            let sequence = request_sequence.get_untracked();
+            let id = current_id.get_untracked();
+            let query = search_query.get_untracked();
+            let sort = sort_order.get_untracked();
+            let global = search_scope_global.get_untracked();
+            let offset = listing_next_offset.get_untracked();
+            let logout = on_logout.clone();
+            loading_more.set(true);
+            loading_more_error.set(String::new());
+            leptos::task::spawn_local(async move {
+                let result = api::fetch_listing(
+                    if global { None } else { Some(&id) },
+                    &query,
+                    &sort,
+                    offset,
+                )
+                .await;
+                if request_sequence.try_get_untracked() != Some(sequence) {
+                    return;
+                }
+                match result {
+                    Ok(listing) => {
+                        let received = listing.items.len() as i64;
+                        // A concurrent deletion may make the final batch empty.
+                        listing_next_offset.set(if received == 0 {
+                            listing.total
+                        } else {
+                            offset + received
+                        });
+                        listing_total.set(listing.total);
+                        total_bytes.set(listing.total_bytes);
+                        file_count.set(listing.file_count);
+                        items.update(|files| {
+                            let existing: HashSet<_> =
+                                files.iter().map(|file| file.id.clone()).collect();
+                            files.extend(
+                                listing
+                                    .items
+                                    .into_iter()
+                                    .filter(|file| !existing.contains(&file.id)),
+                            );
+                        });
+                        preview_items.set(items.get_untracked());
+                    }
+                    Err(request_error) if request_error.is_unauthorized() => {
+                        loading_more.set(false);
+                        logout.run(());
+                        return;
+                    }
+                    Err(request_error) => loading_more_error.set(request_error.message),
+                }
+                loading_more.set(false);
+            });
+        })
+    };
+    Effect::new(move |_| {
+        let Some(end) = listing_end.get() else {
+            return;
+        };
+        let callback = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
+            if listing_end_visible.try_get_untracked().is_some()
+                && let Ok(entry) = entries
+                    .get(0)
+                    .dyn_into::<web_sys::IntersectionObserverEntry>()
+            {
+                listing_end_visible.set(entry.is_intersecting());
+            }
+        });
+        let options = web_sys::IntersectionObserverInit::new();
+        options.set_root_margin("320px");
+        if let Ok(observer) = web_sys::IntersectionObserver::new_with_options(
+            callback.as_ref().unchecked_ref(),
+            &options,
+        ) {
+            observer.observe(&end);
+            let handle = leptos::__reexports::send_wrapper::SendWrapper::new((observer, callback));
+            on_cleanup(move || {
+                let (observer, _callback) = handle.take();
+                observer.disconnect();
+            });
+        }
+    });
+    let auto_load_more = load_more.clone();
+    Effect::new(move |_| {
+        if listing_end_visible.get()
+            && !loading.get()
+            && !loading_more.get()
+            && !trash_mode.get()
+            && loading_more_error.get().is_empty()
+            && listing_next_offset.get() < listing_total.get()
+        {
+            // Measure after the grid has rendered. The observer can still be
+            // reporting the short loading placeholder when a refresh completes.
+            if let Some(window) = web_sys::window() {
+                let load_more = auto_load_more.clone();
+                let callback = Closure::once_into_js(move || {
+                    if request_sequence.try_get_untracked().is_none()
+                        || !loading_more_error.get_untracked().is_empty()
+                    {
+                        return;
+                    }
+                    if let Some(end) = listing_end.get_untracked()
+                        && let Some(height) = web_sys::window()
+                            .and_then(|window| window.inner_height().ok())
+                            .and_then(|height| height.as_f64())
+                        && end.get_bounding_client_rect().top() <= height + 320.0
+                    {
+                        load_more.run(());
+                    }
+                });
+                let _ = window.request_animation_frame(callback.unchecked_ref());
+            }
+        }
+    });
+    let submit_search = {
+        let load_folder = load_folder.clone();
+        Callback::new(move |(): ()| {
+            search_query.set(search_text.get_untracked().trim().to_owned());
+            search_scope_global.set(search_global.get_untracked());
+            load_folder.run(current_id.get_untracked());
+        })
+    };
+    let change_sort = {
+        let load_folder = load_folder.clone();
+        Callback::new(move |order: String| {
+            sort_order.set(order);
+            load_folder.run(current_id.get_untracked());
+        })
+    };
+
     let fallback_loader = load_folder.clone();
     Effect::new(move |_| {
         if fallback_to_root.get() {
@@ -373,6 +550,8 @@ pub fn FileBrowser(
             request_sequence.set(sequence);
             loading_folder.set(None);
             loading.set(true);
+            loading_more.set(false);
+            loading_more_error.set(String::new());
             error.set(String::new());
             let logout = on_logout.clone();
 
@@ -528,6 +707,12 @@ pub fn FileBrowser(
                 }
                 match result {
                     Ok(status) => {
+                        share_expires_at.set(
+                            status
+                                .expires_at
+                                .map(|v| v.to_rfc3339())
+                                .unwrap_or_default(),
+                        );
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
                         share_created_at.set(
@@ -573,7 +758,15 @@ pub fn FileBrowser(
             let sequence = share_sequence.get_untracked();
             let on_logout = on_logout.clone();
             leptos::task::spawn_local(async move {
-                let result = api::create_share(&id).await;
+                let result = api::create_share(
+                    &id,
+                    share_expiry
+                        .get_untracked()
+                        .parse::<i64>()
+                        .ok()
+                        .filter(|v| *v > 0),
+                )
+                .await;
                 if share_sequence.try_get_untracked() != Some(sequence)
                     || share_file.try_with_untracked(Option::is_some) != Some(true)
                 {
@@ -581,6 +774,12 @@ pub fn FileBrowser(
                 }
                 match result {
                     Ok(status) => {
+                        share_expires_at.set(
+                            status
+                                .expires_at
+                                .map(|v| v.to_rfc3339())
+                                .unwrap_or_default(),
+                        );
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
                         share_created_at.set(
@@ -763,17 +962,19 @@ pub fn FileBrowser(
             }
             let logout = on_logout.clone();
             leptos::task::spawn_local(async move {
+                let mut restored = 0;
+                let mut errors = Vec::new();
+                let mut failed = HashSet::new();
                 for item in targets {
                     match api::restore_trash(&item.id).await {
-                        Ok(()) => {}
+                        Ok(()) => restored += 1,
                         Err(error) if error.is_unauthorized() => {
                             logout.run(());
                             return;
                         }
                         Err(error) => {
-                            notify
-                                .run(Feedback::error(format!("{}：{}", item.name, error.message)));
-                            return;
+                            failed.insert(item.id);
+                            errors.push(format!("{}：{}", item.name, error.message));
                         }
                     }
                 }
@@ -781,16 +982,17 @@ pub fn FileBrowser(
                 load_trash_request.run(TrashLoadRequest {
                     completion: Some(sender),
                 });
-                if receiver.await.unwrap_or(false) {
-                    // The reference keeps the selection toolbar mounted
-                    // while `openTrash()` refreshes the list; clear it only
-                    // after the refresh has completed successfully (the
-                    // loader itself also clears it on a successful response).
-                    selected_ids.set(HashSet::new());
+                let _ = receiver.await;
+                selected_ids.set(failed);
+                if errors.is_empty() {
+                    notify.run(Feedback::success(format!("已恢复 {restored} 项")));
+                } else {
+                    notify.run(Feedback::error(format!(
+                        "已恢复 {restored} 项，{} 项失败：{}",
+                        errors.len(),
+                        errors.join("；")
+                    )));
                 }
-                // The reference reports a successful mutation after waiting
-                // for `openTrash()`, even when that refresh itself fails.
-                notify.run(Feedback::success("所选项目已恢复"));
             });
         })
     };
@@ -921,12 +1123,26 @@ pub fn FileBrowser(
                                 });
                             };
                             share_busy.set(true);
-                            let result = api::create_share(&file.id).await;
+                            let result = api::create_share(
+                                &file.id,
+                                share_expiry
+                                    .get_untracked()
+                                    .parse::<i64>()
+                                    .ok()
+                                    .filter(|v| *v > 0),
+                            )
+                            .await;
                             if !share_is_current() {
                                 return Ok(String::new());
                             }
                             match result {
                                 Ok(status) => {
+                                    share_expires_at.set(
+                                        status
+                                            .expires_at
+                                            .map(|v| v.to_rfc3339())
+                                            .unwrap_or_default(),
+                                    );
                                     share_active.set(status.active);
                                     share_url.set(status.url.unwrap_or_default());
                                     share_created_at.set(
@@ -986,33 +1202,41 @@ pub fn FileBrowser(
                                     Err(error) => errors.push(format!("{name}：{}", error.message)),
                                 }
                             }
-                            if let Some(first_error) = errors.first() {
+                            if !errors.is_empty() {
                                 return Err(api::RequestError {
                                     status: 500,
                                     code: None,
                                     message: format!(
-                                        "已移入 {removed} 项，{} 项失败：{first_error}",
-                                        errors.len()
+                                        "已移入 {removed} 项，{} 项失败：{}",
+                                        errors.len(),
+                                        errors.join("；")
                                     ),
                                 });
                             }
                             Ok(format!("已将 {removed} 项移入回收站"))
                         }
                         DialogState::Purge => {
+                            let mut removed = 0;
+                            let mut errors = Vec::new();
                             for (id, name) in delete_targets {
                                 match api::purge_trash(&id).await {
-                                    Ok(()) => {}
+                                    Ok(()) => removed += 1,
                                     Err(error) if error.is_unauthorized() => return Err(error),
-                                    Err(error) => {
-                                        return Err(api::RequestError {
-                                            status: error.status,
-                                            code: error.code,
-                                            message: format!("{name}：{}", error.message),
-                                        });
-                                    }
+                                    Err(error) => errors.push(format!("{name}：{}", error.message)),
                                 }
                             }
-                            Ok("已永久删除所选项目".to_owned())
+                            if !errors.is_empty() {
+                                return Err(api::RequestError {
+                                    status: 500,
+                                    code: None,
+                                    message: format!(
+                                        "已删除 {removed} 项，{} 项失败：{}",
+                                        errors.len(),
+                                        errors.join("；")
+                                    ),
+                                });
+                            }
+                            Ok(format!("已永久删除 {removed} 项"))
                         }
                         DialogState::EmptyTrash => {
                             api::empty_trash().await?;
@@ -1171,6 +1395,22 @@ pub fn FileBrowser(
                 .collect();
             start_transfer.run(TransferRequest {
                 mode: TransferMode::Move,
+                targets,
+            });
+        })
+    };
+    let show_copy_selected = {
+        let start_transfer = start_transfer.clone();
+        let items = items;
+        let selected_ids = selected_ids;
+        Callback::new(move |(): ()| {
+            let targets = items
+                .get_untracked()
+                .into_iter()
+                .filter(|item| selected_ids.get_untracked().contains(&item.id))
+                .collect();
+            start_transfer.run(TransferRequest {
+                mode: TransferMode::Copy,
                 targets,
             });
         })
@@ -1787,6 +2027,11 @@ pub fn FileBrowser(
                 on_home=return_home.clone()
                 on_trash=load_trash.clone()
                 on_account=open_account.clone()
+                search_text=search_text
+                search_query=search_query
+                search_global=search_global
+                trash_mode=trash_mode
+                on_search=submit_search.clone()
             />
 
             <section
@@ -1797,6 +2042,9 @@ pub fn FileBrowser(
                     breadcrumbs=breadcrumbs
                     current=current
                     item_count=items
+                    listing_total=listing_total
+                    sort_order=sort_order
+                    on_sort=change_sort.clone()
                     total_bytes=total_bytes
                     file_count=file_count
                     trash_mode=trash_mode
@@ -1830,6 +2078,7 @@ pub fn FileBrowser(
                         on_select_all=select_all.clone()
                         on_rename=show_rename.clone()
                         on_move=show_move_selected.clone()
+                        on_copy=show_copy_selected.clone()
                         on_delete=show_delete.clone()
                         on_restore=restore_selected.clone()
                         on_purge=show_purge.clone()
@@ -1845,13 +2094,12 @@ pub fn FileBrowser(
                                     .into_iter()
                                     .filter(|item| {
                                         selected_ids.get_untracked().contains(&item.id)
-                                            && item.kind == FileKind::File
                                     })
                                     .collect();
                                 if files.is_empty() {
                                     return;
                                 }
-                                if files.len() == 1 {
+                                if files.len() == 1 && files[0].kind==FileKind::File {
                                     download_file(&files[0]);
                                     return;
                                 }
@@ -1912,7 +2160,7 @@ pub fn FileBrowser(
                             </div>
                         }
                         .into_any()
-                    } else if items.get().is_empty() {
+                    } else if listing_empty.get() {
                         let heading = if trash_mode.get() {
                             "回收站是空的"
                         } else {
@@ -1964,6 +2212,25 @@ pub fn FileBrowser(
                         .into_any()
                     }
                 }}
+                <div node_ref=listing_end class="listing-end" aria-live="polite">
+                    <Show when=move || !trash_mode.get() && !loading.get() && !items.get().is_empty() fallback=|| ()>
+                        <Show when=move || loading_more.get() fallback=|| ()>
+                            <div class="spinner" aria-hidden="true"></div>
+                            <span>"正在加载更多文件…"</span>
+                        </Show>
+                        <Show when=move || !loading_more_error.get().is_empty() fallback=|| ()>
+                            <span role="alert">{move || loading_more_error.get()}</span>
+                            <button class="secondary" type="button" on:click=move |_| load_more.run(())>"重试加载"</button>
+                        </Show>
+                        <Show when=move || !loading_more.get() && loading_more_error.get().is_empty() fallback=|| ()>
+                            <span>{move || if listing_next_offset.get() >= listing_total.get() {
+                                format!("已显示全部 {} 个项目", listing_total.get())
+                            } else {
+                                format!("已显示 {} / {} 个项目，向下滚动继续加载", items.get().len(), listing_total.get())
+                            }}</span>
+                        </Show>
+                    </Show>
+                </div>
             </section>
             <Show when=move || feedback.get().is_some() fallback=|| ()>
                 <div
@@ -2071,6 +2338,9 @@ pub fn FileBrowser(
                     }
                 >
                     <DocumentEditor
+                        file_id=editor_file_id
+                        etag=editor_etag
+                        on_restored=Callback::new({let load=load_folder.clone();move |_|{editor_original.set(editor_content.get_untracked());editor_dirty.set(false);load.run(current_id.get_untracked());}})
                         is_new=editor_is_new
                         readonly=editor_readonly
                         name=editor_name
@@ -2108,6 +2378,8 @@ pub fn FileBrowser(
                                     active=share_active
                                     url=share_url
                                     created_at=share_created_at
+                                    expires_at=share_expires_at
+                                    expiry=share_expiry
                                     busy=share_busy
                                     error=share_error
                                     copied=share_copied

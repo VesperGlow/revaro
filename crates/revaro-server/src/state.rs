@@ -25,6 +25,8 @@ use revaro_reader::BookCache;
 pub struct ReaderRuntime {
     /// LRU of parsed EPUB/TXT books.
     pub books: Arc<BookCache>,
+    /// Bound peak memory and CPU of different books being parsed or built.
+    pub work_slots: Arc<tokio::sync::Semaphore>,
     book_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     flow_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -67,6 +69,7 @@ impl ReaderRuntime {
     pub fn new() -> Self {
         Self {
             books: Arc::new(BookCache::new(4, 128 << 20)),
+            work_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             book_locks: Mutex::new(HashMap::new()),
             flow_locks: Mutex::new(HashMap::new()),
         }
@@ -167,6 +170,9 @@ pub struct AppState {
     pub media: crate::media_runtime::MediaRuntime,
     /// Short-lived tickets for streaming batch downloads.
     pub batch_download: crate::batch_download::BatchDownloadRuntime,
+    /// Admission budgets held for the entire transfer or ZIP generation.
+    pub share_slots: Arc<tokio::sync::Semaphore>,
+    pub zip_slots: Arc<tokio::sync::Semaphore>,
     /// Task-change notifications for the event stream.
     pub jobs: JobBus,
     /// Parsed books and serialized reader-flow builders.
@@ -201,6 +207,8 @@ impl AppState {
             cache,
             media: crate::media_runtime::MediaRuntime::new(),
             batch_download: crate::batch_download::BatchDownloadRuntime::new(),
+            share_slots: Arc::new(tokio::sync::Semaphore::new(8)),
+            zip_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             jobs: JobBus::new(256),
             reader,
             uploads: UploadRuntime::new(),

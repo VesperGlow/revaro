@@ -99,8 +99,8 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
   原始扩张一个 chunk（强制分栏保证当前 spine 的 page boundary 不变，绝对
   栏号由 topAnchor 重对齐吸收）。
 - 窗口增删后当前 readingAnchor 的视觉页与后续 page boundary 不变；随机
-  TOC seek、连续翻页、窗口滑动、横竖屏、字号变化均有回归测试
-  （早期 Vue 工程中的 route-mock 用例已随旧工程删除；当前真实行为测试见下文）。
+  Rust 纯逻辑测试覆盖窗口范围及 spine 原点；真实浏览器测试覆盖翻页、TOC 和进度重开。
+  长章窗口滑动和触摸仍需要专项浏览器/性能验证。
 - 后续如需更激进的虚拟化（不保留整个 spine 前缀），必须基于已测量并缓存
   的真实 page boundary，而不是字符 chunk 边界。
 
@@ -150,7 +150,8 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
 - 测试：`revaro-reader` 与 `revaro-server` 覆盖 flow 不变量、locator 往返、
   spine 边界、TXT 连续性、端点契约、并发幂等和 chunk 自愈；`revaro-web` 覆盖
   纯逻辑与 manifest 校验；`tests/e2e/rust-reader-ui.spec.ts` 覆盖真实上传、
-  首屏、翻页、目录、重排、进度重开、缓存和深链。
+  首屏、翻页、目录、字号/viewport 重排及进度重开。新增功能测试见 `tests/e2e/features.spec.ts`；
+  不将尚未验证的深链、触摸和长章性能列为浏览器覆盖。
 
 已知取舍：
 
@@ -169,9 +170,9 @@ chunk」为排版原点，窗口增删会改变后续所有 page break（相位�
 - **will-change 生命周期**：`.rf-flow` 不常驻 `will-change: transform`，只在
   跟手拖动/翻页 WAAPI 动画期间由 JS 临时开启、动画结束即释放——避免 Android
   Chrome 在大图旁把整层文字常驻合成导致轻微发糊与掉帧。
-- **增量窗口**：阅读窗口滑动不再清空重建最多 8 个 chunk，改为增量 DOM 更新：
+- **增量窗口**：阅读窗口滑动不再清空重建已加载的 chunk，改为增量 DOM 更新：
   只 append 新 chunk、remove 已出窗口的最旧 chunk，保留 chunk 的子树不动
-  （避免大规模 CSS columns reflow）。窗口常驻约 6 个 chunk
+  （避免大规模 CSS columns reflow）。窗口保留当前 spine 的前缀，并向前预取最多 3 个 chunk；长 spine 内驻留量可能增长
   （身后 2 + 前方 3），PageCache 容量 24 保持不变——翻页热路径仍零网络。
 - **精简镜像**：发布镜像不安装 Debian 完整 ffmpeg，而由 Dockerfile 的 multi-stage
   `ffmpeg` 生成与 Rust `revaro-media` ABI 匹配的 shared libraries；运行层只

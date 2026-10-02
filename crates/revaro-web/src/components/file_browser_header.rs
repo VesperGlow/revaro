@@ -10,12 +10,15 @@ use crate::logic::format::format_size;
 
 use super::icons;
 
-/// The reference file-browser header, including its two disclosure menus.
+/// The file-browser header, including sorting and creation/upload menus.
 #[component]
 pub fn FileBrowserHeader(
     breadcrumbs: RwSignal<Vec<File>>,
     current: RwSignal<Option<File>>,
     item_count: RwSignal<Vec<File>>,
+    listing_total: RwSignal<i64>,
+    sort_order: RwSignal<String>,
+    on_sort: Callback<String>,
     total_bytes: RwSignal<i64>,
     file_count: RwSignal<i64>,
     trash_mode: RwSignal<bool>,
@@ -29,6 +32,9 @@ pub fn FileBrowserHeader(
 ) -> impl IntoView {
     let create_menu = NodeRef::<leptos::html::Details>::new();
     let upload_menu = NodeRef::<leptos::html::Details>::new();
+    let sort_container = NodeRef::<leptos::html::Div>::new();
+    let sort_toggle = NodeRef::<leptos::html::Button>::new();
+    let sort_open = RwSignal::new(false);
 
     let create_for_outside = create_menu;
     let upload_for_outside = upload_menu;
@@ -39,6 +45,13 @@ pub fn FileBrowserHeader(
         let Some(target) = target else {
             return;
         };
+        if sort_open.get_untracked()
+            && !sort_container
+                .get()
+                .is_some_and(|container| container.contains(Some(&target)))
+        {
+            sort_open.set(false);
+        }
         if let Some(details) = create_for_outside.get()
             && details.open()
             && !details.contains(Some(&target))
@@ -57,6 +70,12 @@ pub fn FileBrowserHeader(
     let mut escape = browser::on_keydown(move |event| {
         if event.key() != "Escape" {
             return;
+        }
+        if sort_open.get_untracked() {
+            sort_open.set(false);
+            if let Some(button) = sort_toggle.get() {
+                let _ = button.focus();
+            }
         }
         if let Some(details) = create_for_escape.get()
             && details.open()
@@ -148,6 +167,40 @@ pub fn FileBrowserHeader(
             action.run(());
         })
     };
+    let select_sort = Callback::new(move |field: &'static str| {
+        let current = sort_order.get_untracked();
+        if !current.starts_with(field) {
+            on_sort.run(if field == "updated" {
+                format!("{field}_desc")
+            } else {
+                field.to_owned()
+            });
+        }
+        sort_open.set(false);
+        if let Some(button) = sort_toggle.get() {
+            let _ = button.focus();
+        }
+    });
+    let reverse_sort = Callback::new(move |(): ()| {
+        let current = sort_order.get_untracked();
+        let next = if let Some(field) = current.strip_suffix("_desc") {
+            field.to_owned()
+        } else {
+            format!("{current}_desc")
+        };
+        sort_open.set(false);
+        on_sort.run(next);
+    });
+    let sort_label = move || {
+        let order = sort_order.get();
+        if order.starts_with("size") {
+            "大小"
+        } else if order.starts_with("updated") {
+            "时间"
+        } else {
+            "名称"
+        }
+    };
 
     view! {
         <div class="content-head">
@@ -183,7 +236,7 @@ pub fn FileBrowserHeader(
                     </h1>
                 </div>
                 <p class="folder-meta">
-                    <span>{move || format!("{} 个项目", item_count.get().len())}</span><i></i>
+                    <span>{move || format!("{} 个项目", if trash_mode.get() { item_count.get().len() as i64 } else { listing_total.get() })}</span><i></i>
                     <Show
                         when=move || trash_mode.get()
                         fallback=move || view! {
@@ -200,6 +253,28 @@ pub fn FileBrowserHeader(
                 when=move || trash_mode.get()
                 fallback=move || view! {
                     <div class="actions">
+                        <div node_ref=sort_container class="file-sort" role="group" aria-label="文件排序">
+                            <button node_ref=sort_toggle class="sort-field-toggle" type="button"
+                                aria-label="选择排序字段" aria-haspopup="true"
+                                aria-expanded=move || sort_open.get().to_string() aria-controls="file-sort-fields"
+                                on:click=move |_| sort_open.update(|open| *open = !*open)>
+                                <span>{sort_label}</span>
+                            </button>
+                            <button class="sort-direction" type="button" aria-label="切换排序方向"
+                                aria-description=move || if sort_order.get().ends_with("_desc") { "当前降序，点击切换为升序" } else { "当前升序，点击切换为降序" }
+                                on:click=move |_| reverse_sort.run(())>
+                                <span aria-hidden="true">{move || if sort_order.get().ends_with("_desc") { "↓" } else { "↑" }}</span>
+                            </button>
+                            <Show when=move || sort_open.get() fallback=|| ()>
+                                <div id="file-sort-fields" class="sort-field-options" role="group" aria-label="排序字段">
+                                    {[("name", "名称"), ("size", "大小"), ("updated", "时间")]
+                                        .into_iter().map(|(field, label)| view! {
+                                            <button type="button" aria-pressed=move || sort_order.get().starts_with(field).to_string()
+                                                on:click=move |_| select_sort.run(field)>{label}</button>
+                                        }).collect_view()}
+                                </div>
+                            </Show>
+                        </div>
                         <div class="desktop-create-actions">
                             <button class="secondary" type="button" on:click=move |_| on_new_document.run(())>{icons::file_plus()}"新建文档"</button>
                             <button class="secondary" type="button" on:click=move |_| on_create_folder.run(())>{icons::folder_plus()}"新建文件夹"</button>

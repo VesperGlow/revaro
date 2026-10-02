@@ -26,6 +26,7 @@
 pub mod api;
 pub mod classify;
 pub mod error;
+pub mod features;
 pub mod hash;
 pub mod ids;
 pub mod keys;

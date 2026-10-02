@@ -34,3 +34,95 @@
 @media(max-width:430px){.topbar{padding-right:max(12px,env(safe-area-inset-right,0px));padding-left:max(12px,env(safe-area-inset-left,0px))}.topbar .top-actions{gap:4px}.topbar .account-button{margin-left:0}}
 @media(max-width:350px){.topbar{padding-right:max(8px,env(safe-area-inset-right,0px));padding-left:max(8px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:22px}.topbar .brand-button{padding-right:2px;padding-left:2px}.topbar .top-actions{gap:2px}}
 @media(max-width:850px){.topbar .mobile-account-menu>section{top:calc(64px + env(safe-area-inset-top,0px));width:min(210px,calc(100vw - 20px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}.topbar .mobile-tool-item{min-width:0}.topbar .mobile-tool-item b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+
+/* The search circle grows leftward within a fixed slot; other actions stay put. */
+.topbar { position: sticky; top: 0; }
+.topbar .topbar-search {
+  --search-expanded-width: 380px;
+  position: relative; z-index: 2; flex: 0 0 44px; width: 44px; height: 44px;
+}
+.topbar .search-surface {
+  position: absolute; top: 0; right: 0; display: flex; align-items: center;
+  width: 44px; height: 44px; margin: 0; padding: 0; overflow: hidden;
+  border: 0; border-radius: 22px; background: transparent;
+  transition: width .24s ease, background-color .2s ease, box-shadow .2s ease;
+}
+.topbar .topbar-search.expanded .search-surface {
+  width: var(--search-expanded-width); background: var(--surface-subtle);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.topbar .topbar-search.ready .search-surface { overflow: visible; }
+.topbar .topbar-search.expanded .search-surface:focus-within {
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.topbar .search-toggle {
+  display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px;
+  padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--accent);
+}
+.topbar .search-toggle svg { width: 21px; height: 21px; }
+.topbar .search-toggle:hover { background: var(--accent-soft); }
+.topbar .search-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; box-shadow: none; }
+.topbar .search-fields {
+  display: flex; align-items: center; flex: 1; min-width: 0; height: 100%;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .18s ease, visibility .18s;
+}
+.topbar .topbar-search.expanded .search-fields { opacity: 1; visibility: visible; pointer-events: auto; }
+.topbar .search-fields input[type="search"] {
+  flex: 1; min-width: 0; width: 100%; height: 34px; margin: 0; padding: 0 4px 0 0;
+  border: 0; border-radius: 0; outline: none; box-shadow: none; appearance: none;
+  background: transparent; color: var(--ink); font: inherit; font-size: 14px;
+}
+.topbar .search-fields input[type="search"]::-webkit-search-cancel-button,
+.topbar .search-fields input[type="search"]::-webkit-search-decoration { display: none; }
+.topbar .search-scope { position: relative; flex-shrink: 0; border-left: 1px solid var(--line); }
+.topbar .search-scope-toggle {
+  display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 7px;
+  border: 0; border-radius: 0; box-shadow: none; background: transparent; color: var(--ink-subtle);
+  font: inherit; font-size: 14px; white-space: nowrap;
+}
+.topbar .search-scope-toggle:hover,
+.topbar .search-scope-toggle[aria-expanded="true"] { background: transparent; color: var(--ink-subtle); }
+.topbar .search-scope-toggle svg { width: 14px; height: 14px; flex-shrink: 0; }
+.topbar .search-scope-options {
+  position: absolute; z-index: 45; top: calc(100% + 2px); left: 0;
+  display: grid; gap: 0; width: calc(100% + 8px); padding: 2px;
+  border: 1px solid #e8edf1; border-radius: 8px;
+  box-shadow: 0 2px 5px #17212b06; background: var(--surface-subtle);
+  animation: search-scope-expand .16s ease-out;
+}
+.topbar .search-scope-options button {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  width: 100%; min-height: 36px; padding: 0 5px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--ink-subtle); font: inherit; font-size: 14px;
+  text-align: left; white-space: nowrap; box-shadow: none;
+}
+.topbar .search-scope-options button:hover { background: var(--surface-hover); }
+/* Pointer focus stays plain; only keyboard focus gets a subtle indicator. */
+.topbar .search-scope-toggle:focus,
+.topbar .search-scope-options button:focus { outline: none; box-shadow: none; }
+.topbar .search-scope-toggle:focus-visible,
+.topbar .search-scope-options button:focus-visible {
+  outline: 1px solid var(--accent-border); outline-offset: -1px; box-shadow: none;
+}
+.topbar .search-close {
+  display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 26px;
+  margin-right: 6px; padding: 0; border: 0; border-left: 1px solid var(--line);
+  border-radius: 0; box-shadow: none; background: transparent; color: var(--muted);
+}
+.topbar .search-close svg { width: 17px; height: 17px; }
+.topbar .search-close:hover { color: var(--ink-subtle); }
+.topbar .search-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: none; }
+@keyframes search-scope-expand {
+  from { opacity: 0; transform: translateY(-4px); clip-path: inset(0 0 100% 0); }
+  to { opacity: 1; transform: translateY(0); clip-path: inset(0); }
+}
+@media (max-width: 850px) {
+  .topbar .topbar-search { --search-expanded-width: min(380px, calc(100vw - 64px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))); }
+  .topbar .topbar-left { transition: opacity .18s ease; }
+  .topbar.searching .topbar-left { opacity: 0; pointer-events: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .topbar .search-surface, .topbar .search-fields, .topbar .topbar-left { transition: none; }
+  .topbar .search-scope-options { animation: none; }
+}

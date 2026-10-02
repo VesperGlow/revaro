@@ -106,6 +106,16 @@ impl Default for MaintenanceRuntime {
 }
 
 impl MaintenanceRuntime {
+    /// Read scheduler health without exposing paths or credentials.
+    pub fn stats(&self) -> serde_json::Value {
+        let jobs = self
+            .inner
+            .jobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        serde_json::Value::Array(jobs.iter().map(|(name,job)|serde_json::json!({"name":name,"failures":job.failures,"running":job.running})).collect())
+    }
+
     /// Create an empty scheduler. Jobs may be registered before or after start.
     #[must_use]
     pub fn new() -> Self {
@@ -235,6 +245,17 @@ impl MaintenanceRuntime {
             )
             .expect("production maintenance job names are unique");
         }
+        self.register(
+            "flow-cache",
+            minute.saturating_mul(15),
+            minute.saturating_mul(10),
+            true,
+            state_job(state.clone(), |state| async move {
+                let refs = referenced_objects(&state.db).await?;
+                collect_flow_cache(&state, &refs).await
+            }),
+        )
+        .expect("production maintenance job names are unique");
         self.register(
             "temporary-uploads",
             minute.saturating_mul(60),
@@ -650,7 +671,7 @@ async fn referenced_objects(database: &Database) -> Result<References, String> {
         .call(|connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT id,object_key FROM files WHERE object_key IS NOT NULL AND object_key<>''",
+                    "SELECT id,object_key FROM files WHERE object_key IS NOT NULL AND object_key<>'' UNION ALL SELECT file_id,object_key FROM document_versions",
                 )
                 .map_err(DbError::Query)?;
             let rows = statement
@@ -788,7 +809,7 @@ async fn object_is_referenced(database: &Database, object_key: &str) -> Result<b
         .call(move |connection| {
             connection
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM files WHERE object_key=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM files WHERE object_key=?1 UNION ALL SELECT 1 FROM document_versions WHERE object_key=?1)",
                     [&object_key],
                     |row| row.get(0),
                 )

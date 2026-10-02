@@ -1138,6 +1138,9 @@ async fn open_reader(
     // state while its manifest is being fetched.
     loading_text.set("正在读取书籍…".to_owned());
     let network = api::fetch_book_flow(&file_id).await;
+    if runtime.borrow().closing {
+        return;
+    }
     match network {
         Ok(network_manifest) => {
             if !validate_manifest(&network_manifest) {

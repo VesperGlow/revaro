@@ -28,7 +28,7 @@ use axum::body::Body;
 use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use futures_util::TryStreamExt as _;
+use futures_util::StreamExt as _;
 use http::StatusCode;
 use revaro_core::ApiError;
 use revaro_core::api::uploads::{
@@ -258,6 +258,17 @@ async fn create_upload(
     };
     validate::validate_name(&request.name)?;
     validate::validate_file_size(request.size)?;
+    check_space(
+        &state,
+        request
+            .size
+            .saturating_mul(if limits::uses_multipart_upload(request.size) {
+                2
+            } else {
+                1
+            }),
+    )
+    .await?;
     let mime_type = if request.mime_type.is_empty() {
         "application/octet-stream".to_owned()
     } else {
@@ -493,9 +504,46 @@ WHERE upload_id = ?1 ORDER BY part_number",
 
 /// Adapt the request body into an [`tokio::io::AsyncRead`] so a large upload is
 /// streamed to disk rather than buffered in memory.
-fn body_reader(body: Body) -> impl tokio::io::AsyncRead + Unpin {
-    let stream = body.into_data_stream().map_err(std::io::Error::other);
-    StreamReader::new(stream)
+fn body_reader(
+    body: Body,
+    idle: std::time::Duration,
+    total: std::time::Duration,
+) -> impl tokio::io::AsyncRead + Unpin {
+    let deadline = tokio::time::Instant::now() + total;
+    let stream = futures_util::stream::unfold(
+        (body.into_data_stream(), false),
+        move |(mut stream, done)| async move {
+            if done {
+                return None;
+            }
+            let until = deadline.min(tokio::time::Instant::now() + idle);
+            match tokio::time::timeout_at(until, stream.next()).await {
+                Ok(Some(Ok(bytes))) => Some((Ok::<_, std::io::Error>(bytes), (stream, false))),
+                Ok(Some(Err(e))) => Some((Err(std::io::Error::other(e)), (stream, true))),
+                Ok(None) => None,
+                Err(_) => Some((
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "upload made no progress or exceeded its request timeout",
+                    )),
+                    (stream, true),
+                )),
+            }
+        },
+    );
+    StreamReader::new(Box::pin(stream))
+}
+async fn check_space(state: &AppState, bytes: i64) -> Result<(), ApiError> {
+    let root = state.store.root().to_owned();
+    let available = tokio::task::spawn_blocking(move || fs2::available_space(root))
+        .await
+        .map_err(|_| ApiError::internal("disk space check failed"))?
+        .map_err(|_| ApiError::internal("disk space check failed"))?;
+    let required = (bytes.max(0) as u64).saturating_add(state.config.upload_min_free_bytes as u64);
+    if available < required {
+        return Err(ApiError::new(507, "insufficient disk space for upload"));
+    }
+    Ok(())
 }
 
 fn content_length_mismatch(request: &Request, expected: i64) -> bool {
@@ -526,12 +574,42 @@ async fn upload_content(
         return Err(ApiError::bad_request("upload size mismatch"));
     }
 
-    let mut reader = body_reader(request.into_body());
+    let mut reader = body_reader(
+        request.into_body(),
+        state.config.upload_idle_timeout,
+        state.config.upload_request_timeout,
+    );
+    check_space(&state, record.expected_size).await?;
+    update_upload_task(&state, &record.id, "running", "uploading", 0.0, "").await;
     let stored = state
         .store
         .write_stream(&record.object_key, &mut reader, record.expected_size)
-        .await
-        .map_err(write_error)?;
+        .await;
+    let stored = match stored {
+        Ok(stored) => stored,
+        Err(error) => {
+            let error = write_error(error);
+            update_upload_task(
+                &state,
+                &record.id,
+                "failed",
+                "upload_failed",
+                0.0,
+                &error.message,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    update_upload_task(
+        &state,
+        &record.id,
+        "waiting_input",
+        "awaiting_completion",
+        0.0,
+        "",
+    )
+    .await;
 
     Ok(etag_response(&stored.etag))
 }
@@ -561,7 +639,13 @@ async fn upload_content_part(
         return Err(pending_missing());
     };
 
-    let mut reader = body_reader(request.into_body());
+    let mut reader = body_reader(
+        request.into_body(),
+        state.config.upload_idle_timeout,
+        state.config.upload_request_timeout,
+    );
+    check_space(&state, expected).await?;
+    update_upload_task(&state, &record.id, "running", "uploading", 0.0, "").await;
     let stored = state
         .store
         .upload_part(
@@ -571,8 +655,33 @@ async fn upload_content_part(
             &mut reader,
             expected,
         )
-        .await
-        .map_err(write_error)?;
+        .await;
+    let stored = match stored {
+        Ok(stored) => stored,
+        Err(error) => {
+            let error = write_error(error);
+            update_upload_task(
+                &state,
+                &record.id,
+                "failed",
+                "upload_failed",
+                0.0,
+                &error.message,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    update_upload_task(
+        &state,
+        &record.id,
+        "waiting_input",
+        "awaiting_completion",
+        0.0,
+        "",
+    )
+    .await;
+
     Ok(etag_response(&stored.etag))
 }
 
@@ -751,6 +860,7 @@ async fn complete_upload(
                 "multipart completion list is invalid",
             ));
         }
+        check_space(&state, record.expected_size).await?;
         state
             .store
             .complete_multipart(&record.object_key, &multipart_id, &requested_parts)
@@ -1057,7 +1167,7 @@ async fn update_upload_task(
         .call_api(move |connection| {
             connection
                 .execute(
-                    "UPDATE tasks SET status=?1,phase=?2,progress=?3,error=?4, \
+                    "UPDATE tasks SET retry_count=MIN(max_retries,retry_count+CASE WHEN ?5='running' AND (status='failed' OR phase='reselect_file') THEN 1 ELSE 0 END),status=?1,phase=?2,progress=?3,error=?4, \
                      started_at=CASE WHEN ?5='running' THEN COALESCE(started_at,?6) ELSE started_at END, \
                      finished_at=CASE WHEN ?7 IN ('completed','failed','cancelled') THEN COALESCE(finished_at,?8) ELSE NULL END, \
                      heartbeat_at=CASE WHEN ?9='running' THEN ?10 ELSE heartbeat_at END, \
@@ -1097,6 +1207,9 @@ fn etag_response(etag: &str) -> http::Response<Body> {
 }
 
 fn write_error(error: StorageError) -> ApiError {
+    if matches!(&error,StorageError::Io(e) if e.kind()==std::io::ErrorKind::TimedOut) {
+        return ApiError::new(408, "upload timed out; reselect the file to continue");
+    }
     tracing::error!(%error, "upload write failed");
     ApiError::bad_request("file write failed or size mismatch")
 }
@@ -1126,5 +1239,38 @@ mod tests {
     fn lookup_and_pending_upload_errors_keep_distinct_messages() {
         assert_eq!(upload_missing().message, "upload not found");
         assert_eq!(pending_missing().message, "pending upload not found");
+    }
+    #[tokio::test]
+    async fn idle_upload_times_out_and_removes_partial_bytes() {
+        use tokio::io::AsyncReadExt;
+        let body = Body::from_stream(futures_util::stream::pending::<
+            Result<bytes::Bytes, std::io::Error>,
+        >());
+        let mut reader = body_reader(
+            body,
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_secs(1),
+        );
+        let mut bytes = Vec::new();
+        let error = reader.read_to_end(&mut bytes).await.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        let root = std::env::temp_dir().join(format!("revaro-idle-test-{}", crate::ids::new_id()));
+        let store = crate::storage::LocalStore::open(&root).await.unwrap();
+        let body = Body::from_stream(futures_util::stream::pending::<
+            Result<bytes::Bytes, std::io::Error>,
+        >());
+        let mut reader = body_reader(
+            body,
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_secs(1),
+        );
+        let error = store
+            .write_stream("blobs/timeout", &mut reader, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(write_error(error).status, 408);
+        assert!(store.list_prefix("blobs").await.unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(root.join("blobs")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

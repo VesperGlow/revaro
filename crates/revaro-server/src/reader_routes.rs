@@ -35,6 +35,8 @@ use crate::storage::StorageError;
 
 const FLOW_VERSION: u32 = revaro_reader::flow::FLOW_FORMAT_VERSION as u32;
 const MAX_CHUNK_INDEX: u64 = 1 << 22;
+// Shared parsed books and flows must not contain any one file's identity.
+const ASSET_PLACEHOLDER: &str = "/__revaro_book_assets__";
 
 /// Routes mounted below the authenticated API subtree.
 pub fn routes() -> Router<Arc<AppState>> {
@@ -90,6 +92,13 @@ pub(crate) async fn load_book(
     if let Some(book) = state.reader.books.get(&file.object_key) {
         return Ok(book);
     }
+    let permit = state
+        .reader
+        .work_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::unavailable("reader is shutting down"))?;
 
     // `reader_file` deliberately keeps the Go route's single 128 MiB gate:
     // that gate answers 413. The parser has a smaller TXT limit and reports it
@@ -127,9 +136,10 @@ pub(crate) async fn load_book(
         .map_err(|error| reader_cache_error(error, file))?;
     let name = file.name.clone();
     let size = file.size;
-    let asset_base = format!("/api/files/{}/book/assets", file.id);
+    let asset_base = ASSET_PLACEHOLDER.to_owned();
     let etag = file.etag.clone();
     let parsed = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         revaro_reader::parse(&name, Cursor::new(bytes), size, &asset_base, &etag)
     })
     .await
@@ -419,9 +429,20 @@ async fn book_flow_chunk(
     Ok(bytes_response(
         StatusCode::OK,
         "text/html; charset=utf-8",
-        data,
+        bind_asset_urls(data, &file.id)?,
         "private, max-age=31536000, immutable",
     ))
+}
+
+fn bind_asset_urls(data: Vec<u8>, file_id: &str) -> Result<Vec<u8>, ApiError> {
+    let html = String::from_utf8(data)
+        .map_err(|_| ApiError::internal("reading flow is not valid UTF-8"))?;
+    Ok(html
+        .replace(
+            &format!("src=\"{ASSET_PLACEHOLDER}/"),
+            &format!("src=\"/api/files/{file_id}/book/assets/"),
+        )
+        .into_bytes())
 }
 
 async fn read_manifest(
@@ -532,10 +553,20 @@ fn flow_chunk_cache_key_from_object_key(object_key: &str) -> String {
 
 async fn generate_flow(state: Arc<AppState>, file: &File) -> Result<(), ApiError> {
     let book = load_book(Arc::clone(&state), file).await?;
-    let built = tokio::task::spawn_blocking(move || revaro_reader::flow::build(&book))
+    let permit = state
+        .reader
+        .work_slots
+        .clone()
+        .acquire_owned()
         .await
-        .map_err(|error| flow_build_error(error.to_string()))?
-        .map_err(|error| flow_build_error(error.to_string()))?;
+        .map_err(|_| ApiError::unavailable("reader is shutting down"))?;
+    let built = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        revaro_reader::flow::build(&book)
+    })
+    .await
+    .map_err(|error| flow_build_error(error.to_string()))?
+    .map_err(|error| flow_build_error(error.to_string()))?;
 
     for chunk in &built.chunks {
         if chunk.html.len() > revaro_reader::flow::MAX_FLOW_OBJECT {
@@ -1111,5 +1142,62 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"]["message"],
             "无法解析这本书：文本文件超过 16 MiB 限制，请下载后离线阅读"
         );
+    }
+    #[tokio::test]
+    async fn epub_copy_keeps_images_after_original_purge_and_restart() {
+        let state = state().await;
+        seed_book(
+            &state,
+            "original",
+            "illustrated.epub",
+            "application/epub+zip",
+            &epub_fixture(),
+        )
+        .await;
+        let (status, _, _) = request(&state, "GET", "/api/files/original/book/flow", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, body) = request(
+            &state,
+            "POST",
+            "/api/files/original/copy",
+            Some(
+                serde_json::json!({"parent_id":ROOT_ID})
+                    .to_string()
+                    .into_bytes(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let copied: File = serde_json::from_slice(&body).unwrap();
+        for path in ["/api/files/original", "/api/trash/original"] {
+            let (status, _, _) = request(&state, "DELETE", path, Some(b"null".to_vec())).await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        for server in [
+            state.clone(),
+            AppState::new(
+                state.config.clone(),
+                state.db.clone(),
+                state.store.clone(),
+                crate::auth::AuthService::new(state.db.clone()),
+            ),
+        ] {
+            let (status, _, body) = request(
+                &server,
+                "GET",
+                &format!("/api/files/{}/book/flow/chunks/0", copied.id),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let html = String::from_utf8(body).unwrap();
+            assert!(!html.contains("/api/files/original/"));
+            assert!(!html.contains(ASSET_PLACEHOLDER));
+            let prefix = format!("src=\"/api/files/{}/book/assets/", copied.id);
+            let start = html.find(&prefix).expect("copy has its own asset URL") + 5;
+            let end = html[start..].find('"').unwrap() + start;
+            let (status, _, _) = request(&server, "GET", &html[start..end], None).await;
+            assert_eq!(status, StatusCode::OK);
+        }
     }
 }

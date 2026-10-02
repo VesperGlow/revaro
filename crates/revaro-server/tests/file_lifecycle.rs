@@ -563,3 +563,424 @@ async fn multipart_upload_commits_a_streamed_sha256_and_rejects_short_completion
     assert_eq!(status, StatusCode::OK);
     assert_eq!(upload_state["status"], "completed");
 }
+
+#[tokio::test]
+async fn document_versions_restore_with_conflict_protection_and_survive_cleanup() {
+    let h = Harness::start().await;
+    let (status, file) = h
+        .json(
+            "POST",
+            "/api/documents",
+            serde_json::json!({"parent_id":ROOT_ID,"name":"history.md","content":"original"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = file["id"].as_str().unwrap();
+    let (_, updated) = h
+        .json(
+            "PUT",
+            &format!("/api/files/{id}/content"),
+            serde_json::json!({"content":"second","etag":file["etag"]}),
+        )
+        .await;
+    let (status, versions) = h
+        .json(
+            "GET",
+            &format!("/api/files/{id}/versions"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(versions.as_array().unwrap().len(), 1);
+    let v = versions[0]["id"].as_str().unwrap();
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/files/{id}/versions/{v}/content"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "original");
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!("/api/files/{id}/versions/{v}/restore"),
+            serde_json::json!({"etag":file["etag"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, restored) = h
+        .json(
+            "POST",
+            &format!("/api/files/{id}/versions/{v}/restore"),
+            serde_json::json!({"etag":updated["etag"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(restored["etag"], file["etag"]);
+    let (_, body) = h
+        .json(
+            "GET",
+            &format!("/api/files/{id}/content"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(body["content"], "original");
+    for i in 0..22 {
+        let (status, _) = h
+            .json(
+                "PUT",
+                &format!("/api/files/{id}/content"),
+                serde_json::json!({"content":format!("edit {i}")}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (_, versions) = h
+        .json(
+            "GET",
+            &format!("/api/files/{id}/versions"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(versions.as_array().unwrap().len(), 20);
+    h.state.maintenance.start();
+    for _ in 0..100 {
+        let count: i64 = h
+            .state
+            .db
+            .call(|c| Ok(c.query_row("SELECT count(*) FROM object_cleanup", [], |r| r.get(0))?))
+            .await
+            .unwrap();
+        if count == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // Retained bytes remain readable after the actual maintenance worker runs.
+    for version in versions.as_array().unwrap() {
+        let v = version["id"].as_str().unwrap();
+        let (s, _) = h
+            .json(
+                "GET",
+                &format!("/api/files/{id}/versions/{v}/content"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    h.state.maintenance.close().await;
+}
+
+#[tokio::test]
+async fn filename_search_is_literal_sorted_and_paginated_and_shares_expire() {
+    let h = Harness::start().await;
+    let mut ids = Vec::new();
+    for (name, content) in [
+        ("zeta.md", "large text"),
+        ("alpha.md", "a"),
+        ("100%.md", "b"),
+    ] {
+        let (s, f) = h
+            .json(
+                "POST",
+                "/api/documents",
+                serde_json::json!({"parent_id":ROOT_ID,"name":name,"content":content}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+        ids.push(f["id"].as_str().unwrap().to_owned());
+    }
+    let (s, list) = h
+        .json(
+            "GET",
+            &format!("/api/files?parent_id={ROOT_ID}&sort=size&limit=1&offset=2"),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(list["total"], 3);
+    assert_eq!(list["items"][0]["name"], "zeta.md");
+    let (_, list) = h
+        .json("GET", "/api/files?q=%25", serde_json::Value::Null)
+        .await;
+    assert_eq!(list["total"], 1);
+    assert_eq!(list["items"][0]["name"], "100%.md");
+    let (s, _) = h
+        .json("GET", "/api/files?limit=201", serde_json::Value::Null)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let id = &ids[0];
+    let (s, share) = h
+        .json(
+            "POST",
+            &format!("/api/files/{id}/share"),
+            serde_json::json!({"expires_in_seconds":3600}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert!(share["expires_at"].is_string());
+    let path = share["url"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("http://localhost:8080")
+        .unwrap();
+    let (s, _) = h.request("GET", path, None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let id = id.clone();
+    h.state
+        .db
+        .call(move |c| {
+            c.execute(
+                "UPDATE shares SET expires_at='2000-01-01T00:00:00Z' WHERE file_id=?1",
+                [id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (s, _) = h.request("GET", path, None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (_, overview) = h.json("GET", "/api/shares", serde_json::Value::Null).await;
+    assert_eq!(overview[0]["active"], false);
+    let (s, _) = h
+        .json(
+            "POST",
+            &format!("/api/files/{}/share", ids[0]),
+            serde_json::json!({"expires_in_seconds":-1}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = h
+        .json(
+            "DELETE",
+            &format!("/api/files/{}/share", ids[0]),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn directory_copy_and_zip_preserve_nested_and_empty_folders() {
+    let h = Harness::start().await;
+    let (_, folder) = h
+        .json(
+            "POST",
+            "/api/directories",
+            serde_json::json!({"parent_id":ROOT_ID,"name":"archive"}),
+        )
+        .await;
+    let id = folder["id"].as_str().unwrap();
+    let (_, sub) = h
+        .json(
+            "POST",
+            "/api/directories",
+            serde_json::json!({"parent_id":id,"name":"empty"}),
+        )
+        .await;
+    let (_, doc) = h
+        .json(
+            "POST",
+            "/api/documents",
+            serde_json::json!({"parent_id":id,"name":"hello.md","content":"hello folder"}),
+        )
+        .await;
+    let (s, copy) = h
+        .json(
+            "POST",
+            &format!("/api/files/{id}/copy"),
+            serde_json::json!({"parent_id":ROOT_ID}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (_, list) = h
+        .json(
+            "GET",
+            &format!("/api/files/{}/children", copy["id"].as_str().unwrap()),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 2);
+    assert_eq!(list["total_bytes"], 12);
+    let (s, _) = h
+        .json(
+            "POST",
+            &format!("/api/files/{id}/copy"),
+            serde_json::json!({"parent_id":sub["id"]}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, ticket) = h
+        .json(
+            "POST",
+            "/api/files/batch-download/prepare",
+            serde_json::json!({"ids":[id]}),
+        )
+        .await;
+    let response = h
+        .response(
+            "GET",
+            &format!(
+                "/api/files/batch-download/{}",
+                ticket["token"].as_str().unwrap()
+            ),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    assert_eq!(zip.len(), 3);
+    assert!(zip.by_name("archive/empty/").unwrap().is_dir());
+    let mut contents = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("archive/hello.md").unwrap(), &mut contents)
+        .unwrap();
+    assert_eq!(contents, "hello folder");
+    let (s, _) = h
+        .json(
+            "DELETE",
+            &format!("/api/files/{}", doc["id"].as_str().unwrap()),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn public_download_slots_follow_real_tcp_bodies_and_disconnects() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let h = Harness::start().await;
+    let (_, file) = h
+        .json(
+            "POST",
+            "/api/documents",
+            serde_json::json!({"parent_id":ROOT_ID,"name":"slow.txt","content":"x"}),
+        )
+        .await;
+    let id = file["id"].as_str().unwrap().to_owned();
+    let key: String = h
+        .state
+        .db
+        .call({
+            let id = id.clone();
+            move |c| {
+                Ok(
+                    c.query_row("SELECT object_key FROM files WHERE id=?1", [id], |r| {
+                        r.get(0)
+                    })?,
+                )
+            }
+        })
+        .await
+        .unwrap();
+    let path = h.state.store.path_for(&key).unwrap();
+    tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .await
+        .unwrap()
+        .set_len(128 << 20)
+        .await
+        .unwrap();
+    h.state
+        .db
+        .call({
+            let id = id.clone();
+            move |c| {
+                c.execute(
+                    "UPDATE files SET size=?2 WHERE id=?1",
+                    rusqlite::params![id, 128_i64 << 20],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let (_, share) = h
+        .json(
+            "POST",
+            &format!("/api/files/{id}/share"),
+            serde_json::json!({}),
+        )
+        .await;
+    let path = share["url"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("http://localhost:8080")
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = h.router();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let mut clients = Vec::new();
+    for n in 0..9 {
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            let byte = tokio::time::timeout(std::time::Duration::from_secs(5), client.read_u8())
+                .await
+                .unwrap()
+                .unwrap();
+            header.push(byte);
+            assert!(header.len() < 8192);
+        }
+        let text = String::from_utf8(header).unwrap();
+        assert!(
+            text.starts_with(if n < 8 {
+                "HTTP/1.1 200"
+            } else {
+                "HTTP/1.1 429"
+            }),
+            "{text}"
+        );
+        clients.push(client);
+    }
+    assert_eq!(h.state.share_slots.available_permits(), 0);
+    drop(clients);
+    for _ in 0..100 {
+        if h.state.share_slots.available_permits() == 8 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(h.state.share_slots.available_permits(), 8);
+    server.abort();
+}
+
+#[tokio::test]
+async fn concurrent_directory_moves_cannot_create_a_cycle() {
+    let h = Harness::start().await;
+    let (_, a) = h
+        .json(
+            "POST",
+            "/api/directories",
+            serde_json::json!({"parent_id":ROOT_ID,"name":"A"}),
+        )
+        .await;
+    let (_, b) = h
+        .json(
+            "POST",
+            "/api/directories",
+            serde_json::json!({"parent_id":ROOT_ID,"name":"B"}),
+        )
+        .await;
+    let a_path = format!("/api/files/{}", a["id"].as_str().unwrap());
+    let b_path = format!("/api/files/{}", b["id"].as_str().unwrap());
+    let (left, right) = tokio::join!(
+        h.json("PATCH", &a_path, serde_json::json!({"parent_id":b["id"]})),
+        h.json("PATCH", &b_path, serde_json::json!({"parent_id":a["id"]}))
+    );
+    assert!(matches!(
+        (left.0, right.0),
+        (StatusCode::OK, StatusCode::BAD_REQUEST) | (StatusCode::BAD_REQUEST, StatusCode::OK)
+    ));
+}

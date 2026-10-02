@@ -27,6 +27,26 @@ async fn main() -> ExitCode {
         }
     };
 
+    let _process_lock = match revaro_server::admin::lock(&config) {
+        Ok(lock) => lock,
+        Err(error) => {
+            tracing::error!(%error,"could not acquire process lock");
+            return ExitCode::FAILURE;
+        }
+    };
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if !args.is_empty() {
+        return match revaro_server::admin::command(&config, &args).await {
+            Ok(()) => {
+                tracing::info!(command=%args[0],"administration completed");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                tracing::error!(%error,"administration failed");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let addr = match config.listen_addr() {
         Ok(addr) => addr,
         Err(error) => {
@@ -64,16 +84,21 @@ async fn main() -> ExitCode {
 
     let auth = revaro_server::auth::AuthService::new(database.clone());
     let state = AppState::new(config.clone(), database, store, auth);
+    let credentials_path = config.data_dir.join("initial-admin-credentials");
     match state
         .auth
-        .initialize(&config.admin_username, &config.admin_password)
+        .initialize_with_credentials_file(
+            &config.admin_username,
+            &config.admin_password,
+            &credentials_path,
+        )
         .await
     {
         Ok(credentials) if credentials.created && credentials.generated => {
             tracing::warn!(
                 username = %credentials.username,
-                password = %credentials.password,
-                "generated initial administrator credentials; sign in and change them"
+                path = %credentials_path.display(),
+                "initial administrator credentials are available in the private credentials file"
             );
         }
         Ok(credentials) if credentials.created => {

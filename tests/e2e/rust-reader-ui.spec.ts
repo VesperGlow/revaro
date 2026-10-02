@@ -226,6 +226,19 @@ test('Rust bundle opens an EPUB reader, follows its TOC and restores progress', 
   await expect(page.locator('#flow')).toContainText('EPUB chapter two marker')
   await progressResponse
 
+  const beforeReflow = Number(await page.locator('#page-label').textContent())
+  await page.locator('#font-button').click()
+  const originalFont = Number(await page.getByLabel('阅读字号').inputValue())
+  await page.getByRole('button', { name: '增大字号', exact: true }).click()
+  await expect(page.getByLabel('阅读字号')).toHaveValue(String(originalFont + 1))
+  await page.locator('#font-button').click()
+  await page.waitForTimeout(700)
+  expect(Math.abs(Number(await page.locator('#page-label').textContent()) - beforeReflow)).toBeLessThanOrEqual(3)
+  await page.setViewportSize({ width: 960, height: 720 })
+  await page.waitForTimeout(700)
+  await expect(page.locator('#toc-list .toc-item').nth(1)).toHaveClass(/active/)
+  expect(Math.abs(Number(await page.locator('#page-label').textContent()) - beforeReflow)).toBeLessThanOrEqual(3)
+
   await page.locator('#reader-back').click()
   await expect(page.locator('#reader-view')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()

@@ -37,7 +37,7 @@ use crate::storage::StorageError;
 /// `object_key` is coalesced because the column is nullable for directories but
 /// the model stores it as a plain `String`; the rest are read as nullable and
 /// defaulted, matching the Go scanner.
-const FILE_COLUMNS: &str = "id,parent_id,name,kind,COALESCE(object_key,''),size,mime_type,etag,\
+pub(crate) const FILE_COLUMNS: &str = "id,parent_id,name,kind,COALESCE(object_key,''),size,mime_type,etag,\
 content_hash,hash_algorithm,status,created_at,updated_at,deleted_at,restore_parent_id";
 
 /// The same list qualified with a table alias, for the recursive breadcrumb
@@ -112,10 +112,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route(
             "/files/{id}/media/progress",
             get(media_progress).put(save_media_progress),
-        )
-        .route(
-            "/files/{id}/share",
-            get(get_share).post(create_share).delete(revoke_share),
         )
         .route("/trash", get(trash).delete(empty_trash))
         .route("/trash/{id}/restore", axum::routing::post(restore_trash))
@@ -448,6 +444,10 @@ async fn patch_file(
     let updated = state
         .db
         .call_api(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| database_error(DbError::Query(e)))?;
+            let connection = &transaction;
             let existing = lookup_file(connection, &id)
                 .map_err(|error| not_found_or(error, "file not found"))?;
             let name = request
@@ -499,7 +499,11 @@ SELECT EXISTS(SELECT 1 FROM d WHERE id = ?2)",
                     rusqlite::params![name, parent, Timestamp::now().to_rfc3339(), id],
                 )
                 .map_err(|error| conflict_or(DbError::Query(error)))?;
-            lookup_file(connection, &id).map_err(database_error)
+            let result = lookup_file(connection, &id).map_err(database_error)?;
+            transaction
+                .commit()
+                .map_err(|e| database_error(DbError::Query(e)))?;
+            Ok(result)
         })
         .await?;
     Ok(Json(updated))
@@ -848,8 +852,13 @@ async fn update_document(
         state
             .db
             .call_api(move |connection| {
+                let transaction = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|error| database_error(DbError::Query(error)))?;
                 let now = Timestamp::now().to_rfc3339();
-                let changed = connection
+                let original = lookup_file(&transaction, &file_id).map_err(database_error)?;
+                crate::version_routes::snapshot(&transaction, &original)?;
+                let changed = transaction
                     .execute(
                         "UPDATE files SET object_key = ?1, size = ?2, mime_type = ?3, etag = ?4, \
 content_hash = ?5, hash_algorithm = ?6, updated_at = ?7 \
@@ -872,7 +881,11 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
                         "document changed elsewhere; reopen it before saving",
                     ));
                 }
-                lookup_file(connection, &file_id).map_err(database_error)
+                let result = lookup_file(&transaction, &file_id).map_err(database_error)?;
+                transaction
+                    .commit()
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                Ok(result)
             })
             .await
     };
@@ -889,126 +902,6 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
         }
     };
     Ok(Json(updated))
-}
-
-/// A share token: 32 random bytes as unpadded base64url (43 characters).
-///
-/// The length is also enforced when the public link is redeemed, so a token is
-/// never guessable and a malformed one is rejected before touching the database.
-fn new_share_token() -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
-}
-
-fn share_url(base_url: &str, token: &str) -> String {
-    format!("{base_url}/s/{token}")
-}
-
-/// `GET /api/files/{id}/share`
-async fn get_share(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    PathParam(id): PathParam<String>,
-) -> Result<Json<revaro_core::api::share::Status>, ApiError> {
-    let base_url = state.config.base_url.clone();
-    state
-        .db
-        .call_api(move |connection| {
-            // Joining the file row means a share for a file that has since been
-            // deleted or reverted to pending is reported as inactive rather than
-            // handing back a dead link.
-            let found = connection
-                .query_row(
-                    "SELECT s.token, s.created_at FROM shares s JOIN files f ON f.id = s.file_id \
-WHERE s.file_id = ?1 AND f.kind = 'file' AND f.status = 'ready' AND f.deleted_at IS NULL",
-                    [&id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .map(Some)
-                .or_else(|error| match error {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                    other => Err(database_error(DbError::Query(other))),
-                })?;
-            Ok(match found {
-                None => revaro_core::api::share::Status {
-                    active: false,
-                    url: None,
-                    created_at: None,
-                },
-                Some((token, created_at)) => revaro_core::api::share::Status {
-                    active: true,
-                    url: Some(share_url(&base_url, &token)),
-                    created_at: Timestamp::parse(&created_at).ok(),
-                },
-            })
-        })
-        .await
-        .map(Json)
-}
-
-/// `POST /api/files/{id}/share`
-async fn create_share(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    PathParam(id): PathParam<String>,
-) -> Result<(http::StatusCode, Json<revaro_core::api::share::Status>), ApiError> {
-    let token = new_share_token();
-    let base_url = state.config.base_url.clone();
-    let created_at = Timestamp::now();
-    let created = created_at.to_rfc3339();
-    let issued = token.clone();
-    let issued_at = created.clone();
-    state
-        .db
-        .call_api(move |connection| {
-            let file = lookup_file(connection, &id)
-                .map_err(|error| not_found_or(error, "ready file not found"))?;
-            if file.kind != FileKind::File || file.status != FileStatus::Ready {
-                return Err(ApiError::not_found("ready file not found"));
-            }
-            // Re-sharing rotates the token, so a leaked link can be revoked by
-            // sharing again rather than only by deleting the share.
-            connection
-                .execute(
-                    "INSERT INTO shares(file_id,token,created_at) VALUES(?1,?2,?3) \
-ON CONFLICT(file_id) DO UPDATE SET token = excluded.token, created_at = excluded.created_at",
-                    rusqlite::params![id, issued, issued_at],
-                )
-                .map_err(|error| {
-                    tracing::error!(%error, "could not create a share link");
-                    ApiError::internal("could not create share link")
-                })?;
-            Ok(())
-        })
-        .await?;
-    Ok((
-        http::StatusCode::CREATED,
-        Json(revaro_core::api::share::Status {
-            active: true,
-            url: Some(share_url(&base_url, &token)),
-            created_at: Some(created_at),
-        }),
-    ))
-}
-
-/// `DELETE /api/files/{id}/share`
-async fn revoke_share(
-    State(state): State<Arc<AppState>>,
-    _user: AuthUser,
-    PathParam(id): PathParam<String>,
-) -> Result<http::StatusCode, ApiError> {
-    state
-        .db
-        .call_api(move |connection| {
-            connection
-                .execute("DELETE FROM shares WHERE file_id = ?1", [&id])
-                .map_err(|error| {
-                    tracing::error!(%error, "could not revoke the share link");
-                    ApiError::internal("could not revoke share link")
-                })?;
-            Ok(http::StatusCode::NO_CONTENT)
-        })
-        .await
 }
 
 /// Media rows that may carry a playback position.
@@ -1115,10 +1008,10 @@ async fn retry_task(
             let now = Timestamp::now().to_rfc3339();
             let changed = connection
                 .execute(
-                    "UPDATE tasks SET status = 'retrying', phase = 'queued', \
-retry_count = retry_count + 1, error = '', cancel_requested = 0, \
+                    "UPDATE tasks SET status = 'waiting_input', phase = 'reselect_file', \
+error = '', cancel_requested = 0, \
 started_at = NULL, finished_at = NULL, updated_at = ?1 \
-WHERE id = ?2 AND status = 'failed' AND retry_count < max_retries",
+WHERE id = ?2 AND type = 'upload' AND status IN ('failed','waiting_input') AND retry_count < max_retries",
                     rusqlite::params![now, id],
                 )
                 .map_err(|error| {
@@ -2031,12 +1924,6 @@ async fn preview(
 /// the endpoint is rate-limited by admission rather than by identity: beyond the
 /// limit a client is told to come back shortly instead of being allowed to
 /// saturate the server's file handles.
-static SHARE_SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-
-fn share_slots() -> &'static tokio::sync::Semaphore {
-    SHARE_SLOTS.get_or_init(|| tokio::sync::Semaphore::new(8))
-}
-
 /// The public share table, mounted outside `/api` and therefore unauthenticated.
 pub fn public_routes() -> Router<Arc<AppState>> {
     Router::new().route("/s/{token}", get(public_share))
@@ -2061,7 +1948,7 @@ async fn public_share(
             let file = connection
                 .query_row(
                     &format!(
-                        "SELECT {FILE_COLUMNS} FROM files WHERE id = (SELECT file_id FROM shares WHERE token = ?1) AND kind = 'file' AND status = 'ready' AND deleted_at IS NULL"
+                        "SELECT {FILE_COLUMNS} FROM files WHERE id = (SELECT file_id FROM shares WHERE token = ?1 AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))) AND kind = 'file' AND status = 'ready' AND deleted_at IS NULL"
                     ),
                     [&lookup],
                     scan_file,
@@ -2076,7 +1963,7 @@ async fn public_share(
     // sandbox with no script or network access.
     const PUBLIC_CSP: &str = "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'";
 
-    let permit = match share_slots().try_acquire() {
+    let permit = match state.share_slots.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
             let mut response = axum::response::Response::new(axum::body::Body::empty());
@@ -2130,21 +2017,12 @@ async fn public_share(
         http::header::CONTENT_SECURITY_POLICY,
         PUBLIC_CSP.parse().expect("valid"),
     );
-    // The permit is intentionally held until the response is dropped, so the
-    // slot covers the whole body transfer rather than just the lookup.
-    response
-        .extensions_mut()
-        .insert(SharePermit(std::sync::Arc::new(permit)));
+    // Response extensions end with the headers. The body must own admission
+    // until EOF or disconnect, including over a real TCP connection.
+    let body = std::mem::replace(response.body_mut(), axum::body::Body::empty());
+    *response.body_mut() = crate::transfer::hold_permit(body, permit);
     Ok(response)
 }
-
-/// Keeps a public-download slot occupied for the lifetime of the response.
-///
-/// `Arc` because response extensions require `Clone`; the permit itself is not
-/// cloneable, and sharing one across clones is exactly right — the slot is
-/// released when the last handle is dropped.
-#[derive(Clone)]
-struct SharePermit(#[allow(dead_code)] std::sync::Arc<tokio::sync::SemaphorePermit<'static>>);
 
 /// `POST /api/documents` — create a new text document.
 ///
@@ -2300,80 +2178,45 @@ async fn copy_file(
     state
         .db
         .call_api(move |connection| {
-            let source = lookup_file(connection, &id)
-                .map_err(|error| not_found_or(error, "ready file not found"))?;
-            if source.kind != FileKind::File || source.status != FileStatus::Ready {
-                return Err(ApiError::not_found("ready file not found"));
+            let tx=connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e|database_error(DbError::Query(e)))?;
+            let source=lookup_file(&tx,&id).map_err(|e|not_found_or(e,"ready file not found"))?;
+            if id==revaro_core::ids::ROOT_ID || source.status!=FileStatus::Ready {return Err(ApiError::not_found("ready file not found"));}
+            let parent=lookup_file(&tx,&request.parent_id).map_err(|_|ApiError::bad_request("target directory is invalid"))?;
+            if parent.kind!=FileKind::Directory || parent.status!=FileStatus::Ready {return Err(ApiError::bad_request("target directory is invalid"));}
+            let mut originals=vec![source];
+            let mut at=0;
+            while at<originals.len() {
+                if originals[at].kind==FileKind::Directory {
+                    let mut q=tx.prepare(&format!("SELECT {FILE_COLUMNS} FROM files WHERE parent_id=?1 AND deleted_at IS NULL ORDER BY name,id LIMIT 5001"))
+                        .map_err(|e|database_error(DbError::Query(e)))?;
+                    let children=q.query_map([&originals[at].id],scan_file).map_err(|e|database_error(DbError::Query(e)))?
+                        .collect::<Result<Vec<_>,_>>().map_err(|e|database_error(DbError::Query(e)))?;
+                    originals.extend(children);
+                    if originals.len()>5000{return Err(ApiError::payload_too_large("directory copies are limited to 5000 items"));}
+                }
+                at+=1;
             }
-            let parent = lookup_file(connection, &request.parent_id)
-                .map_err(|_| ApiError::bad_request("target directory is invalid"))?;
-            if parent.kind != FileKind::Directory || parent.status != FileStatus::Ready {
-                return Err(ApiError::bad_request("target directory is invalid"));
+            if originals.iter().any(|f|f.id==parent.id){return Err(ApiError::bad_request("cannot copy a directory into itself or its descendants"));}
+            let copy_id=crate::ids::new_id();
+            let root_name=available_copy_name(&tx,&parent.id,&originals[0].name)?;
+            let now=Timestamp::now().to_rfc3339();
+            let mut ids=std::collections::HashMap::<String,String>::new();
+            for (index,source) in originals.iter().enumerate() {
+                if source.status!=FileStatus::Ready {return Err(ApiError::conflict("copy contains a file that is not ready"));}
+                let new_id=if index==0 {copy_id.clone()}else{crate::ids::new_id()};
+                let new_parent=if index==0 {parent.id.clone()}else{ids.get(source.parent_id.as_deref().unwrap_or_default()).cloned().ok_or_else(||ApiError::internal("invalid directory tree"))?};
+                let name=if index==0 {&root_name}else{&source.name};
+                let key=if source.kind==FileKind::Directory{None}else{Some(&source.object_key)};
+                let kind=if source.kind==FileKind::Directory{"directory"}else{"file"};
+                tx.execute("INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,content_hash,hash_algorithm,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'ready',?11,?11)",rusqlite::params![new_id,new_parent,name,kind,key,source.size,source.mime_type,source.etag,source.content_hash,source.hash_algorithm,now])
+                    .map_err(|e|conflict_or(DbError::Query(e)))?;
+                tx.execute("INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,source_etag,probe_version) SELECT ?1,duration_ms,container,video_codec,audio_codec,width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,source_etag,probe_version FROM media_metadata WHERE file_id=?2",rusqlite::params![new_id,source.id]).map_err(|e|database_error(DbError::Query(e)))?;
+                ids.insert(source.id.clone(),new_id);
             }
-
-            let transaction = connection
-                .transaction()
-                .map_err(|error| database_error(DbError::Query(error)))?;
-
-            // Re-read inside the transaction so a concurrent purge cannot drop
-            // the final reference to the blob between the check and the insert.
-            let source = transaction
-                .query_row(
-                    &format!(
-                        "SELECT {FILE_COLUMNS} FROM files WHERE id = ?1 AND kind = 'file' \
-AND status = 'ready' AND deleted_at IS NULL"
-                    ),
-                    [&id],
-                    scan_file,
-                )
-                .map_err(|_| ApiError::conflict("source file is no longer available"))?;
-
-            let name = available_copy_name(&transaction, &request.parent_id, &source.name)?;
-            let copy_id = crate::ids::new_id();
-            let now = Timestamp::now().to_rfc3339();
-            let inserted = transaction
-                .execute(
-                    "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,\
-content_hash,hash_algorithm,status,created_at,updated_at) \
-SELECT ?1,?2,?3,'file',?4,?5,?6,?7,?8,?9,'ready',?10,?10 \
-WHERE EXISTS(SELECT 1 FROM files WHERE id = ?2 AND kind = 'directory' AND status = 'ready' \
-AND deleted_at IS NULL)",
-                    rusqlite::params![
-                        copy_id,
-                        request.parent_id,
-                        name,
-                        source.object_key,
-                        source.size,
-                        source.mime_type,
-                        source.etag,
-                        source.content_hash,
-                        source.hash_algorithm,
-                        now,
-                    ],
-                )
-                .map_err(|error| conflict_or(DbError::Query(error)))?;
-            if inserted != 1 {
-                return Err(ApiError::conflict("parent directory is no longer available"));
-            }
-
-            // Carry the analysis across so the copy does not have to be probed
-            // again. A source with no metadata simply copies zero rows.
-            transaction
-                .execute(
-                    "INSERT INTO media_metadata(file_id,duration_ms,container,video_codec,audio_codec,\
-width,height,bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,\
-source_etag,probe_version) SELECT ?1,duration_ms,container,video_codec,audio_codec,width,height,\
-bitrate,chapters_json,analyzed_at,frame_rate,video_profile,video_level,source_etag,\
-probe_version FROM media_metadata WHERE file_id = ?2",
-                    rusqlite::params![copy_id, id],
-                )
-                .map_err(|error| database_error(DbError::Query(error)))?;
-
-            let copied = lookup_file(&transaction, &copy_id).map_err(database_error)?;
-            transaction
-                .commit()
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            Ok((http::StatusCode::CREATED, copied))
+            let copied=lookup_file(&tx,&copy_id).map_err(database_error)?;
+            tx.commit().map_err(|e|database_error(DbError::Query(e)))?;
+            Ok((http::StatusCode::CREATED,copied))
         })
         .await
         .map(|(status, file)| (status, Json(file)))
@@ -2757,12 +2600,13 @@ VALUES('{id}','{parent}','{name}','{kind}',{}, {size},'{mime}','ready','2024-01-
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["message"], "task not found");
 
-        // Retry clears the failure and re-queues, returning 202.
+        // A browser must reselect its local file before bytes can resume.
         let (status, _) = write(&state, "POST", "/api/tasks/f1/retry", None).await;
         assert_eq!(status, StatusCode::ACCEPTED);
         let (_, task) = call(&state, "/api/tasks/f1").await;
-        assert_eq!(task["status"], "retrying");
-        assert_eq!(task["retry_count"], 1);
+        assert_eq!(task["status"], "waiting_input");
+        assert_eq!(task["phase"], "reselect_file");
+        assert_eq!(task["retry_count"], 0);
         assert!(
             task.get("error").is_none(),
             "the stale error must be cleared"

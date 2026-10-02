@@ -25,7 +25,7 @@ use crate::path::normalize_path;
 use crate::text::utf16_len;
 
 /// Version of the generated flow format.
-pub const FLOW_FORMAT_VERSION: i32 = 4;
+pub const FLOW_FORMAT_VERSION: i32 = 5;
 
 /// Approximate UTF-16 size of one flow chunk.
 pub const CHUNK_CHARS_TARGET: i64 = 7_000;

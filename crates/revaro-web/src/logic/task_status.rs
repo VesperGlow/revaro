@@ -106,6 +106,7 @@ pub fn task_display_name(name: &str, kind: &str, id: &str) -> String {
 #[must_use]
 pub fn task_status_label(status: TaskStatus, _kind: &str, phase: &str, error: &str) -> String {
     match status {
+        TaskStatus::WaitingInput if phase == "reselect_file" => "请选择原文件以继续上传".to_owned(),
         TaskStatus::WaitingInput => "等待输入".to_owned(),
         TaskStatus::Retrying => "等待重试".to_owned(),
         TaskStatus::Queued => "排队中".to_owned(),

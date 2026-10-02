@@ -17,6 +17,8 @@ pub fn ShareDialog(
     active: RwSignal<bool>,
     url: RwSignal<String>,
     created_at: RwSignal<String>,
+    expires_at: RwSignal<String>,
+    expiry: RwSignal<String>,
     busy: RwSignal<bool>,
     error: RwSignal<String>,
     copied: RwSignal<bool>,
@@ -58,6 +60,12 @@ pub fn ShareDialog(
                     </div>
                     <button type="button" aria-label="关闭" on:click=move |_| close_header.run(())>"×"</button>
                 </header>
+                <label class="share-description">"新链接有效期 "
+                    <select aria-label="分享有效期" prop:value=move || expiry.get() prop:disabled=move || busy.get() on:change=move |e|expiry.set(event_target_value(&e))>
+                        <option value="3600">"1 小时"</option><option value="86400">"1 天"</option><option value="604800">"7 天"</option><option value="2592000">"30 天"</option><option value="0">"永久"</option>
+                    </select>
+                </label>
+                <p class="share-description">{move || if expires_at.get().is_empty() {String::new()} else {format!("当前链接到期时间：{}",format_date(&expires_at.get()))}}</p>
                 <Show
                     when=move || !busy.get()
                     fallback=|| view! {

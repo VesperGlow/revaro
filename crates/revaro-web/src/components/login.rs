@@ -88,7 +88,7 @@ pub fn LoginView(
                     <div>
                         <p class="eyebrow dark">"WELCOME BACK"</p>
                         <h2>"登录私人空间"</h2>
-                        <p class="muted">"首次启动的随机凭据可在容器日志中查看"</p>
+                        <p class="muted">"首次启动的随机凭据保存在 /data/initial-admin-credentials"</p>
                     </div>
                     <label>
                         "用户名"

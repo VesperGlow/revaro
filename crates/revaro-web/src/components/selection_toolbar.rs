@@ -18,6 +18,7 @@ pub fn SelectionToolbar(
     on_select_all: Callback<()>,
     on_rename: Callback<()>,
     on_move: Callback<()>,
+    on_copy: Callback<()>,
     on_delete: Callback<()>,
     on_restore: Callback<()>,
     on_purge: Callback<()>,
@@ -53,12 +54,7 @@ pub fn SelectionToolbar(
         let item = selected.next();
         item.filter(|_| selected.next().is_none())
     };
-    let selected_file_count = move || {
-        selected_items()
-            .into_iter()
-            .filter(|item| item.kind == FileKind::File)
-            .count()
-    };
+    let selected_file_count = move || selected_items().len();
     let all_selected = move || {
         let entries = items.get();
         let ids = selected_ids.get();
@@ -145,6 +141,7 @@ pub fn SelectionToolbar(
                             )
                         }}
                     </Show>
+                    <button type="button" on:click=move |_|on_copy.run(())>"复制到"</button>
                     <Show when=move || { selected_file_count() > 0 } fallback=|| ()>
                         <button type="button" on:click=move |_| download.run(())>
                             {download_icon()}

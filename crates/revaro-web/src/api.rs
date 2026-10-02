@@ -25,8 +25,8 @@ use revaro_core::api::auth::{
 };
 use revaro_core::api::book::{Info as BookInfo, Progress as BookProgress, SaveProgressRequest};
 use revaro_core::api::files::{
-    ChildItems, Children, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest,
-    DocumentContent, FileDetail, PatchFileRequest, Trash, UpdateDocumentRequest,
+    ChildItems, CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest, DocumentContent,
+    FileDetail, PatchFileRequest, Trash, UpdateDocumentRequest,
 };
 use revaro_core::api::media::AudioMedia;
 use revaro_core::api::share::Status as ShareStatus;
@@ -121,10 +121,6 @@ pub async fn fetch_file(id: &str) -> Result<FileDetail, RequestError> {
 }
 
 /// Fetch the live children and aggregate counters of a directory.
-pub async fn fetch_children(id: &str) -> Result<Children, RequestError> {
-    get_json(&format!("/api/files/{id}/children")).await
-}
-
 /// Fetch only the directory entries for callers whose historical contract did
 /// not consume aggregate byte/file counters.
 pub async fn fetch_child_items(id: &str) -> Result<Vec<revaro_core::model::File>, RequestError> {
@@ -447,10 +443,61 @@ pub async fn fetch_share(id: &str) -> Result<ShareStatus, RequestError> {
 }
 
 /// Create or replace a public-share link.
-pub async fn create_share(id: &str) -> Result<ShareStatus, RequestError> {
+pub async fn create_share(id: &str, expiry: Option<i64>) -> Result<ShareStatus, RequestError> {
     let request = api_request(Request::post(&format!("/api/files/{id}/share")))
-        .build()
-        .map_err(|error| request_transport(error.to_string()))?;
+        .json(&revaro_core::features::ShareRequest {
+            expires_in_seconds: expiry,
+        })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_json(request).await
+}
+
+pub async fn fetch_listing(
+    parent: Option<&str>,
+    q: &str,
+    sort: &str,
+    offset: i64,
+) -> Result<revaro_core::features::Listing, RequestError> {
+    let descending = sort.ends_with("_desc");
+    let sort = sort.strip_suffix("_desc").unwrap_or(sort);
+    let encoded: String = js_sys::encode_uri_component(q).into();
+    let parent = parent
+        .map(|id| format!("&parent_id={id}"))
+        .unwrap_or_default();
+    get_json(&format!(
+        "/api/files?q={encoded}&sort={sort}&descending={descending}&offset={offset}&limit=100{parent}"
+    ))
+    .await
+}
+pub async fn fetch_system_status() -> Result<serde_json::Value, RequestError> {
+    get_json("/api/system/status").await
+}
+
+pub async fn fetch_shares(
+    offset: i64,
+) -> Result<Vec<revaro_core::features::ShareEntry>, RequestError> {
+    get_json(&format!("/api/shares?offset={offset}")).await
+}
+pub async fn fetch_versions(
+    id: &str,
+) -> Result<Vec<revaro_core::features::DocumentVersion>, RequestError> {
+    get_json(&format!("/api/files/{id}/versions")).await
+}
+pub async fn fetch_version_content(id: &str, version: &str) -> Result<String, RequestError> {
+    get_json(&format!("/api/files/{id}/versions/{version}/content")).await
+}
+pub async fn restore_version(
+    id: &str,
+    version: &str,
+    etag: &str,
+) -> Result<revaro_core::model::File, RequestError> {
+    let request = api_request(Request::post(&format!(
+        "/api/files/{id}/versions/{version}/restore"
+    )))
+    .json(&revaro_core::features::RestoreVersionRequest {
+        etag: etag.to_owned(),
+    })
+    .map_err(|e| request_transport(e.to_string()))?;
     send_json(request).await
 }
 

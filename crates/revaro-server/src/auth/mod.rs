@@ -21,6 +21,7 @@
 //!   64 MiB password hash never stalls the async runtime.
 
 mod base32;
+mod bootstrap;
 pub mod extract;
 mod limiter;
 mod password;

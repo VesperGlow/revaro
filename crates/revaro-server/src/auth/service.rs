@@ -409,6 +409,14 @@ impl AuthService {
     /// # Errors
     /// Returns [`AuthError::Invalid`] for an over-long name.
     pub async fn reset_credentials(&self, username: &str) -> Result<InitialCredentials, AuthError> {
+        self.reset_to(username, &random_text()).await
+    }
+
+    pub(crate) async fn reset_to(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<InitialCredentials, AuthError> {
         let username = if username.is_empty() {
             "admin".to_owned()
         } else {
@@ -419,7 +427,7 @@ impl AuthService {
                 "administrator username length is invalid".to_owned(),
             ));
         }
-        let password = random_text();
+        let password = password.to_owned();
         let hash = self.hash_password(&password).await?;
         let now = self.clock.now().to_rfc3339();
         let (username_for_return, password_for_return) = (username.clone(), password.clone());

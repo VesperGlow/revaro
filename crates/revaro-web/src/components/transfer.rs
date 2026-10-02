@@ -40,11 +40,11 @@ pub fn TransferDialog(
         TransferMode::Move => "移动",
         TransferMode::Copy => "复制",
     };
-    let excluded_ids = if mode == TransferMode::Move {
-        targets.iter().map(|item| item.id.clone()).collect()
-    } else {
-        Vec::new()
-    };
+    let excluded_ids = targets
+        .iter()
+        .filter(|item| item.kind == revaro_core::model::FileKind::Directory)
+        .map(|item| item.id.clone())
+        .collect();
     let cancel_backdrop = on_cancel.clone();
     let cancel_close = on_cancel.clone();
     let cancel_footer = on_cancel;

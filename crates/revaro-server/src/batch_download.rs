@@ -195,32 +195,70 @@ fn resolve_entries(
     connection: &Connection,
     ids: &[String],
 ) -> Result<Vec<BatchDownloadEntry>, ApiError> {
-    let mut used_names = HashSet::with_capacity(ids.len());
-    let mut entries = Vec::with_capacity(ids.len());
+    let mut used_names = HashSet::new();
+    let mut entries = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
     for id in ids {
-        let file = lookup_file(connection, id).map_err(|error| {
-            if error.is_not_found() {
-                ApiError::not_found("file not found")
-            } else {
-                tracing::error!(%error, file_id = %id, "batch download metadata read failed");
-                ApiError::internal("could not read file metadata")
-            }
-        })?;
-        if file.kind != FileKind::File {
-            return Err(ApiError::bad_request(
-                "directories cannot be downloaded in a batch",
+        let file =
+            lookup_file(connection, id).map_err(|_| ApiError::not_found("file not found"))?;
+        if id == revaro_core::ids::ROOT_ID {
+            return Err(ApiError::bad_request("select a folder below the root"));
+        }
+        let name = unique_zip_name(safe_zip_name(&file.name), &mut used_names);
+        queue.push_back((file, name, 0_usize));
+    }
+    let mut count = 0;
+    let mut total = 0_i64;
+    while let Some((file, name, depth)) = queue.pop_front() {
+        count += 1;
+        if count > 5000 || depth > 128 {
+            return Err(ApiError::payload_too_large(
+                "archive directory tree exceeds limits",
             ));
         }
         if file.status != FileStatus::Ready {
             return Err(ApiError::conflict("file is not ready for download"));
         }
-        if file.object_key.is_empty() {
-            tracing::error!(file_id = %file.id, "batch download file has no object key");
-            return Err(ApiError::internal("file content is unavailable"));
+        if file.kind == FileKind::Directory {
+            let mut q=connection.prepare(&format!("SELECT {} FROM files WHERE parent_id=?1 AND deleted_at IS NULL ORDER BY name,id LIMIT 5001",crate::file_routes::FILE_COLUMNS)).map_err(|_|ApiError::internal("database error"))?;
+            let children = q
+                .query_map([&file.id], crate::file_routes::scan_file)
+                .map_err(|_| ApiError::internal("database error"))?;
+            for child in children {
+                let child = child.map_err(|_| ApiError::internal("database error"))?;
+                let path = unique_zip_name(
+                    format!("{name}/{}", safe_zip_name(&child.name)),
+                    &mut used_names,
+                );
+                queue.push_back((child, path, depth + 1));
+                if queue.len() + count > 5000 {
+                    return Err(ApiError::payload_too_large(
+                        "archive directory tree exceeds limits",
+                    ));
+                }
+            }
+            entries.push(BatchDownloadEntry {
+                file,
+                name: format!("{name}/"),
+            });
+        } else {
+            if file.object_key.is_empty() {
+                return Err(ApiError::internal("file content is unavailable"));
+            }
+            total = total.saturating_add(file.size);
+            if entries
+                .iter()
+                .filter(|e| e.file.kind == FileKind::File)
+                .count()
+                >= MAX_BATCH_DOWNLOAD_FILES
+                || total > (1_i64 << 40)
+            {
+                return Err(ApiError::payload_too_large(
+                    "archive is limited to 1000 files and 1 TiB",
+                ));
+            }
+            entries.push(BatchDownloadEntry { file, name });
         }
-
-        let name = unique_zip_name(safe_zip_name(&file.name), &mut used_names);
-        entries.push(BatchDownloadEntry { file, name });
     }
     Ok(entries)
 }
@@ -231,6 +269,10 @@ async fn download(
     user: AuthUser,
     PathParam(token): PathParam<String>,
 ) -> Result<Response, ApiError> {
+    let permit =
+        state.zip_slots.clone().try_acquire_owned().map_err(|_| {
+            ApiError::too_many_requests("ZIP downloads are busy; try again shortly")
+        })?;
     let entries = state
         .batch_download
         .consume(&user.username, &token)
@@ -240,6 +282,9 @@ async fn download(
     // rows always contain blobs/<uuid>, but this check keeps a manually edited
     // database from turning the blocking worker into an arbitrary path reader.
     for entry in &entries {
+        if entry.file.kind == FileKind::Directory {
+            continue;
+        }
         state
             .store
             .path_for(&entry.file.object_key)
@@ -252,6 +297,7 @@ async fn download(
     let (sender, receiver) = mpsc::channel(ZIP_CHANNEL_CAPACITY);
     let store = state.store.clone();
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         if let Err(error) = write_zip(&store, entries, sender) {
             tracing::warn!(%error, "batch download stream failed");
         }
@@ -371,6 +417,10 @@ fn write_zip(
     let mut archive = ZipWriter::new_stream(ChunkWriter { sender });
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     for entry in entries {
+        if entry.file.kind == FileKind::Directory {
+            archive.add_directory(entry.name, options)?;
+            continue;
+        }
         let mut source = store.open_object_blocking(&entry.file.object_key)?;
         archive.start_file(entry.name, options)?;
         io::copy(&mut source, &mut archive)?;
@@ -670,7 +720,7 @@ mod tests {
         let context = context().await;
         let state = &context.state;
         let ready = add_file(state, ROOT_ID, "ready.txt", b"ready").await;
-        let directory = add_directory(state, "folder").await;
+
         let pending = add_pending_file(state).await;
 
         let unauthenticated = request(
@@ -693,11 +743,6 @@ mod tests {
                 serde_json::json!({"ids": [ready.clone(), ready]}),
                 StatusCode::BAD_REQUEST,
                 "duplicate file id",
-            ),
-            (
-                serde_json::json!({"ids": [directory]}),
-                StatusCode::BAD_REQUEST,
-                "directories cannot be downloaded in a batch",
             ),
             (
                 serde_json::json!({"ids": [pending]}),

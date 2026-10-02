@@ -34,7 +34,10 @@ fn App() -> impl IntoView {
         let session = session;
         Callback::new(move |profile: Session| session.set(Some(profile)))
     };
-    let on_logout = Callback::new(move |(): ()| session.set(None));
+    let on_logout = Callback::new(move |(): ()| {
+        crate::components::reader_cache::clear_all();
+        session.set(None);
+    });
     let on_username_changed = {
         let login_username = login_username;
         Callback::new(move |username: String| login_username.set(username))
@@ -46,6 +49,7 @@ fn App() -> impl IntoView {
         Callback::new(move |username: String| {
             login_username.set(username);
             login_notice.set("密码已更新，请重新登录".to_owned());
+            crate::components::reader_cache::clear_all();
             session.set(None);
         })
     };

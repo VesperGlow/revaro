@@ -14,15 +14,17 @@ mod editor;
 mod file_browser;
 mod file_browser_header;
 mod login;
+mod management;
 mod media;
 mod reader;
-mod reader_cache;
+pub(crate) mod reader_cache;
 mod selection_toolbar;
 mod share;
 mod tasks;
 mod topbar;
 mod transfer;
 mod uploads;
+mod version_history;
 mod video;
 
 pub use file_browser::FileBrowser;

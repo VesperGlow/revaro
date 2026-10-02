@@ -168,6 +168,7 @@ pub struct UploadController {
     refresh_folder: Callback<UploadRefresh>,
     feedback: Callback<Feedback>,
     on_logout: Callback<()>,
+    pending_resume: Rc<RefCell<Option<String>>>,
 }
 
 type UiUploadController = leptos::__reexports::send_wrapper::SendWrapper<UploadController>;
@@ -218,11 +219,13 @@ impl UploadController {
             refresh_folder,
             feedback,
             on_logout,
+            pending_resume: Rc::new(RefCell::new(None)),
         }
     }
 
     /// Open the regular file chooser.
     pub fn choose_files(&self) {
+        self.pending_resume.borrow_mut().take();
         if let Some(input) = self.file_input.get() {
             input.click();
         }
@@ -237,6 +240,46 @@ impl UploadController {
 
     /// Queue all files from a regular file input or a drop event.
     pub fn accept_files(&self, files: Vec<BrowserFile>) {
+        if let Some(upload_id) = self.pending_resume.borrow_mut().take() {
+            if files.len() != 1 {
+                self.feedback.run(Feedback::error("请只选择一个原文件"));
+                return;
+            }
+            let file = files.into_iter().next().expect("one selected file");
+            let controller = self.clone();
+            leptos::task::spawn_local(async move {
+                let result = async {
+                    let status = api::fetch_upload(&upload_id).await?;
+                    let detail = api::fetch_file(&status.file_id).await?;
+                    if file.name() != detail.file.name || file_size(&file) != status.expected_size {
+                        return Err(local_error("文件名或大小不匹配，请选择原文件"));
+                    }
+                    let parent_id = detail
+                        .file
+                        .parent_id
+                        .unwrap_or_else(|| revaro_core::ids::ROOT_ID.to_owned());
+                    controller.tasks.update(|tasks| {
+                        tasks.push(UploadTask {
+                            id: controller.next_task_id(),
+                            file,
+                            parent_id,
+                            progress: 0,
+                            status: UploadTaskStatus::Queued,
+                            error: String::new(),
+                            upload_id: Some(upload_id),
+                            run_id: 0,
+                        })
+                    });
+                    controller.pump();
+                    Ok::<(), RequestError>(())
+                }
+                .await;
+                if let Err(error) = result {
+                    controller.handle_request_error(&error);
+                }
+            });
+            return;
+        }
         if self.trash_mode.get_untracked() || files.is_empty() {
             return;
         }
@@ -454,7 +497,12 @@ impl UploadController {
             let mut reuse_completed = false;
             if let Some(upload_id) = previous_upload.as_deref() {
                 match api::fetch_upload(upload_id).await {
-                    Ok(status) if status.status == UploadLifecycle::Completed => {
+                    Ok(status)
+                        if matches!(
+                            status.status,
+                            UploadLifecycle::Completed | UploadLifecycle::Pending
+                        ) =>
+                    {
                         // The completion response may have been lost after the
                         // server committed. Let resolve_upload reconcile it
                         // instead of creating a conflicting sibling.
@@ -530,9 +578,12 @@ impl UploadController {
             self.retry(task_id);
             true
         } else {
-            // The local File handle can disappear when the page is reloaded,
-            // but the durable task still supports the reference client's
-            // server-side retry path. Let TaskController fall through to it.
+            // Keep the chooser inside the user gesture. Its selected file is
+            // subsequently validated against the durable upload session.
+            *self.pending_resume.borrow_mut() = Some(upload_id);
+            if let Some(input) = self.file_input.get() {
+                input.click();
+            }
             false
         }
     }
