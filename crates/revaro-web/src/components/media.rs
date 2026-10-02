@@ -391,7 +391,6 @@ pub fn MediaPreview(
     };
 
     let on_pointer_down = {
-        let stage = stage;
         let selected = selected;
         move |event: PointerEvent| {
             let Some(file) = selected.get_untracked() else {
@@ -436,11 +435,13 @@ pub fn MediaPreview(
                     state.dy = 0.0;
                 });
             }
-            if let Some(stage) = stage
-                .get()
-                .map(|element| element.unchecked_into::<Element>())
+            // Capture the original target so an image click stays an image
+            // click instead of being retargeted to the stage's blank area.
+            if let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
             {
-                let _ = stage.set_pointer_capture(event.pointer_id());
+                let _ = target.set_pointer_capture(event.pointer_id());
             }
         }
     };
@@ -519,11 +520,11 @@ pub fn MediaPreview(
         pointers.update(|active| {
             active.remove(&event.pointer_id());
         });
-        if let Some(stage) = stage
-            .get()
-            .map(|element| element.unchecked_into::<Element>())
+        if let Some(target) = event
+            .target()
+            .and_then(|target| target.dyn_into::<Element>().ok())
         {
-            let _ = stage.release_pointer_capture(event.pointer_id());
+            let _ = target.release_pointer_capture(event.pointer_id());
         }
         let remaining = pointers.get_untracked();
         if !remaining.is_empty() {
@@ -569,6 +570,7 @@ pub fn MediaPreview(
         if !selected
             .get_untracked()
             .is_some_and(|file| classify::is_image(&file))
+            || event.target() == event.current_target()
             || drag.get_untracked().moved
             || event
                 .target()
@@ -643,7 +645,26 @@ pub fn MediaPreview(
     let copy_item = on_copy.clone();
 
     view! {
-        <div class="modal-backdrop previewing" role="presentation">
+        <div
+            class="modal-backdrop previewing"
+            class:image-previewing=move || selected.get().as_ref().is_some_and(classify::is_image)
+            role="presentation"
+            on:click=move |event: MouseEvent| {
+                if !selected.get_untracked().as_ref().is_some_and(classify::is_image) {
+                    return;
+                }
+                let Some(target) = event.target().and_then(|target| target.dyn_into::<Element>().ok()) else {
+                    return;
+                };
+                // Only the empty containers close the viewer; clicks bubbling
+                // from images, toolbars, menus and other controls stay inside.
+                if target.matches(".modal-backdrop.previewing, .image-preview, .preview-stage, .preview-image-footer").unwrap_or(false)
+                    && !(target.matches(".preview-stage").unwrap_or(false) && drag.get_untracked().moved)
+                {
+                    on_close.run(());
+                }
+            }
+        >
             <section
                 node_ref=root
                 class="preview-modal"

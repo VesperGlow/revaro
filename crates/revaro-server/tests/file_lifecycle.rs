@@ -368,16 +368,6 @@ async fn a_file_can_be_created_uploaded_browsed_copied_shared_trashed_and_purged
         1,
         "only the trash root is listed"
     );
-    // The status view still counts the trashed bytes.
-    let (_, status_view) = harness
-        .json("GET", "/api/system/status", serde_json::Value::Null)
-        .await;
-    assert_eq!(status_view["storage"]["file_count"], 2);
-    assert_eq!(
-        status_view["storage"]["trash_bytes"],
-        (payload.len() * 2) as i64
-    );
-
     // Restoring brings it back under its original parent.
     let (status, _) = harness
         .json(

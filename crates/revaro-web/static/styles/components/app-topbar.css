@@ -4,7 +4,7 @@
    contract — unchanged while reproducing the extra specificity Vue's
    `[data-v-*]` attribute selector used to add over the global sheets.
    The two `:deep(svg)` selectors from the original become plain descendant
-   selectors, the `:deep(.system-status>summary)` override included. */
+   selectors. */
 .topbar .topbar-left{display:flex;align-items:center;gap:8px;min-width:0}
 .topbar .brand-logo{display:block;width:auto;height:28px}
 .topbar .brand-button{min-width:0}
@@ -30,7 +30,7 @@
 .topbar .mobile-trash{width:100%;cursor:pointer}
 .topbar .mobile-trash .trash-button{width:34px;height:34px}
 .topbar .mobile-trash b{font-weight:700}
-@media(max-width:850px){.topbar{padding-right:max(14px,env(safe-area-inset-right,0px));padding-left:max(14px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:24px}.topbar .brand-button{flex:0 0 auto;white-space:nowrap}.topbar .top-actions{flex:0 0 auto;gap:5px}.topbar .top-actions .system-status>summary{width:38px;height:40px}.topbar .mobile-account-menu{flex:0 0 auto}}
+@media(max-width:850px){.topbar{padding-right:max(14px,env(safe-area-inset-right,0px));padding-left:max(14px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:24px}.topbar .brand-button{flex:0 0 auto;white-space:nowrap}.topbar .top-actions{flex:0 0 auto;gap:5px}.topbar .mobile-account-menu{flex:0 0 auto}}
 @media(max-width:430px){.topbar{padding-right:max(12px,env(safe-area-inset-right,0px));padding-left:max(12px,env(safe-area-inset-left,0px))}.topbar .top-actions{gap:4px}.topbar .account-button{margin-left:0}}
 @media(max-width:350px){.topbar{padding-right:max(8px,env(safe-area-inset-right,0px));padding-left:max(8px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:22px}.topbar .brand-button{padding-right:2px;padding-left:2px}.topbar .top-actions{gap:2px}}
 @media(max-width:850px){.topbar .mobile-account-menu>section{top:calc(64px + env(safe-area-inset-top,0px));width:min(210px,calc(100vw - 20px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}.topbar .mobile-tool-item{min-width:0}.topbar .mobile-tool-item b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}

@@ -1,8 +1,8 @@
 //! The authenticated top bar.
 //!
 //! This is intentionally a separate shell component. The reference top bar has
-//! three different disclosure surfaces (tasks, system status and the mobile
-//! account/tools menu); keeping their ownership explicit prevents an account
+//! separate disclosure surfaces for tasks and the mobile account/tools menu;
+//! keeping their ownership explicit prevents an account
 //! click from accidentally becoming logout again.
 
 use leptos::prelude::*;
@@ -12,7 +12,6 @@ use wasm_bindgen::JsCast;
 use crate::browser;
 
 use super::icons;
-use super::system_status::SystemStatus;
 use super::tasks::{TaskCenter, UiTaskController};
 use crate::logic::task_status::is_active_task_status;
 
@@ -163,7 +162,6 @@ pub fn AppTopbar(
                 <Show
                     when=move || !mobile.get()
                     fallback=move || view! {
-                        <SystemStatus />
                         <details node_ref=mobile_menu class="mobile-account-menu">
                             <summary title="账户与工具" aria-label="打开账户与工具菜单">
                                 {account_avatar()}
@@ -214,7 +212,6 @@ pub fn AppTopbar(
                     }
                 >
                     <TaskCenter controller=task_controller.clone() hide_trigger=false />
-                    <SystemStatus />
                     <button
                         class="trash-button"
                         type="button"

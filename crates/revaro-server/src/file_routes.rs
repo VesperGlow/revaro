@@ -2873,27 +2873,6 @@ VALUES('x1','00000000-0000-0000-0000-000000000000','notes.bin','file','blobs/x1'
     }
 
     #[tokio::test]
-    async fn system_status_counts_trashed_bytes_separately_from_live_bytes() {
-        let state = state().await;
-        let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
-VALUES('a','00000000-0000-0000-0000-000000000000','a.bin','file','blobs/a',100,'application/octet-stream','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
-('b','00000000-0000-0000-0000-000000000000','b.bin','file','blobs/b',60,'application/octet-stream','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'); \
-UPDATE files SET deleted_at='2024-01-01T00:00:00Z', trash_root_id='b' WHERE id='b';";
-        seed(&state, sql).await;
-
-        let (status, body) = call(&state, "/api/system/status").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["storage"]["bytes"], 160);
-        assert_eq!(body["storage"]["trash_bytes"], 60);
-        assert_eq!(body["storage"]["file_count"], 2);
-        assert!(body["database"]["bytes"].as_i64().unwrap() > 0);
-        // The test state uses an isolated writable cache directory, so the
-        // process-wide cache manager has completed its real startup probe.
-        assert_eq!(body["cache"]["status"], "ok");
-        assert_eq!(body["status"], "ok");
-    }
-
-    #[tokio::test]
     async fn sharing_creates_rotates_and_revokes_a_link() {
         let state = state().await;
         let sql: &'static str = "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \

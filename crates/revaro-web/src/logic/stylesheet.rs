@@ -78,7 +78,7 @@ pub const CASCADE: [Stylesheet; 14] = [
 /// global sheets at equal specificity; loading them last and anchoring their
 /// generic class names under each component root reproduces that. They are
 /// listed separately because they are not part of the original 15-file cascade.
-pub const COMPONENT_SHEETS: [Stylesheet; 9] = [
+pub const COMPONENT_SHEETS: [Stylesheet; 8] = [
     Stylesheet::new(
         "styles/components/app-topbar.css",
         "AppTopbar scoped block; :deep() resolved",
@@ -86,10 +86,6 @@ pub const COMPONENT_SHEETS: [Stylesheet; 9] = [
     Stylesheet::new(
         "styles/components/task-center.css",
         "TaskCenter scoped block",
-    ),
-    Stylesheet::new(
-        "styles/components/system-status.css",
-        "SystemStatus scoped block",
     ),
     Stylesheet::new(
         "styles/components/service-card.css",

@@ -20,7 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use revaro_core::api::system;
 use revaro_core::hash::Sha256;
 use revaro_reader::BookCache;
 use tokio::io::AsyncWriteExt as _;
@@ -187,7 +186,7 @@ pub struct CacheClassStats {
     pub disk_entries: i64,
 }
 
-/// A consistent cache snapshot used by tests and the status endpoint.
+/// A consistent snapshot of cache counters and tier usage.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CacheStats {
     /// Per-class snapshots, in deterministic name order.
@@ -714,44 +713,6 @@ impl CacheManager {
                 .saturating_add(i64::try_from(entries).unwrap_or(i64::MAX));
         }
         output
-    }
-
-    /// Convert the current counters to the public system-status shape.
-    #[must_use]
-    pub fn system_status(&self) -> system::Cache {
-        let stats = self.stats();
-        let classes: BTreeMap<_, _> = stats
-            .classes
-            .into_iter()
-            .map(|(name, class)| {
-                (
-                    name,
-                    system::CacheClass {
-                        hits: class.hits,
-                        misses: class.misses,
-                        loads: class.loads,
-                        load_errors: class.load_errors,
-                        evictions: class.evictions,
-                        memory_bytes: class.memory_bytes,
-                        memory_entries: class.memory_entries,
-                        disk_bytes: class.disk_bytes,
-                        disk_entries: class.disk_entries,
-                    },
-                )
-            })
-            .collect();
-        system::Cache {
-            status: if self.is_healthy() {
-                "ok".to_owned()
-            } else {
-                "degraded".to_owned()
-            },
-            memory_bytes: stats.memory_bytes,
-            disk_bytes: stats.disk_bytes,
-            memory_entries: stats.memory_entries,
-            disk_entries: stats.disk_entries,
-            classes: (!classes.is_empty()).then_some(classes),
-        }
     }
 
     fn class_config(&self, class: &str, key: &str) -> Result<CacheClass, CacheError> {
@@ -1780,9 +1741,8 @@ mod tests {
             std::env::temp_dir().join(format!("revaro-cache-{}", crate::ids::new_id()));
         let manager =
             CacheManager::for_app(&caches_dir, 1 << 20, Arc::new(BookCache::new(4, 128 << 20)));
-        let status = manager.system_status();
-        assert_eq!(status.status, "ok");
-        let classes = status.classes.unwrap();
+        assert!(manager.is_healthy());
+        let classes = manager.stats().classes;
         assert!(classes.contains_key(READER_FLOW_MANIFEST));
         assert!(classes.contains_key(READER_FLOW_CHUNK));
         assert!(classes.contains_key(READER_SOURCE));

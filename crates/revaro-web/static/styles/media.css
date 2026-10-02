@@ -4,6 +4,7 @@
 
 /* Shared viewer surfaces and controls. Media layout lives here, without breakpoint overrides in other modules. */
 .modal-backdrop.previewing { padding: 0; background: #191c20; }
+.modal-backdrop.previewing.image-previewing { background: color-mix(in srgb, var(--paper) 78%, transparent); backdrop-filter: none; }
 .preview-modal {
   --media-surface: #f6f8f9;
   --media-panel: #fff;
@@ -41,11 +42,19 @@
 .media-detail svg { width: 15px; height: 15px; }
 .media-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .preview-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
-.image-preview, .video-preview {
+.video-preview {
   --media-surface: #191c20; --media-panel: #24282d; --media-ink: #edf0f2;
   --media-muted: #a2abb3; --media-line: #ffffff1c; --media-hover: #ffffff12; --media-accent: #a1bed3;
 }
-.image-preview { grid-template-rows: calc(60px + env(safe-area-inset-top, 0px)) minmax(0, 1fr) auto; }
+.image-preview {
+  --media-surface: var(--surface); --media-panel: var(--surface); --media-ink: var(--ink);
+  --media-muted: var(--muted); --media-line: var(--line); --media-hover: var(--surface-hover); --media-accent: var(--accent);
+  grid-template-rows: calc(60px + env(safe-area-inset-top, 0px)) minmax(0, 1fr) auto; background: transparent;
+}
+.image-preview .preview-commandbar { box-shadow: 0 1px 0 var(--line); }
+.image-preview .preview-image-tools, .image-preview .preview-menu-panel { box-shadow: var(--shadow-popover); }
+.image-preview .preview-nav { border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); color: var(--ink-subtle); box-shadow: var(--shadow-popover); }
+.image-preview .preview-nav:hover { background: var(--surface-hover); color: var(--accent); }
 .image-preview .preview-stage { touch-action: none; }
 .preview-image { position: absolute; top: 50%; left: 50%; max-width: none; max-height: none; object-fit: contain; user-select: none; }
 .preview-stage.zoomed { cursor: grab; }

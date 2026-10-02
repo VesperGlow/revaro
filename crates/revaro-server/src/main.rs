@@ -94,9 +94,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    state
-        .status
-        .start(state.db.clone(), state.store.clone(), state.cache.clone());
     state.maintenance.start();
 
     tracing::info!(
@@ -114,7 +111,6 @@ async fn main() -> ExitCode {
     .with_graceful_shutdown(shutdown_signal())
     .await;
     state.maintenance.close().await;
-    state.status.shutdown();
     state.cache.close().await;
     match result {
         Ok(()) => {

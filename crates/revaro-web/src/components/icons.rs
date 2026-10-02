@@ -473,41 +473,6 @@ pub fn minimize() -> impl IntoView {
     }
 }
 
-/// Lucide `database` — the database service status card.
-pub fn database() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-            <path d="M3 5V19A9 3 0 0 0 21 19V5"></path>
-            <path d="M3 12A9 3 0 0 0 21 12"></path>
-        </svg>
-    }
-}
-
-/// Lucide `cloud` — the storage service status card.
-pub fn cloud() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path>
-        </svg>
-    }
-}
-
-/// Lucide `hard-drive` — the cache service status card.
-pub fn hard_drive() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M10 16h.01"></path>
-            <path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
-            <path d="M21.946 12.013H2.054"></path>
-            <path d="M6 16h.01"></path>
-        </svg>
-    }
-}
-
 /// Lucide `upload` — an upload action.
 pub fn upload() -> impl IntoView {
     view! {

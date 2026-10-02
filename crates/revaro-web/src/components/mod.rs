@@ -19,7 +19,6 @@ mod reader;
 mod reader_cache;
 mod selection_toolbar;
 mod share;
-mod system_status;
 mod tasks;
 mod topbar;
 mod transfer;
