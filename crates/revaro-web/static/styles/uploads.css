@@ -50,19 +50,7 @@ button img,
 .drop-zone {
   inset: 78px 0 0;
 }
-.content-head {
-  align-items: flex-end;
-  margin-bottom: 26px;
-}
-.folder-heading {
-  min-width: 0;
-}
-.title-row {
-  margin: 7px 0 7px;
-}
-.title-row h1 {
-  font-size: 32px;
-}
+
 .folder-meta {
   display: flex;
   align-items: center;
@@ -80,20 +68,7 @@ button img,
     .content {
     padding: 18px 14px 80px;
   }
-  .content-head {
-    gap: 14px;
-    margin-bottom: 16px;
-  }
-  .folder-heading {
-    width: 100%;
-  }
-  .title-row {
-    width: 100%;
-    margin: 0 0 7px;
-  }
-  .title-row h1 {
-    font-size: 27px;
-  }
+
   .folder-meta {
     gap: 7px;
     font-size: 12px !important;

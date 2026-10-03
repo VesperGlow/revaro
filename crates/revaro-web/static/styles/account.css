@@ -557,17 +557,3 @@
 .account-modal,.account-subdialog{max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px)}
 @media (max-width:850px){.account-modal,.account-subdialog{max-height:calc(100vh - 28px);max-height:calc(100dvh - 28px)}}
 @media (max-width:460px){.account-modal,.account-subdialog{max-height:calc(100vh - 20px);max-height:calc(100dvh - 20px)}}
-
-.account-modal .management-status { height:42px; margin:10px 0 12px; }
-.status-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; height:100%; }
-.status-metrics > span { display:flex; flex-direction:column; justify-content:center; gap:4px; min-width:0; }
-.status-metrics small { font-size:11px; color:var(--muted); line-height:16px; white-space:nowrap; }
-.status-metrics b { font-size:13px; font-weight:550; line-height:18px; white-space:nowrap; }
-.status-skeleton i { display:block; width:80%; height:11px; border-radius:4px; background:var(--line); animation:status-pulse 1.4s ease-in-out infinite; }
-.status-skeleton i + i { width:65%; height:13px; }
-.status-result { animation:status-reveal .18s ease-out; }
-.account-modal .management-status > p { display:flex; align-items:center; height:100%; margin:0; color:var(--muted); font-size:13px; }
-@keyframes status-pulse { 50% { opacity:.45; } }
-@keyframes status-reveal { from { opacity:0; } to { opacity:1; } }
-@media(max-width:600px) { .account-modal .management-status { height:84px; } .status-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 16px; } }
-@media(prefers-reduced-motion:reduce) { .status-skeleton i,.status-result { animation:none; } }

@@ -90,9 +90,8 @@ pub struct TaskController {
 
 /// Document-level listeners owned by one rendered task-centre disclosure.
 ///
-/// The desktop and mobile top bars swap their `TaskCenter` child at the
-/// responsive breakpoint, but they share the same controller and its SSE
-/// connection.  These listeners therefore need a view-scoped lifetime that
+/// The persistent topbar owns one task-centre view and its SSE connection.
+/// These listeners therefore need a view-scoped lifetime that
 /// is separate from the controller's application lifetime.
 pub struct TaskViewListeners {
     outside: browser::OwnedListener,
@@ -200,18 +199,6 @@ impl TaskController {
         {
             let _ = summary.focus();
         }
-    }
-
-    /// Open the native disclosure panel from the mobile account/tools menu.
-    pub fn open_center(&self) {
-        if let Some(details) = self.center.get() {
-            details.set_open(true);
-        }
-    }
-
-    /// Expose the reactive snapshot to the mobile account/tools summary.
-    pub fn task_signal(&self) -> RwSignal<Vec<Task>> {
-        self.tasks
     }
 
     fn is_center_open(&self) -> bool {
@@ -534,14 +521,10 @@ impl TaskController {
 
 /// Render the task trigger and panel.
 #[component]
-pub fn TaskCenter(
-    controller: UiTaskController,
-    hide_trigger: bool,
-    #[prop(optional)] anchor: Option<NodeRef<leptos::html::Summary>>,
-) -> impl IntoView {
+pub fn TaskCenter(controller: UiTaskController) -> impl IntoView {
     let trigger = NodeRef::<leptos::html::Summary>::new();
     let panel = NodeRef::<leptos::html::Section>::new();
-    let position = browser::anchor_popover(anchor.unwrap_or(trigger), panel);
+    let position = browser::anchor_popover(trigger, panel);
     let listeners = controller.mount();
     on_cleanup(move || drop(listeners));
 
@@ -607,11 +590,7 @@ pub fn TaskCenter(
 
     view! {
         <details node_ref=center class="task-center" on:toggle=move |_| position.run(())>
-            // Keep a real (hidden) summary for the mobile, trigger-less
-            // instance. Without it, HTML details inserts its UA "Details"
-            // summary, which was not present in the reference top bar.
             <summary node_ref=trigger
-                class:task-trigger-hidden=hide_trigger
                 title="任务中心"
                 aria-label="打开任务中心"
             >

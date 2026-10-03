@@ -59,7 +59,7 @@ fn db(error: rusqlite::Error) -> ApiError {
 }
 
 fn valid_kind(kind: &str) -> bool {
-    matches!(kind, "book" | "audio" | "image")
+    matches!(kind, "book" | "audio" | "image" | "video")
 }
 
 async fn list(
@@ -81,11 +81,11 @@ async fn list(
         let total=c.query_row(&format!("SELECT COUNT(*) FROM files WHERE {predicate}"),params,|r| r.get(0)).map_err(db)?;
         let last="COALESCE((SELECT last_opened FROM library_state WHERE file_id=files.id),(SELECT updated_at FROM settings WHERE key='book_progress/'||files.id),(SELECT updated_at FROM media_progress WHERE file_id=files.id))";
         let order=if o.collection.is_some() { "(SELECT position FROM library_collection_items WHERE collection_id=?4 AND file_id=files.id) ASC".to_owned() } else if o.recent { format!("{last} DESC") } else { "created_at DESC".to_owned() };
-        let mut query=c.prepare(&format!("SELECT {FILE_COLUMNS},(SELECT kind FROM library_items WHERE file_id=files.id),COALESCE((SELECT favorite FROM library_state WHERE file_id=files.id),0),{last},EXISTS(SELECT 1 FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag AND m.video_codec<>'') FROM files WHERE {predicate} ORDER BY {order},id LIMIT ?6 OFFSET ?7")).map_err(db)?;
+        let mut query=c.prepare(&format!("SELECT {FILE_COLUMNS},(SELECT kind FROM library_items WHERE file_id=files.id),COALESCE((SELECT favorite FROM library_state WHERE file_id=files.id),0),{last},EXISTS(SELECT 1 FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag AND m.video_codec<>''),(SELECT duration_ms FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag) FROM files WHERE {predicate} ORDER BY {order},id LIMIT ?6 OFFSET ?7")).map_err(db)?;
         let items=query.query_map(rusqlite::params![o.kind,o.q,o.favorite,o.collection,o.recent,limit,o.offset], |row| {
             let mut file=scan_file(row)?;
             file.has_cover=row.get::<_,bool>(18)?;
-            Ok(LibraryItem {file,kind:row.get(15)?,favorite:row.get(16)?,last_opened:row.get::<_,Option<String>>(17)?.and_then(|s| Timestamp::parse(&s).ok())})
+            Ok(LibraryItem {file,duration_ms:row.get(19)?,kind:row.get(15)?,favorite:row.get(16)?,last_opened:row.get::<_,Option<String>>(17)?.and_then(|s| Timestamp::parse(&s).ok())})
         }).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?;
         Ok(LibraryListing {items,total,offset:o.offset,limit})
     }).await.map(Json)
@@ -281,6 +281,7 @@ mod tests {
             ("book", revaro_core::classify::BOOK_EXTENSIONS),
             ("audio", revaro_core::classify::AUDIO_EXTENSIONS),
             ("image", revaro_core::classify::IMAGE_EXTENSIONS),
+            ("video", revaro_core::classify::VIDEO_EXTENSIONS),
         ] {
             for extension in extensions {
                 seed(

@@ -766,7 +766,6 @@ pub fn AccountSettings(
                                 {move || if totp_loading.get() { "读取中…" } else if totp_enabled.get() { "管理" } else { "设置" }}
                             </button>
                         </section>
-                        <super::management::Management/>
                         <section class="account-session-row">
                             <div><span class="setting-label">"当前会话"</span><p>"退出这台设备上的 Revaro 账户"</p></div>
                             <button type="button" on:click=move |_| logout.run(())>"退出登录"</button>

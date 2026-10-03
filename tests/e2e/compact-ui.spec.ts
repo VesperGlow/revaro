@@ -1,55 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { login } from './helpers'
 
-for (const width of [1280, 390, 320]) {
-  test(`runtime status reserves its layout during loading, failure and recovery at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 })
-    let release!: () => void
-    let gate = new Promise<void>(resolve => { release = resolve })
-    let failed = false
-    await page.route('**/api/shares?**', route => route.fulfill({ json: [] }))
-    await page.route('**/api/system/status', async route => {
-      await gate
-      if (failed) await route.fulfill({ status: 500, json: { message: 'unavailable' } })
-      else await route.fulfill({ json: { disk_available_bytes: 4 * 1024 ** 3, cache: { memory_bytes: 2 * 1024 ** 2, disk_bytes: 3 * 1024 ** 2 }, active_tasks: 12 } })
-    })
-    await login(page)
-    if (width <= 850) {
-      await page.getByLabel('打开账户与工具菜单', { exact: true }).click()
-      await page.getByRole('button', { name: '账户设置', exact: true }).click()
-    } else await page.getByLabel('打开账户设置', { exact: true }).click()
-    const management = page.locator('.management')
-    const status = management.getByRole('status')
-    const positions = () => page.evaluate(() => ['.management-status', '.management-actions', '.management > h3:last-of-type'].map(selector => {
-      const rect = document.querySelector(selector)!.getBoundingClientRect()
-      return { y: rect.y, height: rect.height }
-    }))
-    await expect(status).toHaveAttribute('aria-busy', 'true')
-    await expect(status.locator('.status-skeleton')).toBeVisible()
-    await expect(status).toHaveText('')
-    const initial = await positions()
-    release()
-    await expect(status).toHaveAttribute('aria-busy', 'false')
-    await expect(status.locator('.status-metrics > span')).toHaveText(['磁盘可用空间4.0 GiB', '内存缓存2.0 MiB', '磁盘缓存3.0 MiB', '活动任务12'])
-    expect(await positions()).toEqual(initial)
-    await expect(management.getByRole('button', { name: '刷新状态', exact: true })).toBeEnabled()
-    failed = true
-    gate = new Promise<void>(resolve => { release = resolve })
-    await management.getByRole('button', { name: '刷新状态', exact: true }).click()
-    await expect(status.locator('.status-skeleton')).toBeVisible()
-    expect(await positions()).toEqual(initial)
-    release()
-    await expect(status).toHaveText('状态获取失败')
-    expect(await positions()).toEqual(initial)
-    await expect(management.getByRole('button', { name: '刷新状态', exact: true })).toBeEnabled()
-    failed = false
-    gate = Promise.resolve()
-    await management.getByRole('button', { name: '刷新状态', exact: true }).click()
-    await expect(status).toContainText('活动任务12')
-    expect(await positions()).toEqual(initial)
-  })
-}
-
 test('compact dashboards and shared SVG action menus preserve file operations and keyboard focus', async ({ page }) => {
   const failures: string[] = []
   page.on('pageerror', error => failures.push(error.message))
@@ -57,7 +8,7 @@ test('compact dashboards and shared SVG action menus preserve file operations an
   for (const width of [1280, 851, 850, 390, 320]) {
     await page.setViewportSize({ width, height: 900 })
     const nav = page.getByRole('navigation', { name: width <= 850 ? '移动端导航' : '主导航', exact: true })
-    for (const label of ['首页', '阅读', '音乐', '图库']) {
+    for (const label of ['首页', '书籍', '音乐', '图片']) {
       await nav.getByRole('link', { name: label, exact: true }).click()
       await expect(nav.locator('[aria-current=page]')).toHaveAttribute('aria-label', label)
       await expect(page.locator('.library-welcome, .library-eyebrow, .welcome-art, .library-heading, main h1')).toHaveCount(0)
@@ -73,8 +24,8 @@ test('compact dashboards and shared SVG action menus preserve file operations an
       await expect(trigger).toHaveText('')
       await expect(trigger.locator('svg')).toHaveCount(1)
       const bounds = await trigger.boundingBox()
-      expect(bounds!.height).toBe(44)
-      expect(bounds!.width).toBe(44)
+      expect(bounds!.height).toBe(width <= 850 ? 40 : 44)
+      expect(bounds!.width).toBe(width <= 430 ? 30 : width <= 1100 ? 34 : 44)
     }
     await expect(create.locator('svg circle')).toHaveAttribute('r', '9')
     await create.click()
@@ -98,7 +49,7 @@ test('compact dashboards and shared SVG action menus preserve file operations an
     await expect(upload).not.toHaveCSS('box-shadow', 'none')
     await create.press('Enter')
     await expect(page.getByRole('button', { name: '新建文档', exact: true })).toBeVisible()
-    await page.getByRole('heading', { name: '我的文件', exact: true }).click()
+    await page.locator('.breadcrumbs').click({ position: { x: 1, y: 1 } })
     await expect(page.locator('.topbar .action-menu[open]')).toHaveCount(0)
   }
   await page.setViewportSize({ width: 1280, height: 900 })

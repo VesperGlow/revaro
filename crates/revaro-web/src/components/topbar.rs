@@ -1,16 +1,15 @@
 //! Shared application header and navigation, using the existing file tools.
 
 use leptos::prelude::*;
-use revaro_core::model::TaskStatus;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::{browser, logic::library::LibraryPage};
 
 use super::icons;
+use super::management::{PublicLinks, SystemStatus};
 use super::menu::{ActionMenu, MenuIcon};
 use super::tasks::{TaskCenter, UiTaskController};
-use crate::logic::task_status::is_active_task_status;
 
 /// Profile, task and file actions injected by the persistent file workspace.
 #[derive(Clone)]
@@ -27,7 +26,6 @@ pub struct TopbarActions {
     pub on_trash: Callback<()>,
     pub on_account: Callback<()>,
     pub search_text: RwSignal<String>,
-    pub trash_mode: RwSignal<bool>,
     pub on_search: Callback<()>,
 }
 
@@ -56,27 +54,13 @@ pub fn AppTopbar(
         on_upload_folder,
         on_new_document,
         on_create_folder,
-        on_trash,
         on_account,
         search_text,
-        trash_mode,
         on_search,
         ..
     } = actions;
-    let open_trash = Callback::new(move |()| {
-        on_navigate.run(LibraryPage::Files);
-        on_trash.run(());
-    });
-    let file_actions_disabled =
-        Signal::derive(move || page.get() == LibraryPage::Files && trash_mode.get());
-    let menu_context = Signal::from(Memo::new(move |_| {
-        format!("{}:{}", page.get().path(), trash_mode.get())
-    }));
-    let mobile = browser::media_query_signal("(max-width: 850px)");
-    let mobile_menu = NodeRef::<leptos::html::Details>::new();
-    let mobile_trigger = NodeRef::<leptos::html::Summary>::new();
-    let mobile_panel = NodeRef::<leptos::html::Section>::new();
-    let mobile_position = browser::anchor_popover(mobile_trigger, mobile_panel);
+    let file_actions_disabled = Signal::derive(move || page.get() == LibraryPage::Trash);
+    let menu_context = Signal::from(Memo::new(move |_| page.get().path().to_owned()));
     let search_open = RwSignal::new(false);
     let search_container = NodeRef::<leptos::html::Div>::new();
     let search_input = NodeRef::<leptos::html::Input>::new();
@@ -108,12 +92,7 @@ pub fn AppTopbar(
     let mut search_resize = browser::on_resize(move |_| size_search.run(()));
     on_cleanup(move || search_resize.release());
 
-    let search_context = Memo::new(move |_| {
-        (
-            page.get(),
-            page.get() == LibraryPage::Files && trash_mode.get(),
-        )
-    });
+    let search_context = Memo::new(move |_| (page.get(), page.get() == LibraryPage::Trash));
     Effect::new(move |_| {
         let _ = search_context.get();
         search_open.set(false);
@@ -139,23 +118,6 @@ pub fn AppTopbar(
             }
         }
     });
-    let task_signal = task_controller.task_signal();
-    let active_task_count = Signal::derive_local(move || {
-        task_signal
-            .get()
-            .into_iter()
-            .filter(|task| is_active_task_status(task.status))
-            .count()
-    });
-    let failed_task_count = Signal::derive_local(move || {
-        task_signal
-            .get()
-            .into_iter()
-            .filter(|task| task.status == TaskStatus::Failed)
-            .count()
-    });
-
-    let menu_for_outside = mobile_menu;
     let mut outside = browser::on_click(move |event| {
         let Some(target) = event
             .target()
@@ -163,20 +125,12 @@ pub fn AppTopbar(
         else {
             return;
         };
-        // Close after the click is dispatched so shrinking the header cannot
-        // move a navigation link between pointer-down and pointer-up.
         if search_open.get_untracked()
             && !search_container
                 .get()
                 .is_some_and(|container| container.contains(Some(&target)))
         {
             search_open.set(false);
-        }
-        if let Some(details) = menu_for_outside.get()
-            && details.open()
-            && !details.contains(Some(&target))
-        {
-            details.set_open(false);
         }
     });
     let close_search = Callback::new(move |(): ()| {
@@ -187,7 +141,6 @@ pub fn AppTopbar(
             let _ = button.focus_with_options(&options);
         }
     });
-    let menu_for_escape = mobile_menu;
     let mut escape = browser::on_keydown(move |event| {
         if event.key() != "Escape" {
             return;
@@ -197,53 +150,11 @@ pub fn AppTopbar(
             close_search.run(());
             return;
         }
-        let Some(details) = menu_for_escape.get() else {
-            return;
-        };
-        if details.open() {
-            details.set_open(false);
-            if let Ok(Some(summary)) = details.query_selector("summary")
-                && let Ok(summary) = summary.dyn_into::<web_sys::HtmlElement>()
-            {
-                let _ = summary.focus();
-            }
-        }
     });
     on_cleanup(move || {
         outside.release();
         escape.release();
     });
-
-    let close_mobile_menu = Callback::new(move |(): ()| {
-        if let Some(details) = mobile_menu.get() {
-            details.set_open(false);
-        }
-    });
-    let open_mobile_tasks = {
-        let close_mobile_menu = close_mobile_menu.clone();
-        let controller = task_controller.clone();
-        Callback::new(move |(): ()| {
-            close_mobile_menu.run(());
-            controller.open_center();
-        })
-    };
-    let open_mobile_trash = {
-        let close_mobile_menu = close_mobile_menu.clone();
-        let on_trash = open_trash;
-        Callback::new(move |(): ()| {
-            close_mobile_menu.run(());
-            on_trash.run(());
-        })
-    };
-    let open_mobile_account = {
-        let close_mobile_menu = close_mobile_menu.clone();
-        let on_account = on_account.clone();
-        Callback::new(move |(): ()| {
-            close_mobile_menu.run(());
-            on_account.run(());
-        })
-    };
-    let mobile_task_controller = task_controller.clone();
 
     let initial = move || {
         username
@@ -292,12 +203,12 @@ pub fn AppTopbar(
             </div>
             <AppNavigation page=page on_navigate=on_navigate mobile=false />
             <div class="top-actions">
-                <Show when=move || page.get() != LibraryPage::Home && !(page.get() == LibraryPage::Files && trash_mode.get()) fallback=|| ()>
+                <Show when=move || page.get() != LibraryPage::Trash fallback=|| view! { <button class="search-toggle" type="button" aria-label="打开搜索" title="回收站不支持搜索" disabled>{icons::search()}</button> }>
                     <div node_ref=search_container class="topbar-search"
                         class:expanded=move || search_open.get()
                         style=move || format!("--search-width:{}px", search_width.get())>
                         <form class="search-surface" role="search" aria-label=move || match page.get() {
-                            LibraryPage::Books => "书籍搜索", LibraryPage::Music => "歌曲搜索", LibraryPage::Gallery => "图片搜索", _ => "文件搜索",
+                            LibraryPage::Books => "书籍搜索", LibraryPage::Music => "歌曲搜索", LibraryPage::Gallery => "图片搜索", LibraryPage::Videos => "视频搜索", _ => "文件搜索",
                         } on:submit=move |ev: leptos::ev::SubmitEvent| {
                             ev.prevent_default();
                             if search_open.get_untracked() {
@@ -307,9 +218,9 @@ pub fn AppTopbar(
                             <span node_ref=search_measure class="search-measure" aria-hidden="true"></span>
                             <div id="topbar-search-fields" class="search-fields" aria-hidden=move || (!search_open.get()).to_string()>
                                 <input node_ref=search_input type="search" aria-label=move || match page.get() {
-                                    LibraryPage::Books => "搜索书籍", LibraryPage::Music => "搜索歌曲", LibraryPage::Gallery => "搜索图片", _ => "搜索文件名",
+                                    LibraryPage::Books => "搜索书籍", LibraryPage::Music => "搜索歌曲", LibraryPage::Gallery => "搜索图片", LibraryPage::Videos => "搜索视频", _ => "搜索文件名",
                                 } placeholder=move || match page.get() {
-                                    LibraryPage::Books => "搜索书籍…", LibraryPage::Music => "搜索歌曲…", LibraryPage::Gallery => "搜索图片…", _ => "搜索文件…",
+                                    LibraryPage::Books => "搜索书籍…", LibraryPage::Music => "搜索歌曲…", LibraryPage::Gallery => "搜索图片…", LibraryPage::Videos => "搜索视频…", _ => "搜索文件…",
                                 } prop:disabled=move || !search_open.get()
                                     prop:value=move || if page.get() == LibraryPage::Files { search_text.get() } else { library_search.text.get() }
                                     on:input=move |ev| {
@@ -328,6 +239,12 @@ pub fn AppTopbar(
                                 on:click=move |_| {
                                     if search_open.get_untracked() {
                                         if let Some(input) = search_input.get() { let _ = input.focus(); }
+                                    } else if page.get_untracked() == LibraryPage::Home {
+                                        on_navigate.run(LibraryPage::Files);
+                                        if let Some(window) = web_sys::window() {
+                                            let callback = Closure::once_into_js(move || { let _ = search_open.try_set(true); });
+                                            let _ = window.request_animation_frame(callback.unchecked_ref());
+                                        }
                                     } else { search_open.set(true); }
                                 }>{icons::search()}</button>
                         </form>
@@ -341,79 +258,12 @@ pub fn AppTopbar(
                     <button type="button" data-close-menu="true" on:click=move |_| on_upload_files.run(())>"上传文件"</button>
                     <button type="button" data-close-menu="true" on:click=move |_| on_upload_folder.run(())>"上传文件夹"</button>
                 </ActionMenu>
-                <Show
-                    when=move || !mobile.get()
-                    fallback=move || view! {
-                        <details node_ref=mobile_menu class="mobile-account-menu" on:toggle=move |_| mobile_position.run(())>
-                            <summary node_ref=mobile_trigger title="账户与工具" aria-label="打开账户与工具菜单">
-                                {account_avatar()}
-                                <Show when=move || { failed_task_count.get() > 0 } fallback=move || view! {
-                                    <Show when=move || { active_task_count.get() > 0 } fallback=|| ()>
-                                        <i class="task-menu-badge active" aria-label=move || format!("{} 个活动任务", active_task_count.get())></i>
-                                    </Show>
-                                }>
-                                    <i class="task-menu-badge failed" aria-label="存在失败任务">"!"</i>
-                                </Show>
-                            </summary>
-                            <section node_ref=mobile_panel>
-                                <button
-                                    class="mobile-tool-item"
-                                    type="button"
-                                    on:click=move |_| open_mobile_tasks.run(())
-                                >
-                                    <span class="mobile-task-icon">{icons::activity()}</span>
-                                    <b>"任务中心"</b>
-                                    <Show when=move || { failed_task_count.get() > 0 } fallback=move || view! {
-                                        <Show when=move || { active_task_count.get() > 0 } fallback=|| ()>
-                                            <small>{move || format!("{} 项活动", active_task_count.get())}</small>
-                                        </Show>
-                                    }>
-                                        <small class="failed">{move || format!("{} 项失败", failed_task_count.get())}</small>
-                                    </Show>
-                                </button>
-                                <button
-                                    class="mobile-trash"
-                                    type="button"
-                                    on:click=move |_| open_mobile_trash.run(())
-                                >
-                                    <span class="trash-button">{icons::trash()}</span>
-                                    <b>"回收站"</b>
-                                </button>
-                                <hr />
-                                <button
-                                    class="mobile-tool-item"
-                                    type="button"
-                                    on:click=move |_| open_mobile_account.run(())
-                                >
-                                    <span class="mobile-task-icon">{icons::settings()}</span>
-                                    <b>"账户设置"</b>
-                                </button>
-                            </section>
-                        </details>
-                        <TaskCenter controller=mobile_task_controller.clone() hide_trigger=true anchor=mobile_trigger />
-                    }
-                >
-                    <TaskCenter controller=task_controller.clone() hide_trigger=false />
-                    <button
-                        class="trash-button"
-                        type="button"
-                        title="回收站"
-                        aria-label="打开回收站"
-                        on:click=move |_| open_trash.run(())
-                    >
-                        {icons::trash()}
-                    </button>
-                    <button
-                        class="account-button"
-                        type="button"
-                        title=move || format!("账户设置 · {}", username.get())
-                        aria-label="打开账户设置"
-                        on:click=move |_| on_account.run(())
-                    >
-                        {account_avatar()}
-
-                    </button>
-                </Show>
+                <PublicLinks context=menu_context />
+                <TaskCenter controller=task_controller.clone() />
+                <SystemStatus context=menu_context />
+                <button class="account-button" type="button"
+                    title=move || format!("账户设置 · {}", username.get()) aria-label="打开账户设置"
+                    on:click=move |_| on_account.run(())>{account_avatar()}</button>
             </div>
         </header>
     }
@@ -444,7 +294,9 @@ pub fn AppNavigation(
                         LibraryPage::Books => icons::book_open().into_any(),
                         LibraryPage::Music => icons::music_2().into_any(),
                         LibraryPage::Gallery => icons::image().into_any(),
+                        LibraryPage::Videos => icons::video().into_any(),
                         LibraryPage::Files => icons::folder().into_any(),
+                        LibraryPage::Trash => icons::trash().into_any(),
                     }}</a>
             } />
         </nav>

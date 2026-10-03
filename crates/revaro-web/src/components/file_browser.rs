@@ -548,6 +548,10 @@ pub fn FileBrowser(
             let sequence = request_sequence.get_untracked().wrapping_add(1);
             request_sequence.set(sequence);
             loading_folder.set(None);
+            trash_mode.set(true);
+            items.set(Vec::new());
+            total_bytes.set(0);
+            file_count.set(0);
             loading.set(true);
             loading_more.set(false);
             loading_more_error.set(String::new());
@@ -622,9 +626,7 @@ pub fn FileBrowser(
     };
     let upload_feedback = notify.clone();
     let upload_destination = Signal::derive(move || {
-        if shell_context
-            .is_some_and(|context| context.page.get() != crate::logic::library::LibraryPage::Files)
-        {
+        if shell_context.is_some_and(|context| !context.page.get().is_file_workspace()) {
             ROOT_ID.to_owned()
         } else {
             current_id.get()
@@ -632,9 +634,7 @@ pub fn FileBrowser(
     });
     let upload_trash = Signal::derive(move || {
         trash_mode.get()
-            && shell_context.is_none_or(|context| {
-                context.page.get() == crate::logic::library::LibraryPage::Files
-            })
+            && shell_context.is_none_or(|context| context.page.get() == LibraryPage::Trash)
     });
     let uploads = UploadController::new(
         upload_destination,
@@ -1925,6 +1925,9 @@ pub fn FileBrowser(
                 _ => {}
             }
         });
+    } else if shell_context.is_some_and(|c| c.page.get_untracked() == LibraryPage::Trash) {
+        trash_mode.set(true);
+        load_trash.run(());
     } else {
         load_folder.run(initial_folder);
     }
@@ -2023,6 +2026,7 @@ pub fn FileBrowser(
         let load_folder_request = load_folder_request.clone();
         let popstate_queue = popstate_queue.clone();
         let popstate_processing = popstate_processing.clone();
+        let load_trash = load_trash.clone();
         browser::on_popstate(move |_| {
             if let Some(context) = shell_context
                 && !nav_actions
@@ -2030,7 +2034,9 @@ pub fn FileBrowser(
                     .last()
                     .is_some_and(|action| matches!(action, NavAction::Overlay))
             {
-                if context.page.get_untracked() == LibraryPage::Files {
+                if context.page.get_untracked() == LibraryPage::Trash {
+                    load_trash.run(());
+                } else if context.page.get_untracked() == LibraryPage::Files {
                     let path = web_sys::window()
                         .and_then(|w| w.location().pathname().ok())
                         .unwrap_or_default();
@@ -2121,14 +2127,13 @@ pub fn FileBrowser(
         on_trash: load_trash,
         on_account: open_account,
         search_text,
-        trash_mode,
         on_search: submit_search,
     });
 
     view! {
         <div
             class="app-shell"
-            class:file-tools-background=move || shell_context.is_some_and(|c| c.page.get() != LibraryPage::Files)
+            class:file-tools-background=move || shell_context.is_some_and(|c| !c.page.get().is_file_workspace())
             on:dragover=move |event: web_sys::DragEvent| shell_upload.on_drag_over(event)
             on:dragleave=move |event: web_sys::DragEvent| shell_upload_leave.on_drag_leave(event)
             on:drop=move |event: web_sys::DragEvent| shell_upload_drop.on_drop(event)
@@ -2148,7 +2153,6 @@ pub fn FileBrowser(
                     file_count=file_count
                     trash_mode=trash_mode
                     on_open_folder=load_folder.clone()
-                    on_leave_trash=return_home.clone()
                     on_empty_trash=show_empty_trash.clone()
                 />
 

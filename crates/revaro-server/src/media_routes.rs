@@ -34,6 +34,7 @@ const MEDIA_PROBE_VERSION: i64 = 2;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/files/{id}/audio", get(audio_media_info))
+        .route("/files/{id}/video", get(video_media_info))
         .route("/files/{id}/thumbnail", get(thumbnail))
 }
 
@@ -61,6 +62,7 @@ async fn ready_media_file(
                 && match kind {
                     MediaKind::Any => true,
                     MediaKind::Audio => classify::is_audio(&file),
+                    MediaKind::Video => classify::is_video(&file),
                 };
             if !valid {
                 return Err(revaro_core::ApiError::not_found(message));
@@ -74,6 +76,7 @@ async fn ready_media_file(
 enum MediaKind {
     Any,
     Audio,
+    Video,
 }
 
 fn not_found_or(error: crate::db::DbError, message: &'static str) -> revaro_core::ApiError {
@@ -310,6 +313,22 @@ async fn audio_media_info(
         },
         has_cover,
     }))
+}
+
+/// Video metadata uses the same bounded probe and etag-aware cache as audio.
+async fn video_media_info(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    PathParam(id): PathParam<String>,
+) -> Result<Json<MediaProbe>, revaro_core::ApiError> {
+    let file = ready_media_file(
+        state.clone(),
+        id,
+        MediaKind::Video,
+        "ready video file not found",
+    )
+    .await?;
+    ensure_media_metadata(state, file).await.map(Json)
 }
 
 fn thumbnail_key(file: &File) -> String {

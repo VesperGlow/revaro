@@ -108,7 +108,7 @@ test('Rust bundle opens editable TXT files in the document editor', async ({ pag
   await expect(editor.getByRole('button', { name: '保存' })).toBeDisabled()
   await editor.getByRole('button', { name: '关闭编辑器' }).click()
   await expect(editor).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true })).toBeVisible()
 })
 
 test('文档编辑器按文件名和内容共同判断未保存状态，并格式化字节数', async ({ page }) => {
@@ -242,7 +242,7 @@ test('Rust bundle opens an EPUB reader, follows its TOC and restores progress', 
 
   await page.locator('#reader-back').click()
   await expect(page.locator('#reader-view')).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: '我的文件' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true })).toBeVisible()
 
   await card.click()
   await expect(page.locator('#reader-view')).toBeVisible()

@@ -74,6 +74,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "005_content_library.sql",
         sql: include_str!("../migrations/005_content_library.sql"),
     },
+    Migration {
+        version: 6,
+        name: "006_video_library.sql",
+        sql: include_str!("../migrations/006_video_library.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -610,6 +615,71 @@ mod tests {
         drop(connection);
         drop(database);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn video_upgrade_preserves_collections_and_indexes_existing_and_renamed_files() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        for migration in &MIGRATIONS[..5] {
+            c.execute_batch(migration.sql).unwrap();
+        }
+        for (id, name, mime) in [
+            ("photo", "photo.png", "image/png"),
+            ("clip", "clip.MP4", "application/octet-stream"),
+            ("mime-video", "clip.bin", "video/webm"),
+        ] {
+            c.execute("INSERT INTO files(id,parent_id,name,kind,object_key,size,status,mime_type,created_at,updated_at) VALUES(?1,?2,?3,'file',?1,123,'ready',?4,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", rusqlite::params![id,ROOT_ID,name,mime]).unwrap();
+        }
+        c.execute_batch("INSERT INTO library_collections VALUES('album','Saved album','image','2026-01-01T00:00:00Z'); INSERT INTO library_collection_items VALUES('album','photo',7); INSERT INTO library_state VALUES('photo',1,'2026-01-01T00:00:00Z');").unwrap();
+        c.execute_batch(MIGRATIONS[5].sql).unwrap();
+        let videos: i64 = c
+            .query_row(
+                "SELECT count(*) FROM library_items WHERE kind='video'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(videos, 2);
+        let preserved: (String,i64,i64) = c.query_row("SELECT name,position,favorite FROM library_collections JOIN library_collection_items ON collection_id=id JOIN library_state USING(file_id)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(preserved, ("Saved album".to_owned(), 7, 1));
+        c.execute(
+            "UPDATE files SET name='photo.webm',mime_type='video/webm' WHERE id='photo'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT kind FROM library_items WHERE file_id='photo'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "video"
+        );
+        c.execute(
+            "UPDATE files SET name='photo.png',mime_type='image/png' WHERE id='photo'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM library_items WHERE kind='image'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        c.execute_batch("INSERT INTO library_collections VALUES('videos','Clips','video','2026-01-01T00:00:00Z'); INSERT INTO library_collection_items VALUES('videos','clip',0);").unwrap();
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
     }
 
     #[test]

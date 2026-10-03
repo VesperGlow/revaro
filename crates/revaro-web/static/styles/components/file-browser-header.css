@@ -3,7 +3,6 @@
 .content-head .trash-empty-action:disabled { opacity: .45; }
 .breadcrumbs{display:flex;align-items:center;max-width:min(760px,70vw);margin:-4px 0 7px;padding:3px 0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;white-space:nowrap;-webkit-overflow-scrolling:touch}.breadcrumbs::-webkit-scrollbar{display:none}.breadcrumbs button{display:inline-flex;min-width:max-content;min-height:36px;align-items:center;padding:0 10px;border:0;border-radius:9px;background:transparent;color:#53657b;font-size:14px;font-weight:650;line-height:1;transition:background-color .15s ease,color .15s ease,box-shadow .15s ease}.breadcrumbs button:hover{background:#eef5ff;color:#1d64bd}.breadcrumbs button:active{background:#dfeeff;color:#174f96}.breadcrumbs button:focus-visible{outline:0;box-shadow:0 0 0 3px #bfdbfe}.breadcrumbs button.current{background:#edf5ff;color:#1764bd;font-weight:750}.breadcrumb-separator{width:15px;height:15px;flex:0 0 auto;color:#a9b7c8;stroke-width:1.8}@media(max-width:850px){.breadcrumbs{width:calc(100vw - 28px);max-width:100%;margin-bottom:6px;padding:2px 0 4px;mask-image:linear-gradient(to right,transparent 0,#000 10px,#000 calc(100% - 16px),transparent 100%)}.breadcrumbs button{min-height:40px;padding:0 11px;font-size:14px}.breadcrumbs button:first-of-type{margin-left:4px}.breadcrumbs button:last-of-type{margin-right:12px}.breadcrumb-separator{width:14px;height:14px}}
 
-.content-head .actions { align-items: center; }
 .content-head .file-sort {
   position: relative; display: inline-flex; align-items: stretch; flex: 0 0 auto;
   width: max-content; height: var(--control-md); max-width: 100%; padding: 0;
@@ -36,15 +35,17 @@
 .content-head .sort-field-options button {
   justify-content: flex-start; height: 36px; padding: 0 10px; border-radius: 5px;
 }
-@media (max-width: 850px) {
-  .content-head .actions { display:flex; justify-content:flex-start; width:auto; }
-}
-@media (max-width: 380px) {
-  .content-head .actions { gap: 6px; }
 
+/* Path, totals and sorting share one desktop toolbar row. */
+.content-head { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:20px; min-height:40px; margin-bottom:18px; }
+.content-head .breadcrumbs { grid-column:1; min-width:0; max-width:100%; width:100%; min-height:40px; margin:0; padding:0; }
+.content-head .folder-meta { grid-column:2; margin:0; flex-wrap:nowrap; white-space:nowrap; }
+.content-head .actions { grid-column:3; display:flex; align-items:center; width:auto; }
+.trash-toolbar .folder-meta { grid-column:1; }
+@media(max-width:650px) {
+ .content-head { grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+ .content-head .breadcrumbs { grid-column:1/-1; }
+ .content-head .folder-meta { grid-column:1; min-width:0; flex-wrap:wrap; gap:6px; }
+ .content-head .actions { grid-column:2; }
+ .trash-toolbar .folder-meta { white-space:normal; }
 }
-
-/* Breadcrumbs and sort are the file page's only local toolbar. */
-.content-head { flex-direction:row; flex-wrap:wrap; align-items:flex-end; gap:12px; margin-bottom:18px; }
-.content-head .folder-heading { flex:1; min-width:0; }
-.content-head .actions { display:flex; flex-shrink:0; width:auto; }

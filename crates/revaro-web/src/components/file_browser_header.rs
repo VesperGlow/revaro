@@ -23,7 +23,6 @@ pub fn FileBrowserHeader(
     file_count: RwSignal<i64>,
     trash_mode: RwSignal<bool>,
     on_open_folder: Callback<String>,
-    on_leave_trash: Callback<()>,
     on_empty_trash: Callback<()>,
 ) -> impl IntoView {
     let sort_container = NodeRef::<leptos::html::Div>::new();
@@ -131,8 +130,7 @@ pub fn FileBrowserHeader(
     };
 
     view! {
-        <div class="content-head">
-            <div class="folder-heading">
+        <div class="content-head" class:trash-toolbar=move || trash_mode.get()>
                 <Show when=move || !trash_mode.get() && !path_items.get().is_empty() fallback=|| ()>
                     <nav node_ref=breadcrumb_nav class="breadcrumbs" aria-label="当前路径">
                         {move || {
@@ -158,11 +156,6 @@ pub fn FileBrowserHeader(
                         }}
                     </nav>
                 </Show>
-                <div class="title-row">
-                    <h1 title=move || if trash_mode.get() { "回收站".to_owned() } else { current.get().map(|file| file.name).filter(|name| !name.is_empty()).unwrap_or_else(|| "我的文件".to_owned()) }>
-                        {move || if trash_mode.get() { "回收站".to_owned() } else { current.get().map(|file| if file.name.is_empty() { "我的文件".to_owned() } else { file.name }).unwrap_or_else(|| "我的文件".to_owned()) }}
-                    </h1>
-                </div>
                 <p class="folder-meta">
                     <span>{move || format!("{} 个项目", if trash_mode.get() { item_count.get().len() as i64 } else { listing_total.get() })}</span><i></i>
                     <Show
@@ -176,7 +169,6 @@ pub fn FileBrowserHeader(
                         <span>"已删除的文件将在 30 天后永久删除"</span>
                     </Show>
                 </p>
-            </div>
             <Show
                 when=move || trash_mode.get()
                 fallback=move || view! {
@@ -206,7 +198,7 @@ pub fn FileBrowserHeader(
                     </div>
                 }
             >
-                <div class="actions"><button class="secondary" type="button" on:click=move |_| on_leave_trash.run(())>"返回我的文件"</button><button class="trash-empty-action" type="button" prop:disabled=move || item_count.get().is_empty() on:click=move |_| on_empty_trash.run(())>"清空回收站"</button></div>
+                <div class="actions"><button class="trash-empty-action" type="button" prop:disabled=move || item_count.get().is_empty() on:click=move |_| on_empty_trash.run(())>"清空回收站"</button></div>
             </Show>
         </div>
     }

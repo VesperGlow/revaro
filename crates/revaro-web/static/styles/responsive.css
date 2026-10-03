@@ -46,26 +46,18 @@ body {
 
 /* File names must never contribute an unbounded intrinsic width. */
 .card-info,
-.editor-title > div,
-
-.folder-heading,
-.title-row{
+.editor-title > div {
   min-width: 0;
   max-width: 100%;
 }
 .card-info strong,
-.editor-title strong,
-
-.folder-heading h1{
+.editor-title strong {
   display: block;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.title-row h1 {
-  flex: 1;
 }
 
 @media (max-width: 850px) {
@@ -137,16 +129,7 @@ button:disabled {
   width: min(100%, 1540px);
   padding-top: 38px;
 }
-.content-head {
-  align-items: flex-end;
-  margin-bottom: 26px;
-}
-.content-head h1 {
-  margin: 6px 0 7px;
-  color: var(--ink);
-  font-size: clamp(24px, 2vw, 30px);
-  font-weight: 720;
-}
+
 .folder-meta {
   display: flex;
   align-items: center;
@@ -159,9 +142,7 @@ button:disabled {
   border-radius: 50%;
   background: var(--line-strong);
 }
-.title-row {
-  gap: 10px;
-}
+
 .actions {
   gap: 8px;
 }
@@ -240,9 +221,7 @@ button:disabled {
   .content {
     padding-top: 22px;
   }
-  .content-head {
-    gap: 18px;
-  }
+
   .actions {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
@@ -253,21 +232,14 @@ button:disabled {
   .folder-meta {
     flex-wrap: wrap;
   }
-  .content-head h1 {
-    font-size: 24px;
-  }
+
 }
 @media (max-width: 430px) {
   .content {
     padding-right: max(12px, env(safe-area-inset-right, 0px));
     padding-left: max(12px, env(safe-area-inset-left, 0px));
   }
-  .title-row {
-    align-items: center;
-  }
-  .content-head h1 {
-    font-size: 22px;
-  }
+
   .actions .primary,
   .actions .secondary{
     padding: 0 10px;

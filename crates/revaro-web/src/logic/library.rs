@@ -6,16 +6,20 @@ pub enum LibraryPage {
     Books,
     Music,
     Gallery,
+    Videos,
     Files,
+    Trash,
 }
 
 impl LibraryPage {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Home,
         Self::Books,
         Self::Music,
         Self::Gallery,
+        Self::Videos,
         Self::Files,
+        Self::Trash,
     ];
     pub fn path(self) -> &'static str {
         match self {
@@ -23,16 +27,20 @@ impl LibraryPage {
             Self::Books => "/library",
             Self::Music => "/music",
             Self::Gallery => "/gallery",
+            Self::Videos => "/videos",
             Self::Files => "/files",
+            Self::Trash => "/trash",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::Home => "首页",
-            Self::Books => "阅读",
+            Self::Books => "书籍",
             Self::Music => "音乐",
-            Self::Gallery => "图库",
+            Self::Gallery => "图片",
+            Self::Videos => "视频",
             Self::Files => "文件",
+            Self::Trash => "回收站",
         }
     }
     pub fn kind(self) -> &'static str {
@@ -40,6 +48,7 @@ impl LibraryPage {
             Self::Books => "book",
             Self::Music => "audio",
             Self::Gallery => "image",
+            Self::Videos => "video",
             _ => "",
         }
     }
@@ -47,8 +56,12 @@ impl LibraryPage {
         match self {
             Self::Books => "书架",
             Self::Music => "歌单",
+            Self::Videos => "视频集",
             _ => "相册",
         }
+    }
+    pub fn is_file_workspace(self) -> bool {
+        matches!(self, Self::Files | Self::Trash)
     }
     pub fn from_path(path: &str) -> Self {
         match path.trim_end_matches('/') {
@@ -56,6 +69,8 @@ impl LibraryPage {
             "/music" => Self::Music,
             "/gallery" => Self::Gallery,
             "/files" => Self::Files,
+            "/videos" => Self::Videos,
+            "/trash" => Self::Trash,
             p if p.starts_with("/f/") => Self::Files,
             p if p.starts_with("/read/") => Self::Books,
             _ => Self::Home,
@@ -88,6 +103,8 @@ mod tests {
             ("/f/folder", LibraryPage::Files),
             ("/music", LibraryPage::Music),
             ("/gallery", LibraryPage::Gallery),
+            ("/videos", LibraryPage::Videos),
+            ("/trash", LibraryPage::Trash),
         ] {
             assert_eq!(LibraryPage::from_path(path), page);
         }

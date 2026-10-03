@@ -9,6 +9,8 @@ pub struct LibraryItem {
     pub kind: String,
     pub favorite: bool,
     pub last_opened: Option<Timestamp>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

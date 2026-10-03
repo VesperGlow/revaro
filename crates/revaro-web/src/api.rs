@@ -212,6 +212,11 @@ pub async fn fetch_book_chunk(id: &str, index: i32) -> Result<String, RequestErr
     Err(decode_request_error(response).await)
 }
 
+/// Fetch the cached server-side video probe for library duration labels.
+pub async fn fetch_video_media(id: &str) -> Result<revaro_core::media::MediaProbe, RequestError> {
+    get_json(&format!("/api/files/{id}/video")).await
+}
+
 /// Fetch a saved playback position. The server returns zeroes for a first play.
 pub async fn fetch_media_progress(id: &str) -> Result<MediaProgress, RequestError> {
     get_json(&format!("/api/files/{id}/media/progress")).await
@@ -466,9 +471,11 @@ pub async fn fetch_listing(
     ))
     .await
 }
-/// Only the runtime metrics displayed in account settings are retained.
+/// Compact storage and runtime metrics for the topbar status popover.
 #[derive(Clone, serde::Deserialize)]
 pub struct SystemStatusSummary {
+    pub disk_total_bytes: u64,
+    pub disk_used_bytes: u64,
     pub disk_available_bytes: u64,
     pub cache: CacheSummary,
     pub active_tasks: u64,

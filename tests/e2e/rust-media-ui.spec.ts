@@ -126,10 +126,10 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   await secondCard.waitFor()
 
   await page.locator('.file-card').filter({ hasText: target }).click()
-  await page.getByRole('heading', { name: target }).waitFor()
+  await page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: target, exact: true }).waitFor()
   await page.locator('.file-card').filter({ hasText: first }).waitFor()
   await page.getByRole('button', { name: '我的文件', exact: true }).first().click()
-  await page.getByRole('heading', { name: '我的文件' }).waitFor()
+  await page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true }).waitFor()
 
   await page.locator('.file-card').filter({ hasText: audio }).click()
   await page.locator('audio').first().waitFor({ state: 'attached' })

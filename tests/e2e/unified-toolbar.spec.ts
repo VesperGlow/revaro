@@ -21,9 +21,9 @@ test('one header search keeps existing module queries and file scope separate', 
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?q=${prefix}`)).json()).total).toBe(3)
   const nav = page.getByRole('navigation', { name: '主导航', exact: true })
   for (const [name, label, placeholder, kind, extension] of [
-    ['阅读', '搜索书籍', '搜索书籍…', 'book', 'txt'],
+    ['书籍', '搜索书籍', '搜索书籍…', 'book', 'txt'],
     ['音乐', '搜索歌曲', '搜索歌曲…', 'audio', 'wav'],
-    ['图库', '搜索图片', '搜索图片…', 'image', 'png'],
+    ['图片', '搜索图片', '搜索图片…', 'image', 'png'],
   ]) {
     await nav.getByRole('link', { name, exact: true }).click()
     await expect(page.locator('main input[type=search], .library-toolbar input, .library-toolbar select')).toHaveCount(0)
@@ -72,11 +72,11 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
     expect(response.ok()).toBe(true)
   }
   await page.reload()
-  await expect(page.getByRole('heading', { name: '我的文件', exact: true })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true })).toBeVisible()
   for (const width of [1280, 1100, 851, 850, 390, 320]) {
     await page.setViewportSize({ width, height: 900 })
     const nav = page.getByRole('navigation', { name: width <= 850 ? '移动端导航' : '主导航', exact: true })
-    for (const name of ['首页', '阅读', '音乐', '图库', '文件']) {
+    for (const name of ['首页', '书籍', '音乐', '图片', '文件']) {
       const link = nav.getByRole('link', { name, exact: true })
       await expect(link).toHaveAttribute('title', name)
       await expect(link).toHaveText('')
@@ -135,14 +135,14 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     }
 
-    const buttons = page.locator('.topbar .search-toggle, .topbar .action-menu>summary, .topbar .task-center>summary:not(.task-trigger-hidden), .topbar .top-actions>.trash-button, .topbar .top-actions>.account-button, .topbar .mobile-account-menu>summary')
+    const buttons = page.locator('.topbar .search-toggle, .topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
     const geometry = await buttons.evaluateAll(elements => elements.map(element => {
       const rect = element.getBoundingClientRect()
       return { width: rect.width, height: rect.height, center: rect.y + rect.height / 2 }
     }))
     for (const button of geometry) {
-      expect(button.width).toBe(44)
-      expect(button.height).toBe(44)
+      expect(button.width).toBe(width <= 430 ? 30 : width <= 1100 ? 34 : 44)
+      expect(button.height).toBe(width <= 850 ? 40 : 44)
       expect(button.center).toBe(geometry[0].center)
     }
     for (const label of ['新建', '上传']) {
@@ -155,10 +155,9 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
       await expect(page.locator('.topbar .action-menu[open] .action-menu-panel')).toHaveCSS('border-radius', '10px')
       await page.keyboard.press('Escape')
     }
-    const tasksTrigger = page.getByLabel(width <= 850 ? '打开账户与工具菜单' : '打开任务中心', { exact: true })
+    const tasksTrigger = page.getByLabel('打开任务中心', { exact: true })
     const bounds = (await tasksTrigger.boundingBox())!
     await tasksTrigger.click()
-    if (width <= 850) await page.getByRole('button', { name: '任务中心', exact: true }).click()
     await expect(page.locator('.task-panel')).toBeVisible()
     const menu = (await page.locator('.task-panel').boundingBox())!
     expect(Math.abs(menu.x - Math.max(8, Math.min(bounds.x + (bounds.width - menu.width) / 2, width - 8 - menu.width)))).toBeLessThanOrEqual(1)
@@ -182,14 +181,13 @@ test('header search grows with typed text, shrinks on clear and keeps tools fixe
     await expect(input).toBeFocused()
     await input.fill('')
     const surface = page.locator('.search-surface')
-    const initial = width === 320 ? 150 : 208
+    const initial = width <= 850 ? Math.min(208, width - (width <= 430 ? 216 : 248)) : 208
     await expect.poll(async () => (await surface.boundingBox())!.width).toBe(initial)
-    const tools = page.locator('.topbar .action-menu>summary, .topbar .task-center>summary:not(.task-trigger-hidden), .topbar .top-actions>.trash-button, .topbar .top-actions>.account-button, .topbar .mobile-account-menu>summary')
+    const tools = page.locator('.topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
     const positions = await tools.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()))
     const right = (await surface.boundingBox())!.x + initial
     await input.fill('适度长度的文件名称')
-    const maximum = width === 1600 ? 380 : width === 1100 || width === 850 ? 420
-      : width === 1280 ? 220 : width === 390 ? 220 : 150
+    const maximum = width <= 850 ? Math.min(420, width - (width <= 430 ? 216 : 248)) : width <= 1400 ? 420 : 330
     await expect.poll(async () => (await surface.boundingBox())!.width).toBeGreaterThanOrEqual(initial)
     await input.fill('超长的文件名称与关键词'.repeat(12))
     await expect.poll(async () => (await surface.boundingBox())!.width).toBeGreaterThanOrEqual(maximum - 1)

@@ -95,7 +95,6 @@
 .collection-options p { font-size:13px; color:#889a7f; line-height:1.7; }
 .content-library>.app-shell { min-height:0; }
 .content-library>.app-shell.file-tools-background>.content { display:none; }
-.content-library>.app-shell.file-tools-background>.content { display:none; }
 .content-library>.app-shell>.content { max-width:1440px; margin:auto; padding-left:5%; padding-right:5%; }
 .content-library.has-music { padding-bottom:100px; }
 .music-dock { position:fixed; bottom:0; left:0; right:0; height:87px; background:#fafcf9f5; backdrop-filter:blur(18px); border-top:1px solid #dde6d8; padding:0 4%; display:flex; gap:25px; align-items:center; z-index:35; box-shadow:0 -5px 24px #3a513407; }
@@ -191,3 +190,11 @@
 .content-library:has(#reader-view) .dock-controls button { width:34px; height:34px; }
 .content-library.has-music:has(#reader-view) .reader-bar-title { padding-right:100px; }
 .content-library:has(.toc-drawer.open) .music-dock { visibility:hidden; }
+
+/* The filters and every toolbar action use one shared control height. */
+.library-toolbar-actions > button { display:inline-flex; align-items:center; justify-content:center; height:38px; margin:0; padding:0 14px; line-height:1; }
+.library-toolbar-actions { align-self:center; }
+.video-grid .library-cover,.video-grid .library-card:nth-child(5n+1) .library-cover { aspect-ratio:16/9; }
+.video-cover-play { position:absolute; inset:0; display:grid; place-items:center; color:#fff; background:#17212b12; }
+.video-cover-play svg { width:24px; height:24px; padding:5px; box-sizing:content-box; background:#17212b65; border-radius:50%; }
+.video-duration { position:absolute; bottom:8px; right:8px; padding:3px 6px; background:#17212bb3; border-radius:var(--radius-sm); color:#fff; font-size:11px; font-variant-numeric:tabular-nums; }

@@ -28,12 +28,6 @@
   --control-sm:36px;--control-md:40px;--control-lg:44px;--space-1:4px;--space-2:8px;
   --space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px
 }
-.trash-button{
-  width:var(--control-md);height:var(--control-md);border-radius:var(--radius-md);color:var(--muted)
-}
-.trash-button:hover{
-  background:var(--surface-hover);color:var(--ink-subtle)
-}
 .dialog-backdrop{
   position:fixed;z-index:80;inset:0;display:grid;place-items:center;padding:20px;
   background:#0f172a73;backdrop-filter:blur(5px)

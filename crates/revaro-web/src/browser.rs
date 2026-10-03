@@ -1,8 +1,7 @@
 //! Small browser interop helpers used by the shell.
 //!
 //! Nothing here is application logic; it is the handful of `web-sys` calls the
-//! shell needs and that do not belong inline in a view: media-query signals,
-//! `localStorage` access and document-level event listeners.
+//! shell needs and that do not belong inline in a view: `localStorage` access and document-level event listeners.
 //!
 //! Only compiled for wasm. The pure replacements for the old TypeScript helpers
 //! live in `crate::logic`.
@@ -11,45 +10,6 @@ use leptos::ev;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::MediaQueryListEvent;
-
-/// A reactive `matchMedia(query).matches`.
-///
-/// `AppTopbar` switches layout at 850 px by reading `window.matchMedia`, and it
-/// must react when the window crosses the breakpoint rather than only at
-/// startup. The listener is installed once and released with the component that
-/// owns the signal, matching the Vue component's `onMounted`/`onBeforeUnmount`
-/// pair.
-pub fn media_query_signal(query: &str) -> RwSignal<bool> {
-    let signal = RwSignal::new(media_query_matches(query));
-    let Some(window) = web_sys::window() else {
-        return signal;
-    };
-    let Ok(Some(list)) = window.match_media(query) else {
-        return signal;
-    };
-    let listener =
-        Closure::<dyn FnMut(MediaQueryListEvent)>::new(move |event: MediaQueryListEvent| {
-            signal.set(event.matches());
-        });
-    let _ = list.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
-    let cleanup = leptos::__reexports::send_wrapper::SendWrapper::new((list, listener));
-    on_cleanup(move || {
-        let (list, listener) = cleanup.take();
-        let _ =
-            list.remove_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
-    });
-    signal
-}
-
-/// One-shot `matchMedia(query).matches`, false when the API is unavailable.
-#[must_use]
-pub fn media_query_matches(query: &str) -> bool {
-    web_sys::window()
-        .and_then(|window| window.match_media(query).ok().flatten())
-        .is_some_and(|list| list.matches())
-}
-
 /// Read a `localStorage` value, treating any storage failure as "absent".
 ///
 /// Private-mode browsers throw on access; the Vue helpers wrapped every call in

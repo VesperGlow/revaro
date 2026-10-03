@@ -34,17 +34,6 @@ pub fn activity() -> impl IntoView {
     }
 }
 
-/// Lucide `settings` — the mobile account menu.
-pub fn settings() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-        </svg>
-    }
-}
-
 /// Lucide-style edit mark used by the account username action.
 pub fn edit() -> impl IntoView {
     view! {
@@ -518,4 +507,18 @@ pub fn heart() -> impl IntoView {
             <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"></path>
         </svg>
     }
+}
+
+/// Video in the shared stroke icon style.
+pub fn video() -> impl IntoView {
+    view! { <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="14" rx="3" /><path d="m10 9 5 3-5 3Z" />
+    </svg> }
+}
+
+/// Public links in the shared stroke icon style.
+pub fn link() -> impl IntoView {
+    view! { <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10 13a5 5 0 0 0 7 .1l3-3a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7-.1l-3 3a5 5 0 0 0 7 7l2-2" />
+    </svg> }
 }

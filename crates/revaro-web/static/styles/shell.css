@@ -292,18 +292,7 @@ button {
   padding: 42px 48px 80px;
   min-width: 0;
 }
-.content-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  align-items: flex-end;
-  margin-bottom: 32px;
-}
-.content-head h1 {
-  font-size: 29px;
-  letter-spacing: -0.03em;
-  margin: 8px 0 6px;
-}
+
 .content-head p {
   margin: 0;
   color: #94a3b8;
@@ -468,10 +457,7 @@ button {
   .content {
     padding: 26px 16px 90px;
   }
-  .content-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
+
   .actions {
     width: 100%;
   }
@@ -579,9 +565,7 @@ button {
   }
 }
 @media (max-width: 850px) {
-  .content-head {
-    margin-bottom: 22px;
-  }
+
   .actions {
     display: grid;
     grid-template-columns: auto 1fr 1fr;
@@ -604,7 +588,6 @@ button {
 }
 
 /* Calm, full-screen image lightbox */
-
 
 /* Koofr-style tile selection: content first, actions only after selection */
 .avatar-badge {

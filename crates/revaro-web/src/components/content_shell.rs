@@ -18,7 +18,11 @@ use super::{
 use crate::{
     api::{self, LibraryQuery},
     browser,
-    logic::{format::format_date, library::LibraryPage, routing::reader_id},
+    logic::{
+        format::{format_date, format_media_time},
+        library::LibraryPage,
+        routing::reader_id,
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -96,10 +100,12 @@ pub fn ContentShell(
         if !same_route {
             route(next.path(), true);
         }
-        if next == LibraryPage::Files
-            && let Some(actions) = header_actions.get_untracked()
-        {
-            actions.on_files.run(());
+        if let Some(actions) = header_actions.get_untracked() {
+            match next {
+                LibraryPage::Files => actions.on_files.run(()),
+                LibraryPage::Trash => actions.on_trash.run(()),
+                _ => (),
+            }
         }
         refresh.update(|r| *r += 1);
         if let Some(w) = web_sys::window() {
@@ -114,8 +120,10 @@ pub fn ContentShell(
     let logout = on_logout;
     let load = Callback::new(move |more: bool| {
         let current_page = page.get_untracked();
-        if matches!(current_page, LibraryPage::Home | LibraryPage::Files)
-            || (more && more_loading.get_untracked())
+        if matches!(
+            current_page,
+            LibraryPage::Home | LibraryPage::Files | LibraryPage::Trash
+        ) || (more && more_loading.get_untracked())
         {
             return;
         }
@@ -204,12 +212,12 @@ pub fn ContentShell(
                     .map(|i| i.file)
                     .collect(),
             );
-        } else if revaro_core::classify::is_image(&file) {
+        } else if revaro_core::classify::is_image(&file) || revaro_core::classify::is_video(&file) {
             image_items.set(
                 items
                     .get_untracked()
                     .into_iter()
-                    .filter(|i| i.kind == "image")
+                    .filter(|i| revaro_core::classify::is_image(&i.file))
                     .map(|i| i.file)
                     .collect(),
             );
@@ -239,7 +247,7 @@ pub fn ContentShell(
     });
     Effect::new(move |_| {
         let list = items.get();
-        if page.get() == LibraryPage::Gallery {
+        if matches!(page.get(), LibraryPage::Gallery | LibraryPage::Videos) {
             image_items.set(list.iter().map(|i| i.file.clone()).collect());
         }
         if let Some(current) = image.get()
@@ -457,7 +465,7 @@ pub fn ContentShell(
             {move || header_actions.get().map(|actions| view! {
                 <AppTopbar actions=actions library_search=library_search page=page on_navigate=navigate />
             })}
-            <Show when=move ||page.get()!=LibraryPage::Files fallback=|| ()>
+            <Show when=move ||!page.get().is_file_workspace() fallback=|| ()>
                 <main class="library-main">
                     <Show when=move ||page.get()==LibraryPage::Home fallback=move ||view! {
 
@@ -496,7 +504,7 @@ pub fn ContentShell(
                         <Show when=move ||!selected_collection.get().is_empty() fallback=|| ()><div class="collection-caption"><span>"集合中的内容仍保存在原文件夹，移除成员不会删除原文件。"</span><button on:click=move |_|delete_collection.run(())>"删除集合"</button></div></Show>
                         <Show when=move ||loading.get() fallback=move ||view! {
                             <Show when=move ||items.get().is_empty() && error.get().is_empty() fallback=|| ()><div class="library-empty"><span>"＋"</span><h2>"这里等着你的收藏"</h2><p>"已有文件会自动出现在对应内容库，也可以现在导入。"</p><button class="primary" on:click=move |_|import.run(())>"导入内容"</button></div></Show>
-                            <div class="library-grid" class:book-grid=move ||page.get()==LibraryPage::Books class:song-list=move ||page.get()==LibraryPage::Music class:photo-grid=move ||page.get()==LibraryPage::Gallery>
+                            <div class="library-grid" class:book-grid=move ||page.get()==LibraryPage::Books class:song-list=move ||page.get()==LibraryPage::Music class:photo-grid=move ||matches!(page.get(),LibraryPage::Gallery | LibraryPage::Videos) class:video-grid=move ||page.get()==LibraryPage::Videos>
                                 <For each=move || { items.get().into_iter().enumerate().collect::<Vec<_>>() } key=|(_,i)|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.last_opened.is_some()) children=move |(index,item)| {
                                     let favorite_item=item.clone();let open_file=item.file.clone();let add_file=item.file.clone();let remove_file=item.file.clone();
                                     view!{<article class="library-card" class:is-playing=move ||music.current().is_some_and(|f|f.id==open_file.id)>
@@ -539,7 +547,55 @@ fn LibraryCover(item: LibraryItem) -> impl IntoView {
     let failed = RwSignal::new(false);
     let kind = item.kind.clone();
     let class = format!("library-cover {}-cover", kind);
-    view! {<div class=class><Show when=move ||!failed.get() fallback=move ||view!{<div class="cover-placeholder"><span>{match kind.as_str(){"book"=>"READ","audio"=>"♫",_=>"IMAGE"}}</span><strong>{display_title(&item.file.name)}</strong></div>}><img loading="lazy" src=format!("/api/files/{}/thumbnail?v={}",item.file.id,item.file.etag) alt="" on:error=move |_|failed.set(true) /></Show></div>}
+    let is_video = item.kind == "video";
+    let duration = RwSignal::new(
+        item.duration_ms
+            .filter(|ms| *ms > 0)
+            .map(|ms| format_media_time(ms as f64 / 1000.0)),
+    );
+    let thumbnail_url = format!("/api/files/{}/thumbnail?v={}", item.file.id, item.file.etag);
+    let retry = RwSignal::new(0_u8);
+    let retry_thumbnail = move |_| {
+        failed.set(true);
+        if is_video
+            && retry.get_untracked() < 4
+            && let Some(window) = web_sys::window()
+        {
+            use wasm_bindgen::{JsCast, closure::Closure};
+            let callback = Closure::once_into_js(move || {
+                if let Some(attempt) = retry.try_get_untracked() {
+                    retry.set(attempt + 1);
+                    failed.set(false);
+                }
+            });
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.unchecked_ref(),
+                1500,
+            );
+        }
+    };
+    if is_video && duration.get_untracked().is_none() {
+        let id = item.file.id.clone();
+        leptos::task::spawn_local(async move {
+            if let Ok(metadata) = api::fetch_video_media(&id).await
+                && metadata.duration_ms > 0
+            {
+                let _ = duration.try_set(Some(format_media_time(
+                    metadata.duration_ms as f64 / 1000.0,
+                )));
+            }
+        });
+    }
+    view! {
+        <div class=class>
+            <Show when=move || !failed.get() fallback=move || view! {
+                <div class="cover-placeholder"><span>{match kind.as_str() { "book" => view! { <span>"READ"</span> }.into_any(), "audio" => view! { <span>"♫"</span> }.into_any(), "video" => icons::video().into_any(), _ => icons::image().into_any() }}</span><strong>{display_title(&item.file.name)}</strong></div>
+            }>
+                <img loading="lazy" src={let url = thumbnail_url.clone(); move || format!("{}&retry={}", url, retry.get())} alt="" on:error=retry_thumbnail />
+            </Show>
+            {is_video.then(|| view! { <span class="video-cover-play">{icons::play()}</span><span class="video-duration">{move || duration.get().unwrap_or_else(|| "—:—".to_owned())}</span> })}
+        </div>
+    }
 }
 
 #[component]
@@ -559,7 +615,12 @@ fn HomeDashboard(
         let gen_id = generation.get_untracked();
         leptos::task::spawn_local_scoped_with_cancellation(async move {
             let mut list = Vec::new();
-            for page in [LibraryPage::Books, LibraryPage::Music, LibraryPage::Gallery] {
+            for page in [
+                LibraryPage::Books,
+                LibraryPage::Music,
+                LibraryPage::Gallery,
+                LibraryPage::Videos,
+            ] {
                 let base = LibraryQuery {
                     kind: page.kind().to_owned(),
                     ..Default::default()
@@ -603,8 +664,8 @@ fn HomeDashboard(
 
 
         <For each=move ||sections.get() key=move |(p,_)|(p.path(),refresh.get_untracked()) children=move |(p,list)|view!{
-            <section class="home-section"><header><div><h2>{match p{LibraryPage::Books=>"继续阅读",LibraryPage::Music=>"最近播放与收藏",_=>"最近添加"}}</h2></div><button on:click=move |_|on_navigate.run(p)>"查看全部"<span>"→"</span></button></header>
-                <div class="home-content-row" class:home-books=p==LibraryPage::Books class:home-images=p==LibraryPage::Gallery>
+            <section class="home-section"><header><div><h2>{match p{LibraryPage::Books=>"继续阅读",LibraryPage::Music=>"最近播放与收藏",LibraryPage::Videos=>"最近添加的视频",_=>"最近添加的图片"}}</h2></div><button on:click=move |_|on_navigate.run(p)>"查看全部"<span>"→"</span></button></header>
+                <div class="home-content-row" class:home-books=p==LibraryPage::Books class:home-images=matches!(p,LibraryPage::Gallery | LibraryPage::Videos)>
                     {if list.is_empty(){view!{<button class="home-empty" on:click=move |_|on_import.run(())>"还没有内容，导入你的第一份收藏 →"</button>}.into_any()}else{list.into_iter().map(|item|{let file=item.file.clone();view!{<button class="home-item" on:click=move |_|on_open.run(file.clone())><LibraryCover item=item.clone()/><strong>{display_title(&item.file.name)}</strong><small>{if item.last_opened.is_some(){"继续打开"}else{"新加入你的内容库"}}</small></button>}}).collect_view().into_any()}}
                 </div>
             </section>
