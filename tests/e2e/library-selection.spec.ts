@@ -117,7 +117,19 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await expect(targets.first()).toHaveCSS('animation-name', 'selection-sway')
       await expect(targets.first()).toHaveCSS('animation-duration', '2.8s')
       const frames = await targets.first().evaluate(el => (el.getAnimations().find(animation => (animation as CSSAnimation).animationName === 'selection-sway')!.effect as KeyframeEffect).getKeyframes().map(frame => frame.transform))
-      expect(frames).toEqual(['translateX(-2px)', 'translateX(2px)', 'translateX(-2px)'])
+      expect(frames).toEqual(['rotate(-2deg)', 'rotate(2deg)', 'rotate(-2deg)'])
+      const motion = await targets.first().evaluate(el => {
+        const style = getComputedStyle(el)
+        const siblings = [...el.parentElement!.children]
+        return {
+          origin: style.transformOrigin.split(' ').map(parseFloat),
+          center: [parseFloat(style.width) / 2, parseFloat(style.height) / 2],
+          delays: siblings.map(card => getComputedStyle(card).animationDelay),
+        }
+      })
+      expect(motion.origin[0]).toBeCloseTo(motion.center[0], 2)
+      expect(motion.origin[1]).toBeCloseTo(motion.center[1], 2)
+      expect(new Set(motion.delays).size).toBeGreaterThan(1)
       const dimensions = await targets.first().evaluate(el => ({ width: el.clientWidth, height: el.clientHeight }))
       if (name === '音乐') {
         await expect(page.locator('.song-number')).toHaveCount(await cards.count())

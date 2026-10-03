@@ -10,10 +10,14 @@
 
 /* Transform-only motion leaves the listing and batch toolbar geometry unchanged. */
 .selection-mode>:is(.file-card,.library-card,.home-card){cursor:pointer;transform:none;transform-origin:center;transition:transform 180ms ease,box-shadow 180ms ease,outline-color 180ms ease}
-.selection-mode>:is(.file-card,.library-card,.home-card):not(.selected){animation:selection-sway 2.8s ease-in-out infinite}
+.selection-mode>:is(.file-card,.library-card,.home-card):not(.selected){animation:selection-sway 2.8s ease-in-out infinite;animation-delay:var(--selection-delay,0s)}
+.selection-mode>:is(.file-card,.library-card,.home-card):nth-child(5n+2){--selection-delay:-.45s}
+.selection-mode>:is(.file-card,.library-card,.home-card):nth-child(5n+3){--selection-delay:-1.65s}
+.selection-mode>:is(.file-card,.library-card,.home-card):nth-child(5n+4){--selection-delay:-.9s}
+.selection-mode>:is(.file-card,.library-card,.home-card):nth-child(5n){--selection-delay:-2.2s}
 .selection-mode>:is(.file-card,.library-card,.home-card).selected{animation:none;transform:scale(.985);outline:none;box-shadow:0 0 6px color-mix(in srgb,var(--accent) 18%,transparent)}
 .selection-mode>:is(.file-card,.library-card,.home-card):has(.selection-checkbox input:focus-visible){outline:1px solid var(--accent);outline-offset:-1px}
-@keyframes selection-sway{0%,100%{transform:translateX(-2px)}50%{transform:translateX(2px)}}
+@keyframes selection-sway{0%,100%{transform:rotate(-2deg)}50%{transform:rotate(2deg)}}
 @media(prefers-reduced-motion:reduce){.selection-mode>:is(.file-card,.library-card,.home-card):not(.selected){animation:none}.selection-mode>:is(.file-card,.library-card,.home-card){transition:none}}
 
 .selection-mode>:is(.file-card,.library-card,.home-card).selected::after{content:"";position:absolute;z-index:3;inset:0;border:1px solid color-mix(in srgb,var(--accent) 75%,transparent);border-radius:inherit;pointer-events:none;box-shadow:inset 0 0 4px color-mix(in srgb,var(--accent) 10%,transparent)}
