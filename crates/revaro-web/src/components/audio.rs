@@ -21,7 +21,7 @@ use crate::logic::format::format_media_time;
 use crate::logic::media::{active_chapter_index, clamp_percent};
 
 use super::icons;
-use super::media::{MenuIcon, PreviewMenu};
+use super::menu::{ActionMenu, MenuIcon};
 
 /// Full-screen audio player mounted inside [`super::media::MediaPreview`].
 #[component]
@@ -655,7 +655,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                             <option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
                         </select></label>
                         <button type="button" data-panel-trigger="chapters" aria-expanded=move || if panel_open.get() { "true" } else { "false" } on:click=toggle_panel>{icons::list()}<span>"章节"</span></button>
-                        <PreviewMenu label="音量".to_owned() icon=MenuIcon::Volume volume=volume muted=muted>
+                        <ActionMenu label="音量".to_owned() icon=MenuIcon::Volume volume=volume muted=muted>
                             <div class="audio-volume">
                                 <button type="button" aria-label=move || if muted.get() { "取消静音" } else { "静音" } on:click=toggle_mute>
                                     {move || if muted.get() { icons::volume_x().into_any() } else { icons::volume_2().into_any() }}
@@ -663,7 +663,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                                 <input type="range" min="0" max="1" step="0.01" aria-label="音量" prop:value=move || volume.get().to_string() on:input=set_volume />
                                 <output>{move || format!("{}%", if muted.get() { 0 } else { (volume.get() * 100.0).round() as u64 })}</output>
                             </div>
-                        </PreviewMenu>
+                        </ActionMenu>
                     </div>
                     <Show when=move || !error.get().is_empty() fallback=|| ()>
                         <p class="audio-player-error" role="alert">{move || error.get()}</p>

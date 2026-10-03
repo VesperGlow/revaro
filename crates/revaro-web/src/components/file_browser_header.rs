@@ -10,7 +10,7 @@ use crate::logic::format::format_size;
 
 use super::icons;
 
-/// The file-browser header, including sorting and creation/upload menus.
+/// The file-browser header, including sorting.
 #[component]
 pub fn FileBrowserHeader(
     breadcrumbs: RwSignal<Vec<File>>,
@@ -23,21 +23,15 @@ pub fn FileBrowserHeader(
     file_count: RwSignal<i64>,
     trash_mode: RwSignal<bool>,
     on_open_folder: Callback<String>,
-    on_new_document: Callback<()>,
-    on_create_folder: Callback<()>,
-    on_upload_files: Callback<()>,
-    on_upload_folder: Callback<()>,
     on_leave_trash: Callback<()>,
     on_empty_trash: Callback<()>,
 ) -> impl IntoView {
-    let create_menu = NodeRef::<leptos::html::Details>::new();
-    let upload_menu = NodeRef::<leptos::html::Details>::new();
     let sort_container = NodeRef::<leptos::html::Div>::new();
     let sort_toggle = NodeRef::<leptos::html::Button>::new();
     let sort_open = RwSignal::new(false);
+    let sort_panel = NodeRef::<leptos::html::Div>::new();
+    browser::anchor_popover(sort_toggle, sort_panel);
 
-    let create_for_outside = create_menu;
-    let upload_for_outside = upload_menu;
     let mut outside = browser::on_pointerdown(move |event| {
         let target = event
             .target()
@@ -52,21 +46,7 @@ pub fn FileBrowserHeader(
         {
             sort_open.set(false);
         }
-        if let Some(details) = create_for_outside.get()
-            && details.open()
-            && !details.contains(Some(&target))
-        {
-            details.set_open(false);
-        }
-        if let Some(details) = upload_for_outside.get()
-            && details.open()
-            && !details.contains(Some(&target))
-        {
-            details.set_open(false);
-        }
     });
-    let create_for_escape = create_menu;
-    let upload_for_escape = upload_menu;
     let mut escape = browser::on_keydown(move |event| {
         if event.key() != "Escape" {
             return;
@@ -76,16 +56,6 @@ pub fn FileBrowserHeader(
             if let Some(button) = sort_toggle.get() {
                 let _ = button.focus();
             }
-        }
-        if let Some(details) = create_for_escape.get()
-            && details.open()
-        {
-            details.set_open(false);
-        }
-        if let Some(details) = upload_for_escape.get()
-            && details.open()
-        {
-            details.set_open(false);
         }
     });
     on_cleanup(move || {
@@ -125,48 +95,6 @@ pub fn FileBrowserHeader(
         let _ = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
     });
-    let close_create = Callback::new(move |(): ()| {
-        if let Some(details) = create_menu.get() {
-            details.set_open(false);
-        }
-    });
-    let close_upload = Callback::new(move |(): ()| {
-        if let Some(details) = upload_menu.get() {
-            details.set_open(false);
-        }
-    });
-    let create_document = {
-        let close = close_create.clone();
-        let action = on_new_document.clone();
-        Callback::new(move |(): ()| {
-            close.run(());
-            action.run(());
-        })
-    };
-    let create_folder = {
-        let close = close_create;
-        let action = on_create_folder.clone();
-        Callback::new(move |(): ()| {
-            close.run(());
-            action.run(());
-        })
-    };
-    let upload_files = {
-        let close = close_upload.clone();
-        let action = on_upload_files.clone();
-        Callback::new(move |(): ()| {
-            close.run(());
-            action.run(());
-        })
-    };
-    let upload_folder = {
-        let close = close_upload;
-        let action = on_upload_folder.clone();
-        Callback::new(move |(): ()| {
-            close.run(());
-            action.run(());
-        })
-    };
     let select_sort = Callback::new(move |field: &'static str| {
         let current = sort_order.get_untracked();
         if !current.starts_with(field) {
@@ -266,7 +194,7 @@ pub fn FileBrowserHeader(
                                 <span aria-hidden="true">{move || if sort_order.get().ends_with("_desc") { "↓" } else { "↑" }}</span>
                             </button>
                             <Show when=move || sort_open.get() fallback=|| ()>
-                                <div id="file-sort-fields" class="sort-field-options" role="group" aria-label="排序字段">
+                                <div node_ref=sort_panel id="file-sort-fields" class="sort-field-options" role="group" aria-label="排序字段">
                                     {[("name", "名称"), ("size", "大小"), ("updated", "时间")]
                                         .into_iter().map(|(field, label)| view! {
                                             <button type="button" aria-pressed=move || sort_order.get().starts_with(field).to_string()
@@ -275,24 +203,6 @@ pub fn FileBrowserHeader(
                                 </div>
                             </Show>
                         </div>
-                        <div class="desktop-create-actions">
-                            <button class="secondary" type="button" on:click=move |_| on_new_document.run(())>{icons::file_plus()}"新建文档"</button>
-                            <button class="secondary" type="button" on:click=move |_| on_create_folder.run(())>{icons::folder_plus()}"新建文件夹"</button>
-                        </div>
-                        <details node_ref=create_menu class="create-menu">
-                            <summary class="secondary">{icons::file_plus()}"新建"{icons::chevron_down()}</summary>
-                            <div class="create-menu-popover">
-                                <button type="button" on:click=move |_| create_document.run(())><span>{icons::file_plus()}</span><div><b>"新建文档"</b><small>"Markdown 或纯文本"</small></div></button>
-                                <button type="button" on:click=move |_| create_folder.run(())><span>{icons::folder_plus()}</span><div><b>"新建文件夹"</b><small>"整理当前目录"</small></div></button>
-                            </div>
-                        </details>
-                        <details node_ref=upload_menu class="upload-menu">
-                            <summary class="primary upload-action">{icons::upload()}"上传"{icons::chevron_down()}</summary>
-                            <div class="upload-menu-popover">
-                                <button type="button" on:click=move |_| upload_files.run(())><span>{icons::upload()}</span><div><b>"上传文件"</b><small>"可一次选择多个文件"</small></div></button>
-                                <button type="button" on:click=move |_| upload_folder.run(())><span>{icons::folder_up()}</span><div><b>"上传文件夹"</b><small>"保留完整目录结构"</small></div></button>
-                            </div>
-                        </details>
                     </div>
                 }
             >

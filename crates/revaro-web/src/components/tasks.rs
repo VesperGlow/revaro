@@ -534,7 +534,14 @@ impl TaskController {
 
 /// Render the task trigger and panel.
 #[component]
-pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl IntoView {
+pub fn TaskCenter(
+    controller: UiTaskController,
+    hide_trigger: bool,
+    #[prop(optional)] anchor: Option<NodeRef<leptos::html::Summary>>,
+) -> impl IntoView {
+    let trigger = NodeRef::<leptos::html::Summary>::new();
+    let panel = NodeRef::<leptos::html::Section>::new();
+    let position = browser::anchor_popover(anchor.unwrap_or(trigger), panel);
     let listeners = controller.mount();
     on_cleanup(move || drop(listeners));
 
@@ -599,11 +606,11 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
     let show_all = controller.show_all_completed;
 
     view! {
-        <details node_ref=center class="task-center">
+        <details node_ref=center class="task-center" on:toggle=move |_| position.run(())>
             // Keep a real (hidden) summary for the mobile, trigger-less
             // instance. Without it, HTML details inserts its UA "Details"
             // summary, which was not present in the reference top bar.
-            <summary
+            <summary node_ref=trigger
                 class:task-trigger-hidden=hide_trigger
                 title="任务中心"
                 aria-label="打开任务中心"
@@ -613,7 +620,7 @@ pub fn TaskCenter(controller: UiTaskController, hide_trigger: bool) -> impl Into
                     <span>{move || active_count.get()}</span>
                 </Show>
             </summary>
-            <section class="task-panel">
+            <section node_ref=panel class="task-panel">
                 <header>
                     <div>
                         <strong>"任务中心"</strong>

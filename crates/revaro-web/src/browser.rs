@@ -126,6 +126,15 @@ pub fn on_pointerdown(callback: impl Fn(web_sys::PointerEvent) + 'static) -> Own
     ))))
 }
 
+/// Dismiss layout-changing controls after the target has received its click.
+/// Closing them on pointerdown can move navigation before pointerup is delivered.
+pub fn on_click(callback: impl Fn(web_sys::MouseEvent) + 'static) -> OwnedListener {
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::click,
+        callback,
+    ))))
+}
+
 /// Listen for viewport changes while a transient browser view is mounted.
 pub fn on_resize(callback: impl Fn(leptos::ev::UiEvent) + 'static) -> OwnedListener {
     OwnedListener(Some(ListenerHandle::Window(window_event_listener(
@@ -157,6 +166,155 @@ pub fn on_scroll(callback: impl Fn(leptos::ev::Event) + 'static) -> OwnedListene
             true,
         );
     }))))
+}
+
+/// Position existing popovers below the actual trigger, centered horizontally.
+/// Clamp only at viewport edges and flip above when there is more room there.
+/// Resize and scroll listeners keep open panels attached to their trigger.
+pub fn anchor_popover<A, P>(anchor: NodeRef<A>, panel: NodeRef<P>) -> Callback<()>
+where
+    A: leptos::html::ElementType,
+    A::Output: JsCast + Clone,
+    P: leptos::html::ElementType,
+    P::Output: JsCast + Clone,
+{
+    let update = Callback::new(move |()| {
+        let Some(anchor) = anchor
+            .get_untracked()
+            .map(|node| node.unchecked_into::<web_sys::Element>())
+        else {
+            return;
+        };
+        let Some(panel) = panel
+            .get_untracked()
+            .map(|node| node.unchecked_into::<web_sys::HtmlElement>())
+        else {
+            return;
+        };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        if anchor.get_client_rects().length() == 0 || panel.get_client_rects().length() == 0 {
+            return;
+        }
+        let viewport_width = window
+            .inner_width()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let viewport_height = window
+            .inner_height()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let trigger = anchor.get_bounding_client_rect();
+        let bounds = panel.get_bounding_client_rect();
+        let margin = 8.0;
+        let gap = 8.0;
+        let below = (viewport_height - trigger.bottom() - gap - margin).max(0.0);
+        let above = (trigger.top() - gap - margin).max(0.0);
+        let opens_up = bounds.height() > below && above > below;
+        let available = if opens_up { above } else { below };
+        let height = bounds.height().min(available);
+        let left = (trigger.left() + (trigger.width() - bounds.width()) / 2.0).clamp(
+            margin,
+            (viewport_width - margin - bounds.width()).max(margin),
+        );
+        let top = if opens_up {
+            trigger.top() - gap - height
+        } else {
+            trigger.bottom() + gap
+        };
+        // Keep the existing DOM and stacking context, including media controls
+        // inside transformed ancestors; convert viewport coordinates to the offset parent.
+        let parent = panel.offset_parent();
+        let parent_left = parent
+            .as_ref()
+            .map(|p| {
+                p.get_bounding_client_rect().left() + f64::from(p.client_left())
+                    - f64::from(p.scroll_left())
+            })
+            .unwrap_or(0.0);
+        let parent_top = parent
+            .as_ref()
+            .map(|p| {
+                p.get_bounding_client_rect().top() + f64::from(p.client_top())
+                    - f64::from(p.scroll_top())
+            })
+            .unwrap_or(0.0);
+        let style = panel.style();
+        let _ = style.set_property("left", &format!("{}px", left - parent_left));
+        let _ = style.set_property("top", &format!("{}px", top - parent_top));
+        let _ = style.set_property("right", "auto");
+        let _ = style.set_property("bottom", "auto");
+        let _ = style.set_property("transform", "none");
+        let _ = style.set_property("--popover-available-height", &format!("{available}px"));
+    });
+    // ResizeObserver runs during layout: schedule its correction in the next
+    // frame so viewport-height clamping cannot trigger an observer feedback loop.
+    let frame = StoredValue::new(None::<i32>);
+    let frame_callback = StoredValue::new(leptos::__reexports::send_wrapper::SendWrapper::new(
+        Closure::<dyn FnMut(f64)>::new(move |_| {
+            frame.set_value(None);
+            update.run(());
+        }),
+    ));
+    let schedule = Callback::new(move |()| {
+        if frame.get_value().is_none()
+            && let Some(window) = web_sys::window()
+        {
+            frame_callback.with_value(|callback| {
+                if let Ok(id) = window.request_animation_frame(callback.as_ref().unchecked_ref()) {
+                    frame.set_value(Some(id));
+                }
+            });
+        }
+    });
+    let observer = StoredValue::new(
+        None::<
+            leptos::__reexports::send_wrapper::SendWrapper<(
+                web_sys::ResizeObserver,
+                Closure<dyn FnMut()>,
+            )>,
+        >,
+    );
+    Effect::new(move |_| {
+        let anchor_node = anchor.get();
+        let panel_node = panel.get();
+        observer.update_value(|old| {
+            if let Some(old) = old.take() {
+                old.0.disconnect();
+            }
+        });
+        if let (Some(anchor), Some(panel)) = (anchor_node, panel_node) {
+            let callback = Closure::<dyn FnMut()>::new(move || schedule.run(()));
+            if let Ok(resize) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+                resize.observe(anchor.unchecked_ref());
+                resize.observe(panel.unchecked_ref());
+                observer.set_value(Some(leptos::__reexports::send_wrapper::SendWrapper::new((
+                    resize, callback,
+                ))));
+            }
+            update.run(());
+        }
+    });
+    let mut resize = on_resize(move |_| schedule.run(()));
+    let mut scroll = on_scroll(move |_| schedule.run(()));
+    on_cleanup(move || {
+        resize.release();
+        scroll.release();
+        if let Some(id) = frame.get_value()
+            && let Some(window) = web_sys::window()
+        {
+            window.cancel_animation_frame(id).ok();
+        }
+        observer.update_value(|old| {
+            if let Some(old) = old.take() {
+                old.0.disconnect();
+            }
+        });
+    });
+    update
 }
 
 /// Listen for changes to the document's fullscreen element.

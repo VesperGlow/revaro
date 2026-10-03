@@ -13,6 +13,17 @@
 
 use leptos::prelude::*;
 
+/// Circular new-item action in the existing 24 px stroke style.
+pub fn circle_plus() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 8v8M8 12h8"></path>
+        </svg>
+    }
+}
+
 /// Lucide `activity` — the task-centre trigger.
 pub fn activity() -> impl IntoView {
     view! {
@@ -304,43 +315,6 @@ pub fn list() -> impl IntoView {
     }
 }
 
-/// Lucide `file-plus-2` — create a text document.
-pub fn file_plus() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M11.35 22H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v5.35"></path>
-            <path d="M14 2v5a1 1 0 0 0 1 1h5"></path>
-            <path d="M14 19h6"></path>
-            <path d="M17 16v6"></path>
-        </svg>
-    }
-}
-
-/// Lucide `folder-plus` — create a directory.
-pub fn folder_plus() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 10v6"></path>
-            <path d="M9 13h6"></path>
-            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-        </svg>
-    }
-}
-
-/// Lucide `folder-up` — upload a directory.
-pub fn folder_up() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-            <path d="M12 10v6"></path>
-            <path d="m9 13 3-3 3 3"></path>
-        </svg>
-    }
-}
-
 /// Lucide `chevron-down` — native disclosure menu indicator.
 pub fn chevron_down() -> impl IntoView {
     view! {
@@ -492,6 +466,56 @@ pub fn search() -> impl IntoView {
             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="10.5" cy="10.5" r="6.5"></circle>
             <path d="m15.5 15.5 5 5"></path>
+        </svg>
+    }
+}
+
+/// Home in the shared stroke icon style.
+pub fn home() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-8H9v8H4a1 1 0 0 1-1-1Z"></path>
+        </svg>
+    }
+}
+
+/// Book open in the shared stroke icon style.
+pub fn book_open() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v16M12 5C9 3 5 3 2 4v16c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z"></path>
+        </svg>
+    }
+}
+
+/// Image in the shared stroke icon style.
+pub fn image() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="3"></rect><circle cx="8" cy="8" r="1.5"></circle><path d="m21 15-5-5L5 21"></path>
+        </svg>
+    }
+}
+
+/// Folder in the shared stroke icon style.
+pub fn folder() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"></path>
+        </svg>
+    }
+}
+
+/// Heart in the shared stroke icon style.
+pub fn heart() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"></path>
         </svg>
     }
 }

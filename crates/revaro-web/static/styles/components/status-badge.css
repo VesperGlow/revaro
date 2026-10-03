@@ -1,8 +1,8 @@
 /* StatusBadge.vue's <style scoped> block, ported to a global sheet.
    `.size-*` and `.tone-*` collide with the global sheets when pasted
    unprefixed, so each is qualified by the `.status-badge` root that carries it.
-   (TaskCenter and ServiceCard use their own `.tone-*` names; qualifying keeps
-   the two apart, exactly as Vue's scoped attribute did.) */
+   (TaskCenter uses its own `.tone-*` names; qualifying keeps
+   their rules apart, exactly as Vue's scoped attribute did.) */
 .status-badge{display:inline-flex;max-width:100%;align-items:center;justify-content:center;flex:0 0 auto;border:1px solid transparent;border-radius:999px;font-weight:750;line-height:1;white-space:nowrap}
 .status-badge.size-sm{min-height:22px;padding:0 8px;font-size:10px}
 .status-badge.size-md{min-height:27px;padding:0 10px;font-size:11px}

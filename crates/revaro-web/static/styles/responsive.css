@@ -73,25 +73,14 @@ body {
     min-height: 100vh;
     min-height: 100dvh;
   }
-  .app-shell {
-    grid-template-rows: calc(60px + env(safe-area-inset-top, 0px)) minmax(
-        0,
-        1fr
-      );
-  }
-  .topbar {
-    min-width: 0;
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-right: max(18px, env(safe-area-inset-right, 0px));
-    padding-left: max(18px, env(safe-area-inset-left, 0px));
-  }
+
   .content {
     padding-right: max(16px, env(safe-area-inset-right, 0px));
     padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px));
     padding-left: max(16px, env(safe-area-inset-left, 0px));
   }
   .drop-zone {
-    inset: calc(60px + env(safe-area-inset-top, 0px)) 0 0;
+    inset: calc(64px + env(safe-area-inset-top, 0px)) 0 0;
   }
   .modal-backdrop {
     padding: max(10px, env(safe-area-inset-top, 0px))
@@ -128,17 +117,9 @@ select:focus-visible {
 button:disabled {
   cursor: not-allowed;
 }
-.topbar {
-  height: 66px;
-  padding: 0 clamp(18px, 3vw, 40px);
-  border-color: var(--line);
-  background: var(--surface);
-}
+
 .brand-button {
   letter-spacing: -0.02em;
-}
-.top-actions {
-  gap: 5px;
 }
 .account-button {
   margin-left: 7px;
@@ -185,10 +166,7 @@ button:disabled {
   gap: 8px;
 }
 .actions .primary,
-.actions .secondary,
-.desktop-create-actions button,
-.create-menu summary,
-.upload-menu summary {
+.actions .secondary{
   display: flex;
   align-items: center;
   justify-content: center;
@@ -216,31 +194,7 @@ button:disabled {
   border-color: #c5ccd5;
   background: var(--surface-hover);
 }
-.create-menu-popover,
-.upload-menu-popover {
-  padding: 6px;
-  border-color: var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-popover);
-}
-.create-menu-popover button,
-.upload-menu-popover button {
-  min-height: 42px;
-  border-radius: var(--radius-md);
-}
-.create-menu-popover button > span,
-.upload-menu-popover button > span {
-  background: var(--surface-subtle);
-  color: var(--ink-subtle);
-}
-.create-menu-popover button > span svg,
-.upload-menu-popover button > span svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-}
+
 .file-card {
   border-color: var(--line);
   border-radius: var(--radius-sm);
@@ -282,9 +236,7 @@ button:disabled {
   box-shadow: var(--shadow-dialog);
 }
 @media (max-width: 850px) {
-  .topbar {
-    height: calc(60px + env(safe-area-inset-top, 0px));
-  }
+
   .content {
     padding-top: 22px;
   }
@@ -294,10 +246,7 @@ button:disabled {
   .actions {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
-  .create-menu,
-  .upload-menu {
-    min-width: 0;
-  }
+
   .file-grid {
     gap: 8px;
   }
@@ -320,9 +269,7 @@ button:disabled {
     font-size: 22px;
   }
   .actions .primary,
-  .actions .secondary,
-  .create-menu summary,
-  .upload-menu summary {
+  .actions .secondary{
     padding: 0 10px;
   }
   .file-grid {
@@ -393,11 +340,7 @@ button:disabled {
 .card-select.active{
   color: var(--accent);
 }
-.create-menu-popover button:hover > span,
-.upload-menu-popover button:hover > span{
-  background: var(--accent-faint);
-  color: var(--accent-hover);
-}
+
 .progress i{
   background: var(--accent);
 }
@@ -430,11 +373,7 @@ button:disabled {
   background: #f2f6f9f1;
   color: var(--accent-hover);
 }
-.create-menu-popover button > span,
-.upload-menu-popover button > span{
-  background: var(--accent-soft);
-  color: var(--accent);
-}
+
 .file-card.selected::after {
   background: #4f73960a;
 }

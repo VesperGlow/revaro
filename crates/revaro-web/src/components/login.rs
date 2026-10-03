@@ -63,17 +63,17 @@ pub fn LoginView(
                 <div class="visual-copy">
                     <span class="eyebrow">"PRIVATE · DIRECT · YOURS"</span>
                     <h1>
-                        "你的文件，"
+                        "你的书与音乐，"
                         <br />
-                        "安心地留在硬盘上。"
+                        "还有珍藏的画面。"
                     </h1>
-                    <p>"轻量、自托管，文件存储在你的本地磁盘。"</p>
+                    <p>"阅读、音乐与图库，属于你自己的内容空间。"</p>
                 </div>
                 <div class="revaro-card">
                     <span aria-hidden="true">"☁"</span>
                     <div>
-                        <strong>"本地文件存储"</strong>
-                        <small>"SQLite 元数据 · 原生 Range"</small>
+                        <strong>"你的个人内容库"</strong>
+                        <small>"读书 · 听歌 · 看图"</small>
                     </div>
                 </div>
             </section>
@@ -143,7 +143,7 @@ pub fn LoginView(
                         </p>
                     </Show>
                     <button class="primary wide" type="submit" prop:disabled=move || busy.get()>
-                        {move || if busy.get() { "正在验证…" } else { "进入我的网盘" }}
+                        {move || if busy.get() { "正在验证…" } else { "进入我的内容库" }}
                     </button>
                 </form>
             </section>

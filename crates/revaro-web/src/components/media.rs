@@ -21,120 +21,11 @@ use crate::logic::image_geometry::{Point, Size, clamp_image_pan, fit_image, zoom
 
 use super::audio::AudioPlayer;
 use super::icons;
+use super::menu::{ActionMenu, MenuIcon};
 use super::video::VideoPlayer;
-
-/// The static icon used by a small native details menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuIcon {
-    /// An overflow action menu.
-    More,
-    /// Playback settings.
-    Settings,
-    /// Volume controls.
-    Volume,
-}
 
 fn has_natural_dimensions(size: Size) -> bool {
     size.width > 0.0 && size.height > 0.0
-}
-
-/// A disclosure menu that closes when focus moves outside it.
-///
-/// Native `<details>` preserves keyboard and screen-reader semantics. The
-/// document listener only adds the outside-pointer behaviour that native
-/// disclosure elements do not provide consistently across browsers.
-#[component]
-pub fn PreviewMenu(
-    label: String,
-    icon: MenuIcon,
-    #[prop(optional)] volume: Option<RwSignal<f64>>,
-    #[prop(optional)] muted: Option<RwSignal<bool>>,
-    #[prop(optional)] on_toggle: Option<Callback<bool>>,
-    children: Children,
-) -> impl IntoView {
-    let menu = NodeRef::<leptos::html::Details>::new();
-    let outside_menu = menu;
-    let mut outside = browser::on_pointerdown(move |event| {
-        let Some(details) = outside_menu.get() else {
-            return;
-        };
-        if !details.open() {
-            return;
-        }
-        let inside = event
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
-            .is_some_and(|target| details.contains(Some(&target)));
-        if !inside {
-            details.set_open(false);
-        }
-    });
-    on_cleanup(move || outside.release());
-
-    let menu_for_escape = menu;
-    let on_toggle = on_toggle.clone();
-    view! {
-        <details
-            node_ref=menu
-            class="preview-menu"
-            on:toggle=move |_| {
-                if let Some(callback) = on_toggle.as_ref()
-                    && let Some(details) = menu_for_escape.get()
-                {
-                    callback.run(details.open());
-                }
-            }
-            on:keydown=move |event: KeyboardEvent| {
-                if event.key() == "Escape" {
-                    if let Some(details) = menu_for_escape.get() {
-                        if details.open() {
-                            event.prevent_default();
-                            event.stop_propagation();
-                            details.set_open(false);
-                            let _ = details
-                                .query_selector("summary")
-                                .ok()
-                                .flatten()
-                                .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
-                                .map(|element| element.focus());
-                        }
-                    }
-                }
-            }
-        >
-            <summary
-                aria-label=label.clone()
-                title=label
-            >
-                {move || {
-                    if icon == MenuIcon::Volume
-                        && (muted.is_some_and(|value| value.get())
-                            || volume.is_some_and(|value| value.get() <= 0.0))
-                    {
-                        icons::volume_x().into_any()
-                    } else {
-                        menu_icon(icon)
-                    }
-                }}
-            </summary>
-            <div
-                class="preview-menu-panel"
-                on:click=move |event: MouseEvent| {
-                    let Some(target) = event
-                        .target()
-                        .and_then(|target| target.dyn_into::<Element>().ok())
-                    else {
-                        return;
-                    };
-                    if target.closest("[data-close-menu]").ok().flatten().is_some()
-                        && let Some(details) = menu.get()
-                    {
-                        details.set_open(false);
-                    }
-                }
-            >{children()}</div>
-        </details>
-    }
 }
 
 /// The preview for an image, audio file or video file.
@@ -699,7 +590,7 @@ pub fn MediaPreview(
                                         </span>
                                     </Show>
                                     <div class="preview-file-actions">
-                                        <PreviewMenu label="更多操作".to_owned() icon=MenuIcon::More>
+                                        <ActionMenu label="更多操作".to_owned() icon=MenuIcon::More>
                                             <button type="button" data-close-menu="true" on:click={
                                                 let download = download.clone();
                                                 let file = file.clone();
@@ -728,7 +619,7 @@ pub fn MediaPreview(
                                                     <span>{move || format!("{} × {}", natural.get().width as u64, natural.get().height as u64)}</span>
                                                 </Show>
                                             </p>
-                                        </PreviewMenu>
+                                        </ActionMenu>
                                         <button class="media-icon-button preview-close" type="button" aria-label="关闭预览" title="关闭预览" on:click={
                                             let close = close.clone();
                                             move |_| close.run(())
@@ -913,14 +804,6 @@ struct DragState {
     pinched: bool,
 }
 
-fn menu_icon(icon: MenuIcon) -> AnyView {
-    match icon {
-        MenuIcon::More => icons::more_horizontal().into_any(),
-        MenuIcon::Settings => icons::settings_2().into_any(),
-        MenuIcon::Volume => icons::volume_2().into_any(),
-    }
-}
-
 fn gallery_items(items: &[File]) -> Vec<File> {
     items
         .iter()
@@ -953,7 +836,10 @@ fn change_gallery(
     let Some(index) = gallery.iter().position(|file| file.id == current.id) else {
         return;
     };
-    let next = (index as i32 + direction).rem_euclid(gallery.len() as i32) as usize;
+    let Some(next) = crate::logic::library::next_index(index, gallery.len(), direction, false)
+    else {
+        return;
+    };
     on_change.run(gallery[next].clone());
 }
 

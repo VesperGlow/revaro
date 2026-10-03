@@ -27,16 +27,16 @@
 .preview-file-meta strong { display: block; overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .preview-file-actions { display: flex; align-items: center; gap: 4px; }
 .preview-count { flex-shrink: 0; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--media-muted); }
-.media-icon-button, .preview-menu > summary { display: grid; place-items: center; flex: 0 0 auto; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: inherit; cursor: pointer; }
-.media-icon-button:hover:not(:disabled), .preview-menu > summary:hover { background: var(--media-hover); }
-.preview-menu { position: relative; }
-.preview-menu > summary { list-style: none; }
-.preview-menu > summary::-webkit-details-marker { display: none; }
-.preview-menu[open] > summary { background: var(--media-hover); }
-.preview-menu-panel { position: absolute; z-index: 30; right: 0; bottom: calc(100% + 8px); width: max-content; min-width: 188px; max-width: min(300px, calc(100vw - 24px)); padding: 8px; border: 1px solid var(--media-line); border-radius: 14px; background: var(--media-panel); color: var(--media-ink); box-shadow: 0 10px 36px #00000024; }
-.preview-commandbar .preview-menu-panel { top: calc(100% + 8px); bottom: auto; }
-.preview-menu-panel > button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 10px 12px; border: 0; border-radius: 8px; background: transparent; color: inherit; font-size: 13px; text-align: left; }
-.preview-menu-panel > button:hover { background: var(--media-hover); }
+.media-icon-button, .action-menu > summary { display: grid; place-items: center; flex: 0 0 auto; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: inherit; cursor: pointer; }
+.media-icon-button:hover:not(:disabled) { background:var(--media-hover); }
+.action-menu > summary:hover { background:var(--menu-hover); }
+.action-menu { position: relative; --menu-hover:var(--media-hover,var(--surface-hover)); --menu-line:var(--media-line,var(--line)); --menu-panel:var(--media-panel,var(--surface)); --menu-ink:var(--media-ink,var(--ink-subtle)); }
+.action-menu > summary { list-style: none; }
+.action-menu > summary::-webkit-details-marker { display: none; }
+.action-menu[open] > summary { background: var(--menu-hover); }
+.action-menu-panel { position: absolute; z-index: 30; left:50%; transform:translateX(-50%); top:calc(100% + 8px); bottom:auto; width: max-content; min-width: 188px; max-width:min(300px,calc(100vw - 16px)); max-height:var(--popover-available-height,70vh); overflow:auto; padding:5px; border:1px solid var(--menu-line); border-radius:var(--radius-md); background:var(--menu-panel); color:var(--menu-ink); box-shadow:var(--shadow-popover); }
+.action-menu-panel > button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 10px 12px; border: 0; border-radius: 8px; background: transparent; color: inherit; font-size: 13px; text-align: left; }
+.action-menu-panel > button:hover { background: var(--menu-hover); }
 .media-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 260px; margin: 8px 0 0; padding: 12px; border-top: 1px solid var(--media-line); color: var(--media-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .media-detail span { width: 100%; }
 .media-detail svg { width: 15px; height: 15px; }
@@ -52,7 +52,7 @@
   grid-template-rows: calc(60px + env(safe-area-inset-top, 0px)) minmax(0, 1fr) auto; background: transparent;
 }
 .image-preview .preview-commandbar { box-shadow: 0 1px 0 var(--line); }
-.image-preview .preview-image-tools, .image-preview .preview-menu-panel { box-shadow: var(--shadow-popover); }
+.image-preview .preview-image-tools, .image-preview .action-menu-panel { box-shadow: var(--shadow-popover); }
 .image-preview .preview-nav { border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); color: var(--ink-subtle); box-shadow: var(--shadow-popover); }
 .image-preview .preview-nav:hover { background: var(--surface-hover); color: var(--accent); }
 .image-preview .preview-stage { touch-action: none; }

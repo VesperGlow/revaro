@@ -10,7 +10,7 @@
 .task-center>summary:hover{background:#f1f5f9}
 .task-center>summary svg{width:21px;color:#3d5f7e}
 .task-center>summary span{position:absolute;right:-2px;top:-1px;display:grid;place-items:center;min-width:17px;height:17px;padding:0 4px;border:2px solid #fff;border-radius:9px;background:#2563eb;color:#fff;font-size:9px;font-weight:800}
-.task-center .task-panel{position:absolute;z-index:45;top:52px;right:-12px;display:flex;width:min(470px,calc(100vw - 24px));max-height:min(70vh,640px);flex-direction:column;overflow:hidden;border:1px solid #dfe6ee;border-radius:17px;background:#fff;box-shadow:0 24px 70px #0f172a2e}
+.task-center .task-panel{position:absolute;z-index:25;isolation:isolate;top:calc(100% + 8px);left:50%;transform:translateX(-50%);display:flex;width:min(470px,calc(100vw - 16px));max-height:min(var(--popover-available-height,70vh),70vh,640px);flex-direction:column;overflow:hidden;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-popover)}
 .task-center .task-panel>header{display:flex;min-height:62px;flex:0 0 auto;align-items:center;justify-content:space-between;padding:0 17px;border-bottom:1px solid #edf1f5;background:#fff}
 .task-center .task-panel>header div{display:flex;flex-direction:column}
 .task-center .task-panel>header small{color:#94a3b8;font-size:10px}
@@ -46,8 +46,7 @@
 .task-center .expand{display:block;margin:5px auto 8px;padding:6px 12px;border:0;border-radius:8px;background:#f1f5f9;color:#52657b;font-size:10px}
 .task-center .empty,.task-center .error{padding:25px;text-align:center;color:#94a3b8}
 .task-center .error{color:#b91c1c}
-@media(max-width:850px){.task-center .task-panel{position:fixed;top:calc(66px + env(safe-area-inset-top,0px));right:max(10px,env(safe-area-inset-right,0px));bottom:max(10px,env(safe-area-inset-bottom,0px));width:calc(100vw - 20px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px));max-height:min(70vh,640px)}.task-center .task-list article{grid-template-columns:62px minmax(0,1fr) auto}}
-.task-center .task-panel{z-index:25;isolation:isolate;background:#fff}
+@media(max-width:850px){.task-center .task-list article{grid-template-columns:62px minmax(0,1fr) auto}}
 .task-center .task-list{background:#fff}
 .task-center .task-group h3 .clear-completed{min-height:38px;margin-left:auto;padding:0 11px;border:1px solid transparent;border-radius:9px;background:transparent;color:#2563eb;font-size:11px;font-weight:700}
 .task-center .task-group h3 .clear-completed:hover{border-color:#dbeafe;background:#eff6ff}

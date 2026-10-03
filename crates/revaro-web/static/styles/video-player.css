@@ -56,6 +56,6 @@
   .video-desktop-volume { display: none; }
   .video-mobile-volume { display: flex; }
   .video-time { font-size: 11px; }
-  .video-controls .preview-menu-panel { max-height: min(60dvh, 420px); overflow-y: auto; }
+  .video-controls .action-menu-panel { max-height: min(60dvh, 420px); overflow-y: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .video-top-shade, .video-controls { transition: none; } }

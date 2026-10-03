@@ -30,6 +30,7 @@ use crate::logic::format::{format_date, format_size};
 use crate::logic::routing::{folder_id, folder_url, reader_id};
 
 use super::account::AccountSettings;
+use super::content_shell::ShellContext;
 use super::dialogs::{ActionDialog, RenameDialog};
 use super::editor::{DocumentEditor, EditorMode};
 use super::file_browser_header::FileBrowserHeader;
@@ -38,9 +39,10 @@ use super::reader::ReaderView;
 use super::selection_toolbar::SelectionToolbar;
 use super::share::ShareDialog;
 use super::tasks::TaskController;
-use super::topbar::AppTopbar;
+use super::topbar::TopbarActions;
 use super::transfer::{TransferDialog, TransferMode};
 use super::uploads::{UploadController, UploadRefresh, UploadSurface};
+use crate::logic::library::LibraryPage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DialogState {
@@ -101,7 +103,9 @@ pub fn FileBrowser(
     on_logout: Callback<()>,
     on_username_changed: Callback<String>,
     on_password_changed: Callback<String>,
+    on_header_ready: Callback<TopbarActions>,
 ) -> impl IntoView {
+    let shell_context = use_context::<ShellContext>();
     let current_id = RwSignal::new(ROOT_ID.to_owned());
     let current = RwSignal::new(None::<File>);
     let breadcrumbs = RwSignal::new(Vec::<File>::new());
@@ -111,8 +115,6 @@ pub fn FileBrowser(
     let file_count = RwSignal::new(0_i64);
     let search_text = RwSignal::new(String::new());
     let search_query = RwSignal::new(String::new());
-    let search_global = RwSignal::new(false);
-    let search_scope_global = RwSignal::new(false);
     let sort_order = RwSignal::new("name".to_owned());
     let listing_next_offset = RwSignal::new(0_i64);
     let loading_more = RwSignal::new(false);
@@ -263,7 +265,9 @@ pub fn FileBrowser(
             {
                 pending_editor_refresh.set(None);
             }
-            let suppress_history = history_suppressed.get_untracked();
+            let suppress_history = history_suppressed.get_untracked()
+                || shell_context
+                    .is_some_and(|context| context.page.get_untracked() != LibraryPage::Files);
             let initial_request = initial_route_pending.get_untracked();
             initial_route_pending.set(false);
             let logout = on_logout.clone();
@@ -271,13 +275,10 @@ pub fn FileBrowser(
             if requested_id != current_id.get_untracked() {
                 search_query.set(String::new());
                 search_text.set(String::new());
-                search_global.set(false);
-                search_scope_global.set(false);
             }
             let offset = 0;
             let query = search_query.get_untracked();
             let sort = sort_order.get_untracked();
-            let global = search_scope_global.get_untracked();
             let mut completion = completion;
             leptos::task::spawn_local(async move {
                 let result = async {
@@ -288,12 +289,7 @@ pub fn FileBrowser(
                     // listing.
                     let (detail, children) = futures_util::join!(
                         api::fetch_file(&requested_id),
-                        api::fetch_listing(
-                            if global { None } else { Some(&requested_id) },
-                            &query,
-                            &sort,
-                            offset
-                        ),
+                        api::fetch_listing(&requested_id, &query, &sort, offset),
                     );
                     let detail = detail?;
                     let children = children?;
@@ -331,8 +327,15 @@ pub fn FileBrowser(
                         file_count.set(children.file_count);
                         selected_ids.set(HashSet::new());
                         trash_mode.set(false);
-                        replace_folder_url(&requested_id);
+                        if shell_context
+                            .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
+                        {
+                            replace_folder_url(&requested_id);
+                        }
                         loading.set(false);
+                        if let Some(context) = shell_context {
+                            context.refresh.update(|r| *r += 1);
+                        }
                         if pending_editor_refresh.get_untracked().as_deref()
                             == Some(requested_id.as_str())
                         {
@@ -358,7 +361,11 @@ pub fn FileBrowser(
                             // the root and loads that folder without leaving a
                             // transient error screen behind. Ordinary in-app
                             // navigation still reports its error below.
-                            replace_folder_url(ROOT_ID);
+                            if shell_context
+                                .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
+                            {
+                                replace_folder_url(ROOT_ID);
+                            }
                             fallback_to_root.set(true);
                         } else {
                             notify.run(Feedback::error(request_error.message));
@@ -396,19 +403,12 @@ pub fn FileBrowser(
             let id = current_id.get_untracked();
             let query = search_query.get_untracked();
             let sort = sort_order.get_untracked();
-            let global = search_scope_global.get_untracked();
             let offset = listing_next_offset.get_untracked();
             let logout = on_logout.clone();
             loading_more.set(true);
             loading_more_error.set(String::new());
             leptos::task::spawn_local(async move {
-                let result = api::fetch_listing(
-                    if global { None } else { Some(&id) },
-                    &query,
-                    &sort,
-                    offset,
-                )
-                .await;
+                let result = api::fetch_listing(&id, &query, &sort, offset).await;
                 if request_sequence.try_get_untracked() != Some(sequence) {
                     return;
                 }
@@ -510,7 +510,6 @@ pub fn FileBrowser(
         let load_folder = load_folder.clone();
         Callback::new(move |(): ()| {
             search_query.set(search_text.get_untracked().trim().to_owned());
-            search_scope_global.set(search_global.get_untracked());
             load_folder.run(current_id.get_untracked());
         })
     };
@@ -615,14 +614,32 @@ pub fn FileBrowser(
                 });
                 return;
             }
+            if let Some(context) = shell_context {
+                context.refresh.update(|r| *r += 1);
+            }
             request.finish();
         })
     };
     let upload_feedback = notify.clone();
+    let upload_destination = Signal::derive(move || {
+        if shell_context
+            .is_some_and(|context| context.page.get() != crate::logic::library::LibraryPage::Files)
+        {
+            ROOT_ID.to_owned()
+        } else {
+            current_id.get()
+        }
+    });
+    let upload_trash = Signal::derive(move || {
+        trash_mode.get()
+            && shell_context.is_none_or(|context| {
+                context.page.get() == crate::logic::library::LibraryPage::Files
+            })
+    });
     let uploads = UploadController::new(
-        current_id,
+        upload_destination,
         current,
-        trash_mode,
+        upload_trash,
         file_input,
         folder_input,
         upload_refresh,
@@ -1078,7 +1095,11 @@ pub fn FileBrowser(
                 .filter(|item| selected.contains(&item.id))
                 .map(|item| (item.id, item.name))
                 .collect::<Vec<_>>();
-            let parent_id = current_id.get_untracked();
+            let parent_id = if matches!(state, DialogState::CreateFolder) {
+                upload_destination.get_untracked()
+            } else {
+                current_id.get_untracked()
+            };
             let refresh_parent_id = parent_id.clone();
             let in_trash = trash_mode.get_untracked();
             let logout = on_logout.clone();
@@ -1708,7 +1729,7 @@ pub fn FileBrowser(
             let sequence = editor_sequence.get_untracked();
             let is_new = editor_is_new.get_untracked();
             let file_id = editor_file_id.get_untracked();
-            let parent_id = current_id.get_untracked();
+            let parent_id = upload_destination.get_untracked();
             let request = UpdateDocumentRequest {
                 content: content.clone(),
                 etag: editor_etag.get_untracked(),
@@ -1750,8 +1771,8 @@ pub fn FileBrowser(
                         // while the request is in flight remains unsaved.
                         editor_dirty.set(editor_content.get_untracked() != request.content);
                         editor_original.set(request.content);
+                        pending_editor_refresh.set(Some(parent_id.clone()));
                         refresh.run(parent_id);
-                        pending_editor_refresh.set(Some(current_id.get_untracked()));
                     }
                     Err(error) if error.is_unauthorized() => {
                         editor_open.set(false);
@@ -1808,6 +1829,31 @@ pub fn FileBrowser(
                 }
                 return;
             }
+            if classify::is_book(&item)
+                && (!classify::is_editable(&item) || classify::is_epub_name(&item.name))
+                && let Some(context) = shell_context
+            {
+                context.open.run(item);
+                return;
+            }
+            if classify::is_audio(&item)
+                && let Some(context) = shell_context
+            {
+                context.music.play(
+                    item.clone(),
+                    items
+                        .get_untracked()
+                        .into_iter()
+                        .filter(classify::is_audio)
+                        .collect(),
+                );
+                return;
+            }
+            if classify::is_video(&item)
+                && let Some(context) = shell_context
+            {
+                context.music.pause();
+            }
             if item.kind == FileKind::Directory {
                 load_folder.run(item.id);
             } else if classify::is_book(&item)
@@ -1840,17 +1886,23 @@ pub fn FileBrowser(
     let pathname = web_sys::window()
         .and_then(|window| window.location().pathname().ok())
         .unwrap_or_default();
-    let initial_reader = reader_id(&pathname).and_then(|encoded| {
-        js_sys::decode_uri_component(&encoded)
-            .ok()
-            .and_then(|value| value.as_string())
-            .filter(|id| !id.contains('/'))
-    });
+    let initial_reader = shell_context
+        .is_none()
+        .then(|| reader_id(&pathname))
+        .flatten()
+        .and_then(|encoded| {
+            js_sys::decode_uri_component(&encoded)
+                .ok()
+                .and_then(|value| value.as_string())
+                .filter(|id| !id.contains('/'))
+        });
     history_suppressed.set(true);
     let initial_folder = folder_id(&pathname, ROOT_ID);
     initial_route_pending.set(initial_folder != ROOT_ID && pathname.starts_with("/f/"));
-    if initial_folder == ROOT_ID && pathname != "/" {
-        replace_folder_url(&initial_folder);
+    if initial_folder == ROOT_ID && pathname != "/files" {
+        if shell_context.is_none_or(|c| c.page.get_untracked() == LibraryPage::Files) {
+            replace_folder_url(&initial_folder);
+        }
     }
     if let Some(reader_id) = initial_reader {
         let (sender, receiver) = oneshot::channel();
@@ -1934,6 +1986,21 @@ pub fn FileBrowser(
         })
     };
 
+    if let Some(context) = shell_context {
+        let move_action = move_media.clone();
+        let copy_action = copy_media.clone();
+        Effect::new(move |_| {
+            if let Some((file, copy)) = context.transfer.get() {
+                context.transfer.set(None);
+                if copy {
+                    copy_action.run(file);
+                } else {
+                    move_action.run(file);
+                }
+            }
+        });
+    }
+
     let popstate_queue = Rc::new(RefCell::new(Vec::<NavAction>::new()));
     let popstate_processing = Rc::new(Cell::new(false));
     let mut popstate = {
@@ -1957,6 +2024,25 @@ pub fn FileBrowser(
         let popstate_queue = popstate_queue.clone();
         let popstate_processing = popstate_processing.clone();
         browser::on_popstate(move |_| {
+            if let Some(context) = shell_context
+                && !nav_actions
+                    .get_untracked()
+                    .last()
+                    .is_some_and(|action| matches!(action, NavAction::Overlay))
+            {
+                if context.page.get_untracked() == LibraryPage::Files {
+                    let path = web_sys::window()
+                        .and_then(|w| w.location().pathname().ok())
+                        .unwrap_or_default();
+                    history_suppressed.set(true);
+                    load_folder_request.run(FolderLoadRequest {
+                        id: folder_id(&path, ROOT_ID),
+                        completion: None,
+                    });
+                    history_suppressed.set(false);
+                }
+                return;
+            }
             let mut actions = nav_actions.get_untracked();
             let Some(action) = actions.pop() else {
                 return;
@@ -1993,7 +2079,11 @@ pub fn FileBrowser(
                                 dialog_value.set(String::new());
                                 dialog_error.set(String::new());
                             }
-                            replace_folder_url(&current_id.get_untracked());
+                            if shell_context
+                                .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
+                            {
+                                replace_folder_url(&current_id.get_untracked());
+                            }
                         }
                         NavAction::Folder { id } => {
                             let (sender, receiver) = oneshot::channel();
@@ -2012,28 +2102,37 @@ pub fn FileBrowser(
     };
     on_cleanup(move || popstate.release());
 
+    let header_files = return_home;
+    let header_root = Callback::new(move |()| {
+        history_suppressed.set(true);
+        header_files.run(());
+        history_suppressed.set(false);
+    });
+    on_header_ready.run(TopbarActions {
+        username,
+        has_avatar,
+        avatar_version,
+        task_controller: leptos::__reexports::send_wrapper::SendWrapper::new(task_center),
+        on_files: header_root,
+        on_upload_files: upload_files,
+        on_upload_folder: upload_folder,
+        on_new_document: new_document,
+        on_create_folder: show_create_folder,
+        on_trash: load_trash,
+        on_account: open_account,
+        search_text,
+        trash_mode,
+        on_search: submit_search,
+    });
+
     view! {
         <div
             class="app-shell"
+            class:file-tools-background=move || shell_context.is_some_and(|c| c.page.get() != LibraryPage::Files)
             on:dragover=move |event: web_sys::DragEvent| shell_upload.on_drag_over(event)
             on:dragleave=move |event: web_sys::DragEvent| shell_upload_leave.on_drag_leave(event)
             on:drop=move |event: web_sys::DragEvent| shell_upload_drop.on_drop(event)
         >
-            <AppTopbar
-                username=username
-                has_avatar=has_avatar
-                avatar_version=avatar_version
-                task_controller=leptos::__reexports::send_wrapper::SendWrapper::new(task_center)
-                on_home=return_home.clone()
-                on_trash=load_trash.clone()
-                on_account=open_account.clone()
-                search_text=search_text
-                search_query=search_query
-                search_global=search_global
-                trash_mode=trash_mode
-                on_search=submit_search.clone()
-            />
-
             <section
                 class="content"
                 on:click=move |event: web_sys::MouseEvent| clear_selection_from_blank.run(event)
@@ -2049,10 +2148,6 @@ pub fn FileBrowser(
                     file_count=file_count
                     trash_mode=trash_mode
                     on_open_folder=load_folder.clone()
-                    on_new_document=new_document.clone()
-                    on_create_folder=show_create_folder.clone()
-                    on_upload_files=upload_files.clone()
-                    on_upload_folder=upload_folder.clone()
                     on_leave_trash=return_home.clone()
                     on_empty_trash=show_empty_trash.clone()
                 />
@@ -2171,23 +2266,12 @@ pub fn FileBrowser(
                         } else {
                             "拖放文件到这里，或新建一篇文档。"
                         };
-                        let new_document = new_document.clone();
-                        let upload_files = upload_files.clone();
                         view! {
                             <div class="state empty">
                                 <div class="empty-icon" aria-hidden="true">"⌁"</div>
                                 <h3>{heading}</h3>
                                 <p>{description}</p>
-                                <Show when=move || !trash_mode.get() fallback=|| ()>
-                                    <div class="empty-actions">
-                                        <button class="secondary" type="button" on:click=move |_| new_document.run(())>
-                                            "新建文档"
-                                        </button>
-                                        <button class="primary" type="button" on:click=move |_| upload_files.run(())>
-                                            "上传文件"
-                                        </button>
-                                    </div>
-                                </Show>
+
                             </div>
                         }
                         .into_any()
@@ -2876,7 +2960,7 @@ fn file_icon(file: &File) -> AnyView {
     }
 }
 
-fn download_file(file: &File) {
+pub(super) fn download_file(file: &File) {
     start_download_with_name(
         &format!("/api/files/{}/download", file.id),
         Some(&file.name),

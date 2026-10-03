@@ -67,7 +67,8 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   const videoBytes = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
 
   await login(page)
-  await page.getByRole('button', { name: '新建文件夹' }).click()
+  await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
+  await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
   const create = page.getByRole('dialog')
   await create.locator('input[type=text]').fill(target)
   await create.getByRole('button', { name: '创建' }).click()
@@ -131,14 +132,10 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   await page.getByRole('heading', { name: '我的文件' }).waitFor()
 
   await page.locator('.file-card').filter({ hasText: audio }).click()
-  await page.locator('audio').waitFor({ state: 'attached' })
+  await page.locator('audio').first().waitFor({ state: 'attached' })
   await page.waitForFunction(() => document.querySelector('audio')?.readyState >= 1)
-  await expect(page.locator('.audio-main')).toHaveCount(1)
-  await page.getByRole('button', { name: '章节', exact: true }).click()
-  await page.locator('.audio-panel').waitFor()
-  await page.keyboard.press('Escape')
-  await page.locator('.audio-panel').waitFor({ state: 'detached' })
-  await page.locator('.preview-close').click()
+  await expect(page.getByRole('complementary', { name: '全局音乐播放器' })).toBeVisible()
+  await page.getByRole('button', { name: '停止音乐' }).click()
 
   await page.locator('.file-card').filter({ hasText: video }).click()
   const videoElement = page.locator('video').last()

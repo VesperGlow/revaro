@@ -129,7 +129,8 @@ test('文档编辑器按文件名和内容共同判断未保存状态，并格�
   await expect(editor.locator('.editor-meta b')).toHaveText('1,234 字节')
   await editor.getByRole('button', { name: '关闭编辑器' }).click()
 
-  await page.getByRole('button', { name: '新建文档', exact: true }).first().click()
+  await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
+  await page.getByRole('button', { name: '新建文档', exact: true }).click()
   await expect(editor).toBeVisible()
   const filename = editor.getByRole('textbox', { name: '文档文件名' })
   await filename.fill('changed.md')

@@ -18,14 +18,8 @@
 .brand-button:active {
   transform: scale(0.97);
 }
-.topbar .logo {
-  font-size: 20px;
-}
-.topbar .brand-mark.small {
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-}
+
+
 .nav {
   font-size: 14px;
   padding: 12px 13px;
@@ -87,12 +81,6 @@
     opacity: 0;
   }
 }
-.account-copy b {
-  font-size: 13px;
-}
-.account-copy small {
-  font-size: 11px;
-}
 .content-head h1 {
   font-size: 34px;
 }
@@ -115,17 +103,9 @@
 
 /* Mobile polish */
 @media (max-width: 850px) {
-  .topbar {
-    padding: 0 14px;
-  }
-  .topbar .logo {
-    font-size: 18px;
-  }
-  .topbar .brand-mark.small {
-    width: 36px;
-    height: 36px;
-    border-radius: 11px;
-  }
+
+
+
   .content {
     padding: 22px 14px 96px;
   }
@@ -150,9 +130,6 @@
   }
   .login-form h2 {
     font-size: 24px;
-  }
-  .top-actions {
-    gap: 10px;
   }
 }
 @media (max-width: 520px) {
@@ -206,9 +183,11 @@
 .listing-end:empty { min-height: 1px; padding: 0; }
 .management button { padding: 8px 12px; }
 .management { margin:12px 0;max-width:100%; }
-.management summary { cursor:pointer;padding:12px 0; }
+.management h3 { margin:14px 0 10px;font-size:14px; }
+.management p { margin:10px 0;font-size:13px;line-height:1.6; }
+.management-actions,.management-pagination { display:flex;flex-wrap:wrap;gap:8px; }
 .management input { max-width:100%;width:100%; }
-.management pre,.version-history pre { max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere; }
+.version-history pre { max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere; }
 .history-row { display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #ddd; }
 .history-row > :first-child { flex:1;min-width:0;overflow-wrap:anywhere; }
 .version-history { padding:20px;border-bottom:1px solid #ddd;max-height:45vh;overflow:auto; }

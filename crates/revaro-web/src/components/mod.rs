@@ -8,6 +8,7 @@ pub mod icons;
 
 mod account;
 mod audio;
+mod content_shell;
 mod dialogs;
 mod directory_picker;
 mod editor;
@@ -16,6 +17,8 @@ mod file_browser_header;
 mod login;
 mod management;
 mod media;
+mod menu;
+mod music_player;
 mod reader;
 pub(crate) mod reader_cache;
 mod selection_toolbar;
@@ -27,5 +30,6 @@ mod uploads;
 mod version_history;
 mod video;
 
+pub use content_shell::ContentShell;
 pub use file_browser::FileBrowser;
 pub use login::LoginView;

@@ -674,6 +674,124 @@ async fn document_versions_restore_with_conflict_protection_and_survive_cleanup(
 }
 
 #[tokio::test]
+async fn filename_search_uses_directory_scope_and_root_searches_the_whole_drive() {
+    let h = Harness::start().await;
+    let mut folders = Vec::new();
+    for (name, parent) in [("Inbox", ROOT_ID), ("Elsewhere", ROOT_ID)] {
+        let (status, folder) = h
+            .json(
+                "POST",
+                "/api/directories",
+                serde_json::json!({
+                    "parent_id": parent, "name": name,
+                }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+        folders.push(folder["id"].as_str().unwrap().to_owned());
+    }
+    let (_, nested) = h
+        .json(
+            "POST",
+            "/api/directories",
+            serde_json::json!({
+                "parent_id": folders[0], "name": "Nested",
+            }),
+        )
+        .await;
+    let nested_id = nested["id"].as_str().unwrap();
+    let mut ids = Vec::new();
+    for (name, parent) in [
+        ("shared-a.md", ROOT_ID),
+        ("shared-b.md", folders[0].as_str()),
+        ("shared-c.md", nested_id),
+        ("shared-d.md", folders[1].as_str()),
+        ("shared-gone.md", folders[0].as_str()),
+    ] {
+        let (status, file) = h
+            .json(
+                "POST",
+                "/api/documents",
+                serde_json::json!({
+                    "parent_id": parent, "name": name, "content": "search fixture",
+                }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+        ids.push(file["id"].as_str().unwrap().to_owned());
+    }
+    let (status, _) = h
+        .json(
+            "DELETE",
+            &format!("/api/files/{}", ids[4]),
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    for query in [
+        format!("parent_id={ROOT_ID}&q=shared"),
+        "q=shared".to_owned(),
+    ] {
+        let (status, listing) = h
+            .json(
+                "GET",
+                &format!("/api/files?{query}&limit=2&sort=name"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listing["total"], 4);
+        assert_eq!(listing["items"][0]["name"], "shared-a.md");
+        assert_eq!(listing["items"][1]["name"], "shared-b.md");
+        let (_, next) = h
+            .json(
+                "GET",
+                &format!("/api/files?{query}&limit=2&sort=name&offset=2"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(next["total"], 4);
+        assert_eq!(next["items"][0]["name"], "shared-c.md");
+        assert_eq!(next["items"][1]["name"], "shared-d.md");
+    }
+    for (parent, expected) in [(&folders[0], "shared-b.md"), (&folders[1], "shared-d.md")] {
+        let (status, listing) = h
+            .json(
+                "GET",
+                &format!("/api/files?parent_id={parent}&q=shared"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listing["total"], 1);
+        assert_eq!(listing["items"][0]["name"], expected);
+    }
+    // Clearing the query returns to the root listing, including whitespace-only input.
+    for query in ["".to_owned(), format!("parent_id={ROOT_ID}&q=%20%20")] {
+        let (status, listing) = h
+            .json(
+                "GET",
+                &format!("/api/files?{query}"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listing["total"], 3);
+        assert_eq!(listing["file_count"], 4);
+    }
+    for parent in ["missing-directory", ids[0].as_str(), ids[4].as_str()] {
+        let (status, _) = h
+            .json(
+                "GET",
+                &format!("/api/files?parent_id={parent}&q=shared"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+}
+
+#[tokio::test]
 async fn filename_search_is_literal_sorted_and_paginated_and_shares_expire() {
     let h = Harness::start().await;
     let mut ids = Vec::new();

@@ -69,6 +69,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "004_history_and_shares.sql",
         sql: include_str!("../migrations/004_history_and_shares.sql"),
     },
+    Migration {
+        version: 5,
+        name: "005_content_library.sql",
+        sql: include_str!("../migrations/005_content_library.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -602,6 +607,69 @@ mod tests {
             .map(Result::unwrap)
             .collect();
         assert!(!columns.iter().any(|column| column == "subtitles_json"));
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn upgrading_existing_files_backfills_the_content_library() {
+        let directory =
+            std::env::temp_dir().join(format!("revaro-library-upgrade-{}", crate::ids::new_id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("revaro.db");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+                .unwrap();
+            for migration in &MIGRATIONS[..4] {
+                connection.execute_batch(migration.sql).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO schema_migrations VALUES(?1,'2026-01-01T00:00:00Z')",
+                        [migration.version],
+                    )
+                    .unwrap();
+            }
+            for (id, name, status) in [
+                ("book", "existing.EPUB", "ready"),
+                ("music", "existing.flac", "ready"),
+                ("photo", "existing.png", "ready"),
+                ("upload", "unfinished.png", "pending"),
+                ("other", "archive.zip", "ready"),
+            ] {
+                connection.execute(
+                    "INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES(?1,?2,?3,'file',?4,123,?5,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                    rusqlite::params![id,ROOT_ID,name,format!("blobs/{id}"),status],
+                ).unwrap();
+            }
+        }
+        let database = Database::open(&path).unwrap();
+        let connection = database.acquire().unwrap();
+        let classified = connection
+            .prepare("SELECT file_id,kind FROM library_items ORDER BY file_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            classified,
+            vec![
+                ("book".to_owned(), "book".to_owned()),
+                ("music".to_owned(), "audio".to_owned()),
+                ("photo".to_owned(), "image".to_owned()),
+            ]
+        );
+        let original: (String, i64) = connection
+            .query_row(
+                "SELECT object_key,size FROM files WHERE id='book'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(original, ("blobs/book".to_owned(), 123));
         drop(connection);
         drop(database);
         std::fs::remove_dir_all(directory).unwrap();

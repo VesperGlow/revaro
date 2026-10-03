@@ -453,7 +453,7 @@ pub async fn create_share(id: &str, expiry: Option<i64>) -> Result<ShareStatus, 
 }
 
 pub async fn fetch_listing(
-    parent: Option<&str>,
+    parent: &str,
     q: &str,
     sort: &str,
     offset: i64,
@@ -461,22 +461,139 @@ pub async fn fetch_listing(
     let descending = sort.ends_with("_desc");
     let sort = sort.strip_suffix("_desc").unwrap_or(sort);
     let encoded: String = js_sys::encode_uri_component(q).into();
-    let parent = parent
-        .map(|id| format!("&parent_id={id}"))
-        .unwrap_or_default();
     get_json(&format!(
-        "/api/files?q={encoded}&sort={sort}&descending={descending}&offset={offset}&limit=100{parent}"
+        "/api/files?q={encoded}&sort={sort}&descending={descending}&offset={offset}&limit=100&parent_id={parent}"
     ))
     .await
 }
-pub async fn fetch_system_status() -> Result<serde_json::Value, RequestError> {
+/// Only the runtime metrics displayed in account settings are retained.
+#[derive(Clone, serde::Deserialize)]
+pub struct SystemStatusSummary {
+    pub disk_available_bytes: u64,
+    pub cache: CacheSummary,
+    pub active_tasks: u64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct CacheSummary {
+    pub memory_bytes: u64,
+    pub disk_bytes: u64,
+}
+
+pub async fn fetch_system_status() -> Result<SystemStatusSummary, RequestError> {
     get_json("/api/system/status").await
 }
 
-pub async fn fetch_shares(
-    offset: i64,
-) -> Result<Vec<revaro_core::features::ShareEntry>, RequestError> {
-    get_json(&format!("/api/shares?offset={offset}")).await
+#[derive(Clone, Default)]
+pub struct LibraryQuery {
+    pub kind: String,
+    pub query: String,
+    pub favorite: bool,
+    pub collection: String,
+    pub recent: bool,
+    pub offset: i64,
+}
+
+pub async fn fetch_library(
+    query: &LibraryQuery,
+) -> Result<revaro_core::library::LibraryListing, RequestError> {
+    let mut path = format!(
+        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&q={}",
+        query.offset,
+        query.favorite,
+        query.recent,
+        js_sys::encode_uri_component(&query.query)
+    );
+    if !query.kind.is_empty() {
+        path.push_str(&format!(
+            "&kind={}",
+            js_sys::encode_uri_component(&query.kind)
+        ));
+    }
+    if !query.collection.is_empty() {
+        path.push_str(&format!(
+            "&collection={}",
+            js_sys::encode_uri_component(&query.collection)
+        ));
+    }
+    get_json(&path).await
+}
+
+pub async fn update_library_item(
+    id: &str,
+    update: &revaro_core::library::ItemUpdate,
+) -> Result<(), RequestError> {
+    let request = api_request(Request::patch(&format!("/api/library/items/{id}")))
+        .json(update)
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_empty(request).await
+}
+
+pub async fn fetch_collections() -> Result<Vec<revaro_core::library::Collection>, RequestError> {
+    get_json("/api/library/collections").await
+}
+
+pub async fn create_collection(
+    name: &str,
+    kind: &str,
+) -> Result<revaro_core::library::Collection, RequestError> {
+    let request = api_request(Request::post("/api/library/collections"))
+        .json(&revaro_core::library::CreateCollection {
+            name: name.to_owned(),
+            kind: kind.to_owned(),
+        })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_json(request).await
+}
+
+pub async fn collection_member(
+    collection: &str,
+    file_id: &str,
+    add: bool,
+) -> Result<(), RequestError> {
+    let path = format!("/api/library/collections/{collection}/items/{file_id}");
+    let builder = if add {
+        Request::put(&path)
+    } else {
+        Request::delete(&path)
+    };
+    send_empty(
+        api_request(builder)
+            .build()
+            .map_err(|e| request_transport(e.to_string()))?,
+    )
+    .await
+}
+
+pub async fn delete_collection(id: &str) -> Result<(), RequestError> {
+    send_empty(
+        api_request(Request::delete(&format!("/api/library/collections/{id}")))
+            .build()
+            .map_err(|e| request_transport(e.to_string()))?,
+    )
+    .await
+}
+
+pub const SHARE_PAGE_SIZE: i64 = 200;
+
+pub struct SharePage {
+    pub items: Vec<revaro_core::features::ShareEntry>,
+    pub has_next: bool,
+}
+
+pub async fn fetch_shares(offset: i64) -> Result<SharePage, RequestError> {
+    let items: Vec<revaro_core::features::ShareEntry> =
+        get_json(&format!("/api/shares?offset={offset}")).await?;
+    // The endpoint has no total count. Check the following batch only when the
+    // current one is full, so an exact full page does not offer an empty page.
+    let has_next = if items.len() == SHARE_PAGE_SIZE as usize {
+        let next: Vec<revaro_core::features::ShareEntry> =
+            get_json(&format!("/api/shares?offset={}", offset + SHARE_PAGE_SIZE)).await?;
+        !next.is_empty()
+    } else {
+        false
+    };
+    Ok(SharePage { items, has_next })
 }
 pub async fn fetch_versions(
     id: &str,

@@ -39,6 +39,7 @@ wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = [
     "Headers",
     "IntersectionObserver",
+    "ResizeObserver",
     "IntersectionObserverEntry",
     "IntersectionObserverInit",
     "Document",

@@ -159,9 +159,9 @@ impl ActiveUpload {
 pub struct UploadController {
     tasks: RwSignal<Vec<UploadTask>>,
     drag_active: RwSignal<bool>,
-    current_id: RwSignal<String>,
+    current_id: Signal<String>,
     current_folder: RwSignal<Option<ModelFile>>,
-    trash_mode: RwSignal<bool>,
+    trash_mode: Signal<bool>,
     file_input: NodeRef<leptos::html::Input>,
     folder_input: NodeRef<leptos::html::Input>,
     runtime: Rc<UploadRuntime>,
@@ -191,9 +191,9 @@ impl UploadRefresh {
 impl UploadController {
     /// Create a queue bound to the current file-browser signals.
     pub fn new(
-        current_id: RwSignal<String>,
+        current_id: Signal<String>,
         current_folder: RwSignal<Option<ModelFile>>,
-        trash_mode: RwSignal<bool>,
+        trash_mode: Signal<bool>,
         file_input: NodeRef<leptos::html::Input>,
         folder_input: NodeRef<leptos::html::Input>,
         refresh_folder: Callback<UploadRefresh>,

@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use revaro_core::api::auth::Session;
 
 use crate::api;
-use crate::components::{FileBrowser, LoginView};
+use crate::components::{ContentShell, LoginView};
 
 /// Mount the application into the page body.
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
@@ -68,7 +68,7 @@ fn App() -> impl IntoView {
                 .into_any()
             } else if let Some(profile) = session.get() {
                 view! {
-                    <FileBrowser
+                    <ContentShell
                         session=profile
                         on_logout=on_logout.clone()
                         on_username_changed=on_username_changed.clone()

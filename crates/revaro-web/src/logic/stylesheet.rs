@@ -88,10 +88,6 @@ pub const COMPONENT_SHEETS: [Stylesheet; 8] = [
         "TaskCenter scoped block",
     ),
     Stylesheet::new(
-        "styles/components/service-card.css",
-        "ServiceCard scoped block; :deep() resolved",
-    ),
-    Stylesheet::new(
         "styles/components/status-badge.css",
         "StatusBadge scoped block",
     ),
@@ -110,6 +106,10 @@ pub const COMPONENT_SHEETS: [Stylesheet; 8] = [
     Stylesheet::new(
         "styles/components/full-bleed-progress.css",
         "FullBleedProgress track, buffer, chapter markers and native range overlay",
+    ),
+    Stylesheet::new(
+        "styles/content-library.css",
+        "content shell, library layouts and persistent music player",
     ),
 ];
 

@@ -13,6 +13,7 @@
 pub mod feedback;
 pub mod format;
 pub mod image_geometry;
+pub mod library;
 pub mod markdown;
 pub mod media;
 pub mod reader;

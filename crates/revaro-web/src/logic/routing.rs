@@ -32,7 +32,7 @@ pub fn reader_id(pathname: &str) -> Option<String> {
 #[must_use]
 pub fn folder_url(id: &str, root_id: &str) -> String {
     if id == root_id {
-        "/".to_owned()
+        "/files".to_owned()
     } else {
         format!("/f/{id}")
     }
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn root_has_the_short_url() {
-        assert_eq!(folder_url(ROOT, ROOT), "/");
+        assert_eq!(folder_url(ROOT, ROOT), "/files");
         assert_eq!(folder_url("folder", ROOT), "/f/folder");
     }
 }

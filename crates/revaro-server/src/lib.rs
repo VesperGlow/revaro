@@ -22,6 +22,7 @@ pub mod db;
 pub mod error;
 pub mod file_routes;
 pub mod ids;
+pub mod library_routes;
 pub mod listing_routes;
 pub mod maintenance;
 pub mod media_routes;

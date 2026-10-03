@@ -1,23 +1,37 @@
-/* AppTopbar.vue's <style scoped> block, ported to a global sheet.
-   Leptos has no scoped-style transform, so every selector is anchored under
-   `.topbar` (the component root). That keeps the class names — the DOM
-   contract — unchanged while reproducing the extra specificity Vue's
-   `[data-v-*]` attribute selector used to add over the global sheets.
-   The two `:deep(svg)` selectors from the original become plain descendant
-   selectors. */
+/* Shared application header, navigation and file actions. */
+.topbar { --header-padding:clamp(18px,3vw,40px); position:sticky; top:0; z-index:22; display:flex; justify-content:space-between; align-items:center; gap:18px; height:78px; padding:0 var(--header-padding); border-bottom:1px solid var(--line); background:var(--surface); }
+.topbar .top-actions { display:flex; align-items:center; justify-content:flex-end; gap:5px; min-width:0; flex:0 0 auto; }
+.app-navigation { display:flex; align-items:center; height:100%; justify-content:center; gap:8px; }
+.topbar>.app-navigation { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:max-content; height:44px; }
+.app-navigation a { position:relative; display:flex; align-items:center; justify-content:center; width:44px; height:44px; padding:0; border-radius:var(--radius-md); color:var(--muted); text-decoration:none; white-space:nowrap; font-size:14px; }
+.app-navigation a:hover,.app-navigation a.active { color:var(--accent); background:var(--accent-soft); }
+.app-navigation a svg { width:21px; height:21px; stroke-width:1.7; }
+.app-navigation a:focus-visible { outline:none; box-shadow:var(--focus-ring); }
+.app-navigation a.active::after { content:""; position:absolute; bottom:-6px; left:50%; width:20px; height:3px; transform:translateX(-50%); background:var(--accent); border-radius:3px 3px 0 0; }
+.mobile-navigation { display:none; }
+@media(min-width:851px) and (max-width:1100px) { .topbar { --header-padding:18px; gap:12px; } .topbar .top-actions { gap:3px; } .topbar .account-button { margin-left:0; } }
+@media(max-width:850px) {
+ .topbar { display:flex; justify-content:space-between; height:calc(64px + env(safe-area-inset-top,0px)); padding-top:env(safe-area-inset-top,0px); }
+ .topbar>.app-navigation { display:none; }
+ .mobile-navigation { display:flex; position:fixed; bottom:0; left:0; right:0; height:calc(58px + env(safe-area-inset-bottom,0px)); padding-bottom:env(safe-area-inset-bottom,0px); z-index:34; background:var(--surface); border-top:1px solid var(--line); justify-content:space-around; gap:0; }
+ .mobile-navigation a { justify-content:center; flex:1; padding:0 6px; height:100%; border-radius:0; }
+ .mobile-navigation a.active::after { top:0; bottom:auto; left:50%; }
+}
 .topbar .topbar-left{display:flex;align-items:center;gap:8px;min-width:0}
 .topbar .brand-logo{display:block;width:auto;height:28px}
 .topbar .brand-button{min-width:0}
+.topbar .account-button{display:grid;place-items:center;width:44px;height:44px;flex:0 0 44px;margin:0;padding:0;border-radius:50%;}
+.topbar .top-actions>button svg,.topbar .action-menu>summary svg,.topbar .task-center>summary svg{width:21px;height:21px;}
 .topbar .trash-button{display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:50%;background:transparent;color:#64748b}
 .topbar .trash-button:hover{background:#f1f5f9;color:#334155}
 .topbar .trash-button svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .topbar .mobile-account-menu{position:relative}
-.topbar .mobile-account-menu>summary{position:relative;display:grid;width:40px;height:40px;place-items:center;cursor:pointer;list-style:none}
+.topbar .mobile-account-menu>summary{position:relative;display:grid;width:44px;height:44px;place-items:center;cursor:pointer;list-style:none}
 .topbar .mobile-account-menu>summary::-webkit-details-marker{display:none}
 .topbar .mobile-account-menu>summary .avatar-badge{width:34px;height:34px}
 .topbar .task-menu-badge{position:absolute;top:1px;right:0;width:9px;height:9px;border:2px solid #fff;border-radius:50%;background:#2563eb}
 .topbar .task-menu-badge.failed{display:grid;place-items:center;width:15px;height:15px;border-width:1px;background:#dc2626;color:#fff;font-size:9px;font-style:normal;font-weight:900;line-height:1}
-.topbar .mobile-account-menu>section{position:fixed;z-index:44;top:64px;right:max(10px,env(safe-area-inset-right,0px));display:grid;width:min(210px,calc(100vw - 20px));padding:7px;border:1px solid #dfe6ee;border-radius:15px;background:#fff;box-shadow:0 22px 60px #0f172a2e}
+.topbar .mobile-account-menu>section{position:absolute;z-index:44;top:calc(100% + 8px);left:50%;transform:translateX(-50%);display:grid;width:min(210px,calc(100vw - 20px));padding:7px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-popover)}
 .topbar .mobile-account-menu hr{width:calc(100% - 12px);margin:5px 6px;border:0;border-top:1px solid #e8edf3}
 .topbar .mobile-tool-item,.topbar .mobile-trash{display:flex;align-items:center;min-height:46px;padding:3px 9px;border:0;border-radius:10px;background:#fff;color:#34475e;gap:9px}
 .topbar .mobile-tool-item:hover,.topbar .mobile-trash:hover{background:#f4f7fb}
@@ -30,30 +44,21 @@
 .topbar .mobile-trash{width:100%;cursor:pointer}
 .topbar .mobile-trash .trash-button{width:34px;height:34px}
 .topbar .mobile-trash b{font-weight:700}
-@media(max-width:850px){.topbar{padding-right:max(14px,env(safe-area-inset-right,0px));padding-left:max(14px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:24px}.topbar .brand-button{flex:0 0 auto;white-space:nowrap}.topbar .top-actions{flex:0 0 auto;gap:5px}.topbar .mobile-account-menu{flex:0 0 auto}}
-@media(max-width:430px){.topbar{padding-right:max(12px,env(safe-area-inset-right,0px));padding-left:max(12px,env(safe-area-inset-left,0px))}.topbar .top-actions{gap:4px}.topbar .account-button{margin-left:0}}
-@media(max-width:350px){.topbar{padding-right:max(8px,env(safe-area-inset-right,0px));padding-left:max(8px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:22px}.topbar .brand-button{padding-right:2px;padding-left:2px}.topbar .top-actions{gap:2px}}
-@media(max-width:850px){.topbar .mobile-account-menu>section{top:calc(64px + env(safe-area-inset-top,0px));width:min(210px,calc(100vw - 20px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}.topbar .mobile-tool-item{min-width:0}.topbar .mobile-tool-item b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+@media(max-width:850px){.topbar{padding-right:max(14px,env(safe-area-inset-right,0px));padding-left:max(14px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:24px}.topbar .brand-button{flex:0 0 auto;white-space:nowrap}.topbar .top-actions{flex:0 0 auto;gap:2px}.topbar .mobile-account-menu{flex:0 0 auto}}
+@media(max-width:430px){.topbar{padding-right:max(12px,env(safe-area-inset-right,0px));padding-left:max(12px,env(safe-area-inset-left,0px))}}
+@media(max-width:350px){.topbar{padding-right:max(8px,env(safe-area-inset-right,0px));padding-left:max(8px,env(safe-area-inset-left,0px))}.topbar .brand-logo{height:18px}.topbar .brand-button{padding-right:2px;padding-left:2px}}
+@media(max-width:850px){.topbar .mobile-account-menu>section{width:min(210px,calc(100vw - 20px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}.topbar .mobile-tool-item{min-width:0}.topbar .mobile-tool-item b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 
-/* The search circle grows leftward within a fixed slot; other actions stay put. */
-.topbar { position: sticky; top: 0; }
-.topbar .topbar-search {
-  --search-expanded-width: 380px;
-  position: relative; z-index: 2; flex: 0 0 44px; width: 44px; height: 44px;
-}
-.topbar .search-surface {
-  position: absolute; top: 0; right: 0; display: flex; align-items: center;
-  width: 44px; height: 44px; margin: 0; padding: 0; overflow: hidden;
-  border: 0; border-radius: 22px; background: transparent;
-  transition: width .24s ease, background-color .2s ease, box-shadow .2s ease;
-}
-.topbar .topbar-search.expanded .search-surface {
-  width: var(--search-expanded-width); background: var(--surface-subtle);
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-.topbar .topbar-search.ready .search-surface { overflow: visible; }
-.topbar .topbar-search.expanded .search-surface:focus-within {
-  box-shadow: inset 0 0 0 1px var(--accent-border);
+/* The search surface expands left in the header; its right edge stays attached to the trigger. */
+.topbar .topbar-search { position:relative; z-index:2; flex:0 0 auto; width:44px; height:44px; transition:width .24s ease; }
+.topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(50vw - var(--header-padding) - 380px)); }
+.topbar .search-surface { position:relative; display:flex; align-items:center; width:100%; height:44px; margin:0; padding:0; overflow:hidden; border:0; border-radius:22px; background:transparent; transition:background-color .2s ease, box-shadow .2s ease; }
+.topbar .topbar-search.expanded .search-surface { padding-left:12px; background:var(--surface-subtle); box-shadow:inset 0 0 0 1px var(--line); }
+.topbar .topbar-search.expanded .search-surface:focus-within { box-shadow:inset 0 0 0 1px var(--accent-border); }
+/* Compact desktop search needs the central space while editing; navigation returns to the same center on close. */
+@media(min-width:851px) and (max-width:1150px) {
+ .topbar.searching>.app-navigation { visibility:hidden; }
+ .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px); }
 }
 .topbar .search-toggle {
   display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px;
@@ -61,68 +66,51 @@
 }
 .topbar .search-toggle svg { width: 21px; height: 21px; }
 .topbar .search-toggle:hover { background: var(--accent-soft); }
-.topbar .search-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; box-shadow: none; }
 .topbar .search-fields {
   display: flex; align-items: center; flex: 1; min-width: 0; height: 100%;
   opacity: 0; visibility: hidden; pointer-events: none;
   transition: opacity .18s ease, visibility .18s;
 }
 .topbar .topbar-search.expanded .search-fields { opacity: 1; visibility: visible; pointer-events: auto; }
-.topbar .search-fields input[type="search"] {
+.topbar .search-measure,.topbar .search-fields input[type="search"] {
   flex: 1; min-width: 0; width: 100%; height: 34px; margin: 0; padding: 0 4px 0 0;
   border: 0; border-radius: 0; outline: none; box-shadow: none; appearance: none;
   background: transparent; color: var(--ink); font: inherit; font-size: 14px;
 }
+.topbar .search-measure { position:absolute; left:0; top:0; width:max-content; height:auto; padding:0; visibility:hidden; pointer-events:none; white-space:pre; }
 .topbar .search-fields input[type="search"]::-webkit-search-cancel-button,
 .topbar .search-fields input[type="search"]::-webkit-search-decoration { display: none; }
-.topbar .search-scope { position: relative; flex-shrink: 0; border-left: 1px solid var(--line); }
-.topbar .search-scope-toggle {
-  display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 7px;
-  border: 0; border-radius: 0; box-shadow: none; background: transparent; color: var(--ink-subtle);
-  font: inherit; font-size: 14px; white-space: nowrap;
-}
-.topbar .search-scope-toggle:hover,
-.topbar .search-scope-toggle[aria-expanded="true"] { background: transparent; color: var(--ink-subtle); }
-.topbar .search-scope-toggle svg { width: 14px; height: 14px; flex-shrink: 0; }
-.topbar .search-scope-options {
-  position: absolute; z-index: 45; top: calc(100% + 2px); left: 0;
-  display: grid; gap: 0; width: calc(100% + 8px); padding: 2px;
-  border: 1px solid #e8edf1; border-radius: 8px;
-  box-shadow: 0 2px 5px #17212b06; background: var(--surface-subtle);
-  animation: search-scope-expand .16s ease-out;
-}
-.topbar .search-scope-options button {
-  display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  width: 100%; min-height: 36px; padding: 0 5px; border: 0; border-radius: 5px;
-  background: transparent; color: var(--ink-subtle); font: inherit; font-size: 14px;
-  text-align: left; white-space: nowrap; box-shadow: none;
-}
-.topbar .search-scope-options button:hover { background: var(--surface-hover); }
-/* Pointer focus stays plain; only keyboard focus gets a subtle indicator. */
-.topbar .search-scope-toggle:focus,
-.topbar .search-scope-options button:focus { outline: none; box-shadow: none; }
-.topbar .search-scope-toggle:focus-visible,
-.topbar .search-scope-options button:focus-visible {
-  outline: 1px solid var(--accent-border); outline-offset: -1px; box-shadow: none;
-}
 .topbar .search-close {
-  display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 26px;
-  margin-right: 6px; padding: 0; border: 0; border-left: 1px solid var(--line);
+  display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 26px;
+  margin-right:0; padding: 0; border: 0; border-left: 1px solid var(--line);
   border-radius: 0; box-shadow: none; background: transparent; color: var(--muted);
 }
 .topbar .search-close svg { width: 17px; height: 17px; }
 .topbar .search-close:hover { color: var(--ink-subtle); }
-.topbar .search-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: none; }
-@keyframes search-scope-expand {
-  from { opacity: 0; transform: translateY(-4px); clip-path: inset(0 0 100% 0); }
-  to { opacity: 1; transform: translateY(0); clip-path: inset(0); }
+@media(max-width:850px) {
+ .topbar.searching .topbar-left { display:none; }
+ .topbar.searching .top-actions { flex:1; }
+ .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(100vw - 170px)); min-width:0; }
 }
-@media (max-width: 850px) {
-  .topbar .topbar-search { --search-expanded-width: min(380px, calc(100vw - 64px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))); }
-  .topbar .topbar-left { transition: opacity .18s ease; }
-  .topbar.searching .topbar-left { opacity: 0; pointer-events: none; }
+@media(max-width:1440px) {
+ .topbar .search-measure,.topbar .search-fields input[type="search"] { font-size:13px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .topbar .search-surface, .topbar .search-fields, .topbar .topbar-left { transition: none; }
-  .topbar .search-scope-options { animation: none; }
+  .topbar .topbar-search, .topbar .search-surface, .topbar .search-fields { transition: none; }
+}
+
+/* All primary file tools share the existing 44 px icon-button footprint. */
+.topbar .action-menu > summary { color:var(--accent); border-radius:50%; }
+.topbar .action-menu > summary svg { width:21px; height:21px; }
+.topbar .action-menu > summary[aria-disabled="true"] { opacity:.4; cursor:default; }
+.topbar .action-menu-panel { top:calc(100% + 8px); bottom:auto; min-width:160px; }
+.topbar .action-menu-panel > button { min-height:38px; padding:8px 10px; font-size:13px; }
+/* Pointer focus stays plain; keyboard focus uses the shared ring. */
+.topbar .top-actions button:focus,.topbar summary:focus { outline:none; box-shadow:none; }
+.topbar .top-actions button:focus-visible,.topbar summary:focus-visible { outline:none; box-shadow:var(--focus-ring); }
+@media(max-width:350px) {
+ .topbar { gap:4px; }
+ .topbar .topbar-search.expanded .search-surface { padding-left:10px; }
+ .topbar .search-measure,.topbar .search-fields input[type="search"] { font-size:12px; }
+ .topbar .search-close { flex-basis:24px; width:24px; }
 }

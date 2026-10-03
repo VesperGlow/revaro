@@ -107,6 +107,7 @@ fn api() -> Router<Arc<AppState>> {
         .merge(crate::file_routes::routes())
         .merge(crate::share_routes::routes())
         .merge(crate::listing_routes::routes())
+        .merge(crate::library_routes::routes())
         .merge(crate::version_routes::routes())
         .merge(crate::system_routes::routes())
         .merge(crate::media_routes::routes())

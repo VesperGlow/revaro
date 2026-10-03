@@ -20,7 +20,7 @@ use crate::logic::media::{
 };
 
 use super::icons;
-use super::media::{MenuIcon, PreviewMenu};
+use super::menu::{ActionMenu, MenuIcon};
 
 fn play_video_ignoring_rejection(video: &HtmlMediaElement) {
     if let Ok(promise) = video.play() {
@@ -645,7 +645,7 @@ pub fn VideoPlayer(
         }
     };
 
-    // The reference VideoControls forwards PreviewMenu's native toggle event
+    // The reference VideoControls forwards ActionMenu's native toggle event
     // back to showControls(). Closing a menu therefore restarts the same
     // auto-hide window as any other control interaction.
     let menu_interact = Callback::new(move |_: bool| {
@@ -799,7 +799,7 @@ pub fn VideoPlayer(
                         <input class="video-volume" type="range" min="0" max="1" step="0.01" aria-label="音量" aria-valuetext=move || format!("{}%", (effective_volume() * 100.0).round() as i64) prop:value=move || effective_volume().to_string() on:input=change_volume />
                     </div>
                     <span class="video-control-spacer"></span>
-                    <PreviewMenu label="播放设置".to_owned() icon=MenuIcon::Settings on_toggle=menu_interact>
+                    <ActionMenu label="播放设置".to_owned() icon=MenuIcon::Settings on_toggle=menu_interact>
                         <label class="video-setting"><span>"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=change_rate>
                             <option value="0.5">"0.5×"</option><option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
                         </select></label>
@@ -817,7 +817,7 @@ pub fn VideoPlayer(
                             move |_| on_copy.run(item.clone())
                         }>{icons::copy()}<span>"复制"</span></button>
                         <p class="media-detail">"原始文件播放"</p>
-                    </PreviewMenu>
+                    </ActionMenu>
                     <button class="video-icon-button" type="button" aria-label=move || if fullscreen.get() { "退出全屏" } else { "全屏" } on:click=move |_| toggle_fullscreen()>
                         {move || if fullscreen.get() { icons::minimize().into_any() } else { icons::maximize().into_any() }}
                     </button>
