@@ -58,7 +58,7 @@ test('continuous scrolling preserves files and selection, with aligned sorting a
   const create = await page.locator('.topbar').getByLabel('新建', { exact: true }).boundingBox()
   expect(sort && create).toBeTruthy()
   await expect(page.locator('.content-head .desktop-create-actions, .content-head .create-menu, .content-head .upload-menu')).toHaveCount(0)
-  expect(create!.height).toBe(40)
+  expect(create!.height).toBe(44)
   expect(sort!.width).toBeGreaterThanOrEqual(80)
   expect(sort!.width).toBeLessThanOrEqual(110)
   await expect(fieldToggle.locator('svg')).toHaveCount(0)
