@@ -601,69 +601,10 @@ button {
 .file-card {
   position: relative;
 }
-.file-card.selected {
-  border-color: #4b79d8;
-  box-shadow:
-    0 0 0 2px #4b79d820,
-    0 14px 35px #33415514;
-  transform: translateY(-2px);
-}
-.file-card.selected .card-preview:after {
-  position: absolute;
-  inset: 0;
-  content: "";
-  background: #2563eb0d;
-  pointer-events: none;
-}
 .card-info {
   padding-bottom: 14px;
 }
-.card-select {
-  position: absolute;
-  z-index: 3;
-  top: 11px;
-  left: 11px;
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 1px solid #d5deea;
-  border-radius: 9px;
-  background: #fffffff0;
-  color: transparent;
-  opacity: 0;
-  box-shadow: 0 5px 16px #0f172a25;
-  transition: 0.15s;
-}
-.file-card:hover .card-select,
-.card-select:focus-visible,
-.card-select.active {
-  opacity: 1;
-}
-.card-select:hover {
-  border-color: #8aabe7;
-  color: #2563eb;
-}
-.card-select.active {
-  border-color: #2563eb;
-  background: #2563eb;
-  color: #fff;
-}
-.card-select svg {
-  width: 19px;
-  height: 19px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-@media (hover: none) {
-  .card-select {
-    opacity: 1;
-  }
-}
+
 
 /* Unified media viewer */
 .large-video{

@@ -11,7 +11,7 @@
 .app-navigation a:focus-visible { outline:none; box-shadow:var(--focus-ring); }
 .app-navigation a.active::after { content:""; position:absolute; bottom:-6px; left:50%; width:20px; height:3px; transform:translateX(-50%); background:var(--accent); border-radius:3px 3px 0 0; }
 .mobile-navigation { display:none; }
-@media(min-width:851px) and (max-width:1100px) { .topbar { --header-padding:18px; gap:12px; } .topbar .top-actions { gap:3px; } .topbar .account-button { margin-left:0; } }
+@media(min-width:851px) and (max-width:1220px) { .topbar { --header-padding:18px; gap:12px; } .topbar .top-actions { gap:3px; } .topbar .account-button { margin-left:0; } }
 @media(max-width:850px) {
  .topbar { display:flex; justify-content:space-between; height:calc(64px + env(safe-area-inset-top,0px)); padding-top:env(safe-area-inset-top,0px); }
  .topbar>.app-navigation { display:none; }
@@ -28,12 +28,12 @@
 
 /* The search surface expands left in the header; its right edge stays attached to the trigger. */
 .topbar .topbar-search { position:relative; z-index:2; flex:0 0 auto; width:44px; height:44px; transition:width .24s ease; }
-.topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(50vw - var(--header-padding) - 430px)); }
+.topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(50vw - var(--header-padding) - (7 * 44px + 6 * 8px) / 2 - 7 * (44px + 5px) - 18px)); }
 .topbar .search-surface { position:relative; display:flex; align-items:center; width:100%; height:44px; margin:0; padding:0; overflow:hidden; border:0; border-radius:22px; background:transparent; transition:background-color .2s ease, box-shadow .2s ease; }
 .topbar .topbar-search.expanded .search-surface { padding-left:12px; background:var(--surface-subtle); box-shadow:inset 0 0 0 1px var(--line); }
 .topbar .topbar-search.expanded .search-surface:focus-within { box-shadow:inset 0 0 0 1px var(--accent-border); }
 /* Compact desktop search needs the central space while editing; navigation returns to the same center on close. */
-@media(min-width:851px) and (max-width:1400px) {
+@media(min-width:851px) and (max-width:1550px) {
  .topbar.searching>.app-navigation { visibility:hidden; }
  .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px); }
 }
@@ -66,7 +66,8 @@
 @media(max-width:850px) {
  .topbar.searching .topbar-left { display:none; }
  .topbar.searching .top-actions { flex:1; }
- .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(100vw - 170px)); min-width:0; }
+ .topbar.searching .top-actions>:not(.topbar-search) { flex-shrink:0; }
+ .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px); flex-shrink:1; min-width:0; }
 }
 @media(max-width:1440px) {
  .topbar .search-measure,.topbar .search-fields input[type="search"] { font-size:13px; }
@@ -122,12 +123,12 @@
 .system-metric strong { color:var(--ink-subtle); font-size:12px; font-weight:550; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .system-metric .metric-skeleton { width:65px; color:transparent; height:14px; border-radius:4px; background:var(--surface-subtle); }
 .system-metric:first-child .metric-skeleton { width:130px; }
-@media(min-width:851px) and (max-width:1100px) { .topbar>.app-navigation { gap:3px; } .topbar>.app-navigation a { width:40px; } }
-@media(max-width:850px) { .topbar .top-actions { gap:2px; } .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle { width:34px; height:40px; flex-basis:34px; } .topbar { --header-status-size:32px; } .topbar .public-links-popover { max-width:calc(100vw - 16px); } .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(100vw - 248px)); } .mobile-navigation a svg { width:20px; height:20px; } }
+@media(min-width:851px) and (max-width:1220px) { .topbar>.app-navigation { gap:3px; } .topbar>.app-navigation a { width:40px; } }
+@media(max-width:850px) { .topbar .top-actions { gap:2px; } .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle,.topbar .selection-toggle { width:34px; height:40px; flex-basis:34px; } .topbar { --header-status-size:32px; } .topbar .public-links-popover { max-width:calc(100vw - 16px); } .mobile-navigation a svg { width:20px; height:20px; } }
 @media(max-width:520px) { .topbar { --header-brand-padding:12px; } }
 @media(max-width:350px) { .topbar { --header-brand-size:18px; --header-icon-scale:1.08; padding-left:8px; padding-right:8px; gap:4px; } .topbar .top-actions { gap:1px; } }
 
-@media(min-width:851px) and (max-width:1100px) { .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle { width:34px; height:44px; flex-basis:34px; } }
+@media(min-width:851px) and (max-width:1220px) { .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle,.topbar .selection-toggle { width:34px; height:44px; flex-basis:34px; } }
 /* Expanded search sizes itself by width even when compact tools use a fixed basis. */
 .topbar .topbar-search.expanded { flex-basis:auto; }
 .topbar .search-surface { height:100%; }
@@ -135,7 +136,24 @@
 .topbar .task-center > summary { color:var(--accent); }
 .topbar .task-center > summary svg { color:inherit; stroke-width:1.7; }
 @media(max-width:430px) {
- .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle { width:30px; flex-basis:30px; }
+ .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle,.topbar .selection-toggle { width:30px; flex-basis:30px; }
  .topbar { --header-avatar-size:30px; --header-status-size:28px; }
- .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(100vw - 216px)); }
+
+}
+
+/* The selection trigger uses the same artwork scale and action footprint. */
+.topbar .selection-toggle { display:grid; place-items:center; width:44px; height:44px; flex:0 0 44px; margin:0; padding:0; border:0; border-radius:50%; color:var(--accent); background:transparent; }
+.topbar .selection-toggle:hover,.topbar .selection-toggle.active { background:var(--accent-soft); }
+@media(min-width:851px) and (max-width:980px) {
+ .topbar>.app-navigation { gap:2px; }
+ .topbar>.app-navigation a { width:32px; }
+ .topbar .top-actions { gap:2px; }
+}
+@media(max-width:1220px) { .topbar .selection-toggle { width:34px; flex-basis:34px; } }
+@media(max-width:850px) { .topbar .selection-toggle { height:40px; } }
+@media(max-width:430px) {
+ .topbar .selection-toggle { width:30px; flex-basis:30px; }
+ /* Keep the existing brand mark at its current scale beside the extra tool. */
+ .topbar .brand-button { width:calc(var(--header-brand-size) * var(--header-icon-scale) * 1.65); padding:0; overflow:hidden; }
+ .topbar .brand-logo { max-width:none; }
 }

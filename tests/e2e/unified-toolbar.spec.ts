@@ -135,13 +135,13 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     }
 
-    const buttons = page.locator('.topbar .search-toggle, .topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
+    const buttons = page.locator('.topbar .search-toggle, .topbar .selection-toggle, .topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
     const geometry = await buttons.evaluateAll(elements => elements.map(element => {
       const rect = element.getBoundingClientRect()
       return { width: rect.width, height: rect.height, center: rect.y + rect.height / 2 }
     }))
     for (const button of geometry) {
-      expect(button.width).toBe(width <= 430 ? 30 : width <= 1100 ? 34 : 44)
+      expect(button.width).toBe(width <= 430 ? 30 : width <= 1220 ? 34 : 44)
       expect(button.height).toBe(width <= 850 ? 40 : 44)
       expect(button.center).toBe(geometry[0].center)
     }
@@ -181,13 +181,19 @@ test('header search grows with typed text, shrinks on clear and keeps tools fixe
     await expect(input).toBeFocused()
     await input.fill('')
     const surface = page.locator('.search-surface')
-    const initial = width <= 850 ? Math.min(208, width - (width <= 430 ? 216 : 248)) : 208
+    const tools = page.locator('.topbar .selection-toggle, .topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
+    const available = await page.locator('.topbar').evaluate(header => {
+      const headerStyle = getComputedStyle(header), actions = header.querySelector('.top-actions')!, nav = header.querySelector('.app-navigation')!
+      const right = header.querySelector('.selection-toggle')!.getBoundingClientRect().left - parseFloat(getComputedStyle(actions).columnGap)
+      const left = innerWidth > 1550 ? nav.getBoundingClientRect().right + parseFloat(headerStyle.columnGap) : header.getBoundingClientRect().left + parseFloat(headerStyle.paddingLeft)
+      return right - left
+    })
+    const initial = width <= 850 ? Math.min(208, available) : 208
     await expect.poll(async () => (await surface.boundingBox())!.width).toBe(initial)
-    const tools = page.locator('.topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
     const positions = await tools.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()))
     const right = (await surface.boundingBox())!.x + initial
     await input.fill('适度长度的文件名称')
-    const maximum = width <= 850 ? Math.min(420, width - (width <= 430 ? 216 : 248)) : width <= 1400 ? 420 : 330
+    const maximum = width <= 850 || width > 1550 ? Math.min(420, available) : 420
     await expect.poll(async () => (await surface.boundingBox())!.width).toBeGreaterThanOrEqual(initial)
     await input.fill('超长的文件名称与关键词'.repeat(12))
     await expect.poll(async () => (await surface.boundingBox())!.width).toBeGreaterThanOrEqual(maximum - 1)

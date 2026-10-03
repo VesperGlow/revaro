@@ -21,6 +21,7 @@ mod menu;
 mod music_player;
 mod reader;
 pub(crate) mod reader_cache;
+mod selection;
 mod selection_toolbar;
 mod share;
 mod tasks;

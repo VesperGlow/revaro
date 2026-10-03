@@ -9,6 +9,7 @@ use crate::{browser, logic::library::LibraryPage};
 use super::icons;
 use super::management::{PublicLinks, SystemStatus};
 use super::menu::{ActionMenu, MenuIcon};
+use super::selection::SelectionMode;
 use super::tasks::{TaskCenter, UiTaskController};
 
 /// Profile, task and file actions injected by the persistent file workspace.
@@ -44,6 +45,7 @@ pub fn AppTopbar(
     library_search: TopbarSearch,
     page: RwSignal<LibraryPage>,
     on_navigate: Callback<LibraryPage>,
+    selection: SelectionMode,
 ) -> impl IntoView {
     let TopbarActions {
         username,
@@ -144,6 +146,10 @@ pub fn AppTopbar(
     let mut escape = browser::on_keydown(move |event| {
         if event.key() != "Escape" {
             return;
+        }
+        if selection.enabled.get_untracked() {
+            selection.exit();
+            event.prevent_default();
         }
         if search_open.get_untracked() {
             event.prevent_default();
@@ -250,6 +256,12 @@ pub fn AppTopbar(
                         </form>
                     </div>
                 </Show>
+                <button class="selection-toggle" type="button"
+                    class:active=move || selection.enabled.get()
+                    title=move || if selection.enabled.get() { "退出选择模式 (Esc)" } else { "进入选择模式" }
+                    aria-label=move || if selection.enabled.get() { "退出选择模式" } else { "进入选择模式" }
+                    aria-pressed=move || selection.enabled.get().to_string()
+                    on:click=move |_| selection.toggle_mode()>{icons::circle_check()}</button>
                 <ActionMenu label="新建".to_owned() icon=MenuIcon::Create disabled=file_actions_disabled context=menu_context>
                     <button type="button" data-close-menu="true" on:click=move |_| on_new_document.run(())>"新建文档"</button>
                     <button type="button" data-close-menu="true" on:click=move |_| on_create_folder.run(())>"新建文件夹"</button>

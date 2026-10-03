@@ -13,6 +13,17 @@
 
 use leptos::prelude::*;
 
+/// Global selection toggle, matching the existing circular action icons.
+pub fn circle_check() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="m8 12 3 3 5-6"></path>
+        </svg>
+    }
+}
+
 /// Circular new-item action in the existing 24 px stroke style.
 pub fn circle_plus() -> impl IntoView {
     view! {
@@ -255,6 +266,11 @@ pub fn circle_alert() -> impl IntoView {
             <line x1="12" x2="12.01" y1="16" y2="16"></line>
         </svg>
     }
+}
+
+/// Lucide `plus` — add an item.
+pub fn plus() -> impl IntoView {
+    view! { <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg> }
 }
 
 /// Lucide `play` — start playback.

@@ -1,5 +1,12 @@
 import { expect, type Page } from '@playwright/test'
 
+export async function enterSelectionMode(page: Page) {
+  const toggle = page.locator('.selection-toggle')
+  await expect(toggle).toBeVisible()
+  if (await toggle.getAttribute('aria-pressed') === 'false') await toggle.click()
+  await expect(page.getByRole('button', { name: '退出选择模式', exact: true })).toHaveAttribute('aria-pressed', 'true')
+}
+
 export async function login(page: Page) {
   await page.goto('/')
   await page.getByLabel('用户名').fill(process.env.E2E_USERNAME || 'admin')

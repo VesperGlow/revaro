@@ -1,31 +1,59 @@
 //! Selection actions for the live folder and trash listings.
 
-use std::collections::HashSet;
-
 use leptos::prelude::*;
 use revaro_core::classify;
 use revaro_core::model::{File, FileKind};
 
-use crate::logic::format::format_size;
+use super::{
+    icons,
+    menu::{ActionMenu, MenuIcon},
+    selection::SelectionMode,
+};
+use crate::logic::{feedback::Feedback, format::format_size, library::LibraryPage};
 
-/// A compact toolbar for the currently selected listing entries.
+/// Callbacks supplied once by the persistent file workspace for every listing.
+#[derive(Clone)]
+pub struct SelectionActions {
+    pub items: Signal<Vec<File>>,
+    pub trash_mode: Signal<bool>,
+    pub file_tools: Signal<bool>,
+    pub visible: Signal<bool>,
+    pub on_clear: Callback<()>,
+    pub on_select_all: Callback<()>,
+    pub on_rename: Callback<()>,
+    pub on_move: Callback<()>,
+    pub on_copy: Callback<()>,
+    pub on_delete: Callback<()>,
+    pub on_restore: Callback<()>,
+    pub on_purge: Callback<()>,
+    pub on_open: Callback<File>,
+    pub on_download: Callback<()>,
+    pub on_share: Callback<File>,
+    pub on_feedback: Callback<Feedback>,
+}
+
+/// The same batch toolbar serves the folder, trash and content-library views.
 #[component]
-pub fn SelectionToolbar(
-    items: RwSignal<Vec<File>>,
-    selected_ids: RwSignal<HashSet<String>>,
-    trash_mode: RwSignal<bool>,
-    on_clear: Callback<()>,
-    on_select_all: Callback<()>,
-    on_rename: Callback<()>,
-    on_move: Callback<()>,
-    on_copy: Callback<()>,
-    on_delete: Callback<()>,
-    on_restore: Callback<()>,
-    on_purge: Callback<()>,
-    on_open: Callback<File>,
-    on_download: Callback<()>,
-    on_share: Callback<File>,
-) -> impl IntoView {
+pub fn BatchActionBar(selection: SelectionMode, actions: SelectionActions) -> impl IntoView {
+    let selected_ids = selection.ids;
+    let SelectionActions {
+        items,
+        trash_mode,
+        file_tools,
+        visible,
+        on_clear,
+        on_select_all,
+        on_rename,
+        on_move,
+        on_copy,
+        on_delete,
+        on_restore,
+        on_purge,
+        on_open,
+        on_download,
+        on_share,
+        on_feedback: _,
+    } = actions;
     let selected_items = move || {
         let ids = selected_ids.get();
         items
@@ -70,21 +98,27 @@ pub fn SelectionToolbar(
     let share = on_share;
 
     view! {
+        <Show when=move || selection.enabled.get() && !selected_ids.get().is_empty() && visible.get() fallback=|| ()>
         <div class="selection-toolbar" role="toolbar" aria-label="所选项目操作">
             <button
                 class="selection-close"
                 type="button"
-                title="取消选择"
-                aria-label="取消选择"
+                title="退出选择模式"
+                aria-label="取消"
                 on:click=move |_| on_clear.run(())
             >
-                "×"
+                "取消"
             </button>
             <span class="selection-summary">
-                <b>{move || format!("{} 项", selected_count())}</b>
+                <b>{move || format!("已选择 {} 项", selected_count())}</b>
                 <small>{move || format!("已选择 {}", format_size(selected_bytes()))}</small>
             </span>
+            <div class="selection-action-groups">
             <div class="selection-actions">
+                <button type="button" on:click=move |_| on_select_all.run(())>
+                    {check_icon()}
+                    <span>{move || if all_selected() { "取消全选" } else { "全选" }}</span>
+                </button>
                 <Show
                     when=move || !trash_mode.get()
                     fallback=move || view! {
@@ -98,13 +132,9 @@ pub fn SelectionToolbar(
                         </button>
                     }
                 >
-                    <button type="button" on:click=move |_| on_select_all.run(())>
-                        {check_icon()}
-                        <span>{move || if all_selected() { "取消全选" } else { "全选" }}</span>
-                    </button>
                     <Show
                         when=move || {
-                            single_item().is_some_and(|item| {
+                            file_tools.get() && single_item().is_some_and(|item| {
                                 item.kind == FileKind::Directory
                                     || classify::is_editable(&item)
                                     || classify::is_book(&item)
@@ -141,14 +171,14 @@ pub fn SelectionToolbar(
                             )
                         }}
                     </Show>
-                    <button type="button" on:click=move |_|on_copy.run(())>"复制到"</button>
+                    <Show when=move ||file_tools.get() fallback=|| ()><button type="button" on:click=move |_|on_copy.run(())>"复制到"</button></Show>
                     <Show when=move || { selected_file_count() > 0 } fallback=|| ()>
                         <button type="button" on:click=move |_| download.run(())>
                             {download_icon()}
                             <span>{move || format!("下载{}", if selected_file_count() > 1 { format!(" ({})", selected_file_count()) } else { String::new() })}</span>
                         </button>
                     </Show>
-                    <Show when=move || single_item().is_some_and(|item| item.kind == FileKind::File) fallback=|| ()>
+                    <Show when=move || file_tools.get() && single_item().is_some_and(|item| item.kind == FileKind::File) fallback=|| ()>
                         {move || {
                             single_item().map_or_else(
                                 || ().into_any(),
@@ -161,7 +191,7 @@ pub fn SelectionToolbar(
                             )
                         }}
                     </Show>
-                    <Show when=move || selected_count() == 1 fallback=|| ()>
+                    <Show when=move || file_tools.get() && selected_count() == 1 fallback=|| ()>
                         <button type="button" on:click=move |_| rename.run(())>
                             {rename_icon()}
                             <span>"重命名"</span>
@@ -177,7 +207,44 @@ pub fn SelectionToolbar(
                     </button>
                 </Show>
             </div>
+            <Show when=move || !trash_mode.get() && selection.management.get().is_some() && selected_items().iter().any(|file| file.kind == FileKind::File) fallback=|| ()>
+                {move || selection.management.get().map(|management| {
+                    let context = Signal::derive(move || {
+                        let mut ids = selection.ids.get().into_iter().collect::<Vec<_>>();
+                        ids.sort();
+                        ids.join(",")
+                    });
+                    view! {
+                        <div class="selection-management">
+                            <button type="button" disabled=move || management.busy.get() on:click=move |_|management.on_favorite.run(true)>{icons::heart()}<span>"收藏"</span></button>
+                            <ActionMenu label="更多管理操作".to_owned() icon=MenuIcon::More text=Signal::derive(|| "更多".to_owned()) context=context disabled=management.busy panel_class="selection-management-panel".to_owned()>
+                                <button type="button" data-close-menu="true" disabled=move ||management.busy.get() on:click=move |_|management.on_favorite.run(false)>{icons::heart()}"取消收藏"</button>
+                                {[LibraryPage::Books, LibraryPage::Music, LibraryPage::Gallery, LibraryPage::Videos].into_iter().map(|page| view! {
+                                    <Show when=move ||selected_items().iter().any(|file| matches_collection(file, page)) fallback=|| ()>
+                                        <button type="button" data-close-menu="true" disabled=move ||management.busy.get() on:click=move |_|management.on_collection.run(page)>{icons::plus()}{format!("加入{}", page.collection_label())}</button>
+                                    </Show>
+                                }).collect_view()}
+                                <Show when=move ||management.can_remove.get() fallback=|| ()>
+                                    <button type="button" data-close-menu="true" disabled=move ||management.busy.get() on:click=move |_|management.on_remove.run(())>{icons::folder()}"移出当前集合"</button>
+                                </Show>
+                            </ActionMenu>
+                        </div>
+                    }
+                })}
+            </Show>
+            </div>
         </div>
+        </Show>
+    }
+}
+
+pub(super) fn matches_collection(file: &File, page: LibraryPage) -> bool {
+    match page {
+        LibraryPage::Books => classify::is_book(file),
+        LibraryPage::Music => classify::is_audio(file),
+        LibraryPage::Gallery => classify::is_image(file),
+        LibraryPage::Videos => classify::is_video(file),
+        _ => false,
     }
 }
 

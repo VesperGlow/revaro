@@ -30,13 +30,14 @@ use crate::logic::format::{format_date, format_size};
 use crate::logic::routing::{folder_id, folder_url, reader_id};
 
 use super::account::AccountSettings;
-use super::content_shell::ShellContext;
+use super::content_shell::{CardInfo, ShellContext};
 use super::dialogs::{ActionDialog, RenameDialog};
 use super::editor::{DocumentEditor, EditorMode};
 use super::file_browser_header::FileBrowserHeader;
 use super::media::MediaPreview;
 use super::reader::ReaderView;
-use super::selection_toolbar::SelectionToolbar;
+use super::selection::{SelectionCheckbox, SelectionMode};
+use super::selection_toolbar::{BatchActionBar, SelectionActions};
 use super::share::ShareDialog;
 use super::tasks::TaskController;
 use super::topbar::TopbarActions;
@@ -130,7 +131,15 @@ pub fn FileBrowser(
     let error = RwSignal::new(String::new());
     let trash_mode = RwSignal::new(false);
     let request_sequence = RwSignal::new(0_u64);
-    let selected_ids = RwSignal::new(HashSet::<String>::new());
+    let selection = shell_context.map_or_else(SelectionMode::new, |c| c.selection);
+    let selected_ids = selection.ids;
+    let operation_items = Signal::derive(move || match shell_context {
+        Some(context) if !context.page.get().is_file_workspace() => selection.library_items.get(),
+        _ => items.get(),
+    });
+    let operation_trash_mode = Signal::derive(move || {
+        trash_mode.get() && shell_context.is_none_or(|c| c.page.get().is_file_workspace())
+    });
     let dialog = RwSignal::new(None::<DialogState>);
     let dialog_value = RwSignal::new(String::new());
     let dialog_busy = RwSignal::new(false);
@@ -237,7 +246,6 @@ pub fn FileBrowser(
         let error = error;
         let trash_mode = trash_mode;
         let request_sequence = request_sequence;
-        let selected_ids = selected_ids;
         let notify = notify.clone();
         let preview_items = preview_items;
         let nav_actions = nav_actions;
@@ -325,7 +333,10 @@ pub fn FileBrowser(
                         items.set(children.items);
                         total_bytes.set(children.total_bytes);
                         file_count.set(children.file_count);
-                        selected_ids.set(HashSet::new());
+                        if shell_context.is_none_or(|c| c.page.get_untracked().is_file_workspace())
+                        {
+                            selection.clear();
+                        }
                         trash_mode.set(false);
                         if shell_context
                             .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
@@ -539,7 +550,6 @@ pub fn FileBrowser(
         let error = error;
         let trash_mode = trash_mode;
         let request_sequence = request_sequence;
-        let selected_ids = selected_ids;
         let notify = notify.clone();
         let preview_items = preview_items;
         let on_logout = on_logout.clone();
@@ -568,7 +578,10 @@ pub fn FileBrowser(
                         items.set(trash.items);
                         total_bytes.set(trash.total_bytes);
                         file_count.set(trash.file_count);
-                        selected_ids.set(HashSet::new());
+                        if shell_context.is_none_or(|c| c.page.get_untracked().is_file_workspace())
+                        {
+                            selection.clear();
+                        }
                         trash_mode.set(true);
                         loading.set(false);
                         success = true;
@@ -865,47 +878,15 @@ pub fn FileBrowser(
     let uploads_for_cleanup = leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
     on_cleanup(move || uploads_for_cleanup.dispose());
 
-    let clear_selection = {
-        let selected_ids = selected_ids;
-        Callback::new(move |(): ()| selected_ids.set(HashSet::new()))
-    };
-    let clear_selection_from_blank = {
-        let selected_ids = selected_ids;
-        Callback::new(move |event: web_sys::MouseEvent| {
-            if selected_ids.get_untracked().is_empty() {
-                return;
-            }
-            let Some(target) = event
-                .target()
-                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-            else {
-                return;
-            };
-            if target
-                .closest("button,a,input,textarea,select,[role=\"toolbar\"],.file-card")
-                .ok()
-                .flatten()
-                .is_some()
-            {
-                return;
-            }
-            selected_ids.set(HashSet::new());
-        })
-    };
-    let toggle_selection = {
-        let selected_ids = selected_ids;
-        Callback::new(move |item: File| {
-            selected_ids.update(|selected| {
-                if !selected.insert(item.id.clone()) {
-                    selected.remove(&item.id);
-                }
-            });
-        })
-    };
+    let clear_selection = Callback::new(move |(): ()| selection.exit());
+
     let select_all = {
-        let items = items;
+        let items = operation_items;
         let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
+            if !selection.enabled.get_untracked() {
+                return;
+            }
             let entries = items.get_untracked();
             let selected = selected_ids.get_untracked();
             let all_selected = entries.iter().all(|item| selected.contains(&item.id));
@@ -931,7 +912,7 @@ pub fn FileBrowser(
         let dialog = dialog;
         let dialog_value = dialog_value;
         let dialog_error = dialog_error;
-        let items = items;
+        let items = operation_items;
         let selected_ids = selected_ids;
         let push_overlay = push_overlay.clone();
         Callback::new(move |(): ()| {
@@ -1049,9 +1030,9 @@ pub fn FileBrowser(
         let dialog_busy = dialog_busy;
         let dialog_error = dialog_error;
         let selected_ids = selected_ids;
-        let items = items;
+        let items = operation_items;
         let current_id = current_id;
-        let trash_mode = trash_mode;
+        let trash_mode = operation_trash_mode;
         let notify = notify.clone();
         let load_trash_request = load_trash_request.clone();
         let on_logout = on_logout.clone();
@@ -1392,7 +1373,7 @@ pub fn FileBrowser(
         let media_file = media_file;
         let push_overlay = push_overlay.clone();
         Callback::new(move |request: TransferRequest| {
-            if request.targets.is_empty() || trash_mode.get_untracked() {
+            if request.targets.is_empty() || operation_trash_mode.get_untracked() {
                 return;
             }
             push_overlay.run(());
@@ -1406,7 +1387,7 @@ pub fn FileBrowser(
     };
     let show_move_selected = {
         let start_transfer = start_transfer.clone();
-        let items = items;
+        let items = operation_items;
         let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             let targets = items
@@ -1422,7 +1403,7 @@ pub fn FileBrowser(
     };
     let show_copy_selected = {
         let start_transfer = start_transfer.clone();
-        let items = items;
+        let items = operation_items;
         let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             let targets = items
@@ -1812,6 +1793,12 @@ pub fn FileBrowser(
         let open_editor = open_editor.clone();
         let push_overlay = push_overlay.clone();
         Callback::new(move |item: File| {
+            if let Some(context) = shell_context
+                && !context.page.get_untracked().is_file_workspace()
+            {
+                context.open.run(item);
+                return;
+            }
             if trash_mode.get_untracked() {
                 if classify::is_book(&item) {
                     push_overlay.run(());
@@ -2130,6 +2117,77 @@ pub fn FileBrowser(
         on_search: submit_search,
     });
 
+    let selection_actions = SelectionActions {
+        on_feedback: notify.clone(),
+        items: operation_items,
+        trash_mode: operation_trash_mode,
+        file_tools: Signal::derive(move || {
+            shell_context.is_none_or(|c| c.page.get() == LibraryPage::Files)
+        }),
+        visible: Signal::derive(move || {
+            media_file.get().is_none()
+                && reader_file.get().is_none()
+                && !editor_open.get()
+                && !transfer_open.get()
+                && share_file.get().is_none()
+                && !account_open.get()
+                && dialog.get().is_none()
+                && shell_context.is_none_or(|c| !c.selection_overlay.get())
+        }),
+        on_clear: clear_selection,
+        on_select_all: select_all,
+        on_rename: show_rename,
+        on_move: show_move_selected,
+        on_copy: show_copy_selected,
+        on_delete: show_delete,
+        on_restore: restore_selected,
+        on_purge: show_purge,
+        on_open: open_item,
+        on_share: show_share,
+        on_download: Callback::new({
+            let items = operation_items;
+            let selected_ids = selected_ids;
+            let notify = notify.clone();
+            let on_logout = on_logout.clone();
+            move |(): ()| {
+                let files: Vec<File> = items
+                    .get_untracked()
+                    .into_iter()
+                    .filter(|item| selected_ids.get_untracked().contains(&item.id))
+                    .collect();
+                if files.is_empty() {
+                    return;
+                }
+                if files.len() == 1 && files[0].kind == FileKind::File {
+                    download_file(&files[0]);
+                    return;
+                }
+                let file_count = files.len();
+                let ids = files.into_iter().map(|item| item.id).collect();
+                leptos::task::spawn_local(async move {
+                    notify.run(Feedback::success(format!(
+                        "正在准备 {} 个文件…",
+                        file_count
+                    )));
+                    match api::prepare_batch_download(ids).await {
+                        Ok(ticket) => {
+                            start_download(&format!(
+                                "/api/files/batch-download/{}",
+                                js_sys::encode_uri_component(&ticket.token)
+                                    .as_string()
+                                    .unwrap_or_default()
+                            ));
+                            notify.run(Feedback::success("已开始下载"));
+                        }
+                        Err(error) if error.is_unauthorized() => on_logout.run(()),
+                        Err(error) => notify.run(Feedback::error(error.message)),
+                    }
+                });
+            }
+        }),
+    };
+    selection.actions.set(Some(selection_actions.clone()));
+
     view! {
         <div
             class="app-shell"
@@ -2138,10 +2196,7 @@ pub fn FileBrowser(
             on:dragleave=move |event: web_sys::DragEvent| shell_upload_leave.on_drag_leave(event)
             on:drop=move |event: web_sys::DragEvent| shell_upload_drop.on_drop(event)
         >
-            <section
-                class="content"
-                on:click=move |event: web_sys::MouseEvent| clear_selection_from_blank.run(event)
-            >
+            <section class="content" on:click=move |event| selection.exit_from_blank(event)>
                 <FileBrowserHeader
                     breadcrumbs=breadcrumbs
                     current=current
@@ -2156,77 +2211,8 @@ pub fn FileBrowser(
                     on_empty_trash=show_empty_trash.clone()
                 />
 
-                <Show
-                    when=move || {
-                        !selected_ids.get().is_empty()
-                            && media_file.get().is_none()
-                            && reader_file.get().is_none()
-                            && !editor_open.get()
-                            && !transfer_open.get()
-                            && share_file.get().is_none()
-                            && !account_open.get()
-                            && dialog.get().is_none()
-                    }
-                    fallback=|| ()
-                >
-                    <SelectionToolbar
-                        items=items
-                        selected_ids=selected_ids
-                        trash_mode=trash_mode
-                        on_clear=clear_selection.clone()
-                        on_select_all=select_all.clone()
-                        on_rename=show_rename.clone()
-                        on_move=show_move_selected.clone()
-                        on_copy=show_copy_selected.clone()
-                        on_delete=show_delete.clone()
-                        on_restore=restore_selected.clone()
-                        on_purge=show_purge.clone()
-                        on_open=open_item.clone()
-                        on_download=Callback::new({
-                            let items = items;
-                            let selected_ids = selected_ids;
-                            let notify = notify.clone();
-                            let on_logout = on_logout.clone();
-                            move |(): ()| {
-                                let files: Vec<File> = items
-                                    .get_untracked()
-                                    .into_iter()
-                                    .filter(|item| {
-                                        selected_ids.get_untracked().contains(&item.id)
-                                    })
-                                    .collect();
-                                if files.is_empty() {
-                                    return;
-                                }
-                                if files.len() == 1 && files[0].kind==FileKind::File {
-                                    download_file(&files[0]);
-                                    return;
-                                }
-                                let file_count = files.len();
-                                let ids = files.into_iter().map(|item| item.id).collect();
-                                leptos::task::spawn_local(async move {
-                                    notify.run(Feedback::success(format!(
-                                        "正在准备 {} 个文件…",
-                                        file_count
-                                    )));
-                                    match api::prepare_batch_download(ids).await {
-                                        Ok(ticket) => {
-                                            start_download(&format!(
-                                                "/api/files/batch-download/{}",
-                                                js_sys::encode_uri_component(&ticket.token)
-                                                    .as_string()
-                                                    .unwrap_or_default()
-                                            ));
-                                            notify.run(Feedback::success("已开始下载"));
-                                        }
-                                        Err(error) if error.is_unauthorized() => on_logout.run(()),
-                                        Err(error) => notify.run(Feedback::error(error.message)),
-                                    }
-                                });
-                            }
-                        })
-                        on_share=show_share.clone()
-                    />
+                <Show when=move ||shell_context.is_none_or(|context|context.page.get().is_file_workspace()) fallback=|| ()>
+                    <BatchActionBar selection=selection actions=selection_actions.clone() />
                 </Show>
 
                 {move || {
@@ -2280,18 +2266,17 @@ pub fn FileBrowser(
                         }
                         .into_any()
                     } else {
-                        // Grid-only since the list view was removed. Selection
-                        // lives on each card's top-left control so the batch
-                        // toolbar stays reachable.
+                        // Grid-only since the list view was removed. Global
+                        // selection turns card clicks into toggles and exposes
+                        // the shared batch toolbar after an item is selected.
                         view! {
-                            <div class="file-grid" class:selection-mode=move || !selected_ids.get().is_empty()>
+                            <div class="file-grid" class:selection-mode=move || selection.enabled.get()>
                                 <For each=move || items.get() key=|item| item.id.clone() let:item>
                                     <FileTile
                                         item=item
                                         trash_mode=trash_mode
                                         selectable=true
-                                        selected_ids=selected_ids
-                                        on_select=toggle_selection.clone()
+                                        selection=selection
                                         on_open=open_item.clone()
                                     />
                                 </For>
@@ -2565,51 +2550,26 @@ fn FileTile(
     item: File,
     trash_mode: RwSignal<bool>,
     selectable: bool,
-    selected_ids: RwSignal<HashSet<String>>,
-    on_select: Callback<File>,
+    selection: SelectionMode,
     on_open: Callback<File>,
 ) -> impl IntoView {
+    let selected_ids = selection.ids;
     let name = item.name.clone();
     let name_for_aria = name.clone();
     let item_for_click = item.clone();
     let item_for_key = item.clone();
-    let item_for_select_click = item.clone();
     let item_for_select_key = item.clone();
     let item_for_meta = item.clone();
     let item_for_title = item.clone();
     let item_for_cannot_open = item.clone();
     let item_id_for_class = item.id.clone();
     let item_id_for_aria = item.id.clone();
-    let item_id_for_title = item.id.clone();
-    let item_id_for_label = item.id.clone();
-    let item_id_for_pressed = item.id.clone();
-    let item_id_for_active = item.id.clone();
     let preview_available = RwSignal::new(initial_preview_available(&item));
     let class_item = item.clone();
-    let on_select_click = on_select.clone();
     let on_open_click = on_open.clone();
     let on_open_key = on_open;
     let select_control = if selectable {
-        view! {
-            <button
-                class="card-select"
-                type="button"
-                title=move || if selected_ids.get().contains(&item_id_for_title) { "取消选择" } else { "选择项目" }
-                aria-label=move || if selected_ids.get().contains(&item_id_for_label) { "取消选择" } else { "选择项目" }
-                aria-pressed=move || if selected_ids.get().contains(&item_id_for_pressed) { "true" } else { "false" }
-                class:active=move || selected_ids.get().contains(&item_id_for_active)
-                on:click=move |event: web_sys::MouseEvent| {
-                    event.stop_propagation();
-                    on_select_click.run(item_for_select_click.clone());
-                }
-                on:keydown=move |event: web_sys::KeyboardEvent| event.stop_propagation()
-            >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m5 12 4 4L19 6"></path>
-                </svg>
-            </button>
-        }
-        .into_any()
+        view! { <SelectionCheckbox id=item.id.clone() name=item.name.clone() selection=selection /> }.into_any()
     } else {
         ().into_any()
     };
@@ -2622,23 +2582,19 @@ fn FileTile(
             tabindex="0"
             aria-label=move || format!("{}，{}", name_for_aria, if selected_ids.get().contains(&item_id_for_aria) { "已选择" } else { "未选择" })
             on:click=move |_| {
-                if !trash_mode.get_untracked() || item_for_click.kind == FileKind::File {
+                if selectable && selection.enabled.get_untracked() {
+                    selection.toggle(&item_for_click.id);
+                } else if !trash_mode.get_untracked() || item_for_click.kind == FileKind::File {
                     on_open_click.run(item_for_click.clone());
                 }
             }
             on:keydown=move |event: web_sys::KeyboardEvent| {
-                if event.key() == "Enter" {
+                if matches!(event.key().as_str(), "Enter" | " ") {
                     event.prevent_default();
-                    if !trash_mode.get_untracked() || item_for_key.kind == FileKind::File {
+                    if selectable && selection.enabled.get_untracked() {
+                        selection.toggle(&item_for_select_key.id);
+                    } else if !trash_mode.get_untracked() || item_for_key.kind == FileKind::File {
                         on_open_key.run(item_for_key.clone());
-                    }
-                } else if event.key() == " " {
-                    // FileCard.vue uses Vue's `.prevent` modifier on the
-                    // production grid even when the grid is not selectable;
-                    // keep a focused card from scrolling the page on Space.
-                    event.prevent_default();
-                    if selectable {
-                        on_select.run(item_for_select_key.clone());
                     }
                 }
             }
@@ -2654,10 +2610,7 @@ fn FileTile(
             >
                 {file_preview_with_state(&item, Some(preview_available))}
             </div>
-            <div class="card-info">
-                <strong title=name.clone()>{name.clone()}</strong>
-                <small>{move || display_meta(&item_for_meta, trash_mode.get())}</small>
-            </div>
+            <CardInfo name=name.clone() detail=Signal::derive(move ||display_meta(&item_for_meta, trash_mode.get())) />
         </article>
     }
 }

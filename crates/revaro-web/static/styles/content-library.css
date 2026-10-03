@@ -1,6 +1,8 @@
 /* The content shell shares file, reader and preview primitives, with its own layout. */
-.content-library { --library-ink:#253b3b; --library-muted:#899493; --library-accent:#376b62; min-height:100dvh; background:#f8f9f6; color:var(--library-ink); padding-bottom:48px; }
-.library-main { max-width:1440px; padding:24px 5% 40px; margin:auto; }
+.content-library { --workspace-width:1440px; --workspace-gutter:5vw; --library-gutter:var(--workspace-gutter); --library-ink:#253b3b; --library-muted:#899493; --library-accent:#376b62; min-height:100dvh; background:#f8f9f6; color:var(--library-ink); padding-bottom:48px; }
+.library-main { max-width:var(--workspace-width); padding:24px var(--library-gutter) 40px; margin:auto; }
+/* Align the batch bar with files while retaining the library card layout. */
+.library-main>.selection-toolbar { margin-inline:calc(var(--workspace-gutter) - var(--library-gutter)); }
 
 .home-section { margin:0 0 28px; }
 .home-section>header { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
@@ -8,8 +10,7 @@
 .home-section>header button { border:0; background:none; display:flex; gap:15px; color:#78877c; font-size:12px; padding:10px 0; }
 .home-content-row { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:22px; }
 .home-item { padding:0; border:0; background:none; text-align:left; min-width:0; color:inherit; }
-.home-item>strong { display:block; font-weight:550; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin:13px 0 5px; }
-.home-item>small { color:#919b93; font-size:10px; }
+
 .library-cover { width:100%; display:block; border:0; box-shadow:none; overflow:hidden; position:relative; border-radius:9px; background:#e9ede3; aspect-ratio:1; transition:transform .25s; }
 .library-cover img { width:100%; height:100%; object-fit:cover; display:block; }
 .library-cover.book-cover { aspect-ratio:2/3; border-radius:3px 7px 7px 3px; box-shadow:3px 5px 10px #3b4b3810; border-right:3px solid #dce0d7; }
@@ -20,7 +21,7 @@
 .audio-cover .cover-placeholder { background:repeating-radial-gradient(circle,#394c45 0 3px,#34443e 4px 6px); color:#e7e9df; }
 .audio-cover .cover-placeholder>span { background:#b29376; border-radius:50%; width:65px; height:65px; display:grid; place-items:center; font-size:28px; padding-left:3px; }
 .audio-cover .cover-placeholder>strong { display:none; }
-.home-item:hover .library-cover { transform:translateY(-4px); }
+
 .home-empty { grid-column:1/-1; border:1px dashed #dbe3d7; border-radius:12px; background:#f1f4ec; color:#82907e; min-height:90px; font-size:13px; }
 .library-toolbar-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
 .content-library .primary { background:#426b5e; box-shadow:none; border-radius:9px; display:inline-flex; align-items:center; gap:8px; font-size:13px; }
@@ -36,7 +37,7 @@
 .library-tabs small { font-size:10px; font-weight:400; margin-left:8px; padding:2px 6px; background:var(--surface-subtle); border-radius:4px; }
 .library-tabs .favorite-filter { display:grid; place-items:center; width:38px; padding:0; }
 .favorite-filter svg { width:18px; height:18px; }
-.favorite-filter.active svg,.library-card-actions .favorite svg { fill:currentColor; }
+
 .library-tabs .collection-menu { min-width:0; }
 .library-tabs .collection-menu>summary { display:flex; align-items:center; gap:8px; width:auto; height:38px; max-width:220px; padding:0 10px; }
 .collection-menu>summary span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -48,34 +49,22 @@
 .library-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:30px 24px; }
 .library-card { min-width:0; position:relative; }
 .library-card-open { display:block; border:0; padding:0; background:none; text-align:left; width:100%; color:inherit; }
-.library-card-info { margin-top:15px; padding-right:44px; }
-.library-card-info strong { display:block; font-size:13px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.library-card-info small { display:block; color:#929c91; font-size:10px; margin-top:7px; }
-.library-card-actions { display:flex; gap:1px; justify-content:flex-end; margin-top:10px; }
-.library-card-actions button { border:0; border-radius:5px; color:#a0aa9b; background:none; font-size:21px; padding:0 7px; height:27px; }
-.library-card-actions button:hover { background:#e8eee1; }
-.library-card-actions button svg { width:17px; height:17px; vertical-align:middle; }
-.library-card-actions button.favorite { color:#a25c5b; }
-.library-card-open:hover .library-cover { transform:translateY(-3px); }
-.song-number,.song-play { display:none; }
+
 .song-list { display:block; background:#fcfdf9; border:1px solid #e3e8dd; border-radius:13px; padding:6px 22px; }
 .song-list .library-card { display:flex; gap:15px; align-items:center; border-bottom:1px solid #ebeee6; padding:13px 0; }
 .song-list .library-card:last-child { border-bottom:0; }
 .song-list .library-card-open { display:flex; align-items:center; gap:20px; flex:1; min-width:0; }
-.song-list .song-number { display:block; color:#9ca89a; font-size:11px; width:23px; flex-shrink:0; }
+
+.song-number-slot { display:grid; place-items:center; width:24px; flex:0 0 24px; }
+.song-number { color:#9ca89a; font-size:11px; }
 .song-list .library-cover { width:49px; height:49px; flex-shrink:0; border-radius:7px; }
 .song-list .cover-placeholder { padding:0; }
 .song-list .audio-cover .cover-placeholder>span { width:25px; height:25px; font-size:15px; }
-.song-list .library-card-info { margin:0; flex:1; min-width:0; }
-.song-list .song-play { display:block; color:#91a48b; }
-.song-list .song-play svg { width:16px; height:16px; }
-.song-list .library-card-actions { margin:0; }
-.song-list .is-playing .library-card-info strong { color:#3b7556; }
+
 .photo-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; }
 .photo-grid .library-cover { aspect-ratio:4/3; }
 .photo-grid .library-card:nth-child(5n+1) .library-cover { aspect-ratio:1; }
-.photo-grid .library-card-info { margin-top:11px; }
-.photo-grid .library-card-actions { margin-top:5px; }
+
 .library-empty,.library-loading { min-height:340px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:#96a08e; text-align:center; }
 .library-empty>span { font-size:40px; color:#b5c2ad; }
 .library-empty h2 { font-size:19px; font-weight:500; margin:0; color:#7c8c72; }
@@ -95,7 +84,7 @@
 .collection-options p { font-size:13px; color:#889a7f; line-height:1.7; }
 .content-library>.app-shell { min-height:0; }
 .content-library>.app-shell.file-tools-background>.content { display:none; }
-.content-library>.app-shell>.content { max-width:1440px; margin:auto; padding-left:5%; padding-right:5%; }
+.content-library>.app-shell>.content { max-width:var(--workspace-width); margin:auto; padding-left:var(--workspace-gutter); padding-right:var(--workspace-gutter); }
 .content-library.has-music { padding-bottom:100px; }
 .music-dock { position:fixed; bottom:0; left:0; right:0; height:87px; background:#fafcf9f5; backdrop-filter:blur(18px); border-top:1px solid #dde6d8; padding:0 4%; display:flex; gap:25px; align-items:center; z-index:35; box-shadow:0 -5px 24px #3a513407; }
 .dock-track { display:flex; align-items:center; gap:12px; width:26%; min-width:130px; }
@@ -126,7 +115,7 @@
 .music-queue>button span { font-size:10px; }
 .music-queue>button strong { font-size:12px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .content-library button:focus-visible,.content-library a:focus-visible,.content-library input:focus-visible { outline:none; box-shadow:var(--focus-ring); }
-@media(min-width:1600px) { .library-main { padding-left:65px; padding-right:65px; } }
+@media(min-width:1600px) { .content-library { --library-gutter:65px; } }
 @media(max-width:1100px) { .library-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } .photo-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .dock-options input { display:none; } .music-dock { gap:17px; } .home-content-row { gap:15px; } }
 @media(max-width:850px) {
  .content-library { padding-bottom:80px; }
@@ -137,8 +126,7 @@
  .home-section h2 { font-size:19px; }
  .home-section>header button { font-size:10px; gap:7px; }
  .home-content-row { grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px 12px; }
- .home-item>strong { font-size:11px; margin:9px 0 3px; }
- .home-item>small { font-size:8px; }
+
  .cover-placeholder { padding:14px 10px; gap:16px; }
  .cover-placeholder>strong { font-size:15px; }
  .cover-placeholder>span { font-size:12px; }
@@ -152,17 +140,13 @@
  .library-tabs>button { font-size:12px; }
  .library-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:22px 13px; }
  .photo-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:15px; }
- .library-card-info { padding-right:0; margin-top:10px; }
- .library-card-info strong { font-size:11px; }
- .library-card-info small { font-size:9px; }
- .library-card-actions { margin-top:7px; }
+
  .song-list { display:block; padding:4px 12px; }
  .song-list .library-card { gap:5px; }
  .song-list .library-card-open { gap:10px; }
- .song-list .song-number { width:17px; font-size:9px; }
+
+ .song-number { font-size:9px; }
  .song-list .library-cover { width:39px; height:39px; }
- .song-list .song-play { display:none; }
- .library-card-actions button { padding:0 5px; }
  .content-library.has-music { padding-bottom:150px; }
  .music-dock { bottom:calc(58px + env(safe-area-inset-bottom,0px)); height:68px; padding:0 4%; gap:12px; }
  .dock-track { flex:1; width:auto; min-width:0; }
@@ -198,3 +182,37 @@
 .video-cover-play { position:absolute; inset:0; display:grid; place-items:center; color:#fff; background:#17212b12; }
 .video-cover-play svg { width:24px; height:24px; padding:5px; box-sizing:content-box; background:#17212b65; border-radius:50%; }
 .video-duration { position:absolute; bottom:8px; right:8px; padding:3px 6px; background:#17212bb3; border-radius:var(--radius-sm); color:#fff; font-size:11px; font-variant-numeric:tabular-nums; }
+
+/* Shared selection mode keeps the existing card surfaces and spacing. */
+.home-card { min-width:0; position:relative; }
+.home-card .home-item { display:block; width:100%; }
+
+
+/* One cover surface and hover caption for files, libraries and home sections. */
+:is(.library-card,.home-card){align-self:start;overflow:hidden;border-radius:9px}
+:is(.library-card,.home-card):has(.book-cover){border-radius:3px 7px 7px 3px;box-shadow:3px 5px 10px #3b4b3810}
+.library-card-open,.home-item{position:relative;display:block;width:100%;border-radius:inherit}
+.library-cover{border-radius:inherit;transition:none}
+.library-cover.book-cover{box-shadow:none}
+.content-library .card-preview{padding:0}
+.content-library .card-info{position:absolute;z-index:2;bottom:0;left:0;right:0;min-height:0;margin:0;padding:12px 14px;background:#fffffff0;backdrop-filter:none;opacity:0;transform:translateY(8px);transition:opacity 180ms ease,transform 180ms ease;pointer-events:none;text-align:left}
+.content-library .card-info strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--library-ink);font-size:13px;font-weight:550;margin:0}
+.content-library .card-info small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--library-muted);font-size:10px;margin-top:5px}
+:is(.file-card,.library-card,.home-card):is(:hover,:focus-within) .card-info{opacity:1;transform:none}
+.song-list .library-card{border-radius:7px}
+.song-list .library-card-open{flex:1;min-width:0}
+.song-list .card-info{position:static;flex:1;background:transparent;padding:0;transform:translateX(4px)}
+.song-list .library-card:is(:hover,:focus-within) .card-info{transform:none}
+.song-list .is-playing .card-info strong{color:#3b7556}
+.collection-target-count{font-size:12px;color:var(--muted);line-height:1.6;margin:0 0 16px}
+@media(max-width:850px){.content-library .card-info{padding:9px 10px}.content-library .card-info strong{font-size:11px}.content-library .card-info small{font-size:9px}.song-list .card-info{padding:0}}
+@media(prefers-reduced-motion:reduce){.content-library .card-info{transition:none}}
+
+/* Music keeps its inline title for scanning; extra details follow the shared hover rule. */
+.song-list .card-info{opacity:1;transform:none}
+.song-list .card-info small{opacity:0;transition:opacity 180ms ease}
+.song-list .library-card:is(:hover,:focus-within) .card-info small{opacity:1}
+@media(prefers-reduced-motion:reduce){.song-list .card-info small{transition:none}}
+
+.video-duration{z-index:3}
+:is(.library-card,.home-card):has(.video-cover) .card-info{padding-right:64px}
