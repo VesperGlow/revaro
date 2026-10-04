@@ -116,7 +116,7 @@ test('continuous scrolling preserves files and selection, with aligned sorting a
   await expect(page.locator('.search-surface')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await expect(toggle).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await toggle.hover()
-  await expect(toggle).toHaveCSS('background-color', 'rgb(232, 240, 246)')
+  await expect(toggle).toHaveCSS('background-color', 'rgb(233, 239, 223)')
   const circle = await page.locator('.search-toggle').boundingBox()
   const neighbors = page.locator('.top-actions .action-menu > summary, .top-actions > .account-button')
   const before = await neighbors.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()))

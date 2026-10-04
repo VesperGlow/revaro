@@ -59,9 +59,7 @@ fn App() -> impl IntoView {
             if checking.get() {
                 view! {
                     <main class="splash" aria-live="polite">
-                        <div class="brand-mark">
-                            <img class="ui-image" src="/logo.png" alt="" draggable="false" />
-                        </div>
+                        <img class="brand-logo ui-image" src="/revaro-logo.svg" alt="revaro" draggable="false" />
                         <div class="spinner" aria-label="正在连接服务"></div>
                     </main>
                 }

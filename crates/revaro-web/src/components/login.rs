@@ -80,10 +80,7 @@ pub fn LoginView(
             <section class="login-panel">
                 <form class="login-form" on:submit=submit>
                     <div class="logo">
-                        <span class="brand-mark small">
-                            <img class="ui-image" src="/logo.png" alt="" draggable="false" />
-                        </span>
-                        <span>"revaro"</span>
+                        <img class="brand-logo ui-image" src="/revaro-logo.svg" alt="revaro" draggable="false" />
                     </div>
                     <div>
                         <p class="eyebrow dark">"WELCOME BACK"</p>

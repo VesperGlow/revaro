@@ -164,8 +164,8 @@
 }
 
 .v2-lineheight .font-step.v2-active {
-  color: var(--accent, #2563eb);
-  border-color: var(--accent, #2563eb);
+  color: var(--accent, #426b5e);
+  border-color: var(--accent, #426b5e);
 }
 
 @media (prefers-reduced-motion: reduce) {

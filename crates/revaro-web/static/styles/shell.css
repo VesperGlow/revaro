@@ -6,14 +6,10 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #15202b;
-  background: #f4f6f9;
+  color: var(--ink);
+  background: var(--paper);
   font-synthesis: none;
-  --ink: #15202b;
-  --muted: #73808e;
-  --line: #e6eaf0;
-  --blue: #2563eb;
-  --navy: #102a43;
+  --navy: var(--ink);
 }
 * {
   box-sizing: border-box;
@@ -36,10 +32,14 @@ button {
   gap: 24px;
   justify-items: center;
 }
+.splash .brand-logo {
+  width: 77px;
+  height: 64px;
+}
 .spinner {
   width: 22px;
   height: 22px;
-  border: 2px solid #d6deea;
+  border: 2px solid var(--line-strong);
   border-top-color: var(--blue);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -55,11 +55,11 @@ button {
   border-radius: 18px;
   display: grid;
   place-items: center;
-  background: linear-gradient(145deg, #1d4ed8, #60a5fa);
+  background: linear-gradient(145deg, var(--accent-hover), var(--accent-border));
   color: #fff;
   font-weight: 800;
   font-size: 25px;
-  box-shadow: 0 16px 34px #2563eb3b;
+  box-shadow: 0 16px 34px #426b5e3b;
 }
 .brand-mark.small {
   width: 34px;
@@ -84,7 +84,7 @@ button {
 .login-visual {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(145deg, #102a43, #0e4a78);
+  background: linear-gradient(145deg, var(--ink-subtle), var(--accent-hover));
   color: #fff;
   padding: 9vh 8vw;
   display: flex;
@@ -106,10 +106,10 @@ button {
   font-size: 11px;
   letter-spacing: 0.2em;
   font-weight: 700;
-  color: #93c5fd;
+  color: var(--accent-border);
 }
 .eyebrow.dark {
-  color: #3b82f6;
+  color: var(--accent);
   margin: 0 0 8px;
 }
 .visual-copy h1 {
@@ -120,7 +120,7 @@ button {
   max-width: 800px;
 }
 .visual-copy p {
-  color: #cbdbea;
+  color: var(--accent-soft);
   font-size: 17px;
 }
 .revaro-card {
@@ -146,7 +146,7 @@ button {
   gap: 4px;
 }
 .revaro-card small {
-  color: #b7c9db;
+  color: var(--accent-light);
 }
 .glow {
   position: absolute;
@@ -158,14 +158,14 @@ button {
   height: 460px;
   right: -140px;
   top: -140px;
-  background: #38bdf833;
+  background: #b5cbb333;
 }
 .glow-b {
   width: 300px;
   height: 300px;
   left: -100px;
   bottom: -80px;
-  background: #8b5cf633;
+  background: #426b5e33;
 }
 .login-panel {
   display: grid;
@@ -181,6 +181,11 @@ button {
 .login-form > .logo {
   margin-bottom: 44px;
 }
+.login-form .brand-logo {
+  display: block;
+  width: 48px;
+  height: 40px;
+}
 .login-form h2 {
   font-size: 31px;
   letter-spacing: -0.03em;
@@ -195,14 +200,14 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  color: #475569;
+  color: var(--ink-subtle);
   font-size: 13px;
   font-weight: 650;
 }
 .login-form input,
 .modal input {
   width: 100%;
-  border: 1px solid #d9e0e8;
+  border: 1px solid var(--line-strong);
   border-radius: 10px;
   padding: 13px 14px;
   outline: none;
@@ -210,12 +215,12 @@ button {
 }
 .login-form input:focus,
 .modal input:focus {
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 3px #60a5fa22;
+  border-color: var(--accent-border);
+  box-shadow: var(--focus-ring);
 }
 .form-error {
   margin: -10px 0;
-  color: #dc2626;
+  color: var(--danger);
   font-size: 13px;
 }
 .primary,
@@ -228,18 +233,18 @@ button {
 .primary {
   background: var(--blue);
   color: #fff;
-  box-shadow: 0 6px 16px #2563eb30;
+  box-shadow: 0 6px 16px #426b5e30;
 }
 .primary:hover {
-  background: #1d4ed8;
+  background: var(--accent-hover);
 }
 .primary:disabled {
   opacity: 0.55;
 }
 .secondary {
   background: #fff;
-  border: 1px solid #dce2e9;
-  color: #334155;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-subtle);
 }
 .wide {
   width: 100%;
@@ -252,8 +257,8 @@ button {
 
 .avatar {
   border: 0;
-  background: #e9f0fe;
-  color: #1d4ed8;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
   border-radius: 50%;
   width: 34px;
   height: 34px;
@@ -281,7 +286,7 @@ button {
 
 .content-head p {
   margin: 0;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 12px;
 }
 .actions {
@@ -293,7 +298,7 @@ button {
   display: grid;
   place-content: center;
   justify-items: center;
-  color: #94a3b8;
+  color: var(--muted);
 }
 .state.small {
   min-height: 180px;
@@ -302,15 +307,15 @@ button {
   width: 68px;
   height: 68px;
   border-radius: 20px;
-  background: #e9f0fe;
-  color: #3b82f6;
+  background: var(--accent-soft);
+  color: var(--accent);
   display: grid;
   place-items: center;
   font-size: 34px;
   transform: rotate(-8deg);
 }
 .state h3 {
-  color: #334155;
+  color: var(--ink-subtle);
   margin: 20px 0 6px;
 }
 .state p {
@@ -322,13 +327,13 @@ button {
 .drop-zone {
   position: fixed;
   inset: 78px 0 0;
-  background: #eff6fff1;
+  background: #f3f6eff1;
   z-index: 20;
-  border: 3px dashed #60a5fa;
+  border: 3px dashed var(--accent-border);
   display: grid;
   place-items: center;
   text-align: center;
-  color: #1d4ed8;
+  color: var(--accent-hover);
 }
 .drop-zone span {
   font-size: 55px;
@@ -337,11 +342,11 @@ button {
   margin: 12px 0;
 }
 .drop-zone p {
-  color: #64748b;
+  color: var(--muted);
 }
 .progress {
   height: 3px;
-  background: #e7edf4;
+  background: var(--line);
   border-radius: 3px;
   margin: 9px 0 0 41px;
   overflow: hidden;
@@ -349,14 +354,14 @@ button {
 .progress i {
   display: block;
   height: 100%;
-  background: #3b82f6;
+  background: var(--accent);
   transition: 0.2s;
 }
 .progress i.done {
-  background: #22c55e;
+  background: var(--success);
 }
 .progress i.failed {
-  background: #ef4444;
+  background: var(--danger);
 }
 .modal-backdrop {
   position: fixed;
@@ -387,7 +392,7 @@ button {
 .modal header > button {
   border: 0;
   background: transparent;
-  color: #64748b;
+  color: var(--muted);
   font-size: 24px;
 }
 .modal footer {
@@ -410,7 +415,7 @@ button {
   font-size: 13px;
 }
 .toast.success {
-  background: #166534;
+  background: var(--success);
 }
 @media (max-width: 850px) {
   .login-page {
@@ -448,14 +453,14 @@ button {
   border-radius: 13px;
   background: transparent;
   padding: 5px 9px 5px 5px;
-  color: #334155;
+  color: var(--ink-subtle);
   text-align: left;
 }
 .account-button:hover {
-  background: #f1f5f9;
+  background: var(--surface-subtle);
 }
 .account-button:focus-visible {
-  outline: 3px solid #93c5fd;
+  outline: 3px solid var(--accent-border);
   outline-offset: 2px;
 }
 .avatar-badge {
@@ -464,8 +469,8 @@ button {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: #e9f0fe;
-  color: #1d4ed8;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
   font-weight: 800;
 }
 .file-grid {
@@ -483,7 +488,7 @@ button {
   transition: 0.18s;
 }
 .file-card:hover {
-  border-color: #cbd9ea;
+  border-color: var(--accent-border);
   box-shadow: 0 14px 35px #33415514;
   transform: translateY(-2px);
 }
@@ -496,8 +501,8 @@ button {
   padding: 0;
   overflow: hidden;
   border: 0;
-  border-bottom: 1px solid #edf0f4;
-  background: linear-gradient(145deg, #f8fafc, #eef3f8);
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(145deg, var(--surface-subtle), var(--surface-hover));
 }
 .card-preview img {
   width: 100%;
@@ -513,14 +518,14 @@ button {
 }
 .card-info strong {
   overflow: hidden;
-  color: #25364a;
+  color: var(--ink);
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .card-info small {
   overflow: hidden;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -579,8 +584,8 @@ button {
   width: 76px;
   height: 76px;
   border-radius: 50%;
-  background: #e8eefb;
-  color: #4e6fb3;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 34px;
   line-height: 1;
 }

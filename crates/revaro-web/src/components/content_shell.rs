@@ -106,6 +106,7 @@ pub fn ContentShell(
     let notice = RwSignal::new(String::new());
     let generation = RwSignal::new(0_u64);
     let reader = RwSignal::new(None::<File>);
+    let reader_revision = RwSignal::new(0_u64);
     let reader_return = RwSignal::new(page.get_untracked().path().to_owned());
     let reader_pushed = RwSignal::new(false);
     let image = RwSignal::new(None::<File>);
@@ -148,6 +149,7 @@ pub fn ContentShell(
     });
 
     let navigate = Callback::new(move |next: LibraryPage| {
+        reader_revision.update(|revision| *revision += 1);
         reader.set(None);
         image.set(None);
         selected_series.set(String::new());
@@ -203,6 +205,7 @@ pub fn ContentShell(
             return;
         }
         if revaro_core::classify::is_book(&file) {
+            reader_revision.update(|revision| *revision += 1);
             reader_return.set(pathname());
             reader_pushed.set(true);
             reader.set(Some(file.clone()));
@@ -218,6 +221,9 @@ pub fn ContentShell(
                     .collect(),
             );
         } else if revaro_core::classify::is_image(&file) || revaro_core::classify::is_video(&file) {
+            if revaro_core::classify::is_video(&file) {
+                music.pause();
+            }
             image_items.set(
                 items
                     .get_untracked()
@@ -269,6 +275,7 @@ pub fn ContentShell(
         }
     });
     let close_reader = Callback::new(move |()| {
+        reader_revision.update(|revision| *revision += 1);
         reader.set(None);
         // Return through history so reopening and browser Back have one meaning.
         if reader_pushed.get_untracked() {
@@ -283,24 +290,41 @@ pub fn ContentShell(
         }
         refresh.update(|r| *r += 1);
     });
-    if let Some(id) = reader_id(&pathname()) {
-        reader_return.set("/library".to_owned());
+    let restore_reader = Callback::new(move |(path, pushed): (String, bool)| {
+        reader_revision.update(|revision| *revision += 1);
+        reader.set(None);
+        image.set(None);
+        let Some(id) = reader_id(&path) else {
+            return;
+        };
+        reader_pushed.set(pushed);
         let id = js_sys::decode_uri_component(&id)
             .ok()
             .and_then(|s| s.as_string())
             .unwrap_or_default();
-        leptos::task::spawn_local(async move {
-            match api::fetch_file(&id).await {
+        let revision = reader_revision.get_untracked();
+        leptos::task::spawn_local_scoped_with_cancellation(async move {
+            let result = api::fetch_file(&id).await;
+            // Navigation can leave and revisit this URL while a request is pending.
+            if reader_revision.try_get_untracked() != Some(revision) || pathname() != path {
+                return;
+            }
+            match result {
                 Ok(detail) if revaro_core::classify::is_book(&detail.file) => {
                     reader.set(Some(detail.file))
                 }
                 Err(e) if e.is_unauthorized() => logout.run(()),
                 _ => {
+                    page.set(LibraryPage::Books);
                     error.set("这本书已不可用".to_owned());
                     route("/library", false);
                 }
             }
         });
+    });
+    if reader_id(&pathname()).is_some() {
+        reader_return.set("/library".to_owned());
+        restore_reader.run((pathname(), false));
     }
     let mut popstate = browser::on_popstate(move |_| {
         let path = pathname();
@@ -318,19 +342,7 @@ pub fn ContentShell(
         } else {
             String::new()
         });
-        if let Some(id) = reader_id(&path) {
-            reader_pushed.set(true);
-            leptos::task::spawn_local(async move {
-                if let Ok(detail) = api::fetch_file(&id).await
-                    && revaro_core::classify::is_book(&detail.file)
-                {
-                    reader.set(Some(detail.file));
-                }
-            });
-        } else {
-            reader.set(None);
-            image.set(None);
-        }
+        restore_reader.run((path, true));
         refresh.update(|r| *r += 1);
     });
     on_cleanup(move || popstate.release());

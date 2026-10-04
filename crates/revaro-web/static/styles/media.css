@@ -6,13 +6,13 @@
 .modal-backdrop.previewing { padding: 0; background: #191c20; }
 .modal-backdrop.previewing.image-previewing { background: color-mix(in srgb, var(--paper) 78%, transparent); backdrop-filter: none; }
 .preview-modal {
-  --media-surface: #f6f8f9;
-  --media-panel: #fff;
-  --media-ink: #27323c;
-  --media-muted: #737f89;
-  --media-line: #e3e8ec;
-  --media-hover: #eaf0f4;
-  --media-accent: #587a95;
+  --media-surface: var(--paper);
+  --media-panel: var(--surface);
+  --media-ink: var(--ink);
+  --media-muted: var(--muted);
+  --media-line: var(--line);
+  --media-hover: var(--surface-hover);
+  --media-accent: var(--accent);
   position: fixed; z-index: 30; inset: 0;
   display: grid; grid-template-rows: calc(60px + env(safe-area-inset-top, 0px)) minmax(0, 1fr);
   width: 100%; height: 100dvh; min-width: 0; overflow: hidden; outline: none;
@@ -44,7 +44,7 @@
 .preview-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 .video-preview {
   --media-surface: #191c20; --media-panel: #24282d; --media-ink: #edf0f2;
-  --media-muted: #a2abb3; --media-line: #ffffff1c; --media-hover: #ffffff12; --media-accent: #a1bed3;
+  --media-muted: #a2abb3; --media-line: #ffffff1c; --media-hover: #ffffff12; --media-accent: var(--accent-light);
 }
 .image-preview {
   --media-surface: var(--surface); --media-panel: var(--surface); --media-ink: var(--ink);
@@ -81,7 +81,7 @@
 .chapter-audio-player.panel-open { grid-template-columns: minmax(0, 1fr) minmax(300px, 38%); }
 .audio-main { display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 32px; min-width: 0; overflow-y: auto; padding: 24px 32px max(28px, env(safe-area-inset-bottom, 0px)); }
 .audio-now-playing { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; width: 100%; max-width: 500px; text-align: center; }
-.audio-cover { display: grid; place-items: center; width: min(280px, 32dvh); aspect-ratio: 1; overflow: hidden; border: 1px solid #ffffff80; border-radius: 18px; background: #e5edf2; color: #8199ac; box-shadow: 0 12px 34px #293d4d12; }
+.audio-cover { display: grid; place-items: center; width: min(280px, 32dvh); aspect-ratio: 1; overflow: hidden; border: 1px solid #ffffff80; border-radius: 18px; background: var(--accent-soft); color: var(--accent); box-shadow: 0 12px 34px #293d4d12; }
 .audio-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .audio-cover > svg { width: 28%; height: 28%; stroke-width: 1; }
 .audio-chapter-current { width: 100%; margin-top: 24px; }
@@ -91,7 +91,7 @@
 .audio-chapter-current small { color: var(--media-muted); font-size: 12px; }
 .audio-playback { flex-shrink: 0; width: 100%; max-width: 460px; }
 .audio-playback > audio { display: none; }
-.audio-playback .full-bleed-progress--audio { --progress-center: 12px; --progress-height: 3px; --progress-thumb-size: 12px; --progress-track: #d9e1e7; --progress-buffer: #bfcbd5; --progress-played: var(--media-accent); --progress-thumb: var(--media-accent); --progress-thumb-border: var(--media-surface); }
+.audio-playback .full-bleed-progress--audio { --progress-center: 12px; --progress-height: 3px; --progress-thumb-size: 12px; --progress-track: var(--line); --progress-buffer: var(--line-strong); --progress-played: var(--media-accent); --progress-thumb: var(--media-accent); --progress-thumb-border: var(--media-surface); }
 .audio-time { display: flex; justify-content: space-between; margin-top: 4px; color: var(--media-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .audio-controls { display: flex; align-items: center; justify-content: center; gap: 26px; margin: 22px 0 16px; }
 .audio-controls button { position: relative; display: grid; place-items: center; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--media-ink); }
@@ -110,7 +110,7 @@
 .audio-volume button { display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: inherit; }
 .audio-volume input { min-width: 0; flex: 1; height: 44px; accent-color: var(--media-accent); }
 .audio-volume output { min-width: 32px; font-size: 11px; }
-.audio-player-error { margin: 12px 0 0; color: #af4b4b; font-size: 12px; line-height: 1.6; text-align: center; }
+.audio-player-error { margin: 12px 0 0; color: var(--danger); font-size: 12px; line-height: 1.6; text-align: center; }
 .audio-panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--media-line); background: var(--media-panel); }
 .audio-panel > header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--media-line); }
 .audio-panel-tabs { display: flex; align-items: center; min-height: 44px; font-size: 13px; font-weight: 600; }

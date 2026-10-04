@@ -22,6 +22,7 @@ pub struct MusicController {
     pub error: RwSignal<String>,
     pub repeat: RwSignal<u8>,
     pub shuffle: RwSignal<bool>,
+    autoplay_requested: RwSignal<bool>,
     progress: PlaybackProgress,
 }
 
@@ -37,6 +38,7 @@ impl MusicController {
             error: RwSignal::new(String::new()),
             repeat: RwSignal::new(0),
             shuffle: RwSignal::new(false),
+            autoplay_requested: RwSignal::new(false),
             progress: PlaybackProgress::new(),
         }
     }
@@ -86,6 +88,7 @@ impl MusicController {
         // Disable writes before changing the queue or audio source: load()
         // can dispatch pause/timeupdate events for the previous source.
         self.progress.reset(resume);
+        self.autoplay_requested.set(true);
         self.playing.set(false);
     }
     pub fn play(self, file: File, queue: Vec<File>) {
@@ -153,9 +156,12 @@ impl MusicController {
         audio.set_current_time(position);
         self.position.set(position);
         self.duration.set(duration);
-        self.start();
+        if self.autoplay_requested.get_untracked() {
+            self.start();
+        }
     }
     pub fn pause(self) {
+        self.autoplay_requested.set(false);
         if let Some(audio) = self.element() {
             let _ = audio.pause();
         }
@@ -165,11 +171,12 @@ impl MusicController {
             if audio.paused() {
                 self.start();
             } else {
-                let _ = audio.pause();
+                self.pause();
             }
         }
     }
     fn start(self) {
+        self.autoplay_requested.set(true);
         if !self.progress.ready.get_untracked() {
             return;
         }

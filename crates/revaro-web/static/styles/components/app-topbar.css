@@ -152,15 +152,15 @@
 .public-link-row { display:grid; min-width:0; gap:8px; padding:12px 0; border-top:1px solid var(--line); }
 .public-link-row > strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-subtle); font-size:12px; font-weight:600; }
 .public-link-row p { margin:0; font-size:11px; color:var(--muted); }
-.public-link-row .link-active { color:#56816b; }
+.public-link-row .link-active { color:var(--success); }
 .public-link-row input { width:100%; min-width:0; height:30px; border:1px solid var(--line); border-radius:var(--radius-sm); padding:0 8px; background:var(--surface-subtle); color:var(--muted); font-size:11px; }
 .popover-row-actions { display:flex; align-items:center; gap:8px; padding-top:4px; }
 .topbar-popover .popover-row-actions button { display:inline-flex; justify-content:center; align-items:center; min-height:30px; padding:0 8px; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--surface); color:var(--ink-subtle); font-size:11px; font-weight:500; }
 .topbar-popover footer { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
 .topbar-popover button:disabled { opacity:.5; cursor:default; }
 .topbar-popover .form-error,.popover-notice { margin:10px 0 0; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
-.popover-notice { color:#56816b; }
-.topbar .system-status-ball { display:grid; place-items:center; position:relative; width:calc(var(--header-status-size) * var(--header-icon-scale)); height:calc(var(--header-status-size) * var(--header-icon-scale)); flex-shrink:0; color:#56816b; }
+.popover-notice { color:var(--success); }
+.topbar .system-status-ball { display:grid; place-items:center; position:relative; width:calc(var(--header-status-size) * var(--header-icon-scale)); height:calc(var(--header-status-size) * var(--header-icon-scale)); flex-shrink:0; color:var(--accent); }
 .topbar .action-menu > summary .system-status-ball svg { position:absolute; inset:0; width:100%; height:100%; }
 .storage-ring-track { stroke:var(--line); }
 .storage-ring-progress { stroke:currentColor; stroke-linecap:round; }

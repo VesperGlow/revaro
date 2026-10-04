@@ -1,6 +1,6 @@
 .form-success {
   margin: -10px 0;
-  color: #15803d;
+  color: var(--success);
   font-size: 13px;
 }
 
@@ -29,9 +29,9 @@
   align-items: center;
   flex-direction: column;
   padding: 22px 14px;
-  border: 1px solid #e1e7ef;
+  border: 1px solid var(--line);
   border-radius: 15px;
-  background: #f8fafc;
+  background: var(--surface-subtle);
   text-align: center;
 }
 
@@ -42,8 +42,8 @@
   width: 104px;
   height: 104px;
   border-radius: 50%;
-  background: #e7effd;
-  color: #2563eb;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 36px;
   font-weight: 800;
   box-shadow: 0 0 0 6px #fff, 0 10px 26px #3341551a;
@@ -58,7 +58,7 @@
 .avatar-settings h3,
 .account-modal form h3 {
   margin: 18px 0 7px;
-  color: #25364a;
+  color: var(--ink);
   font-size: 15px;
 }
 
@@ -68,7 +68,7 @@
 
 .avatar-settings > p:not(.form-error) {
   margin: 0 0 15px;
-  color: #7b899a;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.55;
 }
@@ -107,13 +107,13 @@
   justify-content: space-between;
   gap: 20px;
   padding: 18px 20px;
-  border: 1px solid #e1e7ef;
+  border: 1px solid var(--line);
   border-radius: 15px;
   background: #fff;
 }
 
 .account-setting-row.security-row {
-  background: #f8fafc;
+  background: var(--surface-subtle);
 }
 
 .account-session-row {
@@ -123,9 +123,9 @@
   min-height: 64px;
   gap: 18px;
   padding: 12px 18px;
-  border: 1px dashed #dce4ee;
+  border: 1px dashed var(--line);
   border-radius: 15px;
-  background: #fbfcfe;
+  background: var(--surface-subtle);
 }
 
 .account-session-row > div {
@@ -138,23 +138,23 @@
 
 .account-session-row p {
   margin: 0;
-  color: #8794a6;
+  color: var(--muted);
   font-size: 11px;
 }
 
 .account-session-row > button {
   flex: 0 0 auto;
   padding: 8px 13px;
-  border: 1px solid #fecaca;
+  border: 1px solid var(--danger-border);
   border-radius: 9px;
   background: #fff;
-  color: #dc2626;
+  color: var(--danger);
   font-size: 12px;
   font-weight: 750;
 }
 
 .account-session-row > button:hover {
-  background: #fff1f2;
+  background: var(--danger-soft);
 }
 
 .setting-copy {
@@ -162,7 +162,7 @@
 }
 
 .setting-label {
-  color: #25364a;
+  color: var(--ink);
   font-size: 13px;
   font-weight: 750;
 }
@@ -182,7 +182,7 @@
 .username-line strong {
   overflow: hidden;
   max-width: 260px;
-  color: #17263a;
+  color: var(--ink);
   font-size: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -196,14 +196,14 @@
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: #64748b;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 700;
 }
 
 .edit-username:hover {
-  background: #eaf1fe;
-  color: #2563eb;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
 }
 
 .edit-username svg {
@@ -226,7 +226,7 @@
 
 .username-line small {
   flex: 0 0 auto;
-  color: #7b899a;
+  color: var(--muted);
   font-size: 10px;
 }
 
@@ -240,7 +240,7 @@
 
 .security-row .setting-copy p {
   margin: 7px 0 0;
-  color: #718096;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -272,13 +272,13 @@
 
 .subdialog-hint {
   margin: 7px 0 0;
-  color: #718096;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
 }
 
 .login-totp-hint {
-  color: #8491a3;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 500;
   line-height: 1.5;
@@ -286,7 +286,7 @@
 
 .totp-instructions h4 {
   margin: 0 0 6px;
-  color: #25364a;
+  color: var(--ink);
   font-size: 15px;
 }
 
@@ -295,7 +295,7 @@
 .totp-instructions > p,
 .recovery-panel p {
   margin: 0;
-  color: #6f7f92;
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -304,15 +304,15 @@
   flex: 0 0 auto;
   padding: 6px 9px;
   border-radius: 999px;
-  background: #f1f5f9;
-  color: #64748b;
+  background: var(--surface-subtle);
+  color: var(--muted);
   font-size: 11px;
   font-weight: 750;
 }
 
 .security-badge.enabled {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--success-soft);
+  color: var(--success);
 }
 
 .two-factor-loading {
@@ -320,7 +320,7 @@
   align-items: center;
   gap: 10px;
   min-height: 76px;
-  color: #7b899a;
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -349,9 +349,9 @@
   grid-template-columns: 188px minmax(0, 1fr);
   gap: 24px;
   padding: 18px;
-  border: 1px solid #dbe6f5;
+  border: 1px solid var(--line);
   border-radius: 15px;
-  background: #f8fbff;
+  background: var(--surface-subtle);
 }
 
 .totp-qr {
@@ -360,7 +360,7 @@
   align-self: start;
   overflow: hidden;
   padding: 9px;
-  border: 1px solid #dce4ee;
+  border: 1px solid var(--line);
   border-radius: 13px;
   background: #fff;
 }
@@ -383,8 +383,8 @@
   margin-top: 6px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: #eaf1fe;
-  color: #214d9a;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
   font: 700 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
   letter-spacing: .06em;
 }
@@ -405,15 +405,15 @@
 
 .danger-button {
   padding: 11px 17px;
-  border: 1px solid #fecaca;
+  border: 1px solid var(--danger-border);
   border-radius: 10px;
   background: #fff;
-  color: #dc2626;
+  color: var(--danger);
   font-weight: 700;
 }
 
 .danger-button:hover {
-  background: #fef2f2;
+  background: var(--danger-soft);
 }
 
 .danger-button:disabled {
@@ -423,13 +423,13 @@
 .recovery-panel {
   margin-bottom: 18px;
   padding: 16px;
-  border: 1px solid #f8d78c;
+  border: 1px solid var(--warning-border);
   border-radius: 14px;
-  background: #fffbeb;
+  background: var(--warning-soft);
 }
 
 .recovery-panel strong {
-  color: #92400e;
+  color: var(--warning);
   font-size: 13px;
 }
 
@@ -442,10 +442,10 @@
 
 .recovery-grid code {
   padding: 8px 10px;
-  border: 1px solid #f3dfaa;
+  border: 1px solid var(--warning-border);
   border-radius: 8px;
   background: #fff;
-  color: #5e4a21;
+  color: var(--warning);
   text-align: center;
   font: 700 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
   letter-spacing: .07em;

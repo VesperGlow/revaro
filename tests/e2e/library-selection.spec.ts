@@ -109,7 +109,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await page.mouse.move(1, 80)
       await expect(page.locator('.library-card-actions')).toHaveCount(0)
       if (name !== '音乐') {
-        await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', name === '文件' && width <= 850 ? '1' : '0')
+        await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', width <= 850 ? '1' : '0')
         await targets.first().hover()
         await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', '1')
         const surface = (await targets.first().boundingBox())!, caption = (await targets.first().locator('.card-info').boundingBox())!

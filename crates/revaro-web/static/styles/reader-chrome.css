@@ -7,7 +7,6 @@
   --ink: #34322e;
   --muted: #858078;
   --line: #e6e0d6;
-  --accent: #657b85;
   --surface-hover: #eeeadf;
   --revaro-paper: var(--paper);
   --revaro-ink: var(--ink);
@@ -25,7 +24,7 @@
   --ink: #d8d9d3;
   --muted: #a0a49e;
   --line: #353a37;
-  --accent: #a3b6b9;
+  --accent: var(--accent-light);
   --surface-hover: #2e3330;
 }
 #reader-view .hidden { display: none; }

@@ -172,7 +172,7 @@ button:disabled {
   color: var(--ink-subtle);
 }
 .secondary:hover {
-  border-color: #c5ccd5;
+  border-color: var(--line-strong);
   background: var(--surface-hover);
 }
 
@@ -181,13 +181,13 @@ button:disabled {
   border-radius: var(--radius-sm);
 }
 .file-card:hover {
-  border-color: #bfc7d1;
+  border-color: var(--line-strong);
 }
 .card-preview {
   background: var(--surface);
 }
 .preview-tile .card-preview {
-  background: #f1f3f5;
+  background: var(--surface-subtle);
 }
 .card-info strong {
   color: var(--ink);
@@ -252,7 +252,7 @@ button:disabled {
   }
 }
 
-/* The canonical 37-token `:root` block used to live here. During the Leptos
+/* The canonical `:root` palette used to live here. During the Leptos
    port the byte-identical duplicate in `ui.css` was kept as the single
    authoritative definition and this one was deleted: both blocks had the same
    specificity, so `ui.css` (later in the cascade) already won for every token,
@@ -260,17 +260,19 @@ button:disabled {
    `0 24px 64px #17212b33` against the `#17212b29` here. Keeping `ui.css` is
    therefore a pure no-op for rendered output. */
 
-/* Muted single-hue interaction palette. Media and book preview pixels remain untouched. */
+/* A muted grass-green palette for shared controls and the login illustration. */
 .brand-mark {
-  background: linear-gradient(145deg, var(--accent-hover), #7897b1);
-  box-shadow: 0 16px 34px #4f73963b;
+  background: linear-gradient(145deg, var(--accent-hover), var(--accent-light));
+  box-shadow: 0 16px 34px #426b5e3b;
 }
 .login-visual {
-  background: linear-gradient(145deg, #263b4e, #466882);
+  background: linear-gradient(145deg, var(--ink-subtle), var(--accent-hover));
 }
-.eyebrow,
+.eyebrow {
+  color: var(--accent-light);
+}
 .eyebrow.dark {
-  color: #7897b1;
+  color: var(--accent);
 }
 .login-form input:focus,
 .modal input:focus {
@@ -280,12 +282,12 @@ button:disabled {
 .primary {
   border-color: var(--accent);
   background: var(--accent);
-  box-shadow: 0 6px 16px #4f739630;
+  box-shadow: none;
 }
 .primary:hover {
   border-color: var(--accent-hover);
   background: var(--accent-hover);
-  box-shadow: 0 8px 20px #4f739638;
+  box-shadow: none;
 }
 .file-card:focus-visible {
   border-color: var(--accent-border);
@@ -321,6 +323,6 @@ button:disabled {
 }
 .drop-zone {
   border-color: var(--accent-border);
-  background: #f2f6f9f1;
+  background: #f3f6eff1;
   color: var(--accent-hover);
 }

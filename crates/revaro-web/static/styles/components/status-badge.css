@@ -5,8 +5,8 @@
 .status-badge{display:inline-flex;max-width:100%;align-items:center;justify-content:center;flex:0 0 auto;border:1px solid transparent;border-radius:999px;font-weight:750;line-height:1;white-space:nowrap}
 .status-badge.size-sm{min-height:22px;padding:0 8px;font-size:10px}
 .status-badge.size-md{min-height:27px;padding:0 10px;font-size:11px}
-.status-badge.tone-neutral{border-color:#e2e8f0;background:#f4f7fa;color:#64748b}
-.status-badge.tone-info{border-color:#dbeafe;background:#edf5ff;color:#1d64bd}
-.status-badge.tone-success{border-color:#d4efdf;background:#eaf8f0;color:#167447}
-.status-badge.tone-warning{border-color:#fde7c5;background:#fff4e5;color:#a95808}
-.status-badge.tone-danger{border-color:#ffd5da;background:#ffedef;color:#bd2638}
+.status-badge.tone-neutral{border-color:var(--line);background:var(--surface-subtle);color:var(--muted)}
+.status-badge.tone-info{border-color:var(--accent-border);background:var(--accent-soft);color:var(--accent-hover)}
+.status-badge.tone-success{border-color:var(--success-border);background:var(--success-soft);color:var(--success)}
+.status-badge.tone-warning{border-color:var(--warning-border);background:var(--warning-soft);color:var(--warning)}
+.status-badge.tone-danger{border-color:var(--danger-border);background:var(--danger-soft);color:var(--danger)}
