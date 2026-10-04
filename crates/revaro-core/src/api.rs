@@ -8,6 +8,8 @@
 //! Request types set `deny_unknown_fields` to preserve the server's historical
 //! behaviour of rejecting unknown JSON members with `400 invalid JSON request`.
 
+use crate::serde_helpers::null_default;
+
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
@@ -15,64 +17,6 @@ use crate::model::{File, UploadMode, UploadPart, UploadStatus as UploadState};
 use crate::reader::{Anchor, FlowManifest, TocEntry};
 use crate::storage::CompletedPart;
 use crate::time::Timestamp;
-
-fn deserialize_vec_or_default<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Older browser callers treated an unset TOTP flag as falsey. Keep explicit
-/// `null` equivalent to an omitted field while rejecting other malformed
-/// scalar values.
-fn deserialize_nullable_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
-}
-
-/// Older browser callers treated an unset recovery-code count as an empty
-/// count. Keep explicit `null` equivalent to an omitted field while rejecting
-/// other malformed scalar values.
-fn deserialize_nullable_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// The single-request upload caller ignores multipart geometry. Keep a
-/// missing or explicit `null` part count equivalent to zero while rejecting
-/// malformed scalar values.
-fn deserialize_nullable_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<usize>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Older account callers treated an absent or `null` setup string as empty
-/// while still entering the setup stage. Keep response decoding tolerant while
-/// rejecting other malformed scalar types.
-fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Older document callers only consumed the text and ETag. Keep a missing or
-/// explicit `null` modification time equivalent to the serde default while
-/// still rejecting malformed timestamp strings and other scalar types.
-fn deserialize_nullable_timestamp<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<Timestamp>::deserialize(deserializer)?.unwrap_or_default())
-}
 
 /// The historical upload caller treated every mode other than the literal
 /// `single` as multipart. Keep that response fallback without relaxing the
@@ -178,10 +122,10 @@ pub mod auth {
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct TotpStatus {
         /// Whether TOTP is enabled.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_bool")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub enabled: bool,
         /// Number of unused recovery codes.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub recovery_codes: i64,
     }
 
@@ -189,13 +133,13 @@ pub mod auth {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct TotpSetup {
         /// Base32 shared secret.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub secret: String,
         /// `otpauth://` provisioning URI.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub uri: String,
         /// PNG QR code as a data URL.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub qr_data_url: String,
     }
 
@@ -261,7 +205,7 @@ pub mod files {
         /// The requested file.
         pub file: File,
         /// Path from the root, outermost first.
-        #[serde(default, deserialize_with = "deserialize_vec_or_default")]
+        #[serde(default, deserialize_with = "null_default")]
         pub breadcrumbs: Vec<File>,
     }
 
@@ -271,10 +215,10 @@ pub mod files {
         /// Directory entries, directories first then case-insensitive by name.
         pub items: Vec<File>,
         /// Total bytes of the ready files directly inside.
-        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
+        #[serde(default, deserialize_with = "null_default")]
         pub total_bytes: i64,
         /// Number of ready files directly inside.
-        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
+        #[serde(default, deserialize_with = "null_default")]
         pub file_count: i64,
     }
 
@@ -296,13 +240,10 @@ pub mod files {
         /// UTF-8 contents.
         pub content: String,
         /// ETag the client must send back when writing.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub etag: String,
         /// Last modification time.
-        #[serde(
-            default,
-            deserialize_with = "crate::api::deserialize_nullable_timestamp"
-        )]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub updated_at: Timestamp,
     }
 
@@ -323,10 +264,10 @@ pub mod files {
         /// Trashed root items, most recently deleted first.
         pub items: Vec<File>,
         /// Bytes held by trashed files.
-        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
+        #[serde(default, deserialize_with = "null_default")]
         pub total_bytes: i64,
         /// Number of trashed files.
-        #[serde(default, deserialize_with = "deserialize_nullable_i64")]
+        #[serde(default, deserialize_with = "null_default")]
         pub file_count: i64,
     }
 
@@ -380,16 +321,13 @@ pub mod uploads {
         #[serde(default)]
         pub url: String,
         /// Part size the client must slice with; unused by single uploads.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub part_size: i64,
         /// Number of parts; `0` for single-request uploads.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_usize")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub part_count: usize,
         /// Session expiry.
-        #[serde(
-            default,
-            deserialize_with = "crate::api::deserialize_nullable_timestamp"
-        )]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub expires_at: Timestamp,
     }
 
@@ -408,10 +346,10 @@ pub mod uploads {
         #[serde(default)]
         pub url: String,
         /// Part size the client must slice with; unused by single uploads.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_i64")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub part_size: i64,
         /// Number of parts; `0` for single-request uploads.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_usize")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub part_count: usize,
         /// Declared total size.
         #[serde(default)]
@@ -423,13 +361,10 @@ pub mod uploads {
         #[serde(default, deserialize_with = "deserialize_upload_status_response")]
         pub status: UploadStatusKind,
         /// Session expiry.
-        #[serde(
-            default,
-            deserialize_with = "crate::api::deserialize_nullable_timestamp"
-        )]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub expires_at: Timestamp,
         /// Parts acknowledged so far.
-        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub parts: Vec<UploadPart>,
     }
 
@@ -490,19 +425,19 @@ pub mod book {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Info {
         /// `epub` or `txt`.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub format: String,
         /// Book title as parsed from the source.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub title: String,
         /// File name on disk.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_string")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub name: String,
         /// Whether an embedded cover exists.
-        #[serde(default, deserialize_with = "crate::api::deserialize_nullable_bool")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub cover: bool,
         /// Table of contents.
-        #[serde(default, deserialize_with = "crate::api::deserialize_vec_or_default")]
+        #[serde(default, deserialize_with = "crate::api::null_default")]
         pub toc: Vec<TocEntry>,
     }
 

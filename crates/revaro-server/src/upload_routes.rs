@@ -776,7 +776,7 @@ async fn complete_upload(
             .call_api({
                 let file_id = record.file_id.clone();
                 move |connection| {
-                    crate::file_routes::lookup_file_for_commit(connection, &file_id)
+                    crate::file_routes::lookup_file_any(connection, &file_id)
                         .map_err(database_error)
                 }
             })
@@ -902,7 +902,7 @@ WHERE id = ?3",
             // Read through the transaction, not `connection`: the transaction
             // holds the mutable borrow, and reading inside it also makes the
             // returned row the one this commit produced.
-            let file = crate::file_routes::lookup_file_for_commit(&transaction, &file_id)
+            let file = crate::file_routes::lookup_file_any(&transaction, &file_id)
                 .map_err(database_error)?;
             transaction
                 .commit()

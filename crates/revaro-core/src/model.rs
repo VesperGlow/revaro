@@ -7,6 +7,8 @@
 //! already-deployed browsers, so they are pinned by the tests at the bottom of
 //! this module.
 
+use crate::serde_helpers::null_default;
+
 use serde::{Deserialize, Serialize};
 
 use crate::time::Timestamp;
@@ -215,28 +217,28 @@ pub struct File {
     /// Stored content type, omitted when unset.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub mime_type: String,
     /// Entity tag used for cache validation, omitted when unset.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub etag: String,
     /// Integrity hash of the committed bytes, omitted when unset.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub content_hash: String,
     /// Algorithm of [`File::content_hash`], omitted when unset.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub hash_algorithm: String,
@@ -244,16 +246,10 @@ pub struct File {
     #[serde(deserialize_with = "deserialize_file_status")]
     pub status: FileStatus,
     /// Creation time.
-    #[serde(
-        default = "missing_file_timestamp",
-        deserialize_with = "deserialize_nullable_timestamp"
-    )]
+    #[serde(default = "missing_file_timestamp", deserialize_with = "null_default")]
     pub created_at: Timestamp,
     /// Last metadata change.
-    #[serde(
-        default = "missing_file_timestamp",
-        deserialize_with = "deserialize_nullable_timestamp"
-    )]
+    #[serde(default = "missing_file_timestamp", deserialize_with = "null_default")]
     pub updated_at: Timestamp,
     /// Soft-deletion time, omitted while the row is live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,7 +260,7 @@ pub struct File {
     /// Whether a thumbnail or generated cover exists.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_bool",
+        deserialize_with = "null_default",
         skip_serializing_if = "is_false"
     )]
     pub has_cover: bool,
@@ -275,58 +271,8 @@ pub struct File {
     pub object_key: String,
 }
 
-/// Older browser responses typed optional string fields structurally. A
-/// server may therefore send `null` for an unset value, which the Vue caller
-/// treated exactly like an omitted field (`value || ''`). Keep response
-/// decoding tolerant while retaining the concrete string representation used
-/// by the Rust UI and storage layer.
-fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Older task callers treated a missing or `null` numeric progress value as
-/// zero through JavaScript's normal falsey/coercion rules. Keep that response
-/// tolerance while rejecting other malformed scalar types.
-fn deserialize_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Older task callers treated a missing or `null` integer counter as zero.
-fn deserialize_nullable_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Older task callers did not read creation/update timestamps at all. Treat
-/// an omitted or explicit `null` timestamp as the wire default while still
-/// rejecting malformed timestamp values.
-fn deserialize_nullable_timestamp<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<Timestamp>::deserialize(deserializer)?.unwrap_or_default())
-}
-
 fn missing_file_timestamp() -> Timestamp {
     Timestamp::missing()
-}
-
-/// The historical `has_cover` check was `=== true`, so an explicit `null`
-/// was the same as a missing/false value. Reject other malformed scalar types
-/// rather than inventing a new truthiness rule.
-fn deserialize_nullable_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
 }
 
 /// The historical browser treated every status other than `ready` as a muted
@@ -381,10 +327,10 @@ impl File {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderRef {
     /// Directory id.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    #[serde(default, deserialize_with = "null_default")]
     pub id: String,
     /// Directory name.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
 }
 
@@ -392,10 +338,10 @@ pub struct FolderRef {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct MediaProgress {
     /// Resume position in seconds.
-    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
+    #[serde(default, deserialize_with = "null_default")]
     pub position: f64,
     /// Known duration in seconds.
-    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
+    #[serde(default, deserialize_with = "null_default")]
     pub duration: f64,
     /// When the position was last written, omitted when never saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,7 +363,7 @@ pub struct ShareStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<Timestamp>,
     /// Whether a share link exists.
-    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
+    #[serde(default, deserialize_with = "null_default")]
     pub active: bool,
     /// The public URL, present only while active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -431,13 +377,13 @@ pub struct ShareStatus {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UploadPart {
     /// 1-based part number.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub part_number: i32,
     /// Part size in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
     /// Entity tag returned when the part was stored.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    #[serde(default, deserialize_with = "null_default")]
     pub etag: String,
     /// Optional per-part integrity hash.
     ///
@@ -452,7 +398,7 @@ pub struct Profile {
     /// Login name.
     pub username: String,
     /// Whether an avatar image is stored.
-    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
+    #[serde(default, deserialize_with = "null_default")]
     pub has_avatar: bool,
 }
 

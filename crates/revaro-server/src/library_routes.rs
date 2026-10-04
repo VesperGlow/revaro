@@ -1,4 +1,6 @@
 //! Content-library queries and virtual collections over the existing files.
+mod query;
+
 use std::sync::Arc;
 
 use axum::{
@@ -90,49 +92,21 @@ async fn list(
     }
     let grouped = o.group_series && o.series.is_none();
     let offset = o.offset;
-    let (total, rows) = state.db.call_api(move |c| {
-        let predicate = "status='ready' AND deleted_at IS NULL AND id IN (SELECT file_id FROM library_items WHERE (?1 IS NULL OR kind=?1)) AND (instr(lower(name),lower(?2))>0 OR EXISTS(SELECT 1 FROM library_items WHERE file_id=files.id AND metadata_etag=COALESCE(files.etag,'') AND instr(lower(series),lower(?2))>0)) AND (?3=0 OR id IN (SELECT file_id FROM library_state WHERE favorite=1)) AND (?4 IS NULL OR id IN (SELECT file_id FROM library_collection_items WHERE collection_id=?4)) AND (?5=0 OR id IN (SELECT file_id FROM library_state WHERE last_opened IS NOT NULL) OR EXISTS(SELECT 1 FROM settings WHERE key='book_progress/'||files.id) OR id IN (SELECT file_id FROM media_progress)) AND (?6 IS NULL OR id IN (SELECT file_id FROM library_items WHERE series=?6))";
-        let series = "(SELECT series FROM library_items WHERE file_id=files.id AND kind='book' AND metadata_etag=COALESCE(files.etag,''))";
-        let bucket = format!("CASE WHEN ?7 AND {series} IS NOT NULL THEN 'series:'||{series} ELSE 'file:'||id END");
-        let last = "COALESCE((SELECT last_opened FROM library_state WHERE file_id=files.id),(SELECT updated_at FROM settings WHERE key='book_progress/'||files.id),(SELECT updated_at FROM media_progress WHERE file_id=files.id))";
-        let params = rusqlite::params![o.kind,o.q,o.favorite,o.collection,o.recent,o.series,grouped];
-        let count = if grouped { format!("COUNT(DISTINCT ({bucket}))") } else { "COUNT(*)".to_owned() };
-        let count_params = if grouped { params } else { &params[..6] };
-        let total = c.query_row(&format!("SELECT {count} FROM files WHERE {predicate}"), count_params, |r| r.get::<_,i64>(0)).map_err(db)?;
-        let (sort, aggregate, direction) = if o.series.is_some() {
-            ("COALESCE((SELECT series_index FROM library_items WHERE file_id=files.id),1e308)".to_owned(), "MIN", "ASC")
-        } else if o.collection.is_some() {
-            ("(SELECT position FROM library_collection_items WHERE collection_id=?4 AND file_id=files.id)".to_owned(), "MIN", "ASC")
-        } else if o.recent {
-            (last.to_owned(), "MAX", "DESC")
-        } else {
-            ("created_at".to_owned(), "MAX", "DESC")
-        };
-        let fields = format!("{FILE_COLUMNS},(SELECT kind FROM library_items WHERE file_id=files.id) AS library_kind,COALESCE((SELECT favorite FROM library_state WHERE file_id=files.id),0) AS favorite,{last} AS last_opened,EXISTS(SELECT 1 FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag AND m.video_codec<>'') AS has_cover,(SELECT duration_ms FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag) AS duration_ms,{series} AS series,(SELECT series_index FROM library_items WHERE file_id=files.id AND metadata_etag=COALESCE(files.etag,'')) AS series_index,(SELECT value FROM settings WHERE key='book_progress/'||files.id) AS progress");
-        // Page groups first, then fetch their members. Other listings keep ordinary file pagination.
-        let sql = if grouped {
-            format!("WITH candidates AS (SELECT {fields},{bucket} AS bucket,{sort} AS sort_key FROM files WHERE {predicate}), groups AS (SELECT bucket,{aggregate}(sort_key) AS sort_key FROM candidates GROUP BY bucket ORDER BY sort_key {direction},bucket LIMIT ?8 OFFSET ?9) SELECT candidates.* FROM candidates JOIN groups USING(bucket) ORDER BY groups.sort_key {direction},groups.bucket,candidates.series_index ASC NULLS LAST,candidates.name,candidates.id")
-        } else {
-            format!("SELECT {fields},'file:'||id AS bucket FROM files WHERE {predicate} ORDER BY {sort} {direction},CASE WHEN ?6 IS NOT NULL THEN name END,id LIMIT ?8 OFFSET ?9")
-        };
-        let mut query = c.prepare(&sql).map_err(db)?;
-        let rows = query.query_map(rusqlite::params![o.kind,o.q,o.favorite,o.collection,o.recent,o.series,grouped,limit,offset], |row| {
-            let mut file = scan_file(row)?;
-            file.has_cover = row.get(18)?;
-            Ok((LibraryItem {
-                file, duration_ms: row.get(19)?, kind: row.get(15)?, favorite: row.get(16)?,
-                last_opened: row.get::<_,Option<String>>(17)?.and_then(|s| Timestamp::parse(&s).ok()),
-                reading_progress: None, series: row.get(20)?, series_index: row.get(21)?, series_files: Vec::new(),
-            }, row.get::<_,Option<String>>(22)?, row.get::<_,String>(23)?))
-        }).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?;
-        Ok((total, rows))
-    }).await?;
+    let (total, rows) = state
+        .db
+        .call_api(move |connection| query::load_listing(connection, o, limit, grouped))
+        .await?;
     let mut items = Vec::<LibraryItem>::new();
     let mut previous_bucket = String::new();
     let mut progress_sum = 0.0;
-    for (mut item, raw, bucket) in rows {
+    for query::Candidate {
+        mut item,
+        progress,
+        bucket,
+    } in rows
+    {
         if item.kind == "book" {
-            item.reading_progress = book_reading_progress(&state, &item.file, raw).await;
+            item.reading_progress = book_reading_progress(&state, &item.file, progress).await;
         }
         if grouped && item.series.is_some() && previous_bucket == bucket {
             let group = items.last_mut().expect("previous group exists");
@@ -443,6 +417,62 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn recent_items_use_the_latest_activity_with_nanosecond_precision() {
+        let state = state().await;
+        for (kind, extension) in [("book", "txt"), ("audio", "wav")] {
+            for index in 0..6 {
+                seed(
+                    &state,
+                    &format!("{kind}-{index}"),
+                    &format!("{kind}-{index}.{extension}"),
+                )
+                .await;
+            }
+        }
+        state.db.call(|c| {
+            for kind in ["book", "audio"] {
+                for (index, timestamp) in [
+                    (0, "2026-01-01T00:00:00Z"),
+                    (1, "2026-01-02T00:00:00Z"),
+                    (3, "2026-01-04T00:00:00.100000001Z"),
+                    (4, "2026-01-04 00:00:01"),
+                ] {
+                    c.execute("INSERT INTO library_state(file_id,last_opened) VALUES(?1,?2)",rusqlite::params![format!("{kind}-{index}"),timestamp])?;
+                }
+                for (index, timestamp) in [(0,"2026-01-03T00:00:00Z"),(2,"2026-01-04T00:00:00.1Z")] {
+                    let id = format!("{kind}-{index}");
+                    if kind == "book" {
+                        c.execute("INSERT INTO settings(key,value,updated_at) VALUES(?1,?2,?3)",rusqlite::params![format!("book_progress/{id}"),r#"{"anchor":{"spine":0,"block":1,"offset":0},"percent":50.0}"#,timestamp])?;
+                    } else {
+                        c.execute("INSERT INTO media_progress(file_id,position_ms,duration_ms,updated_at) VALUES(?1,1000,10000,?2)",rusqlite::params![id,timestamp])?;
+                    }
+                }
+            }
+            Ok(())
+        }).await.unwrap();
+        for kind in ["book", "audio"] {
+            let (status, listing) = request(
+                &state,
+                "GET",
+                &format!("/api/library/items?kind={kind}&recent=true"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(listing["total"], 5);
+            let items = listing["items"].as_array().unwrap();
+            let ids = items
+                .iter()
+                .map(|item| item["file"]["id"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(ids, [4, 3, 2, 0, 1].map(|i| format!("{kind}-{i}")));
+            assert_eq!(items[1]["last_opened"], "2026-01-04T00:00:00.100000001Z");
+            assert_eq!(items[2]["last_opened"], "2026-01-04T00:00:00.1Z");
+            assert_eq!(items[3]["last_opened"], "2026-01-03T00:00:00Z");
+        }
     }
 
     #[tokio::test]

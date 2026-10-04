@@ -262,6 +262,22 @@ impl Pool {
 
 /// Apply the pragmas every connection needs.
 fn configure(connection: &Connection) -> Result<(), DbError> {
+    // Historical rows use RFC3339Nano or SQLite's UTC timestamp format.
+    // Normalize before SQL compares times, preserving sub-millisecond order.
+    connection
+        .create_scalar_function(
+            "revaro_timestamp",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            |context| {
+                Ok(context
+                    .get::<Option<String>>(0)?
+                    .and_then(|value| revaro_core::Timestamp::parse(&value).ok())
+                    .map(|timestamp| timestamp.to_rfc3339_fixed()))
+            },
+        )
+        .map_err(DbError::Open)?;
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(DbError::Open)?;

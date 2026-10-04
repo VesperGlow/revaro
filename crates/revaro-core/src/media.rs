@@ -3,43 +3,9 @@
 //!
 //! `chapters_json` stores the JSON encoding of [`MediaChapter`].
 
+use crate::serde_helpers::null_default;
+
 use serde::{Deserialize, Serialize};
-
-fn deserialize_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-fn deserialize_nullable_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
-}
-
-fn deserialize_nullable_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-fn deserialize_nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
-}
 
 /// One chapter mark inside an audio or video file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,10 +78,10 @@ impl MediaProbe {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioChapter {
     /// 1-based chapter number.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub id: i32,
     /// Chapter title. The old player renders an empty title when it is absent.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    #[serde(default, deserialize_with = "null_default")]
     pub title: String,
     /// Start offset in seconds.
     pub start: f64,
@@ -127,16 +93,16 @@ pub struct AudioChapter {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioMedia {
     /// Duration in seconds.
-    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
+    #[serde(default, deserialize_with = "null_default")]
     pub duration: f64,
     /// Chapter marks.
-    #[serde(default, deserialize_with = "deserialize_nullable_vec")]
+    #[serde(default, deserialize_with = "null_default")]
     pub chapters: Vec<AudioChapter>,
     /// Thumbnail URL for the embedded cover, empty when there is none.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    #[serde(default, deserialize_with = "null_default")]
     pub cover_url: String,
     /// Whether an embedded cover exists.
-    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
+    #[serde(default, deserialize_with = "null_default")]
     pub has_cover: bool,
 }
 

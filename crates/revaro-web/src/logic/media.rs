@@ -48,6 +48,16 @@ pub fn authoritative_seek_target(current: f64, saved: f64, user_seeked: bool) ->
     }
 }
 
+/// Completed media starts again; a saved position in the last five seconds is complete.
+#[must_use]
+pub fn resume_time(saved: f64, duration: f64) -> f64 {
+    if saved > 0.0 && saved < duration - 5.0 {
+        saved
+    } else {
+        0.0
+    }
+}
+
 /// Native media elements are the clock; invalid values only occur during load.
 #[must_use]
 pub fn media_element_time(value: f64) -> f64 {
@@ -120,6 +130,19 @@ mod tests {
         assert_eq!(authoritative_seek_target(0.0, 86.0, false), 86.0);
         assert_eq!(authoritative_seek_target(80.0, 86.0, false), 80.0);
         assert_eq!(authoritative_seek_target(0.0, f64::NAN, false), 0.0);
+    }
+
+    #[test]
+    fn resume_positions_restart_completed_media_and_keep_explicit_zero_seeks() {
+        assert_eq!(resume_time(84.9, 90.0), 84.9);
+        assert_eq!(resume_time(85.0, 90.0), 0.0);
+        assert_eq!(resume_time(90.0, 90.0), 0.0);
+        assert_eq!(resume_time(f64::NAN, 90.0), 0.0);
+        assert_eq!(resume_time(60.0, 0.0), 0.0);
+        assert_eq!(
+            resume_time(authoritative_seek_target(0.0, 60.0, true), 90.0),
+            0.0
+        );
     }
 
     #[test]

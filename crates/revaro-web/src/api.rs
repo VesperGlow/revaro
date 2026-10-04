@@ -67,20 +67,6 @@ impl RequestError {
     pub fn is_unauthorized(&self) -> bool {
         self.status == 401
     }
-}
-
-/// A rejected login, decoded from the shared error envelope when possible.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoginError {
-    /// HTTP status the server answered with.
-    pub status: u16,
-    /// Machine-readable code, when the server sent one.
-    pub code: Option<ErrorCode>,
-    /// Human-readable message: the envelope's, or a generic fallback.
-    pub message: String,
-}
-
-impl LoginError {
     /// True when the server is asking for a TOTP or recovery code.
     ///
     /// `useAuthSession.submitLogin` treated this code as "show the second field
@@ -321,7 +307,7 @@ pub async fn complete_upload(
     request: &CompleteUploadRequest,
     signal: Option<&web_sys::AbortSignal>,
 ) -> Result<(), RequestError> {
-    let request = api_request_timeout(
+    let request = api_request_with_timeout(
         Request::post(&format!("/api/uploads/{id}/complete")),
         0,
         signal,
@@ -636,35 +622,12 @@ pub async fn prepare_batch_download(ids: Vec<String>) -> Result<BatchDownloadTic
     Ok(BatchDownloadTicket { token })
 }
 
-/// Sign in, mapping a non-2xx answer to a decoded [`LoginError`].
-pub async fn login(request: &LoginRequest) -> Result<Session, LoginError> {
-    let sent = api_request(Request::post("/api/auth/login"))
+/// Sign in, mapping a non-2xx answer to a decoded [`RequestError`].
+pub async fn login(request: &LoginRequest) -> Result<Session, RequestError> {
+    let request = api_request(Request::post("/api/auth/login"))
         .json(request)
-        .map_err(|error| transport(error.to_string()))?
-        .send()
-        .await
-        .map_err(|error| transport(error.to_string()))?;
-    let status = sent.status();
-    if sent.ok() {
-        return sent
-            .json::<Session>()
-            .await
-            .map_err(|error| transport(error.to_string()));
-    }
-    // The envelope's message is the user-facing text for everything except the
-    // two codes the form handles itself.
-    match sent.json::<ErrorEnvelope>().await {
-        Ok(envelope) => Err(LoginError {
-            status,
-            code: envelope.error.code,
-            message: envelope.error.message,
-        }),
-        Err(_) => Err(LoginError {
-            status,
-            code: None,
-            message: format!("请求失败 ({status})"),
-        }),
-    }
+        .map_err(|error| login_transport(error.to_string()))?;
+    send_json_with_transport(request, login_transport).await
 }
 
 /// End the session. Failures are ignored: the shell clears local state anyway.
@@ -744,8 +707,8 @@ pub async fn delete_avatar() -> Result<(), RequestError> {
 }
 
 /// A transport failure (offline, DNS, malformed body) carries no HTTP status.
-fn transport(message: String) -> LoginError {
-    LoginError {
+fn login_transport(message: String) -> RequestError {
+    RequestError {
         status: 0,
         code: None,
         message,
@@ -760,46 +723,17 @@ where
     let request = api_request(Request::get(path))
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
-    get_json_with_request(request).await
+    send_json(request).await
 }
 
 async fn get_json_with_timeout<T>(path: &str, timeout_ms: u32) -> Result<T, RequestError>
 where
     T: serde::de::DeserializeOwned,
 {
-    let request = api_request_timeout(Request::get(path), timeout_ms, None)
+    let request = api_request_with_timeout(Request::get(path), timeout_ms, None)
         .build()
         .map_err(|error| request_transport(error.to_string()))?;
-    get_json_with_request(request).await
-}
-
-async fn get_json_with_request<T>(request: Request) -> Result<T, RequestError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let response = request
-        .send()
-        .await
-        .map_err(|error| request_transport(error.to_string()))?;
-    if response.ok() {
-        return response
-            .json::<T>()
-            .await
-            .map_err(|error| request_transport(error.to_string()));
-    }
-    let status = response.status();
-    match response.json::<ErrorEnvelope>().await {
-        Ok(envelope) => Err(RequestError {
-            status,
-            code: envelope.error.code,
-            message: envelope.error.message,
-        }),
-        Err(_) => Err(RequestError {
-            status,
-            code: None,
-            message: format!("请求失败 ({status})"),
-        }),
-    }
+    send_json(request).await
 }
 
 /// Send an already encoded JSON request and decode its success body.
@@ -807,15 +741,25 @@ async fn send_json<T>(request: Request) -> Result<T, RequestError>
 where
     T: serde::de::DeserializeOwned,
 {
+    send_json_with_transport(request, request_transport).await
+}
+
+async fn send_json_with_transport<T>(
+    request: Request,
+    transport_error: fn(String) -> RequestError,
+) -> Result<T, RequestError>
+where
+    T: serde::de::DeserializeOwned,
+{
     let response = request
         .send()
         .await
-        .map_err(|error| request_transport(error.to_string()))?;
+        .map_err(|error| transport_error(error.to_string()))?;
     if response.ok() {
         return response
             .json::<T>()
             .await
-            .map_err(|error| request_transport(error.to_string()));
+            .map_err(|error| transport_error(error.to_string()));
     }
     Err(decode_request_error(response).await)
 }
@@ -875,14 +819,6 @@ fn request_transport(message: String) -> RequestError {
 /// consumed, so it is safe for the local Rust value to be dropped here.
 fn api_request(builder: RequestBuilder) -> RequestBuilder {
     api_request_with_timeout(builder, API_TIMEOUT_MS, None)
-}
-
-fn api_request_timeout(
-    builder: RequestBuilder,
-    timeout_ms: u32,
-    caller_signal: Option<&AbortSignal>,
-) -> RequestBuilder {
-    api_request_with_timeout(builder, timeout_ms, caller_signal)
 }
 
 fn api_request_with_timeout(

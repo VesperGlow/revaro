@@ -15,7 +15,6 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use tokio::io::AsyncReadExt as _;
 use tokio_util::io::ReaderStream;
 
 use crate::state::AppState;
@@ -203,14 +202,6 @@ fn cache_policy(path: &Path) -> &'static str {
         Some("html" | "js" | "wasm" | "css") => "no-cache",
         _ => "private, max-age=3600",
     }
-}
-
-/// Read a bundle file fully, used by tests and small assets.
-pub async fn read_asset(path: &Path) -> std::io::Result<Vec<u8>> {
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).await?;
-    Ok(buffer)
 }
 
 #[cfg(test)]

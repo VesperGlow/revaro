@@ -996,7 +996,7 @@ impl UploadController {
                         if active.cancelled.get() {
                             return Err(cancelled_error());
                         }
-                        if !retryable(&error) || attempt + 1 == UPLOAD_RETRIES {
+                        if attempt + 1 == UPLOAD_RETRIES {
                             return Err(error);
                         }
                         last = error;
@@ -1375,13 +1375,6 @@ fn ensure_not_cancelled(active: &ActiveUpload) -> Result<(), RequestError> {
     } else {
         Ok(())
     }
-}
-
-fn retryable(_error: &RequestError) -> bool {
-    // The reference queue retries every failed XHR/API operation up to five
-    // times, including ordinary HTTP errors. Keep that broad contract here;
-    // callers decide separately whether a final 401 should end the session.
-    true
 }
 
 fn cancelled_error() -> RequestError {

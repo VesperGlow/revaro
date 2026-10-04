@@ -28,58 +28,6 @@
   background: #eef4fb;
   color: #1d4ed8;
 }
-.connection {
-  font-size: 13px;
-}
-.connection i {
-  position: relative;
-  width: 8px;
-  height: 8px;
-  animation: connection-breathe 2.4s ease-in-out infinite;
-}
-.connection i:before {
-  content: "";
-  position: absolute;
-  inset: -5px;
-  border-radius: 50%;
-  background: #22c55e;
-  animation: connection-pulse 2.4s ease-out infinite;
-}
-.connection i:after {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  border-radius: 50%;
-  border: 1px solid #22c55e55;
-  animation: connection-pulse 2.4s ease-out 1.2s infinite;
-}
-@keyframes connection-breathe {
-  0%,
-  100% {
-    box-shadow:
-      0 0 0 3px #dcfce7,
-      0 0 6px #22c55e99;
-  }
-  50% {
-    box-shadow:
-      0 0 0 3px #dcfce7,
-      0 0 14px #22c55ecc;
-  }
-}
-@keyframes connection-pulse {
-  0% {
-    transform: scale(0.55);
-    opacity: 0.75;
-  }
-  70% {
-    transform: scale(2);
-    opacity: 0;
-  }
-  100% {
-    transform: scale(2);
-    opacity: 0;
-  }
-}
 
 .content-head p {
   font-size: 13px;

@@ -8,7 +8,7 @@
 use leptos::ev::{Event, PointerEvent};
 use leptos::prelude::*;
 use revaro_core::media::{AudioChapter, AudioMedia};
-use revaro_core::model::{File, MediaProgress};
+use revaro_core::model::File;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{
@@ -18,10 +18,14 @@ use web_sys::{
 use crate::api;
 use crate::browser;
 use crate::logic::format::format_media_time;
-use crate::logic::media::{active_chapter_index, clamp_percent};
+use crate::logic::media::{active_chapter_index, clamp_percent, media_element_time};
 
 use super::icons;
 use super::menu::{ActionMenu, MenuIcon};
+use super::playback::{
+    PlaybackProgress, ProgressDestination, clear_timer, debounce, persist_progress, stored_volume,
+    throttle,
+};
 
 /// Full-screen audio player mounted inside [`super::media::MediaPreview`].
 #[component]
@@ -38,14 +42,12 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let native_duration = RwSignal::new(0.0_f64);
     let buffered = RwSignal::new(0.0_f64);
     let rate = RwSignal::new(1.0_f64);
-    let volume = RwSignal::new(audio_volume());
+    let volume = RwSignal::new(stored_volume("revaro-audio-volume", 0.85));
     let muted = RwSignal::new(audio_muted());
     let error = RwSignal::new(String::new());
     let seek_preview = RwSignal::new(None::<f64>);
     let seek_hover = RwSignal::new(None::<SeekHover>);
-    let server_position = RwSignal::new(0.0_f64);
-    let progress_loaded = RwSignal::new(false);
-    let restored_position = RwSignal::new(false);
+    let playback = PlaybackProgress::new();
     let save_timer = RwSignal::new(None::<i32>);
     let remote_save_timer = RwSignal::new(None::<i32>);
     let mounted = RwSignal::new(false);
@@ -102,93 +104,46 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let restore_position = {
         let position_key = position_key.clone();
         move || {
-            if !progress_loaded.get_untracked()
-                || restored_position.get_untracked()
-                || duration() <= 0.0
+            if duration() > 0.0
+                && let Some(saved) = playback.restore(duration(), 0.0, false, Some(&position_key))
+                && saved > 0.0
             {
-                return;
-            }
-            restored_position.set(true);
-            let saved = if server_position.get_untracked() > 0.0 {
-                server_position.get_untracked()
-            } else {
-                browser::local_storage_get(&position_key)
-                    .and_then(|value| value.parse::<f64>().ok())
-                    .filter(|value| value.is_finite() && *value > 0.0)
-                    .unwrap_or(0.0)
-            };
-            if saved > 0.0 && saved < duration() - 5.0 {
                 seek_audio(audio, current_time, duration(), saved, false);
             }
         }
     };
-
     let save_progress = {
         let position_key = position_key.clone();
         let item_id = item_id.clone();
         move |remote: bool| {
             let position = current_time.get_untracked().max(0.0);
-            if position <= 0.0 {
-                return;
-            }
-            browser::local_storage_set(&position_key, &position.floor().to_string());
-            if remote {
-                let id = item_id.clone();
-                let progress = MediaProgress {
+            if position > 0.0 {
+                persist_progress(
+                    &item_id,
                     position,
-                    duration: duration(),
-                    updated_at: None,
-                };
-                leptos::task::spawn_local(async move {
-                    let _ = api::save_media_progress(&id, &progress).await;
-                });
+                    duration(),
+                    Some(&position_key),
+                    if remote {
+                        ProgressDestination::Remote
+                    } else {
+                        ProgressDestination::Local
+                    },
+                );
             }
         }
     };
-
     let schedule_local_save = {
         let save_progress = save_progress.clone();
         move || {
-            clear_timer(save_timer);
-            if let Some(window) = web_sys::window() {
-                let callback = Closure::once_into_js({
-                    let save_progress = save_progress.clone();
-                    move || {
-                        save_timer.set(None);
-                        save_progress(false);
-                    }
-                });
-                if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    callback.unchecked_ref(),
-                    500,
-                ) {
-                    save_timer.set(Some(id));
-                }
-            }
+            let save = save_progress.clone();
+            debounce(save_timer, 500, move || save(false));
         }
     };
-
     let schedule_remote_save = {
         let save_progress = save_progress.clone();
         move || {
-            if remote_save_timer.get_untracked().is_some() {
-                return;
-            }
-            if let Some(window) = web_sys::window() {
-                let callback = Closure::once_into_js({
-                    let save_progress = save_progress.clone();
-                    move || {
-                        remote_save_timer.set(None);
-                        save_progress(true);
-                    }
-                });
-                if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    callback.unchecked_ref(),
-                    5_000,
-                ) {
-                    remote_save_timer.set(Some(id));
-                }
-            }
+            let save = save_progress.clone();
+            throttle(remote_save_timer, 5_000, move || save(true));
         }
     };
 
@@ -196,7 +151,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
         let restore_position = restore_position.clone();
         move |_| {
             if let Some(element) = audio_element(audio) {
-                native_duration.set(safe_duration(element.duration()));
+                native_duration.set(media_element_time(element.duration()));
                 element.set_volume(volume.get_untracked());
                 element.set_muted(muted.get_untracked());
                 element.set_playback_rate(rate.get_untracked());
@@ -212,7 +167,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
         let schedule_remote_save = schedule_remote_save.clone();
         move |_| {
             if let Some(element) = audio_element(audio) {
-                current_time.set(safe_time(element.current_time()));
+                current_time.set(media_element_time(element.current_time()));
             }
             update_buffer(audio, duration, buffered);
             schedule_local_save();
@@ -304,9 +259,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let on_key = {
         let toggle_playback = toggle_playback.clone();
         let seek = seek.clone();
-        let player = player;
         let close_panel = {
-            let panel_open = panel_open;
             move || {
                 panel_open.set(false);
                 if let Some(element) = player.get() {
@@ -399,7 +352,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     };
     let revealed_chapter = StoredValue::new(None::<usize>);
     {
-        let player = player;
         Effect::new(move |_| {
             let open = panel_open.get();
             let index = current_chapter_index();
@@ -521,15 +473,8 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     // server response are available. These reads belong to the player: unlike
     // durable progress writes, they must stop when its reactive owner is gone.
     {
-        let id = item.id.clone();
         let restore_position = restore_position.clone();
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            if let Ok(progress) = api::fetch_media_progress(&id).await {
-                server_position.set(safe_time(progress.position));
-            }
-            progress_loaded.set(true);
-            restore_position();
-        });
+        playback.load(item.id.clone(), Callback::new(move |()| restore_position()));
     }
     {
         let id = item.id.clone();
@@ -545,7 +490,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     // harmless and the visible play button remains available for that browser.
     {
         let source = source.clone();
-        let player = player;
         Effect::new(move |_| {
             if mounted.get() {
                 return;
@@ -580,18 +524,15 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
         cleanup_save(false);
         let position = current_time.get_untracked().max(0.0);
         if position > 0.0 {
-            api::save_media_progress_keepalive(
+            persist_progress(
                 &cleanup_item_id,
-                &MediaProgress {
-                    position,
-                    duration: audio_duration(
-                        media.get_untracked(),
-                        native_duration.get_untracked(),
-                    ),
-                    updated_at: None,
-                },
+                position,
+                audio_duration(media.get_untracked(), native_duration.get_untracked()),
+                None,
+                ProgressDestination::Keepalive,
             );
         }
+        playback.reset(None);
         if let Some(element) = audio_element(audio) {
             let _ = element.pause();
             element.set_src("");
@@ -682,7 +623,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                     <div class="audio-chapter-list">
                         <For each=move || indexed_chapters(chapters()) key=|(index, _)| *index let:entry>
                             <button type="button" data-chapter-index=entry.0.to_string() aria-current=move || if entry.0 == current_chapter_index() { Some("true") } else { None } on:click={
-                                let seek_callback = seek_callback;
                                 let chapter = entry.1.clone();
                                 move |_| seek_callback.with_value(|seek| seek(chapter.start, true))
                             }>
@@ -775,22 +715,6 @@ fn indexed_chapters(chapters: Vec<AudioChapter>) -> Vec<(usize, AudioChapter)> {
     chapters.into_iter().enumerate().collect()
 }
 
-fn safe_duration(value: f64) -> f64 {
-    if value.is_finite() && value > 0.0 {
-        value
-    } else {
-        0.0
-    }
-}
-
-fn safe_time(value: f64) -> f64 {
-    if value.is_finite() && value >= 0.0 {
-        value
-    } else {
-        0.0
-    }
-}
-
 fn seek_audio(
     audio: NodeRef<leptos::html::Audio>,
     current_time: RwSignal<f64>,
@@ -808,7 +732,7 @@ fn seek_audio(
     });
     if let Some(element) = audio_element(audio) {
         element.set_current_time(target);
-        current_time.set(safe_time(element.current_time()));
+        current_time.set(media_element_time(element.current_time()));
         if play {
             play_ignoring_rejection(&element);
         }
@@ -863,22 +787,6 @@ fn stem(name: &str) -> String {
         .map_or_else(|| name.to_owned(), |(stem, _)| stem.to_owned())
 }
 
-fn audio_volume() -> f64 {
-    browser::local_storage_get("revaro-audio-volume")
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite())
-        .map_or(0.85, |value| value.clamp(0.0, 1.0))
-}
-
 fn audio_muted() -> bool {
     browser::local_storage_get("revaro-audio-muted").as_deref() == Some("true")
-}
-
-fn clear_timer(signal: RwSignal<Option<i32>>) {
-    if let Some(timer) = signal.get_untracked()
-        && let Some(window) = web_sys::window()
-    {
-        window.clear_timeout_with_handle(timer);
-    }
-    signal.set(None);
 }

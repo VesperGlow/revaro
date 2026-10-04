@@ -565,6 +565,128 @@ async fn multipart_upload_commits_a_streamed_sha256_and_rejects_short_completion
 }
 
 #[tokio::test]
+async fn delayed_document_saves_cannot_overwrite_a_restored_revision() {
+    let h = Harness::start().await;
+    // Both a supplied ETag and the legacy omitted-ETag request must detect
+    // changes made after the handler reads its initial file snapshot.
+    for supplied_etag in [true, false] {
+        let (status, file) = h
+            .json(
+                "POST",
+                "/api/documents",
+                serde_json::json!({"parent_id":ROOT_ID,"name":format!("delayed-{supplied_etag}.md"),"content":"original A"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = file["id"].as_str().unwrap();
+        let original_key: String = h
+            .state
+            .db
+            .call({
+                let id = id.to_owned();
+                move |c| {
+                    Ok(
+                        c.query_row("SELECT object_key FROM files WHERE id=?1", [id], |r| {
+                            r.get(0)
+                        })?,
+                    )
+                }
+            })
+            .await
+            .unwrap();
+        let mut payload = serde_json::json!({"content":"stale overwrite"});
+        if supplied_etag {
+            payload["etag"] = file["etag"].clone();
+        }
+        let (reading_tx, reading_rx) = tokio::sync::oneshot::channel();
+        let (body_tx, body_rx) = tokio::sync::oneshot::channel();
+        let body = Body::from_stream(futures_util::stream::once(async move {
+            // The handler only polls the body after its initial DB lookup.
+            reading_tx.send(()).unwrap();
+            body_rx.await.unwrap();
+            Ok::<_, std::io::Error>(bytes::Bytes::from(payload.to_string()))
+        }));
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("/api/files/{id}/content"))
+            .header("cookie", &h.cookie)
+            .header("origin", "http://localhost:8080")
+            .header("content-type", "application/json")
+            .body(body)
+            .unwrap();
+        let pending = tokio::spawn(h.router().oneshot(request));
+        tokio::time::timeout(std::time::Duration::from_secs(5), reading_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (status, saved) = h
+            .json(
+                "PUT",
+                &format!("/api/files/{id}/content"),
+                serde_json::json!({"content":"intervening B","etag":file["etag"]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, versions) = h
+            .json(
+                "GET",
+                &format!("/api/files/{id}/versions"),
+                serde_json::Value::Null,
+            )
+            .await;
+        let version = versions[0]["id"].as_str().unwrap();
+        let (status, restored) = h
+            .json(
+                "POST",
+                &format!("/api/files/{id}/versions/{version}/restore"),
+                serde_json::json!({"etag":saved["etag"]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let restored_key: String = h
+            .state
+            .db
+            .call({
+                let id = id.to_owned();
+                move |c| {
+                    Ok(
+                        c.query_row("SELECT object_key FROM files WHERE id=?1", [id], |r| {
+                            r.get(0)
+                        })?,
+                    )
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(restored_key, original_key);
+        assert_ne!(restored["etag"], file["etag"]);
+
+        body_tx.send(()).unwrap();
+        let response = pending.await.unwrap().unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let (status, content) = h
+            .json(
+                "GET",
+                &format!("/api/files/{id}/content"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content["content"], "original A");
+        assert_eq!(content["etag"], restored["etag"]);
+        let (_, versions) = h
+            .json(
+                "GET",
+                &format!("/api/files/{id}/versions"),
+                serde_json::Value::Null,
+            )
+            .await;
+        assert_eq!(versions.as_array().unwrap().len(), 2);
+    }
+}
+
+#[tokio::test]
 async fn document_versions_restore_with_conflict_protection_and_survive_cleanup() {
     let h = Harness::start().await;
     let (status, file) = h

@@ -187,23 +187,6 @@ pub(crate) fn lookup_file(connection: &rusqlite::Connection, id: &str) -> Result
         .map_err(DbError::Query)
 }
 
-/// Look up a file row for the upload commit path.
-///
-/// `pub(crate)` because the upload module needs the same decode but lives in its
-/// own module; duplicating [`FILE_COLUMNS`] there would let the two drift.
-pub(crate) fn lookup_file_for_commit(
-    connection: &rusqlite::Connection,
-    id: &str,
-) -> Result<File, DbError> {
-    connection
-        .query_row(
-            &format!("SELECT {FILE_COLUMNS} FROM files WHERE id = ?1"),
-            [id],
-            scan_file,
-        )
-        .map_err(DbError::Query)
-}
-
 /// A file by id, including soft-deleted rows.
 ///
 /// Content delivery deliberately resolves trashed rows: an item stays readable
@@ -836,10 +819,10 @@ async fn update_document(
     let content_hash = revaro_core::keys::sha256_hex(&bytes);
     let mime = revaro_core::classify::document_mime(&file.name).to_owned();
 
-    // The previous object key is part of the WHERE clause, so two concurrent
-    // savers cannot both win: the loser updates zero rows and gets a 409 instead
-    // of silently overwriting the winner between a check and a write.
+    // A restore can reuse an older object key while issuing a fresh ETag.
+    // Check both the object and revision inside the write transaction.
     let previous_key = file.object_key.clone();
+    let previous_etag = file.etag.clone();
     let file_id = file.id.clone();
     let update = {
         let object_key = object_key.clone();
@@ -852,12 +835,17 @@ async fn update_document(
                     .map_err(|error| database_error(DbError::Query(error)))?;
                 let now = Timestamp::now().to_rfc3339();
                 let original = lookup_file(&transaction, &file_id).map_err(database_error)?;
+                if original.object_key != previous_key || original.etag != previous_etag {
+                    return Err(ApiError::conflict(
+                        "document changed elsewhere; reopen it before saving",
+                    ));
+                }
                 crate::version_routes::snapshot(&transaction, &original)?;
                 let changed = transaction
                     .execute(
                         "UPDATE files SET object_key = ?1, size = ?2, mime_type = ?3, etag = ?4, \
 content_hash = ?5, hash_algorithm = ?6, updated_at = ?7 \
-WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
+WHERE id = ?8 AND object_key = ?9 AND COALESCE(etag,'') = ?10 AND status = 'ready' AND deleted_at IS NULL",
                         rusqlite::params![
                             object_key,
                             size,
@@ -868,6 +856,7 @@ WHERE id = ?8 AND object_key = ?9 AND status = 'ready' AND deleted_at IS NULL",
                             now,
                             file_id,
                             previous_key,
+                            previous_etag,
                         ],
                     )
                     .map_err(|error| database_error(DbError::Query(error)))?;
@@ -1789,7 +1778,7 @@ AND deleted_at IS NULL)",
                         "parent directory is no longer available",
                     ));
                 }
-                lookup_file_for_commit(connection, &file_id).map_err(database_error)
+                lookup_file_any(connection, &file_id).map_err(database_error)
             })
             .await
     };

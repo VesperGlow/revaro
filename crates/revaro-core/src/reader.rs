@@ -13,36 +13,9 @@
 //! content block, so it survives chunking, client-side pagination, font
 //! changes and rotation.
 
+use crate::serde_helpers::null_default;
+
 use serde::{Deserialize, Deserializer, Serialize};
-
-fn deserialize_nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-fn deserialize_nullable_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-fn deserialize_nullable_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
-}
 
 fn deserialize_nullable_chunk<'de, D>(deserializer: D) -> Result<i32, D::Error>
 where
@@ -177,31 +150,31 @@ impl Ord for Anchor {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocEntry {
     /// Display label.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    #[serde(default, deserialize_with = "null_default")]
     pub label: String,
     /// Source path inside the EPUB, omitted when not applicable.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub path: String,
     /// Source fragment inside the EPUB, omitted when not applicable.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub fragment: String,
     /// Byte offset for plain-text books, omitted for EPUB.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_i64",
+        deserialize_with = "null_default",
         skip_serializing_if = "is_zero_i64"
     )]
     pub offset: i64,
     /// Nesting depth, `0` at the top level.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub depth: i32,
 }
 
@@ -213,10 +186,10 @@ fn is_zero_i64(value: &i64) -> bool {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpineMeta {
     /// First block of the chapter.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub block_start: i32,
     /// Number of blocks in the chapter.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub block_count: i32,
 }
 
@@ -224,27 +197,27 @@ pub struct SpineMeta {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkMeta {
     /// Chunk index in reading order.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub index: i32,
     /// First block contained in the chunk.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub block_start: i32,
     /// Number of blocks contained in the chunk.
     pub block_count: i32,
     /// UTF-16 code units of text in the chunk, used for progress scaling.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
+    #[serde(default, deserialize_with = "null_default")]
     pub chars: i64,
     /// Estimated HTML size in bytes, omitted when unknown.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_i32",
+        deserialize_with = "null_default",
         skip_serializing_if = "is_zero_i32"
     )]
     pub bytes: i32,
     /// URL the chunk can be fetched from, omitted when not addressable yet.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub url: String,
@@ -267,35 +240,35 @@ fn missing_chunk() -> i32 {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocTarget {
     /// Display label.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    #[serde(default, deserialize_with = "null_default")]
     pub label: String,
     /// Nesting depth.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub depth: i32,
     /// Chapter the target belongs to.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub spine: i32,
     /// Block the target belongs to.
-    #[serde(default, deserialize_with = "deserialize_nullable_i32")]
+    #[serde(default, deserialize_with = "null_default")]
     pub block: i32,
     /// Synthetic element id for media targets, omitted otherwise.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub nav_anchor: String,
     /// Path to the target text node for text targets, omitted otherwise.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_vec",
+        deserialize_with = "null_default",
         skip_serializing_if = "Vec::is_empty"
     )]
     pub text_path: Vec<i32>,
     /// UTF-16 offset of the first visible character, omitted when zero.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_i32",
+        deserialize_with = "null_default",
         skip_serializing_if = "is_zero_i32"
     )]
     pub text_offset: i32,
@@ -309,14 +282,14 @@ pub struct TocTarget {
     /// Original EPUB path, kept for debugging and client fallback.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub source_path: String,
     /// Original EPUB fragment, kept for debugging and client fallback.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub source_fragment: String,
@@ -335,7 +308,7 @@ pub struct FlowManifest {
     /// chunks on the client when a file id is reused for different content.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub book_key: String,
@@ -346,12 +319,12 @@ pub struct FlowManifest {
     #[serde(default)]
     pub chunks: Vec<ChunkMeta>,
     /// Table of contents resolved onto the flow.
-    #[serde(default, deserialize_with = "deserialize_nullable_vec")]
+    #[serde(default, deserialize_with = "null_default")]
     pub toc: Vec<TocTarget>,
     /// Generation time, informational only.
     #[serde(
         default,
-        deserialize_with = "deserialize_nullable_string",
+        deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
     pub generated_at: String,

@@ -1,4 +1,13 @@
 //! Personal content library, with file tools kept mounted during navigation.
+mod cards;
+mod collections;
+mod home;
+mod loading;
+
+use cards::LibraryCover;
+pub(super) use cards::{BookProgressBar, CardInfo};
+use home::*;
+
 use leptos::prelude::*;
 use revaro_core::{
     api::auth::Session,
@@ -44,81 +53,6 @@ pub struct ShellContext {
 struct CollectionTarget {
     page: LibraryPage,
     files: Vec<File>,
-}
-
-enum LibraryBatchOperation {
-    Favorite(bool),
-    Membership { collection: String, add: bool },
-}
-
-/// Use the existing APIs and global toast for every listing; keep failed targets retryable.
-async fn apply_library_batch(
-    files: Vec<File>,
-    operation: LibraryBatchOperation,
-    selection: SelectionMode,
-    refresh: RwSignal<u64>,
-    error: RwSignal<String>,
-    logout: Callback<()>,
-) -> Vec<File> {
-    let mut failed = Vec::new();
-    let mut first_error = None;
-    for file in &files {
-        let result = match &operation {
-            LibraryBatchOperation::Favorite(favorite) => {
-                api::update_library_item(
-                    &file.id,
-                    &ItemUpdate {
-                        favorite: Some(*favorite),
-                        opened: false,
-                    },
-                )
-                .await
-            }
-            LibraryBatchOperation::Membership { collection, add } => {
-                api::collection_member(collection, &file.id, *add).await
-            }
-        };
-        if let Err(e) = result {
-            if e.is_unauthorized() {
-                logout.run(());
-                return files;
-            }
-            first_error.get_or_insert_with(|| format!("{}：{}", file.name, e.message));
-            failed.push(file.clone());
-        }
-    }
-    let completed = files.len() - failed.len();
-    if completed > 0 {
-        refresh.update(|r| *r += 1);
-    }
-    let feedback = if let Some(message) = first_error {
-        let message = format!("已完成 {completed}/{} 项，{message}", files.len());
-        error.set(message.clone());
-        Feedback::error(message)
-    } else {
-        let verb = match operation {
-            LibraryBatchOperation::Favorite(true) => "已收藏",
-            LibraryBatchOperation::Favorite(false) => "已取消收藏",
-            LibraryBatchOperation::Membership { add: true, .. } => "已加入集合",
-            LibraryBatchOperation::Membership { add: false, .. } => "已移出集合",
-        };
-        Feedback::success(format!("{verb} {completed} 项"))
-    };
-    if let Some(actions) = selection.actions.get_untracked() {
-        actions.on_feedback.run(feedback);
-    }
-    failed
-}
-
-/// Names and metadata stay within the cover instead of adding a second card boundary.
-#[component]
-pub(super) fn CardInfo(name: String, detail: Signal<String>) -> impl IntoView {
-    view! {
-        <div class="card-info">
-            <strong title=name.clone()>{name.clone()}</strong>
-            <small>{move || detail.get()}</small>
-        </div>
-    }
 }
 
 fn series_name(path: &str) -> String {
@@ -246,96 +180,23 @@ pub fn ContentShell(
         }
     });
     let logout = on_logout;
-    let load = Callback::new(move |more: bool| {
-        let current_page = page.get_untracked();
-        if matches!(
-            current_page,
-            LibraryPage::Home | LibraryPage::Files | LibraryPage::Trash
-        ) || (more && more_loading.get_untracked())
-        {
-            return;
-        }
-        let request = LibraryQuery {
-            kind: current_page.kind().to_owned(),
-            query: if selected_series.get_untracked().is_empty() {
-                query.get_untracked()
-            } else {
-                String::new()
-            },
-            favorite: selected_series.get_untracked().is_empty() && favorites.get_untracked(),
-            collection: if selected_series.get_untracked().is_empty() {
-                selected_collection.get_untracked()
-            } else {
-                String::new()
-            },
-            series: selected_series.get_untracked(),
-            group_series: current_page == LibraryPage::Books
-                && selected_series.get_untracked().is_empty(),
-            offset: if more {
-                items.get_untracked().len() as i64
-            } else {
-                0
-            },
-            ..Default::default()
-        };
-        if !more {
-            generation.update(|g| *g += 1);
-            loading.set(true);
-            items.set(Vec::new());
-            total.set(0);
-        } else {
-            more_loading.set(true);
-        }
-        error.set(String::new());
-        let gen_id = generation.get_untracked();
-        leptos::task::spawn_local(async move {
-            let result = api::fetch_library(&request).await;
-            if generation.try_get_untracked() != Some(gen_id) {
-                return;
-            }
-            loading.set(false);
-            more_loading.set(false);
-            match result {
-                Ok(result) => {
-                    total.set(result.total);
-                    if more {
-                        items.update(|list| list.extend(result.items));
-                    } else {
-                        items.set(result.items);
-                    }
-                }
-                Err(e) if e.is_unauthorized() => logout.run(()),
-                Err(e) => error.set(e.message),
-            }
-        });
-    });
-    Effect::new(move |_| {
-        let _ = (
-            page.get(),
-            query.get(),
-            favorites.get(),
-            selected_collection.get(),
-            selected_series.get(),
-            refresh.get(),
-        );
-        more_loading.set(false);
-        load.run(false);
-        leptos::task::spawn_local(async move {
-            match api::fetch_collections().await {
-                Ok(list) => {
-                    if collections.try_get_untracked().is_some() {
-                        collections.set(list);
-                    }
-                }
-                Err(e) if e.is_unauthorized() => logout.run(()),
-                Err(e) => {
-                    if error.try_get_untracked().is_some() {
-                        error.set(e.message);
-                    }
-                }
-            }
-        });
-    });
+    let load = loading::ListingController {
+        page,
+        query,
+        favorites,
+        selected_collection,
+        selected_series,
+        items,
+        total,
+        generation,
+        loading,
+        more_loading,
+        error,
+        refresh,
+        collections,
+        logout,
+    }
+    .install();
     let open = Callback::new(move |file: File| {
         if selection.enabled.get_untracked() {
             selection.toggle(&file.id);
@@ -473,174 +334,23 @@ pub fn ContentShell(
         refresh.update(|r| *r += 1);
     });
     on_cleanup(move || popstate.release());
-    let collection_page = Signal::derive(move || {
-        collection_target
-            .get()
-            .map(|target| target.page)
-            .unwrap_or_else(|| page.get())
-    });
-    let create = Callback::new(move |()| {
-        if collection_busy.get_untracked() {
-            return;
-        }
-        collection_busy.set(true);
-        error.set(String::new());
-        let kind = collection_page.get_untracked().kind().to_owned();
-        let name = collection_name.get_untracked();
-        let target = collection_target.get_untracked();
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            match api::create_collection(&name, &kind).await {
-                Ok(c) => {
-                    if let Some(mut target) = target {
-                        target.files = apply_library_batch(
-                            target.files,
-                            LibraryBatchOperation::Membership {
-                                collection: c.id,
-                                add: true,
-                            },
-                            selection,
-                            refresh,
-                            error,
-                            logout,
-                        )
-                        .await;
-                        collection_target.set((!target.files.is_empty()).then_some(target));
-                    } else {
-                        selected_collection.set(c.id);
-                    }
-                    // Keep the form's owner alive until all membership requests finish.
-                    new_collection.set(false);
-                    collection_name.set(String::new());
-                    refresh.update(|r| *r += 1);
-                }
-                Err(e) if e.is_unauthorized() => logout.run(()),
-                Err(e) => error.set(e.message),
-            }
-            collection_busy.set(false);
-        });
-    });
-    let add_member = Callback::new(move |collection_id: String| {
-        if collection_busy.get_untracked() {
-            return;
-        }
-        let Some(mut target) = collection_target.get_untracked() else {
-            return;
-        };
-        collection_busy.set(true);
-        error.set(String::new());
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            target.files = apply_library_batch(
-                target.files,
-                LibraryBatchOperation::Membership {
-                    collection: collection_id,
-                    add: true,
-                },
-                selection,
-                refresh,
-                error,
-                logout,
-            )
-            .await;
-            collection_target.set((!target.files.is_empty()).then_some(target));
-            collection_busy.set(false);
-        });
-    });
-    let favorite_selected = Callback::new(move |favorite: bool| {
-        if collection_busy.get_untracked() {
-            return;
-        }
-        let files = selection
-            .selected_files()
-            .into_iter()
-            .filter(|file| file.kind == FileKind::File)
-            .collect::<Vec<_>>();
-        if files.is_empty() {
-            return;
-        }
-        collection_busy.set(true);
-        error.set(String::new());
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            apply_library_batch(
-                files,
-                LibraryBatchOperation::Favorite(favorite),
-                selection,
-                refresh,
-                error,
-                logout,
-            )
-            .await;
-            collection_busy.set(false);
-        });
-    });
-    let collect_selected = Callback::new(move |target_page: LibraryPage| {
-        if collection_busy.get_untracked() {
-            return;
-        }
-        let files = selection
-            .selected_files()
-            .into_iter()
-            .filter(|file| matches_collection(file, target_page))
-            .collect::<Vec<_>>();
-        if files.is_empty() {
-            return;
-        }
-        error.set(String::new());
-        collection_target.set(Some(CollectionTarget {
-            page: target_page,
-            files,
-        }));
-    });
-    let remove_member = Callback::new(move |()| {
-        if collection_busy.get_untracked() {
-            return;
-        }
-        let collection_id = selected_collection.get_untracked();
-        let files = selection.selected_files();
-        if collection_id.is_empty() || files.is_empty() {
-            return;
-        }
-        collection_busy.set(true);
-        error.set(String::new());
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            apply_library_batch(
-                files,
-                LibraryBatchOperation::Membership {
-                    collection: collection_id,
-                    add: false,
-                },
-                selection,
-                refresh,
-                error,
-                logout,
-            )
-            .await;
-            collection_busy.set(false);
-        });
-    });
-    selection.management.set(Some(SelectionManagement {
-        busy: collection_busy.into(),
-        on_favorite: favorite_selected,
-        on_collection: collect_selected,
-        on_remove: remove_member,
-        can_remove: Signal::derive(move || {
-            !page.get().is_file_workspace()
-                && page.get() != LibraryPage::Home
-                && !selected_collection.get().is_empty()
-                && selected_series.get().is_empty()
-        }),
-    }));
-    let delete_collection = Callback::new(move |()| {
-        let id = selected_collection.get_untracked();
-        leptos::task::spawn_local(async move {
-            match api::delete_collection(&id).await {
-                Ok(()) => {
-                    selected_collection.set(String::new());
-                    refresh.update(|r| *r += 1);
-                }
-                Err(e) if e.is_unauthorized() => logout.run(()),
-                Err(e) => error.set(e.message),
-            }
-        });
+    let collections::CollectionController {
+        collection_page,
+        create,
+        add_member,
+        delete_collection,
+    } = collections::CollectionController::install(collections::CollectionContext {
+        page,
+        selected_collection,
+        selected_series,
+        collection_target,
+        collection_name,
+        collection_busy,
+        new_collection,
+        selection,
+        refresh,
+        error,
+        logout,
     });
     let play_all = Callback::new(move |()| {
         let request = LibraryQuery {
@@ -861,170 +571,5 @@ pub fn ContentShell(
                 </section></div>
             </Show>
         </div>
-    }
-}
-
-#[component]
-pub(super) fn BookProgressBar(
-    #[prop(optional_no_strip)] percent: Option<f64>,
-    #[prop(optional)] file_id: Option<String>,
-) -> impl IntoView {
-    let progress = RwSignal::new(percent.filter(|p| p.is_finite() && *p > 0.0));
-    if let Some(id) = file_id {
-        leptos::task::spawn_local(async move {
-            if let Ok(value) = api::fetch_book_progress(&id).await {
-                let _ = progress.try_set(value.percent.filter(|p| p.is_finite() && *p > 0.0));
-            }
-        });
-    }
-    view! {
-        {move ||progress.get().map(|p|view! {
-            <div class="book-reading-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow=p.clamp(0.0,100.0) title=format!("已读 {p:.1}%")>
-                <span style:width=format!("{}%",p.clamp(0.0,100.0))></span>
-            </div>
-        })}
-    }
-}
-
-#[component]
-fn LibraryCover(item: LibraryItem) -> impl IntoView {
-    let failed = RwSignal::new(false);
-    let kind = item.kind.clone();
-    let class = format!("library-cover {}-cover", kind);
-    let is_video = item.kind == "video";
-    let duration = RwSignal::new(
-        item.duration_ms
-            .filter(|ms| *ms > 0)
-            .map(|ms| format_media_time(ms as f64 / 1000.0)),
-    );
-    let thumbnail_url = format!("/api/files/{}/thumbnail?v={}", item.file.id, item.file.etag);
-    let retry = RwSignal::new(0_u8);
-    let retry_thumbnail = move |_| {
-        failed.set(true);
-        if is_video
-            && retry.get_untracked() < 4
-            && let Some(window) = web_sys::window()
-        {
-            use wasm_bindgen::{JsCast, closure::Closure};
-            let callback = Closure::once_into_js(move || {
-                if let Some(attempt) = retry.try_get_untracked() {
-                    retry.set(attempt + 1);
-                    failed.set(false);
-                }
-            });
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                callback.unchecked_ref(),
-                1500,
-            );
-        }
-    };
-    if is_video && duration.get_untracked().is_none() {
-        let id = item.file.id.clone();
-        leptos::task::spawn_local(async move {
-            if let Ok(metadata) = api::fetch_video_media(&id).await
-                && metadata.duration_ms > 0
-            {
-                let _ = duration.try_set(Some(format_media_time(
-                    metadata.duration_ms as f64 / 1000.0,
-                )));
-            }
-        });
-    }
-    view! {
-        <div class=class>
-            <Show when=move || !failed.get() fallback=move || view! {
-                <div class="cover-placeholder"><span>{match kind.as_str() { "book" => view! { <span>"READ"</span> }.into_any(), "audio" => view! { <span>"♫"</span> }.into_any(), "video" => icons::video().into_any(), _ => icons::image().into_any() }}</span><strong>{display_title(&item.file.name)}</strong></div>
-            }>
-                <img loading="lazy" src={let url = thumbnail_url.clone(); move || format!("{}&retry={}", url, retry.get())} alt="" on:error=retry_thumbnail />
-            </Show>
-            <BookProgressBar percent=item.reading_progress />
-            {is_video.then(|| view! { <span class="video-cover-play">{icons::play()}</span><span class="video-duration">{move || duration.get().unwrap_or_else(|| "—:—".to_owned())}</span> })}
-        </div>
-    }
-}
-
-#[component]
-fn HomeDashboard(
-    refresh: RwSignal<u64>,
-    on_open: Callback<File>,
-    on_navigate: Callback<LibraryPage>,
-    on_import: Callback<()>,
-    on_unauthorized: Callback<()>,
-) -> impl IntoView {
-    let sections = RwSignal::new(Vec::<(LibraryPage, Vec<LibraryItem>)>::new());
-    let selection = expect_context::<ShellContext>().selection;
-    let error = RwSignal::new(String::new());
-    let generation = RwSignal::new(0_u64);
-    Effect::new(move |_| {
-        let _ = refresh.get();
-        generation.update(|g| *g += 1);
-        let gen_id = generation.get_untracked();
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            let mut list = Vec::new();
-            for page in [
-                LibraryPage::Books,
-                LibraryPage::Music,
-                LibraryPage::Gallery,
-                LibraryPage::Videos,
-            ] {
-                let base = LibraryQuery {
-                    kind: page.kind().to_owned(),
-                    ..Default::default()
-                };
-                match api::fetch_library(&base).await {
-                    Ok(all) => {
-                        let recent = if page != LibraryPage::Gallery {
-                            api::fetch_library(&LibraryQuery {
-                                recent: true,
-                                ..base
-                            })
-                            .await
-                            .ok()
-                            .filter(|r| !r.items.is_empty())
-                            .map(|r| r.items)
-                        } else {
-                            None
-                        };
-                        list.push((
-                            page,
-                            recent
-                                .unwrap_or(all.items)
-                                .into_iter()
-                                .take(6)
-                                .collect::<Vec<_>>(),
-                        ));
-                    }
-                    Err(e) => {
-                        if e.is_unauthorized() {
-                            on_unauthorized.run(());
-                        } else {
-                            error.set(e.message);
-                        }
-                        return;
-                    }
-                }
-            }
-            if generation.try_get_untracked() == Some(gen_id) {
-                error.set(String::new());
-                selection.set_library_items(
-                    list.iter()
-                        .flat_map(|(_, items)| items.iter().map(|item| item.file.clone()))
-                        .collect(),
-                );
-                sections.set(list);
-            }
-        });
-    });
-    view! {
-
-
-        <For each=move ||sections.get() key=move |(p,_)|(p.path(),refresh.get_untracked()) children=move |(p,list)|view!{
-            <section class="home-section"><header><div><h2>{match p{LibraryPage::Books=>"继续阅读",LibraryPage::Music=>"最近播放与收藏",LibraryPage::Videos=>"最近添加的视频",_=>"最近添加的图片"}}</h2></div><button on:click=move |_|on_navigate.run(p)>"查看全部"<span>"→"</span></button></header>
-                <div class="home-content-row" class:selection-mode=move || selection.enabled.get() class:home-books=p==LibraryPage::Books class:home-images=matches!(p,LibraryPage::Gallery | LibraryPage::Videos)>
-                    {if list.is_empty(){view!{<button class="home-empty" on:click=move |_|on_import.run(())>"还没有内容，导入你的第一份收藏 →"</button>}.into_any()}else{list.into_iter().map(|item|{let file=item.file.clone();let selected_id=file.id.clone();let card_background_id=file.id.clone();view!{<article class="home-card" data-selection-ids=serde_json::to_string(&vec![item.file.id.clone()]).unwrap_or_default() on:click=move |event| selection.toggle_from_card_background(event, &card_background_id) class:selected=move || selection.ids.with(|ids| ids.contains(&selected_id))><SelectionCheckbox id=item.file.id.clone() name=item.file.name.clone() selection=selection /><button class="home-item" aria-label=format!("打开 {}",item.file.name) on:click=move |_|on_open.run(file.clone())><LibraryCover item=item.clone()/><CardInfo name=display_title(&item.file.name) detail=Signal::derive(move ||if item.last_opened.is_some(){"继续打开".to_owned()}else{"新加入你的内容库".to_owned()}) /></button></article>}}).collect_view().into_any()}}
-                </div>
-            </section>
-        } />
-        <Show when=move ||!error.get().is_empty() fallback=|| ()><div class="library-error" role="alert">{move ||error.get()}<button on:click=move |_|refresh.update(|r|*r+=1)>"重试"</button></div></Show>
     }
 }

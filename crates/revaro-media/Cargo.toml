@@ -14,6 +14,3 @@ ffmpeg-next.workspace = true
 image = { workspace = true, features = ["bmp", "gif", "png", "webp"] }
 thiserror.workspace = true
 tokio-util.workspace = true
-
-[dev-dependencies]
-uuid.workspace = true

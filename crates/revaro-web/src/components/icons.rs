@@ -69,17 +69,6 @@ pub fn trash() -> impl IntoView {
     }
 }
 
-/// Lucide `x` — cancel a background task.
-pub fn close_square() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M18 6 6 18"></path>
-            <path d="m6 6 12 12"></path>
-        </svg>
-    }
-}
-
 /// Lucide `rotate-ccw` — retry a failed background task.
 pub fn rotate_ccw() -> impl IntoView {
     view! {

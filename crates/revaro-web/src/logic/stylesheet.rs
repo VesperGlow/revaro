@@ -6,12 +6,9 @@
 //! `account.css`, `ui.css` and the remaining parts, with `video-player.css`
 //! injected last by `VideoPlayer.vue`'s global `<style src>`).
 //!
-//! The order is not cosmetic. Roughly 200 rules are last-wins overrides, and the
-//! clearest example is `.app-shell`'s `grid-template-columns`, declared as
-//! `230px 1fr` by `shell.css` and `1fr` by `uploads.css`; the full-width
-//! desktop layout only holds while `uploads.css` wins. A future edit that
-//! reorders the imports would change layouts with no visible error, so the
-//! sequence is asserted below against [`CASCADE`] + [`COMPONENT_SHEETS`].
+//! Global sheets and component sheets form an ordered cascade. Component rules
+//! can override shared defaults and responsive layouts, so the sequence is
+//! asserted against [`CASCADE`] + [`COMPONENT_SHEETS`].
 
 /// The manifest text, embedded so the order test runs without touching the
 /// filesystem (and so it compiles for wasm like the rest of `logic`).
@@ -28,7 +25,7 @@ pub const CASCADE: [Stylesheet; 14] = [
     ),
     Stylesheet::new(
         "styles/browser.css",
-        "brand, connection pulse, storage bar, modal-backdrop states",
+        "brand, storage bar, modal-backdrop states",
     ),
     Stylesheet::new(
         "styles/uploads.css",

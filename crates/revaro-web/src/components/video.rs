@@ -3,7 +3,7 @@
 use js_sys::{Function, Object, Reflect};
 use leptos::ev::{Event, MouseEvent, PointerEvent};
 use leptos::prelude::*;
-use revaro_core::model::{File, MediaProgress};
+use revaro_core::model::File;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -11,16 +11,17 @@ use web_sys::{
     Element, HtmlInputElement, HtmlMediaElement, HtmlSelectElement, HtmlVideoElement, KeyboardEvent,
 };
 
-use crate::api;
+use super::resource_url::thumbnail_url;
 use crate::browser;
 use crate::logic::format::format_media_time;
-use crate::logic::media::{
-    authoritative_seek_target, media_element_time, should_hide_video_cursor,
-    should_sync_media_clock,
-};
+use crate::logic::media::{media_element_time, should_hide_video_cursor, should_sync_media_clock};
 
 use super::icons;
 use super::menu::{ActionMenu, MenuIcon};
+use super::playback::{
+    PlaybackProgress, ProgressDestination, clear_timer, debounce, persist_progress, stored_volume,
+    throttle,
+};
 
 fn play_video_ignoring_rejection(video: &HtmlMediaElement) {
     if let Ok(promise) = video.play() {
@@ -49,7 +50,7 @@ pub fn VideoPlayer(
     let duration = RwSignal::new(0.0_f64);
     let controls_visible = RwSignal::new(true);
     let controls_hovered = RwSignal::new(false);
-    let initial_volume = video_volume();
+    let initial_volume = stored_volume("revaro-video-volume", 0.9);
     let volume = RwSignal::new(initial_volume);
     let last_audible_volume = RwSignal::new(if initial_volume > 0.0 {
         initial_volume
@@ -68,9 +69,7 @@ pub fn VideoPlayer(
     let pending_seek = RwSignal::new(None::<f64>);
     let fullscreen = RwSignal::new(false);
     let autoplay_pending = RwSignal::new(true);
-    let server_position = RwSignal::new(0.0_f64);
-    let progress_loaded = RwSignal::new(false);
-    let restored_position = RwSignal::new(false);
+    let playback = PlaybackProgress::new();
     let user_seeked = RwSignal::new(false);
 
     let source = format!("/api/files/{}/preview", item.id);
@@ -113,57 +112,41 @@ pub fn VideoPlayer(
         )
     };
 
-    let restore_item_id = item_id.clone();
-    let restore_position = move || {
-        if !progress_loaded.get_untracked()
-            || restored_position.get_untracked()
-            || duration.get_untracked() <= 0.0
-        {
-            return;
-        }
-        restored_position.set(true);
-        let saved = if server_position.get_untracked() > 0.0 {
-            server_position.get_untracked()
-        } else {
-            browser::local_storage_get(&format!("revaro-video-position:{restore_item_id}"))
-                .and_then(|value| value.parse::<f64>().ok())
-                .filter(|value| value.is_finite() && *value > 0.0)
-                .unwrap_or(0.0)
-        };
-        let target = authoritative_seek_target(
-            current_time.get_untracked(),
-            saved,
-            user_seeked.get_untracked(),
-        );
-        if target > 0.0 && target < duration.get_untracked() - 5.0 {
-            if let Some(video) = video_media_element(video) {
+    let position_key = format!("revaro-video-position:{item_id}");
+    let restore_position = {
+        let position_key = StoredValue::new(position_key.clone());
+        move || {
+            if duration.get_untracked() > 0.0
+                && let Some(target) = playback.restore(
+                    duration.get_untracked(),
+                    current_time.get_untracked(),
+                    user_seeked.get_untracked(),
+                    Some(&position_key.get_value()),
+                )
+                && target > 0.0
+                && let Some(video) = video_media_element(video)
+            {
                 video.set_current_time(target);
                 current_time.set(target);
             }
         }
     };
-
     let save_progress = {
         let item_id = item_id.clone();
         move |remote: bool| {
             let position = current_time.get_untracked().max(0.0);
-            if position <= 0.0 && !user_seeked.get_untracked() {
-                return;
-            }
-            browser::local_storage_set(
-                &format!("revaro-video-position:{item_id}"),
-                &position.floor().to_string(),
-            );
-            if remote {
-                let progress = MediaProgress {
+            if position > 0.0 || user_seeked.get_untracked() {
+                persist_progress(
+                    &item_id,
                     position,
-                    duration: duration.get_untracked(),
-                    updated_at: None,
-                };
-                let id = item_id.clone();
-                leptos::task::spawn_local(async move {
-                    let _ = api::save_media_progress(&id, &progress).await;
-                });
+                    duration.get_untracked(),
+                    Some(&position_key),
+                    if remote {
+                        ProgressDestination::Remote
+                    } else {
+                        ProgressDestination::Local
+                    },
+                );
             }
         }
     };
@@ -172,7 +155,7 @@ pub fn VideoPlayer(
         let restore_position = restore_position.clone();
         move |_| {
             if let Some(video) = video_element(video) {
-                duration.set(safe_duration(video.duration()));
+                duration.set(media_element_time(video.duration()));
                 video.set_volume(volume.get_untracked());
                 video.set_muted(muted.get_untracked());
                 video.set_playback_rate(rate.get_untracked());
@@ -189,11 +172,11 @@ pub fn VideoPlayer(
                     current_time.set(media_element_time(video.current_time()));
                 }
             }
-            schedule_progress_timer(save_timer, 600, {
+            debounce(save_timer, 600, {
                 let save_progress = save_progress.clone();
                 move || save_progress(false)
             });
-            schedule_remote_timer(remote_save_timer, 5_000, {
+            throttle(remote_save_timer, 5_000, {
                 let save_progress = save_progress.clone();
                 move || save_progress(true)
             });
@@ -252,7 +235,7 @@ pub fn VideoPlayer(
         // duration in sync with the native element at the first playable
         // event, matching the reference's metadata display on retry/resume.
         if let Some(video) = video_element(video) {
-            let native_duration = safe_duration(video.duration());
+            let native_duration = media_element_time(video.duration());
             if native_duration > 0.0 {
                 duration.set(native_duration);
             }
@@ -505,7 +488,6 @@ pub fn VideoPlayer(
         }
     };
     let mut fullscreen_listener = browser::on_fullscreenchange({
-        let shell = shell;
         move |_| {
             let active = web_sys::window()
                 .and_then(|window| window.document())
@@ -664,20 +646,7 @@ pub fn VideoPlayer(
     // does. A metadata failure leaves native video playback available. Cancel
     // these component-owned reads on close so late responses cannot restore a
     // disposed player or start a detached video element.
-    {
-        let id = item.id.clone();
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            if let Ok(progress) = api::fetch_media_progress(&id).await {
-                server_position.set(if progress.position.is_finite() {
-                    progress.position.max(0.0)
-                } else {
-                    0.0
-                });
-            }
-            progress_loaded.set(true);
-            restore_position();
-        });
-    }
+    playback.load(item.id.clone(), Callback::new(move |()| restore_position()));
     {
         let video_for_start = video;
         leptos::task::spawn_local_scoped_with_cancellation(async move {
@@ -703,15 +672,15 @@ pub fn VideoPlayer(
         cleanup_save(false);
         let position = current_time.get_untracked().max(0.0);
         if position > 0.0 {
-            api::save_media_progress_keepalive(
+            persist_progress(
                 &cleanup_item_id,
-                &MediaProgress {
-                    position,
-                    duration: duration.get_untracked(),
-                    updated_at: None,
-                },
+                position,
+                duration.get_untracked(),
+                None,
+                ProgressDestination::Keepalive,
             );
         }
+        playback.reset(None);
         if let Some(video) = video_media_element(video) {
             let _ = video.pause();
             video.set_src("");
@@ -859,14 +828,6 @@ fn video_media_element(node: NodeRef<leptos::html::Video>) -> Option<HtmlMediaEl
     video_element(node).map(|element| element.unchecked_into())
 }
 
-fn safe_duration(value: f64) -> f64 {
-    if value.is_finite() && value > 0.0 {
-        value
-    } else {
-        0.0
-    }
-}
-
 fn volume_icon(value: f64) -> AnyView {
     if value <= 0.0 {
         icons::volume_x().into_any()
@@ -875,13 +836,6 @@ fn volume_icon(value: f64) -> AnyView {
     } else {
         icons::volume_2().into_any()
     }
-}
-
-fn video_volume() -> f64 {
-    browser::local_storage_get("revaro-video-volume")
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite())
-        .map_or(0.9, |value| value.clamp(0.0, 1.0))
 }
 
 fn video_rate() -> f64 {
@@ -893,25 +847,6 @@ fn video_rate() -> f64 {
     } else {
         1.0
     }
-}
-
-fn thumbnail_url(file: &File) -> String {
-    format!(
-        "/api/files/{}/thumbnail?v={}",
-        file.id,
-        js_sys::encode_uri_component(&file.etag)
-            .as_string()
-            .unwrap_or_default()
-    )
-}
-
-fn clear_timer(signal: RwSignal<Option<i32>>) {
-    if let Some(timer) = signal.get_untracked()
-        && let Some(window) = web_sys::window()
-    {
-        window.clear_timeout_with_handle(timer);
-    }
-    signal.set(None);
 }
 
 fn show_video_controls(
@@ -962,44 +897,6 @@ fn show_video_controls(
             ) {
                 timer.set(Some(id));
             }
-        }
-    }
-}
-
-fn schedule_progress_timer<F>(signal: RwSignal<Option<i32>>, delay: i32, callback: F)
-where
-    F: Fn() + 'static,
-{
-    clear_timer(signal);
-    if let Some(window) = web_sys::window() {
-        let callback = Closure::once_into_js(move || {
-            signal.set(None);
-            callback();
-        });
-        if let Ok(id) = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), delay)
-        {
-            signal.set(Some(id));
-        }
-    }
-}
-
-fn schedule_remote_timer<F>(signal: RwSignal<Option<i32>>, delay: i32, callback: F)
-where
-    F: Fn() + 'static,
-{
-    if signal.get_untracked().is_some() {
-        return;
-    }
-    if let Some(window) = web_sys::window() {
-        let callback = Closure::once_into_js(move || {
-            signal.set(None);
-            callback();
-        });
-        if let Ok(id) = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), delay)
-        {
-            signal.set(Some(id));
         }
     }
 }

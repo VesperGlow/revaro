@@ -234,7 +234,7 @@ pub fn AppTopbar(
                                     } />
                                 <button class="search-close" type="button" title="收起搜索" aria-label="收起搜索"
                                     prop:disabled=move || !search_open.get() on:click=move |_| close_search.run(())>
-                                    {icons::close_square()}
+                                    {icons::x()}
                                 </button>
                             </div>
                             <button node_ref=search_toggle class="search-toggle" type="button"

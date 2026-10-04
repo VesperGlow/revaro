@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use super::resource_url::thumbnail_url;
 use leptos::ev::{Event, MouseEvent, WheelEvent};
 use leptos::prelude::*;
 use revaro_core::classify;
@@ -72,7 +73,6 @@ pub fn MediaPreview(
     // Reset image-only state when the gallery changes. Audio/video children are
     // keyed by their file id and therefore get a fresh player at the same time.
     {
-        let last_selected_id = last_selected_id;
         Effect::new(move |_| {
             let Some(file) = selected.get() else {
                 return;
@@ -165,13 +165,7 @@ pub fn MediaPreview(
     });
 
     let on_key = {
-        let root = root;
-        let selected = selected;
-        let items = items;
-        let on_change = Callback::new({
-            let selected = selected;
-            move |file: File| selected.set(Some(file))
-        });
+        let on_change = Callback::new(move |file: File| selected.set(Some(file)));
         move |event: KeyboardEvent| {
             if event.default_prevented() {
                 return;
@@ -282,7 +276,6 @@ pub fn MediaPreview(
     };
 
     let on_pointer_down = {
-        let selected = selected;
         move |event: PointerEvent| {
             let Some(file) = selected.get_untracked() else {
                 return;
@@ -338,7 +331,6 @@ pub fn MediaPreview(
     };
 
     let on_pointer_move = {
-        let stage = stage;
         move |event: PointerEvent| {
             let Some(before) = pointers.get_untracked().get(&event.pointer_id()).copied() else {
                 return;
@@ -478,7 +470,6 @@ pub fn MediaPreview(
             window.clear_timeout_with_handle(timer);
         }
         if event.detail() < 2 {
-            let chrome_visible = chrome_visible;
             let timer = Closure::once_into_js(move || {
                 click_timer.set(None);
                 chrome_visible.update(|visible| *visible = !*visible);
@@ -526,10 +517,7 @@ pub fn MediaPreview(
         );
     };
 
-    let set_selected = Callback::new({
-        let selected = selected;
-        move |file: File| selected.set(Some(file))
-    });
+    let set_selected = Callback::new(move |file: File| selected.set(Some(file)));
     let close = on_close.clone();
     let download = on_download.clone();
     let move_item = on_move.clone();
@@ -682,8 +670,6 @@ pub fn MediaPreview(
                                     </Show>
                                     <Show when=move || gallery_items(&items.get()).len().gt(&1) fallback=|| ()>
                                         <button class="media-icon-button preview-nav preview-prev" type="button" aria-label="上一张" inert=move || !chrome_visible.get() on:click={
-                                            let selected = selected;
-                                            let items = items;
                                             let set_selected = set_selected.clone();
                                             move |event: MouseEvent| {
                                                 event.stop_propagation();
@@ -691,8 +677,6 @@ pub fn MediaPreview(
                                             }
                                         }>{icons::chevron_left()}</button>
                                         <button class="media-icon-button preview-nav preview-next" type="button" aria-label="下一张" inert=move || !chrome_visible.get() on:click={
-                                            let selected = selected;
-                                            let items = items;
                                             let set_selected = set_selected.clone();
                                             move |event: MouseEvent| {
                                                 event.stop_propagation();
@@ -845,16 +829,6 @@ fn change_gallery(
 
 fn non_negative(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
-}
-
-fn thumbnail_url(file: &File) -> String {
-    format!(
-        "/api/files/{}/thumbnail?v={}",
-        file.id,
-        js_sys::encode_uri_component(&file.etag)
-            .as_string()
-            .unwrap_or_default()
-    )
 }
 
 fn actual_zoom(natural: Size, stage: Size) -> f64 {

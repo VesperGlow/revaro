@@ -5,6 +5,19 @@
 //! the same authenticated shell so their session and gallery state stay
 //! attached to the listing.
 
+mod actions;
+mod downloads;
+mod loading;
+mod navigation;
+mod tiles;
+
+use actions::dialog_config;
+pub(super) use downloads::download_file;
+use downloads::start_download;
+use loading::{ListingContext, ListingController};
+use navigation::*;
+use tiles::*;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -23,6 +36,7 @@ use revaro_core::time::Timestamp;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
+use super::resource_url::thumbnail_url;
 use crate::api;
 use crate::browser;
 use crate::logic::feedback::{Feedback, FeedbackKind};
@@ -146,8 +160,6 @@ pub fn FileBrowser(
     let feedback = RwSignal::new(None::<Feedback>);
     let feedback_timer = RwSignal::new(None::<i32>);
     let notify = {
-        let feedback = feedback;
-        let feedback_timer = feedback_timer;
         Callback::new(move |notification: Feedback| {
             if let Some(timer) = feedback_timer.get_untracked() {
                 feedback_timer.set(None);
@@ -205,11 +217,6 @@ pub fn FileBrowser(
     let editor_dirty = RwSignal::new(false);
     let editor_sequence = RwSignal::new(0_u64);
     {
-        let editor_name = editor_name;
-        let editor_original_name = editor_original_name;
-        let editor_content = editor_content;
-        let editor_original = editor_original;
-        let editor_dirty = editor_dirty;
         Effect::new(move |_| {
             let dirty = editor_name.get() != editor_original_name.get()
                 || editor_content.get() != editor_original.get();
@@ -234,229 +241,43 @@ pub fn FileBrowser(
     // success toast (or its error) without making every folder load awaitable.
     let pending_editor_refresh = RwSignal::new(None::<String>);
 
-    let load_folder_request = {
-        let current_id = current_id;
-        let current = current;
-        let breadcrumbs = breadcrumbs;
-        let items = items;
-        let total_bytes = total_bytes;
-        let file_count = file_count;
-        let loading = loading;
-        let error = error;
-        let trash_mode = trash_mode;
-        let request_sequence = request_sequence;
-        let notify = notify.clone();
-        let preview_items = preview_items;
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
-        let initial_route_pending = initial_route_pending;
-        let fallback_to_root = fallback_to_root;
-        let pending_editor_refresh = pending_editor_refresh;
-        let editor_error = editor_error;
-        let on_logout = on_logout.clone();
-        Callback::new(move |request: FolderLoadRequest| {
-            let FolderLoadRequest {
-                id: requested_id,
-                completion,
-            } = request;
-            let sequence = request_sequence.get_untracked().wrapping_add(1);
-            request_sequence.set(sequence);
-            loading_folder.set(Some(requested_id.clone()));
-            loading.set(true);
-            loading_more.set(false);
-            loading_more_error.set(String::new());
-            error.set(String::new());
-            if pending_editor_refresh
-                .get_untracked()
-                .is_some_and(|expected_id| expected_id != requested_id)
-            {
-                pending_editor_refresh.set(None);
-            }
-            let suppress_history = history_suppressed.get_untracked()
-                || shell_context
-                    .is_some_and(|context| context.page.get_untracked() != LibraryPage::Files);
-            let initial_request = initial_route_pending.get_untracked();
-            initial_route_pending.set(false);
-            let logout = on_logout.clone();
-
-            if requested_id != current_id.get_untracked() {
-                search_query.set(String::new());
-                search_text.set(String::new());
-            }
-            let offset = 0;
-            let query = search_query.get_untracked();
-            let sort = sort_order.get_untracked();
-            let mut completion = completion;
-            leptos::task::spawn_local(async move {
-                let result = async {
-                    // The reference `openFolder` starts metadata and children
-                    // with `Promise.all`. Keep navigation latency and the
-                    // observable request ordering equivalent instead of
-                    // waiting for the detail response before asking for the
-                    // listing.
-                    let (detail, children) = futures_util::join!(
-                        api::fetch_file(&requested_id),
-                        api::fetch_listing(&requested_id, &query, &sort, offset),
-                    );
-                    let detail = detail?;
-                    let children = children?;
-                    Ok::<(FileDetail, revaro_core::features::Listing), api::RequestError>((
-                        detail, children,
-                    ))
-                }
-                .await;
-
-                if request_sequence.try_get_untracked() != Some(sequence) {
-                    finish_folder_load(&mut completion);
-                    return;
-                }
-                loading_folder.set(None);
-
-                match result {
-                    Ok((detail, children)) => {
-                        let changed_folder = requested_id != current_id.get_untracked();
-                        if !suppress_history && changed_folder {
-                            nav_actions.update(|actions| {
-                                actions.push(NavAction::Folder {
-                                    id: current_id.get_untracked(),
-                                });
-                            });
-                            push_browser_history();
-                        }
-                        current_id.set(requested_id.clone());
-                        current.set(Some(detail.file));
-                        breadcrumbs.set(detail.breadcrumbs);
-                        listing_total.set(children.total);
-                        listing_next_offset.set(children.items.len() as i64);
-                        preview_items.set(children.items.clone());
-                        items.set(children.items);
-                        total_bytes.set(children.total_bytes);
-                        file_count.set(children.file_count);
-                        if shell_context.is_none_or(|c| c.page.get_untracked().is_file_workspace())
-                        {
-                            selection.clear();
-                        }
-                        trash_mode.set(false);
-                        if shell_context
-                            .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
-                        {
-                            replace_folder_url(&requested_id);
-                        }
-                        loading.set(false);
-                        if let Some(context) = shell_context {
-                            context.refresh.update(|r| *r += 1);
-                        }
-                        if pending_editor_refresh.get_untracked().as_deref()
-                            == Some(requested_id.as_str())
-                        {
-                            pending_editor_refresh.set(None);
-                            notify.run(Feedback::success("文档已保存"));
-                        }
-                    }
-                    Err(request_error) if request_error.is_unauthorized() => {
-                        loading.set(false);
-                        logout.run(());
-                    }
-                    Err(request_error) => {
-                        loading.set(false);
-                        let editor_refresh_failed =
-                            pending_editor_refresh.get_untracked().as_deref()
-                                == Some(requested_id.as_str());
-                        if editor_refresh_failed {
-                            pending_editor_refresh.set(None);
-                            editor_error.set(request_error.message);
-                        } else if initial_request && requested_id != ROOT_ID {
-                            // The reference startup route treats an invalid
-                            // `/f/{id}` bookmark as a stale URL: it returns to
-                            // the root and loads that folder without leaving a
-                            // transient error screen behind. Ordinary in-app
-                            // navigation still reports its error below.
-                            if shell_context
-                                .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
-                            {
-                                replace_folder_url(ROOT_ID);
-                            }
-                            fallback_to_root.set(true);
-                        } else {
-                            notify.run(Feedback::error(request_error.message));
-                        }
-                    }
-                }
-                finish_folder_load(&mut completion);
-            });
-        })
-    };
-
-    let load_folder = {
-        let load_folder_request = load_folder_request.clone();
-        Callback::new(move |id: String| {
-            load_folder_request.run(FolderLoadRequest {
-                id,
-                completion: None,
-            });
-        })
-    };
-
-    // Appending a batch never replaces the grid or clears its selection. A
-    // navigation/refresh invalidates the request before it can append stale files.
-    let load_more = {
-        let on_logout = on_logout.clone();
-        Callback::new(move |(): ()| {
-            if loading.get_untracked()
-                || loading_more.get_untracked()
-                || trash_mode.get_untracked()
-                || listing_next_offset.get_untracked() >= listing_total.get_untracked()
-            {
-                return;
-            }
-            let sequence = request_sequence.get_untracked();
-            let id = current_id.get_untracked();
-            let query = search_query.get_untracked();
-            let sort = sort_order.get_untracked();
-            let offset = listing_next_offset.get_untracked();
-            let logout = on_logout.clone();
-            loading_more.set(true);
-            loading_more_error.set(String::new());
-            leptos::task::spawn_local(async move {
-                let result = api::fetch_listing(&id, &query, &sort, offset).await;
-                if request_sequence.try_get_untracked() != Some(sequence) {
-                    return;
-                }
-                match result {
-                    Ok(listing) => {
-                        let received = listing.items.len() as i64;
-                        // A concurrent deletion may make the final batch empty.
-                        listing_next_offset.set(if received == 0 {
-                            listing.total
-                        } else {
-                            offset + received
-                        });
-                        listing_total.set(listing.total);
-                        total_bytes.set(listing.total_bytes);
-                        file_count.set(listing.file_count);
-                        items.update(|files| {
-                            let existing: HashSet<_> =
-                                files.iter().map(|file| file.id.clone()).collect();
-                            files.extend(
-                                listing
-                                    .items
-                                    .into_iter()
-                                    .filter(|file| !existing.contains(&file.id)),
-                            );
-                        });
-                        preview_items.set(items.get_untracked());
-                    }
-                    Err(request_error) if request_error.is_unauthorized() => {
-                        loading_more.set(false);
-                        logout.run(());
-                        return;
-                    }
-                    Err(request_error) => loading_more_error.set(request_error.message),
-                }
-                loading_more.set(false);
-            });
-        })
-    };
+    let ListingController {
+        load_folder_request,
+        load_folder,
+        load_more,
+        load_trash_request,
+        load_trash,
+    } = ListingController::new(ListingContext {
+        current_id,
+        search_text,
+        search_query,
+        sort_order,
+        error,
+        loading_more_error,
+        editor_error,
+        current,
+        breadcrumbs,
+        items,
+        preview_items,
+        total_bytes,
+        file_count,
+        listing_total,
+        listing_next_offset,
+        loading,
+        loading_more,
+        trash_mode,
+        history_suppressed,
+        initial_route_pending,
+        fallback_to_root,
+        loading_folder,
+        pending_editor_refresh,
+        request_sequence,
+        selection,
+        shell_context,
+        nav_actions,
+        notify,
+        on_logout,
+    });
     Effect::new(move |_| {
         let Some(end) = listing_end.get() else {
             return;
@@ -539,83 +360,9 @@ pub fn FileBrowser(
         }
     });
 
-    let load_trash_request = {
-        let current = current;
-        let breadcrumbs = breadcrumbs;
-        let items = items;
-        let total_bytes = total_bytes;
-        let file_count = file_count;
-        let loading = loading;
-        let error = error;
-        let trash_mode = trash_mode;
-        let request_sequence = request_sequence;
-        let notify = notify.clone();
-        let preview_items = preview_items;
-        let on_logout = on_logout.clone();
-        Callback::new(move |request: TrashLoadRequest| {
-            let mut completion = request.completion;
-            let sequence = request_sequence.get_untracked().wrapping_add(1);
-            request_sequence.set(sequence);
-            loading_folder.set(None);
-            trash_mode.set(true);
-            items.set(Vec::new());
-            total_bytes.set(0);
-            file_count.set(0);
-            loading.set(true);
-            loading_more.set(false);
-            loading_more_error.set(String::new());
-            error.set(String::new());
-            let logout = on_logout.clone();
-
-            leptos::task::spawn_local(async move {
-                let mut success = false;
-                match api::fetch_trash().await {
-                    Ok(trash) if request_sequence.try_get_untracked() == Some(sequence) => {
-                        current.set(None);
-                        breadcrumbs.set(Vec::new());
-                        preview_items.set(trash.items.clone());
-                        items.set(trash.items);
-                        total_bytes.set(trash.total_bytes);
-                        file_count.set(trash.file_count);
-                        if shell_context.is_none_or(|c| c.page.get_untracked().is_file_workspace())
-                        {
-                            selection.clear();
-                        }
-                        trash_mode.set(true);
-                        loading.set(false);
-                        success = true;
-                    }
-                    Err(request_error)
-                        if request_sequence.try_get_untracked() == Some(sequence)
-                            && request_error.is_unauthorized() =>
-                    {
-                        loading.set(false);
-                        logout.run(());
-                    }
-                    Err(request_error)
-                        if request_sequence.try_get_untracked() == Some(sequence) =>
-                    {
-                        loading.set(false);
-                        notify.run(Feedback::error(request_error.message));
-                    }
-                    Ok(_) | Err(_) => {}
-                }
-                finish_trash_load(&mut completion, success);
-            });
-        })
-    };
-    let load_trash = {
-        let load_trash_request = load_trash_request.clone();
-        Callback::new(move |(): ()| {
-            load_trash_request.run(TrashLoadRequest { completion: None });
-        })
-    };
-
     let file_input = NodeRef::<leptos::html::Input>::new();
     let folder_input = NodeRef::<leptos::html::Input>::new();
     let upload_refresh = {
-        let current_id = current_id;
-        let trash_mode = trash_mode;
         let load_folder_request = load_folder_request.clone();
         Callback::new(move |request: UploadRefresh| {
             let current_folder = !trash_mode.get_untracked()
@@ -660,14 +407,6 @@ pub fn FileBrowser(
     );
 
     let push_overlay = {
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
-        let media_file = media_file;
-        let reader_file = reader_file;
-        let editor_open = editor_open;
-        let transfer_open = transfer_open;
-        let share_file = share_file;
-        let account_open = account_open;
         Callback::new(move |(): ()| {
             if history_suppressed.get_untracked() {
                 return;
@@ -686,13 +425,6 @@ pub fn FileBrowser(
     };
 
     let show_share = {
-        let share_file = share_file;
-        let share_active = share_active;
-        let share_url = share_url;
-        let share_created_at = share_created_at;
-        let share_busy = share_busy;
-        let share_error = share_error;
-        let share_copied = share_copied;
         let on_logout = on_logout.clone();
         let push_overlay = push_overlay.clone();
         Callback::new(move |file: File| {
@@ -744,16 +476,6 @@ pub fn FileBrowser(
         })
     };
     let create_share_request = {
-        let share_file = share_file;
-        let share_active = share_active;
-        let share_url = share_url;
-        let share_created_at = share_created_at;
-        let share_busy = share_busy;
-        let share_error = share_error;
-        let share_copied = share_copied;
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
         let on_logout = on_logout.clone();
         Callback::new(move |replace: bool| {
             if replace {
@@ -811,9 +533,6 @@ pub fn FileBrowser(
         })
     };
     let revoke_share_request = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
         Callback::new(move |(): ()| {
             dialog_value.set(String::new());
             dialog_error.set(String::new());
@@ -821,9 +540,6 @@ pub fn FileBrowser(
         })
     };
     let copy_share = {
-        let share_url = share_url;
-        let share_copied = share_copied;
-        let share_error = share_error;
         Callback::new(move |(): ()| {
             let value = share_url.get_untracked();
             if value.is_empty() {
@@ -845,11 +561,6 @@ pub fn FileBrowser(
         })
     };
     let close_share = {
-        let share_file = share_file;
-        let share_error = share_error;
-        let share_copied = share_copied;
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
             if request_overlay_close(nav_actions, history_suppressed) {
                 return;
@@ -866,7 +577,6 @@ pub fn FileBrowser(
 
     let select_all = {
         let items = operation_items;
-        let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             if !selection.enabled.get_untracked() {
                 return;
@@ -883,9 +593,6 @@ pub fn FileBrowser(
     };
 
     let show_create_folder = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
         Callback::new(move |(): ()| {
             dialog_value.set(String::new());
             dialog_error.set(String::new());
@@ -893,11 +600,7 @@ pub fn FileBrowser(
         })
     };
     let show_rename = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
         let items = operation_items;
-        let selected_ids = selected_ids;
         let push_overlay = push_overlay.clone();
         Callback::new(move |(): ()| {
             let Some(item) = items
@@ -914,10 +617,6 @@ pub fn FileBrowser(
         })
     };
     let show_delete = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
-        let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             if selected_ids.get_untracked().is_empty() {
                 return;
@@ -927,62 +626,15 @@ pub fn FileBrowser(
             dialog.set(Some(DialogState::Delete));
         })
     };
-    let restore_selected = {
-        let selected_ids = selected_ids;
-        let items = items;
-        let load_trash_request = load_trash_request.clone();
-        let notify = notify.clone();
-        let on_logout = on_logout.clone();
-        Callback::new(move |(): ()| {
-            let targets = items
-                .get_untracked()
-                .into_iter()
-                .filter(|item| selected_ids.get_untracked().contains(&item.id))
-                .collect::<Vec<_>>();
-            if targets.is_empty() {
-                return;
-            }
-            let logout = on_logout.clone();
-            leptos::task::spawn_local(async move {
-                let mut restored = 0;
-                let mut errors = Vec::new();
-                let mut failed = HashSet::new();
-                for item in targets {
-                    match api::restore_trash(&item.id).await {
-                        Ok(()) => restored += 1,
-                        Err(error) if error.is_unauthorized() => {
-                            logout.run(());
-                            return;
-                        }
-                        Err(error) => {
-                            failed.insert(item.id);
-                            errors.push(format!("{}：{}", item.name, error.message));
-                        }
-                    }
-                }
-                let (sender, receiver) = oneshot::channel();
-                load_trash_request.run(TrashLoadRequest {
-                    completion: Some(sender),
-                });
-                let _ = receiver.await;
-                selected_ids.set(failed);
-                if errors.is_empty() {
-                    notify.run(Feedback::success(format!("已恢复 {restored} 项")));
-                } else {
-                    notify.run(Feedback::error(format!(
-                        "已恢复 {restored} 项，{} 项失败：{}",
-                        errors.len(),
-                        errors.join("；")
-                    )));
-                }
-            });
-        })
-    };
+    let restore_selected = actions::TrashRestoreContext {
+        selected_ids,
+        items,
+        load_trash_request,
+        notify,
+        on_logout,
+    }
+    .callback();
     let show_purge = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
-        let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             if selected_ids.get_untracked().is_empty() {
                 return;
@@ -993,11 +645,6 @@ pub fn FileBrowser(
         })
     };
     let show_empty_trash = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
-        let items = items;
-        let trash_mode = trash_mode;
         Callback::new(move |(): ()| {
             if !trash_mode.get_untracked() || items.get_untracked().is_empty() {
                 return;
@@ -1008,327 +655,36 @@ pub fn FileBrowser(
         })
     };
 
-    let submit_dialog = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_busy = dialog_busy;
-        let dialog_error = dialog_error;
-        let selected_ids = selected_ids;
-        let items = operation_items;
-        let current_id = current_id;
-        let trash_mode = operation_trash_mode;
-        let notify = notify.clone();
-        let load_trash_request = load_trash_request.clone();
-        let on_logout = on_logout.clone();
-        let editor_open = editor_open;
-        let share_file = share_file;
-        let share_active = share_active;
-        let share_url = share_url;
-        let share_created_at = share_created_at;
-        let share_busy = share_busy;
-        let share_error = share_error;
-        let share_copied = share_copied;
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
-        let load_folder_request = load_folder_request.clone();
-        Callback::new(move |value: String| {
-            let Some(state) = dialog.get_untracked() else {
-                return;
-            };
-            if dialog_busy.get_untracked() {
-                return;
-            }
-            dialog_busy.set(true);
-            dialog_error.set(String::new());
-            let discard_editor = matches!(&state, DialogState::DiscardEditor);
-            let rename_action = matches!(&state, DialogState::Rename { .. });
-            let delete_action = matches!(&state, DialogState::Delete);
-            let regenerate_share = matches!(&state, DialogState::RegenerateShare);
-            let share_action = matches!(
-                &state,
-                DialogState::RegenerateShare | DialogState::RevokeShare
-            );
-            let share_session = share_sequence.get_untracked();
-            let share_is_current = move || {
-                share_sequence.try_get_untracked() == Some(share_session)
-                    && share_file.try_with_untracked(Option::is_some) == Some(true)
-            };
-            let selected = selected_ids.get_untracked();
-            let delete_targets = items
-                .get_untracked()
-                .into_iter()
-                .filter(|item| selected.contains(&item.id))
-                .map(|item| (item.id, item.name))
-                .collect::<Vec<_>>();
-            let parent_id = if matches!(state, DialogState::CreateFolder) {
-                upload_destination.get_untracked()
-            } else {
-                current_id.get_untracked()
-            };
-            let refresh_parent_id = parent_id.clone();
-            let in_trash = trash_mode.get_untracked();
-            let logout = on_logout.clone();
-
-            // The reference `confirmDialog`/`promptDialog` resolves and
-            // removes AppDialog synchronously. The mutation continues after
-            // the confirmation surface is gone; only RenameDialog stays
-            // mounted while its save request is in flight.
-            if !rename_action {
-                dialog.set(None);
-                dialog_value.set(String::new());
-                dialog_error.set(String::new());
-            }
-
-            leptos::task::spawn_local(async move {
-                let result: Result<String, api::RequestError> = async {
-                    match state {
-                        DialogState::CreateFolder => {
-                            let name = value.trim().to_owned();
-                            if name.is_empty() {
-                                Err(api::RequestError {
-                                    status: 0,
-                                    code: None,
-                                    message: "文件夹名称不能为空".to_owned(),
-                                })
-                            } else {
-                                api::create_directory_action(&CreateDirectoryRequest {
-                                    parent_id,
-                                    name,
-                                })
-                                .await
-                                .map(|_| "文件夹已创建".to_owned())
-                            }
-                        }
-                        DialogState::DiscardEditor => Ok(String::new()),
-                        DialogState::RegenerateShare => {
-                            let Some(file) = share_file.get_untracked() else {
-                                return Err(api::RequestError {
-                                    status: 0,
-                                    code: None,
-                                    message: "分享文件已关闭".to_owned(),
-                                });
-                            };
-                            share_busy.set(true);
-                            let result = api::create_share(
-                                &file.id,
-                                share_expiry
-                                    .get_untracked()
-                                    .parse::<i64>()
-                                    .ok()
-                                    .filter(|v| *v > 0),
-                            )
-                            .await;
-                            if !share_is_current() {
-                                return Ok(String::new());
-                            }
-                            match result {
-                                Ok(status) => {
-                                    share_expires_at.set(
-                                        status
-                                            .expires_at
-                                            .map(|v| v.to_rfc3339())
-                                            .unwrap_or_default(),
-                                    );
-                                    share_active.set(status.active);
-                                    share_url.set(status.url.unwrap_or_default());
-                                    share_created_at.set(
-                                        status
-                                            .created_at
-                                            .map(|value| value.to_rfc3339())
-                                            .unwrap_or_default(),
-                                    );
-                                    share_copied.set(false);
-                                    share_error.set(String::new());
-                                    Ok("分享链接已重新生成".to_owned())
-                                }
-                                Err(error) => Err(error),
-                            }
-                        }
-                        DialogState::RevokeShare => {
-                            let Some(file) = share_file.get_untracked() else {
-                                return Err(api::RequestError {
-                                    status: 0,
-                                    code: None,
-                                    message: "分享文件已关闭".to_owned(),
-                                });
-                            };
-                            share_busy.set(true);
-                            api::revoke_share(&file.id).await?;
-                            if !share_is_current() {
-                                return Ok(String::new());
-                            }
-                            share_active.set(false);
-                            share_url.set(String::new());
-                            share_created_at.set(String::new());
-                            share_copied.set(false);
-                            Ok("分享已停止".to_owned())
-                        }
-                        DialogState::Rename { id } => {
-                            // RenameDialog in the reference forwards the
-                            // original input verbatim. Server-side name
-                            // validation remains authoritative, including
-                            // leading/trailing whitespace and empty names.
-                            api::patch_file(
-                                &id,
-                                &PatchFileRequest {
-                                    name: Some(value),
-                                    parent_id: None,
-                                },
-                            )
-                            .await
-                            .map(|_| "已重命名".to_owned())
-                        }
-                        DialogState::Delete => {
-                            let mut removed = 0_usize;
-                            let mut errors = Vec::new();
-                            for (id, name) in delete_targets {
-                                match api::delete_file(&id).await {
-                                    Ok(()) => removed += 1,
-                                    Err(error) if error.is_unauthorized() => return Err(error),
-                                    Err(error) => errors.push(format!("{name}：{}", error.message)),
-                                }
-                            }
-                            if !errors.is_empty() {
-                                return Err(api::RequestError {
-                                    status: 500,
-                                    code: None,
-                                    message: format!(
-                                        "已移入 {removed} 项，{} 项失败：{}",
-                                        errors.len(),
-                                        errors.join("；")
-                                    ),
-                                });
-                            }
-                            Ok(format!("已将 {removed} 项移入回收站"))
-                        }
-                        DialogState::Purge => {
-                            let mut removed = 0;
-                            let mut errors = Vec::new();
-                            for (id, name) in delete_targets {
-                                match api::purge_trash(&id).await {
-                                    Ok(()) => removed += 1,
-                                    Err(error) if error.is_unauthorized() => return Err(error),
-                                    Err(error) => errors.push(format!("{name}：{}", error.message)),
-                                }
-                            }
-                            if !errors.is_empty() {
-                                return Err(api::RequestError {
-                                    status: 500,
-                                    code: None,
-                                    message: format!(
-                                        "已删除 {removed} 项，{} 项失败：{}",
-                                        errors.len(),
-                                        errors.join("；")
-                                    ),
-                                });
-                            }
-                            Ok(format!("已永久删除 {removed} 项"))
-                        }
-                        DialogState::EmptyTrash => {
-                            api::empty_trash().await?;
-                            Ok("回收站已清空".to_owned())
-                        }
-                    }
-                }
-                .await;
-
-                dialog_busy.set(false);
-                if share_action && !share_is_current() {
-                    return;
-                }
-                share_busy.set(false);
-                match result {
-                    Ok(message) => {
-                        dialog.set(None);
-                        dialog_value.set(String::new());
-                        dialog_error.set(String::new());
-                        if rename_action {
-                            let _ = request_overlay_close(nav_actions, history_suppressed);
-                        }
-                        if share_action {
-                            // The share dialog remains open; only its link state
-                            // changes after the confirmation is dismissed.
-                        } else if discard_editor {
-                            selected_ids.set(HashSet::new());
-                            if !request_overlay_close(nav_actions, history_suppressed) {
-                                editor_open.set(false);
-                            }
-                        } else if in_trash {
-                            let (sender, receiver) = oneshot::channel();
-                            load_trash_request.run(TrashLoadRequest {
-                                completion: Some(sender),
-                            });
-                            if receiver.await.unwrap_or(false) {
-                                // Keep the selection toolbar until the
-                                // reference-style trash refresh completes.
-                                selected_ids.set(HashSet::new());
-                            }
-                        } else {
-                            selected_ids.set(HashSet::new());
-                            let (sender, receiver) = oneshot::channel();
-                            load_folder_request.run(FolderLoadRequest {
-                                id: refresh_parent_id,
-                                completion: Some(sender),
-                            });
-                            let _ = receiver.await;
-                        }
-                        // The reference keeps share regeneration and editor
-                        // discard as local modal state transitions: neither
-                        // emits or clears the global toast. Revoke-share and
-                        // all ordinary successful mutations still do.
-                        if !regenerate_share && !discard_editor {
-                            notify.run(Feedback::success(message));
-                        }
-                    }
-                    Err(request_error) if request_error.is_unauthorized() => {
-                        dialog.set(None);
-                        logout.run(());
-                    }
-                    Err(request_error) => {
-                        if rename_action {
-                            notify.run(Feedback::error(request_error.message));
-                        } else if share_action {
-                            // The reference confirm helper closes its own
-                            // confirmation before the share request runs.
-                            // Share failures are then rendered by the still
-                            // open share dialog, rather than keeping the
-                            // confirmation dialog on screen.
-                            dialog.set(None);
-                            dialog_value.set(String::new());
-                            dialog_error.set(String::new());
-                            share_error.set(request_error.message);
-                        } else {
-                            // `confirmDialog`/`promptDialog` resolve and
-                            // close before the asynchronous mutation. Keep
-                            // that old interaction: failures are a toast,
-                            // not an inline error that traps the user in the
-                            // action dialog.
-                            dialog.set(None);
-                            dialog_value.set(String::new());
-                            dialog_error.set(String::new());
-                            if delete_action {
-                                selected_ids.set(HashSet::new());
-                                let (sender, receiver) = oneshot::channel();
-                                load_folder_request.run(FolderLoadRequest {
-                                    id: refresh_parent_id,
-                                    completion: Some(sender),
-                                });
-                                let _ = receiver.await;
-                            }
-                            notify.run(Feedback::error(request_error.message));
-                        }
-                    }
-                }
-            });
-        })
-    };
+    let submit_dialog = actions::FileActionContext {
+        dialog,
+        dialog_value,
+        dialog_busy,
+        dialog_error,
+        selected_ids,
+        items: operation_items,
+        current_id,
+        trash_mode: operation_trash_mode,
+        notify,
+        load_trash_request,
+        load_folder_request,
+        on_logout,
+        editor_open,
+        share_file,
+        share_sequence,
+        share_active,
+        share_url,
+        share_created_at,
+        share_expires_at,
+        share_expiry,
+        share_busy,
+        share_error,
+        share_copied,
+        nav_actions,
+        history_suppressed,
+        upload_destination,
+    }
+    .submit();
     let close_dialog = {
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
-        let dialog_busy = dialog_busy;
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
             // The reference rename modal keeps its close button and backdrop
             // active while PATCH is pending. Generic confirmation dialogs are
@@ -1348,13 +704,6 @@ pub fn FileBrowser(
     };
 
     let start_transfer = {
-        let transfer_open = transfer_open;
-        let transfer_targets = transfer_targets;
-        let transfer_mode = transfer_mode;
-        let transfer_target_id = transfer_target_id;
-        let transfer_error = transfer_error;
-        let current_id = current_id;
-        let media_file = media_file;
         let push_overlay = push_overlay.clone();
         Callback::new(move |request: TransferRequest| {
             if request.targets.is_empty() || operation_trash_mode.get_untracked() {
@@ -1372,7 +721,6 @@ pub fn FileBrowser(
     let show_move_selected = {
         let start_transfer = start_transfer.clone();
         let items = operation_items;
-        let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             let targets = items
                 .get_untracked()
@@ -1388,7 +736,6 @@ pub fn FileBrowser(
     let show_copy_selected = {
         let start_transfer = start_transfer.clone();
         let items = operation_items;
-        let selected_ids = selected_ids;
         Callback::new(move |(): ()| {
             let targets = items
                 .get_untracked()
@@ -1402,11 +749,6 @@ pub fn FileBrowser(
         })
     };
     let close_transfer = {
-        let transfer_open = transfer_open;
-        let transfer_targets = transfer_targets;
-        let transfer_error = transfer_error;
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
             if request_overlay_close(nav_actions, history_suppressed) {
                 return;
@@ -1417,7 +759,6 @@ pub fn FileBrowser(
         })
     };
     let transfer_unauthorized = {
-        let transfer_open = transfer_open;
         let on_logout = on_logout.clone();
         Callback::new(move |(): ()| {
             transfer_open.set(false);
@@ -1425,13 +766,6 @@ pub fn FileBrowser(
         })
     };
     let submit_transfer = {
-        let transfer_open = transfer_open;
-        let transfer_targets = transfer_targets;
-        let transfer_mode = transfer_mode;
-        let transfer_busy = transfer_busy;
-        let transfer_error = transfer_error;
-        let selected_ids = selected_ids;
-        let current_id = current_id;
         let load_folder_request = load_folder_request.clone();
         let notify = notify.clone();
         let on_logout = on_logout.clone();
@@ -1539,20 +873,6 @@ pub fn FileBrowser(
     };
 
     let open_editor = {
-        let editor_open = editor_open;
-        let editor_is_new = editor_is_new;
-        let editor_readonly = editor_readonly;
-        let editor_file_id = editor_file_id;
-        let editor_name = editor_name;
-        let editor_original_name = editor_original_name;
-        let editor_content = editor_content;
-        let editor_original = editor_original;
-        let editor_etag = editor_etag;
-        let editor_mode = editor_mode;
-        let editor_busy = editor_busy;
-        let editor_error = editor_error;
-        let editor_dirty = editor_dirty;
-        let editor_sequence = editor_sequence;
         let on_logout = on_logout.clone();
         let push_overlay = push_overlay.clone();
         Callback::new(move |file: File| {
@@ -1610,19 +930,6 @@ pub fn FileBrowser(
         })
     };
     let new_document = {
-        let editor_open = editor_open;
-        let editor_is_new = editor_is_new;
-        let editor_readonly = editor_readonly;
-        let editor_file_id = editor_file_id;
-        let editor_name = editor_name;
-        let editor_original_name = editor_original_name;
-        let editor_content = editor_content;
-        let editor_original = editor_original;
-        let editor_etag = editor_etag;
-        let editor_mode = editor_mode;
-        let editor_busy = editor_busy;
-        let editor_error = editor_error;
-        let editor_dirty = editor_dirty;
         let push_overlay = push_overlay.clone();
         Callback::new(move |(): ()| {
             push_overlay.run(());
@@ -1649,21 +956,7 @@ pub fn FileBrowser(
         })
     };
     let save_editor = {
-        let editor_open = editor_open;
-        let editor_is_new = editor_is_new;
-        let editor_readonly = editor_readonly;
-        let editor_file_id = editor_file_id;
-        let editor_name = editor_name;
-        let editor_original_name = editor_original_name;
-        let editor_content = editor_content;
-        let editor_original = editor_original;
-        let editor_etag = editor_etag;
-        let editor_busy = editor_busy;
-        let editor_error = editor_error;
-        let editor_dirty = editor_dirty;
-        let current_id = current_id;
         let load_folder = load_folder.clone();
-        let pending_editor_refresh = pending_editor_refresh;
         let on_logout = on_logout.clone();
         Callback::new(move |(): ()| {
             if editor_readonly.get_untracked() || editor_busy.get_untracked() {
@@ -1750,12 +1043,6 @@ pub fn FileBrowser(
         })
     };
     let close_editor = {
-        let editor_open = editor_open;
-        let editor_readonly = editor_readonly;
-        let editor_dirty = editor_dirty;
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
         Callback::new(move |(): ()| {
             if editor_dirty.get_untracked() && !editor_readonly.get_untracked() {
                 dialog_value.set(String::new());
@@ -1769,11 +1056,6 @@ pub fn FileBrowser(
 
     let open_item = {
         let load_folder = load_folder.clone();
-        let trash_mode = trash_mode;
-        let media_file = media_file;
-        let reader_file = reader_file;
-        let preview_items = preview_items;
-        let items = items;
         let open_editor = open_editor.clone();
         let push_overlay = push_overlay.clone();
         Callback::new(move |item: File| {
@@ -1847,7 +1129,6 @@ pub fn FileBrowser(
     };
 
     let open_account = {
-        let account_open = account_open;
         let push_overlay = push_overlay.clone();
         Callback::new(move |(): ()| {
             push_overlay.run(());
@@ -1881,7 +1162,6 @@ pub fn FileBrowser(
             id: initial_folder,
             completion: Some(sender),
         });
-        let reader_file = reader_file;
         let push_overlay = push_overlay.clone();
         let logout = on_logout.clone();
         leptos::task::spawn_local(async move {
@@ -1908,7 +1188,6 @@ pub fn FileBrowser(
     let avatar_version = RwSignal::new(0_u64);
     let return_home = {
         let load_folder = load_folder.clone();
-        let trash_mode = trash_mode;
         Callback::new(move |(): ()| {
             trash_mode.set(false);
             load_folder.run(ROOT_ID.to_owned());
@@ -1925,8 +1204,6 @@ pub fn FileBrowser(
     let folder_upload = uploads_for_view.clone();
     let upload_folder = Callback::new(move |(): ()| folder_upload.choose_folder());
     let close_media = {
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
             if !request_overlay_close(nav_actions, history_suppressed) {
                 media_file.set(None);
@@ -1935,8 +1212,6 @@ pub fn FileBrowser(
     };
     let download_media = Callback::new(move |file: File| download_file(&file));
     let close_reader = {
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
             if !request_overlay_close(nav_actions, history_suppressed) {
                 reader_file.set(None);
@@ -1944,8 +1219,6 @@ pub fn FileBrowser(
         })
     };
     let close_account = {
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
         Callback::new(move |(): ()| {
             if !request_overlay_close(nav_actions, history_suppressed) {
                 account_open.set(false);
@@ -1978,22 +1251,6 @@ pub fn FileBrowser(
     let popstate_queue = Rc::new(RefCell::new(Vec::<NavAction>::new()));
     let popstate_processing = Rc::new(Cell::new(false));
     let mut popstate = {
-        let nav_actions = nav_actions;
-        let history_suppressed = history_suppressed;
-        let media_file = media_file;
-        let reader_file = reader_file;
-        let editor_open = editor_open;
-        let transfer_open = transfer_open;
-        let transfer_targets = transfer_targets;
-        let transfer_error = transfer_error;
-        let share_file = share_file;
-        let share_error = share_error;
-        let share_copied = share_copied;
-        let account_open = account_open;
-        let dialog = dialog;
-        let dialog_value = dialog_value;
-        let dialog_error = dialog_error;
-        let current_id = current_id;
         let load_folder_request = load_folder_request.clone();
         let popstate_queue = popstate_queue.clone();
         let popstate_processing = popstate_processing.clone();
@@ -2130,7 +1387,6 @@ pub fn FileBrowser(
         on_share: show_share,
         on_download: Callback::new({
             let items = operation_items;
-            let selected_ids = selected_ids;
             let notify = notify.clone();
             let on_logout = on_logout.clone();
             move |(): ()| {
@@ -2453,536 +1709,5 @@ pub fn FileBrowser(
             </Show>
             <UploadSurface controller=upload_surface />
         </div>
-    }
-}
-
-fn dialog_config(
-    state: &DialogState,
-    selected_count: usize,
-    trash_count: usize,
-) -> (String, String, String, bool, bool, Option<String>) {
-    match state {
-        DialogState::CreateFolder => (
-            "新建文件夹".to_owned(),
-            "给这个文件夹起个名字。".to_owned(),
-            "创建".to_owned(),
-            false,
-            true,
-            Some("文件夹名称".to_owned()),
-        ),
-        DialogState::DiscardEditor => (
-            "放弃未保存的修改？".to_owned(),
-            "关闭后，本次修改将无法恢复。".to_owned(),
-            "放弃修改".to_owned(),
-            true,
-            false,
-            None,
-        ),
-        DialogState::RegenerateShare => (
-            "重新生成分享链接？".to_owned(),
-            "旧分享链接会立即失效，拿到旧链接的人将无法继续访问。".to_owned(),
-            "重新生成".to_owned(),
-            false,
-            false,
-            None,
-        ),
-        DialogState::RevokeShare => (
-            "停止分享？".to_owned(),
-            "现有公开链接会立即失效。文件本身不会被删除。".to_owned(),
-            "停止分享".to_owned(),
-            true,
-            false,
-            None,
-        ),
-        DialogState::Rename { .. } => (
-            "重命名".to_owned(),
-            String::new(),
-            "保存".to_owned(),
-            false,
-            true,
-            Some("新名称".to_owned()),
-        ),
-        DialogState::Delete => (
-            "移入回收站？".to_owned(),
-            format!("选中的 {selected_count} 项会移入回收站，文件夹中的内容也会一起保留。"),
-            "移入回收站".to_owned(),
-            true,
-            false,
-            None,
-        ),
-        DialogState::Purge => (
-            format!("永久删除 {selected_count} 项？"),
-            "这个操作无法撤销。无引用的数据块会在垃圾回收后清理。".to_owned(),
-            "永久删除".to_owned(),
-            true,
-            false,
-            None,
-        ),
-        DialogState::EmptyTrash => (
-            "清空回收站？".to_owned(),
-            format!("回收站中的 {trash_count} 项及其内容都会永久删除，无法恢复。"),
-            "清空回收站".to_owned(),
-            true,
-            false,
-            None,
-        ),
-    }
-}
-
-#[component]
-fn FileTile(
-    item: File,
-    trash_mode: RwSignal<bool>,
-    selectable: bool,
-    selection: SelectionMode,
-    on_open: Callback<File>,
-) -> impl IntoView {
-    let selected_ids = selection.ids;
-    let name = item.name.clone();
-    let name_for_aria = name.clone();
-    let item_for_click = item.clone();
-    let item_for_key = item.clone();
-    let item_for_select_key = item.clone();
-    let item_for_meta = item.clone();
-    let item_for_title = item.clone();
-    let item_for_cannot_open = item.clone();
-    let item_id_for_class = item.id.clone();
-    let item_id_for_aria = item.id.clone();
-    let preview_available = RwSignal::new(initial_preview_available(&item));
-    let class_item = item.clone();
-    let on_open_click = on_open.clone();
-    let on_open_key = on_open;
-    let select_control = if selectable {
-        view! { <SelectionCheckbox id=item.id.clone() name=item.name.clone() selection=selection /> }.into_any()
-    } else {
-        ().into_any()
-    };
-
-    view! {
-        <article
-            class=move || tile_class(&class_item, preview_available.get())
-            data-selection-ids=selectable.then(|| serde_json::to_string(&vec![item.id.clone()]).unwrap_or_default())
-            class:selected=move || selected_ids.get().contains(&item_id_for_class)
-            role="button"
-            tabindex="0"
-            aria-label=move || format!("{}，{}", name_for_aria, if selected_ids.get().contains(&item_id_for_aria) { "已选择" } else { "未选择" })
-            on:click=move |_| {
-                if selectable && selection.enabled.get_untracked() {
-                    selection.toggle(&item_for_click.id);
-                } else if !trash_mode.get_untracked() || item_for_click.kind == FileKind::File {
-                    on_open_click.run(item_for_click.clone());
-                }
-            }
-            on:keydown=move |event: web_sys::KeyboardEvent| {
-                if matches!(event.key().as_str(), "Enter" | " ") {
-                    event.prevent_default();
-                    if selectable && selection.enabled.get_untracked() {
-                        selection.toggle(&item_for_select_key.id);
-                    } else if !trash_mode.get_untracked() || item_for_key.kind == FileKind::File {
-                        on_open_key.run(item_for_key.clone());
-                    }
-                }
-            }
-            on:contextmenu=move |event: web_sys::MouseEvent| event.prevent_default()
-        >
-            {select_control}
-            <div
-                class="card-preview"
-                class:cannot-open=move || {
-                    trash_mode.get() && item_for_cannot_open.kind == FileKind::Directory
-                }
-                title=move || preview_title(&item_for_title, trash_mode.get())
-            >
-                {file_preview_with_state(&item, Some(preview_available))}
-                {classify::is_book(&item).then(||view! { <BookProgressBar file_id=item.id.clone() /> })}
-            </div>
-            <CardInfo name=name.clone() detail=Signal::derive(move ||display_meta(&item_for_meta, trash_mode.get())) />
-        </article>
-    }
-}
-
-fn tile_class(file: &File, preview_available: bool) -> String {
-    let mut class = String::from("file-card");
-    if file.kind == FileKind::Directory {
-        class.push_str(" folder-tile");
-    } else if classify::is_editable(file) {
-        class.push_str(" document-tile");
-    } else if is_epub_file(file) {
-        class.push_str(" book-tile");
-    } else if classify::is_audio(file) {
-        class.push_str(" audio-tile");
-    }
-    if preview_available {
-        class.push_str(" preview-tile");
-    } else {
-        class.push_str(" fallback-tile");
-    }
-    if file.status != FileStatus::Ready {
-        class.push_str(" mutedrow");
-    }
-    class
-}
-
-fn initial_preview_available(file: &File) -> bool {
-    classify::is_image(file)
-        || (classify::is_audio(file) && file.has_cover)
-        || classify::is_video(file)
-        || is_epub_file(file)
-}
-
-fn is_epub_file(file: &File) -> bool {
-    file.kind == FileKind::File && classify::is_epub_name(&file.name)
-}
-
-fn display_meta(file: &File, trash_mode: bool) -> String {
-    if file.kind == FileKind::Directory {
-        if trash_mode {
-            return format!(
-                "文件夹 · 删除于 {}",
-                format_file_date(file.deleted_at.unwrap_or(file.updated_at))
-            );
-        }
-        return "文件夹".to_owned();
-    }
-    let size = format_size(non_negative(file.size));
-    if trash_mode {
-        format!(
-            "{size} · 删除于 {}",
-            format_file_date(file.deleted_at.unwrap_or(file.updated_at))
-        )
-    } else {
-        // FileGrid.vue's card fallback only renders the formatted size. The
-        // reference deliberately keeps pending/failed lifecycle details in
-        // the muted visual state instead of adding status text to the card.
-        size
-    }
-}
-
-fn format_file_date(value: Timestamp) -> String {
-    if value.is_missing() {
-        "—".to_owned()
-    } else {
-        format_date(&value.to_rfc3339())
-    }
-}
-
-fn preview_title(file: &File, trash_mode: bool) -> String {
-    if trash_mode && file.kind == FileKind::Directory {
-        "恢复后可打开文件夹".to_owned()
-    } else if classify::is_book(file) {
-        "阅读".to_owned()
-    } else if trash_mode && classify::is_editable(file) {
-        "只读查看".to_owned()
-    } else if file.kind == FileKind::Directory {
-        "打开文件夹".to_owned()
-    } else if classify::is_editable(file) {
-        "编辑文档".to_owned()
-    } else if classify::is_image(file) {
-        "预览图片".to_owned()
-    } else if classify::is_video(file) {
-        "播放视频".to_owned()
-    } else if classify::is_audio(file) {
-        "播放音频".to_owned()
-    } else {
-        "文件".to_owned()
-    }
-}
-
-fn non_negative(value: i64) -> u64 {
-    u64::try_from(value).unwrap_or(0)
-}
-
-fn is_markdown_name(name: &str) -> bool {
-    let extension = classify::extension(name);
-    extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
-}
-
-fn file_preview_with_state(file: &File, preview_available: Option<RwSignal<bool>>) -> AnyView {
-    view! { <FilePreview file=file.clone() preview_available=preview_available /> }.into_any()
-}
-
-/// Card/row thumbnails follow the old two-step fallback policy: images try a
-/// generated thumbnail and then the original preview, while EPUB covers and
-/// audio covers fall back directly to their type icon when the thumbnail is
-/// unavailable.
-#[component]
-fn FilePreview(file: File, preview_available: Option<RwSignal<bool>>) -> impl IntoView {
-    let is_image = classify::is_image(&file);
-    let is_audio_cover = classify::is_audio(&file) && file.has_cover;
-    let is_epub = is_epub_file(&file);
-    let is_video = classify::is_video(&file);
-    let thumbnail = thumbnail_url(&file);
-    let preview = format!("/api/files/{}/preview", file.id);
-    let preview_for_src = preview.clone();
-    let thumbnail_for_src = thumbnail.clone();
-    let fallback_to_preview = RwSignal::new(false);
-    let broken = RwSignal::new(false);
-    let preview_available_for_error = preview_available;
-    let file_for_error = file.clone();
-    let on_image_error = move |_| {
-        if is_audio_cover || is_epub {
-            broken.set(true);
-            if let Some(preview_available) = preview_available_for_error {
-                preview_available.set(false);
-            }
-        } else if fallback_to_preview.get_untracked() {
-            broken.set(true);
-            if let Some(preview_available) = preview_available_for_error {
-                preview_available.set(false);
-            }
-        } else {
-            fallback_to_preview.set(true);
-        }
-    };
-
-    view! {
-        {move || {
-            if is_video {
-                view! { <VideoThumbnail file=file.clone() /> }.into_any()
-            } else if (is_image || is_audio_cover || is_epub) && !broken.get() {
-                let file = file_for_error.clone();
-                let preview = preview_for_src.clone();
-                let thumbnail = thumbnail_for_src.clone();
-                view! {
-                    <img
-                        class="ui-image"
-                        src=move || {
-                            if fallback_to_preview.get() {
-                                preview.clone()
-                            } else {
-                                thumbnail.clone()
-                            }
-                        }
-                        alt=file.name.clone()
-                        loading="lazy"
-                        draggable="false"
-                        on:error=on_image_error
-                    />
-                }.into_any()
-            } else {
-                file_icon(&file)
-            }
-        }}
-    }
-}
-
-#[component]
-fn VideoThumbnail(file: File) -> impl IntoView {
-    const RETRY_DELAYS: [i32; 5] = [800, 1_600, 3_200, 6_400, 12_800];
-    let attempt = RwSignal::new(0_usize);
-    let loaded = RwSignal::new(false);
-    let failed = RwSignal::new(false);
-    let timer = RwSignal::new(None::<i32>);
-    let id = StoredValue::new(file.id.clone());
-    let etag = StoredValue::new(
-        js_sys::encode_uri_component(&file.etag)
-            .as_string()
-            .unwrap_or_default(),
-    );
-    let on_error = move |_| {
-        let current = attempt.get_untracked();
-        if current >= RETRY_DELAYS.len() {
-            failed.set(true);
-            return;
-        }
-        if let Some(window) = web_sys::window() {
-            if let Some(old) = timer.get_untracked() {
-                window.clear_timeout_with_handle(old);
-            }
-            let attempt = attempt;
-            let callback = Closure::once_into_js(move || attempt.update(|value| *value += 1));
-            if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                callback.unchecked_ref(),
-                RETRY_DELAYS[current],
-            ) {
-                timer.set(Some(id));
-            }
-        }
-    };
-    on_cleanup(move || {
-        if let Some(timer) = timer.get_untracked()
-            && let Some(window) = web_sys::window()
-        {
-            window.clear_timeout_with_handle(timer);
-        }
-    });
-
-    view! {
-        <div class="video-thumb">
-            <span class="thumb-fallback" class:hidden=move || loaded.get() && !failed.get()>
-                <span class="large-video" aria-hidden="true">
-                    <svg viewBox="0 0 24 24"><path d="m9 7 8 5-8 5Z"></path></svg>
-                </span>
-            </span>
-            <Show when=move || !failed.get() fallback=|| ()>
-                <img
-                    class="ui-image"
-                    src=move || {
-                        format!(
-                            "/api/files/{}/thumbnail?v={}&retry={}",
-                            id.get_value(),
-                            etag.get_value(),
-                            attempt.get()
-                        )
-                    }
-                    alt=""
-                    loading="lazy"
-                    draggable="false"
-                    on:load=move |_| loaded.set(true)
-                    on:error=on_error
-                />
-            </Show>
-        </div>
-    }
-}
-
-fn thumbnail_url(file: &File) -> String {
-    format!(
-        "/api/files/{}/thumbnail?v={}",
-        file.id,
-        js_sys::encode_uri_component(&file.etag)
-            .as_string()
-            .unwrap_or_default()
-    )
-}
-
-fn file_icon(file: &File) -> AnyView {
-    if file.kind == FileKind::Directory {
-        view! {
-            <svg class="file-type-icon folder-type-icon" viewBox="0 0 96 96" aria-hidden="true">
-                <path class="folder-back" d="M10 23c0-4 3-7 7-7h21l10 11h31c4 0 7 3 7 7v9H10Z"></path>
-                <path class="folder-front" d="M8 38c0-4 3-7 7-7h66c5 0 8 4 7 9l-7 35c-1 4-4 6-8 6H16c-4 0-7-3-7-7Z"></path>
-                <path class="folder-highlight" d="M17 38h62l-1 6H16Z"></path>
-            </svg>
-        }
-        .into_any()
-    } else if classify::is_video(file) {
-        view! {
-            <span class="large-video" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="m9 7 8 5-8 5Z"></path></svg>
-            </span>
-        }
-        .into_any()
-    } else if is_epub_file(file) {
-        view! {
-            <svg class="file-type-icon book-type-icon" viewBox="0 0 96 96" aria-hidden="true">
-                <path class="icon-base" d="M48 24c-9-6-20-8-34-8v57c14 0 25 2 34 8 9-6 20-8 34-8V16c-14 0-25 2-34 8Z"></path>
-                <path class="icon-detail" d="M48 24v57M23 31c7 0 13 1 18 4M23 44c7 0 13 1 18 4M73 31c-7 0-13 1-18 4M73 44c-7 0-13 1-18 4"></path>
-            </svg>
-        }
-        .into_any()
-    } else if classify::is_editable(file) {
-        view! {
-            <svg class="file-type-icon document-type-icon" viewBox="0 0 96 96" aria-hidden="true">
-                <path class="icon-base" d="M22 10h38l17 17v58H22Z"></path>
-                <path class="icon-fold" d="M60 10v17h17Z"></path>
-                <path class="icon-detail" d="M34 45h31M34 57h31M34 69h22"></path>
-            </svg>
-        }
-        .into_any()
-    } else if classify::is_audio(file) {
-        view! {
-            <svg class="file-type-icon audio-type-icon" viewBox="0 0 96 96" aria-hidden="true">
-                <path class="icon-base" d="M22 10h38l17 17v58H22Z"></path>
-                <path class="icon-fold" d="M60 10v17h17Z"></path>
-                <path class="icon-detail audio-note" d="M62 42v27m0-27-20 5v27"></path>
-                <ellipse class="icon-accent" cx="35" cy="75" rx="9" ry="7"></ellipse>
-                <ellipse class="icon-accent" cx="55" cy="70" rx="9" ry="7"></ellipse>
-            </svg>
-        }
-        .into_any()
-    } else {
-        view! {
-            <svg class="file-type-icon generic-type-icon" viewBox="0 0 96 96" aria-hidden="true">
-                <path class="icon-base" d="M22 10h38l17 17v58H22Z"></path>
-                <path class="icon-fold" d="M60 10v17h17Z"></path>
-                <circle class="icon-accent" cx="49" cy="58" r="5"></circle>
-            </svg>
-        }
-        .into_any()
-    }
-}
-
-pub(super) fn download_file(file: &File) {
-    start_download_with_name(
-        &format!("/api/files/{}/download", file.id),
-        Some(&file.name),
-    );
-}
-
-fn start_download(path: &str) {
-    start_download_with_name(path, None);
-}
-
-fn start_download_with_name(path: &str, name: Option<&str>) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let Some(document) = window.document() else {
-        return;
-    };
-    let Some(body) = document.body() else {
-        return;
-    };
-    let Ok(anchor) = document.create_element("a") else {
-        return;
-    };
-    let _ = anchor.set_attribute("href", path);
-    if let Some(name) = name {
-        let _ = anchor.set_attribute("download", name);
-    }
-    let _ = anchor.set_attribute("hidden", "");
-    if body.append_child(&anchor).is_ok()
-        && let Ok(anchor) = anchor.dyn_into::<web_sys::HtmlElement>()
-    {
-        anchor.click();
-        anchor.remove();
-    }
-}
-
-fn push_browser_history() {
-    if let Some(window) = web_sys::window()
-        && let Ok(history) = window.history()
-    {
-        let _ = history.push_state_with_url(&JsValue::NULL, "", None);
-    }
-}
-
-fn request_overlay_close(
-    nav_actions: RwSignal<Vec<NavAction>>,
-    history_suppressed: RwSignal<bool>,
-) -> bool {
-    if history_suppressed.get_untracked()
-        || !nav_actions
-            .get_untracked()
-            .last()
-            .is_some_and(|action| matches!(action, NavAction::Overlay))
-    {
-        return false;
-    }
-    if let Some(window) = web_sys::window()
-        && let Ok(history) = window.history()
-    {
-        let _ = history.back();
-        return true;
-    }
-    false
-}
-
-fn replace_reader_url(id: &str) {
-    if let Some(window) = web_sys::window()
-        && let Ok(history) = window.history()
-    {
-        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&format!("/read/{id}")));
-    }
-}
-
-fn replace_folder_url(id: &str) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let url = folder_url(id, ROOT_ID);
-    if let Ok(history) = window.history() {
-        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&url));
     }
 }

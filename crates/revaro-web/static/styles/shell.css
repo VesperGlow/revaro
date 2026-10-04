@@ -250,20 +250,6 @@ button {
   display: block;
 }
 
-.connection {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #64748b;
-  font-size: 12px;
-}
-.connection i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 0 3px #dcfce7;
-}
 .avatar {
   border: 0;
   background: #e9f0fe;
@@ -352,23 +338,6 @@ button {
 }
 .drop-zone p {
   color: #64748b;
-}
-.task-list {
-  overflow: auto;
-  max-height: calc(50vh - 53px);
-}
-.task-list article {
-  padding: 13px 15px;
-  border-bottom: 1px solid #eef2f6;
-}
-.task-icon {
-  width: 29px;
-  height: 29px;
-  background: #eaf1fe;
-  color: #2563eb;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
 }
 .progress {
   height: 3px;
@@ -463,9 +432,6 @@ button {
   }
   .actions button {
     flex: 1;
-  }
-  .connection {
-    display: none;
   }
 }
 

@@ -176,7 +176,7 @@ fn init_tracing() {
     // `main.rs` has target `revaro`, which a `revaro_server=info` directive
     // would filter out. Getting this wrong silences startup logging entirely.
     const DEFAULT_FILTER: &str =
-        "revaro=info,revaro_server=info,revaro_media=info,revaro_reader=info,tower_http=warn";
+        "revaro=info,revaro_server=info,revaro_media=info,revaro_reader=info";
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
     tracing_subscriber::fmt()
