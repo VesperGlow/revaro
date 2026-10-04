@@ -413,13 +413,6 @@ VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,?10)",
         return Err(error);
     }
 
-    // Uploads are visible in the background-task centre.
-    // Keep this separate from the metadata transaction: the reference server
-    // treats a task-row failure as non-fatal to an otherwise valid upload.
-    if let Err(error) = create_upload_task(&state, &upload_id, &file_id).await {
-        tracing::error!(%error, upload = %upload_id, "could not create upload task");
-    }
-
     Ok((
         StatusCode::CREATED,
         Json(CreateUpload {
@@ -580,7 +573,6 @@ async fn upload_content(
         state.config.upload_request_timeout,
     );
     check_space(&state, record.expected_size).await?;
-    update_upload_task(&state, &record.id, "running", "uploading", 0.0, "").await;
     let stored = state
         .store
         .write_stream(&record.object_key, &mut reader, record.expected_size)
@@ -589,27 +581,9 @@ async fn upload_content(
         Ok(stored) => stored,
         Err(error) => {
             let error = write_error(error);
-            update_upload_task(
-                &state,
-                &record.id,
-                "failed",
-                "upload_failed",
-                0.0,
-                &error.message,
-            )
-            .await;
             return Err(error);
         }
     };
-    update_upload_task(
-        &state,
-        &record.id,
-        "waiting_input",
-        "awaiting_completion",
-        0.0,
-        "",
-    )
-    .await;
 
     Ok(etag_response(&stored.etag))
 }
@@ -645,7 +619,6 @@ async fn upload_content_part(
         state.config.upload_request_timeout,
     );
     check_space(&state, expected).await?;
-    update_upload_task(&state, &record.id, "running", "uploading", 0.0, "").await;
     let stored = state
         .store
         .upload_part(
@@ -660,27 +633,9 @@ async fn upload_content_part(
         Ok(stored) => stored,
         Err(error) => {
             let error = write_error(error);
-            update_upload_task(
-                &state,
-                &record.id,
-                "failed",
-                "upload_failed",
-                0.0,
-                &error.message,
-            )
-            .await;
             return Err(error);
         }
     };
-    update_upload_task(
-        &state,
-        &record.id,
-        "waiting_input",
-        "awaiting_completion",
-        0.0,
-        "",
-    )
-    .await;
 
     Ok(etag_response(&stored.etag))
 }
@@ -876,23 +831,11 @@ async fn complete_upload(
                 "uploaded object size does not match the declared size",
             ));
         }
-        update_upload_task(&state, &record.id, "running", "verifying", 99.0, "").await;
-        let content_hash = match state.store.sha256_hex(&record.object_key).await {
-            Ok(hash) => hash,
-            Err(error) => {
-                let api_error = complete_error(error);
-                update_upload_task(
-                    &state,
-                    &record.id,
-                    "failed",
-                    "verifying",
-                    99.0,
-                    &api_error.message,
-                )
-                .await;
-                return Err(api_error);
-            }
-        };
+        let content_hash = state
+            .store
+            .sha256_hex(&record.object_key)
+            .await
+            .map_err(complete_error)?;
         (stored.etag, content_hash)
     } else {
         if !requested_parts.is_empty() {
@@ -910,23 +853,11 @@ async fn complete_upload(
                 "uploaded object size does not match the declared size",
             ));
         }
-        update_upload_task(&state, &record.id, "running", "verifying", 99.0, "").await;
-        let content_hash = match state.store.sha256_hex(&record.object_key).await {
-            Ok(hash) => hash,
-            Err(error) => {
-                let api_error = complete_error(error);
-                update_upload_task(
-                    &state,
-                    &record.id,
-                    "failed",
-                    "verifying",
-                    99.0,
-                    &api_error.message,
-                )
-                .await;
-                return Err(api_error);
-            }
-        };
+        let content_hash = state
+            .store
+            .sha256_hex(&record.object_key)
+            .await
+            .map_err(complete_error)?;
         (stored.etag, content_hash)
     };
 
@@ -979,24 +910,7 @@ WHERE id = ?3",
             Ok(file)
         })
         .await;
-    match result {
-        Ok(file) => {
-            update_upload_task(&state, &record.id, "completed", "completed", 100.0, "").await;
-            Ok(Json(file))
-        }
-        Err(error) => {
-            update_upload_task(
-                &state,
-                &record.id,
-                "retrying",
-                "committing",
-                99.0,
-                "文件已上传，正在等待元数据重试",
-            )
-            .await;
-            Err(error)
-        }
-    }
+    result.map(Json)
 }
 
 /// `DELETE /api/uploads/{id}`
@@ -1018,15 +932,6 @@ async fn abort_upload(
     }
     abort_pending_upload(&state, &id, false).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Abort a pending upload from the task centre runtime.
-pub(crate) async fn cancel_upload_task(state: &Arc<AppState>, upload_id: &str) {
-    if let Err(error) = abort_pending_upload(state, upload_id, false).await
-        && error.status != 404
-    {
-        tracing::warn!(%error, upload = %upload_id, "could not cancel upload task");
-    }
 }
 
 /// Mark a pending upload aborted, remove its invisible file row and clean its
@@ -1080,14 +985,6 @@ async fn abort_pending_upload(
         })
         .await?;
 
-    let phase = if expired_only { "expired" } else { "cancelled" };
-    let message = if expired_only {
-        "upload session expired"
-    } else {
-        ""
-    };
-    update_upload_task(state, &record.id, "cancelled", phase, 0.0, message).await;
-
     if let Some(multipart_id) = &record.multipart_id
         && let Err(error) = state
             .store
@@ -1100,101 +997,6 @@ async fn abort_pending_upload(
         tracing::warn!(%error, upload = %record.id, "could not remove a partial object");
     }
     Ok(())
-}
-
-/// Create the durable task row shown in the browser's task centre.
-///
-/// The task centre is the only feedback an in-flight upload has: the `pending`
-/// file is not listed in its folder, and the browser-local byte queue is not
-/// rendered. The row is committed here, so announce it immediately. Otherwise
-/// nothing at all appears until the byte transfer finishes, which makes a slow
-/// upload look like it never started.
-async fn create_upload_task(
-    state: &Arc<AppState>,
-    upload_id: &str,
-    file_id: &str,
-) -> Result<(), ApiError> {
-    let task_id = crate::ids::new_id();
-    let upload_id = upload_id.to_owned();
-    let file_id = file_id.to_owned();
-    state
-        .db
-        .call_api(move |connection| {
-            let now = Timestamp::now().to_rfc3339();
-            let transaction = connection
-                .transaction()
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            transaction
-                .execute(
-                    "INSERT INTO tasks(id,type,status,phase,source_type,source_id,created_at,updated_at) \
-                     VALUES(?1,'upload','queued','uploading','upload',?2,?3,?3)",
-                    rusqlite::params![task_id, upload_id, now],
-                )
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            transaction
-                .execute(
-                    "INSERT INTO task_files(task_id,file_id,role) VALUES(?1,?2,'input')",
-                    rusqlite::params![task_id, file_id],
-                )
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            transaction
-                .commit()
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            Ok(())
-        })
-        .await?;
-    state.jobs.changed();
-    Ok(())
-}
-
-/// Persist the same upload lifecycle fields used by the old task manager.
-async fn update_upload_task(
-    state: &Arc<AppState>,
-    upload_id: &str,
-    status: &str,
-    phase: &str,
-    progress: f64,
-    task_error: &str,
-) {
-    let upload_id = upload_id.to_owned();
-    let status = status.to_owned();
-    let phase = phase.to_owned();
-    let task_error = task_error.to_owned();
-    let upload_for_log = upload_id.clone();
-    let now = Timestamp::now().to_rfc3339();
-    let result = state
-        .db
-        .call_api(move |connection| {
-            connection
-                .execute(
-                    "UPDATE tasks SET retry_count=MIN(max_retries,retry_count+CASE WHEN ?5='running' AND (status='failed' OR phase='reselect_file') THEN 1 ELSE 0 END),status=?1,phase=?2,progress=?3,error=?4, \
-                     started_at=CASE WHEN ?5='running' THEN COALESCE(started_at,?6) ELSE started_at END, \
-                     finished_at=CASE WHEN ?7 IN ('completed','failed','cancelled') THEN COALESCE(finished_at,?8) ELSE NULL END, \
-                     heartbeat_at=CASE WHEN ?9='running' THEN ?10 ELSE heartbeat_at END, \
-                     updated_at=?11 \
-                     WHERE source_type='upload' AND source_id=?12",
-                    rusqlite::params![
-                        status,
-                        phase,
-                        progress,
-                        task_error,
-                        status,
-                        now,
-                        status,
-                        now,
-                        status,
-                        now,
-                        now,
-                        upload_id,
-                    ],
-                )
-                .map_err(|error| database_error(DbError::Query(error)))
-        })
-        .await;
-    if let Err(error) = result {
-        tracing::warn!(%error, upload = %upload_for_log, "could not update upload task");
-    }
-    state.jobs.changed();
 }
 
 fn etag_response(etag: &str) -> http::Response<Body> {

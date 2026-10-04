@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { deflateSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
-import { login } from './helpers'
+import { login, openTopbarMenu } from './helpers'
 
 function png(width: number, height: number, colours: [number, number, number][]) {
   const rows: Buffer[] = []
@@ -67,6 +67,7 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   const videoBytes = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
 
   await login(page)
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
   await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
   const create = page.getByRole('dialog')

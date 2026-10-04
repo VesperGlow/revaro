@@ -2,7 +2,7 @@
 //!
 //! These modules are deliberately free of DOM, Leptos and WASM APIs. They are
 //! the Rust home of the small TypeScript utilities the shell already needs
-//! (`format.ts`, `imageGeometry.ts`, `taskStatus.ts`) plus a new guard for the
+//! (`format.ts`, `imageGeometry.ts`) plus a new guard for the
 //! stylesheet cascade. Because they do not depend on the browser they carry
 //! their unit tests natively, so `cargo test -p revaro-web` exercises the same
 //! code the wasm build ships.
@@ -19,5 +19,4 @@ pub mod media;
 pub mod reader;
 pub mod routing;
 pub mod stylesheet;
-pub mod task_status;
 pub mod upload;

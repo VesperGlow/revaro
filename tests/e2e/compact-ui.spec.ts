@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login } from './helpers'
+import { login, openTopbarMenu } from './helpers'
 
 test('compact dashboards and shared SVG action menus preserve file operations and keyboard focus', async ({ page }) => {
   const failures: string[] = []
@@ -18,51 +18,57 @@ test('compact dashboards and shared SVG action menus preserve file operations an
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     }
     await nav.getByRole('link', { name: '文件', exact: true }).click()
+    await expect(page.locator('.selection-toggle')).toBeHidden()
+    await expect(page.getByLabel('新建', { exact: true })).toBeHidden()
+    await expect(page.getByLabel('上传', { exact: true })).toBeHidden()
+    await openTopbarMenu(page)
     const create = page.locator('.topbar').getByLabel('新建', { exact: true })
     const upload = page.locator('.topbar').getByLabel('上传', { exact: true })
     for (const trigger of [create, upload]) {
-      await expect(trigger).toHaveText('')
-      await expect(trigger.locator('svg')).toHaveCount(1)
-      const bounds = await trigger.boundingBox()
-      expect(bounds!.height).toBe(width <= 850 ? 40 : 44)
-      expect(bounds!.width).toBe(width <= 430 ? 30 : width <= 1100 ? 34 : 44)
+      await expect(trigger).toHaveText(/新建|上传/)
+      await expect(trigger.locator('svg')).toHaveCount(2)
+      expect((await trigger.boundingBox())!.height).toBe(44)
     }
     await expect(create.locator('svg circle')).toHaveAttribute('r', '9')
     await create.click()
     await expect(page.getByRole('button', { name: '新建文档', exact: true })).toBeVisible()
-    const panel = page.locator('.topbar .action-menu[open] .action-menu-panel')
-    const triggerBounds = await create.boundingBox()
-    const panelBounds = await panel.boundingBox()
-    expect(panelBounds!.y).toBeGreaterThan(triggerBounds!.y + triggerBounds!.height)
-    expect(panelBounds!.x).toBeGreaterThanOrEqual(0)
-    expect(panelBounds!.x + panelBounds!.width).toBeLessThanOrEqual(width)
+    const panel = page.locator('.topbar .embedded-menu[open] > .action-menu-panel')
+    const triggerBounds = (await create.boundingBox())!
+    const panelBounds = (await panel.boundingBox())!
+    expect(panelBounds.y).toBeGreaterThan(triggerBounds.y + triggerBounds.height)
+    expect(panelBounds.x).toBeGreaterThanOrEqual(0)
+    expect(panelBounds.x + panelBounds.width).toBeLessThanOrEqual(width)
     await upload.click()
-    await expect(page.locator('.topbar .action-menu[open]')).toHaveCount(1)
+    await expect(page.locator('.topbar .embedded-menu[open]')).toHaveCount(1)
     await expect(page.getByRole('button', { name: '新建文档', exact: true })).toBeHidden()
     await expect(page.getByRole('button', { name: '上传文件夹', exact: true })).toBeVisible()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('button', { name: '上传文件', exact: true })).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(upload).toBeFocused()
-    await expect(page.locator('.topbar .action-menu[open]')).toHaveCount(0)
+    await expect(page.locator('.topbar .embedded-menu[open]')).toHaveCount(0)
     await expect(upload).toHaveCSS('outline-style', 'none')
     await expect(upload).not.toHaveCSS('box-shadow', 'none')
     await create.press('Enter')
     await expect(page.getByRole('button', { name: '新建文档', exact: true })).toBeVisible()
-    await page.locator('.breadcrumbs').click({ position: { x: 1, y: 1 } })
+    if (width <= 850) await page.locator('.topbar-menu-backdrop').click({ position: { x: 1, y: 1 } })
+    else await page.locator('.breadcrumbs').click({ position: { x: 1, y: 1 } })
     await expect(page.locator('.topbar .action-menu[open]')).toHaveCount(0)
   }
   await page.setViewportSize({ width: 1280, height: 900 })
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
   const backgroundName = `background-menu-${Date.now()}.txt`
   await page.locator('input[type=file]').first().setInputFiles({ name: backgroundName, mimeType: 'text/plain', buffer: Buffer.from('后台上传完成时保持菜单打开') })
   await expect(page.locator('.file-card').filter({ hasText: backgroundName })).toBeVisible()
   await expect(page.getByRole('button', { name: '新建文档', exact: true })).toBeVisible()
   await page.keyboard.press('Escape')
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('上传', { exact: true }).click()
   const chooser = page.waitForEvent('filechooser')
   await page.getByRole('button', { name: '上传文件夹', exact: true }).click()
   expect(await (await chooser).element().getAttribute('webkitdirectory')).toBe('')
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
   await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
   const name = `compact-folder-${Date.now()}`
@@ -71,8 +77,9 @@ test('compact dashboards and shared SVG action menus preserve file operations an
   await dialog.getByRole('button', { name: '创建', exact: true }).click()
   await expect(page.locator('.file-card').filter({ hasText: name })).toBeVisible()
   await page.locator('.file-card').filter({ hasText: name }).click()
-  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name, exact: true })).toBeVisible()
   await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '首页', exact: true }).click()
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
   await page.getByRole('button', { name: '新建文档', exact: true }).click()
   const editor = page.locator('.document-editor')
@@ -83,4 +90,73 @@ test('compact dashboards and shared SVG action menus preserve file operations an
   const listing = await (await page.request.get(`/api/files?q=${documentName}`)).json()
   expect(listing.items[0].parent_id).toBe('00000000-0000-0000-0000-000000000000')
   expect(failures).toEqual([])
+})
+
+test('hamburger popover and mobile sheet fit every viewport and preserve selection and dismissal', async ({ page }) => {
+  test.setTimeout(90_000)
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await login(page)
+  for (const [width, height] of [[1920, 900], [1600, 900], [1280, 900], [1024, 768], [851, 900], [850, 900], [768, 1024], [650, 844], [430, 844], [390, 844], [375, 667], [320, 568], [844, 390], [320, 280]]) {
+    await page.setViewportSize({ width, height })
+    const topbar = page.locator('header.topbar')
+    await expect(topbar.getByLabel('回到首页', { exact: true })).toBeVisible()
+    const tools = topbar.locator('.search-toggle, .top-actions > .action-menu > summary, .top-actions > .account-button')
+    await expect(tools).toHaveCount(4)
+    expect(await tools.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')))).toEqual(['打开搜索', '系统状态', '更多操作', '打开账户设置'])
+
+    const positions = await tools.evaluateAll(elements => elements.map(element => {
+      const rect = element.getBoundingClientRect()
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+    }))
+    for (let i = 0; i < positions.length; i++) {
+      expect(positions[i].left).toBeGreaterThanOrEqual(0)
+      expect(positions[i].right).toBeLessThanOrEqual(width)
+      if (i > 0) expect(positions[i].left).toBeGreaterThanOrEqual(positions[i - 1].right)
+    }
+    await expect(page.locator('.selection-toggle')).toBeHidden()
+    await openTopbarMenu(page)
+    const panel = page.locator('.topbar-menu-panel')
+    const bounds = (await panel.boundingBox())!
+    const trigger = (await page.getByLabel('更多操作', { exact: true }).boundingBox())!
+    expect(bounds.x).toBeGreaterThanOrEqual(0)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
+    expect(bounds.y).toBeGreaterThanOrEqual(0)
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(height)
+    if (width <= 850) {
+      expect(bounds.x).toBe(0)
+      expect(bounds.width).toBe(width)
+      expect(bounds.y + bounds.height).toBe(height)
+      await expect(page.locator('.topbar-menu-backdrop')).toBeVisible()
+      await expect(panel).toHaveCSS('border-top-left-radius', '18px')
+      await expect(page.locator('body')).toHaveCSS('overflow', 'hidden')
+      await page.getByLabel('关闭菜单', { exact: true }).focus()
+      await page.keyboard.press('Shift+Tab')
+      await expect(page.getByLabel('公开链接', { exact: true })).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(page.getByLabel('关闭菜单', { exact: true })).toBeFocused()
+    } else {
+      expect(bounds.x + bounds.width).toBe(trigger.x + trigger.width)
+      expect(bounds.y).toBe(trigger.y + trigger.height + 8)
+      await expect(panel).toHaveCSS('border-radius', '10px')
+      await expect(page.locator('.topbar-menu-backdrop')).toBeHidden()
+    }
+    await expect(panel.getByLabel('打开任务通知', { exact: true })).toHaveCount(0)
+    await expect(panel.locator('.embedded-menu > summary')).toHaveText(['新建', '上传', '公开链接'])
+    await page.keyboard.press('Escape')
+    await expect(panel).toBeHidden()
+    await expect(page.getByLabel('更多操作', { exact: true })).toBeFocused()
+    await openTopbarMenu(page)
+    await page.getByRole('button', { name: '进入选择模式', exact: true }).click()
+    await expect(panel).toBeHidden()
+    await expect(page.locator('.selection-toggle')).toHaveAttribute('aria-pressed', 'true')
+    await openTopbarMenu(page)
+    await expect(page.getByRole('button', { name: '退出选择模式', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await openTopbarMenu(page)
+    await page.getByRole('button', { name: '退出选择模式', exact: true }).click()
+    await expect(panel).toBeHidden()
+    await expect(page.locator('.selection-toggle')).toHaveAttribute('aria-pressed', 'false')
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+  }
+  expect(errors).toEqual([])
 })

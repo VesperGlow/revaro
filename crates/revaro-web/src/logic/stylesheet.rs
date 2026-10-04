@@ -84,8 +84,8 @@ pub const COMPONENT_SHEETS: [Stylesheet; 8] = [
         "AppTopbar scoped block; :deep() resolved",
     ),
     Stylesheet::new(
-        "styles/components/task-center.css",
-        "TaskCenter scoped block",
+        "styles/components/upload-progress.css",
+        "Temporary upload progress overlay",
     ),
     Stylesheet::new(
         "styles/components/status-badge.css",

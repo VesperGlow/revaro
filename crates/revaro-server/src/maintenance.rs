@@ -606,7 +606,6 @@ async fn cleanup_expired_uploads(state: &Arc<AppState>) -> Result<(), String> {
         }
     }
     if removed > 0 {
-        state.jobs.changed();
         state.maintenance.wake("object-cleanup");
     }
     if records.len() == CLEANUP_BATCH {
@@ -656,7 +655,6 @@ async fn cleanup_trash(state: &Arc<AppState>) -> Result<(), String> {
         .await
         .map_err(|error| error.to_string())?;
     if removed > 0 {
-        state.jobs.changed();
         state.maintenance.wake("object-cleanup");
     }
     if removed == CLEANUP_BATCH {

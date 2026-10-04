@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login } from './helpers'
+import { login, openTopbarMenu } from './helpers'
 
 function crc32(data: Buffer) {
   let value = 0xffffffff
@@ -129,6 +129,7 @@ test('文档编辑器按文件名和内容共同判断未保存状态，并格�
   await expect(editor.locator('.editor-meta b')).toHaveText('1,234 字节')
   await editor.getByRole('button', { name: '关闭编辑器' }).click()
 
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
   await page.getByRole('button', { name: '新建文档', exact: true }).click()
   await expect(editor).toBeVisible()

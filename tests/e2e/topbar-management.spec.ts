@@ -1,9 +1,19 @@
 import { expect, test, type Page } from '@playwright/test'
-import { login } from './helpers'
+import { login, openTopbarMenu } from './helpers'
 import { readFileSync } from 'node:fs'
 
 async function attached(page: Page, trigger: string, panel: string) {
   await expect(page.locator(panel)).toBeVisible()
+  if (panel === '.public-links-popover') {
+    const a = (await page.getByLabel(trigger, { exact: true }).boundingBox())!
+    const p = (await page.locator(panel).boundingBox())!
+    const menu = (await page.locator('.topbar-menu-panel').boundingBox())!
+    expect(p.y).toBeGreaterThanOrEqual(a.y + a.height)
+    expect(p.x).toBeGreaterThanOrEqual(menu.x)
+    expect(p.x + p.width).toBeLessThanOrEqual(menu.x + menu.width)
+    return
+  }
+
   await expect.poll(async () => {
     const a = (await page.getByLabel(trigger, { exact: true }).boundingBox())!
     const p = (await page.locator(panel).boundingBox())!
@@ -13,12 +23,13 @@ async function attached(page: Page, trigger: string, panel: string) {
   }).toBeLessThanOrEqual(1)
 }
 
-test('links and storage are independent anchored popovers, and account only owns account/security', async ({ page, context }) => {
+test('links use the menu and storage stays anchored', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   let revoked = false
   await page.route('**/api/shares?**', route => route.fulfill({ json: revoked ? [] : [{ file_id: 'link-test', name: '公开文件', active: true, url: 'http://localhost/s/link-test', created_at: '2026-10-03T00:00:00Z' }] }))
   await page.route('**/api/files/link-test/share', route => { revoked = true; return route.fulfill({ status: 204 }) })
   await login(page)
+  await openTopbarMenu(page)
   await page.getByLabel('公开链接', { exact: true }).click()
   await attached(page, '公开链接', '.public-links-popover')
   const links = page.locator('.public-links-popover')
@@ -32,7 +43,7 @@ test('links and storage are independent anchored popovers, and account only owns
   await expect(links).toBeHidden()
   await attached(page, '系统状态', '.system-status-popover')
   const status = page.locator('.system-status-popover')
-  await expect(status.locator('.system-metric')).toHaveCount(5)
+  await expect(status.locator('.system-metric')).toHaveCount(4)
   await expect(status).toContainText('已用 / 总存储空间')
   await expect(status.getByRole('button', { name: '任务中心', exact: true })).toHaveCount(0)
   await status.getByRole('button', { name: '刷新状态', exact: true }).click()
@@ -44,10 +55,8 @@ test('links and storage are independent anchored popovers, and account only owns
   await page.keyboard.press('Escape')
   await expect(status).toBeHidden()
   await expect(page.getByLabel('系统状态', { exact: true })).toBeFocused()
-  await page.getByLabel('打开任务中心', { exact: true }).click()
-  await attached(page, '打开任务中心', '.task-panel')
   await page.getByLabel('系统状态', { exact: true }).click()
-  await expect(page.locator('.task-panel')).toBeHidden()
+  await openTopbarMenu(page)
   await page.getByLabel('公开链接', { exact: true }).click()
   await expect(status).toBeHidden()
   await page.locator('.breadcrumbs').click({ position: { x: 1, y: 1 } })
@@ -62,14 +71,14 @@ test('links and storage are independent anchored popovers, and account only owns
 test('status ball and numeric metrics reserve their geometry during loading and expose real storage ratio', async ({ page }) => {
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  await page.route('**/api/system/status', async route => { await gate; await route.fulfill({ json: { disk_total_bytes: 100 * 1024 ** 3, disk_used_bytes: 42 * 1024 ** 3, disk_available_bytes: 58 * 1024 ** 3, cache: { memory_bytes: 2 * 1024 ** 2, disk_bytes: 3 * 1024 ** 2 }, active_tasks: 12 } }) })
+  await page.route('**/api/system/status', async route => { await gate; await route.fulfill({ json: { disk_total_bytes: 100 * 1024 ** 3, disk_used_bytes: 42 * 1024 ** 3, disk_available_bytes: 58 * 1024 ** 3, cache: { memory_bytes: 2 * 1024 ** 2, disk_bytes: 3 * 1024 ** 2 } } }) })
   await login(page)
   const ball = page.locator('.system-status-ball')
   await expect(ball).toHaveClass(/pending/)
   const before = await ball.boundingBox()
   await page.getByLabel('系统状态', { exact: true }).click()
   const metrics = page.locator('.system-metrics')
-  await expect(metrics.locator('.metric-skeleton')).toHaveCount(5)
+  await expect(metrics.locator('.metric-skeleton')).toHaveCount(4)
   const positions = () => metrics.locator('.system-metric').evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.height] }))
   const pending = await positions()
   release()
@@ -91,6 +100,7 @@ test('public link pagination returns to an existing page after its last link is 
   await page.route('**/api/shares?**', route => { const offset = Number(new URL(route.request().url()).searchParams.get('offset')); return route.fulfill({ json: links.slice(0, count).slice(offset, offset + 200) }) })
   await page.route('**/api/files/test-link-200/share', route => { count = 200; return route.fulfill({ status: 204 }) })
   await login(page)
+  await openTopbarMenu(page)
   await page.getByLabel('公开链接', { exact: true }).click()
   const panel = page.locator('.public-links-popover')
   await expect(panel.locator('.public-link-row')).toHaveCount(200)
@@ -107,6 +117,7 @@ test('video and image libraries use separate queries, shared cards and the exist
   await login(page)
   const name = `video-library-${Date.now()}.webm`
   const chooser = page.waitForEvent('filechooser')
+  await openTopbarMenu(page)
   await page.getByLabel('上传', { exact: true }).click()
   await page.getByRole('button', { name: '上传文件', exact: true }).click()
   await (await chooser).setFiles({ name, mimeType: 'video/webm', buffer: readFileSync('fixtures/preview.webm') })

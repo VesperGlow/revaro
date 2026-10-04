@@ -10,15 +10,15 @@ use super::icons;
 use super::management::{PublicLinks, SystemStatus};
 use super::menu::{ActionMenu, MenuIcon};
 use super::selection::SelectionMode;
-use super::tasks::{TaskCenter, UiTaskController};
+use super::uploads::UiUploadController;
 
-/// Profile, task and file actions injected by the persistent file workspace.
+/// Profile, upload and file actions injected by the persistent file workspace.
 #[derive(Clone)]
 pub struct TopbarActions {
     pub username: RwSignal<String>,
     pub has_avatar: RwSignal<bool>,
     pub avatar_version: RwSignal<u64>,
-    pub task_controller: UiTaskController,
+    pub upload_controller: UiUploadController,
     pub on_files: Callback<()>,
     pub on_upload_files: Callback<()>,
     pub on_upload_folder: Callback<()>,
@@ -51,7 +51,6 @@ pub fn AppTopbar(
         username,
         has_avatar,
         avatar_version,
-        task_controller,
         on_upload_files,
         on_upload_folder,
         on_new_document,
@@ -256,23 +255,29 @@ pub fn AppTopbar(
                         </form>
                     </div>
                 </Show>
-                <button class="selection-toggle" type="button"
-                    class:active=move || selection.enabled.get()
-                    title=move || if selection.enabled.get() { "退出选择模式 (Esc)" } else { "进入选择模式" }
-                    aria-label=move || if selection.enabled.get() { "退出选择模式" } else { "进入选择模式" }
-                    aria-pressed=move || selection.enabled.get().to_string()
-                    on:click=move |_| selection.toggle_mode()>{icons::circle_check()}</button>
-                <ActionMenu label="新建".to_owned() icon=MenuIcon::Create disabled=file_actions_disabled context=menu_context>
-                    <button type="button" data-close-menu="true" on:click=move |_| on_new_document.run(())>"新建文档"</button>
-                    <button type="button" data-close-menu="true" on:click=move |_| on_create_folder.run(())>"新建文件夹"</button>
-                </ActionMenu>
-                <ActionMenu label="上传".to_owned() icon=MenuIcon::Upload disabled=file_actions_disabled context=menu_context>
-                    <button type="button" data-close-menu="true" on:click=move |_| on_upload_files.run(())>"上传文件"</button>
-                    <button type="button" data-close-menu="true" on:click=move |_| on_upload_folder.run(())>"上传文件夹"</button>
-                </ActionMenu>
-                <PublicLinks context=menu_context />
-                <TaskCenter controller=task_controller.clone() />
                 <SystemStatus context=menu_context />
+                <ActionMenu label="更多操作".to_owned() icon=MenuIcon::Menu sheet=true context=menu_context panel_class="topbar-menu-panel">
+                    <header class="topbar-menu-heading"><h2>"更多操作"</h2>
+                        <button class="topbar-menu-close" type="button" aria-label="关闭菜单" data-close-menu="true">{icons::x()}</button>
+                    </header>
+                    <button class="selection-toggle" type="button" data-close-menu="true"
+                        class:active=move || selection.enabled.get()
+                        title=move || if selection.enabled.get() { "退出选择模式 (Esc)" } else { "进入选择模式" }
+                        aria-label=move || if selection.enabled.get() { "退出选择模式" } else { "进入选择模式" }
+                        aria-pressed=move || selection.enabled.get().to_string()
+                        on:click=move |_| selection.toggle_mode()>{icons::circle_check()}
+                        <span class="menu-item-label">{move || if selection.enabled.get() { "退出多选" } else { "多选" }}</span>
+                    </button>
+                    <ActionMenu label="新建".to_owned() icon=MenuIcon::Create embedded=true disabled=file_actions_disabled context=menu_context>
+                        <button type="button" data-close-menu="true" on:click=move |_| on_new_document.run(())>"新建文档"</button>
+                        <button type="button" data-close-menu="true" on:click=move |_| on_create_folder.run(())>"新建文件夹"</button>
+                    </ActionMenu>
+                    <ActionMenu label="上传".to_owned() icon=MenuIcon::Upload embedded=true disabled=file_actions_disabled context=menu_context>
+                        <button type="button" data-close-menu="true" on:click=move |_| on_upload_files.run(())>"上传文件"</button>
+                        <button type="button" data-close-menu="true" on:click=move |_| on_upload_folder.run(())>"上传文件夹"</button>
+                    </ActionMenu>
+                    <PublicLinks context=menu_context />
+                </ActionMenu>
                 <button class="account-button" type="button"
                     title=move || format!("账户设置 · {}", username.get()) aria-label="打开账户设置"
                     on:click=move |_| on_account.run(())>{account_avatar()}</button>

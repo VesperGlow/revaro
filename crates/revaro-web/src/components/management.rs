@@ -78,7 +78,7 @@ pub fn PublicLinks(context: Signal<String>) -> impl IntoView {
         });
     });
     view! {
-        <ActionMenu label="公开链接".to_owned() icon=MenuIcon::Link context=context panel_class="topbar-popover public-links-popover"
+        <ActionMenu label="公开链接".to_owned() icon=MenuIcon::Link context=context embedded=true panel_class="topbar-popover public-links-popover"
             on_toggle=Callback::new(move |open| { if open { refresh.run(0); } })>
             <header class="popover-heading"><h2>"公开链接"</h2><button class="popover-text-action" type="button" disabled=move || busy.get() on:click=move |_| refresh.run(offset.get_untracked())>"刷新"</button></header>
             <Show when=move || !error.get().is_empty() fallback=|| ()><p class="form-error" role="alert">{move || error.get()}</p></Show>
@@ -154,9 +154,9 @@ pub fn SystemStatus(context: Signal<String>) -> impl IntoView {
                     let summary = status.get();
                     let values = summary.as_ref().map(|s| [
                         format!("{} / {}", format_size(s.disk_used_bytes), format_size(s.disk_total_bytes)),
-                        format_size(s.disk_available_bytes), format_size(s.cache.memory_bytes), format_size(s.cache.disk_bytes), s.active_tasks.to_string(),
+                        format_size(s.disk_available_bytes), format_size(s.cache.memory_bytes), format_size(s.cache.disk_bytes),
                     ]);
-                    ["已用 / 总存储空间", "可用空间", "内存缓存", "磁盘缓存", "活动任务"].into_iter().enumerate().map(|(index, label)| view! {
+                    ["已用 / 总存储空间", "可用空间", "内存缓存", "磁盘缓存"].into_iter().enumerate().map(|(index, label)| view! {
                         <div class="system-metric"><span>{label}</span><strong class:metric-skeleton=values.is_none()>{values.as_ref().map(|v| v[index].clone()).unwrap_or_else(|| "—".to_owned())}</strong></div>
                     }).collect_view()
                 }}

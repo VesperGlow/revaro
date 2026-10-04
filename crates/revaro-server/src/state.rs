@@ -111,48 +111,6 @@ impl Default for ReaderRuntime {
     }
 }
 
-/// A change notification bus for the job/task event stream.
-///
-/// Subscribers only need to know *that* something changed, not what: the client
-/// re-reads `GET /api/tasks` when it is told. That keeps the payload free of
-/// task details, so a task cannot leak through the stream to a client that is
-/// not allowed to read it.
-///
-/// Lagging receivers are dropped by the broadcast channel rather than blocking
-/// the sender; a slow SSE client falls behind and resynchronises on its next
-/// read, instead of stalling every handler that publishes.
-#[derive(Debug, Clone)]
-pub struct JobBus {
-    sender: tokio::sync::broadcast::Sender<()>,
-}
-
-impl JobBus {
-    /// Create the bus. `capacity` bounds how far a subscriber may lag.
-    #[must_use]
-    pub fn new(capacity: usize) -> Self {
-        let (sender, _) = tokio::sync::broadcast::channel(capacity);
-        Self { sender }
-    }
-
-    /// Announce that task state changed. Never fails: with no subscribers the
-    /// signal is simply discarded.
-    pub fn changed(&self) {
-        let _ = self.sender.send(());
-    }
-
-    /// Subscribe to change notifications.
-    #[must_use]
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<()> {
-        self.sender.subscribe()
-    }
-}
-
-impl Default for JobBus {
-    fn default() -> Self {
-        Self::new(256)
-    }
-}
-
 /// Everything a handler can reach.
 #[derive(Debug)]
 pub struct AppState {
@@ -173,8 +131,6 @@ pub struct AppState {
     /// Admission budgets held for the entire transfer or ZIP generation.
     pub share_slots: Arc<tokio::sync::Semaphore>,
     pub zip_slots: Arc<tokio::sync::Semaphore>,
-    /// Task-change notifications for the event stream.
-    pub jobs: JobBus,
     /// Parsed books and serialized reader-flow builders.
     pub reader: ReaderRuntime,
     /// Serialized upload lifecycle operations.
@@ -209,7 +165,6 @@ impl AppState {
             batch_download: crate::batch_download::BatchDownloadRuntime::new(),
             share_slots: Arc::new(tokio::sync::Semaphore::new(8)),
             zip_slots: Arc::new(tokio::sync::Semaphore::new(2)),
-            jobs: JobBus::new(256),
             reader,
             uploads: UploadRuntime::new(),
             maintenance,

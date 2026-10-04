@@ -39,7 +39,6 @@ use super::reader::ReaderView;
 use super::selection::{SelectionCheckbox, SelectionMode};
 use super::selection_toolbar::{BatchActionBar, SelectionActions};
 use super::share::ShareDialog;
-use super::tasks::TaskController;
 use super::topbar::TopbarActions;
 use super::transfer::{TransferDialog, TransferMode};
 use super::uploads::{UploadController, UploadRefresh, UploadSurface};
@@ -660,21 +659,6 @@ pub fn FileBrowser(
         on_logout.clone(),
     );
 
-    let mut task_center = TaskController::new(on_logout.clone(), upload_feedback);
-    let uploads_for_task_cancel =
-        leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
-    let uploads_for_task_retry = uploads_for_task_cancel.clone();
-    task_center.set_upload_actions(
-        Callback::new(move |upload_id: String| -> bool {
-            uploads_for_task_cancel.cancel_by_upload_id(upload_id)
-        }),
-        Callback::new(move |upload_id: String| {
-            uploads_for_task_retry.retry_by_upload_id(upload_id)
-        }),
-    );
-    let task_center_cleanup =
-        leptos::__reexports::send_wrapper::SendWrapper::new(task_center.clone());
-    on_cleanup(move || task_center_cleanup.dispose());
     let push_overlay = {
         let nav_actions = nav_actions;
         let history_suppressed = history_suppressed;
@@ -2105,7 +2089,7 @@ pub fn FileBrowser(
         username,
         has_avatar,
         avatar_version,
-        task_controller: leptos::__reexports::send_wrapper::SendWrapper::new(task_center),
+        upload_controller: leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone()),
         on_files: header_root,
         on_upload_files: upload_files,
         on_upload_folder: upload_folder,

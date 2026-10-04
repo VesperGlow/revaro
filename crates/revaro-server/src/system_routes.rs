@@ -21,12 +21,8 @@ async fn status(
     .await
     .map_err(|_| ApiError::internal("disk probe failed"))?
     .map_err(|_| ApiError::internal("disk probe failed"))?;
-    let tasks=s.db.call_api(|c| {
-        let active:i64=c.query_row("SELECT count(*) FROM tasks WHERE status IN ('running','retrying','waiting_input')",[],|r|r.get(0)).map_err(|_|ApiError::internal("database error"))?;
-        Ok(active)
-    }).await?;
     Ok(Json(
-        serde_json::json!({"disk_total_bytes":total,"disk_used_bytes":total.saturating_sub(free),"disk_available_bytes":space,"cache":s.cache.stats(),"maintenance":s.maintenance.stats(),"active_tasks":tasks,
+        serde_json::json!({"disk_total_bytes":total,"disk_used_bytes":total.saturating_sub(free),"disk_available_bytes":space,"cache":s.cache.stats(),"maintenance":s.maintenance.stats(),
         "reader_available_slots":s.reader.work_slots.available_permits(),"zip_available_slots":s.zip_slots.available_permits(),"share_available_slots":s.share_slots.available_permits()}),
     ))
 }

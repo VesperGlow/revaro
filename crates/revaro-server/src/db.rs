@@ -79,6 +79,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "006_video_library.sql",
         sql: include_str!("../migrations/006_video_library.sql"),
     },
+    Migration {
+        version: 7,
+        name: "007_remove_task_center.sql",
+        sql: include_str!("../migrations/007_remove_task_center.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -544,8 +549,6 @@ mod tests {
             "sessions",
             "settings",
             "shares",
-            "task_files",
-            "tasks",
             "upload_parts",
             "uploads",
         ] {
@@ -740,6 +743,61 @@ mod tests {
             )
             .unwrap();
         assert_eq!(original, ("blobs/book".to_owned(), 123));
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn removing_task_projection_preserves_unfinished_uploads_and_parts() {
+        let directory =
+            std::env::temp_dir().join(format!("revaro-upload-upgrade-{}", crate::ids::new_id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("revaro.db");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)").unwrap();
+            for migration in &MIGRATIONS[..6] {
+                connection.execute_batch(migration.sql).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO schema_migrations VALUES(?1,'2026-01-01T00:00:00Z')",
+                        [migration.version],
+                    )
+                    .unwrap();
+            }
+            connection.execute_batch("INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES('f1','00000000-0000-0000-0000-000000000000','unfinished.bin','file','blobs/f1',200,'pending','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                INSERT INTO uploads(id,file_id,mode,object_key,multipart_id,part_size,expected_size,mime_type,status,created_at,expires_at) VALUES('u1','f1','multipart','blobs/f1','m1',100,200,'application/octet-stream','pending','2026-01-01T00:00:00Z','2027-01-01T00:00:00Z');
+                INSERT INTO upload_parts(upload_id,part_number,size,etag,completed_at) VALUES('u1',1,100,'part-etag','2026-01-01T00:00:00Z');
+                INSERT INTO tasks(id,type,status,source_type,source_id,created_at,updated_at) VALUES('t1','upload','running','upload','u1','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                INSERT INTO task_files(task_id,file_id,role) VALUES('t1','f1','input');").unwrap();
+        }
+        let database = Database::open(&path).unwrap();
+        let connection = database.acquire().unwrap();
+        let obsolete: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('tasks','task_files')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(obsolete, 0);
+        let upload: (String, String, i64, String) = connection.query_row("SELECT uploads.status, files.status, upload_parts.size, upload_parts.etag FROM uploads JOIN files ON files.id=uploads.file_id JOIN upload_parts ON upload_parts.upload_id=uploads.id WHERE uploads.id='u1'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        assert_eq!(
+            upload,
+            (
+                "pending".to_owned(),
+                "pending".to_owned(),
+                100,
+                "part-etag".to_owned()
+            )
+        );
+        let invalid: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(invalid, 0);
         drop(connection);
         drop(database);
         std::fs::remove_dir_all(directory).unwrap();

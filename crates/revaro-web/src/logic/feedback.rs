@@ -2,7 +2,7 @@
 //!
 //! The reference client gives every toast a severity and removes it after a
 //! short fixed lifetime. Keeping the value separate from the DOM lets the
-//! file browser, upload queue, task centre and account settings share exactly
+//! file browser, upload queue and account settings share exactly
 //! the same notification sink.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

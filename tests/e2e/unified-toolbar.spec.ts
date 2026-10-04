@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login } from './helpers'
+import { login, openTopbarMenu } from './helpers'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 const wav = Buffer.alloc(16044)
@@ -135,38 +135,30 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     }
 
-    const buttons = page.locator('.topbar .search-toggle, .topbar .selection-toggle, .topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
+    const buttons = page.locator('.topbar .search-toggle, .topbar .top-actions>.action-menu>summary, .topbar .top-actions>.account-button')
     const geometry = await buttons.evaluateAll(elements => elements.map(element => {
       const rect = element.getBoundingClientRect()
       return { width: rect.width, height: rect.height, center: rect.y + rect.height / 2 }
     }))
     for (const button of geometry) {
-      expect(button.width).toBe(width <= 430 ? 30 : width <= 1220 ? 34 : 44)
+      expect(button.width).toBe(width <= 1220 ? 34 : 44)
       expect(button.height).toBe(width <= 850 ? 40 : 44)
       expect(button.center).toBe(geometry[0].center)
     }
+    await openTopbarMenu(page)
     for (const label of ['新建', '上传']) {
       const trigger = page.locator('.topbar').getByLabel(label, { exact: true })
       await trigger.click()
-      const menu = (await page.locator('.topbar .action-menu[open] .action-menu-panel').boundingBox())!
+      const menu = (await page.locator('.topbar .embedded-menu[open] > .action-menu-panel').boundingBox())!
       const bounds = (await trigger.boundingBox())!
-      expect(Math.abs(menu.x - Math.max(8, Math.min(bounds.x + (bounds.width - menu.width) / 2, width - 8 - menu.width)))).toBeLessThanOrEqual(1)
-      expect(menu.y).toBe(bounds.y + bounds.height + 8)
-      await expect(page.locator('.topbar .action-menu[open] .action-menu-panel')).toHaveCSS('border-radius', '10px')
+      expect(menu.y).toBeGreaterThanOrEqual(bounds.y + bounds.height)
+      expect(menu.x).toBeGreaterThanOrEqual(0)
+      expect(menu.x + menu.width).toBeLessThanOrEqual(width)
       await page.keyboard.press('Escape')
+      await expect(trigger).toBeFocused()
     }
-    const tasksTrigger = page.getByLabel('打开任务中心', { exact: true })
-    const bounds = (await tasksTrigger.boundingBox())!
-    await tasksTrigger.click()
-    await expect(page.locator('.task-panel')).toBeVisible()
-    const menu = (await page.locator('.task-panel').boundingBox())!
-    expect(Math.abs(menu.x - Math.max(8, Math.min(bounds.x + (bounds.width - menu.width) / 2, width - 8 - menu.width)))).toBeLessThanOrEqual(1)
-    expect(menu.y).toBe(bounds.y + bounds.height + 8)
-    expect(menu.x).toBeGreaterThanOrEqual(0)
-    expect(menu.x + menu.width).toBeLessThanOrEqual(width)
-    await expect(page.locator('.task-panel')).toHaveCSS('border-radius', '10px')
     await page.keyboard.press('Escape')
-    await expect(page.locator('.task-panel')).toBeHidden()
+    await expect(page.getByLabel('更多操作', { exact: true })).toBeFocused()
   }
 })
 
@@ -181,10 +173,10 @@ test('header search grows with typed text, shrinks on clear and keeps tools fixe
     await expect(input).toBeFocused()
     await input.fill('')
     const surface = page.locator('.search-surface')
-    const tools = page.locator('.topbar .selection-toggle, .topbar .action-menu>summary, .topbar .task-center>summary, .topbar .top-actions>.account-button')
+    const tools = page.locator('.topbar .top-actions>.action-menu>summary, .topbar .top-actions>.account-button')
     const available = await page.locator('.topbar').evaluate(header => {
       const headerStyle = getComputedStyle(header), actions = header.querySelector('.top-actions')!, nav = header.querySelector('.app-navigation')!
-      const right = header.querySelector('.selection-toggle')!.getBoundingClientRect().left - parseFloat(getComputedStyle(actions).columnGap)
+      const right = header.querySelector('.top-actions > .action-menu > summary')!.getBoundingClientRect().left - parseFloat(getComputedStyle(actions).columnGap)
       const left = innerWidth > 1550 ? nav.getBoundingClientRect().right + parseFloat(headerStyle.columnGap) : header.getBoundingClientRect().left + parseFloat(headerStyle.paddingLeft)
       return right - left
     })

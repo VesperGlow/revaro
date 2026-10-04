@@ -4,8 +4,8 @@
 //! byte request. JSON session operations are kept in [`crate::api`], while
 //! this module deals with progress, cancellation, retries, local resume
 //! records and directory selection. A cancelled request is aborted before the
-//! remote upload session is deleted, so a late XHR callback cannot resurrect a
-//! task in the visible queue.
+//! remote upload session is deleted, so a late XHR callback cannot resurrect an
+//! upload in the visible queue.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -42,23 +42,22 @@ const RESUME_KEY: &str = "revaro.uploads.v1";
 
 /// The local lifecycle of a browser-selected file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UploadTaskStatus {
+enum UploadState {
     Queued,
     Retrying,
     Uploading,
-    Done,
+    Verifying,
     Failed,
-    Cancelled,
 }
 
 /// One file in the local queue.
 #[derive(Clone)]
-struct UploadTask {
+struct UploadItem {
     id: String,
     file: BrowserFile,
     parent_id: String,
     progress: u8,
-    status: UploadTaskStatus,
+    status: UploadState,
     error: String,
     upload_id: Option<String>,
     run_id: u64,
@@ -90,7 +89,7 @@ struct SavedUpload {
 /// Runtime state shared by the queue's asynchronous operations.
 struct UploadRuntime {
     disposed: Cell<bool>,
-    next_task_id: Cell<u64>,
+    next_item_id: Cell<u64>,
     next_run_id: Cell<u64>,
     active_count: Cell<usize>,
     active: RefCell<HashMap<(String, u64), Rc<ActiveUpload>>>,
@@ -157,7 +156,7 @@ impl ActiveUpload {
 /// State and controls shared by the browser's upload controls and panel.
 #[derive(Clone)]
 pub struct UploadController {
-    tasks: RwSignal<Vec<UploadTask>>,
+    items: RwSignal<Vec<UploadItem>>,
     drag_active: RwSignal<bool>,
     current_id: Signal<String>,
     current_folder: RwSignal<Option<ModelFile>>,
@@ -168,10 +167,10 @@ pub struct UploadController {
     refresh_folder: Callback<UploadRefresh>,
     feedback: Callback<Feedback>,
     on_logout: Callback<()>,
-    pending_resume: Rc<RefCell<Option<String>>>,
 }
 
-type UiUploadController = leptos::__reexports::send_wrapper::SendWrapper<UploadController>;
+pub(crate) type UiUploadController =
+    leptos::__reexports::send_wrapper::SendWrapper<UploadController>;
 
 /// A refresh request whose completion is observed by a folder upload before
 /// it emits its success feedback.
@@ -201,7 +200,7 @@ impl UploadController {
         on_logout: Callback<()>,
     ) -> Self {
         Self {
-            tasks: RwSignal::new(Vec::new()),
+            items: RwSignal::new(Vec::new()),
             drag_active: RwSignal::new(false),
             current_id,
             current_folder,
@@ -210,7 +209,7 @@ impl UploadController {
             folder_input,
             runtime: Rc::new(UploadRuntime {
                 disposed: Cell::new(false),
-                next_task_id: Cell::new(0),
+                next_item_id: Cell::new(0),
                 next_run_id: Cell::new(0),
                 active_count: Cell::new(0),
                 active: RefCell::new(HashMap::new()),
@@ -219,13 +218,11 @@ impl UploadController {
             refresh_folder,
             feedback,
             on_logout,
-            pending_resume: Rc::new(RefCell::new(None)),
         }
     }
 
     /// Open the regular file chooser.
     pub fn choose_files(&self) {
-        self.pending_resume.borrow_mut().take();
         if let Some(input) = self.file_input.get() {
             input.click();
         }
@@ -240,46 +237,6 @@ impl UploadController {
 
     /// Queue all files from a regular file input or a drop event.
     pub fn accept_files(&self, files: Vec<BrowserFile>) {
-        if let Some(upload_id) = self.pending_resume.borrow_mut().take() {
-            if files.len() != 1 {
-                self.feedback.run(Feedback::error("请只选择一个原文件"));
-                return;
-            }
-            let file = files.into_iter().next().expect("one selected file");
-            let controller = self.clone();
-            leptos::task::spawn_local(async move {
-                let result = async {
-                    let status = api::fetch_upload(&upload_id).await?;
-                    let detail = api::fetch_file(&status.file_id).await?;
-                    if file.name() != detail.file.name || file_size(&file) != status.expected_size {
-                        return Err(local_error("文件名或大小不匹配，请选择原文件"));
-                    }
-                    let parent_id = detail
-                        .file
-                        .parent_id
-                        .unwrap_or_else(|| revaro_core::ids::ROOT_ID.to_owned());
-                    controller.tasks.update(|tasks| {
-                        tasks.push(UploadTask {
-                            id: controller.next_task_id(),
-                            file,
-                            parent_id,
-                            progress: 0,
-                            status: UploadTaskStatus::Queued,
-                            error: String::new(),
-                            upload_id: Some(upload_id),
-                            run_id: 0,
-                        })
-                    });
-                    controller.pump();
-                    Ok::<(), RequestError>(())
-                }
-                .await;
-                if let Err(error) = result {
-                    controller.handle_request_error(&error);
-                }
-            });
-            return;
-        }
         if self.trash_mode.get_untracked() || files.is_empty() {
             return;
         }
@@ -415,28 +372,22 @@ impl UploadController {
     }
 
     /// Cancel a queued or active upload and abandon its server session.
-    pub fn cancel(&self, task_id: String) {
-        let task = self
-            .tasks
+    pub fn cancel(&self, item_id: String) {
+        let item = self
+            .items
             .get_untracked()
             .into_iter()
-            .find(|task| task.id == task_id);
-        let Some(task) = task else {
+            .find(|item| item.id == item_id);
+        let Some(item) = item else {
             return;
         };
-        if matches!(
-            task.status,
-            UploadTaskStatus::Done | UploadTaskStatus::Cancelled
-        ) {
-            return;
-        }
 
         let active_runs: Vec<Rc<ActiveUpload>> = self
             .runtime
             .active
             .borrow()
             .iter()
-            .filter(|((id, _), _)| id == &task_id)
+            .filter(|((id, _), _)| id == &item_id)
             .map(|(_, active)| Rc::clone(active))
             .collect();
         for active in active_runs {
@@ -446,53 +397,47 @@ impl UploadController {
                 spawn_abort(upload_id);
             }
         }
-        if let Some(upload_id) = task.upload_id.clone() {
+        if let Some(upload_id) = item.upload_id.clone() {
             let active_owns_upload = self
                 .runtime
                 .active
                 .borrow()
                 .iter()
-                .filter(|((id, _), _)| id == &task_id)
+                .filter(|((id, _), _)| id == &item_id)
                 .any(|(_, active)| active.remote_upload_id.borrow().as_deref() == Some(&upload_id));
             if !active_owns_upload {
                 self.forget_resume(Some(&upload_id));
                 spawn_abort(upload_id);
             }
         }
-        self.set_task_if_current(&task_id, task.run_id, |task| {
-            task.status = UploadTaskStatus::Cancelled;
-            task.error.clear();
-        });
+        self.remove_item(&item_id, item.run_id);
     }
 
-    /// Retry a failed or cancelled task, reconciling a committed session first.
-    pub fn retry(&self, task_id: String) {
-        let Some(task) = self
-            .tasks
+    /// Retry a failed upload, reconciling a committed session first.
+    pub fn retry(&self, item_id: String) {
+        let Some(item) = self
+            .items
             .get_untracked()
             .into_iter()
-            .find(|task| task.id == task_id)
+            .find(|item| item.id == item_id)
         else {
             return;
         };
-        if !matches!(
-            task.status,
-            UploadTaskStatus::Failed | UploadTaskStatus::Cancelled
-        ) {
+        if item.status != UploadState::Failed {
             return;
         }
 
-        let previous_upload = task.upload_id.clone();
+        let previous_upload = item.upload_id.clone();
         if let Some(upload_id) = previous_upload.as_deref() {
             self.forget_resume(Some(upload_id));
         }
-        self.set_task_if_current(&task_id, task.run_id, |task| {
-            task.status = UploadTaskStatus::Retrying;
-            task.progress = 0;
-            task.error.clear();
+        self.update_item_if_current(&item_id, item.run_id, |item| {
+            item.status = UploadState::Retrying;
+            item.progress = 0;
+            item.error.clear();
         });
         let controller = self.clone();
-        let expected_run_id = task.run_id;
+        let expected_run_id = item.run_id;
         leptos::task::spawn_local(async move {
             let mut reuse_completed = false;
             if let Some(upload_id) = previous_upload.as_deref() {
@@ -513,27 +458,27 @@ impl UploadController {
                             && error.status != 404
                         {
                             controller.handle_request_error(&error);
-                            controller.set_task_if_current(&task_id, expected_run_id, |task| {
-                                task.status = UploadTaskStatus::Failed;
-                                task.error = error.message.clone();
+                            controller.update_item_if_current(&item_id, expected_run_id, |item| {
+                                item.status = UploadState::Failed;
+                                item.error = error.message.clone();
                             });
                             return;
                         }
                     }
                     Err(error) => {
                         controller.handle_request_error(&error);
-                        controller.set_task_if_current(&task_id, expected_run_id, |task| {
-                            task.status = UploadTaskStatus::Failed;
-                            task.error = error.message.clone();
+                        controller.update_item_if_current(&item_id, expected_run_id, |item| {
+                            item.status = UploadState::Failed;
+                            item.error = error.message.clone();
                         });
                         return;
                     }
                 }
             }
-            controller.set_task_if_current(&task_id, expected_run_id, |task| {
-                if task.status == UploadTaskStatus::Retrying {
-                    task.status = UploadTaskStatus::Queued;
-                    task.upload_id = if reuse_completed {
+            controller.update_item_if_current(&item_id, expected_run_id, |item| {
+                if item.status == UploadState::Retrying {
+                    item.status = UploadState::Queued;
+                    item.upload_id = if reuse_completed {
                         previous_upload.clone()
                     } else {
                         None
@@ -542,50 +487,6 @@ impl UploadController {
             });
             controller.pump();
         });
-    }
-
-    /// Route a task-centre action to the local upload task that owns the
-    /// server-side upload session.
-    pub fn cancel_by_upload_id(&self, upload_id: String) -> bool {
-        let task_id = self
-            .tasks
-            .get_untracked()
-            .into_iter()
-            .find(|task| task.upload_id.as_deref() == Some(upload_id.as_str()))
-            .map(|task| task.id);
-        if let Some(task_id) = task_id {
-            self.cancel(task_id);
-            return true;
-        }
-        // The reference falls back to `/api/tasks/{id}/cancel` when the
-        // browser no longer owns a File handle. The task controller performs
-        // that fallback with the durable task id; returning false here keeps
-        // the two paths distinct.
-        let _ = upload_id;
-        false
-    }
-
-    /// Retry a task-centre upload through the browser queue when its file
-    /// handle is still available after the upload failed.
-    pub fn retry_by_upload_id(&self, upload_id: String) -> bool {
-        let task_id = self
-            .tasks
-            .get_untracked()
-            .into_iter()
-            .find(|task| task.upload_id.as_deref() == Some(upload_id.as_str()))
-            .map(|task| task.id);
-        if let Some(task_id) = task_id {
-            self.retry(task_id);
-            true
-        } else {
-            // Keep the chooser inside the user gesture. Its selected file is
-            // subsequently validated against the durable upload session.
-            *self.pending_resume.borrow_mut() = Some(upload_id);
-            if let Some(input) = self.file_input.get() {
-                input.click();
-            }
-            false
-        }
     }
 
     /// Abort browser requests when the authenticated shell is unmounted.
@@ -601,16 +502,7 @@ impl UploadController {
         for active in self.runtime.active.borrow().values() {
             active.abort();
         }
-        self.tasks.update(|tasks| {
-            for task in tasks {
-                if matches!(
-                    task.status,
-                    UploadTaskStatus::Queued | UploadTaskStatus::Uploading
-                ) {
-                    task.status = UploadTaskStatus::Cancelled;
-                }
-            }
-        });
+        self.items.set(Vec::new());
     }
 
     fn queue_files(&self, files: Vec<(BrowserFile, String)>, parent_id: String) {
@@ -623,7 +515,7 @@ impl UploadController {
 
     fn queue_files_with_parents(&self, files: Vec<(BrowserFile, String, String)>) {
         let saved = saved_uploads();
-        self.tasks.update(|tasks| {
+        self.items.update(|items| {
             for (file, _relative_path, parent_id) in files.iter().cloned() {
                 let size = file_size(&file);
                 let resume = saved.iter().find(|entry| {
@@ -632,12 +524,12 @@ impl UploadController {
                         && entry.size == size
                         && entry.last_modified == file.last_modified()
                 });
-                tasks.push(UploadTask {
-                    id: self.next_task_id(),
+                items.push(UploadItem {
+                    id: self.next_item_id(),
                     file,
                     parent_id,
                     progress: 0,
-                    status: UploadTaskStatus::Queued,
+                    status: UploadState::Queued,
                     error: String::new(),
                     upload_id: resume.map(|entry| entry.upload_id.clone()),
                     run_id: 0,
@@ -646,9 +538,9 @@ impl UploadController {
         });
     }
 
-    fn next_task_id(&self) -> String {
-        let id = self.runtime.next_task_id.get().wrapping_add(1);
-        self.runtime.next_task_id.set(id);
+    fn next_item_id(&self) -> String {
+        let id = self.runtime.next_item_id.get().wrapping_add(1);
+        self.runtime.next_item_id.set(id);
         format!("upload-{id}")
     }
 
@@ -663,40 +555,40 @@ impl UploadController {
             return;
         }
         while self.runtime.active_count.get() < FILE_CONCURRENCY {
-            let Some(task) = self
-                .tasks
+            let Some(item) = self
+                .items
                 .get_untracked()
                 .into_iter()
-                .find(|task| task.status == UploadTaskStatus::Queued)
+                .find(|item| item.status == UploadState::Queued)
             else {
                 break;
             };
-            let task_id = task.id.clone();
+            let item_id = item.id.clone();
             let run_id = self.next_run_id();
             let active = Rc::new(ActiveUpload::new());
-            if let Some(upload_id) = task.upload_id.as_deref() {
+            if let Some(upload_id) = item.upload_id.as_deref() {
                 active.remember_upload(upload_id);
             }
-            self.set_task_if_current(&task_id, 0, |task| {
-                task.status = UploadTaskStatus::Uploading;
-                task.error.clear();
-                task.run_id = run_id;
+            self.update_item_if_current(&item_id, 0, |item| {
+                item.status = UploadState::Uploading;
+                item.error.clear();
+                item.run_id = run_id;
             });
             self.runtime
                 .active
                 .borrow_mut()
-                .insert((task_id.clone(), run_id), Rc::clone(&active));
+                .insert((item_id.clone(), run_id), Rc::clone(&active));
             self.runtime
                 .active_count
                 .set(self.runtime.active_count.get() + 1);
             let controller = self.clone();
             leptos::task::spawn_local(async move {
-                controller.run_upload(task_id.clone(), run_id, active).await;
+                controller.run_upload(item_id.clone(), run_id, active).await;
                 controller
                     .runtime
                     .active
                     .borrow_mut()
-                    .remove(&(task_id, run_id));
+                    .remove(&(item_id, run_id));
                 controller
                     .runtime
                     .active_count
@@ -706,17 +598,17 @@ impl UploadController {
         }
     }
 
-    async fn run_upload(&self, task_id: String, run_id: u64, active: Rc<ActiveUpload>) {
-        let Some(task) = self
-            .tasks
+    async fn run_upload(&self, item_id: String, run_id: u64, active: Rc<ActiveUpload>) {
+        let Some(item) = self
+            .items
             .get_untracked()
             .into_iter()
-            .find(|task| task.id == task_id && task.run_id == run_id)
+            .find(|item| item.id == item_id && item.run_id == run_id)
         else {
             return;
         };
         let result = self
-            .run_upload_inner(&task_id, run_id, &task, &active)
+            .run_upload_inner(&item_id, run_id, &item, &active)
             .await;
         if active.cancelled.get() || self.runtime.disposed.get() {
             if active.abandon_remote.get()
@@ -725,10 +617,7 @@ impl UploadController {
                 self.forget_resume(Some(&upload_id));
                 spawn_abort(upload_id);
             }
-            self.set_task_if_current(&task_id, run_id, |task| {
-                task.status = UploadTaskStatus::Cancelled;
-                task.error.clear();
-            });
+            self.remove_item(&item_id, run_id);
             return;
         }
         match result {
@@ -736,20 +625,16 @@ impl UploadController {
                 if let Some(upload_id) = active.remote_upload_id.borrow().clone() {
                     self.forget_resume(Some(&upload_id));
                 }
-                self.set_task_if_current(&task_id, run_id, |task| {
-                    task.progress = 100;
-                    task.status = UploadTaskStatus::Done;
-                    task.error.clear();
-                });
-                self.schedule_refresh(task.parent_id);
+                self.remove_item(&item_id, run_id);
+                self.schedule_refresh(item.parent_id);
             }
             Err(error) => {
                 if error.is_unauthorized() {
                     self.on_logout.run(());
                 }
-                self.set_task_if_current(&task_id, run_id, |task| {
-                    task.status = UploadTaskStatus::Failed;
-                    task.error = error.message.clone();
+                self.update_item_if_current(&item_id, run_id, |item| {
+                    item.status = UploadState::Failed;
+                    item.error = error.message.clone();
                 });
             }
         }
@@ -757,18 +642,18 @@ impl UploadController {
 
     async fn run_upload_inner(
         &self,
-        task_id: &str,
+        item_id: &str,
         run_id: u64,
-        task: &UploadTask,
+        item: &UploadItem,
         active: &Rc<ActiveUpload>,
     ) -> Result<(), RequestError> {
-        let size = file_size(&task.file);
-        let resolved = self.resolve_upload(task, size).await?;
+        let size = file_size(&item.file);
+        let resolved = self.resolve_upload(item, size).await?;
         active.remember_upload(&resolved.upload_id);
-        self.set_task_if_current(task_id, run_id, |task| {
-            task.upload_id = Some(resolved.upload_id.clone());
+        self.update_item_if_current(item_id, run_id, |item| {
+            item.upload_id = Some(resolved.upload_id.clone());
         });
-        self.save_resume(&resolved.upload_id, &task.parent_id, &task.file);
+        self.save_resume(&resolved.upload_id, &item.parent_id, &item.file);
         ensure_not_cancelled(active)?;
         if resolved.already_completed {
             return Ok(());
@@ -779,9 +664,9 @@ impl UploadController {
                 if resolved.url.is_empty() {
                     return Err(local_error("服务端没有返回上传地址"));
                 }
-                let body = file_blob(&task.file).clone();
+                let body = file_blob(&item.file).clone();
                 let progress = self.progress_callback(
-                    task_id.to_owned(),
+                    item_id.to_owned(),
                     run_id,
                     size,
                     Rc::new(RefCell::new(vec![0_i64])),
@@ -792,7 +677,7 @@ impl UploadController {
                     let body = body.clone();
                     let url = resolved.url.clone();
                     let progress = Rc::clone(&progress);
-                    let mime_type = Some(file_mime(&task.file));
+                    let mime_type = Some(file_mime(&item.file));
                     async move { xhr_put(active, url, body, mime_type, progress).await }
                 })
                 .await?;
@@ -800,9 +685,9 @@ impl UploadController {
             }
             UploadMode::Multipart => {
                 self.upload_multipart(
-                    task_id,
+                    item_id,
                     run_id,
-                    &task.file,
+                    &item.file,
                     &resolved.upload_id,
                     size,
                     resolved.part_size,
@@ -815,6 +700,10 @@ impl UploadController {
         };
 
         ensure_not_cancelled(active)?;
+        self.update_item_if_current(item_id, run_id, |item| {
+            item.status = UploadState::Verifying;
+            item.progress = 99;
+        });
         let verifier =
             AbortController::new().map_err(|error| js_error("无法创建提交控制器", error))?;
         let signal = verifier.signal();
@@ -836,15 +725,15 @@ impl UploadController {
 
     async fn resolve_upload(
         &self,
-        task: &UploadTask,
+        item: &UploadItem,
         size: i64,
     ) -> Result<ResolvedUpload, RequestError> {
-        if let Some(upload_id) = task.upload_id.as_deref() {
+        if let Some(upload_id) = item.upload_id.as_deref() {
             match api::fetch_upload(upload_id).await {
                 Ok(status) if status.status == UploadLifecycle::Completed => {
                     // The commit endpoint is idempotent. Completing here also
                     // validates that the saved session still belongs to this
-                    // file before the task is shown as done.
+                    // file before the item is shown as done.
                     api::complete_upload(
                         upload_id,
                         &CompleteUploadRequest { parts: Vec::new() },
@@ -887,10 +776,10 @@ impl UploadController {
         }
 
         let created = api::create_upload(&CreateUploadRequest {
-            parent_id: task.parent_id.clone(),
-            name: task.file.name(),
+            parent_id: item.parent_id.clone(),
+            name: item.file.name(),
             size,
-            mime_type: file_mime(&task.file),
+            mime_type: file_mime(&item.file),
         })
         .await?;
         validate_upload_shape(created.mode, created.part_size, created.part_count, size)?;
@@ -907,7 +796,7 @@ impl UploadController {
 
     async fn upload_multipart(
         &self,
-        task_id: &str,
+        item_id: &str,
         run_id: u64,
         file: &BrowserFile,
         upload_id: &str,
@@ -1009,13 +898,13 @@ impl UploadController {
                         let progress = {
                             let sent = Rc::clone(&sent_for_progress);
                             let controller = controller.clone();
-                            let task_id = task_id.to_owned();
+                            let item_id = item_id.to_owned();
                             Rc::new(move |loaded: u64| {
                                 let loaded = (loaded as i64).clamp(0, expected);
                                 sent.borrow_mut()[index] = loaded;
                                 let total = sent.borrow().iter().sum();
-                                controller.set_task_progress(
-                                    &task_id,
+                                controller.set_item_progress(
+                                    &item_id,
                                     run_id,
                                     transfer_progress(total, total_size),
                                 );
@@ -1074,7 +963,7 @@ impl UploadController {
 
     fn progress_callback(
         &self,
-        task_id: String,
+        item_id: String,
         run_id: u64,
         total_size: i64,
         sent: Rc<RefCell<Vec<i64>>>,
@@ -1084,7 +973,7 @@ impl UploadController {
         Rc::new(move |loaded: u64| {
             sent.borrow_mut()[index] = loaded as i64;
             let done = sent.borrow().iter().sum();
-            controller.set_task_progress(&task_id, run_id, transfer_progress(done, total_size));
+            controller.set_item_progress(&item_id, run_id, transfer_progress(done, total_size));
         })
     }
 
@@ -1121,21 +1010,27 @@ impl UploadController {
         }
     }
 
-    fn set_task_progress(&self, task_id: &str, run_id: u64, progress: u8) {
-        self.set_task_if_current(task_id, run_id, |task| task.progress = progress.min(98));
+    fn set_item_progress(&self, item_id: &str, run_id: u64, progress: u8) {
+        self.update_item_if_current(item_id, run_id, |item| item.progress = progress.min(98));
     }
 
-    fn set_task_if_current<F>(&self, task_id: &str, run_id: u64, update: F)
+    fn update_item_if_current<F>(&self, item_id: &str, run_id: u64, update: F)
     where
-        F: FnOnce(&mut UploadTask),
+        F: FnOnce(&mut UploadItem),
     {
-        self.tasks.update(|tasks| {
-            if let Some(task) = tasks
+        self.items.update(|items| {
+            if let Some(item) = items
                 .iter_mut()
-                .find(|task| task.id == task_id && (run_id == 0 || task.run_id == run_id))
+                .find(|item| item.id == item_id && (run_id == 0 || item.run_id == run_id))
             {
-                update(task);
+                update(item);
             }
+        });
+    }
+
+    fn remove_item(&self, item_id: &str, run_id: u64) {
+        self.items.update(|items| {
+            items.retain(|item| item.id != item_id || item.run_id != run_id);
         });
     }
 
@@ -1199,12 +1094,6 @@ impl UploadController {
 }
 
 /// Render the hidden chooser inputs and the drag/drop surface.
-///
-/// The reference client does not render a second foreground upload queue in
-/// the file browser. Upload progress is represented by the durable task
-/// centre; the browser-local queue remains an implementation detail so that
-/// it can cancel, retry and resume byte transfers without changing the shell
-/// layout.
 #[component]
 pub fn UploadSurface(controller: UiUploadController) -> impl IntoView {
     let file_input = controller.file_input;
@@ -1261,6 +1150,71 @@ pub fn UploadSurface(controller: UiUploadController) -> impl IntoView {
                     <p>"文件将保存到服务器本地磁盘"</p>
                 </div>
             </div>
+        </Show>
+    }
+}
+
+/// Only current uploads and failures are rendered; successful entries are removed by the queue.
+#[component]
+pub fn UploadProgress(controller: UiUploadController) -> impl IntoView {
+    let items = controller.items;
+    view! {
+        <Show when=move || !items.get().is_empty() fallback=|| ()>
+            <section class="upload-progress" aria-label="上传进度">
+                <header><strong>"上传进度"</strong><small>{move || format!("{} 个文件", items.get().len())}</small></header>
+                <div class="upload-progress-list" tabindex="0" aria-label="上传文件进度，可上下滚动">
+                    <For
+                        each=move || items.get()
+                        key=|item| item.id.clone()
+                        children={
+                            let controller = controller.clone();
+                            move |item| {
+                                let id = item.id.clone();
+                                let name = item.file.name();
+                                let current = Signal::derive({
+                                    let id = id.clone();
+                                    move || items.get().into_iter().find(|item| item.id == id)
+                                });
+                                let failed = move || current.get().is_some_and(|item| item.status == UploadState::Failed);
+                                let progress = move || current.get().map_or(0, |item| item.progress);
+                                let retry = controller.clone();
+                                let retry_id = id.clone();
+                                let on_retry = Callback::new(move |()| retry.retry(retry_id.clone()));
+                                let cancel = controller.clone();
+                                let cancel_id = id.clone();
+                                view! {
+                                    <article class="upload-progress-item" class:failed=failed>
+                                        <strong title=name.clone()>{name.clone()}</strong>
+                                        <span class="upload-progress-state" title=move || current.get().map_or(String::new(), |item| item.error)>
+                                            {move || current.get().map(|item| match item.status {
+                                                UploadState::Queued => "排队中".to_owned(),
+                                                UploadState::Retrying => "重试中".to_owned(),
+                                                UploadState::Verifying => "处理中".to_owned(),
+                                                UploadState::Uploading => format!("{}%", item.progress),
+                                                UploadState::Failed => "上传失败".to_owned(),
+                                            })}
+                                        </span>
+                                        <progress max="100" value=progress aria-label="文件上传进度"></progress>
+                                        <div class="upload-progress-actions">
+                                            <Show when=failed fallback=|| ()>
+                                                <button type="button" aria-label="重试上传" title="重试上传"
+                                                    on:click=move |_| on_retry.run(())>
+                                                    {super::icons::rotate_cw()}<span>"重试"</span>
+                                                </button>
+                                            </Show>
+                                            <button type="button" aria-label=move || if failed() { "移除失败上传" } else { "取消上传" }
+                                                title=move || if failed() { "移除失败上传" } else { "取消上传" }
+                                                on:click=move |_| cancel.cancel(cancel_id.clone())>
+                                                {super::icons::x()}
+                                            </button>
+                                        </div>
+                                    </article>
+                                }
+                            }
+                        }
+                    />
+                </div>
+            </section>
         </Show>
     }
 }
@@ -1568,7 +1522,7 @@ fn finish_xhr(
 fn xhr_error(_xhr: &XmlHttpRequest, status: u16) -> RequestError {
     // The historical XHR wrapper did not decode the JSON error envelope for
     // raw byte requests; it exposed the status-shaped message to the local
-    // upload task and retried that error in the same way as any other failure.
+    // upload item and retried that error in the same way as any other failure.
     RequestError {
         status,
         code: None,

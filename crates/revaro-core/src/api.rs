@@ -11,7 +11,7 @@
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{File, Task, UploadMode, UploadPart, UploadStatus as UploadState};
+use crate::model::{File, UploadMode, UploadPart, UploadStatus as UploadState};
 use crate::reader::{Anchor, FlowManifest, TocEntry};
 use crate::storage::CompletedPart;
 use crate::time::Timestamp;
@@ -482,18 +482,6 @@ pub mod uploads {
     }
 }
 
-/// Task-centre payloads.
-pub mod tasks {
-    use super::*;
-
-    /// Response of `GET /api/tasks`.
-    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-    pub struct TaskList {
-        /// Active tasks plus recently finished ones, newest first.
-        pub items: Vec<Task>,
-    }
-}
-
 /// Book and reader payloads.
 pub mod book {
     use super::*;
@@ -573,7 +561,6 @@ pub use files::{
     CreateDirectoryRequest, CreateDocumentRequest, DocumentContent, FileDetail, PatchFileRequest,
     Trash, UpdateDocumentRequest,
 };
-pub use tasks::TaskList;
 pub use uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, PartUrl, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,

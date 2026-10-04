@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login, enterSelectionMode } from './helpers'
+import { login, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://localhost:18083').replace(/\/$/, '')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -83,6 +83,7 @@ test('favorites and albums persist, and removing membership preserves the origin
   await image.getByRole('checkbox').press('Space')
   await toolbar.getByRole('button', { name: '收藏', exact: true }).click()
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?q=${photo}`)).json()).items[0].favorite).toBe(true)
+  await openTopbarMenu(page)
   await page.getByRole('button', { name: '退出选择模式', exact: true }).click()
   await page.getByRole('button', { name: '＋ 新建相册', exact: true }).click()
   await page.getByLabel('集合名称').fill(name)
@@ -160,6 +161,7 @@ test('home import and gallery transfer use the existing file tools', async ({ pa
   const suffix = Date.now().toString(36)
   const target = `gallery-transfer-${suffix}`
   const photo = `home-import-${suffix}.png`
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('新建', { exact: true }).click()
   await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
   const dialog = page.getByRole('dialog')
@@ -169,6 +171,7 @@ test('home import and gallery transfer use the existing file tools', async ({ pa
   const nav = page.getByRole('navigation', { name: '主导航', exact: true })
   await nav.getByRole('link', { name: '首页', exact: true }).click()
   const chooserPromise = page.waitForEvent('filechooser')
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('上传', { exact: true }).click()
   await page.getByRole('button', { name: '上传文件', exact: true }).click()
   await (await chooserPromise).setFiles({ name: photo, mimeType: 'image/png', buffer: png })

@@ -1,5 +1,5 @@
 import { expect, test, request, type Page } from '@playwright/test'
-import { login, enterSelectionMode } from './helpers'
+import { login, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '')
 const root = '00000000-0000-0000-0000-000000000000'
@@ -55,10 +55,10 @@ test('continuous scrolling preserves files and selection, with aligned sorting a
   await expect(fieldToggle).toHaveText('名称')
   await expect(directionToggle).toHaveText('↑')
   const sort = await sorting.boundingBox()
-  const create = await page.locator('.topbar').getByLabel('新建', { exact: true }).boundingBox()
-  expect(sort && create).toBeTruthy()
+  const menu = await page.getByLabel('更多操作', { exact: true }).boundingBox()
+  expect(sort && menu).toBeTruthy()
   await expect(page.locator('.content-head .desktop-create-actions, .content-head .create-menu, .content-head .upload-menu')).toHaveCount(0)
-  expect(create!.height).toBe(44)
+  expect(menu!.height).toBe(44)
   expect(sort!.width).toBeGreaterThanOrEqual(80)
   expect(sort!.width).toBeLessThanOrEqual(110)
   await expect(fieldToggle.locator('svg')).toHaveCount(0)
@@ -232,9 +232,8 @@ test('mobile search expands left inside the header, preserving other controls an
   const sorting = page.getByRole('group', { name: '文件排序', exact: true })
   await expect(sorting.getByRole('button')).toHaveCount(2)
   const sort = await sorting.boundingBox()
-  const create = await page.locator('.topbar').getByLabel('新建', { exact: true }).boundingBox()
-  const upload = await page.locator('.topbar').getByLabel('上传', { exact: true }).boundingBox()
-  expect(sort && create && upload).toBeTruthy()
+  const menu = await page.getByLabel('更多操作', { exact: true }).boundingBox()
+  expect(sort && menu).toBeTruthy()
   expect(sort!.width).toBeGreaterThanOrEqual(80)
   expect(sort!.width).toBeLessThanOrEqual(110)
   for (const button of await sorting.getByRole('button').all()) {
@@ -243,9 +242,9 @@ test('mobile search expands left inside the header, preserving other controls an
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(sort!.y + sort!.height)
     expect(await button.evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy()
   }
-  expect(sort!.y).toBeGreaterThan(create!.y + create!.height)
-  expect(create!.height).toBe(40)
-  expect(Math.abs(create!.height - upload!.height)).toBeLessThanOrEqual(1)
+  expect(sort!.y).toBeGreaterThan(menu!.y + menu!.height)
+  expect(menu!.height).toBe(40)
+  expect(menu!.height).toBe(accountBefore!.height)
   await expect(page.locator('.search-scope, #search-scope-options')).toHaveCount(0)
   const close = page.getByRole('button', { name: '收起搜索', exact: true })
   await input.press('Tab')
@@ -260,7 +259,7 @@ test('mobile search expands left inside the header, preserving other controls an
   await page.getByLabel('打开搜索', { exact: true }).click()
   await expect(input).toBeFocused()
   await input.fill('这是超过输入框长度的文件名称'.repeat(8))
-  await expect.poll(async () => (await page.locator('.search-surface').boundingBox())!.width).toBeLessThanOrEqual(150)
+  await expect.poll(async () => (await page.locator('.search-surface').boundingBox())!.width).toBeLessThanOrEqual(200)
   expect(await page.locator('.account-button').boundingBox()).toEqual(accountBefore)
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320)
   await page.keyboard.press('Escape')
@@ -317,6 +316,7 @@ test('expiring share links are visible in the topbar popover and can be revoked'
   await expect(share).toContainText('当前链接到期时间')
   await share.getByRole('button', { name: '关闭', exact: true }).click()
   await expect(share).toBeHidden()
+  await openTopbarMenu(page)
   await page.getByLabel('公开链接', { exact: true }).click()
   const row = page.locator('.public-links-popover .public-link-row').filter({ hasText: name })
   await expect(row).toContainText('有效')
@@ -361,22 +361,22 @@ test('refreshing an unfinished multipart upload lets the user reselect and resum
   const firstPart = await page.request.put(`/api/uploads/${upload.upload_id}/data/1`, { headers: { Origin: origin }, data: bytes.subarray(0, upload.part_size) })
   expect(firstPart.status()).toBe(204)
   await page.request.put(`/api/uploads/${upload.upload_id}/parts/1`, { headers: { Origin: origin }, data: { etag: firstPart.headers().etag, size: upload.part_size } })
+  // Only unfinished session metadata is persisted; reselection resumes existing parts.
+  await page.evaluate(({ uploadId, name, size, parentId }) => localStorage.setItem('revaro.uploads.v1', JSON.stringify([{ uploadId, parentId, name, size, lastModified: 1700000000000 }])), { uploadId: upload.upload_id, name, size, parentId: root })
   await page.reload()
-  await page.getByLabel('打开任务中心', { exact: true }).click()
-  const task = page.locator('.task-group-row').filter({ hasText: name })
-  const chooserPromise = page.waitForEvent('filechooser')
-  await task.getByRole('button', { name: '选择原文件', exact: true }).click()
-  const chooser = await chooserPromise
-  await chooser.setFiles({ name, mimeType: 'application/octet-stream', buffer: bytes })
+  await expect(page.getByLabel('选择文件上传', { exact: true })).toHaveCount(1)
+  await page.evaluate(({ name, size }) => {
+    const input = document.querySelector('input[aria-label="选择文件上传"]') as HTMLInputElement
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([new Uint8Array(size).fill(7)], name, { type: 'application/octet-stream', lastModified: 1700000000000 }))
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  }, { name, size })
   await expect.poll(async () => (await (await page.request.get(`/api/uploads/${upload.upload_id}`)).json()).status, { timeout: 20000 }).toBe('completed')
   const file = await page.request.get(`/api/files/${upload.file_id}/download`)
   expect(Buffer.compare(await file.body(), bytes)).toBe(0)
-  const cancelledName = `cancel-${Date.now().toString(36)}.bin`
-  const cancelled = await post(page, '/api/uploads', { parent_id: root, name: cancelledName, size: 1, mime_type: 'application/octet-stream' })
-  await page.reload()
-  await page.getByLabel('打开任务中心', { exact: true }).click()
-  await page.locator('.task-group-row').filter({ hasText: cancelledName }).getByRole('button', { name: '取消任务', exact: true }).click()
-  await expect.poll(async () => (await page.request.get(`/api/uploads/${cancelled.upload_id}`)).status()).toBe(404)
+  await expect(page.getByRole('region', { name: '上传进度', exact: true })).toHaveCount(0)
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('revaro.uploads.v1') || '[]'))).toEqual([])
 })
 
 test('trash items can be restored and permanently removed from the browser', async ({ page }) => {

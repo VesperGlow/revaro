@@ -38,7 +38,7 @@
 - [音频播放器](../crates/revaro-web/src/components/audio.rs)、[媒体预览](../crates/revaro-web/src/components/media.rs)、[媒体探测](../crates/revaro-media/src/probe.rs)
 - [阅读模型](../crates/revaro-reader/src/model.rs)、[阅读接口](../crates/revaro-server/src/reader_routes.rs)、[阅读器架构](reader-flow.md)
 - [文件查询](../crates/revaro-server/src/listing_routes.rs)、[初始数据库](../crates/revaro-server/migrations/001_local_product.sql)、[媒体模型](../crates/revaro-core/src/media.rs)
-- [任务中心](../crates/revaro-web/src/components/tasks.rs)、[上传完成流程](../crates/revaro-server/src/upload_routes.rs)、[存储与运行边界](data-plane.md)
+- [上传队列与进度浮窗](../crates/revaro-web/src/components/uploads.rs)、[上传完成流程](../crates/revaro-server/src/upload_routes.rs)、[存储与运行边界](data-plane.md)
 
 ## 3. 应用导航与页面形态
 
@@ -181,7 +181,7 @@ flowchart TB
 
 ### 导入体验
 
-三个库都提供「导入」，复用现有文件/文件夹上传和任务中心。可记住各库上次使用的目标目录，但目标目录不决定逻辑分类。图库导入可选加入相册，音乐导入可选加入歌单；集合关系在对应文件提交后写入。
+三个库都提供「导入」，复用现有文件/文件夹上传和临时上传进度浮窗。可记住各库上次使用的目标目录，但目标目录不决定逻辑分类。图库导入可选加入相册，音乐导入可选加入歌单；集合关系在对应文件提交后写入。
 
 默认给出「全部现有文件」的自动入库结果，并允许限定来源目录和排除项目，解决开发素材、临时截图、日志混入个人内容库的问题。
 

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login } from './helpers'
+import { login, openTopbarMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 
@@ -19,9 +19,6 @@ test('one persistent header serves every page, with working tools, routes and gl
     await expect(page.locator('.account-modal')).toBeVisible()
     await expect(page.locator('.account-modal')).not.toContainText('公开链接')
     await page.locator('.account-modal').getByRole('button', { name: '关闭', exact: true }).click()
-    await page.getByLabel('打开任务中心', { exact: true }).click()
-    await expect(page.locator('.task-panel')).toBeVisible()
-    await page.keyboard.press('Escape')
   }
   await page.getByLabel('回到首页', { exact: true }).click()
   await expect(nav.locator('[aria-current="page"]')).toHaveAttribute('aria-label', '首页')
@@ -32,6 +29,7 @@ test('one persistent header serves every page, with working tools, routes and gl
   await nav.getByRole('link', { name: '书籍', exact: true }).click()
   await expect(page.locator('.topbar').getByLabel('上传', { exact: true })).toHaveAttribute('aria-disabled', 'false')
   const chooser = page.waitForEvent('filechooser')
+  await openTopbarMenu(page)
   await page.locator('.topbar').getByLabel('上传', { exact: true }).click()
   await page.getByRole('button', { name: '上传文件', exact: true }).click()
   const name = `global-import-${Date.now()}.txt`

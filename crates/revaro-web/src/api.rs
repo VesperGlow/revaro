@@ -30,7 +30,6 @@ use revaro_core::api::files::{
 };
 use revaro_core::api::media::AudioMedia;
 use revaro_core::api::share::Status as ShareStatus;
-use revaro_core::api::tasks::TaskList;
 use revaro_core::api::uploads::{
     CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
     UploadPartsRequest, UploadPartsResponse, UploadStatus,
@@ -274,35 +273,6 @@ pub fn save_media_progress_keepalive(id: &str, progress: &MediaProgress) {
     let _ = window.fetch_with_request(&request);
 }
 
-/// Fetch the durable tasks shown by the task centre.
-pub async fn fetch_tasks() -> Result<TaskList, RequestError> {
-    get_json("/api/tasks").await
-}
-
-/// Ask a running or waiting task to stop.
-pub async fn cancel_task(id: &str) -> Result<(), RequestError> {
-    let request = api_request(Request::post(&format!("/api/tasks/{id}/cancel")))
-        .build()
-        .map_err(|error| request_transport(error.to_string()))?;
-    send_empty(request).await
-}
-
-/// Retry a failed task on the server's next worker pass.
-pub async fn retry_task(id: &str) -> Result<(), RequestError> {
-    let request = api_request(Request::post(&format!("/api/tasks/{id}/retry")))
-        .build()
-        .map_err(|error| request_transport(error.to_string()))?;
-    send_empty(request).await
-}
-
-/// Remove one terminal task notification from the durable task history.
-pub async fn delete_task(id: &str) -> Result<(), RequestError> {
-    let request = api_request(Request::delete(&format!("/api/tasks/{id}")))
-        .build()
-        .map_err(|error| request_transport(error.to_string()))?;
-    send_empty(request).await
-}
-
 /// Start or resume a browser upload session.
 pub async fn create_upload(request: &CreateUploadRequest) -> Result<CreateUpload, RequestError> {
     let request = api_request(Request::post("/api/uploads"))
@@ -478,7 +448,6 @@ pub struct SystemStatusSummary {
     pub disk_used_bytes: u64,
     pub disk_available_bytes: u64,
     pub cache: CacheSummary,
-    pub active_tasks: u64,
 }
 
 #[derive(Clone, serde::Deserialize)]

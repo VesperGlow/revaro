@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Locator } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login, enterSelectionMode } from './helpers'
+import { login, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -44,6 +44,21 @@ test('music cover playback stays functional and management uses only the batch t
   }
   await row.getByRole('button', { name: `打开 ${prefix}-1.wav`, exact: true }).click()
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
+  await page.route('**/api/uploads/*/data', route => route.fulfill({ status: 422, json: { error: { message: '上传失败' } } }))
+  await page.getByLabel('选择文件上传', { exact: true }).setInputFiles({ name: `${prefix}-float.txt`, mimeType: 'text/plain', buffer: Buffer.from('floating') })
+  const progress = page.getByRole('region', { name: '上传进度', exact: true })
+  await expect(progress).toContainText('上传失败')
+  for (const width of [1280, 851, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    const bounds = (await progress.boundingBox())!
+    const player = (await page.getByLabel('全局音乐播放器', { exact: true }).boundingBox())!
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(player.y - 12)
+    expect(bounds.x).toBeGreaterThanOrEqual(0)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+  }
+  await progress.getByRole('button', { name: '移除失败上传', exact: true }).click()
+  await expect(progress).toHaveCount(0)
   await enterSelectionMode(page)
   await row.getByRole('checkbox').press('Space')
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
@@ -73,8 +88,8 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
   const prefix = `selection-${Date.now()}`
   await upload(page, prefix, ['txt', 'wav', 'png', 'webm'])
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
-  const enter = page.getByRole('button', { name: '进入选择模式', exact: true })
-  const exit = page.getByRole('button', { name: '退出选择模式', exact: true })
+  const enter = page.locator('.selection-toggle[aria-label="进入选择模式"]')
+  const exit = page.locator('.selection-toggle[aria-label="退出选择模式"]')
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 })
     const nav = page.getByRole('navigation', { name: width > 850 ? '主导航' : '移动端导航', exact: true })
@@ -169,7 +184,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await expect(toolbar.locator('.selection-summary b')).toHaveText(`已选择 ${await cards.count()} 项`)
       await toolbar.getByRole('button', { name: '取消全选', exact: true }).click()
       await expect(toolbar).toBeHidden()
-      await expect(exit).toBeVisible()
+      await expect(exit).toHaveAttribute('aria-pressed', 'true')
       await firstCheckbox.press('Space')
       await toolbar.getByRole('button', { name: '取消', exact: true }).click()
       await expect(page.locator('.selection-checkbox')).toHaveCount(0)
@@ -178,7 +193,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await firstCheckbox.press('Escape')
       await expect(page.locator('.selection-checkbox')).toHaveCount(0)
       await expect(toolbar).toBeHidden()
-      await expect(enter).toBeVisible()
+      await expect(enter).toHaveAttribute('aria-pressed', 'false')
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     }
   }
@@ -190,7 +205,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
   await images.first().getByRole('checkbox').press('Space')
   await nav.getByRole('link', { name: '视频', exact: true }).click()
   await expect(toolbar).toBeHidden()
-  await expect(exit).toBeVisible()
+  await expect(exit).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('.selection-checkbox input:checked')).toHaveCount(0)
   await page.locator('.library-card').filter({ hasText: prefix }).first().getByRole('checkbox').press('Space')
   await page.goBack()
@@ -225,10 +240,11 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
   await page.locator('.library-main').click({ position: { x: 1, y: 1 } })
   await expect(toolbar).toBeHidden()
   await expect(page.locator('.selection-checkbox')).toHaveCount(0)
-  await expect(enter).toBeVisible()
+  await expect(enter).toHaveAttribute('aria-pressed', 'false')
   await enterSelectionMode(page)
   await expect(page.locator('.selection-checkbox input:checked')).toHaveCount(0)
   await images.first().getByRole('checkbox').press('Space')
+  await openTopbarMenu(page)
   await exit.click()
   await expect(toolbar).toBeHidden()
   await expect(page.locator('.selection-checkbox')).toHaveCount(0)
@@ -242,8 +258,8 @@ test('batch bars match file margins and background dismissal never intercepts ca
   const prefix = `batch-layout-${Date.now()}`
   await upload(page, prefix, ['txt', 'wav', 'png', 'webm'])
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
-  const enter = page.getByRole('button', { name: '进入选择模式', exact: true })
-  const exit = page.getByRole('button', { name: '退出选择模式', exact: true })
+  const enter = page.locator('.selection-toggle[aria-label="进入选择模式"]')
+  const exit = page.locator('.selection-toggle[aria-label="退出选择模式"]')
   for (const width of [1280, 1600, 1920, 390, 320]) {
     await page.setViewportSize({ width, height: 1000 })
     const nav = page.getByRole('navigation', { name: width > 850 ? '主导航' : '移动端导航', exact: true })
@@ -261,7 +277,7 @@ test('batch bars match file margins and background dismissal never intercepts ca
       await enterSelectionMode(page)
       // A background click also dismisses a mode with no selections.
       await page.mouse.click(1, 200)
-      await expect(enter).toBeVisible()
+      await expect(enter).toHaveAttribute('aria-pressed', 'false')
       await expect(page.locator('.selection-checkbox')).toHaveCount(0)
       await enterSelectionMode(page)
       await cards.first().getByRole('checkbox').press('Space')
@@ -269,7 +285,7 @@ test('batch bars match file margins and background dismissal never intercepts ca
       const second = (await cards.nth(1).boundingBox())!
       await page.mouse.click(second.x + 5, second.y + second.height / 2)
       await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 2 项')
-      await expect(exit).toBeVisible()
+      await expect(exit).toHaveAttribute('aria-pressed', 'true')
       const box = (await toolbar.boundingBox())!
       const styles = await toolbar.evaluate(el => {
         const bar = getComputedStyle(el), actions = getComputedStyle(el.querySelector('.selection-actions')!), summary = getComputedStyle(el.querySelector('.selection-summary')!)
@@ -286,19 +302,20 @@ test('batch bars match file margins and background dismissal never intercepts ca
       if (name !== '首页') {
         const toggle = page.getByLabel(name === '文件' ? '选择排序字段' : '选择集合', { exact: true })
         await toggle.click()
-        await expect(exit).toBeVisible()
+        await expect(exit).toHaveAttribute('aria-pressed', 'true')
         await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 2 项')
         await toggle.click()
-        await expect(exit).toBeVisible()
+        await expect(exit).toHaveAttribute('aria-pressed', 'true')
       }
       const open = name === '文件' ? cards.first() : cards.first().locator(name === '首页' ? '.home-item' : '.library-card-open')
       await open.click()
       await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 1 项')
-      await expect(exit).toBeVisible()
+      await expect(exit).toHaveAttribute('aria-pressed', 'true')
       await content.click({ position: { x: 1, y: 1 } })
-      await expect(enter).toBeVisible()
+      await expect(enter).toHaveAttribute('aria-pressed', 'false')
       await expect(toolbar).toBeHidden()
       await expect(page.locator('.selection-checkbox')).toHaveCount(0)
+      await openTopbarMenu(page)
       await enter.click()
       await expect(page.locator('.selection-checkbox input:checked')).toHaveCount(0)
       if (name === '音乐') {
@@ -317,12 +334,13 @@ test('batch bars match file margins and background dismissal never intercepts ca
         const blank = { x: width / 2, y: 1900 }
         expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('content-library'), blank)).toBe(true)
         await page.mouse.click(blank.x, blank.y)
-        await expect(enter).toBeVisible()
+        await expect(enter).toHaveAttribute('aria-pressed', 'false')
         await expect(toolbar).toBeHidden()
         await page.setViewportSize({ width, height: 1000 })
         await enterSelectionMode(page)
         await expect(page.locator('.selection-checkbox input:checked')).toHaveCount(0)
       }
+      await openTopbarMenu(page)
       await exit.click()
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     }
@@ -401,7 +419,8 @@ test('mixed file selections share typed batch management, retry failures and kee
   await menu.getByRole('button', { name: '取消收藏', exact: true }).click()
   await expect.poll(async () => (await listing()).filter((item: any) => item.favorite).length).toBe(0)
   await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 9 项')
-  await page.getByRole('button', { name: '退出选择模式', exact: true }).click()
+  await openTopbarMenu(page)
+  await page.locator('.selection-toggle[aria-label="退出选择模式"]').click()
   await enterSelectionMode(page)
   await cards.filter({ hasText: `${prefix}-folder` }).getByRole('checkbox').press('Space')
   await expect(toolbar.locator('.selection-management')).toHaveCount(0)

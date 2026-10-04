@@ -442,7 +442,7 @@ async fn unauthenticated_and_cross_origin_requests_are_refused() {
         .router()
         .oneshot(
             Request::builder()
-                .uri("/api/tasks")
+                .uri("/api/files/00000000-0000-0000-0000-000000000000/children")
                 .body(Body::empty())
                 .unwrap(),
         )

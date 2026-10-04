@@ -24,7 +24,6 @@ pub(crate) mod reader_cache;
 mod selection;
 mod selection_toolbar;
 mod share;
-mod tasks;
 mod topbar;
 mod transfer;
 mod uploads;

@@ -7,7 +7,7 @@
 .app-navigation a:hover,.app-navigation a.active { color:var(--accent); background:var(--accent-soft); }
 .app-navigation a svg { width:21px; height:21px; stroke-width:1.7; }
 /* Enlarge the artwork together while preserving the header and button footprints. */
-.topbar>.app-navigation a svg,.topbar .top-actions>button svg,.topbar .action-menu>summary svg,.topbar .task-center>summary svg,.topbar .search-toggle svg { width:calc(21px * var(--header-icon-scale)); height:calc(21px * var(--header-icon-scale)); }
+.topbar>.app-navigation a svg,.topbar .top-actions>button svg,.topbar .top-actions>.action-menu>summary svg,.topbar .search-toggle svg { width:calc(21px * var(--header-icon-scale)); height:calc(21px * var(--header-icon-scale)); }
 .app-navigation a:focus-visible { outline:none; box-shadow:var(--focus-ring); }
 .app-navigation a.active::after { content:""; position:absolute; bottom:-6px; left:50%; width:20px; height:3px; transform:translateX(-50%); background:var(--accent); border-radius:3px 3px 0 0; }
 .mobile-navigation { display:none; }
@@ -28,11 +28,11 @@
 
 /* The search surface expands left in the header; its right edge stays attached to the trigger. */
 .topbar .topbar-search { position:relative; z-index:2; flex:0 0 auto; width:44px; height:44px; transition:width .24s ease; }
-.topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(50vw - var(--header-padding) - (7 * 44px + 6 * 8px) / 2 - 7 * (44px + 5px) - 18px)); }
+.topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px,calc(50vw - var(--header-padding) - (7 * 44px + 6 * 8px) / 2 - 3 * (44px + 5px) - 18px)); }
 .topbar .search-surface { position:relative; display:flex; align-items:center; width:100%; height:44px; margin:0; padding:0; overflow:hidden; border:0; border-radius:22px; background:transparent; transition:background-color .2s ease, box-shadow .2s ease; }
 .topbar .topbar-search.expanded .search-surface { padding-left:12px; background:var(--surface-subtle); box-shadow:inset 0 0 0 1px var(--line); }
 .topbar .topbar-search.expanded .search-surface:focus-within { box-shadow:inset 0 0 0 1px var(--accent-border); }
-/* Compact desktop search needs the central space while editing; navigation returns to the same center on close. */
+/* Compact desktop search uses the central space while editing. */
 @media(min-width:851px) and (max-width:1550px) {
  .topbar.searching>.app-navigation { visibility:hidden; }
  .topbar .topbar-search.expanded { width:min(var(--search-width,208px),420px); }
@@ -76,24 +76,66 @@
   .topbar .topbar-search, .topbar .search-surface, .topbar .search-fields { transition: none; }
 }
 
-/* All primary file tools share the existing 44 px icon-button footprint. */
-.topbar .action-menu > summary { color:var(--accent); border-radius:50%; }
-.topbar .action-menu > summary[aria-disabled="true"] { opacity:.4; cursor:default; }
-.topbar .action-menu-panel { top:calc(100% + 8px); bottom:auto; min-width:160px; }
-.topbar .action-menu-panel > button { min-height:38px; padding:8px 10px; font-size:13px; }
-/* Pointer focus stays plain; keyboard focus uses the shared ring. */
+/* Topbar actions reuse the shared disclosure surface and SVG treatment. */
+.topbar .top-actions > .action-menu > summary { color:var(--accent); border-radius:50%; }
 .topbar .top-actions button:focus,.topbar summary:focus { outline:none; box-shadow:none; }
 .topbar .top-actions button:focus-visible,.topbar summary:focus-visible { outline:none; box-shadow:var(--focus-ring); }
+.topbar .action-menu > summary[aria-disabled="true"] { opacity:.4; cursor:default; }
+.topbar .topbar-menu > .topbar-menu-panel { left:auto; right:0; top:calc(100% + 8px); transform:none; width:300px; min-width:0; max-width:calc(100vw - 16px); max-height:min(70vh,calc(100dvh - 96px)); padding:8px; overscroll-behavior:contain; }
+.topbar-menu-backdrop { display:none; }
+.topbar-menu-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 6px 8px; margin-bottom:4px; border-bottom:1px solid var(--line); }
+.topbar-menu-heading h2 { margin:0; color:var(--ink); font-size:14px; font-weight:600; }
+.topbar-menu-close { display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:var(--radius-sm); color:var(--muted); background:transparent; }
+.topbar-menu-close:hover { background:var(--surface-hover); }
+.topbar-menu-close svg { width:18px; height:18px; }
+.topbar .topbar-menu-panel > .selection-toggle,.topbar .topbar-menu-panel .embedded-menu > summary { display:flex; align-items:center; gap:12px; width:100%; min-height:44px; height:auto; padding:10px 12px; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--ink-subtle); font-size:13px; text-align:left; }
+.topbar .topbar-menu-panel > .selection-toggle:hover,.topbar .topbar-menu-panel > .selection-toggle.active,.topbar .topbar-menu-panel .embedded-menu > summary:hover,.topbar .topbar-menu-panel .embedded-menu[open] > summary { background:var(--accent-soft); color:var(--accent); }
+.topbar .topbar-menu-panel > .selection-toggle svg,.topbar .topbar-menu-panel .embedded-menu > summary svg { width:21px; height:21px; flex:0 0 21px; color:var(--accent); stroke-width:1.7; }
+.topbar .topbar-menu-panel .menu-item-label { position:static; flex:1; min-width:0; color:inherit; font-size:inherit; font-weight:500; }
+.topbar .topbar-menu-panel .embedded-menu > summary > svg:last-child { width:16px; height:16px; flex-basis:16px; color:var(--muted); transition:transform .15s ease; }
+.topbar .topbar-menu-panel .embedded-menu[open] > summary > svg:last-child { transform:rotate(180deg); }
+.topbar .embedded-menu > .action-menu-panel { position:static; width:100%; min-width:0; max-width:100%; max-height:360px; margin:4px 0 8px; padding:5px; transform:none; box-shadow:none; background:var(--surface-subtle); }
+.topbar .embedded-menu > .action-menu-panel > button { min-height:38px; padding:8px 12px 8px 44px; font-size:13px; }
+.topbar .embedded-menu > .topbar-popover { padding:12px; }
+
+@media(min-width:851px) and (max-width:1220px) {
+ .topbar > .app-navigation { gap:3px; }
+ .topbar > .app-navigation a { width:40px; }
+ .topbar .top-actions > .action-menu > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle { width:34px; flex-basis:34px; }
+}
+@media(min-width:851px) and (max-width:980px) {
+ .topbar > .app-navigation { gap:2px; }
+ .topbar > .app-navigation a { width:32px; }
+ .topbar .top-actions { gap:2px; }
+}
+@media(max-width:850px) {
+ .topbar { --header-status-size:32px; }
+ .topbar .top-actions { gap:2px; }
+ .topbar .top-actions > .action-menu > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle { width:34px; height:40px; flex-basis:34px; }
+ .mobile-navigation a svg { width:20px; height:20px; }
+ .topbar:has(.topbar-menu[open]) { z-index:36; }
+ body:has(.topbar-menu[open]) { overflow:hidden; }
+ .topbar-menu[open] > .topbar-menu-backdrop { display:block; position:fixed; inset:0; z-index:1; background:#0f172a66; }
+ .topbar .topbar-menu > .topbar-menu-panel { position:fixed; z-index:2; inset:auto 0 0; width:100%; max-width:100%; max-height:calc(100dvh - 24px - env(safe-area-inset-top,0px)); padding:8px max(12px,env(safe-area-inset-right,0px)) calc(12px + env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px)); border-radius:var(--radius-xl) var(--radius-xl) 0 0; box-shadow:var(--shadow-dialog); }
+ .topbar-menu-panel::before { content:""; display:block; width:36px; height:4px; margin:2px auto 8px; border-radius:var(--radius-sm); background:var(--line-strong); }
+}
+@media(max-width:520px) { .topbar { --header-brand-padding:12px; } }
+@media(max-width:430px) { .topbar { --header-avatar-size:30px; --header-status-size:28px; } }
 @media(max-width:350px) {
- .topbar { gap:4px; }
+ .topbar { --header-brand-size:18px; --header-icon-scale:1.08; padding-left:8px; padding-right:8px; gap:4px; }
+ .topbar .top-actions { gap:1px; }
  .topbar .topbar-search.expanded .search-surface { padding-left:10px; }
  .topbar .search-measure,.topbar .search-fields input[type="search"] { font-size:12px; }
  .topbar .search-close { flex-basis:24px; width:24px; }
 }
+/* Search still sizes itself by content when the surrounding tools are compact. */
+.topbar .topbar-search.expanded { flex-basis:auto; }
+.topbar .search-surface { height:100%; }
+@media(prefers-reduced-motion:reduce) { .topbar .topbar-menu-panel .embedded-menu > summary > svg:last-child { transition:none; } }
 
 /* Account-independent disclosures share the existing menu anchor and surface. */
 .topbar .topbar-popover { padding:14px; max-height:min(var(--popover-available-height,70vh),520px); overflow:auto; cursor:default; }
-.topbar .public-links-popover { width:288px; min-width:0; }
+.topbar .public-links-popover { width:100%; min-width:0; }
 .topbar .system-status-popover { width:200px; min-width:0; }
 .popover-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
 .popover-heading h2 { margin:0; color:var(--ink); font-size:14px; font-weight:600; }
@@ -123,37 +165,3 @@
 .system-metric strong { color:var(--ink-subtle); font-size:12px; font-weight:550; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .system-metric .metric-skeleton { width:65px; color:transparent; height:14px; border-radius:4px; background:var(--surface-subtle); }
 .system-metric:first-child .metric-skeleton { width:130px; }
-@media(min-width:851px) and (max-width:1220px) { .topbar>.app-navigation { gap:3px; } .topbar>.app-navigation a { width:40px; } }
-@media(max-width:850px) { .topbar .top-actions { gap:2px; } .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle,.topbar .selection-toggle { width:34px; height:40px; flex-basis:34px; } .topbar { --header-status-size:32px; } .topbar .public-links-popover { max-width:calc(100vw - 16px); } .mobile-navigation a svg { width:20px; height:20px; } }
-@media(max-width:520px) { .topbar { --header-brand-padding:12px; } }
-@media(max-width:350px) { .topbar { --header-brand-size:18px; --header-icon-scale:1.08; padding-left:8px; padding-right:8px; gap:4px; } .topbar .top-actions { gap:1px; } }
-
-@media(min-width:851px) and (max-width:1220px) { .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle,.topbar .selection-toggle { width:34px; height:44px; flex-basis:34px; } }
-/* Expanded search sizes itself by width even when compact tools use a fixed basis. */
-.topbar .topbar-search.expanded { flex-basis:auto; }
-.topbar .search-surface { height:100%; }
-
-.topbar .task-center > summary { color:var(--accent); }
-.topbar .task-center > summary svg { color:inherit; stroke-width:1.7; }
-@media(max-width:430px) {
- .topbar .top-actions > .action-menu > summary,.topbar .task-center > summary,.topbar .account-button,.topbar .topbar-search,.topbar .search-toggle,.topbar .selection-toggle { width:30px; flex-basis:30px; }
- .topbar { --header-avatar-size:30px; --header-status-size:28px; }
-
-}
-
-/* The selection trigger uses the same artwork scale and action footprint. */
-.topbar .selection-toggle { display:grid; place-items:center; width:44px; height:44px; flex:0 0 44px; margin:0; padding:0; border:0; border-radius:50%; color:var(--accent); background:transparent; }
-.topbar .selection-toggle:hover,.topbar .selection-toggle.active { background:var(--accent-soft); }
-@media(min-width:851px) and (max-width:980px) {
- .topbar>.app-navigation { gap:2px; }
- .topbar>.app-navigation a { width:32px; }
- .topbar .top-actions { gap:2px; }
-}
-@media(max-width:1220px) { .topbar .selection-toggle { width:34px; flex-basis:34px; } }
-@media(max-width:850px) { .topbar .selection-toggle { height:40px; } }
-@media(max-width:430px) {
- .topbar .selection-toggle { width:30px; flex-basis:30px; }
- /* Keep the existing brand mark at its current scale beside the extra tool. */
- .topbar .brand-button { width:calc(var(--header-brand-size) * var(--header-icon-scale) * 1.65); padding:0; overflow:hidden; }
- .topbar .brand-logo { max-width:none; }
-}

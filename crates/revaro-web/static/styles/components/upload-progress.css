@@ -1,0 +1,34 @@
+/* Temporary upload progress, using the shared surface and focus tokens. */
+.upload-progress{--upload-edge:clamp(12px,2vw,24px);--upload-bottom:calc(var(--upload-edge) + env(safe-area-inset-bottom,0px));position:fixed;z-index:24;right:max(var(--upload-edge),env(safe-area-inset-right,0px));bottom:var(--upload-bottom);display:flex;flex-direction:column;width:min(380px,calc(100vw - max(var(--upload-edge),env(safe-area-inset-left,0px)) - max(var(--upload-edge),env(safe-area-inset-right,0px))));max-height:min(360px,calc(100dvh - var(--upload-bottom) - 12px));overflow:hidden;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);color:var(--ink-subtle);box-shadow:var(--shadow-popover)}
+.upload-progress>header{display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.upload-progress>header strong{font-size:13px;font-weight:600}
+.upload-progress>header small{color:var(--muted);font-size:11px}
+.upload-progress-list{min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding:4px 12px;scrollbar-gutter:stable}
+.upload-progress-list:focus-visible{outline:0;box-shadow:inset var(--focus-ring)}
+.upload-progress-item{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:6px 10px;min-height:60px;padding:10px 0;border-bottom:1px solid var(--line)}
+.upload-progress-item:last-child{border-bottom:0}
+.upload-progress-item>strong{min-width:0;overflow:hidden;font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
+.upload-progress-state{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.upload-progress-item.failed .upload-progress-state{color:var(--danger)}
+.upload-progress-item>progress{grid-column:1/3;width:100%;height:4px;overflow:hidden;appearance:none;border:0;border-radius:var(--radius-sm);background:var(--line);color:var(--accent)}
+.upload-progress-item>progress::-webkit-progress-bar{border-radius:var(--radius-sm);background:var(--line)}
+.upload-progress-item>progress::-webkit-progress-value{border-radius:var(--radius-sm);background:var(--accent)}
+.upload-progress-item>progress::-moz-progress-bar{border-radius:var(--radius-sm);background:var(--accent)}
+.upload-progress-item.failed>progress{color:var(--danger)}
+.upload-progress-item.failed>progress::-webkit-progress-value{background:var(--danger)}
+.upload-progress-item.failed>progress::-moz-progress-bar{background:var(--danger)}
+.upload-progress-actions{grid-column:3;grid-row:1/3;display:flex;align-items:center;gap:2px}
+.upload-progress-actions>button{display:flex;min-width:28px;min-height:28px;align-items:center;justify-content:center;gap:3px;padding:3px;border:0;border-radius:var(--radius-sm);background:transparent;color:var(--muted);font-size:11px}
+.upload-progress-actions>button:hover{background:var(--surface-hover);color:var(--accent)}
+.upload-progress-actions>button:focus-visible{outline:0;box-shadow:var(--focus-ring)}
+.upload-progress-actions svg{width:15px;height:15px;stroke-width:1.7}
+.content-library.has-music .upload-progress{--upload-bottom:calc(87px + var(--upload-edge) + env(safe-area-inset-bottom,0px))}
+@media(max-width:850px){
+ .upload-progress{--upload-edge:12px;--upload-bottom:calc(58px + env(safe-area-inset-bottom,0px) + var(--upload-edge))}
+ .content-library.has-music .upload-progress{--upload-bottom:calc(126px + env(safe-area-inset-bottom,0px) + var(--upload-edge))}
+ .upload-progress-actions>button{min-width:32px;min-height:32px}
+}
+@media(max-height:320px){
+ .upload-progress{--upload-edge:12px}
+ .upload-progress>header{padding:8px 12px}
+}

@@ -4,7 +4,7 @@
 //! HTML shell, and everything after that runs in the browser. A single-page
 //! application is the right shape here because the product's core is
 //! long-lived interactive state — the reader's pagination, media playback with
-//! progress sync, the upload queue and the task centre — none of which benefit
+//! progress sync, the upload queue — none of which benefit
 //! from server round-trips per navigation.
 //!
 //! The crate compiles to an empty stub on non-wasm targets so that

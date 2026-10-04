@@ -16,6 +16,7 @@ use super::{
     selection::{SelectionCheckbox, SelectionManagement, SelectionMode},
     selection_toolbar::{BatchActionBar, matches_collection},
     topbar::{AppNavigation, AppTopbar, TopbarActions, TopbarSearch},
+    uploads::UploadProgress,
 };
 use crate::{
     api::{self, LibraryQuery},
@@ -673,8 +674,12 @@ pub fn ContentShell(
                     selection.exit_from_blank(event);
                 }
             }>
-            {move || header_actions.get().map(|actions| view! {
-                <AppTopbar actions=actions library_search=library_search page=page on_navigate=navigate selection=selection />
+            {move || header_actions.get().map(|actions| {
+                let upload_controller = actions.upload_controller.clone();
+                view! {
+                    <AppTopbar actions=actions library_search=library_search page=page on_navigate=navigate selection=selection />
+                    <UploadProgress controller=upload_controller />
+                }
             })}
             <Show when=move ||!page.get().is_file_workspace() fallback=|| ()>
                 <main class="library-main" on:click=move |event| selection.exit_from_blank(event)>

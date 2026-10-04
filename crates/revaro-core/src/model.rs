@@ -198,129 +198,6 @@ string_enum! {
     }
 }
 
-/// Lifecycle of a row in `tasks`.
-///
-/// The Go browser decoded task responses into a structural TypeScript type, so
-/// a newer server status remained in the task array and was simply omitted
-/// from the known groups. Keep database parsing strict through [`FromStr`],
-/// while accepting an unknown response value as `Unknown` for the browser.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum TaskStatus {
-    /// Waiting for a worker.
-    #[default]
-    Queued,
-    /// A worker is executing.
-    Running,
-    /// The task needs additional user input.
-    WaitingInput,
-    /// A failed task was retried.
-    Retrying,
-    /// Finished successfully.
-    Completed,
-    /// Finished unsuccessfully.
-    Failed,
-    /// Cancelled by the user.
-    Cancelled,
-    /// A status introduced by a newer server; ignored by known UI groups.
-    Unknown,
-}
-
-impl TaskStatus {
-    /// Every status understood by the product and persisted in SQLite.
-    pub const ALL: &'static [Self] = &[
-        Self::Queued,
-        Self::Running,
-        Self::WaitingInput,
-        Self::Retrying,
-        Self::Completed,
-        Self::Failed,
-        Self::Cancelled,
-    ];
-
-    /// The canonical wire and database spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::WaitingInput => "waiting_input",
-            Self::Retrying => "retrying",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    /// Default used when a legacy or newer task response omits its status.
-    #[must_use]
-    pub const fn unknown() -> Self {
-        Self::Unknown
-    }
-}
-
-impl std::fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for TaskStatus {
-    type Err = crate::model::UnknownEnumValue;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "queued" => Ok(Self::Queued),
-            "running" => Ok(Self::Running),
-            "waiting_input" => Ok(Self::WaitingInput),
-            "retrying" => Ok(Self::Retrying),
-            "completed" => Ok(Self::Completed),
-            "failed" => Ok(Self::Failed),
-            "cancelled" => Ok(Self::Cancelled),
-            other => Err(crate::model::UnknownEnumValue {
-                type_name: "TaskStatus",
-                value: other.to_owned(),
-            }),
-        }
-    }
-}
-
-impl serde::Serialize for TaskStatus {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for TaskStatus {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        Ok(match value.as_str() {
-            Some(raw) => raw.parse().unwrap_or(Self::Unknown),
-            None => Self::Unknown,
-        })
-    }
-}
-
-impl TaskStatus {
-    /// True when no further transition is expected.
-    #[must_use]
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
-        )
-    }
-}
-
-/// Task type names used by the task centre.
-///
-/// Stored as free-form text so a future task type does not require a schema
-/// change; these are the values the product understands today.
-pub mod task_type {
-    /// A file upload.
-    pub const UPLOAD: &str = "upload";
-}
-
 /// A row of the `files` table as the API exposes it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct File {
@@ -421,16 +298,6 @@ where
 }
 
 /// Older task callers treated a missing or `null` integer counter as zero.
-fn deserialize_nullable_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Older upload callers ignored resume parts whose number was omitted or
-/// `null`. Keep that response tolerance while rejecting malformed scalar
-/// values.
 fn deserialize_nullable_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -579,76 +446,6 @@ pub struct UploadPart {
     pub content_hash: Option<String>,
 }
 
-/// A row of the `tasks` table as the API exposes it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Task {
-    /// Primary key.
-    pub id: String,
-    /// Task type, see [`task_type`].
-    #[serde(rename = "type")]
-    pub task_type: String,
-    /// Lifecycle state.
-    #[serde(default = "TaskStatus::unknown")]
-    pub status: TaskStatus,
-    /// Human-readable phase within the task.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
-    pub phase: String,
-    /// Completion percentage, `0.0..=100.0`.
-    #[serde(default, deserialize_with = "deserialize_nullable_f64")]
-    pub progress: f64,
-    /// Current throughput in bytes per second.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub speed: i64,
-    /// Estimated seconds remaining, omitted when unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub eta_seconds: Option<i64>,
-    /// How many times this task has been retried.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub retry_count: i64,
-    /// Retry ceiling.
-    #[serde(default, deserialize_with = "deserialize_nullable_i64")]
-    pub max_retries: i64,
-    /// Failure message, omitted while healthy.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_nullable_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub error: String,
-    /// Origin kind of the task, omitted when it has none.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_nullable_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub source_type: String,
-    /// Origin identifier, omitted when it has none.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_nullable_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub source_id: String,
-    /// Whether cancellation has been requested.
-    #[serde(default, deserialize_with = "deserialize_nullable_bool")]
-    pub cancel_requested: bool,
-    /// Creation time.
-    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
-    pub created_at: Timestamp,
-    /// When a worker picked the task up, omitted before that.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<Timestamp>,
-    /// When the task reached a terminal state, omitted before that.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<Timestamp>,
-    /// Last state change.
-    #[serde(default, deserialize_with = "deserialize_nullable_timestamp")]
-    pub updated_at: Timestamp,
-    /// Display name derived from the task's files or type.
-    #[serde(default, deserialize_with = "deserialize_nullable_string")]
-    pub name: String,
-}
-
 /// The signed-in administrator's profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
@@ -678,8 +475,6 @@ mod tests {
         assert_eq!(UploadMode::Single.as_str(), "single");
         assert_eq!(UploadMode::Multipart.as_str(), "multipart");
         assert_eq!(UploadStatus::Aborted.as_str(), "aborted");
-        assert_eq!(TaskStatus::WaitingInput.as_str(), "waiting_input");
-        assert_eq!(TaskStatus::Cancelled.as_str(), "cancelled");
     }
 
     #[test]
@@ -691,37 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn task_response_unknown_statuses_are_ignored_but_database_parsing_stays_strict() {
-        assert_eq!(
-            serde_json::from_str::<TaskStatus>(r#""future_status""#).unwrap(),
-            TaskStatus::Unknown
-        );
-        assert_eq!(
-            serde_json::from_str::<TaskStatus>("null").unwrap(),
-            TaskStatus::Unknown
-        );
-        assert!("future_status".parse::<TaskStatus>().is_err());
-        assert_eq!(
-            serde_json::to_string(&TaskStatus::Unknown).unwrap(),
-            r#""unknown""#
-        );
-        let task: Task = serde_json::from_value(serde_json::json!({
-            "id": "future-task",
-            "type": "upload",
-            "created_at": "2024-05-06T07:08:09Z",
-            "updated_at": "2024-05-06T07:08:09Z"
-        }))
-        .unwrap();
-        assert_eq!(task.status, TaskStatus::Unknown);
-    }
-
-    #[test]
     fn every_variant_round_trips() {
         for variant in FileStatus::ALL {
             assert_eq!(variant.as_str().parse::<FileStatus>(), Ok(*variant));
-        }
-        for variant in TaskStatus::ALL {
-            assert_eq!(variant.as_str().parse::<TaskStatus>(), Ok(*variant));
         }
         for variant in UploadMode::ALL {
             assert_eq!(variant.as_str().parse::<UploadMode>(), Ok(*variant));
@@ -911,93 +678,5 @@ mod tests {
             "position": "ten"
         }));
         assert!(invalid.is_err());
-    }
-
-    #[test]
-    fn task_json_omits_empty_optional_fields() {
-        let task = Task {
-            id: "t".into(),
-            task_type: task_type::UPLOAD.into(),
-            status: TaskStatus::Queued,
-            name: "upload".into(),
-            created_at: Timestamp::parse("2024-05-06T07:08:09Z").unwrap(),
-            updated_at: Timestamp::parse("2024-05-06T07:08:09Z").unwrap(),
-            ..Task::default()
-        };
-        let json = serde_json::to_value(&task).unwrap();
-        let object = json.as_object().unwrap();
-        for absent in [
-            "eta_seconds",
-            "error",
-            "source_type",
-            "source_id",
-            "started_at",
-            "finished_at",
-        ] {
-            assert!(!object.contains_key(absent), "{absent} should be omitted");
-        }
-        assert_eq!(json["type"], "upload");
-        assert_eq!(json["status"], "queued");
-    }
-
-    #[test]
-    fn task_responses_treat_nullable_display_fields_as_defaults() {
-        let task: Task = serde_json::from_value(serde_json::json!({
-            "id": "task",
-            "type": "upload",
-            "status": "running",
-            "phase": null,
-            "progress": null,
-            "speed": null,
-            "retry_count": null,
-            "max_retries": null,
-            "error": null,
-            "source_type": null,
-            "source_id": null,
-            "cancel_requested": null,
-            "created_at": "2024-05-06T07:08:09Z",
-            "updated_at": "2024-05-06T07:08:09Z",
-            "name": null
-        }))
-        .unwrap();
-        assert_eq!(task.phase, "");
-        assert_eq!(task.progress, 0.0);
-        assert_eq!(task.speed, 0);
-        assert_eq!(task.retry_count, 0);
-        assert_eq!(task.max_retries, 0);
-        assert!(task.error.is_empty());
-        assert!(task.source_type.is_empty());
-        assert!(task.source_id.is_empty());
-        assert!(!task.cancel_requested);
-        assert!(task.name.is_empty());
-    }
-
-    #[test]
-    fn task_responses_treat_unused_timestamps_as_defaults() {
-        let task: Task = serde_json::from_value(serde_json::json!({
-            "id": "task",
-            "type": "upload",
-            "status": "completed",
-            "created_at": null
-        }))
-        .unwrap();
-        assert_eq!(task.created_at, Timestamp::default());
-        assert_eq!(task.updated_at, Timestamp::default());
-
-        let invalid = serde_json::from_value::<Task>(serde_json::json!({
-            "id": "task",
-            "type": "upload",
-            "created_at": 42
-        }));
-        assert!(invalid.is_err());
-    }
-
-    #[test]
-    fn task_status_terminality() {
-        assert!(TaskStatus::Completed.is_terminal());
-        assert!(TaskStatus::Failed.is_terminal());
-        assert!(TaskStatus::Cancelled.is_terminal());
-        assert!(!TaskStatus::Running.is_terminal());
-        assert!(!TaskStatus::WaitingInput.is_terminal());
     }
 }
