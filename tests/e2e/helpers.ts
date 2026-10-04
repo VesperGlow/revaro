@@ -23,9 +23,20 @@ export async function login(page: Page) {
 }
 
 export async function openTopbarMenu(page: Page) {
-  const menu = page.locator('.topbar-menu')
+  const menu = page.locator('.topbar .topbar-menu')
   if (!await menu.evaluate(element => (element as HTMLDetailsElement).open)) {
     await page.getByLabel('更多操作', { exact: true }).click()
   }
   await expect(page.locator('.topbar-menu-panel')).toBeVisible()
+}
+
+export async function navigate(page: Page, name: string) {
+  const mobile = (page.viewportSize()?.width || 1280) <= 850
+  const nav = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
+  if (mobile && ['书籍', '音乐', '图片', '视频'].includes(name)) {
+    await nav.getByLabel('内容库', { exact: true }).click()
+  }
+  const link = nav.getByRole('link', { name: mobile && name === '图片' ? '图库' : name, exact: true, includeHidden: true })
+  await link.click()
+  return link
 }

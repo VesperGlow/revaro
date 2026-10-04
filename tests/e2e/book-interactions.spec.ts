@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login } from './helpers'
+import { login, navigate } from './helpers'
 import { zip } from './fixtures/epub'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -26,10 +26,6 @@ function wav() {
   data.writeUInt16LE(2, 32); data.writeUInt16LE(16, 34)
   data.write('data', 36); data.writeUInt32LE(16000, 40)
   return data
-}
-
-async function navigate(page: Page, name: string, touch: boolean) {
-  await page.getByRole('navigation', { name: touch ? '移动端导航' : '主导航', exact: true }).getByRole('link', { name, exact: true }).click()
 }
 
 async function press(page: Page, card: Locator, touch: boolean, cancel: false | 'move' | 'scroll' = false) {
@@ -80,7 +76,7 @@ for (const touch of [false, true]) {
       const book = listing.items.find((item: any) => item.file.name === first)
       const saved = await page.request.put(`/api/files/${book.file.id}/book/progress`, { headers: { origin: new URL(page.url()).origin }, data: { anchor: { spine: 0, block: 20, offset: 0 }, percent: 37.5 } })
       expect(saved.ok()).toBeTruthy()
-      await navigate(page, '书籍', touch)
+      await navigate(page, '书籍')
       const card = page.locator('.series-card').filter({ hasText: seriesName })
       await expect(card).toHaveCount(1)
       await expect(card.locator('.series-count')).toHaveText('2 本')
@@ -144,7 +140,7 @@ for (const touch of [false, true]) {
       await press(page, fileCard, touch, 'scroll')
       await expect(page.locator('.selection-toggle')).toHaveAttribute('aria-pressed', 'false')
       for (const name of ['文件', '书籍', '音乐', '图片', '视频', '首页']) {
-        if (name !== '文件') await navigate(page, name, touch)
+        if (name !== '文件') await navigate(page, name)
         const cards = page.locator(name === '首页' ? '.home-card' : name === '文件' ? '.file-card' : '.library-card')
         const card = name === '首页' ? cards.first() : cards.filter({ hasText: prefix }).first()
         await expect(card).toBeVisible()
@@ -153,11 +149,11 @@ for (const touch of [false, true]) {
         await expect(page.locator('#reader-view,.media-preview,.document-editor')).toHaveCount(0)
         await page.locator('.selection-toolbar').getByRole('button', { name: '取消', exact: true }).click()
       }
-      await navigate(page, '文件', touch)
+      await navigate(page, '文件')
       const files = await (await page.request.get(`/api/library/items?q=${prefix}`)).json()
       const id = files.items.find((item: any) => item.file.name.endsWith('.txt')).file.id
       expect((await page.request.delete(`/api/files/${id}`, { headers: { origin: new URL(page.url()).origin } })).ok()).toBeTruthy()
-      await navigate(page, '回收站', touch)
+      await navigate(page, '回收站')
       await press(page, page.locator('.file-card').filter({ hasText: `${prefix}.txt` }), touch)
       await expect(page.locator('.selection-summary b')).toHaveText('已选择 1 项')
       await page.locator('.selection-toolbar').getByRole('button', { name: '取消', exact: true }).click()

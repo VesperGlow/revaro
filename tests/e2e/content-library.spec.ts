@@ -85,7 +85,7 @@ test('favorites and albums persist, and removing membership preserves the origin
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?q=${photo}`)).json()).items[0].favorite).toBe(true)
   await openTopbarMenu(page)
   await page.getByRole('button', { name: '退出选择模式', exact: true }).click()
-  await page.getByRole('button', { name: '＋ 新建相册', exact: true }).click()
+  await page.getByRole('button', { name: '新建相册', exact: true }).click()
   await page.getByLabel('集合名称').fill(name)
   await page.getByRole('dialog', { name: '管理集合' }).getByRole('button', { name: '创建', exact: true }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)

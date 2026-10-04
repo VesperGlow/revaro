@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { login } from './helpers'
+import { login, navigate } from './helpers'
 
 const overlay = (page: Page) => page.getByRole('region', { name: '上传进度', exact: true })
 const row = (page: Page, name: string) => page.locator('.upload-progress-item').filter({ has: page.locator('strong', { hasText: name }) })
@@ -65,7 +65,7 @@ test('uploads appear automatically in a bounded scrolling overlay and disappear 
   await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
   await page.mouse.wheel(0, -1000)
   await expect.poll(() => list.evaluate(element => element.scrollTop)).toBe(0)
-  await page.getByRole('navigation', { name: '移动端导航', exact: true }).getByRole('link', { name: '书籍', exact: true }).click()
+  await navigate(page, '书籍')
   await expect(overlay(page)).toBeVisible()
   await expect(page.locator('.upload-progress-item')).toHaveCount(20)
   const firstId = ids.get(names[0])!

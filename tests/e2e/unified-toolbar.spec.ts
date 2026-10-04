@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login, openTopbarMenu } from './helpers'
+import { login, navigate, openTopbarMenu } from './helpers'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 const wav = Buffer.alloc(16044)
@@ -77,18 +77,20 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
     await page.setViewportSize({ width, height: 900 })
     const nav = page.getByRole('navigation', { name: width <= 850 ? '移动端导航' : '主导航', exact: true })
     for (const name of ['首页', '书籍', '音乐', '图片', '文件']) {
-      const link = nav.getByRole('link', { name, exact: true })
-      await expect(link).toHaveAttribute('title', name)
-      await expect(link).toHaveText('')
+      const link = await navigate(page, name)
+      const inMenu = width <= 850 && ['书籍', '音乐', '图片'].includes(name)
+      const label = inMenu && name === '图片' ? '图库' : name
+      await expect(link).toHaveAttribute('title', label)
+      await expect(link).toHaveText(inMenu ? label : '')
       await expect(link.locator('svg')).toHaveCount(1)
-      await link.click()
       await expect(link).toHaveAttribute('aria-current', 'page')
       if (width > 850) {
         const header = (await page.locator('header.topbar').boundingBox())!
         const navigation = (await nav.boundingBox())!
         expect(Math.abs(navigation.x + navigation.width / 2 - header.x - header.width / 2)).toBeLessThanOrEqual(0.5)
       }
-      const underline = await link.evaluate(element => {
+      const activeIcon = inMenu ? nav.getByLabel('内容库', { exact: true }) : link
+      const underline = await activeIcon.evaluate(element => {
         const icon = element.querySelector('svg')!.getBoundingClientRect()
         const link = element.getBoundingClientRect()
         const style = getComputedStyle(element, '::after')

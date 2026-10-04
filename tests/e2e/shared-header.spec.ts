@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login, openTopbarMenu } from './helpers'
+import { login, navigate, openTopbarMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 
@@ -67,10 +67,22 @@ test('shared navigation, tools and search remain usable across mobile breakpoint
     await page.setViewportSize({ width, height: 844 })
     await expect(page.locator('header.topbar')).toHaveCount(1)
     const nav = page.getByRole('navigation', { name: '移动端导航', exact: true })
-    expect(await nav.getByRole('link').evaluateAll(links => links.map(link => link.getAttribute('aria-label')))).toEqual(['首页', '书籍', '音乐', '图片', '视频', '文件', '回收站'])
+    const icons = nav.locator(':scope > a, :scope > .mobile-library-menu > details > summary')
+    await expect(icons).toHaveCount(4)
+    expect(await icons.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')))).toEqual(['首页', '文件', '内容库', '回收站'])
+    const positions = await icons.evaluateAll(elements => elements.map(element => {
+      const bounds = element.getBoundingClientRect()
+      return { x: bounds.x, width: bounds.width }
+    }))
+    for (let index = 0; index < positions.length; index++) {
+      expect(positions[index].width).toBeCloseTo(width / 4, 1)
+      expect(positions[index].x).toBeCloseTo(index * width / 4, 1)
+    }
     for (const label of ['书籍', '音乐', '图片', '视频', '文件']) {
-      await nav.getByRole('link', { name: label, exact: true }).click()
-      await expect(nav.locator('[aria-current="page"]')).toHaveAttribute('aria-label', label)
+      await navigate(page, label)
+      await expect(nav.locator('[aria-current="page"]')).toHaveAttribute('aria-label', label === '图片' ? '图库' : label)
+      await expect(nav.getByLabel('内容库', { exact: true })).toHaveAttribute('aria-expanded', 'false')
+      await expect(nav.locator('.mobile-library-menu')).toHaveClass(label === '文件' ? 'mobile-library-menu' : 'mobile-library-menu active')
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     await page.getByLabel('打开搜索', { exact: true }).click()
@@ -105,4 +117,53 @@ test('shared navigation, tools and search remain usable across mobile breakpoint
   await desktop.getByRole('link', { name: '音乐', exact: true }).click()
   await expect(desktop.locator('[aria-current="page"]')).toHaveAttribute('aria-label', '音乐')
   await expect(page.locator('.topbar.searching')).toHaveCount(0)
+})
+
+test('mobile library menu supports dismissal, keyboard focus, history and desktop resizing', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await login(page)
+  const nav = page.getByRole('navigation', { name: '移动端导航', exact: true })
+  const trigger = nav.getByLabel('内容库', { exact: true })
+  const panel = nav.locator('.mobile-library-menu-panel')
+  await trigger.click()
+  await expect(panel).toBeVisible()
+  expect(await panel.getByRole('link').allTextContents()).toEqual(['书籍', '音乐', '图库', '视频'])
+  const bounds = (await panel.boundingBox())!
+  expect(bounds.x).toBe(0)
+  expect(bounds.width).toBe(390)
+  expect(bounds.y + bounds.height).toBe(844)
+  await expect(page.locator('body')).toHaveCSS('overflow', 'hidden')
+  const close = nav.getByRole('button', { name: '关闭内容库菜单', exact: true })
+  await close.focus()
+  await page.keyboard.press('Shift+Tab')
+  await expect(panel.getByRole('link', { name: '视频', exact: true })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(close).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(panel).toBeHidden()
+  await expect(trigger).toBeFocused()
+  await trigger.press('Enter')
+  await close.click()
+  await expect(panel).toBeHidden()
+  await trigger.click()
+  await nav.locator('.topbar-menu-backdrop').click({ position: { x: 1, y: 1 } })
+  await expect(panel).toBeHidden()
+  await navigate(page, '书籍')
+  await navigate(page, '音乐')
+  await page.goBack()
+  await expect(page).toHaveURL(/\/library$/)
+  await trigger.click()
+  await expect(panel.getByRole('link', { name: '书籍', exact: true })).toHaveAttribute('aria-current', 'page')
+  await page.goForward()
+  await expect(panel).toBeHidden()
+  await expect(page).toHaveURL(/\/music$/)
+  await trigger.click()
+  await page.setViewportSize({ width: 851, height: 844 })
+  await expect(nav).toBeHidden()
+  await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden')
+  const desktop = page.getByRole('navigation', { name: '主导航', exact: true })
+  await expect(desktop.getByRole('link')).toHaveCount(7)
+  await expect(desktop.getByRole('link', { name: '音乐', exact: true })).toHaveAttribute('aria-current', 'page')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false')
 })

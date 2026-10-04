@@ -752,11 +752,11 @@ pub fn ContentShell(
                         }>
                         <div class="library-toolbar">
                             <div class="library-tabs">
-                                <button class:active=move || !favorites.get() && selected_collection.get().is_empty()
+                                <button type="button" class:active=move || !favorites.get() && selected_collection.get().is_empty()
                                     on:click=move |_| { favorites.set(false); selected_collection.set(String::new()); }>
                                     "全部"<small>{move || total.get()}</small>
                                 </button>
-                                <button class="favorite-filter" class:active=move || favorites.get() title="我的收藏" aria-label="我的收藏"
+                                <button type="button" class="favorite-filter" class:active=move || favorites.get() title="我的收藏" aria-label="我的收藏"
                                     aria-pressed=move || favorites.get().to_string()
                                     on:click=move |_| { favorites.update(|v| *v = !*v); selected_collection.set(String::new()); }>
                                     {icons::heart()}
@@ -778,8 +778,11 @@ pub fn ContentShell(
                                 </ActionMenu>
                             </div>
                             <div class="library-toolbar-actions">
-                                <button class="secondary" on:click=move |_| { new_collection.set(true); error.set(String::new()); }>{move || format!("＋ 新建{}", page.get().collection_label())}</button>
-                                <Show when=move || page.get() == LibraryPage::Music fallback=|| ()><button class="primary" on:click=move |_| play_all.run(())>{icons::play()}"播放全部"</button></Show>
+                                <button class="secondary collection-create" type="button"
+                                    title=move || format!("新建{}", page.get().collection_label())
+                                    aria-label=move || format!("新建{}", page.get().collection_label())
+                                    on:click=move |_| { new_collection.set(true); error.set(String::new()); }>{icons::plus()}</button>
+                                <Show when=move || page.get() == LibraryPage::Music fallback=|| ()><button class="primary library-play" type="button" on:click=move |_| play_all.run(())>{icons::play()}"播放"</button></Show>
                             </div>
                         </div>
                         <Show when=move ||!selected_collection.get().is_empty() fallback=|| ()><div class="collection-caption"><span>"集合中的内容仍保存在原文件夹，移除成员不会删除原文件。"</span><button on:click=move |_|delete_collection.run(())>"删除集合"</button></div></Show>

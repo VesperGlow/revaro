@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login, openTopbarMenu } from './helpers'
+import { login, navigate, openTopbarMenu } from './helpers'
 
 test('compact dashboards and shared SVG action menus preserve file operations and keyboard focus', async ({ page }) => {
   const failures: string[] = []
@@ -9,8 +9,8 @@ test('compact dashboards and shared SVG action menus preserve file operations an
     await page.setViewportSize({ width, height: 900 })
     const nav = page.getByRole('navigation', { name: width <= 850 ? '移动端导航' : '主导航', exact: true })
     for (const label of ['首页', '书籍', '音乐', '图片']) {
-      await nav.getByRole('link', { name: label, exact: true }).click()
-      await expect(nav.locator('[aria-current=page]')).toHaveAttribute('aria-label', label)
+      await navigate(page, label)
+      await expect(nav.locator('[aria-current=page]')).toHaveAttribute('aria-label', width <= 850 && label === '图片' ? '图库' : label)
       await expect(page.locator('.library-welcome, .library-eyebrow, .welcome-art, .library-heading, main h1')).toHaveCount(0)
       const content = await page.locator('main.library-main').boundingBox()
       const header = await page.locator('header.topbar').boundingBox()
@@ -51,7 +51,7 @@ test('compact dashboards and shared SVG action menus preserve file operations an
     await expect(upload).not.toHaveCSS('box-shadow', 'none')
     await create.press('Enter')
     await expect(page.getByRole('button', { name: '新建文档', exact: true })).toBeVisible()
-    if (width <= 850) await page.locator('.topbar-menu-backdrop').click({ position: { x: 1, y: 1 } })
+    if (width <= 850) await page.locator('.topbar .topbar-menu-backdrop').click({ position: { x: 1, y: 1 } })
     else await page.locator('.breadcrumbs').click({ position: { x: 1, y: 1 } })
     await expect(page.locator('.topbar .action-menu[open]')).toHaveCount(0)
   }
@@ -127,7 +127,7 @@ test('hamburger popover and mobile sheet fit every viewport and preserve selecti
       expect(bounds.x).toBe(0)
       expect(bounds.width).toBe(width)
       expect(bounds.y + bounds.height).toBe(height)
-      await expect(page.locator('.topbar-menu-backdrop')).toBeVisible()
+      await expect(page.locator('.topbar .topbar-menu-backdrop')).toBeVisible()
       await expect(panel).toHaveCSS('border-top-left-radius', '18px')
       await expect(page.locator('body')).toHaveCSS('overflow', 'hidden')
       await page.getByLabel('关闭菜单', { exact: true }).focus()
@@ -139,7 +139,7 @@ test('hamburger popover and mobile sheet fit every viewport and preserve selecti
       expect(bounds.x + bounds.width).toBe(trigger.x + trigger.width)
       expect(bounds.y).toBe(trigger.y + trigger.height + 8)
       await expect(panel).toHaveCSS('border-radius', '10px')
-      await expect(page.locator('.topbar-menu-backdrop')).toBeHidden()
+      await expect(page.locator('.topbar .topbar-menu-backdrop')).toBeHidden()
     }
     await expect(panel.getByLabel('打开任务通知', { exact: true })).toHaveCount(0)
     await expect(panel.locator('.embedded-menu > summary')).toHaveText(['新建', '上传', '公开链接'])

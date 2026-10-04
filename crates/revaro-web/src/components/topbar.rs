@@ -293,29 +293,70 @@ pub fn AppNavigation(
     on_navigate: Callback<LibraryPage>,
     mobile: bool,
 ) -> impl IntoView {
+    let links = if mobile {
+        view! {
+            <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Home />
+            <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Files />
+            <div class="mobile-library-menu" class:active=move || matches!(page.get(), LibraryPage::Books | LibraryPage::Music | LibraryPage::Gallery | LibraryPage::Videos)>
+                <ActionMenu label="内容库".to_owned() icon=MenuIcon::Menu sheet=true
+                    context=Signal::derive(move || page.get().path().to_owned())
+                    panel_class="mobile-library-menu-panel">
+                    <header class="topbar-menu-heading"><h2>"内容库"</h2>
+                        <button class="topbar-menu-close" type="button" aria-label="关闭内容库菜单" data-close-menu="true">{icons::x()}</button>
+                    </header>
+                    <For each=|| [LibraryPage::Books, LibraryPage::Music, LibraryPage::Gallery, LibraryPage::Videos]
+                        key=|destination| destination.path() children=move |destination| view! {
+                            <NavigationLink page=page on_navigate=on_navigate destination=destination menu=true />
+                        } />
+                </ActionMenu>
+            </div>
+            <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Trash />
+        }.into_any()
+    } else {
+        view! {
+            <For each=|| LibraryPage::ALL key=|destination| destination.path() children=move |destination| view! {
+                <NavigationLink page=page on_navigate=on_navigate destination=destination />
+            } />
+        }.into_any()
+    };
     view! {
         <nav class="app-navigation" class:mobile-navigation=mobile
             aria-label=if mobile { "移动端导航" } else { "主导航" }>
-            <For each=|| LibraryPage::ALL key=|p| p.path() children=move |destination| view! {
-                <a href=destination.path() class:active=move || page.get() == destination
-                    title=destination.label() aria-label=destination.label()
-                    aria-current=move || if page.get() == destination { Some("page") } else { None }
-                    on:click=move |event: leptos::ev::MouseEvent| {
-                        if event.button() != 0 || event.ctrl_key() || event.meta_key() || event.shift_key() || event.alt_key() {
-                            return;
-                        }
-                        event.prevent_default();
-                        on_navigate.run(destination);
-                    }>{match destination {
-                        LibraryPage::Home => icons::home().into_any(),
-                        LibraryPage::Books => icons::book_open().into_any(),
-                        LibraryPage::Music => icons::music_2().into_any(),
-                        LibraryPage::Gallery => icons::image().into_any(),
-                        LibraryPage::Videos => icons::video().into_any(),
-                        LibraryPage::Files => icons::folder().into_any(),
-                        LibraryPage::Trash => icons::trash().into_any(),
-                    }}</a>
-            } />
+            {links}
         </nav>
+    }
+}
+
+#[component]
+fn NavigationLink(
+    page: RwSignal<LibraryPage>,
+    on_navigate: Callback<LibraryPage>,
+    destination: LibraryPage,
+    #[prop(optional)] menu: bool,
+) -> impl IntoView {
+    let label = if menu && destination == LibraryPage::Gallery {
+        "图库"
+    } else {
+        destination.label()
+    };
+    view! {
+        <a href=destination.path() class:active=move || page.get() == destination
+            title=label aria-label=label data-close-menu=menu.then_some("true")
+            aria-current=move || if page.get() == destination { Some("page") } else { None }
+            on:click=move |event: leptos::ev::MouseEvent| {
+                if event.button() != 0 || event.ctrl_key() || event.meta_key() || event.shift_key() || event.alt_key() {
+                    return;
+                }
+                event.prevent_default();
+                on_navigate.run(destination);
+            }>{match destination {
+                LibraryPage::Home => icons::home().into_any(),
+                LibraryPage::Books => icons::book_open().into_any(),
+                LibraryPage::Music => icons::music_2().into_any(),
+                LibraryPage::Gallery => icons::image().into_any(),
+                LibraryPage::Videos => icons::video().into_any(),
+                LibraryPage::Files => icons::folder().into_any(),
+                LibraryPage::Trash => icons::trash().into_any(),
+            }}{menu.then(|| view! { <span>{label}</span> })}</a>
     }
 }

@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Locator } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login, enterSelectionMode, openTopbarMenu } from './helpers'
+import { login, navigate, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -92,9 +92,8 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
   const exit = page.locator('.selection-toggle[aria-label="退出选择模式"]')
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 })
-    const nav = page.getByRole('navigation', { name: width > 850 ? '主导航' : '移动端导航', exact: true })
     for (const name of ['首页', '书籍', '音乐', '图片', '视频', '文件']) {
-      await nav.getByRole('link', { name, exact: true }).click()
+      await navigate(page, name)
       if (name === '文件') {
         await page.getByLabel('打开搜索', { exact: true }).click()
         await page.getByLabel('搜索文件名', { exact: true }).fill(prefix)
@@ -266,10 +265,9 @@ test('batch bars match file margins and background dismissal never intercepts ca
   const exit = page.locator('.selection-toggle[aria-label="退出选择模式"]')
   for (const width of [1280, 1600, 1920, 390, 320]) {
     await page.setViewportSize({ width, height: 1000 })
-    const nav = page.getByRole('navigation', { name: width > 850 ? '主导航' : '移动端导航', exact: true })
     let reference: { x: number; width: number; styles: unknown } | undefined
     for (const name of ['文件', '图片', '视频', '书籍', '音乐', '首页']) {
-      await nav.getByRole('link', { name, exact: true }).click()
+      await navigate(page, name)
       if (name === '文件') {
         await page.getByLabel('打开搜索', { exact: true }).click()
         await page.getByLabel('搜索文件名', { exact: true }).fill(prefix)

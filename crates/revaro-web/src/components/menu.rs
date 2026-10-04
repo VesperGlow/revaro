@@ -85,6 +85,17 @@ pub fn ActionMenu(
     });
     on_cleanup(move || outside.release());
 
+    if sheet {
+        let mut resize = browser::on_resize(move |_| {
+            if let Some(details) = menu.get()
+                && details.get_client_rects().length() == 0
+            {
+                details.set_open(false);
+            }
+        });
+        on_cleanup(move || resize.release());
+    }
+
     if let Some(context) = context {
         Effect::new(move |_| {
             let _ = context.get();
