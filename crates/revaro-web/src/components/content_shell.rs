@@ -13,7 +13,7 @@ use super::{
     menu::{ActionMenu, MenuIcon},
     music_player::{MusicController, PersistentMusicPlayer, display_title},
     reader::ReaderView,
-    selection::{SelectionCheckbox, SelectionManagement, SelectionMode},
+    selection::{SelectionCheckbox, SelectionManagement, SelectionMode, install_long_press},
     selection_toolbar::{BatchActionBar, matches_collection},
     topbar::{AppNavigation, AppTopbar, TopbarActions, TopbarSearch},
     uploads::UploadProgress,
@@ -121,6 +121,13 @@ pub(super) fn CardInfo(name: String, detail: Signal<String>) -> impl IntoView {
     }
 }
 
+fn series_name(path: &str) -> String {
+    crate::logic::routing::series_id(path)
+        .and_then(|name| js_sys::decode_uri_component(&name).ok())
+        .and_then(|name| name.as_string())
+        .unwrap_or_default()
+}
+
 fn pathname() -> String {
     web_sys::window()
         .and_then(|w| w.location().pathname().ok())
@@ -155,6 +162,7 @@ pub fn ContentShell(
     let query = RwSignal::new(String::new());
     let favorites = RwSignal::new(false);
     let selected_collection = RwSignal::new(String::new());
+    let selected_series = RwSignal::new(series_name(&pathname()));
     let collections = RwSignal::new(Vec::<Collection>::new());
     let items = RwSignal::new(Vec::<LibraryItem>::new());
     let total = RwSignal::new(0_i64);
@@ -173,6 +181,7 @@ pub fn ContentShell(
     let collection_busy = RwSignal::new(false);
     let collection_target = RwSignal::new(None::<CollectionTarget>);
     let selection = SelectionMode::new();
+    install_long_press(selection);
     let selection_overlay = Signal::derive(move || {
         reader.get().is_some()
             || image.get().is_some()
@@ -185,6 +194,7 @@ pub fn ContentShell(
             query.get(),
             favorites.get(),
             selected_collection.get(),
+            selected_series.get(),
         )
     });
     Effect::new(move |_| {
@@ -193,13 +203,20 @@ pub fn ContentShell(
     });
     Effect::new(move |_| {
         if !loading.get() && !page.get().is_file_workspace() && page.get() != LibraryPage::Home {
-            selection.set_library_items(items.get().into_iter().map(|item| item.file).collect());
+            selection.set_library_items(
+                items
+                    .get()
+                    .iter()
+                    .flat_map(LibraryItem::selectable_files)
+                    .collect(),
+            );
         }
     });
 
     let navigate = Callback::new(move |next: LibraryPage| {
         reader.set(None);
         image.set(None);
+        selected_series.set(String::new());
         if page.get_untracked() != next {
             query.set(String::new());
             query_text.set(String::new());
@@ -240,9 +257,20 @@ pub fn ContentShell(
         }
         let request = LibraryQuery {
             kind: current_page.kind().to_owned(),
-            query: query.get_untracked(),
-            favorite: favorites.get_untracked(),
-            collection: selected_collection.get_untracked(),
+            query: if selected_series.get_untracked().is_empty() {
+                query.get_untracked()
+            } else {
+                String::new()
+            },
+            favorite: selected_series.get_untracked().is_empty() && favorites.get_untracked(),
+            collection: if selected_series.get_untracked().is_empty() {
+                selected_collection.get_untracked()
+            } else {
+                String::new()
+            },
+            series: selected_series.get_untracked(),
+            group_series: current_page == LibraryPage::Books
+                && selected_series.get_untracked().is_empty(),
             offset: if more {
                 items.get_untracked().len() as i64
             } else {
@@ -287,6 +315,7 @@ pub fn ContentShell(
             query.get(),
             favorites.get(),
             selected_collection.get(),
+            selected_series.get(),
             refresh.get(),
         );
         more_loading.set(false);
@@ -422,6 +451,12 @@ pub fn ContentShell(
             selected_collection.set(String::new());
         }
         page.set(next);
+        selected_series.set(series_name(&path));
+        query_text.set(if selected_series.get_untracked().is_empty() {
+            query.get_untracked()
+        } else {
+            String::new()
+        });
         if let Some(id) = reader_id(&path) {
             reader_pushed.set(true);
             leptos::task::spawn_local(async move {
@@ -591,6 +626,7 @@ pub fn ContentShell(
             !page.get().is_file_workspace()
                 && page.get() != LibraryPage::Home
                 && !selected_collection.get().is_empty()
+                && selected_series.get().is_empty()
         }),
     }));
     let delete_collection = Callback::new(move |()| {
@@ -652,8 +688,30 @@ pub fn ContentShell(
                 query.set(text);
             }
         }),
-        on_submit: Callback::new(move |()| query.set(query_text.get_untracked())),
+        on_submit: Callback::new(move |()| {
+            if !selected_series.get_untracked().is_empty() {
+                selected_series.set(String::new());
+                route("/library", true);
+            }
+            query.set(query_text.get_untracked());
+        }),
     };
+    let open_series = Callback::new(move |name: String| {
+        selected_series.set(name.clone());
+        query_text.set(String::new());
+        route(
+            &format!("/library/series/{}", js_sys::encode_uri_component(&name)),
+            true,
+        );
+        if let Some(window) = web_sys::window() {
+            window.scroll_to_with_x_and_y(0.0, 0.0);
+        }
+    });
+    let close_series = Callback::new(move |()| {
+        selected_series.set(String::new());
+        query_text.set(query.get_untracked());
+        route("/library", true);
+    });
     let collection_text = Signal::derive(move || {
         collections
             .get()
@@ -686,6 +744,12 @@ pub fn ContentShell(
                     {move || selection.actions.get().map(|actions| view! { <BatchActionBar selection=selection actions=actions /> })}
                     <Show when=move ||page.get()==LibraryPage::Home fallback=move ||view! {
 
+                        <Show when=move ||selected_series.get().is_empty() fallback=move ||view! {
+                            <header class="series-header">
+                                <button class="secondary" on:click=move |_|close_series.run(())>"← 返回书架"</button>
+                                <div><h1>{move ||selected_series.get()}</h1><small>{move ||format!("{} 本书",total.get())}</small></div>
+                            </header>
+                        }>
                         <div class="library-toolbar">
                             <div class="library-tabs">
                                 <button class:active=move || !favorites.get() && selected_collection.get().is_empty()
@@ -719,31 +783,47 @@ pub fn ContentShell(
                             </div>
                         </div>
                         <Show when=move ||!selected_collection.get().is_empty() fallback=|| ()><div class="collection-caption"><span>"集合中的内容仍保存在原文件夹，移除成员不会删除原文件。"</span><button on:click=move |_|delete_collection.run(())>"删除集合"</button></div></Show>
+                        </Show>
                         <Show when=move ||loading.get() fallback=move ||view! {
                             <Show when=move ||items.get().is_empty() && error.get().is_empty() fallback=|| ()><div class="library-empty"><span>"＋"</span><h2>"这里等着你的收藏"</h2><p>"已有文件会自动出现在对应内容库，也可以现在导入。"</p><button class="primary" on:click=move |_|import.run(())>"导入内容"</button></div></Show>
                             <div class="library-grid" class:selection-mode=move || selection.enabled.get() class:book-grid=move ||page.get()==LibraryPage::Books class:song-list=move ||page.get()==LibraryPage::Music class:photo-grid=move ||matches!(page.get(),LibraryPage::Gallery | LibraryPage::Videos) class:video-grid=move ||page.get()==LibraryPage::Videos>
-                                <For each=move || { items.get().into_iter().enumerate().collect::<Vec<_>>() } key=|(_,i)|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.last_opened.is_some()) children=move |(index,item)| {
-                                    let open_file = item.file.clone();
-                                    let selected_id = item.file.id.clone();
-                                    let card_background_id = item.file.id.clone();
-                                    let detail = if item.kind == "book" {
-                                        if item.last_opened.is_some() { "继续阅读".to_owned() } else { "未读".to_owned() }
-                                    } else if item.kind == "audio" {
-                                        format!("{} · 本地音乐", revaro_core::classify::extension(&item.file.name).to_uppercase())
-                                    } else { format_date(&item.file.created_at.to_rfc3339()) };
-                                    view! {
-                                        <article class="library-card" on:click=move |event|selection.toggle_from_card_background(event, &card_background_id)
-                                            class:selected=move ||selection.ids.with(|ids|ids.contains(&selected_id))
-                                            class:is-playing=move ||music.current().is_some_and(|f|f.id==open_file.id)>
-                                            <SelectionCheckbox id=item.file.id.clone() name=item.file.name.clone() selection=selection />
-                                            <Show when=move ||page.get()==LibraryPage::Music fallback=|| ()><span class="song-number-slot"><span class="song-number">{format!("{:02}",index+1)}</span></span></Show>
-                                            <button class="library-card-open" aria-label=format!("打开 {}",item.file.name) on:click={let file=item.file.clone();move |_|open.run(file.clone())}>
-                                                <LibraryCover item=item.clone() />
-                                                <CardInfo name=display_title(&item.file.name) detail=Signal::derive(move ||detail.clone()) />
-                                            </button>
-                                        </article>
-                                    }
-                                } />
+                                <For each=move || { items.get().into_iter().enumerate().collect::<Vec<_>>() }
+                                    key=|(_,i)|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.reading_progress.map(f64::to_bits),i.series_files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())
+                                    children=move |(index,item)| {
+                                        let file_id = item.file.id.clone();
+                                        let group = item.selectable_files().into_iter().map(|f|f.id).collect::<Vec<_>>();
+                                        let selected_group = group.clone();
+                                        let background_group = group.clone();
+                                        let is_series = !item.series_files.is_empty();
+                                        let name = if is_series { item.series.clone().unwrap_or_default() } else { display_title(&item.file.name) };
+                                        let detail = if is_series { format!("{} 本书", item.series_files.len()) }
+                                            else if item.kind == "book" {
+                                                let progress = item.reading_progress.map(|p|format!("已读 {p:.1}%")).unwrap_or_else(|| "未读".to_owned());
+                                                item.series_index.map(|n| format!("第 {n} 卷 · {progress}")).unwrap_or(progress)
+                                            } else if item.kind == "audio" { format!("{} · 本地音乐",revaro_core::classify::extension(&item.file.name).to_uppercase()) }
+                                            else { format_date(&item.file.created_at.to_rfc3339()) };
+                                        let aria = if is_series { format!("打开系列 {name}，{} 本书",item.series_files.len()) } else { format!("打开 {}",item.file.name) };
+                                        let open_item = item.clone();
+                                        let open_group = group.clone();
+                                        view! {
+                                            <article class="library-card" class:series-card=is_series data-selection-ids=serde_json::to_string(&group).unwrap_or_default()
+                                                on:click=move |event|selection.toggle_group_from_card_background(event,&background_group)
+                                                class:selected=move ||selection.ids.with(|ids|selected_group.iter().all(|id|ids.contains(id)))
+                                                class:is-playing=move ||music.current().is_some_and(|f|f.id==file_id)>
+                                                <SelectionCheckbox id=item.file.id.clone() name=name.clone() group=group.clone() selection=selection />
+                                                <Show when=move ||page.get()==LibraryPage::Music fallback=|| ()><span class="song-number-slot"><span class="song-number">{format!("{:02}",index+1)}</span></span></Show>
+                                                <button class="library-card-open" aria-label=aria on:click=move |_| {
+                                                    if selection.enabled.get_untracked() { selection.toggle_group(&open_group); }
+                                                    else if is_series { open_series.run(open_item.series.clone().unwrap_or_default()); }
+                                                    else { open.run(open_item.file.clone()); }
+                                                }>
+                                                    <LibraryCover item=item.clone() />
+                                                    {is_series.then(||view! { <span class="series-count">{format!("{} 本",item.series_files.len())}</span> })}
+                                                    <CardInfo name=name detail=Signal::derive(move ||detail.clone()) />
+                                                </button>
+                                            </article>
+                                        }
+                                    } />
                             </div>
                             <Show when=move || { (items.get().len() as i64)<total.get() } fallback=|| ()><div class="library-load-more"><button class="secondary" disabled=move ||more_loading.get() on:click=move |_|load.run(true)>{move ||if more_loading.get(){"正在加载…"}else{"加载更多"}}</button><small>{move ||format!("已显示 {} / {}",items.get().len(),total.get())}</small></div></Show>
                         }><div class="library-loading"><div class="spinner"></div><p>"正在打开内容库…"</p></div></Show>
@@ -778,6 +858,28 @@ pub fn ContentShell(
                 </section></div>
             </Show>
         </div>
+    }
+}
+
+#[component]
+pub(super) fn BookProgressBar(
+    #[prop(optional_no_strip)] percent: Option<f64>,
+    #[prop(optional)] file_id: Option<String>,
+) -> impl IntoView {
+    let progress = RwSignal::new(percent.filter(|p| p.is_finite() && *p > 0.0));
+    if let Some(id) = file_id {
+        leptos::task::spawn_local(async move {
+            if let Ok(value) = api::fetch_book_progress(&id).await {
+                let _ = progress.try_set(value.percent.filter(|p| p.is_finite() && *p > 0.0));
+            }
+        });
+    }
+    view! {
+        {move ||progress.get().map(|p|view! {
+            <div class="book-reading-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow=p.clamp(0.0,100.0) title=format!("已读 {p:.1}%")>
+                <span style:width=format!("{}%",p.clamp(0.0,100.0))></span>
+            </div>
+        })}
     }
 }
 
@@ -832,6 +934,7 @@ fn LibraryCover(item: LibraryItem) -> impl IntoView {
             }>
                 <img loading="lazy" src={let url = thumbnail_url.clone(); move || format!("{}&retry={}", url, retry.get())} alt="" on:error=retry_thumbnail />
             </Show>
+            <BookProgressBar percent=item.reading_progress />
             {is_video.then(|| view! { <span class="video-cover-play">{icons::play()}</span><span class="video-duration">{move || duration.get().unwrap_or_else(|| "—:—".to_owned())}</span> })}
         </div>
     }
@@ -915,7 +1018,7 @@ fn HomeDashboard(
         <For each=move ||sections.get() key=move |(p,_)|(p.path(),refresh.get_untracked()) children=move |(p,list)|view!{
             <section class="home-section"><header><div><h2>{match p{LibraryPage::Books=>"继续阅读",LibraryPage::Music=>"最近播放与收藏",LibraryPage::Videos=>"最近添加的视频",_=>"最近添加的图片"}}</h2></div><button on:click=move |_|on_navigate.run(p)>"查看全部"<span>"→"</span></button></header>
                 <div class="home-content-row" class:selection-mode=move || selection.enabled.get() class:home-books=p==LibraryPage::Books class:home-images=matches!(p,LibraryPage::Gallery | LibraryPage::Videos)>
-                    {if list.is_empty(){view!{<button class="home-empty" on:click=move |_|on_import.run(())>"还没有内容，导入你的第一份收藏 →"</button>}.into_any()}else{list.into_iter().map(|item|{let file=item.file.clone();let selected_id=file.id.clone();let card_background_id=file.id.clone();view!{<article class="home-card" on:click=move |event| selection.toggle_from_card_background(event, &card_background_id) class:selected=move || selection.ids.with(|ids| ids.contains(&selected_id))><SelectionCheckbox id=item.file.id.clone() name=item.file.name.clone() selection=selection /><button class="home-item" aria-label=format!("打开 {}",item.file.name) on:click=move |_|on_open.run(file.clone())><LibraryCover item=item.clone()/><CardInfo name=display_title(&item.file.name) detail=Signal::derive(move ||if item.last_opened.is_some(){"继续打开".to_owned()}else{"新加入你的内容库".to_owned()}) /></button></article>}}).collect_view().into_any()}}
+                    {if list.is_empty(){view!{<button class="home-empty" on:click=move |_|on_import.run(())>"还没有内容，导入你的第一份收藏 →"</button>}.into_any()}else{list.into_iter().map(|item|{let file=item.file.clone();let selected_id=file.id.clone();let card_background_id=file.id.clone();view!{<article class="home-card" data-selection-ids=serde_json::to_string(&vec![item.file.id.clone()]).unwrap_or_default() on:click=move |event| selection.toggle_from_card_background(event, &card_background_id) class:selected=move || selection.ids.with(|ids| ids.contains(&selected_id))><SelectionCheckbox id=item.file.id.clone() name=item.file.name.clone() selection=selection /><button class="home-item" aria-label=format!("打开 {}",item.file.name) on:click=move |_|on_open.run(file.clone())><LibraryCover item=item.clone()/><CardInfo name=display_title(&item.file.name) detail=Signal::derive(move ||if item.last_opened.is_some(){"继续打开".to_owned()}else{"新加入你的内容库".to_owned()}) /></button></article>}}).collect_view().into_any()}}
                 </div>
             </section>
         } />

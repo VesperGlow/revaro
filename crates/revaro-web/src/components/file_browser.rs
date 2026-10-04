@@ -30,7 +30,7 @@ use crate::logic::format::{format_date, format_size};
 use crate::logic::routing::{folder_id, folder_url, reader_id};
 
 use super::account::AccountSettings;
-use super::content_shell::{CardInfo, ShellContext};
+use super::content_shell::{BookProgressBar, CardInfo, ShellContext};
 use super::dialogs::{ActionDialog, RenameDialog};
 use super::editor::{DocumentEditor, EditorMode};
 use super::file_browser_header::FileBrowserHeader;
@@ -2561,6 +2561,7 @@ fn FileTile(
     view! {
         <article
             class=move || tile_class(&class_item, preview_available.get())
+            data-selection-ids=selectable.then(|| serde_json::to_string(&vec![item.id.clone()]).unwrap_or_default())
             class:selected=move || selected_ids.get().contains(&item_id_for_class)
             role="button"
             tabindex="0"
@@ -2593,6 +2594,7 @@ fn FileTile(
                 title=move || preview_title(&item_for_title, trash_mode.get())
             >
                 {file_preview_with_state(&item, Some(preview_available))}
+                {classify::is_book(&item).then(||view! { <BookProgressBar file_id=item.id.clone() /> })}
             </div>
             <CardInfo name=name.clone() detail=Signal::derive(move ||display_meta(&item_for_meta, trash_mode.get())) />
         </article>

@@ -64,6 +64,7 @@ mod text;
 use std::io::{Read, Seek};
 
 pub use cache::BookCache;
+pub use epub::read_series;
 pub use model::{Asset, Book, Chapter, Format};
 pub use path::{asset_content_type, normalize_path};
 pub use revaro_core::reader::TocEntry;

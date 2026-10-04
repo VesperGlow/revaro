@@ -84,6 +84,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "007_remove_task_center.sql",
         sql: include_str!("../migrations/007_remove_task_center.sql"),
     },
+    Migration {
+        version: 8,
+        name: "008_book_series.sql",
+        sql: include_str!("../migrations/008_book_series.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

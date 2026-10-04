@@ -311,6 +311,17 @@ async fn book_progress(
         .is_some_and(|anchor| !anchor.is_valid())
     {
         progress.anchor = None;
+        progress.percent = None;
+    }
+    progress.percent = progress
+        .percent
+        .filter(|p| p.is_finite() && (0.0..=100.0).contains(p));
+    if progress.anchor.is_none() {
+        progress.percent = None;
+    } else if progress.percent.is_none()
+        && let Some(anchor) = &progress.anchor
+    {
+        progress.percent = legacy_progress_percent(state, &file, anchor).await;
     }
     Ok(Json(progress))
 }
@@ -327,11 +338,16 @@ async fn save_book_progress(
     // `encoding/json` accepts `null` into a struct and leaves it at its zero
     // value. Deserialising an Option preserves that small wire-level detail
     // while `{}` continues to mean the same thing as an empty progress object.
-    let anchor = request.and_then(|request| request.anchor);
+    let request = request.unwrap_or_default();
+    let anchor = request.anchor;
+    let percent = request.percent.filter(|_| anchor.is_some());
+    if percent.is_some_and(|value| !value.is_finite() || !(0.0..=100.0).contains(&value)) {
+        return Err(ApiError::bad_request("progress percent is invalid"));
+    }
     if anchor.as_ref().is_some_and(|anchor| !anchor.is_valid()) {
         return Err(ApiError::bad_request("progress anchor is invalid"));
     }
-    let raw = serde_json::to_string(&BookProgress { anchor })
+    let raw = serde_json::to_string(&BookProgress { anchor, percent })
         .map_err(|_| ApiError::bad_request("progress values are invalid"))?;
     let key = progress_key(&file.id);
     state
@@ -457,6 +473,30 @@ async fn read_manifest(
         tracing::error!(%error, "flow manifest is invalid");
         ApiError::internal("could not read flow manifest")
     })
+}
+
+pub(crate) async fn legacy_progress_percent(
+    state: Arc<AppState>,
+    file: &File,
+    anchor: &reader_model::Anchor,
+) -> Option<f64> {
+    ensure_flow(state.clone(), file).await.ok()?;
+    let manifest = read_manifest(&state, file).await.ok()?;
+    let index = manifest.chunk_for_block(anchor.block)?;
+    let key = keys::flow_chunk_key(&file.object_key, FLOW_VERSION, index as u32);
+    let bytes = read_flow_object(&state, READER_FLOW_CHUNK, &key)
+        .await
+        .ok()?;
+    let html = String::from_utf8(bytes).ok()?;
+    let permit = state.reader.work_slots.clone().acquire_owned().await.ok()?;
+    let anchor = anchor.clone();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        revaro_reader::flow::percent_for_anchor(&manifest, &html, &anchor)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 async fn ensure_flow(state: Arc<AppState>, file: &File) -> Result<(), ApiError> {

@@ -467,6 +467,8 @@ pub struct LibraryQuery {
     pub favorite: bool,
     pub collection: String,
     pub recent: bool,
+    pub group_series: bool,
+    pub series: String,
     pub offset: i64,
 }
 
@@ -474,16 +476,23 @@ pub async fn fetch_library(
     query: &LibraryQuery,
 ) -> Result<revaro_core::library::LibraryListing, RequestError> {
     let mut path = format!(
-        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&q={}",
+        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&group_series={}&q={}",
         query.offset,
         query.favorite,
         query.recent,
+        query.group_series,
         js_sys::encode_uri_component(&query.query)
     );
     if !query.kind.is_empty() {
         path.push_str(&format!(
             "&kind={}",
             js_sys::encode_uri_component(&query.kind)
+        ));
+    }
+    if !query.series.is_empty() {
+        path.push_str(&format!(
+            "&series={}",
+            js_sys::encode_uri_component(&query.series)
         ));
     }
     if !query.collection.is_empty() {

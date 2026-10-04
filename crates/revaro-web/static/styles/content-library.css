@@ -208,6 +208,15 @@
 @media(max-width:850px){.content-library .card-info{padding:9px 10px}.content-library .card-info strong{font-size:11px}.content-library .card-info small{font-size:9px}.song-list .card-info{padding:0}}
 @media(prefers-reduced-motion:reduce){.content-library .card-info{transition:none}}
 
+/* Touch file browsing keeps names inside the cover without obscuring its center. */
+@media(max-width:850px){
+ .content-library .file-card .card-info{padding:24px 10px 10px;background:linear-gradient(180deg,transparent,#141d26a8 22px,#141d26e0);opacity:1;transform:none;transition:none;gap:0}
+ .content-library .file-card .card-info strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere;color:#fff;font-size:12px;font-weight:600;line-height:1.4;text-shadow:0 1px 2px #0006}
+ .content-library .file-card .card-info small{display:none}
+ .content-library .file-card.fallback-tile .card-info{background:linear-gradient(180deg,#f7f8fa00,#f7f8faf5 22px,#f7f8fa)}
+ .content-library .file-card.fallback-tile .card-info strong{color:var(--library-ink);text-shadow:none}
+}
+
 /* Music keeps its inline title for scanning; extra details follow the shared hover rule. */
 .song-list .card-info{opacity:1;transform:none}
 .song-list .card-info small{opacity:0;transition:opacity 180ms ease}
@@ -216,3 +225,20 @@
 
 .video-duration{z-index:3}
 :is(.library-card,.home-card):has(.video-cover) .card-info{padding-right:64px}
+
+/* Keep gestures native while preventing cover dragging and touch callouts. */
+[data-selection-ids]{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:pan-y pinch-zoom}
+[data-selection-ids] img{-webkit-user-drag:none}
+.book-reading-progress{position:absolute;z-index:4;bottom:0;left:0;right:0;height:3px;background:#426b5e33;opacity:0;pointer-events:none;transition:opacity 180ms ease}
+.book-reading-progress>span{display:block;height:100%;background:var(--accent,#426b5e);transition:width 180ms ease}
+:is(.file-card,.library-card,.home-card):is(:hover,:focus-within) .book-reading-progress{opacity:1}
+.series-count{position:absolute;top:9px;right:9px;padding:4px 7px;border-radius:var(--radius-sm);background:#fffffff0;color:var(--library-ink);font-size:11px}
+.content-library .series-card .card-info{opacity:1;transform:none}
+.series-header{display:flex;align-items:center;gap:18px;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.series-header>div{min-width:0}
+.series-header h1{font-size:20px;line-height:1.4;margin:0 0 4px;overflow-wrap:anywhere;color:var(--library-ink)}
+.series-header small{color:var(--library-muted);font-size:12px}
+.series-header>button{flex-shrink:0}
+@media(hover:none){.book-reading-progress{opacity:1}}
+@media(max-width:850px){.series-header{gap:12px}.series-header h1{font-size:17px}.series-count{top:6px;right:6px;font-size:10px}}
+@media(prefers-reduced-motion:reduce){.book-reading-progress,.book-reading-progress>span{transition:none}}

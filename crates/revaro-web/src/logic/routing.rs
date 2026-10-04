@@ -28,6 +28,18 @@ pub fn reader_id(pathname: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
+/// Encoded series name; the browser decodes it after validating the route shape.
+#[must_use]
+pub fn series_id(pathname: &str) -> Option<String> {
+    let rest = pathname
+        .strip_prefix("/library/series/")?
+        .trim_end_matches('/');
+    if rest.is_empty() || rest.contains('/') || matches!(rest, "." | "..") {
+        return None;
+    }
+    Some(rest.to_owned())
+}
+
 /// Build the canonical URL for a folder.
 #[must_use]
 pub fn folder_url(id: &str, root_id: &str) -> String {
@@ -43,6 +55,22 @@ mod tests {
     use super::*;
 
     const ROOT: &str = "root";
+
+    #[test]
+    fn series_routes_preserve_encoded_names_and_reject_nested_paths() {
+        assert_eq!(
+            series_id("/library/series/%E6%98%9F%2F%E6%B5%B7/"),
+            Some("%E6%98%9F%2F%E6%B5%B7".into())
+        );
+        for path in [
+            "/library",
+            "/library/series/",
+            "/library/series/a/b",
+            "/library/series/..",
+        ] {
+            assert_eq!(series_id(path), None);
+        }
+    }
 
     #[test]
     fn restores_only_single_segment_folder_routes() {

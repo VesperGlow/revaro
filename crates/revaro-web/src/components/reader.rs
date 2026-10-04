@@ -133,6 +133,8 @@ struct ReaderRuntime {
     current_col: i32,
     metrics: ReaderMetrics,
     top_anchor: Option<Anchor>,
+    top_percent: f64,
+    library_refresh: Option<RwSignal<u64>>,
     pending_turns: i32,
     turn_busy: bool,
     syncing: bool,
@@ -158,6 +160,8 @@ impl Default for ReaderRuntime {
             current_col: 0,
             metrics: ReaderMetrics::default(),
             top_anchor: None,
+            top_percent: 0.0,
+            library_refresh: None,
             pending_turns: 0,
             turn_busy: false,
             syncing: false,
@@ -191,6 +195,8 @@ pub fn ReaderView(
     let viewport = DivRef::new();
     let flow = DivRef::new();
     let runtime = Rc::new(RefCell::new(ReaderRuntime::default()));
+    runtime.borrow_mut().library_refresh =
+        use_context::<super::content_shell::ShellContext>().map(|c| c.refresh);
 
     let stage = RwSignal::new(ReaderStage::Loading);
     let loading_text = RwSignal::new("正在读取书籍…".to_owned());
@@ -2162,7 +2168,7 @@ fn refresh_ui(
     toc_active: RwSignal<i32>,
     percent: RwSignal<f64>,
 ) {
-    let state = runtime.borrow();
+    let mut state = runtime.borrow_mut();
     let Some(manifest) = &state.manifest else {
         toc_active.set(-1);
         percent.set(0.0);
@@ -2174,7 +2180,9 @@ fn refresh_ui(
         return;
     };
     toc_active.set(toc_active_index(manifest, anchor.block));
-    percent.set(percent_for_anchor(manifest, flow, anchor));
+    let value = percent_for_anchor(manifest, flow, anchor);
+    state.top_percent = value;
+    percent.set(value);
 }
 
 fn percent_for_anchor(manifest: &FlowManifest, flow: DivRef, anchor: &Anchor) -> f64 {
@@ -2575,12 +2583,12 @@ fn clear_timer_value(timer: Option<i32>) {
 }
 
 fn save_current_progress(runtime: Rc<RefCell<ReaderRuntime>>, file_id: String) {
-    let anchor = {
+    let (anchor, percent) = {
         let state = runtime.borrow();
         if state.closing {
             return;
         }
-        state.top_anchor.clone()
+        (state.top_anchor.clone(), state.top_percent)
     };
     let Some(anchor) = anchor else {
         return;
@@ -2590,6 +2598,7 @@ fn save_current_progress(runtime: Rc<RefCell<ReaderRuntime>>, file_id: String) {
             &file_id,
             &SaveProgressRequest {
                 anchor: Some(anchor),
+                percent: Some(percent),
             },
         )
         .await;
@@ -2598,15 +2607,23 @@ fn save_current_progress(runtime: Rc<RefCell<ReaderRuntime>>, file_id: String) {
 
 fn flush_progress(runtime: Rc<RefCell<ReaderRuntime>>, file_id: String) {
     let anchor = runtime.borrow().top_anchor.clone();
+    let percent = runtime.borrow().top_percent;
+    let refresh = runtime.borrow().library_refresh;
     if let Some(anchor) = anchor {
         leptos::task::spawn_local(async move {
-            let _ = api::save_book_progress(
+            let result = api::save_book_progress(
                 &file_id,
                 &SaveProgressRequest {
                     anchor: Some(anchor),
+                    percent: Some(percent),
                 },
             )
             .await;
+            if result.is_ok()
+                && let Some(refresh) = refresh
+            {
+                let _ = refresh.try_update(|r| *r += 1);
+            }
         });
     }
 }

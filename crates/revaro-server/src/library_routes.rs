@@ -28,6 +28,9 @@ struct Options {
     #[serde(default)]
     favorite: bool,
     collection: Option<String>,
+    series: Option<String>,
+    #[serde(default)]
+    group_series: bool,
     #[serde(default)]
     recent: bool,
     #[serde(default)]
@@ -75,20 +78,188 @@ async fn list(
     {
         return Err(ApiError::bad_request("invalid library query"));
     }
-    state.db.call_api(move |c| {
-        let predicate = "status='ready' AND deleted_at IS NULL AND id IN (SELECT file_id FROM library_items WHERE (?1 IS NULL OR kind=?1)) AND instr(lower(name),lower(?2))>0 AND (?3=0 OR id IN (SELECT file_id FROM library_state WHERE favorite=1)) AND (?4 IS NULL OR id IN (SELECT file_id FROM library_collection_items WHERE collection_id=?4)) AND (?5=0 OR id IN (SELECT file_id FROM library_state WHERE last_opened IS NOT NULL) OR EXISTS(SELECT 1 FROM settings WHERE key='book_progress/'||files.id) OR id IN (SELECT file_id FROM media_progress))";
-        let params = rusqlite::params![o.kind,o.q,o.favorite,o.collection,o.recent];
-        let total=c.query_row(&format!("SELECT COUNT(*) FROM files WHERE {predicate}"),params,|r| r.get(0)).map_err(db)?;
-        let last="COALESCE((SELECT last_opened FROM library_state WHERE file_id=files.id),(SELECT updated_at FROM settings WHERE key='book_progress/'||files.id),(SELECT updated_at FROM media_progress WHERE file_id=files.id))";
-        let order=if o.collection.is_some() { "(SELECT position FROM library_collection_items WHERE collection_id=?4 AND file_id=files.id) ASC".to_owned() } else if o.recent { format!("{last} DESC") } else { "created_at DESC".to_owned() };
-        let mut query=c.prepare(&format!("SELECT {FILE_COLUMNS},(SELECT kind FROM library_items WHERE file_id=files.id),COALESCE((SELECT favorite FROM library_state WHERE file_id=files.id),0),{last},EXISTS(SELECT 1 FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag AND m.video_codec<>''),(SELECT duration_ms FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag) FROM files WHERE {predicate} ORDER BY {order},id LIMIT ?6 OFFSET ?7")).map_err(db)?;
-        let items=query.query_map(rusqlite::params![o.kind,o.q,o.favorite,o.collection,o.recent,limit,o.offset], |row| {
-            let mut file=scan_file(row)?;
-            file.has_cover=row.get::<_,bool>(18)?;
-            Ok(LibraryItem {file,duration_ms:row.get(19)?,kind:row.get(15)?,favorite:row.get(16)?,last_opened:row.get::<_,Option<String>>(17)?.and_then(|s| Timestamp::parse(&s).ok())})
+    if o.series
+        .as_ref()
+        .is_some_and(|s| s.is_empty() || s.len() > 2048)
+        || ((o.group_series || o.series.is_some()) && o.kind.as_deref() != Some("book"))
+    {
+        return Err(ApiError::bad_request("invalid series query"));
+    }
+    if o.kind.as_deref().is_none_or(|kind| kind == "book") {
+        index_book_series(&state).await?;
+    }
+    let grouped = o.group_series && o.series.is_none();
+    let offset = o.offset;
+    let (total, rows) = state.db.call_api(move |c| {
+        let predicate = "status='ready' AND deleted_at IS NULL AND id IN (SELECT file_id FROM library_items WHERE (?1 IS NULL OR kind=?1)) AND (instr(lower(name),lower(?2))>0 OR EXISTS(SELECT 1 FROM library_items WHERE file_id=files.id AND metadata_etag=COALESCE(files.etag,'') AND instr(lower(series),lower(?2))>0)) AND (?3=0 OR id IN (SELECT file_id FROM library_state WHERE favorite=1)) AND (?4 IS NULL OR id IN (SELECT file_id FROM library_collection_items WHERE collection_id=?4)) AND (?5=0 OR id IN (SELECT file_id FROM library_state WHERE last_opened IS NOT NULL) OR EXISTS(SELECT 1 FROM settings WHERE key='book_progress/'||files.id) OR id IN (SELECT file_id FROM media_progress)) AND (?6 IS NULL OR id IN (SELECT file_id FROM library_items WHERE series=?6))";
+        let series = "(SELECT series FROM library_items WHERE file_id=files.id AND kind='book' AND metadata_etag=COALESCE(files.etag,''))";
+        let bucket = format!("CASE WHEN ?7 AND {series} IS NOT NULL THEN 'series:'||{series} ELSE 'file:'||id END");
+        let last = "COALESCE((SELECT last_opened FROM library_state WHERE file_id=files.id),(SELECT updated_at FROM settings WHERE key='book_progress/'||files.id),(SELECT updated_at FROM media_progress WHERE file_id=files.id))";
+        let params = rusqlite::params![o.kind,o.q,o.favorite,o.collection,o.recent,o.series,grouped];
+        let count = if grouped { format!("COUNT(DISTINCT ({bucket}))") } else { "COUNT(*)".to_owned() };
+        let count_params = if grouped { params } else { &params[..6] };
+        let total = c.query_row(&format!("SELECT {count} FROM files WHERE {predicate}"), count_params, |r| r.get::<_,i64>(0)).map_err(db)?;
+        let (sort, aggregate, direction) = if o.series.is_some() {
+            ("COALESCE((SELECT series_index FROM library_items WHERE file_id=files.id),1e308)".to_owned(), "MIN", "ASC")
+        } else if o.collection.is_some() {
+            ("(SELECT position FROM library_collection_items WHERE collection_id=?4 AND file_id=files.id)".to_owned(), "MIN", "ASC")
+        } else if o.recent {
+            (last.to_owned(), "MAX", "DESC")
+        } else {
+            ("created_at".to_owned(), "MAX", "DESC")
+        };
+        let fields = format!("{FILE_COLUMNS},(SELECT kind FROM library_items WHERE file_id=files.id) AS library_kind,COALESCE((SELECT favorite FROM library_state WHERE file_id=files.id),0) AS favorite,{last} AS last_opened,EXISTS(SELECT 1 FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag AND m.video_codec<>'') AS has_cover,(SELECT duration_ms FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag) AS duration_ms,{series} AS series,(SELECT series_index FROM library_items WHERE file_id=files.id AND metadata_etag=COALESCE(files.etag,'')) AS series_index,(SELECT value FROM settings WHERE key='book_progress/'||files.id) AS progress");
+        // Page groups first, then fetch their members. Other listings keep ordinary file pagination.
+        let sql = if grouped {
+            format!("WITH candidates AS (SELECT {fields},{bucket} AS bucket,{sort} AS sort_key FROM files WHERE {predicate}), groups AS (SELECT bucket,{aggregate}(sort_key) AS sort_key FROM candidates GROUP BY bucket ORDER BY sort_key {direction},bucket LIMIT ?8 OFFSET ?9) SELECT candidates.* FROM candidates JOIN groups USING(bucket) ORDER BY groups.sort_key {direction},groups.bucket,candidates.series_index ASC NULLS LAST,candidates.name,candidates.id")
+        } else {
+            format!("SELECT {fields},'file:'||id AS bucket FROM files WHERE {predicate} ORDER BY {sort} {direction},CASE WHEN ?6 IS NOT NULL THEN name END,id LIMIT ?8 OFFSET ?9")
+        };
+        let mut query = c.prepare(&sql).map_err(db)?;
+        let rows = query.query_map(rusqlite::params![o.kind,o.q,o.favorite,o.collection,o.recent,o.series,grouped,limit,offset], |row| {
+            let mut file = scan_file(row)?;
+            file.has_cover = row.get(18)?;
+            Ok((LibraryItem {
+                file, duration_ms: row.get(19)?, kind: row.get(15)?, favorite: row.get(16)?,
+                last_opened: row.get::<_,Option<String>>(17)?.and_then(|s| Timestamp::parse(&s).ok()),
+                reading_progress: None, series: row.get(20)?, series_index: row.get(21)?, series_files: Vec::new(),
+            }, row.get::<_,Option<String>>(22)?, row.get::<_,String>(23)?))
         }).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?;
-        Ok(LibraryListing {items,total,offset:o.offset,limit})
-    }).await.map(Json)
+        Ok((total, rows))
+    }).await?;
+    let mut items = Vec::<LibraryItem>::new();
+    let mut previous_bucket = String::new();
+    let mut progress_sum = 0.0;
+    for (mut item, raw, bucket) in rows {
+        if item.kind == "book" {
+            item.reading_progress = book_reading_progress(&state, &item.file, raw).await;
+        }
+        if grouped && item.series.is_some() && previous_bucket == bucket {
+            let group = items.last_mut().expect("previous group exists");
+            progress_sum += item.reading_progress.unwrap_or(0.0);
+            group.series_files.push(item.file);
+            group.reading_progress =
+                (progress_sum > 0.0).then(|| progress_sum / group.series_files.len() as f64);
+        } else {
+            previous_bucket = bucket;
+            progress_sum = item.reading_progress.unwrap_or(0.0);
+            if grouped && item.series.is_some() {
+                item.series_files.push(item.file.clone());
+            }
+            items.push(item);
+        }
+    }
+    Ok(Json(LibraryListing {
+        items,
+        total,
+        offset,
+        limit,
+    }))
+}
+
+/// Cache series metadata in the existing classification row, including negative results.
+async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
+    let files = state.db.call_api(|c| {
+        let mut query = c.prepare(&format!("SELECT {FILE_COLUMNS} FROM files WHERE status='ready' AND deleted_at IS NULL AND id IN (SELECT file_id FROM library_items WHERE kind='book' AND (metadata_etag IS NULL OR metadata_etag<>COALESCE(files.etag,'')))")).map_err(db)?;
+        query.query_map([], scan_file).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)
+    }).await?;
+    for file in files {
+        let _guard = state.reader.book_lock(&file.object_key).await;
+        let id = file.id.clone();
+        let etag = file.etag.clone();
+        let current = state
+            .db
+            .call_api(move |c| {
+                Ok(c.query_row(
+                    "SELECT metadata_etag= ?2 FROM library_items WHERE file_id=?1",
+                    rusqlite::params![id, etag],
+                    |r| r.get::<_, Option<bool>>(0),
+                )
+                .optional()
+                .map_err(db)?
+                .flatten()
+                .unwrap_or(false))
+            })
+            .await?;
+        if current {
+            continue;
+        }
+        let metadata = if revaro_core::classify::is_epub_name(&file.name)
+            && file.size <= revaro_reader::MAX_EPUB
+        {
+            let _permit = state
+                .reader
+                .work_slots
+                .acquire()
+                .await
+                .map_err(|_| ApiError::unavailable("reader is shutting down"))?;
+            match state
+                .store
+                .read(&file.object_key, revaro_reader::MAX_EPUB as usize)
+                .await
+            {
+                Ok(bytes) => tokio::task::spawn_blocking(move || {
+                    revaro_reader::read_series(std::io::Cursor::new(bytes))
+                })
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten(),
+                Err(error) => {
+                    tracing::warn!(%error, file_id=%file.id, "could not read series metadata");
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let (series, index) = metadata
+            .map(|(name, index)| (Some(name), index))
+            .unwrap_or_default();
+        state.db.call_api(move |c| {
+            c.execute("UPDATE library_items SET series=?2,series_index=?3,metadata_etag=?4 WHERE file_id=?1 AND kind='book' AND EXISTS(SELECT 1 FROM files WHERE id=?1 AND COALESCE(etag,'')=?4 AND name=?5 AND object_key=?6)", rusqlite::params![file.id,series,index,file.etag,file.name,file.object_key]).map_err(db)?;
+            Ok(())
+        }).await?;
+    }
+    Ok(())
+}
+
+async fn book_reading_progress(
+    state: &Arc<AppState>,
+    file: &revaro_core::model::File,
+    raw: Option<String>,
+) -> Option<f64> {
+    let raw = raw?;
+    let mut progress: revaro_core::api::book::Progress = serde_json::from_str(&raw).ok()?;
+    let anchor = progress.anchor.as_ref().filter(|a| a.is_valid())?;
+    let percent = match progress
+        .percent
+        .filter(|p| p.is_finite() && (0.0..=100.0).contains(p))
+    {
+        Some(percent) => percent,
+        None => {
+            let percent =
+                crate::reader_routes::legacy_progress_percent(state.clone(), file, anchor).await?;
+            progress.percent = Some(percent);
+            let value = serde_json::to_string(&progress).ok()?;
+            let key = format!("book_progress/{}", file.id);
+            // Keep its timestamp and never overwrite a newer reader save.
+            state
+                .db
+                .call_api(move |c| {
+                    c.execute(
+                        "UPDATE settings SET value=?1 WHERE key=?2 AND value=?3",
+                        rusqlite::params![value, key, raw],
+                    )
+                    .map_err(db)?;
+                    Ok(())
+                })
+                .await
+                .ok()?;
+            percent
+        }
+    };
+    (percent > 0.0).then_some(percent)
 }
 
 async fn update(
@@ -272,6 +443,179 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn series_pages_keep_members_together_and_details_sort_volumes() {
+        let state = state().await;
+        for (id, name) in [
+            ("a", "third.txt"),
+            ("b", "first.txt"),
+            ("c", "second.txt"),
+            ("d", "standalone.txt"),
+        ] {
+            seed(&state, id, name).await;
+        }
+        state.db.call(|c| {
+            c.execute("UPDATE library_items SET series='Saga',series_index=CASE file_id WHEN 'a' THEN 10 WHEN 'b' THEN 1 ELSE 2 END,metadata_etag=(SELECT COALESCE(etag,'') FROM files WHERE id=file_id) WHERE file_id IN ('a','b','c')", [])?;
+            c.execute("INSERT INTO settings(key,value,updated_at) VALUES('book_progress/b',?1,'2026-01-01T00:00:00Z')", [r#"{"anchor":{"spine":0,"block":1,"offset":0},"percent":60.0}"#])?;
+            Ok(())
+        }).await.unwrap();
+        let (status, page) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=book&group_series=true&limit=1",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        let (_, page2) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=book&group_series=true&limit=1&offset=1",
+            None,
+        )
+        .await;
+        let group = [&page["items"][0], &page2["items"][0]]
+            .into_iter()
+            .find(|i| i["series"] == "Saga")
+            .unwrap();
+        assert_eq!(group["file"]["id"], "b");
+        assert_eq!(group["series_files"].as_array().unwrap().len(), 3);
+        assert_eq!(group["reading_progress"], 20.0);
+        let (_, detail) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=book&series=Saga",
+            None,
+        )
+        .await;
+        assert_eq!(detail["total"], 3);
+        let ids = detail["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["file"]["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["b", "c", "a"]);
+        assert!(
+            detail["items"][0]["series_files"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(detail["items"][1]["reading_progress"].is_null());
+        let (_, search) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=book&group_series=true&q=Saga",
+            None,
+        )
+        .await;
+        assert_eq!(search["total"], 1);
+        assert_eq!(
+            search["items"][0]["series_files"].as_array().unwrap().len(),
+            3
+        );
+        request(
+            &state,
+            "PATCH",
+            "/api/library/items/b",
+            Some(serde_json::json!({"favorite":true})),
+        )
+        .await;
+        let (_, favorites) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=book&group_series=true&favorite=true",
+            None,
+        )
+        .await;
+        assert_eq!(
+            favorites["items"][0]["series_files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        state
+            .db
+            .call(|c| {
+                c.execute(
+                    "UPDATE files SET deleted_at='2026-01-02T00:00:00Z' WHERE id='c'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (_, detail) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=book&series=Saga",
+            None,
+        )
+        .await;
+        assert_eq!(detail["total"], 2);
+        assert_eq!(
+            request(
+                &state,
+                "GET",
+                "/api/library/items?kind=image&group_series=true",
+                None
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_progress_is_recovered_without_changing_recent_order_or_newer_saves() {
+        let state = state().await;
+        seed(&state, "legacy", "legacy.txt").await;
+        let text = "a long reading line😀\n".repeat(1200);
+        state
+            .store
+            .put("blobs/legacy", text.as_bytes())
+            .await
+            .unwrap();
+        state.db.call(|c| {
+            c.execute("INSERT INTO settings(key,value,updated_at) VALUES('book_progress/legacy',?1,'2026-01-01T00:00:00Z')", [r#"{"anchor":{"spine":0,"block":1,"offset":0}}"#])?;
+            Ok(())
+        }).await.unwrap();
+        let (status, listing) = request(&state, "GET", "/api/library/items?kind=book", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(listing["items"][0]["reading_progress"].as_f64().unwrap() > 0.0);
+        state
+            .db
+            .call(|c| {
+                let (value, updated): (String, String) = c.query_row(
+                    "SELECT value,updated_at FROM settings WHERE key='book_progress/legacy'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(&value).unwrap()["percent"]
+                        .as_f64()
+                        .unwrap()
+                        > 0.0
+                );
+                assert_eq!(updated, "2026-01-01T00:00:00Z");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (status, _) = request(
+            &state,
+            "PUT",
+            "/api/files/legacy/book/progress",
+            Some(serde_json::json!({"anchor":{"spine":0,"block":1,"offset":0},"percent":101})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -71,6 +71,7 @@ impl LibraryPage {
             "/files" => Self::Files,
             "/videos" => Self::Videos,
             "/trash" => Self::Trash,
+            p if p.starts_with("/library/series/") => Self::Books,
             p if p.starts_with("/f/") => Self::Files,
             p if p.starts_with("/read/") => Self::Books,
             _ => Self::Home,
@@ -99,6 +100,7 @@ mod tests {
         for (path, page) in [
             ("/", LibraryPage::Home),
             ("/library/", LibraryPage::Books),
+            ("/library/series/series", LibraryPage::Books),
             ("/read/book", LibraryPage::Books),
             ("/f/folder", LibraryPage::Files),
             ("/music", LibraryPage::Music),

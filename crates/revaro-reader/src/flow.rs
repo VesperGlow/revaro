@@ -17,9 +17,9 @@ use std::collections::{HashMap, HashSet};
 
 use html5ever::serialize::{SerializeOpts, TraversalScope};
 use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
-use revaro_core::reader::{ChunkMeta, FlowManifest, SpineMeta, TocTarget};
+use revaro_core::reader::{Anchor, ChunkMeta, FlowManifest, SpineMeta, TocTarget};
 
-use crate::dom::{attr, children, parse_html, tag_name};
+use crate::dom::{attr, children, parse_html, tag_name, text_content};
 use crate::model::{Book, Chapter, Format};
 use crate::path::normalize_path;
 use crate::text::utf16_len;
@@ -44,6 +44,32 @@ pub const MAX_BLOCKS: usize = 1 << 24;
 
 /// Maximum chunk object size served by the backend.
 pub const MAX_FLOW_OBJECT: usize = 8 << 20;
+
+/// Recover legacy progress using the same UTF-16 block boundaries as the browser reader.
+pub fn percent_for_anchor(manifest: &FlowManifest, html: &str, anchor: &Anchor) -> Option<f64> {
+    if !anchor.is_valid() || manifest.total_chars <= 0 {
+        return None;
+    }
+    let chunk = manifest.chunk_for_block(anchor.block)?;
+    let mut chars: i64 = manifest
+        .chunks
+        .iter()
+        .take(chunk as usize)
+        .map(|c| c.chars)
+        .sum();
+    let dom = parse_html(html.as_bytes())?;
+    let mut pending = vec![dom.document.clone()];
+    while let Some(node) = pending.pop() {
+        if let Some(block) = attr(&node, "data-block").and_then(|s| s.parse::<i32>().ok()) {
+            if block < anchor.block {
+                chars = chars.saturating_add(text_content(&node).encode_utf16().count() as i64);
+            }
+        } else {
+            pending.extend(children(&node));
+        }
+    }
+    Some((chars as f64 / manifest.total_chars as f64 * 100.0).clamp(0.0, 100.0))
+}
 
 /// One generated flow chunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -963,6 +989,35 @@ mod tests {
             }],
             ..Book::default()
         }
+    }
+
+    #[test]
+    fn legacy_progress_counts_utf16_before_the_saved_block_across_chunks() {
+        let text = "中文😀 & text\n".repeat(1500);
+        let built = build(&txt_book(&text)).unwrap();
+        let chunk = &built.chunks[1];
+        let anchor = Anchor {
+            spine: 0,
+            block: chunk.meta.block_start,
+            path: Vec::new(),
+            offset: -1,
+        };
+        let expected =
+            built.chunks[0].meta.chars as f64 / built.manifest.total_chars as f64 * 100.0;
+        assert_eq!(
+            percent_for_anchor(&built.manifest, &chunk.html, &anchor),
+            Some(expected)
+        );
+        let anchor = Anchor { block: 1, ..anchor };
+        assert!(percent_for_anchor(&built.manifest, &built.chunks[0].html, &anchor).unwrap() > 0.0);
+        let invalid = Anchor {
+            block: i32::MAX,
+            ..anchor
+        };
+        assert_eq!(
+            percent_for_anchor(&built.manifest, &chunk.html, &invalid),
+            None
+        );
     }
 
     #[test]

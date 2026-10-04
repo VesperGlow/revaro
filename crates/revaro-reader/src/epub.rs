@@ -43,6 +43,81 @@ struct OpfMeta {
     name: String,
     /// `content` attribute.
     content: String,
+    property: String,
+    id: String,
+    refines: String,
+}
+
+fn opf_meta(event: &BytesStart<'_>) -> OpfMeta {
+    OpfMeta {
+        name: attribute(event, "name").unwrap_or_default(),
+        content: attribute(event, "content").unwrap_or_default(),
+        property: attribute(event, "property").unwrap_or_default(),
+        id: attribute(event, "id").unwrap_or_default(),
+        refines: attribute(event, "refines").unwrap_or_default(),
+    }
+}
+
+fn series(package: &OpfPackage) -> Option<(String, Option<f64>)> {
+    let position = |value: &str| {
+        value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+    };
+    for meta in &package.metas {
+        if meta.property != "belongs-to-collection" || meta.id.is_empty() {
+            continue;
+        }
+        let refines = format!("#{}", meta.id);
+        if package.metas.iter().any(|m| {
+            m.refines == refines && m.property == "collection-type" && m.content.trim() == "series"
+        }) {
+            let name = meta.content.trim();
+            if !name.is_empty() {
+                let index = package
+                    .metas
+                    .iter()
+                    .find(|m| m.refines == refines && m.property == "group-position")
+                    .and_then(|m| position(&m.content));
+                return Some((name.to_owned(), index));
+            }
+        }
+    }
+    let name = package
+        .metas
+        .iter()
+        .find(|m| m.name == "calibre:series")?
+        .content
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    let index = package
+        .metas
+        .iter()
+        .find(|m| m.name == "calibre:series_index")
+        .and_then(|m| position(&m.content));
+    Some((name.to_owned(), index))
+}
+
+/// Read only the container and OPF, using the same archive bounds and parser as reading.
+pub fn read_series<R: Read + Seek>(
+    source: R,
+) -> Result<Option<(String, Option<f64>)>, ReaderError> {
+    let mut archive =
+        ZipArchive::new(source).map_err(|e| ReaderError::InvalidZip(e.to_string()))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(ReaderError::TooManyEntries(MAX_ARCHIVE_ENTRIES));
+    }
+    let mut budget = Budget::default();
+    let container = zip_text(&mut archive, "META-INF/container.xml", &mut budget)
+        .map_err(|e| ReaderError::Container(e.to_string()))?;
+    let path = opf_path_from_container(&container)?;
+    let xml = zip_text(&mut archive, &path, &mut budget)
+        .map_err(|e| ReaderError::OpfRead(e.to_string()))?;
+    Ok(series(&parse_opf(&xml)?))
 }
 
 /// A manifest `<item>` as declared in the OPF.
@@ -268,10 +343,7 @@ fn parse_opf(xml: &str) -> Result<OpfPackage, ReaderError> {
                         capturing_title = true;
                     }
                     "meta" if in_section(&stack, "metadata") => {
-                        open_meta = Some(OpfMeta {
-                            name: attribute(&event, "name").unwrap_or_default(),
-                            content: attribute(&event, "content").unwrap_or_default(),
-                        });
+                        open_meta = Some(opf_meta(&event));
                     }
                     "item" if in_section(&stack, "manifest") => {
                         package.items.push(raw_manifest_item(&event));
@@ -293,10 +365,7 @@ fn parse_opf(xml: &str) -> Result<OpfPackage, ReaderError> {
                 match local.as_str() {
                     "title" if in_section(&stack, "metadata") => package.title.clear(),
                     "meta" if in_section(&stack, "metadata") => {
-                        package.metas.push(OpfMeta {
-                            name: attribute(&event, "name").unwrap_or_default(),
-                            content: attribute(&event, "content").unwrap_or_default(),
-                        });
+                        package.metas.push(opf_meta(&event));
                     }
                     "item" if in_section(&stack, "manifest") => {
                         package.items.push(raw_manifest_item(&event));
@@ -316,10 +385,32 @@ fn parse_opf(xml: &str) -> Result<OpfPackage, ReaderError> {
                 if capturing_title && let Some(decoded) = decode_text(&text) {
                     package.title.push_str(&decoded);
                 }
+                if let Some(meta) = open_meta.as_mut()
+                    && let Some(decoded) = decode_text(&text)
+                {
+                    meta.content.push_str(&decoded);
+                }
             }
             Ok(Event::CData(cdata)) => {
                 if capturing_title && let Some(decoded) = decode_cdata(&cdata) {
                     package.title.push_str(&decoded);
+                }
+                if let Some(meta) = open_meta.as_mut()
+                    && let Some(decoded) = decode_cdata(&cdata)
+                {
+                    meta.content.push_str(&decoded);
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if let Ok(name) = reference.decode()
+                    && let Ok(value) = unescape(&format!("&{name};"))
+                {
+                    if capturing_title {
+                        package.title.push_str(&value);
+                    }
+                    if let Some(meta) = open_meta.as_mut() {
+                        meta.content.push_str(&value);
+                    }
                 }
             }
             Ok(Event::End(end)) => {
@@ -685,6 +776,30 @@ fn cover_item<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn series_metadata_supports_epub3_refinements_and_calibre() {
+        let package = parse_opf(
+            r##"<package><metadata>
+            <meta property="belongs-to-collection" id="set">Not a series</meta>
+            <meta refines="#set" property="collection-type">set</meta>
+            <meta property="belongs-to-collection" id="series">  星河 &amp; 海  </meta>
+            <meta refines="#series" property="group-position">2.5</meta>
+            <meta refines="#series" property="collection-type"><![CDATA[series]]></meta>
+            <meta name="calibre:series" content="Legacy"/>
+        </metadata></package>"##,
+        )
+        .unwrap();
+        assert_eq!(series(&package), Some(("星河 & 海".into(), Some(2.5))));
+        let package = parse_opf(r#"<package><metadata><meta name="calibre:series" content=" Legacy "/><meta name="calibre:series_index" content="10"/></metadata></package>"#).unwrap();
+        assert_eq!(series(&package), Some(("Legacy".into(), Some(10.0))));
+        for index in ["NaN", "inf", "-1", "bad"] {
+            let package = parse_opf(&format!(r#"<package><metadata><meta name="calibre:series" content="Series"/><meta name="calibre:series_index" content="{index}"/></metadata></package>"#)).unwrap();
+            assert_eq!(series(&package), Some(("Series".into(), None)));
+        }
+        let package = parse_opf(r##"<package><metadata><meta id="set" property="belongs-to-collection">Set</meta><meta refines="#set" property="collection-type">set</meta></metadata></package>"##).unwrap();
+        assert_eq!(series(&package), None);
+    }
 
     #[test]
     fn properties_tokens_are_matched_whole() {

@@ -507,23 +507,28 @@ pub mod book {
     }
 
     /// `PUT /api/files/{id}/book/progress`
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct SaveProgressRequest {
         /// Reading position. An empty object clears the saved position.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub anchor: Option<Anchor>,
+        /// Percentage displayed by the reader; older clients may omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub percent: Option<f64>,
     }
 
     /// Response of `GET /api/files/{id}/book/progress`.
     ///
     /// The response deliberately accepts the same empty shape as the write
     /// request: old installations return `{}` when no usable progress exists.
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
     pub struct Progress {
         /// Saved reading position, omitted when it is absent or invalid.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub anchor: Option<Anchor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub percent: Option<f64>,
     }
 
     /// Response of `GET /api/files/{id}/book/flow`.

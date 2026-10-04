@@ -110,7 +110,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await page.mouse.move(1, 80)
       await expect(page.locator('.library-card-actions')).toHaveCount(0)
       if (name !== '音乐') {
-        await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', '0')
+        await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', name === '文件' && width <= 850 ? '1' : '0')
         await targets.first().hover()
         await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', '1')
         const surface = (await targets.first().boundingBox())!, caption = (await targets.first().locator('.card-info').boundingBox())!
@@ -181,7 +181,11 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await firstCheckbox.press('Space')
       await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 1 项')
       await toolbar.getByRole('button', { name: '全选', exact: true }).click()
-      await expect(toolbar.locator('.selection-summary b')).toHaveText(`已选择 ${await cards.count()} 项`)
+      // A series card selects each represented book; the toolbar counts files.
+      const selectableCount = await cards.evaluateAll(elements => new Set(elements.flatMap(element =>
+        JSON.parse(element.getAttribute('data-selection-ids') || '[]') as string[],
+      )).size)
+      await expect(toolbar.locator('.selection-summary b')).toHaveText(`已选择 ${selectableCount} 项`)
       await toolbar.getByRole('button', { name: '取消全选', exact: true }).click()
       await expect(toolbar).toBeHidden()
       await expect(exit).toHaveAttribute('aria-pressed', 'true')
