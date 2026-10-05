@@ -94,6 +94,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "009_book_stacks.sql",
         sql: include_str!("../migrations/009_book_stacks.sql"),
     },
+    Migration {
+        version: 10,
+        name: "010_upload_commits.sql",
+        sql: include_str!("../migrations/010_upload_commits.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

@@ -6,9 +6,8 @@
 //! the *contract between* modules fails here even when each module's own tests
 //! still pass.
 //!
-//! It deliberately asserts observable behaviour only (status codes, JSON
-//! fields, byte counts), never internals, so it stays valid as the
-//! implementation is refactored.
+//! Assertions use the client contract. Upload recovery tests also inject
+//! database failures and inspect durable phases to exercise crash boundaries.
 
 use std::sync::Arc;
 
@@ -44,6 +43,10 @@ impl Drop for ScratchDir {
 
 impl Harness {
     async fn start() -> Self {
+        Self::start_with_database(false).await
+    }
+
+    async fn start_with_database(persistent: bool) -> Self {
         let scratch = ScratchDir(std::env::temp_dir().join(format!(
             "revaro-lifecycle-{}-{:?}",
             std::process::id(),
@@ -61,7 +64,11 @@ impl Harness {
         })
         .expect("configuration is valid");
 
-        let database = Database::open_in_memory().expect("in-memory database");
+        let database = if persistent {
+            Database::open(config.database_path()).expect("persistent database")
+        } else {
+            Database::open_in_memory().expect("in-memory database")
+        };
         let store = LocalStore::open(config.objects_dir())
             .await
             .expect("object store");
@@ -1223,4 +1230,556 @@ async fn concurrent_directory_moves_cannot_create_a_cycle() {
         (left.0, right.0),
         (StatusCode::OK, StatusCode::BAD_REQUEST) | (StatusCode::BAD_REQUEST, StatusCode::OK)
     ));
+}
+
+async fn prepare_upload(h: &Harness, name: &str, size: usize) -> serde_json::Value {
+    let (status, upload) = h
+        .json(
+            "POST",
+            "/api/uploads",
+            serde_json::json!({
+                "parent_id": ROOT_ID, "name": name, "size": size,
+                "mime_type": "application/octet-stream"
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{upload}");
+    upload
+}
+
+async fn send_parts(h: &Harness, upload: &serde_json::Value, payload: &[u8]) {
+    let id = upload["upload_id"].as_str().unwrap();
+    let part_size = upload["part_size"].as_u64().unwrap() as usize;
+    for (index, bytes) in payload.chunks(part_size).enumerate() {
+        let response = h
+            .response(
+                "PUT",
+                &format!("/api/uploads/{id}/data/{}", index + 1),
+                Some(bytes.to_vec()),
+                Some("application/octet-stream"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+}
+
+#[tokio::test]
+async fn upload_creation_is_idempotent_and_expired_names_are_reclaimed() {
+    let h = Harness::start().await;
+    let request = serde_json::json!({"parent_id": ROOT_ID, "name": "idempotent.bin",
+        "size": 3, "idempotency_key": "stable-upload-key"});
+    let ((status_a, first), (status_b, second)) = tokio::join!(
+        h.json("POST", "/api/uploads", request.clone()),
+        h.json("POST", "/api/uploads", request.clone())
+    );
+    assert_eq!(status_a, StatusCode::CREATED);
+    assert_eq!(status_b, StatusCode::CREATED);
+    assert_eq!(first["upload_id"], second["upload_id"]);
+    assert_eq!(first["file_id"], second["file_id"]);
+    let (status, _) = h
+        .json(
+            "POST",
+            "/api/uploads",
+            serde_json::json!({
+                "parent_id": ROOT_ID, "name": "other.bin", "size": 3,
+                "idempotency_key": "stable-upload-key"
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let id = first["upload_id"].as_str().unwrap().to_owned();
+    let expired_id = id.clone();
+    h.state
+        .db
+        .call(move |c| {
+            c.execute(
+                "UPDATE uploads SET expires_at='2000-01-01T00:00:00Z' WHERE id=?1",
+                [expired_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (status, _) = h
+        .request("GET", &format!("/api/uploads/{id}"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::GONE);
+    let (status, replacement) = h.json("POST", "/api/uploads", request).await;
+    assert_eq!(status, StatusCode::CREATED, "{replacement}");
+    assert_ne!(replacement["upload_id"], first["upload_id"]);
+    assert_eq!(
+        h.request("GET", &format!("/api/uploads/{id}"), None, None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    // Reclaiming by filename works even when the new client uses another key.
+    let new_id = replacement["upload_id"].as_str().unwrap().to_owned();
+    h.state
+        .db
+        .call(move |c| {
+            c.execute(
+                "UPDATE uploads SET expires_at='2000-01-01T00:00:00Z' WHERE id=?1",
+                [new_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (status, _) = h
+        .json(
+            "POST",
+            "/api/uploads",
+            serde_json::json!({
+                "parent_id": ROOT_ID, "name": "idempotent.bin", "size": 3,
+                "idempotency_key": "fresh-upload-key"
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn single_upload_retries_preserve_accepted_bytes_and_etag() {
+    let h = Harness::start().await;
+    let upload = prepare_upload(&h, "single-retry.bin", 3).await;
+    let url = upload["url"].as_str().unwrap();
+    let first = h.response("PUT", url, Some(b"abc".to_vec()), None).await;
+    assert_eq!(first.status(), StatusCode::NO_CONTENT);
+    let etag = first.headers()["etag"].clone();
+    let retry = h.response("PUT", url, Some(b"abc".to_vec()), None).await;
+    assert_eq!(retry.status(), StatusCode::NO_CONTENT);
+    assert_eq!(retry.headers()["etag"], etag);
+    assert_eq!(
+        h.response("PUT", url, Some(b"xyz".to_vec()), None)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let id = upload["upload_id"].as_str().unwrap();
+    let (_, status) = h
+        .request("GET", &format!("/api/uploads/{id}"), None, None)
+        .await;
+    assert_eq!(status["data_received"], true);
+    let (status, file) = h
+        .json(
+            "POST",
+            &format!("/api/uploads/{id}/complete"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(file["content_hash"], revaro_core::keys::sha256_hex(b"abc"));
+    let (status, repeated) = h
+        .json(
+            "POST",
+            &format!("/api/uploads/{id}/complete"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(file["id"], repeated["id"]);
+}
+
+#[tokio::test]
+async fn multipart_put_acknowledges_parts_and_conflicting_retries_cannot_replace_them() {
+    let h = Harness::start().await;
+    let size = revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1;
+    let upload = prepare_upload(&h, "automatic-parts.bin", size).await;
+    let id = upload["upload_id"].as_str().unwrap();
+    let part = vec![17; size - 1];
+    let url = format!("/api/uploads/{id}/data/1");
+    let first = h.response("PUT", &url, Some(part.clone()), None).await;
+    assert_eq!(first.status(), StatusCode::NO_CONTENT);
+    let etag = first.headers()["etag"].clone();
+    let (_, status) = h
+        .request("GET", &format!("/api/uploads/{id}"), None, None)
+        .await;
+    assert_eq!(status["parts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        status["parts"][0]["content_hash"],
+        revaro_core::keys::sha256_hex(&part)
+    );
+    let retry = h.response("PUT", &url, Some(part.clone()), None).await;
+    assert_eq!(retry.status(), StatusCode::NO_CONTENT);
+    assert_eq!(retry.headers()["etag"], etag);
+    let mut changed = part.clone();
+    changed[0] ^= 1;
+    assert_eq!(
+        h.response("PUT", &url, Some(changed), None).await.status(),
+        StatusCode::CONFLICT
+    );
+    let (status, _) = h
+        .json(
+            "PUT",
+            &format!("/api/uploads/{id}/parts/1"),
+            serde_json::json!({"etag": "forged", "size": part.len(), "content_hash": "fake"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // A pre-upgrade client may have stored bytes without a database ACK. The
+    // compatibility endpoint recovers it using the actual server-side hash.
+    h.state
+        .db
+        .call({
+            let id = id.to_owned();
+            move |connection| {
+                connection
+                    .execute(
+                        "DELETE FROM upload_parts WHERE upload_id=?1 AND part_number=1",
+                        [id],
+                    )
+                    .map_err(revaro_server::db::DbError::Query)
+            }
+        })
+        .await
+        .unwrap();
+    let (status, _) = h
+        .json(
+            "PUT",
+            &format!("/api/uploads/{id}/parts/1"),
+            serde_json::json!({"etag": etag.to_str().unwrap(), "size": part.len(), "content_hash": "fake"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, status) = h
+        .request("GET", &format!("/api/uploads/{id}"), None, None)
+        .await;
+    assert_eq!(
+        status["parts"][0]["content_hash"],
+        revaro_core::keys::sha256_hex(&part)
+    );
+    assert_eq!(
+        h.response(
+            "PUT",
+            &format!("/api/uploads/{id}/data/2"),
+            Some(vec![18]),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let (status, file) = h
+        .json(
+            "POST",
+            &format!("/api/uploads/{id}/complete"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{file}");
+    let mut payload = part;
+    payload.push(18);
+    assert_eq!(
+        file["content_hash"],
+        revaro_core::keys::sha256_hex(&payload)
+    );
+}
+
+#[tokio::test]
+async fn different_upload_parts_progress_concurrently_and_completion_waits_for_writers() {
+    use futures_util::StreamExt as _;
+    let h = Harness::start().await;
+    let part_size = revaro_core::limits::DEFAULT_MULTIPART_PART_SIZE as usize;
+    let upload = prepare_upload(&h, "parallel-parts.bin", part_size * 2).await;
+    let id = upload["upload_id"].as_str().unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let stream = futures_util::stream::once(async move {
+        let _ = started_tx.send(());
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"a"))
+    })
+    .chain(futures_util::stream::once(async move {
+        release_rx.await.unwrap();
+        Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b'a'; part_size - 1]))
+    }));
+    let request = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/uploads/{id}/data/1"))
+        .header("cookie", &h.cookie)
+        .header("origin", "http://localhost:8080")
+        .body(Body::from_stream(stream))
+        .unwrap();
+    let first = tokio::spawn(h.router().oneshot(request));
+    started_rx.await.unwrap();
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        h.response(
+            "PUT",
+            &format!("/api/uploads/{id}/data/2"),
+            Some(vec![b'b'; part_size]),
+            None,
+        ),
+    )
+    .await
+    .expect("the second part must finish while the first is stalled");
+    assert_eq!(second.status(), StatusCode::NO_CONTENT);
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/uploads/{id}/complete"))
+        .header("cookie", &h.cookie)
+        .header("origin", "http://localhost:8080")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let mut completing = tokio::spawn(h.router().oneshot(request));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut completing)
+            .await
+            .is_err(),
+        "completion must wait for the first part's durable acknowledgement"
+    );
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        first.await.unwrap().unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(completing.await.unwrap().unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn failed_upload_metadata_commit_retains_parts_and_retry_reuses_staged_object() {
+    let h = Harness::start().await;
+    let payload = vec![41; revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1];
+    let upload = prepare_upload(&h, "recover-staged.bin", payload.len()).await;
+    send_parts(&h, &upload, &payload).await;
+    h.state.db.call(|c| {
+        c.execute_batch("CREATE TRIGGER fail_upload_commit BEFORE UPDATE OF status ON files WHEN NEW.status='ready' BEGIN SELECT RAISE(ABORT,'injected upload commit failure'); END;")?;
+        Ok(())
+    }).await.unwrap();
+    let id = upload["upload_id"].as_str().unwrap();
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!("/api/uploads/{id}/complete"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let (_, status) = h
+        .request("GET", &format!("/api/uploads/{id}"), None, None)
+        .await;
+    assert_eq!(status["status"], "pending");
+    assert_eq!(status["finalizing"], true);
+    let query_id = id.to_owned();
+    let (key, multipart_id, phase): (String, String, String) = h
+        .state
+        .db
+        .call(move |c| {
+            c.query_row(
+                "SELECT object_key,multipart_id,commit_state FROM uploads WHERE id=?1",
+                [query_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(revaro_server::db::DbError::Query)
+        })
+        .await
+        .unwrap();
+    assert_eq!(phase, "staged");
+    let staging = h
+        .state
+        .store
+        .root()
+        .join(revaro_core::keys::multipart_dir(&multipart_id, &key));
+    assert!(
+        staging.join("1").exists(),
+        "parts survive a failed metadata commit"
+    );
+    let etag = h.state.store.head(&key).await.unwrap().etag;
+    // Even if staged parts disappear, the durable checkpoint can finish.
+    h.state
+        .store
+        .abort_multipart(&key, &multipart_id)
+        .await
+        .unwrap();
+    h.state
+        .db
+        .call(|c| {
+            c.execute_batch("DROP TRIGGER fail_upload_commit")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (status, file) = h
+        .json(
+            "POST",
+            &format!("/api/uploads/{id}/complete"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{file}");
+    assert_eq!(file["etag"], etag);
+    assert_eq!(
+        file["content_hash"],
+        revaro_core::keys::sha256_hex(&payload)
+    );
+}
+
+#[tokio::test]
+async fn startup_recovers_a_publication_interrupted_before_its_checkpoint() {
+    let mut h = Harness::start_with_database(true).await;
+    let payload = vec![53; revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1];
+    let upload = prepare_upload(&h, "recover-publication.bin", payload.len()).await;
+    send_parts(&h, &upload, &payload).await;
+    h.state.db.call(|c| {
+        c.execute_batch("CREATE TRIGGER fail_upload_checkpoint BEFORE UPDATE OF commit_state ON uploads WHEN NEW.commit_state='staged' BEGIN SELECT RAISE(ABORT,'injected checkpoint failure'); END;")?;
+        Ok(())
+    }).await.unwrap();
+    let id = upload["upload_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        h.json(
+            "POST",
+            &format!("/api/uploads/{id}/complete"),
+            serde_json::json!({})
+        )
+        .await
+        .0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let query_id = id.clone();
+    let key: String = h
+        .state
+        .db
+        .call(move |c| {
+            c.query_row(
+                "SELECT object_key FROM uploads WHERE id=?1 AND commit_state='assembling'",
+                [query_id],
+                |r| r.get(0),
+            )
+            .map_err(revaro_server::db::DbError::Query)
+        })
+        .await
+        .unwrap();
+    let etag = h.state.store.head(&key).await.unwrap().etag;
+    let query_id = id.clone();
+    h.state
+        .db
+        .call(move |c| {
+            c.execute_batch("DROP TRIGGER fail_upload_checkpoint")?;
+            c.execute(
+                "UPDATE uploads SET expires_at='2000-01-01T00:00:00Z' WHERE id=?1",
+                [query_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Open a fresh database pool, store and runtime as startup does.
+    let config = Arc::clone(&h.state.config);
+    let database = Database::open(config.database_path()).unwrap();
+    let store = LocalStore::open(config.objects_dir()).await.unwrap();
+    let service = auth::AuthService::new(database.clone());
+    h.state = AppState::new(config, database, store, service);
+    h.state.maintenance.start();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let (_, status) = h
+                .request("GET", &format!("/api/uploads/{id}"), None, None)
+                .await;
+            if status["status"] == "completed" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("startup recovery commits the published object even after expiry");
+    h.state.maintenance.close().await;
+    let (status, file) = h
+        .json(
+            "POST",
+            &format!("/api/uploads/{id}/complete"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        file["etag"], etag,
+        "recovery must not reassemble an already published object"
+    );
+    assert_eq!(
+        file["content_hash"],
+        revaro_core::keys::sha256_hex(&payload)
+    );
+}
+
+#[tokio::test]
+async fn broken_commit_recoveries_do_not_starve_later_uploads() {
+    let h = Harness::start().await;
+    for index in 0..32 {
+        prepare_upload(&h, &format!("broken-commit-{index}.bin"), 1).await;
+    }
+    let healthy = prepare_upload(&h, "healthy-later-commit.bin", 1).await;
+    let id = healthy["upload_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        h.response(
+            "PUT",
+            &format!("/api/uploads/{id}/data"),
+            Some(vec![42]),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    h.state
+        .db
+        .call({
+            let id = id.clone();
+            move |connection| {
+                connection.execute(
+                    "UPDATE uploads SET commit_state='assembling',created_at='2000-01-01T00:00:00Z' WHERE id<>?1",
+                    [&id],
+                )?;
+                connection.execute(
+                    "UPDATE uploads SET commit_state='assembling' WHERE id=?1",
+                    [id],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    h.state.maintenance.start();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let attempts =
+                h.state
+                    .db
+                    .call(|connection| {
+                        connection.query_row(
+                    "SELECT COUNT(*) FROM uploads WHERE commit_attempted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                ).map_err(revaro_server::db::DbError::Query)
+                    })
+                    .await
+                    .unwrap();
+            if attempts == 32 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the first recovery batch attempts all 32 broken sessions");
+    let (_, pending) = h
+        .request("GET", &format!("/api/uploads/{id}"), None, None)
+        .await;
+    assert_eq!(pending["status"], "pending");
+    assert!(h.state.maintenance.wake("upload-commits"));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let (_, status) = h
+                .request("GET", &format!("/api/uploads/{id}"), None, None)
+                .await;
+            if status["status"] == "completed" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the next batch commits the later healthy upload");
+    h.state.maintenance.close().await;
 }

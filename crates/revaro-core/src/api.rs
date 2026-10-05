@@ -304,6 +304,9 @@ pub mod uploads {
         /// Declared MIME type; empty becomes `application/octet-stream`.
         #[serde(default)]
         pub mime_type: String,
+        /// Stable client key for recovering a lost creation response.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pub idempotency_key: String,
     }
 
     /// Response of `POST /api/uploads`.
@@ -317,7 +320,7 @@ pub mod uploads {
         /// Single-request or multipart transfer.
         #[serde(deserialize_with = "deserialize_upload_mode_response")]
         pub mode: UploadMode,
-        /// Target URL, empty for multipart uploads.
+        /// Target URL; append `/part_number` for multipart uploads.
         #[serde(default)]
         pub url: String,
         /// Part size the client must slice with; unused by single uploads.
@@ -360,6 +363,12 @@ pub mod uploads {
         /// Session state.
         #[serde(default, deserialize_with = "deserialize_upload_status_response")]
         pub status: UploadStatusKind,
+        /// Bytes are frozen and completion can be retried without retransmission.
+        #[serde(default)]
+        pub finalizing: bool,
+        /// A single-request body has already been durably accepted.
+        #[serde(default)]
+        pub data_received: bool,
         /// Session expiry.
         #[serde(default, deserialize_with = "crate::api::null_default")]
         pub expires_at: Timestamp,
@@ -375,7 +384,7 @@ pub mod uploads {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct UploadPartsRequest {
-        /// Part numbers to fetch signed, single-use URLs for.
+        /// Part numbers to fetch authenticated local upload URLs for.
         pub part_numbers: Vec<i32>,
     }
 
@@ -829,6 +838,8 @@ mod tests {
             expected_size: 16,
             mime_type: "image/png".into(),
             status: crate::model::UploadStatus::Pending,
+            finalizing: false,
+            data_received: false,
             expires_at: Timestamp::parse("2024-05-06T07:08:09Z").unwrap(),
             parts: vec![UploadPart {
                 part_number: 1,

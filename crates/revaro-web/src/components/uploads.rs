@@ -8,7 +8,7 @@
 //! upload in the visible queue.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::rc::Rc;
 
@@ -17,9 +17,7 @@ use futures_util::future::join_all;
 use js_sys::Math;
 use leptos::prelude::*;
 use revaro_core::api::files::CreateDirectoryRequest;
-use revaro_core::api::uploads::{
-    CompleteUploadRequest, CreateUploadRequest, RecordUploadPartRequest, UploadPartsRequest,
-};
+use revaro_core::api::uploads::{CompleteUploadRequest, CreateUploadRequest, PartUrl};
 use revaro_core::limits;
 use revaro_core::model::{
     File as ModelFile, FileKind, UploadMode, UploadStatus as UploadLifecycle,
@@ -60,6 +58,7 @@ struct UploadItem {
     status: UploadState,
     error: String,
     upload_id: Option<String>,
+    creation_key: String,
     run_id: u64,
 }
 
@@ -72,6 +71,8 @@ struct ResolvedUpload {
     part_count: usize,
     existing_parts: Vec<revaro_core::model::UploadPart>,
     already_completed: bool,
+    finalizing: bool,
+    data_received: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -84,6 +85,8 @@ struct SavedUpload {
     size: i64,
     #[serde(rename = "lastModified")]
     last_modified: f64,
+    #[serde(default, rename = "idempotencyKey")]
+    idempotency_key: String,
 }
 
 /// Runtime state shared by the queue's asynchronous operations.
@@ -381,6 +384,7 @@ impl UploadController {
         let Some(item) = item else {
             return;
         };
+        self.forget_creation(&item.creation_key);
 
         let active_runs: Vec<Rc<ActiveUpload>> = self
             .runtime
@@ -428,9 +432,6 @@ impl UploadController {
         }
 
         let previous_upload = item.upload_id.clone();
-        if let Some(upload_id) = previous_upload.as_deref() {
-            self.forget_resume(Some(upload_id));
-        }
         self.update_item_if_current(&item_id, item.run_id, |item| {
             item.status = UploadState::Retrying;
             item.progress = 0;
@@ -453,7 +454,10 @@ impl UploadController {
                         // instead of creating a conflicting sibling.
                         reuse_completed = true;
                     }
-                    Ok(_) | Err(RequestError { status: 404, .. }) => {
+                    Ok(_)
+                    | Err(RequestError {
+                        status: 404 | 410, ..
+                    }) => {
                         if let Err(error) = api::abort_upload(upload_id).await
                             && error.status != 404
                         {
@@ -531,7 +535,13 @@ impl UploadController {
                     progress: 0,
                     status: UploadState::Queued,
                     error: String::new(),
-                    upload_id: resume.map(|entry| entry.upload_id.clone()),
+                    upload_id: resume
+                        .filter(|entry| !entry.upload_id.is_empty())
+                        .map(|entry| entry.upload_id.clone()),
+                    creation_key: resume
+                        .filter(|entry| !entry.idempotency_key.is_empty())
+                        .map(|entry| entry.idempotency_key.clone())
+                        .unwrap_or_else(new_creation_key),
                     run_id: 0,
                 });
             }
@@ -648,54 +658,59 @@ impl UploadController {
         active: &Rc<ActiveUpload>,
     ) -> Result<(), RequestError> {
         let size = file_size(&item.file);
-        let resolved = self.resolve_upload(item, size).await?;
+        self.save_resume(item.upload_id.as_deref(), item);
+        let resolved = self.resolve_upload(item, size, active).await?;
         active.remember_upload(&resolved.upload_id);
         self.update_item_if_current(item_id, run_id, |item| {
             item.upload_id = Some(resolved.upload_id.clone());
         });
-        self.save_resume(&resolved.upload_id, &item.parent_id, &item.file);
+        self.save_resume(Some(&resolved.upload_id), item);
         ensure_not_cancelled(active)?;
         if resolved.already_completed {
             return Ok(());
         }
 
-        let completed_parts = match resolved.mode {
-            UploadMode::Single => {
-                if resolved.url.is_empty() {
-                    return Err(local_error("服务端没有返回上传地址"));
+        let completed_parts = if resolved.finalizing || resolved.data_received {
+            Vec::new()
+        } else {
+            match resolved.mode {
+                UploadMode::Single => {
+                    if resolved.url.is_empty() {
+                        return Err(local_error("服务端没有返回上传地址"));
+                    }
+                    let body = file_blob(&item.file).clone();
+                    let progress = self.progress_callback(
+                        item_id.to_owned(),
+                        run_id,
+                        size,
+                        Rc::new(RefCell::new(vec![0_i64])),
+                        0,
+                    );
+                    self.retrying(Rc::clone(active), || {
+                        let active = Rc::clone(active);
+                        let body = body.clone();
+                        let url = resolved.url.clone();
+                        let progress = Rc::clone(&progress);
+                        let mime_type = Some(file_mime(&item.file));
+                        async move { xhr_put(active, url, body, mime_type, progress).await }
+                    })
+                    .await?;
+                    Vec::new()
                 }
-                let body = file_blob(&item.file).clone();
-                let progress = self.progress_callback(
-                    item_id.to_owned(),
-                    run_id,
-                    size,
-                    Rc::new(RefCell::new(vec![0_i64])),
-                    0,
-                );
-                self.retrying(Rc::clone(active), || {
-                    let active = Rc::clone(active);
-                    let body = body.clone();
-                    let url = resolved.url.clone();
-                    let progress = Rc::clone(&progress);
-                    let mime_type = Some(file_mime(&item.file));
-                    async move { xhr_put(active, url, body, mime_type, progress).await }
-                })
-                .await?;
-                Vec::new()
-            }
-            UploadMode::Multipart => {
-                self.upload_multipart(
-                    item_id,
-                    run_id,
-                    &item.file,
-                    &resolved.upload_id,
-                    size,
-                    resolved.part_size,
-                    resolved.part_count,
-                    resolved.existing_parts,
-                    active,
-                )
-                .await?
+                UploadMode::Multipart => {
+                    self.upload_multipart(
+                        item_id,
+                        run_id,
+                        &item.file,
+                        &resolved.upload_id,
+                        size,
+                        resolved.part_size,
+                        resolved.part_count,
+                        resolved.existing_parts,
+                        active,
+                    )
+                    .await?
+                }
             }
         };
 
@@ -727,6 +742,7 @@ impl UploadController {
         &self,
         item: &UploadItem,
         size: i64,
+        active: &Rc<ActiveUpload>,
     ) -> Result<ResolvedUpload, RequestError> {
         if let Some(upload_id) = item.upload_id.as_deref() {
             match api::fetch_upload(upload_id).await {
@@ -748,6 +764,8 @@ impl UploadController {
                         part_count: status.part_count,
                         existing_parts: status.parts,
                         already_completed: true,
+                        finalizing: status.finalizing,
+                        data_received: status.data_received,
                     });
                 }
                 Ok(status) if status.status == UploadLifecycle::Pending => {
@@ -763,34 +781,55 @@ impl UploadController {
                         part_count: status.part_count,
                         existing_parts: status.parts,
                         already_completed: false,
+                        finalizing: status.finalizing,
+                        data_received: status.data_received,
                     });
                 }
                 Ok(_) => {
                     self.forget_resume(Some(upload_id));
                 }
-                Err(error) if error.status == 404 => {
+                Err(error) if error.status == 404 || error.status == 410 => {
+                    if error.status == 410 {
+                        match api::abort_upload(upload_id).await {
+                            Ok(()) => {}
+                            Err(error) if error.status == 404 => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
                     self.forget_resume(Some(upload_id));
                 }
                 Err(error) => return Err(error),
             }
         }
 
-        let created = api::create_upload(&CreateUploadRequest {
+        let request = CreateUploadRequest {
             parent_id: item.parent_id.clone(),
             name: item.file.name(),
             size,
             mime_type: file_mime(&item.file),
-        })
-        .await?;
-        validate_upload_shape(created.mode, created.part_size, created.part_count, size)?;
+            idempotency_key: item.creation_key.clone(),
+        };
+        let created = self
+            .retrying(Rc::clone(active), || api::create_upload(&request))
+            .await?;
+        // Replaying creation can find an already transferred or committed file.
+        active.remember_upload(&created.upload_id);
+        self.update_item_if_current(&item.id, item.run_id, |item| {
+            item.upload_id = Some(created.upload_id.clone())
+        });
+        self.save_resume(Some(&created.upload_id), item);
+        let status = api::fetch_upload(&created.upload_id).await?;
+        validate_upload_shape(status.mode, status.part_size, status.part_count, size)?;
         Ok(ResolvedUpload {
-            upload_id: created.upload_id,
-            mode: created.mode,
+            upload_id: status.upload_id,
+            mode: status.mode,
             url: created.url,
-            part_size: created.part_size,
-            part_count: created.part_count,
-            existing_parts: Vec::new(),
-            already_completed: false,
+            part_size: status.part_size,
+            part_count: status.part_count,
+            existing_parts: status.parts,
+            already_completed: status.status == UploadLifecycle::Completed,
+            finalizing: status.finalizing,
+            data_received: status.data_received,
         })
     }
 
@@ -840,32 +879,22 @@ impl UploadController {
 
         for page in missing.chunks(limits::MAX_UPLOAD_PART_BATCH) {
             ensure_not_cancelled(active)?;
-            let response = api::fetch_upload_parts(
-                upload_id,
-                &UploadPartsRequest {
-                    part_numbers: page.to_vec(),
-                },
-            )
-            .await?;
-            let mut expected = page.iter().copied().collect::<HashSet<_>>();
-            for part in &response.parts {
-                if part.url.is_empty() || !expected.remove(&part.part_number) {
-                    return Err(local_error("服务端返回了无效的分片地址"));
-                }
-            }
-            if !expected.is_empty() {
-                return Err(local_error("服务端没有返回全部分片地址"));
-            }
+            let urls = page
+                .iter()
+                .map(|number| PartUrl {
+                    part_number: *number,
+                    url: format!("/api/uploads/{upload_id}/data/{number}"),
+                })
+                .collect::<Vec<_>>();
 
             let cursor = Rc::new(Cell::new(0_usize));
-            let workers = response.parts.len().min(MULTIPART_CONCURRENCY);
+            let workers = urls.len().min(MULTIPART_CONCURRENCY);
             let mut futures = Vec::with_capacity(workers);
             for _ in 0..workers {
                 let controller = self.clone();
                 let active = Rc::clone(active);
                 let file = file.clone();
-                let upload_id = upload_id.to_owned();
-                let urls = response.parts.clone();
+                let urls = urls.clone();
                 let cursor = Rc::clone(&cursor);
                 let sent_for_progress = Rc::clone(&sent);
                 let completed = Rc::clone(&completed);
@@ -927,20 +956,6 @@ impl UploadController {
                             etag: etag.clone(),
                             ..Default::default()
                         });
-                        controller
-                            .retrying(Rc::clone(&active), || {
-                                let upload_id = upload_id.clone();
-                                let request = RecordUploadPartRequest {
-                                    etag: etag.clone(),
-                                    size: expected,
-                                    content_hash: String::new(),
-                                };
-                                async move {
-                                    api::record_upload_part(&upload_id, part.part_number, &request)
-                                        .await
-                                }
-                            })
-                            .await?;
                     }
                 });
             }
@@ -996,7 +1011,12 @@ impl UploadController {
                         if active.cancelled.get() {
                             return Err(cancelled_error());
                         }
-                        if attempt + 1 == UPLOAD_RETRIES {
+                        if attempt + 1 == UPLOAD_RETRIES
+                            || !(error.status == 0
+                                || error.status == 408
+                                || error.status == 429
+                                || error.status >= 500)
+                        {
                             return Err(error);
                         }
                         last = error;
@@ -1034,16 +1054,23 @@ impl UploadController {
         });
     }
 
-    fn save_resume(&self, upload_id: &str, parent_id: &str, file: &BrowserFile) {
+    fn save_resume(&self, upload_id: Option<&str>, item: &UploadItem) {
         let mut saved = saved_uploads();
-        saved.retain(|entry| entry.upload_id != upload_id);
+        saved.retain(|entry| entry.idempotency_key != item.creation_key);
         saved.push(SavedUpload {
-            upload_id: upload_id.to_owned(),
-            parent_id: parent_id.to_owned(),
-            name: file.name(),
-            size: file_size(file),
-            last_modified: file.last_modified(),
+            upload_id: upload_id.unwrap_or_default().to_owned(),
+            parent_id: item.parent_id.clone(),
+            name: item.file.name(),
+            size: file_size(&item.file),
+            last_modified: item.file.last_modified(),
+            idempotency_key: item.creation_key.clone(),
         });
+        persist_saved_uploads(&saved);
+    }
+
+    fn forget_creation(&self, key: &str) {
+        let mut saved = saved_uploads();
+        saved.retain(|entry| entry.idempotency_key != key);
         persist_saved_uploads(&saved);
     }
 
@@ -1330,7 +1357,11 @@ fn saved_uploads() -> Vec<SavedUpload> {
             // Match the reference's Number.isSafeInteger/Number.isFinite
             // guards per entry; one malformed record must not discard valid
             // resume records beside it.
-            if upload_id.is_empty()
+            let idempotency_key = entry
+                .get("idempotencyKey")
+                .and_then(|key| key.as_str())
+                .unwrap_or_default();
+            if (upload_id.is_empty() && idempotency_key.is_empty())
                 || parent_id.is_empty()
                 || name.is_empty()
                 || !size.is_finite()
@@ -1347,9 +1378,18 @@ fn saved_uploads() -> Vec<SavedUpload> {
                 name: name.to_owned(),
                 size: size as i64,
                 last_modified,
+                idempotency_key: idempotency_key.to_owned(),
             })
         })
         .collect()
+}
+
+fn new_creation_key() -> String {
+    format!(
+        "upload-{:x}-{:x}",
+        js_sys::Date::now() as u64,
+        (Math::random() * 9_007_199_254_740_991.0) as u64
+    )
 }
 
 fn persist_saved_uploads(saved: &[SavedUpload]) {

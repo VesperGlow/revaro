@@ -1,8 +1,94 @@
 import { expect, test, type Page } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { login, navigate } from './helpers'
 
 const overlay = (page: Page) => page.getByRole('region', { name: '上传进度', exact: true })
 const row = (page: Page, name: string) => page.locator('.upload-progress-item').filter({ has: page.locator('strong', { hasText: name }) })
+
+test('lost creation and completion responses reuse one session and do not retransmit accepted bytes', async ({ page }) => {
+  await login(page)
+  const name = `lost-response-${Date.now()}.bin`
+  const payload = Buffer.from('recover an accepted upload without duplicating it')
+  const ids: string[] = []
+  const keys: string[] = []
+  let dataRequests = 0
+  let completionRequests = 0
+  await page.route('**/api/uploads', async route => {
+    keys.push(route.request().postDataJSON().idempotency_key)
+    const response = await route.fetch()
+    ids.push((await response.json()).upload_id)
+    if (ids.length === 1) await route.abort('connectionreset')
+    else await route.fulfill({ response })
+  })
+  await page.route('**/api/uploads/*/data', async route => {
+    dataRequests++
+    await route.continue()
+  })
+  await page.route('**/api/uploads/*/complete', async route => {
+    completionRequests++
+    const response = await route.fetch()
+    expect(response.status()).toBe(200)
+    if (completionRequests === 1) await route.abort('connectionreset')
+    else await route.fulfill({ response })
+  })
+  await page.getByLabel('选择文件上传', { exact: true }).setInputFiles({ name, mimeType: 'application/octet-stream', buffer: payload })
+  await expect.poll(() => completionRequests).toBe(2)
+  await expect(overlay(page)).toHaveCount(0)
+  expect(ids).toHaveLength(2)
+  expect(ids[1]).toBe(ids[0])
+  expect(keys[0]).toBeTruthy()
+  expect(keys[1]).toBe(keys[0])
+  expect(dataRequests).toBe(1)
+  const status = await (await page.request.get(`/api/uploads/${ids[0]}`)).json()
+  expect(status.status).toBe('completed')
+  const file = await (await page.request.get(`/api/files/${status.file_id}`)).json()
+  expect(file.file.content_hash).toBe(createHash('sha256').update(payload).digest('hex'))
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('revaro.uploads.v1') || '[]'))).toEqual([])
+})
+
+test('multipart retry uses server acknowledgements and only sends the missing part', async ({ page }) => {
+  test.setTimeout(90_000)
+  await login(page)
+  const name = `resume-parts-${Date.now()}.bin`
+  const payload = Buffer.alloc(16 * 1024 * 1024 + 1, 97)
+  const requests = new Map<number, number>()
+  const legacyRequests: string[] = []
+  const ids: string[] = []
+  let failing = true
+  page.on('request', request => {
+    if (/\/api\/uploads\/[^/]+\/parts(?:\/|$)/.test(new URL(request.url()).pathname)) legacyRequests.push(request.url())
+  })
+  await page.route('**/api/uploads', async route => {
+    const response = await route.fetch()
+    ids.push((await response.json()).upload_id)
+    await route.fulfill({ response })
+  })
+  await page.route('**/api/uploads/*/data/*', async route => {
+    const part = Number(new URL(route.request().url()).pathname.split('/').pop())
+    requests.set(part, (requests.get(part) || 0) + 1)
+    if (failing) {
+      // The first part reached disk but its response was lost. The second did
+      // not reach the server. A manual retry must reconcile these two cases.
+      if (part === 1) expect((await route.fetch()).status()).toBe(204)
+      await route.fulfill({ status: 422, json: { error: { message: '模拟分片失败' } } })
+    } else await route.continue()
+  })
+  await page.getByLabel('选择文件上传', { exact: true }).setInputFiles({ name, mimeType: 'application/octet-stream', buffer: payload })
+  await expect(row(page, name)).toContainText('上传失败')
+  const pending = await (await page.request.get(`/api/uploads/${ids[0]}`)).json()
+  expect(pending.parts.map((part: { part_number: number }) => part.part_number)).toEqual([1])
+  failing = false
+  await row(page, name).getByRole('button', { name: '重试上传', exact: true }).click()
+  await expect(overlay(page)).toHaveCount(0)
+  expect(ids).toHaveLength(1)
+  expect(requests.get(1)).toBe(1)
+  expect(requests.get(2)).toBe(2)
+  expect(legacyRequests).toEqual([])
+  const completed = await (await page.request.get(`/api/uploads/${ids[0]}`)).json()
+  expect(completed.status).toBe('completed')
+  const file = await (await page.request.get(`/api/files/${completed.file_id}`)).json()
+  expect(file.file.content_hash).toBe(createHash('sha256').update(payload).digest('hex'))
+})
 
 test('uploads appear automatically in a bounded scrolling overlay and disappear as each file finishes', async ({ page }) => {
   test.setTimeout(90_000)

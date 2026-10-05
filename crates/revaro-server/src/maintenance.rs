@@ -201,6 +201,16 @@ impl MaintenanceRuntime {
         )
         .expect("production maintenance job names are unique");
         self.register(
+            "upload-commits",
+            minute,
+            minute.saturating_mul(5),
+            true,
+            state_job(state.clone(), |state| async move {
+                crate::upload_routes::recover_upload_commits(&state).await
+            }),
+        )
+        .expect("production maintenance job names are unique");
+        self.register(
             "uploads",
             minute.saturating_mul(15),
             minute.saturating_mul(5),
@@ -262,9 +272,32 @@ impl MaintenanceRuntime {
             minute.saturating_mul(5),
             true,
             state_job(state.clone(), |state| async move {
+                let protected = state
+                    .db
+                    .call(|connection| {
+                        let mut query = connection
+                            .prepare(
+                                "SELECT multipart_id FROM uploads WHERE multipart_id IS NOT NULL \
+                                 AND (status='pending' OR staging_cleaned=0)",
+                            )
+                            .map_err(DbError::Query)?;
+                        query
+                            .query_map([], |row| row.get::<_, String>(0))
+                            .map_err(DbError::Query)?
+                            .collect::<Result<HashSet<_>, _>>()
+                            .map_err(DbError::Query)
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
                 state
                     .store
-                    .cleanup_temporary(state.config.upload_expires)
+                    .cleanup_temporary_except(
+                        state
+                            .config
+                            .upload_expires
+                            .max(state.config.upload_request_timeout),
+                        &protected,
+                    )
                     .await
                     .map_err(|error| error.to_string())
             }),
@@ -530,7 +563,7 @@ async fn load_expired_uploads(
             let mut statement = connection
                 .prepare(
                     "SELECT id,file_id,object_key,multipart_id FROM uploads \
-                     WHERE status='pending' AND julianday(expires_at) <= julianday(?1) \
+                     WHERE status='pending' AND commit_state='receiving' AND julianday(expires_at) <= julianday(?1) \
                      ORDER BY expires_at LIMIT ?2",
                 )
                 .map_err(DbError::Query)?;
@@ -564,7 +597,7 @@ async fn cleanup_expired_uploads(state: &Arc<AppState>) -> Result<(), String> {
                 let transaction = connection.transaction().map_err(DbError::Query)?;
                 let upload = transaction
                     .execute(
-                        "DELETE FROM uploads WHERE id=?1 AND file_id=?2 AND status='pending' \
+                        "DELETE FROM uploads WHERE id=?1 AND file_id=?2 AND status='pending' AND commit_state='receiving' \
                          AND julianday(expires_at) <= julianday(?3) \
                          AND EXISTS(SELECT 1 FROM files WHERE id=?2 AND status='pending')",
                         rusqlite::params![id, file_id, now],

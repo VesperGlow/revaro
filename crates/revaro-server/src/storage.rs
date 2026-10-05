@@ -8,8 +8,8 @@
 //! ## Why the details matter
 //!
 //! * **Confinement.** Keys are validated and resolved to relative paths only, and
-//!   symlinks are refused on read. A key can never address anything outside the
-//!   root, so a bug higher up cannot become an arbitrary-file read.
+//!   symlinks in existing parent directories and final objects are refused.
+//!   The private root must not be modified concurrently by another process.
 //! * **Atomicity.** Writes go to a temporary file in the destination directory,
 //!   are flushed and `fsync`ed, and only then renamed into place. A crash leaves
 //!   either the old object or a stray temporary file, never a half-written
@@ -32,9 +32,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use revaro_core::hash::Sha256;
 use revaro_core::keys;
 use revaro_core::storage::{CompletedPart, ObjectInfo, ObjectRef};
+use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
 
 use crate::ids::new_id;
@@ -68,6 +68,9 @@ pub enum StorageError {
         /// Size the caller declared.
         expected: i64,
     },
+    /// A retry attempted to replace previously accepted bytes.
+    #[error("uploaded content differs from the accepted object")]
+    ContentMismatch,
     /// The upload session identifier is malformed.
     #[error("invalid multipart reference")]
     InvalidMultipartReference,
@@ -120,6 +123,13 @@ pub struct StoredObject {
     pub etag: String,
 }
 
+/// Integrity metadata computed while streaming bytes to durable storage.
+#[derive(Debug)]
+pub struct HashedObject {
+    pub info: ObjectInfo,
+    pub content_hash: String,
+}
+
 /// A directory-backed object store confined to one root.
 #[derive(Debug, Clone)]
 pub struct LocalStore {
@@ -139,6 +149,7 @@ impl LocalStore {
             use std::os::unix::fs::PermissionsExt as _;
             tokio::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).await?;
         }
+        let root = tokio::fs::canonicalize(root).await?;
         Ok(Self { root })
     }
 
@@ -236,6 +247,21 @@ impl LocalStore {
     /// rather than teaching a response module how object paths work.
     pub(crate) fn open_object_blocking(&self, key: &str) -> Result<std::fs::File, StorageError> {
         let path = self.path_for(key)?;
+        let relative = path
+            .parent()
+            .ok_or(StorageError::InvalidKey)?
+            .strip_prefix(&self.root)
+            .map_err(|_| StorageError::InvalidKey)?;
+        let mut directory = self.root.clone();
+        for component in relative.components() {
+            directory.push(component);
+            if !std::fs::symlink_metadata(&directory)
+                .map_err(map_not_found)?
+                .is_dir()
+            {
+                return Err(StorageError::NotFound);
+            }
+        }
         let metadata = std::fs::symlink_metadata(&path).map_err(map_not_found)?;
         if !metadata.is_file() {
             return Err(StorageError::NotFound);
@@ -261,10 +287,8 @@ impl LocalStore {
 
     /// Hash an object without buffering its contents in memory.
     ///
-    /// Upload completion uses this after a multipart assembly. The metadata
-    /// size is captured with the file handle and checked again after the read,
-    /// so a concurrent out-of-band replacement cannot silently produce a hash
-    /// for bytes different from the object that was opened.
+    /// Recovery uses this when an interrupted write has no saved digest. The
+    /// bytes read are checked against the size captured with the file handle.
     ///
     /// # Errors
     /// Propagates [`StorageError::NotFound`] and I/O failures, and reports a
@@ -290,6 +314,14 @@ impl LocalStore {
             });
         }
         Ok(hex_digest(&hasher.finalize()))
+    }
+
+    /// Re-establish durability when recovery finds a rename whose caller may
+    /// have been interrupted before syncing the destination directory.
+    pub async fn sync_object(&self, key: &str) -> Result<(), StorageError> {
+        let object = self.open_object(key).await?;
+        object.file.sync_all().await?;
+        self.sync_directory(&self.path_for(key)?).await
     }
 
     /// Read a byte range, seeking first. Used by video and audio range requests.
@@ -351,33 +383,69 @@ impl LocalStore {
     where
         R: AsyncRead + Unpin,
     {
+        Ok(self
+            .write_stream_hashed(key, reader, size, None)
+            .await?
+            .info)
+    }
+
+    /// Hash while writing. An accepted digest makes retries create-only: bytes
+    /// are verified in a separate temporary file and the existing ETag survives.
+    pub async fn write_stream_hashed<R>(
+        &self,
+        key: &str,
+        reader: &mut R,
+        size: i64,
+        accepted_hash: Option<&str>,
+    ) -> Result<HashedObject, StorageError>
+    where
+        R: AsyncRead + Unpin,
+    {
         let path = self.path_for(key)?;
-        if let Some(parent) = path.parent() {
-            // Every component of a valid key is a plain name, so creating the
-            // parent chain cannot escape the root.
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
+        self.ensure_parent(&path, true).await?;
         let temp = temp_path_for(&path);
-        let result = self.write_temp(&temp, reader, Some(size)).await;
-        let written = match result {
-            Ok(written) => written,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&temp).await;
-                return Err(error);
+        let result = async {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp)
+                .await?;
+            let mut hasher = Sha256::new();
+            let written = copy_hashed(
+                &mut reader.take(size.max(0) as u64 + 1),
+                &mut file,
+                &mut hasher,
+            )
+            .await?;
+            if written != size {
+                return Err(StorageError::SizeMismatch {
+                    actual: written,
+                    expected: size,
+                });
             }
-        };
-
-        match tokio::fs::rename(&temp, &path).await {
-            Ok(()) => {}
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&temp).await;
-                return Err(StorageError::Io(error));
+            let content_hash = hex_digest(&hasher.finalize());
+            if let Some(accepted) = accepted_hash {
+                if content_hash != accepted {
+                    return Err(StorageError::ContentMismatch);
+                }
+                return Ok(HashedObject {
+                    info: self.head(key).await?,
+                    content_hash,
+                });
             }
+            file.flush().await?;
+            file.sync_all().await?;
+            drop(file);
+            tokio::fs::rename(&temp, &path).await?;
+            self.sync_directory(&path).await?;
+            Ok(HashedObject {
+                info: self.head(key).await?,
+                content_hash,
+            })
         }
-        self.sync_directory(&path).await?;
-        debug_assert_eq!(written, size);
-        self.head(key).await
+        .await;
+        let _ = tokio::fs::remove_file(&temp).await;
+        result
     }
 
     /// Delete an object. Missing objects are not an error.
@@ -386,6 +454,11 @@ impl LocalStore {
     /// Propagates [`StorageError::InvalidKey`] and I/O failures.
     pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
         let path = self.path_for(key)?;
+        match self.ensure_parent(&path, false).await {
+            Ok(()) => {}
+            Err(StorageError::NotFound) => return Ok(()),
+            Err(error) => return Err(error),
+        }
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -483,7 +556,7 @@ impl LocalStore {
         }
         let upload_id = new_id();
         let directory = self.path_for(&keys::multipart_dir(&upload_id, key))?;
-        tokio::fs::create_dir_all(&directory).await?;
+        self.ensure_parent(&directory.join("1"), true).await?;
         Ok(upload_id)
     }
 
@@ -519,7 +592,8 @@ impl LocalStore {
         self.write_stream(&part_key, reader, size).await
     }
 
-    /// Concatenate every part into the final object, then discard the session.
+    /// Concatenate parts and hash their ordered bytes. Staging remains until
+    /// the caller commits metadata, so a failed commit can be recovered.
     ///
     /// Parts must be consecutive from 1 and each must still match the entity tag
     /// the client acknowledged; both checks happen before any bytes are copied,
@@ -533,11 +607,11 @@ impl LocalStore {
         key: &str,
         upload_id: &str,
         parts: &[CompletedPart],
-    ) -> Result<ObjectInfo, StorageError> {
+    ) -> Result<HashedObject, StorageError> {
         if parts.is_empty() || parts.len() > 10_000 {
             return Err(StorageError::InvalidPartList);
         }
-        let directory = keys::multipart_dir(upload_id, key);
+        let directory = self.multipart_directory(key, upload_id)?;
         let mut total: i64 = 0;
         for (index, part) in parts.iter().enumerate() {
             let expected_number = index as i32 + 1;
@@ -561,36 +635,29 @@ impl LocalStore {
         }
 
         let destination = self.path_for(key)?;
-        if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        self.ensure_parent(&destination, true).await?;
         let temp = temp_path_for(&destination);
-        match self.assemble_parts(&directory, parts.len(), &temp).await {
-            Ok(assembled) if assembled != total => {
+        let content_hash = match self.assemble_parts(&directory, parts.len(), &temp).await {
+            Ok((assembled, _)) if assembled != total => {
                 let _ = tokio::fs::remove_file(&temp).await;
                 return Err(StorageError::SizeMismatch {
                     actual: assembled,
                     expected: total,
                 });
             }
-            Ok(_) => {}
+            Ok((_, content_hash)) => content_hash,
             Err(error) => {
                 let _ = tokio::fs::remove_file(&temp).await;
                 return Err(error);
             }
-        }
+        };
         if let Err(error) = tokio::fs::rename(&temp, &destination).await {
             let _ = tokio::fs::remove_file(&temp).await;
             return Err(StorageError::Io(error));
         }
         self.sync_directory(&destination).await?;
         let info = self.head(key).await?;
-        // The session's bytes are now part of the committed object; dropping the
-        // staging directory is housekeeping, not part of the commit.
-        if let Err(error) = self.abort_multipart(key, upload_id).await {
-            tracing::warn!(key, upload_id, %error, "could not remove multipart staging");
-        }
-        Ok(info)
+        Ok(HashedObject { info, content_hash })
     }
 
     /// Discard a multipart session and its parts.
@@ -601,6 +668,11 @@ impl LocalStore {
     pub async fn abort_multipart(&self, key: &str, upload_id: &str) -> Result<(), StorageError> {
         let directory = self.multipart_directory(key, upload_id)?;
         let directory_path = self.path_for(&directory)?;
+        match self.ensure_parent(&directory_path, false).await {
+            Ok(()) => {}
+            Err(StorageError::NotFound) => return Ok(()),
+            Err(error) => return Err(error),
+        }
         match tokio::fs::remove_dir_all(&directory_path).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -622,11 +694,24 @@ impl LocalStore {
     /// # Errors
     /// Propagates I/O failures other than "already gone".
     pub async fn cleanup_temporary(&self, age: Duration) -> Result<(), StorageError> {
-        self.cleanup_staging(age).await?;
+        self.cleanup_temporary_except(age, &std::collections::HashSet::new())
+            .await
+    }
+
+    pub async fn cleanup_temporary_except(
+        &self,
+        age: Duration,
+        protected: &std::collections::HashSet<String>,
+    ) -> Result<(), StorageError> {
+        self.cleanup_staging(age, protected).await?;
         self.cleanup_uploads(&self.root.clone(), age).await
     }
 
-    async fn cleanup_staging(&self, age: Duration) -> Result<(), StorageError> {
+    async fn cleanup_staging(
+        &self,
+        age: Duration,
+        protected: &std::collections::HashSet<String>,
+    ) -> Result<(), StorageError> {
         let staging = self.root.join(keys::MULTIPART_ROOT.trim_end_matches('/'));
         let mut sessions = match tokio::fs::read_dir(&staging).await {
             Ok(sessions) => sessions,
@@ -634,6 +719,9 @@ impl LocalStore {
             Err(error) => return Err(StorageError::Io(error)),
         };
         while let Some(session) = sessions.next_entry().await? {
+            if protected.contains(session.file_name().to_string_lossy().as_ref()) {
+                continue;
+            }
             let metadata = session.metadata().await?;
             if !metadata.is_dir() || !is_older_than(&metadata, age) {
                 continue;
@@ -732,13 +820,14 @@ impl LocalStore {
         directory: &str,
         count: usize,
         temp: &Path,
-    ) -> Result<i64, StorageError> {
+    ) -> Result<(i64, String), StorageError> {
         let mut output = tokio::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(temp)
             .await?;
         let mut copied: i64 = 0;
+        let mut hasher = Sha256::new();
         for number in 1..=count {
             let part_key = format!("{directory}/{number}");
             let mut part = self
@@ -750,16 +839,46 @@ impl LocalStore {
                     },
                     other => other,
                 })?;
-            copied += tokio::io::copy(&mut part.file, &mut output).await? as i64;
+            copied += copy_hashed(&mut part.file, &mut output, &mut hasher).await?;
         }
         output.flush().await?;
         output.sync_all().await?;
-        Ok(copied)
+        Ok((copied, hex_digest(&hasher.finalize())))
+    }
+
+    /// Refuse existing symlink ancestors, including on writes. The private
+    /// object root is trusted; other processes must not mutate its directories
+    /// while this process operates on them.
+    async fn ensure_parent(&self, path: &Path, create: bool) -> Result<(), StorageError> {
+        let relative = path
+            .parent()
+            .ok_or(StorageError::InvalidKey)?
+            .strip_prefix(&self.root)
+            .map_err(|_| StorageError::InvalidKey)?;
+        let mut directory = self.root.clone();
+        for component in relative.components() {
+            directory.push(component);
+            if create {
+                match tokio::fs::create_dir(&directory).await {
+                    Ok(()) => self.sync_directory(&directory).await?,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(StorageError::Io(error)),
+                }
+            }
+            let metadata = tokio::fs::symlink_metadata(&directory)
+                .await
+                .map_err(map_not_found)?;
+            if !metadata.is_dir() {
+                return Err(StorageError::NotFound);
+            }
+        }
+        Ok(())
     }
 
     /// Metadata for a regular file, rejecting directories, symlinks and
     /// anything else that is not plain content.
     async fn regular_file_metadata(&self, path: &Path) -> Result<std::fs::Metadata, StorageError> {
+        self.ensure_parent(path, false).await?;
         // `symlink_metadata` deliberately does not follow the final component, so
         // a symlink planted in the store is reported as a symlink rather than as
         // whatever it points at.
@@ -805,9 +924,7 @@ impl LocalStore {
         immutable: bool,
     ) -> Result<ObjectInfo, StorageError> {
         let path = self.path_for(key)?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        self.ensure_parent(&path, true).await?;
         let temp = temp_path_for(&path);
         let mut source = data;
         let written = self
@@ -840,8 +957,28 @@ impl LocalStore {
     }
 }
 
+/// Bounded streaming copy shared by uploads and multipart assembly.
+async fn copy_hashed<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    output: &mut tokio::fs::File,
+    hasher: &mut Sha256,
+) -> Result<i64, StorageError> {
+    let mut buffer = vec![0u8; 256 * 1024];
+    let mut copied = 0;
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        output.write_all(&buffer[..count]).await?;
+        copied += count as i64;
+    }
+    Ok(copied)
+}
+
 /// Encode a SHA-256 digest without allocating a second copy of the object.
-fn hex_digest(digest: &[u8; 32]) -> String {
+fn hex_digest(digest: &[u8]) -> String {
     use std::fmt::Write as _;
 
     let mut output = String::with_capacity(64);
@@ -1092,6 +1229,57 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_ancestors_are_refused_for_reads_and_writes() {
+        let (root, store) = store().await;
+        let outside = root.0.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("object"), b"original").unwrap();
+        std::os::unix::fs::symlink(&outside, root.0.join("blobs")).unwrap();
+        assert!(matches!(
+            store.head("blobs/object").await,
+            Err(StorageError::NotFound)
+        ));
+        assert!(matches!(
+            store.open_object_blocking("blobs/object"),
+            Err(StorageError::NotFound)
+        ));
+        let mut source: &[u8] = b"replaced";
+        assert!(
+            store
+                .write_stream("blobs/object", &mut source, 8)
+                .await
+                .is_err()
+        );
+        assert!(store.put("blobs/object", b"replaced").await.is_err());
+        assert_eq!(std::fs::read(outside.join("object")).unwrap(), b"original");
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_preserves_recoverable_multipart_sessions() {
+        let (_root, store) = store().await;
+        let protected_id = store.create_multipart("blobs/protected").await.unwrap();
+        let abandoned_id = store.create_multipart("blobs/abandoned").await.unwrap();
+        let protected = std::collections::HashSet::from([protected_id.clone()]);
+        store
+            .cleanup_temporary_except(Duration::ZERO, &protected)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .root()
+                .join(keys::multipart_dir(&protected_id, "blobs/protected"))
+                .exists()
+        );
+        assert!(
+            !store
+                .root()
+                .join(keys::multipart_dir(&abandoned_id, "blobs/abandoned"))
+                .exists()
+        );
+    }
+
     #[tokio::test]
     async fn immutable_puts_keep_the_first_writer() {
         let (_root, store) = store().await;
@@ -1260,12 +1448,13 @@ mod tests {
             .complete_multipart(&key, &upload_id, &parts)
             .await
             .unwrap();
-        assert_eq!(info.size, 11);
+        assert_eq!(info.info.size, 11);
+        assert_eq!(info.content_hash, keys::sha256_hex(b"hello world"));
         assert_eq!(store.read(&key, 64).await.unwrap(), b"hello world");
 
-        // The session is gone once the object is committed.
+        // Metadata has not been committed yet, so recovery still has parts.
         assert!(
-            !store
+            store
                 .root()
                 .join(keys::multipart_dir(&upload_id, &key))
                 .exists()

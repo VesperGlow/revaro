@@ -89,6 +89,8 @@ pub struct Config {
     pub upload_request_timeout: Duration,
     /// Free space to keep after accepting bytes.
     pub upload_min_free_bytes: i64,
+    /// Maximum simultaneous upload writes and assemblies across all sessions.
+    pub upload_concurrency: usize,
     /// How long deleted files stay in the trash.
     pub trash_retention: Duration,
     /// Interval between orphan-blob sweeps; zero disables the sweep.
@@ -181,6 +183,12 @@ impl Config {
             Duration::from_secs(24 * 3600),
         )?;
         let upload_min_free_bytes = parse_int("UPLOAD_MIN_FREE_BYTES", lookup, 64 << 20)?;
+        let upload_concurrency = parse_int("UPLOAD_CONCURRENCY", lookup, 8)?;
+        if !(1..=64).contains(&upload_concurrency) {
+            return Err(ConfigError::new(
+                "UPLOAD_CONCURRENCY must be between 1 and 64",
+            ));
+        }
         if upload_idle_timeout.is_zero()
             || upload_request_timeout.is_zero()
             || upload_min_free_bytes < 0
@@ -218,6 +226,7 @@ impl Config {
             upload_idle_timeout,
             upload_request_timeout,
             upload_min_free_bytes,
+            upload_concurrency: upload_concurrency as usize,
             trash_retention,
             gc_interval,
             flow_cache_ttl,
@@ -468,6 +477,18 @@ mod tests {
     fn rejects_non_positive_upload_expiry() {
         assert!(config_from(&[("UPLOAD_EXPIRES", "0s")]).is_err());
         assert!(config_from(&[("UPLOAD_EXPIRES", "nonsense")]).is_err());
+    }
+
+    #[test]
+    fn upload_concurrency_is_bounded() {
+        assert_eq!(
+            config_from(&[("UPLOAD_CONCURRENCY", "4")])
+                .unwrap()
+                .upload_concurrency,
+            4
+        );
+        assert!(config_from(&[("UPLOAD_CONCURRENCY", "0")]).is_err());
+        assert!(config_from(&[("UPLOAD_CONCURRENCY", "65")]).is_err());
     }
 
     #[test]

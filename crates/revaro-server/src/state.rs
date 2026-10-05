@@ -31,35 +31,115 @@ pub struct ReaderRuntime {
     flow_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
-/// Per-upload serialization state.
-///
-/// Upload bytes and their database acknowledgement are two halves of one
-/// lifecycle. A completion or abort that races a part write must wait for that
-/// write to settle before it inspects or removes the staging object. The map
-/// stores only the short-lived lock objects and prunes idle keys on lookup.
-#[derive(Debug, Default)]
+/// Lifecycle writers (completion, abort, expiry) exclude all part writers.
+/// Part writers share the lifecycle lock and serialize only their own part.
+#[derive(Debug)]
 pub struct UploadRuntime {
-    locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    locks: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    part_locks: Mutex<UploadPartLocks>,
+    pub io_slots: Arc<tokio::sync::Semaphore>,
+    reserved_bytes: Arc<Mutex<u64>>,
+}
+
+type UploadPartLocks = HashMap<(String, i32), Arc<tokio::sync::Mutex<()>>>;
+
+/// Held until both the streamed bytes and their acknowledgement are durable.
+pub struct UploadPartGuard {
+    _lifecycle: tokio::sync::OwnedRwLockReadGuard<()>,
+    _part: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// Conservative admission budget for a currently active filesystem write.
+/// The filesystem may also count bytes already written by another reservation;
+/// counting those twice is safer than admitting writers past the reserve.
+pub struct UploadSpaceGuard {
+    reserved_bytes: Arc<Mutex<u64>>,
+    bytes: u64,
+}
+
+impl Drop for UploadSpaceGuard {
+    fn drop(&mut self) {
+        let mut reserved = self
+            .reserved_bytes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *reserved -= self.bytes;
+    }
+}
+
+impl Default for UploadRuntime {
+    fn default() -> Self {
+        Self::with_concurrency(8)
+    }
 }
 
 impl UploadRuntime {
-    /// Create an empty upload lock registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Serialize all mutable operations for one durable upload id.
-    pub async fn lock(&self, upload_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    #[must_use]
+    pub fn with_concurrency(concurrency: usize) -> Self {
+        Self {
+            locks: Mutex::new(HashMap::new()),
+            part_locks: Mutex::new(HashMap::new()),
+            io_slots: Arc::new(tokio::sync::Semaphore::new(concurrency)),
+            reserved_bytes: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    fn lifecycle(&self, upload_id: &str) -> Arc<tokio::sync::RwLock<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks.entry(upload_id.to_owned()).or_default().clone()
+    }
+
+    pub async fn lock(&self, upload_id: &str) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.lifecycle(upload_id).write_owned().await
+    }
+
+    pub async fn lock_part(&self, upload_id: &str, part: i32) -> UploadPartGuard {
+        let lifecycle = self.lifecycle(upload_id).read_owned().await;
         let lock = {
-            let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut locks = self
+                .part_locks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             locks.retain(|_, lock| Arc::strong_count(lock) > 1);
             locks
-                .entry(upload_id.to_owned())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .entry((upload_id.to_owned(), part))
+                .or_default()
                 .clone()
         };
-        lock.lock_owned().await
+        UploadPartGuard {
+            _lifecycle: lifecycle,
+            _part: lock.lock_owned().await,
+        }
+    }
+
+    pub fn reserve_space(
+        &self,
+        bytes: u64,
+        minimum: u64,
+        available_space: impl FnOnce() -> std::io::Result<u64>,
+    ) -> std::io::Result<Option<UploadSpaceGuard>> {
+        let mut reserved = self
+            .reserved_bytes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Take the filesystem snapshot while holding the budget lock. Otherwise
+        // a completed writer could release its reservation after the snapshot,
+        // letting the next writer spend free bytes which were already consumed.
+        let available = available_space()?;
+        if available < bytes.saturating_add(*reserved).saturating_add(minimum) {
+            return Ok(None);
+        }
+        *reserved += bytes;
+        Ok(Some(UploadSpaceGuard {
+            reserved_bytes: Arc::clone(&self.reserved_bytes),
+            bytes,
+        }))
     }
 }
 
@@ -155,6 +235,7 @@ impl AppState {
             Arc::clone(&reader.books),
         );
         let maintenance = crate::maintenance::MaintenanceRuntime::new();
+        let uploads = UploadRuntime::with_concurrency(config.upload_concurrency);
         let state = Arc::new(Self {
             config,
             db,
@@ -166,7 +247,7 @@ impl AppState {
             share_slots: Arc::new(tokio::sync::Semaphore::new(8)),
             zip_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             reader,
-            uploads: UploadRuntime::new(),
+            uploads,
             maintenance,
         });
         state
@@ -229,5 +310,18 @@ mod tests {
         drop(guard);
         finished_rx.await.expect("waiting operation completes");
         task.await.expect("waiting task does not panic");
+    }
+
+    #[test]
+    fn concurrent_upload_space_is_reserved_and_released() {
+        let runtime = UploadRuntime::new();
+        let first = runtime.reserve_space(60, 10, || Ok(100)).unwrap().unwrap();
+        assert!(runtime.reserve_space(40, 10, || Ok(100)).unwrap().is_none());
+        let second = runtime.reserve_space(30, 10, || Ok(100)).unwrap().unwrap();
+        assert!(runtime.reserve_space(1, 10, || Ok(100)).unwrap().is_none());
+        drop(first);
+        assert!(runtime.reserve_space(60, 10, || Ok(100)).unwrap().is_some());
+        drop(second);
+        assert_eq!(*runtime.reserved_bytes.lock().unwrap(), 0);
     }
 }

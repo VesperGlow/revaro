@@ -31,8 +31,7 @@ use revaro_core::api::files::{
 use revaro_core::api::media::AudioMedia;
 use revaro_core::api::share::Status as ShareStatus;
 use revaro_core::api::uploads::{
-    CompleteUploadRequest, CreateUpload, CreateUploadRequest, RecordUploadPartRequest,
-    UploadPartsRequest, UploadPartsResponse, UploadStatus,
+    CompleteUploadRequest, CreateUpload, CreateUploadRequest, UploadStatus,
 };
 use revaro_core::api::{BatchDownloadRequest, BatchDownloadTicket};
 use revaro_core::model::MediaProgress;
@@ -270,31 +269,6 @@ pub async fn create_upload(request: &CreateUploadRequest) -> Result<CreateUpload
 /// Read the server-side state of an upload session for local resume.
 pub async fn fetch_upload(id: &str) -> Result<UploadStatus, RequestError> {
     get_json(&format!("/api/uploads/{id}")).await
-}
-
-/// Request one-use URLs for a batch of multipart parts.
-pub async fn fetch_upload_parts(
-    id: &str,
-    request: &UploadPartsRequest,
-) -> Result<UploadPartsResponse, RequestError> {
-    let request = api_request(Request::post(&format!("/api/uploads/{id}/parts")))
-        .json(request)
-        .map_err(|error| request_transport(error.to_string()))?;
-    send_json(request).await
-}
-
-/// Acknowledge the ETag and exact size of one stored multipart part.
-pub async fn record_upload_part(
-    id: &str,
-    part_number: i32,
-    request: &RecordUploadPartRequest,
-) -> Result<(), RequestError> {
-    let request = api_request(Request::put(&format!(
-        "/api/uploads/{id}/parts/{part_number}"
-    )))
-    .json(request)
-    .map_err(|error| request_transport(error.to_string()))?;
-    send_empty(request).await
 }
 
 /// Commit the upload transaction. The historical client disabled its generic

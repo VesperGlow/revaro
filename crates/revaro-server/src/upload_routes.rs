@@ -1,10 +1,10 @@
 //! Uploads: creating a session, streaming bytes, and committing the file.
 //!
-//! Two transfer modes, chosen by size exactly as the Go server chose them:
+//! Two transfer modes, chosen by size:
 //!
 //! * **single** — one `PUT` carries the whole body (files below 16 MiB).
-//! * **multipart** — the client fetches single-use URLs in batches, `PUT`s each
-//!   part, acknowledges its entity tag, then completes with the full part list.
+//! * **multipart** — each part PUT persists its own acknowledgement. Completion
+//!   can use that authoritative list; the legacy URL and ACK routes remain.
 //!
 //! The bytes always go to [`LocalStore`]; this module only owns the session
 //! bookkeeping in `uploads`/`upload_parts` and the commit transaction.
@@ -17,10 +17,10 @@
 //! `files` row and the `uploads` row in one transaction, and completing twice
 //! returns the already-committed file instead of creating a second one.
 //!
-//! Completion hashes the committed object with a bounded streaming SHA-256, so
-//! single and multipart uploads expose the same integrity metadata without
-//! buffering a multi-gigabyte object in memory. Mutable operations for one
-//! upload are serialized by [`crate::state::UploadRuntime`].
+//! Single bodies are hashed while receiving, multipart bodies while assembling.
+//! Durable commit phases allow publication to resume after a crash without
+//! deleting staged parts early. Distinct parts can write concurrently; the
+//! completion and abort paths exclusively lock the session.
 
 use std::sync::Arc;
 
@@ -75,6 +75,10 @@ struct UploadRecord {
     mime_type: String,
     status: UploadStatus,
     expires_at: Timestamp,
+    commit_state: String,
+    staged_etag: Option<String>,
+    content_hash: Option<String>,
+    request_fingerprint: Option<String>,
 }
 
 /// The Go decoder filled omitted upload fields with their zero values before
@@ -87,6 +91,7 @@ struct CreateUploadInput {
     name: Option<String>,
     size: Option<i64>,
     mime_type: Option<String>,
+    idempotency_key: Option<String>,
 }
 
 /// The Go decoder zero-filled omitted members before each upload endpoint
@@ -155,7 +160,7 @@ impl UploadRecord {
 fn load_upload(connection: &Connection, id: &str) -> Result<UploadRecord, DbError> {
     connection
         .query_row(
-            "SELECT id,file_id,mode,object_key,multipart_id,part_size,expected_size,mime_type,status,expires_at \
+            "SELECT id,file_id,mode,object_key,multipart_id,part_size,expected_size,mime_type,status,expires_at,commit_state,staged_etag,content_hash,request_fingerprint \
 FROM uploads WHERE id = ?1",
             [id],
             |row| {
@@ -176,6 +181,10 @@ FROM uploads WHERE id = ?1",
                     expires_at: Timestamp::parse(&row.get::<_, String>(9)?).map_err(|_| {
                         rusqlite::Error::InvalidColumnType(9, "expires_at".into(), rusqlite::types::Type::Text)
                     })?,
+                    commit_state: row.get(10)?,
+                    staged_etag: row.get(11)?,
+                    content_hash: row.get(12)?,
+                    request_fingerprint: row.get(13)?,
                 })
             },
         )
@@ -214,7 +223,10 @@ fn require_pending(connection: &Connection, id: &str) -> Result<UploadRecord, Ap
             database_error(error)
         }
     })?;
-    if record.status != UploadStatus::Pending || record.is_expired(Timestamp::now()) {
+    if record.status != UploadStatus::Pending
+        || record.is_expired(Timestamp::now())
+        || record.commit_state != "receiving"
+    {
         return Err(pending_missing());
     }
     Ok(record)
@@ -255,10 +267,124 @@ async fn create_upload(
         name: input.name.unwrap_or_default(),
         size: input.size.unwrap_or_default(),
         mime_type: input.mime_type.unwrap_or_default(),
+        idempotency_key: input.idempotency_key.unwrap_or_default(),
     };
     validate::validate_name(&request.name)?;
     validate::validate_file_size(request.size)?;
-    check_space(
+    let mime_type = if request.mime_type.is_empty() {
+        "application/octet-stream".to_owned()
+    } else {
+        request.mime_type
+    };
+    validate::validate_mime_type(&mime_type)?;
+
+    if request.idempotency_key.len() > 128 || request.idempotency_key.chars().any(char::is_control)
+    {
+        return Err(ApiError::bad_request("invalid idempotency key"));
+    }
+    let fingerprint = keys::sha256_hex(
+        serde_json::to_string(&(&request.parent_id, &request.name, request.size, &mime_type))
+            .map_err(|_| ApiError::internal("upload fingerprint failed"))?
+            .as_bytes(),
+    );
+    let _creation_guard = if request.idempotency_key.is_empty() {
+        None
+    } else {
+        Some(
+            state
+                .uploads
+                .lock(&format!("create:{}", request.idempotency_key))
+                .await,
+        )
+    };
+    if !request.idempotency_key.is_empty() {
+        let key = request.idempotency_key.clone();
+        let existing = state
+            .db
+            .call_api(move |connection| {
+                use rusqlite::OptionalExtension as _;
+                let id = connection
+                    .query_row(
+                        "SELECT id FROM uploads WHERE idempotency_key=?1",
+                        [key],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                match id {
+                    Some(id) => match load_upload_api(connection, &id) {
+                        Ok(record) => Ok(Some(record)),
+                        Err(error) if error.status == 404 => Ok(None),
+                        Err(error) => Err(error),
+                    },
+                    None => Ok(None),
+                }
+            })
+            .await?;
+        if let Some(record) = existing {
+            if record.request_fingerprint.as_deref() != Some(&fingerprint) {
+                return Err(ApiError::conflict(
+                    "idempotency key belongs to a different upload",
+                ));
+            }
+            if record.status == UploadStatus::Completed
+                || (record.status == UploadStatus::Pending
+                    && (record.commit_state != "receiving" || !record.is_expired(Timestamp::now())))
+            {
+                return Ok((StatusCode::CREATED, Json(created_response(&record))));
+            }
+            match abort_pending_upload(&state, &record.id, true).await {
+                Ok(()) => {}
+                Err(error) if error.status == 404 => {
+                    // Completion or the expiry worker may have won while we
+                    // waited for the lifecycle lock. Reconcile before creating.
+                    let id = record.id;
+                    match state.db.call_api(move |c| load_upload_api(c, &id)).await {
+                        Ok(record)
+                            if matches!(
+                                record.status,
+                                UploadStatus::Pending | UploadStatus::Completed
+                            ) =>
+                        {
+                            return Ok((StatusCode::CREATED, Json(created_response(&record))));
+                        }
+                        Ok(_) => return Err(pending_missing()),
+                        Err(error) if error.status == 404 => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    // Reclaim an expired placeholder immediately instead of making a new
+    // upload wait for the periodic cleanup worker to free its name.
+    let (parent, name) = (request.parent_id.clone(), request.name.clone());
+    let expired = state
+        .db
+        .call_api(move |connection| {
+            use rusqlite::OptionalExtension as _;
+            connection
+                .query_row(
+                    "SELECT u.id FROM uploads u JOIN files f ON f.id=u.file_id \
+                     WHERE f.parent_id=?1 AND f.name=?2 AND f.deleted_at IS NULL \
+                     AND u.status='pending' AND u.commit_state='receiving' \
+                     AND julianday(u.expires_at)<=julianday(?3)",
+                    rusqlite::params![parent, name, Timestamp::now().to_rfc3339()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| database_error(DbError::Query(error)))
+        })
+        .await?;
+    if let Some(id) = expired {
+        match abort_pending_upload(&state, &id, true).await {
+            Ok(()) => {}
+            Err(error) if error.status == 404 => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let _space = reserve_space(
         &state,
         request
             .size
@@ -269,12 +395,6 @@ async fn create_upload(
             }),
     )
     .await?;
-    let mime_type = if request.mime_type.is_empty() {
-        "application/octet-stream".to_owned()
-    } else {
-        request.mime_type
-    };
-    validate::validate_mime_type(&mime_type)?;
 
     let parent_id = request.parent_id.clone();
     let parent_valid = state
@@ -328,11 +448,7 @@ AND status = 'ready' AND deleted_at IS NULL)",
         None
     };
 
-    let url = if multipart {
-        String::new()
-    } else {
-        format!("/api/uploads/{upload_id}/data")
-    };
+    let url = format!("/api/uploads/{upload_id}/data");
     let expires_at =
         Timestamp::from_system_time(std::time::SystemTime::now() + state.config.upload_expires);
 
@@ -350,6 +466,8 @@ AND status = 'ready' AND deleted_at IS NULL)",
         } else {
             UploadMode::Single
         };
+        let idempotency_key =
+            (!request.idempotency_key.is_empty()).then_some(request.idempotency_key.clone());
         state
             .db
             .call_api(move |connection| {
@@ -381,8 +499,8 @@ AND status = 'ready' AND deleted_at IS NULL)",
                 transaction
                     .execute(
                         "INSERT INTO uploads(id,file_id,mode,object_key,multipart_id,part_size,\
-expected_size,mime_type,status,created_at,expires_at) \
-VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,?10)",
+expected_size,mime_type,status,created_at,expires_at,idempotency_key,request_fingerprint) \
+VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,?10,?11,?12)",
                         rusqlite::params![
                             upload_id,
                             file_id,
@@ -394,6 +512,8 @@ VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,?10)",
                             mime_type,
                             now,
                             expires_at.to_rfc3339(),
+                            idempotency_key,
+                            fingerprint,
                         ],
                     )
                     .map_err(|error| conflict_or(DbError::Query(error)))?;
@@ -447,6 +567,12 @@ async fn get_upload(
                     database_error(error)
                 }
             })?;
+            if record.status == UploadStatus::Pending
+                && record.commit_state == "receiving"
+                && record.is_expired(Timestamp::now())
+            {
+                return Err(ApiError::new(410, "upload expired; create a new upload"));
+            }
             let mut statement = connection
                 .prepare(
                     "SELECT part_number,size,etag,COALESCE(content_hash,'') FROM upload_parts \
@@ -487,6 +613,8 @@ WHERE upload_id = ?1 ORDER BY part_number",
                 expected_size: record.expected_size,
                 mime_type: record.mime_type,
                 status: record.status,
+                finalizing: record.commit_state != "receiving",
+                data_received: record.staged_etag.is_some(),
                 expires_at: record.expires_at,
                 parts,
             })
@@ -526,17 +654,59 @@ fn body_reader(
     );
     StreamReader::new(Box::pin(stream))
 }
-async fn check_space(state: &AppState, bytes: i64) -> Result<(), ApiError> {
+async fn reserve_space(
+    state: &Arc<AppState>,
+    bytes: i64,
+) -> Result<crate::state::UploadSpaceGuard, ApiError> {
     let root = state.store.root().to_owned();
-    let available = tokio::task::spawn_blocking(move || fs2::available_space(root))
-        .await
-        .map_err(|_| ApiError::internal("disk space check failed"))?
-        .map_err(|_| ApiError::internal("disk space check failed"))?;
-    let required = (bytes.max(0) as u64).saturating_add(state.config.upload_min_free_bytes as u64);
-    if available < required {
-        return Err(ApiError::new(507, "insufficient disk space for upload"));
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || {
+        state.uploads.reserve_space(
+            bytes.max(0) as u64,
+            state.config.upload_min_free_bytes as u64,
+            || fs2::available_space(root),
+        )
+    })
+    .await
+    .map_err(|_| ApiError::internal("disk space check failed"))?
+    .map_err(|_| ApiError::internal("disk space check failed"))?
+    .ok_or_else(|| ApiError::new(507, "insufficient disk space for upload"))
+}
+
+fn created_response(record: &UploadRecord) -> CreateUpload {
+    CreateUpload {
+        upload_id: record.id.clone(),
+        file_id: record.file_id.clone(),
+        mode: record.mode,
+        url: format!("/api/uploads/{}/data", record.id),
+        part_size: record.part_size,
+        part_count: if record.is_multipart() {
+            limits::multipart_part_count(record.expected_size, record.part_size).unwrap_or(0)
+        } else {
+            0
+        },
+        expires_at: record.expires_at,
     }
-    Ok(())
+}
+
+async fn io_slot(state: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+    Arc::clone(&state.uploads.io_slots)
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::unavailable("upload service unavailable"))
+}
+
+async fn accepted_hash(state: &AppState, key: &str) -> Result<Option<String>, ApiError> {
+    match state.store.head(key).await {
+        Ok(_) => state
+            .store
+            .sha256_hex(key)
+            .await
+            .map(Some)
+            .map_err(complete_error),
+        Err(StorageError::NotFound) => Ok(None),
+        Err(error) => Err(complete_error(error)),
+    }
 }
 
 fn content_length_mismatch(request: &Request, expected: i64) -> bool {
@@ -553,94 +723,138 @@ async fn upload_content(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
-    request: axum::extract::Request,
+    request: Request,
 ) -> Result<http::Response<Body>, ApiError> {
-    let _upload_guard = state.uploads.lock(&id).await;
-    let record = state
-        .db
-        .call_api(move |connection| require_pending(connection, &id))
-        .await?;
+    let _guard = state.uploads.lock_part(&id, 0).await;
+    let _slot = io_slot(&state).await?;
+    let record = state.db.call_api(move |c| require_pending(c, &id)).await?;
     if record.is_multipart() {
         return Err(ApiError::bad_request("invalid part number"));
     }
     if content_length_mismatch(&request, record.expected_size) {
         return Err(ApiError::bad_request("upload size mismatch"));
     }
-
+    let known_hash = match record.content_hash.clone().filter(|hash| !hash.is_empty()) {
+        Some(hash) => Some(hash),
+        None => accepted_hash(&state, &record.object_key).await?,
+    };
+    let _space = reserve_space(&state, record.expected_size).await?;
     let mut reader = body_reader(
         request.into_body(),
         state.config.upload_idle_timeout,
         state.config.upload_request_timeout,
     );
-    check_space(&state, record.expected_size).await?;
     let stored = state
         .store
-        .write_stream(&record.object_key, &mut reader, record.expected_size)
-        .await;
-    let stored = match stored {
-        Ok(stored) => stored,
-        Err(error) => {
-            let error = write_error(error);
-            return Err(error);
-        }
-    };
-
-    Ok(etag_response(&stored.etag))
+        .write_stream_hashed(
+            &record.object_key,
+            &mut reader,
+            record.expected_size,
+            known_hash.as_deref(),
+        )
+        .await
+        .map_err(write_error)?;
+    let (upload_id, etag, hash) = (record.id, stored.info.etag.clone(), stored.content_hash);
+    state
+        .db
+        .call_api(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE uploads SET staged_etag=?1,content_hash=?2 \
+                     WHERE id=?3 AND status='pending' AND commit_state='receiving'",
+                    rusqlite::params![etag, hash, upload_id],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            if changed != 1 {
+                return Err(pending_missing());
+            }
+            Ok(())
+        })
+        .await?;
+    Ok(etag_response(&stored.info.etag))
 }
 
-/// `PUT /api/uploads/{id}/data/{part}` — one numbered part.
+/// A successful part PUT includes the durable database acknowledgement.
 async fn upload_content_part(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam((id, part)): PathParam<(String, i32)>,
-    request: axum::extract::Request,
+    request: Request,
 ) -> Result<http::Response<Body>, ApiError> {
-    let _upload_guard = state.uploads.lock(&id).await;
+    let _guard = state.uploads.lock_part(&id, part).await;
+    let _slot = io_slot(&state).await?;
     let record = state
         .db
-        .call_api(move |connection| require_pending(connection, &id))
+        .call_api({
+            let id = id.clone();
+            move |c| require_pending(c, &id)
+        })
         .await?;
     if !record.is_multipart() {
         return Err(ApiError::bad_request("single upload has no parts"));
     }
-    let Some(expected) = record.expected_part_size(part) else {
-        return Err(ApiError::bad_request("invalid part number"));
-    };
+    let expected = record
+        .expected_part_size(part)
+        .ok_or_else(|| ApiError::bad_request("invalid part number"))?;
     if content_length_mismatch(&request, expected) {
         return Err(ApiError::bad_request("upload size mismatch"));
     }
-    let Some(multipart_id) = record.multipart_id.clone() else {
-        return Err(pending_missing());
+    let multipart_id = record.multipart_id.as_deref().ok_or_else(pending_missing)?;
+    let key = format!(
+        "{}/{part}",
+        keys::multipart_dir(multipart_id, &record.object_key)
+    );
+    let known_hash = state
+        .db
+        .call_api({
+            let id = id.clone();
+            move |c| {
+                use rusqlite::OptionalExtension as _;
+                c.query_row(
+                    "SELECT content_hash FROM upload_parts WHERE upload_id=?1 AND part_number=?2",
+                    rusqlite::params![id, part],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map(|hash| hash.flatten().filter(|hash| !hash.is_empty()))
+                .map_err(|e| database_error(DbError::Query(e)))
+            }
+        })
+        .await?;
+    let known_hash = match known_hash {
+        Some(hash) => Some(hash),
+        None => accepted_hash(&state, &key).await?,
     };
-
+    let _space = reserve_space(&state, expected).await?;
     let mut reader = body_reader(
         request.into_body(),
         state.config.upload_idle_timeout,
         state.config.upload_request_timeout,
     );
-    check_space(&state, expected).await?;
     let stored = state
         .store
-        .upload_part(
-            &record.object_key,
-            &multipart_id,
-            part,
-            &mut reader,
-            expected,
-        )
-        .await;
-    let stored = match stored {
-        Ok(stored) => stored,
-        Err(error) => {
-            let error = write_error(error);
-            return Err(error);
-        }
-    };
-
-    Ok(etag_response(&stored.etag))
+        .write_stream_hashed(&key, &mut reader, expected, known_hash.as_deref())
+        .await
+        .map_err(write_error)?;
+    let etag = stored.info.etag.clone();
+    state
+        .db
+        .call_api(move |connection| {
+            connection
+                .execute(
+                    "INSERT INTO upload_parts(upload_id,part_number,size,etag,content_hash,completed_at) \
+                     VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(upload_id,part_number) DO UPDATE \
+                     SET size=excluded.size,etag=excluded.etag,content_hash=excluded.content_hash,completed_at=excluded.completed_at",
+                    rusqlite::params![id, part, expected, etag, stored.content_hash, Timestamp::now().to_rfc3339()],
+                )
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(())
+        })
+        .await?;
+    Ok(etag_response(&stored.info.etag))
 }
 
-/// `POST /api/uploads/{id}/parts` — hand out single-use URLs for a batch.
+/// `POST /api/uploads/{id}/parts` — legacy batch of authenticated local URLs.
 async fn upload_parts(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
@@ -684,55 +898,79 @@ async fn record_upload_part(
     PathParam((id, part)): PathParam<(String, i32)>,
     request: Request,
 ) -> Result<StatusCode, ApiError> {
-    let _upload_guard = state.uploads.lock(&id).await;
+    let _guard = state.uploads.lock_part(&id, part).await;
     let record = state
         .db
-        .call_api(move |connection| {
-            let record = require_pending(connection, &id)?;
-            if !record.is_multipart() {
-                return Err(pending_missing());
-            }
-            if record.expected_part_size(part).is_none() {
-                return Err(ApiError::bad_request("invalid multipart part number"));
-            }
-            Ok(record)
+        .call_api({
+            let id = id.clone();
+            move |c| require_pending(c, &id)
         })
         .await?;
-    let Some(expected) = record.expected_part_size(part) else {
-        return Err(ApiError::bad_request("invalid multipart part number"));
-    };
-    let JsonBody(request) =
-        JsonBody::<RecordUploadPartInput>::from_request(request, &state).await?;
-    let etag = request.etag.unwrap_or_default();
-    let size = request.size.unwrap_or_default();
-    let content_hash = request.content_hash.unwrap_or_default();
-    let etag = etag.trim().to_owned();
-    if etag.is_empty() || size != expected || content_hash.len() > 128 {
+    if !record.is_multipart() {
+        return Err(pending_missing());
+    }
+    let expected = record
+        .expected_part_size(part)
+        .ok_or_else(|| ApiError::bad_request("invalid multipart part number"))?;
+    let JsonBody(input) = JsonBody::<RecordUploadPartInput>::from_request(request, &state).await?;
+    let etag = input.etag.unwrap_or_default();
+    if etag.trim().is_empty()
+        || input.size.unwrap_or_default() != expected
+        || input.content_hash.unwrap_or_default().len() > 128
+    {
         return Err(ApiError::bad_request(
             "invalid uploaded part acknowledgement",
         ));
     }
-    state
+    let key = format!(
+        "{}/{part}",
+        keys::multipart_dir(
+            record.multipart_id.as_deref().ok_or_else(pending_missing)?,
+            &record.object_key
+        )
+    );
+    let stored = state.store.head(&key).await.map_err(complete_error)?;
+    if stored.size != expected || stored.etag != etag.trim().trim_matches('"') {
+        return Err(ApiError::conflict(
+            "part acknowledgement does not match stored bytes",
+        ));
+    }
+    // New PUTs have already acknowledged their bytes. A session written before
+    // the upgrade can still acknowledge its stored part, using a server hash.
+    let has_ack = state
         .db
-        .call_api(move |connection| {
-            connection
-                .execute(
-                    "INSERT INTO upload_parts(upload_id,part_number,size,etag,content_hash,completed_at) \
-VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(upload_id,part_number) DO UPDATE SET \
-size=excluded.size,etag=excluded.etag,content_hash=excluded.content_hash,completed_at=excluded.completed_at",
-                    rusqlite::params![
-                        record.id,
-                        part,
-                        size,
-                        etag,
-                        content_hash,
-                        Timestamp::now().to_rfc3339(),
-                    ],
-                )
-                .map_err(|error| database_error(DbError::Query(error)))?;
-            Ok(StatusCode::NO_CONTENT)
+        .call({
+            let id = record.id.clone();
+            move |connection| {
+                connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM upload_parts WHERE upload_id=?1 AND part_number=?2)",
+                        rusqlite::params![id, part],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(DbError::Query)
+            }
         })
         .await
+        .map_err(database_error)?;
+    if !has_ack {
+        let _slot = io_slot(&state).await?;
+        let hash = state.store.sha256_hex(&key).await.map_err(complete_error)?;
+        state
+            .db
+            .call_api(move |connection| {
+                connection
+                    .execute(
+                        "INSERT INTO upload_parts(upload_id,part_number,etag,size,content_hash,completed_at) \
+                         VALUES(?1,?2,?3,?4,?5,?6)",
+                        rusqlite::params![record.id, part, stored.etag, expected, hash, Timestamp::now().to_rfc3339()],
+                    )
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                Ok(())
+            })
+            .await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/uploads/{id}/complete`
@@ -742,18 +980,8 @@ async fn complete_upload(
     PathParam(id): PathParam<String>,
     request: Request,
 ) -> Result<Json<revaro_core::model::File>, ApiError> {
-    let _upload_guard = state.uploads.lock(&id).await;
-    let record = state
-        .db
-        .call_api(move |connection| load_upload_api(connection, &id))
-        .await?;
-    if (record.status != UploadStatus::Pending && record.status != UploadStatus::Completed)
-        || (record.status == UploadStatus::Pending && record.is_expired(Timestamp::now()))
-    {
-        return Err(pending_missing());
-    }
-    let JsonBody(request) = JsonBody::<CompleteUploadInput>::from_request(request, &state).await?;
-    let mut requested_parts: Vec<CompletedPart> = request
+    let JsonBody(input) = JsonBody::<CompleteUploadInput>::from_request(request, &state).await?;
+    let parts = input
         .parts
         .unwrap_or_default()
         .into_iter()
@@ -767,141 +995,266 @@ async fn complete_upload(
             }
         })
         .collect();
+    finalize_upload(&state, &id, parts).await.map(Json)
+}
 
-    // Completing twice returns the committed file rather than minting a second
-    // one: a client that retried after a lost response must not have to guess.
+/// Resume every publication phase from durable metadata. The file is visible
+/// only after the final transaction; staging is retained throughout failures.
+async fn finalize_upload(
+    state: &Arc<AppState>,
+    id: &str,
+    mut parts: Vec<CompletedPart>,
+) -> Result<revaro_core::model::File, ApiError> {
+    let _guard = state.uploads.lock(id).await;
+    let mut record = state
+        .db
+        .call_api({
+            let id = id.to_owned();
+            move |c| load_upload_api(c, &id)
+        })
+        .await?;
     if record.status == UploadStatus::Completed {
+        cleanup_committed_staging(state, &record).await;
         return state
             .db
             .call_api({
-                let file_id = record.file_id.clone();
-                move |connection| {
-                    crate::file_routes::lookup_file_any(connection, &file_id)
-                        .map_err(database_error)
-                }
+                let id = record.file_id;
+                move |c| crate::file_routes::lookup_file_any(c, &id).map_err(database_error)
             })
-            .await
-            .map(Json);
+            .await;
     }
-    // Go's completion path received the object metadata from Stat/CompleteMultipart
-    // and persisted its ETag together with the ready file row. The Rust port only
-    // retained the content hash, which made a freshly uploaded file lose the
-    // validator used by previews, thumbnails, and editor conflict checks.
-    let (etag, content_hash) = if record.is_multipart() {
-        let Some(multipart_id) = record.multipart_id.clone() else {
-            return Err(pending_missing());
-        };
-        let expected_parts = limits::multipart_part_count(record.expected_size, record.part_size)
-            .map_err(ApiError::bad_request)?;
-        if requested_parts.is_empty() {
-            let upload_id = record.id.clone();
-            requested_parts = state
-                .db
-                .call_api(move |connection| {
-                    load_acknowledged_parts(connection, &upload_id).map_err(database_error)
-                })
-                .await?;
+    if record.status != UploadStatus::Pending
+        || (record.commit_state == "receiving" && record.is_expired(Timestamp::now()))
+    {
+        return Err(ApiError::new(410, "upload expired or unavailable"));
+    }
+    if record.commit_state == "receiving" {
+        if record.is_multipart() {
+            if parts.is_empty() {
+                parts = state
+                    .db
+                    .call_api({
+                        let id = record.id.clone();
+                        move |c| load_acknowledged_parts(c, &id).map_err(database_error)
+                    })
+                    .await?;
+            }
+            let count = limits::multipart_part_count(record.expected_size, record.part_size)
+                .map_err(ApiError::bad_request)?;
+            if parts.len() != count {
+                return Err(ApiError::bad_request(
+                    "multipart completion list is incomplete",
+                ));
+            }
+            parts.sort_by_key(|part| part.part_number);
+            if parts
+                .iter()
+                .enumerate()
+                .any(|(i, p)| p.part_number != i as i32 + 1 || p.etag.trim().is_empty())
+            {
+                return Err(ApiError::bad_request(
+                    "multipart completion list is invalid",
+                ));
+            }
+            let directory = keys::multipart_dir(
+                record.multipart_id.as_deref().ok_or_else(pending_missing)?,
+                &record.object_key,
+            );
+            for part in &mut parts {
+                let info = state
+                    .store
+                    .head(&format!("{directory}/{}", part.part_number))
+                    .await
+                    .map_err(complete_error)?;
+                if Some(info.size) != record.expected_part_size(part.part_number)
+                    || info.etag != part.etag.trim_matches('"')
+                {
+                    return Err(complete_error(StorageError::PartEtagMismatch {
+                        part: part.part_number,
+                    }));
+                }
+                part.size = Some(info.size);
+                part.etag = info.etag;
+            }
+        } else {
+            if !parts.is_empty() {
+                return Err(ApiError::bad_request(
+                    "single upload must not include multipart parts",
+                ));
+            }
+            let info = state
+                .store
+                .head(&record.object_key)
+                .await
+                .map_err(complete_error)?;
+            if info.size != record.expected_size {
+                return Err(ApiError::bad_request(
+                    "uploaded object size does not match the declared size",
+                ));
+            }
         }
-        if requested_parts.len() != expected_parts {
-            return Err(ApiError::bad_request(
-                "multipart completion list is incomplete",
-            ));
-        }
-        requested_parts.sort_by_key(|part| part.part_number);
-        if requested_parts.iter().enumerate().any(|(index, part)| {
-            part.part_number != index as i32 + 1 || part.etag.trim().is_empty()
-        }) {
-            return Err(ApiError::bad_request(
-                "multipart completion list is invalid",
-            ));
-        }
-        check_space(&state, record.expected_size).await?;
+        let upload_id = record.id.clone();
         state
-            .store
-            .complete_multipart(&record.object_key, &multipart_id, &requested_parts)
-            .await
-            .map_err(complete_error)?;
-        let stored = state
-            .store
-            .head(&record.object_key)
-            .await
-            .map_err(complete_error)?;
-        if stored.size != record.expected_size {
+            .db
+            .call_api(move |connection| {
+                let transaction = connection
+                    .transaction()
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                for part in parts {
+                    transaction
+                        .execute(
+                            "INSERT INTO upload_parts(upload_id,part_number,size,etag,completed_at) \
+                             VALUES(?1,?2,?3,?4,?5) ON CONFLICT(upload_id,part_number) DO NOTHING",
+                            rusqlite::params![upload_id, part.part_number, part.size, part.etag, Timestamp::now().to_rfc3339()],
+                        )
+                        .map_err(|error| database_error(DbError::Query(error)))?;
+                }
+                let changed = transaction
+                    .execute(
+                        "UPDATE uploads SET commit_state='assembling' \
+                         WHERE id=?1 AND status='pending' AND commit_state='receiving'",
+                        [upload_id],
+                    )
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                if changed != 1 {
+                    return Err(pending_missing());
+                }
+                transaction
+                    .commit()
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                Ok(())
+            })
+            .await?;
+        record.commit_state = "assembling".to_owned();
+    }
+    if record.commit_state == "assembling" {
+        let _slot = io_slot(state).await?;
+        let stored = match state.store.head(&record.object_key).await {
+            Ok(info) => {
+                if info.size != record.expected_size {
+                    return Err(ApiError::bad_request(
+                        "uploaded object size does not match the declared size",
+                    ));
+                }
+                let hash = if record.staged_etag.as_deref() == Some(&info.etag) {
+                    record.content_hash.clone().filter(|hash| hash.len() == 64)
+                } else {
+                    None
+                };
+                let content_hash = match hash {
+                    Some(hash) => hash,
+                    None => {
+                        let hash = state
+                            .store
+                            .sha256_hex(&record.object_key)
+                            .await
+                            .map_err(complete_error)?;
+                        state
+                            .store
+                            .sync_object(&record.object_key)
+                            .await
+                            .map_err(complete_error)?;
+                        hash
+                    }
+                };
+                crate::storage::HashedObject { info, content_hash }
+            }
+            Err(StorageError::NotFound) if record.is_multipart() => {
+                let _space = reserve_space(state, record.expected_size).await?;
+                let parts = state
+                    .db
+                    .call_api({
+                        let id = record.id.clone();
+                        move |c| load_acknowledged_parts(c, &id).map_err(database_error)
+                    })
+                    .await?;
+                state
+                    .store
+                    .complete_multipart(
+                        &record.object_key,
+                        record.multipart_id.as_deref().ok_or_else(pending_missing)?,
+                        &parts,
+                    )
+                    .await
+                    .map_err(complete_error)?
+            }
+            Err(error) => return Err(complete_error(error)),
+        };
+        if stored.info.size != record.expected_size {
             return Err(ApiError::bad_request(
                 "uploaded object size does not match the declared size",
             ));
         }
-        let content_hash = state
-            .store
-            .sha256_hex(&record.object_key)
-            .await
-            .map_err(complete_error)?;
-        (stored.etag, content_hash)
-    } else {
-        if !requested_parts.is_empty() {
-            return Err(ApiError::bad_request(
-                "single upload must not include multipart parts",
-            ));
-        }
-        let stored = state
-            .store
-            .head(&record.object_key)
-            .await
-            .map_err(complete_error)?;
-        if stored.size != record.expected_size {
-            return Err(ApiError::bad_request(
-                "uploaded object size does not match the declared size",
-            ));
-        }
-        let content_hash = state
-            .store
-            .sha256_hex(&record.object_key)
-            .await
-            .map_err(complete_error)?;
-        (stored.etag, content_hash)
-    };
-
-    let file_id = record.file_id.clone();
-    let upload_id = record.id.clone();
-    let expected_size = record.expected_size;
-    let result = state
+        let (id, etag, hash) = (
+            record.id.clone(),
+            stored.info.etag.clone(),
+            stored.content_hash.clone(),
+        );
+        state
+            .db
+            .call_api(move |connection| {
+                let changed = connection
+                    .execute(
+                        "UPDATE uploads SET commit_state='staged',staged_etag=?1,content_hash=?2 \
+                         WHERE id=?3 AND status='pending' AND commit_state='assembling'",
+                        rusqlite::params![etag, hash, id],
+                    )
+                    .map_err(|error| database_error(DbError::Query(error)))?;
+                if changed != 1 {
+                    return Err(pending_missing());
+                }
+                Ok(())
+            })
+            .await?;
+        record.commit_state = "staged".to_owned();
+        record.staged_etag = Some(stored.info.etag);
+        record.content_hash = Some(stored.content_hash);
+    }
+    let info = state
+        .store
+        .head(&record.object_key)
+        .await
+        .map_err(complete_error)?;
+    if info.size != record.expected_size || record.staged_etag.as_deref() != Some(&info.etag) {
+        return Err(ApiError::conflict("staged upload object changed"));
+    }
+    let (file_id, upload_id, etag, hash, size) = (
+        record.file_id.clone(),
+        record.id.clone(),
+        info.etag,
+        record
+            .content_hash
+            .clone()
+            .ok_or_else(|| ApiError::internal("staged upload hash missing"))?,
+        record.expected_size,
+    );
+    let file = state
         .db
         .call_api(move |connection| {
-            let now = Timestamp::now().to_rfc3339();
             let transaction = connection
                 .transaction()
                 .map_err(|error| database_error(DbError::Query(error)))?;
-            let committed = transaction
+            let now = Timestamp::now().to_rfc3339();
+            let changed = transaction
                 .execute(
-                    "UPDATE files SET status = 'ready', etag = ?1, content_hash = ?2, hash_algorithm = ?3, \
-                         updated_at = ?4 WHERE id = ?5 AND status = 'pending' AND size = ?6 AND deleted_at IS NULL",
-                    rusqlite::params![
-                        etag,
-                        content_hash,
-                        if content_hash.is_empty() {
-                            ""
-                        } else {
-                            "sha256"
-                        },
-                        now,
-                        file_id,
-                        expected_size,
-                    ],
+                    "UPDATE files SET status='ready',etag=?1,content_hash=?2,hash_algorithm='sha256',updated_at=?3 \
+                     WHERE id=?4 AND status='pending' AND size=?5 AND deleted_at IS NULL",
+                    rusqlite::params![etag, hash, now, file_id, size],
                 )
                 .map_err(|error| database_error(DbError::Query(error)))?;
-            if committed != 1 {
+            if changed != 1 {
                 return Err(ApiError::conflict("upload could not be committed"));
             }
-            transaction
+            let changed = transaction
                 .execute(
-                    "UPDATE uploads SET status = 'completed', content_hash = ?1, completed_at = ?2 \
-WHERE id = ?3",
-                    rusqlite::params![content_hash, now, upload_id],
+                    "UPDATE uploads SET status='completed',completed_at=?1 \
+                     WHERE id=?2 AND status='pending' AND commit_state='staged'",
+                    rusqlite::params![now, upload_id],
                 )
                 .map_err(|error| database_error(DbError::Query(error)))?;
-            // Read through the transaction, not `connection`: the transaction
-            // holds the mutable borrow, and reading inside it also makes the
-            // returned row the one this commit produced.
+            if changed != 1 {
+                return Err(ApiError::conflict("upload could not be committed"));
+            }
             let file = crate::file_routes::lookup_file_any(&transaction, &file_id)
                 .map_err(database_error)?;
             transaction
@@ -909,8 +1262,76 @@ WHERE id = ?3",
                 .map_err(|error| database_error(DbError::Query(error)))?;
             Ok(file)
         })
-        .await;
-    result.map(Json)
+        .await?;
+    cleanup_committed_staging(state, &record).await;
+    Ok(file)
+}
+
+async fn cleanup_committed_staging(state: &Arc<AppState>, record: &UploadRecord) {
+    if let Some(id) = &record.multipart_id
+        && let Err(error) = state.store.abort_multipart(&record.object_key, id).await
+    {
+        tracing::warn!(%error,upload=%record.id,"committed upload staging cleanup failed");
+        return;
+    }
+    let id = record.id.clone();
+    if let Err(error) = state
+        .db
+        .call(move |c| {
+            c.execute(
+                "UPDATE uploads SET staging_cleaned=1 WHERE id=?1 AND status='completed'",
+                [id],
+            )
+            .map_err(DbError::Query)
+        })
+        .await
+    {
+        tracing::warn!(%error,"upload cleanup acknowledgement failed");
+    }
+}
+
+pub(crate) async fn recover_upload_commits(state: &Arc<AppState>) -> Result<(), String> {
+    let ids = state
+        .db
+        .call(|connection| {
+            let mut query = connection
+                .prepare(
+                    "SELECT id FROM uploads WHERE (status='pending' AND commit_state<>'receiving') \
+                     OR (status='completed' AND staging_cleaned=0) \
+                     ORDER BY COALESCE(commit_attempted_at,created_at),id LIMIT 32",
+                )
+                .map_err(DbError::Query)?;
+            query
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(DbError::Query)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(DbError::Query)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    for id in ids {
+        // Record before attempting, including attempts interrupted by timeout.
+        // A broken early session must not monopolize every bounded batch.
+        state
+            .db
+            .call({
+                let id = id.clone();
+                move |connection| {
+                    connection
+                        .execute(
+                            "UPDATE uploads SET commit_attempted_at=?1 WHERE id=?2",
+                            rusqlite::params![Timestamp::now().to_rfc3339(), id],
+                        )
+                        .map_err(DbError::Query)
+                }
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = finalize_upload(state, &id, Vec::new()).await {
+            tracing::warn!(upload=%id,%error,"upload commit recovery will retry");
+        }
+    }
+    Ok(())
 }
 
 /// `DELETE /api/uploads/{id}`
@@ -948,8 +1369,12 @@ async fn abort_pending_upload(
         .db
         .call_api(move |connection| load_upload_api(connection, &upload_id))
         .await?;
+    if !expired_only && record.status == UploadStatus::Completed {
+        return Ok(());
+    }
     if record.status != UploadStatus::Pending
-        || (expired_only && !record.is_expired(Timestamp::now()))
+        || (expired_only
+            && (record.commit_state != "receiving" || !record.is_expired(Timestamp::now())))
     {
         return Err(pending_missing());
     }
@@ -1009,10 +1434,19 @@ fn etag_response(etag: &str) -> http::Response<Body> {
 }
 
 fn write_error(error: StorageError) -> ApiError {
+    if matches!(error, StorageError::ContentMismatch) {
+        return ApiError::conflict("upload retry contains different bytes");
+    }
     if matches!(&error,StorageError::Io(e) if e.kind()==std::io::ErrorKind::TimedOut) {
         return ApiError::new(408, "upload timed out; reselect the file to continue");
     }
+    if matches!(&error, StorageError::Io(e) if e.kind() == std::io::ErrorKind::StorageFull) {
+        return ApiError::new(507, "insufficient disk space for upload");
+    }
     tracing::error!(%error, "upload write failed");
+    if matches!(error, StorageError::Io(_)) {
+        return ApiError::internal("upload storage write failed");
+    }
     ApiError::bad_request("file write failed or size mismatch")
 }
 
