@@ -453,8 +453,8 @@ pub struct LibraryQuery {
     pub favorite: bool,
     pub collection: String,
     pub recent: bool,
-    pub group_series: bool,
-    pub series: String,
+    pub group_stacks: bool,
+    pub stack: String,
     pub offset: i64,
 }
 
@@ -462,11 +462,11 @@ pub async fn fetch_library(
     query: &LibraryQuery,
 ) -> Result<revaro_core::library::LibraryListing, RequestError> {
     let mut path = format!(
-        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&group_series={}&q={}",
+        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&group_stacks={}&q={}",
         query.offset,
         query.favorite,
         query.recent,
-        query.group_series,
+        query.group_stacks,
         js_sys::encode_uri_component(&query.query)
     );
     if !query.kind.is_empty() {
@@ -475,10 +475,10 @@ pub async fn fetch_library(
             js_sys::encode_uri_component(&query.kind)
         ));
     }
-    if !query.series.is_empty() {
+    if !query.stack.is_empty() {
         path.push_str(&format!(
-            "&series={}",
-            js_sys::encode_uri_component(&query.series)
+            "&stack={}",
+            js_sys::encode_uri_component(&query.stack)
         ));
     }
     if !query.collection.is_empty() {
@@ -539,6 +539,65 @@ pub async fn collection_member(
 pub async fn delete_collection(id: &str) -> Result<(), RequestError> {
     send_empty(
         api_request(Request::delete(&format!("/api/library/collections/{id}")))
+            .build()
+            .map_err(|e| request_transport(e.to_string()))?,
+    )
+    .await
+}
+
+pub async fn fetch_stacks() -> Result<Vec<revaro_core::stacks::Stack>, RequestError> {
+    get_json("/api/library/stacks").await
+}
+
+pub async fn fetch_stack_suggestions()
+-> Result<Vec<revaro_core::stacks::StackSuggestion>, RequestError> {
+    get_json("/api/library/stack-suggestions").await
+}
+
+pub async fn create_stack(
+    name: &str,
+    file_ids: Vec<String>,
+) -> Result<revaro_core::stacks::Stack, RequestError> {
+    let request = api_request(Request::post("/api/library/stacks"))
+        .json(&revaro_core::stacks::CreateStack {
+            name: name.to_owned(),
+            file_ids,
+        })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_json(request).await
+}
+
+pub async fn rename_stack(id: &str, name: &str) -> Result<(), RequestError> {
+    let request = api_request(Request::patch(&format!("/api/library/stacks/{id}")))
+        .json(&revaro_core::stacks::RenameStack {
+            name: name.to_owned(),
+        })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_empty(request).await
+}
+
+pub async fn stack_members(id: &str, file_ids: Vec<String>, add: bool) -> Result<(), RequestError> {
+    let path = format!("/api/library/stacks/{id}/items");
+    let request = api_request(if add {
+        Request::post(&path)
+    } else {
+        Request::delete(&path)
+    })
+    .json(&revaro_core::stacks::StackMembers { file_ids })
+    .map_err(|e| request_transport(e.to_string()))?;
+    send_empty(request).await
+}
+
+pub async fn reorder_stack(id: &str, file_ids: Vec<String>) -> Result<(), RequestError> {
+    let request = api_request(Request::put(&format!("/api/library/stacks/{id}/order")))
+        .json(&revaro_core::stacks::StackMembers { file_ids })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_empty(request).await
+}
+
+pub async fn dissolve_stack(id: &str) -> Result<(), RequestError> {
+    send_empty(
+        api_request(Request::delete(&format!("/api/library/stacks/{id}")))
             .build()
             .map_err(|e| request_transport(e.to_string()))?,
     )

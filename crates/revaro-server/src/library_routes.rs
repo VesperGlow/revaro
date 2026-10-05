@@ -1,5 +1,6 @@
 //! Content-library queries and virtual collections over the existing files.
 mod query;
+mod stacks;
 
 use std::sync::Arc;
 
@@ -30,9 +31,9 @@ struct Options {
     #[serde(default)]
     favorite: bool,
     collection: Option<String>,
-    series: Option<String>,
+    stack: Option<String>,
     #[serde(default)]
-    group_series: bool,
+    group_stacks: bool,
     #[serde(default)]
     recent: bool,
     #[serde(default)]
@@ -42,6 +43,7 @@ struct Options {
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .merge(stacks::routes())
         .route("/library/items", get(list))
         .route("/library/items/{id}", axum::routing::patch(update))
         .route(
@@ -80,17 +82,14 @@ async fn list(
     {
         return Err(ApiError::bad_request("invalid library query"));
     }
-    if o.series
+    if o.stack
         .as_ref()
-        .is_some_and(|s| s.is_empty() || s.len() > 2048)
-        || ((o.group_series || o.series.is_some()) && o.kind.as_deref() != Some("book"))
+        .is_some_and(|s| s.is_empty() || s.len() > 128)
+        || ((o.group_stacks || o.stack.is_some()) && o.kind.as_deref() != Some("book"))
     {
-        return Err(ApiError::bad_request("invalid series query"));
+        return Err(ApiError::bad_request("invalid stack query"));
     }
-    if o.kind.as_deref().is_none_or(|kind| kind == "book") {
-        index_book_series(&state).await?;
-    }
-    let grouped = o.group_series && o.series.is_none();
+    let grouped = o.group_stacks && o.stack.is_none();
     let offset = o.offset;
     let (total, rows) = state
         .db
@@ -103,22 +102,28 @@ async fn list(
         mut item,
         progress,
         bucket,
+        stack,
     } in rows
     {
         if item.kind == "book" {
             item.reading_progress = book_reading_progress(&state, &item.file, progress).await;
         }
-        if grouped && item.series.is_some() && previous_bucket == bucket {
+        if grouped && stack.is_some() && previous_bucket == bucket {
             let group = items.last_mut().expect("previous group exists");
             progress_sum += item.reading_progress.unwrap_or(0.0);
-            group.series_files.push(item.file);
+            let stack = group.stack.as_mut().expect("stack group exists");
+            stack.files.push(item.file);
             group.reading_progress =
-                (progress_sum > 0.0).then(|| progress_sum / group.series_files.len() as f64);
+                (progress_sum > 0.0).then(|| progress_sum / stack.files.len() as f64);
         } else {
             previous_bucket = bucket;
             progress_sum = item.reading_progress.unwrap_or(0.0);
-            if grouped && item.series.is_some() {
-                item.series_files.push(item.file.clone());
+            if grouped && let Some((id, name)) = stack {
+                item.stack = Some(revaro_core::stacks::Stack {
+                    id,
+                    name,
+                    files: vec![item.file.clone()],
+                });
             }
             items.push(item);
         }
@@ -475,8 +480,17 @@ mod tests {
         }
     }
 
+    fn file_ids(items: &serde_json::Value) -> Vec<&str> {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap())
+            .collect()
+    }
+
     #[tokio::test]
-    async fn series_pages_keep_members_together_and_details_sort_volumes() {
+    async fn manual_stacks_paginate_as_units_preserve_filters_and_ignore_series_grouping() {
         let state = state().await;
         for (id, name) in [
             ("a", "third.txt"),
@@ -491,64 +505,98 @@ mod tests {
             c.execute("INSERT INTO settings(key,value,updated_at) VALUES('book_progress/b',?1,'2026-01-01T00:00:00Z')", [r#"{"anchor":{"spine":0,"block":1,"offset":0},"percent":60.0}"#])?;
             Ok(())
         }).await.unwrap();
-        let (status, page) = request(
+        let (_, listing) = request(
             &state,
             "GET",
-            "/api/library/items?kind=book&group_series=true&limit=1",
+            "/api/library/items?kind=book&group_stacks=true",
             None,
+        )
+        .await;
+        assert_eq!(listing["total"], 4);
+        assert!(
+            listing["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["stack"].is_null())
+        );
+        let (_, suggestions) = request(&state, "GET", "/api/library/stack-suggestions", None).await;
+        assert_eq!(
+            suggestions,
+            serde_json::json!([{"name":"Saga","file_ids":["b","c","a"]}])
+        );
+        assert_eq!(
+            request(&state, "GET", "/api/library/stacks", None).await.1,
+            serde_json::json!([])
+        );
+
+        let (status, stack) = request(
+            &state,
+            "POST",
+            "/api/library/stacks",
+            Some(serde_json::json!({"name":"Manual", "file_ids":["c","a","b"]})),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(page["total"], 2);
-        assert_eq!(page["items"].as_array().unwrap().len(), 1);
-        let (_, page2) = request(
+        let id = stack["id"].as_str().unwrap();
+        assert_eq!(file_ids(&stack["files"]), ["c", "a", "b"]);
+        let (_, page) = request(
             &state,
             "GET",
-            "/api/library/items?kind=book&group_series=true&limit=1&offset=1",
+            "/api/library/items?kind=book&group_stacks=true&limit=1",
             None,
         )
         .await;
+        let (_, page2) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=book&group_stacks=true&limit=1&offset=1",
+            None,
+        )
+        .await;
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page2["items"].as_array().unwrap().len(), 1);
         let group = [&page["items"][0], &page2["items"][0]]
             .into_iter()
-            .find(|i| i["series"] == "Saga")
+            .find(|i| i["stack"]["id"] == id)
             .unwrap();
-        assert_eq!(group["file"]["id"], "b");
-        assert_eq!(group["series_files"].as_array().unwrap().len(), 3);
+        assert_eq!(group["file"]["id"], "c");
+        assert_eq!(file_ids(&group["stack"]["files"]), ["c", "a", "b"]);
         assert_eq!(group["reading_progress"], 20.0);
         let (_, detail) = request(
             &state,
             "GET",
-            "/api/library/items?kind=book&series=Saga",
+            &format!("/api/library/items?kind=book&stack={id}"),
             None,
         )
         .await;
         assert_eq!(detail["total"], 3);
-        let ids = detail["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|i| i["file"]["id"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(ids, ["b", "c", "a"]);
-        assert!(
-            detail["items"][0]["series_files"]
+        assert_eq!(
+            detail["items"]
                 .as_array()
                 .unwrap()
-                .is_empty()
+                .iter()
+                .map(|i| i["file"]["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["c", "a", "b"]
         );
-        assert!(detail["items"][1]["reading_progress"].is_null());
+        assert!(
+            detail["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["stack"].is_null())
+        );
         let (_, search) = request(
             &state,
             "GET",
-            "/api/library/items?kind=book&group_series=true&q=Saga",
+            "/api/library/items?kind=book&group_stacks=true&q=first",
             None,
         )
         .await;
         assert_eq!(search["total"], 1);
-        assert_eq!(
-            search["items"][0]["series_files"].as_array().unwrap().len(),
-            3
-        );
+        assert_eq!(file_ids(&search["items"][0]["stack"]["files"]), ["b"]);
         request(
             &state,
             "PATCH",
@@ -559,46 +607,314 @@ mod tests {
         let (_, favorites) = request(
             &state,
             "GET",
-            "/api/library/items?kind=book&group_series=true&favorite=true",
+            "/api/library/items?kind=book&group_stacks=true&favorite=true",
+            None,
+        )
+        .await;
+        assert_eq!(file_ids(&favorites["items"][0]["stack"]["files"]), ["b"]);
+        let (_, shelf) = request(
+            &state,
+            "POST",
+            "/api/library/collections",
+            Some(serde_json::json!({"name":"Shelf", "kind":"book"})),
+        )
+        .await;
+        let shelf_id = shelf["id"].as_str().unwrap();
+        request(
+            &state,
+            "PUT",
+            &format!("/api/library/collections/{shelf_id}/items/a"),
+            None,
+        )
+        .await;
+        let (_, shelf_listing) = request(
+            &state,
+            "GET",
+            &format!("/api/library/items?kind=book&group_stacks=true&collection={shelf_id}"),
             None,
         )
         .await;
         assert_eq!(
-            favorites["items"][0]["series_files"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
+            file_ids(&shelf_listing["items"][0]["stack"]["files"]),
+            ["a"]
         );
+        let (_, shelf_detail) = request(
+            &state,
+            "GET",
+            &format!("/api/library/items?kind=book&stack={id}&collection={shelf_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(shelf_detail["total"], 1);
+        assert_eq!(shelf_detail["items"][0]["file"]["id"], "a");
+        assert_eq!(
+            request(
+                &state,
+                "GET",
+                "/api/library/items?kind=image&group_stacks=true",
+                None
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn stack_changes_are_atomic_and_dissolving_preserves_books_shelves_and_metadata() {
+        let state = state().await;
+        for (id, name) in [
+            ("a", "a.txt"),
+            ("b", "b.txt"),
+            ("c", "c.txt"),
+            ("image", "image.png"),
+        ] {
+            seed(&state, id, name).await;
+        }
+        state
+            .store
+            .put("blobs/a", b"original book content")
+            .await
+            .unwrap();
+        let (_, shelf) = request(
+            &state,
+            "POST",
+            "/api/library/collections",
+            Some(serde_json::json!({"name":"Books","kind":"book"})),
+        )
+        .await;
+        let shelf_id = shelf["id"].as_str().unwrap();
+        request(
+            &state,
+            "PUT",
+            &format!("/api/library/collections/{shelf_id}/items/a"),
+            None,
+        )
+        .await;
+        request(
+            &state,
+            "PATCH",
+            "/api/library/items/a",
+            Some(serde_json::json!({"favorite":true})),
+        )
+        .await;
+        let before = request(&state, "GET", "/api/library/items?kind=book", None)
+            .await
+            .1;
+        let shelves_before = request(&state, "GET", "/api/library/collections", None)
+            .await
+            .1;
+        let (status, stack) = request(
+            &state,
+            "POST",
+            "/api/library/stacks",
+            Some(serde_json::json!({"name":"Original","file_ids":["a","b"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let id = stack["id"].as_str().unwrap();
+        let path = format!("/api/library/stacks/{id}");
+        for invalid in [
+            serde_json::json!({"name":"Invalid","file_ids":["a","image"]}),
+            serde_json::json!({"name":"Invalid","file_ids":["a","a"]}),
+            serde_json::json!({"name":" ","file_ids":["a","b"]}),
+            serde_json::json!({"name":"Invalid","file_ids":["a"]}),
+            serde_json::json!({"name":"Invalid","file_ids":["a","missing"]}),
+            serde_json::json!({"name":"Invalid","file_ids":["a","b"],"series":"Saga"}),
+        ] {
+            assert_eq!(
+                request(&state, "POST", "/api/library/stacks", Some(invalid))
+                    .await
+                    .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        assert_eq!(
+            request(
+                &state,
+                "POST",
+                &format!("{path}/items"),
+                Some(serde_json::json!({"file_ids":["c","image"]}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (_, all) = request(&state, "GET", "/api/library/stacks", None).await;
+        assert_eq!(all.as_array().unwrap().len(), 1);
+        assert_eq!(file_ids(&all[0]["files"]), ["a", "b"]);
+        assert_eq!(
+            request(
+                &state,
+                "PATCH",
+                &path,
+                Some(serde_json::json!({"name":"Renamed"}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            request(
+                &state,
+                "POST",
+                &format!("{path}/items"),
+                Some(serde_json::json!({"file_ids":["c","a"]}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            request(
+                &state,
+                "PUT",
+                &format!("{path}/order"),
+                Some(serde_json::json!({"file_ids":["b","a"]}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            request(
+                &state,
+                "PUT",
+                &format!("{path}/order"),
+                Some(serde_json::json!({"file_ids":["c","b","a"]}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let (_, all) = request(&state, "GET", "/api/library/stacks", None).await;
+        assert_eq!(all[0]["name"], "Renamed");
+        assert_eq!(file_ids(&all[0]["files"]), ["c", "b", "a"]);
+        request(
+            &state,
+            "DELETE",
+            &format!("{path}/items"),
+            Some(serde_json::json!({"file_ids":["b"]})),
+        )
+        .await;
+        let (_, moved) = request(
+            &state,
+            "POST",
+            "/api/library/stacks",
+            Some(serde_json::json!({"name":"Moved","file_ids":["b","c"]})),
+        )
+        .await;
+        let (_, all) = request(&state, "GET", "/api/library/stacks", None).await;
+        let original = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap();
+        assert_eq!(file_ids(&original["files"]), ["a"]);
+        assert_eq!(file_ids(&moved["files"]), ["b", "c"]);
+        assert_eq!(
+            request(&state, "DELETE", &path, None).await.0,
+            StatusCode::NO_CONTENT
+        );
+        request(
+            &state,
+            "DELETE",
+            &format!("/api/library/stacks/{}", moved["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(
+            request(&state, "GET", "/api/library/items?kind=book", None)
+                .await
+                .1,
+            before
+        );
+        assert_eq!(
+            request(&state, "GET", "/api/library/collections", None)
+                .await
+                .1,
+            shelves_before
+        );
+        assert_eq!(
+            state.store.read("blobs/a", 1024).await.unwrap(),
+            b"original book content"
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_members_are_hidden_and_membership_survives_trash_restore() {
+        let state = state().await;
+        seed(&state, "a", "a.txt").await;
+        seed(&state, "b", "b.txt").await;
+        seed(&state, "c", "c.txt").await;
+        let (_, stack) = request(
+            &state,
+            "POST",
+            "/api/library/stacks",
+            Some(serde_json::json!({"name":"Saved","file_ids":["a","b","c"]})),
+        )
+        .await;
         state
             .db
             .call(|c| {
                 c.execute(
-                    "UPDATE files SET deleted_at='2026-01-02T00:00:00Z' WHERE id='c'",
+                    "UPDATE files SET deleted_at='2026-01-01T00:00:00Z' WHERE id='b'",
                     [],
                 )?;
                 Ok(())
             })
             .await
             .unwrap();
-        let (_, detail) = request(
+        let (_, all) = request(&state, "GET", "/api/library/stacks", None).await;
+        assert_eq!(file_ids(&all[0]["files"]), ["a", "c"]);
+        let (_, listing) = request(
             &state,
             "GET",
-            "/api/library/items?kind=book&series=Saga",
+            "/api/library/items?kind=book&group_stacks=true",
             None,
         )
         .await;
-        assert_eq!(detail["total"], 2);
+        assert_eq!(file_ids(&listing["items"][0]["stack"]["files"]), ["a", "c"]);
         assert_eq!(
             request(
                 &state,
-                "GET",
-                "/api/library/items?kind=image&group_series=true",
-                None
+                "POST",
+                &format!(
+                    "/api/library/stacks/{}/items",
+                    stack["id"].as_str().unwrap()
+                ),
+                Some(serde_json::json!({"file_ids":["b"]}))
             )
             .await
             .0,
             StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            request(
+                &state,
+                "PUT",
+                &format!(
+                    "/api/library/stacks/{}/order",
+                    stack["id"].as_str().unwrap()
+                ),
+                Some(serde_json::json!({"file_ids":["c","a"]}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        state
+            .db
+            .call(|c| {
+                c.execute("UPDATE files SET deleted_at=NULL WHERE id='b'", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            file_ids(&request(&state, "GET", "/api/library/stacks", None).await.1[0]["files"]),
+            ["c", "b", "a"]
         );
     }
 

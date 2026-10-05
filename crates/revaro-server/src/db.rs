@@ -89,6 +89,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "008_book_series.sql",
         sql: include_str!("../migrations/008_book_series.sql"),
     },
+    Migration {
+        version: 9,
+        name: "009_book_stacks.sql",
+        sql: include_str!("../migrations/009_book_stacks.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

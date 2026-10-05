@@ -28,11 +28,11 @@ pub fn reader_id(pathname: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-/// Encoded series name; the browser decodes it after validating the route shape.
+/// Independent stack identifier, validated before use in a browser route.
 #[must_use]
-pub fn series_id(pathname: &str) -> Option<String> {
+pub fn stack_id(pathname: &str) -> Option<String> {
     let rest = pathname
-        .strip_prefix("/library/series/")?
+        .strip_prefix("/library/stacks/")?
         .trim_end_matches('/');
     if rest.is_empty() || rest.contains('/') || matches!(rest, "." | "..") {
         return None;
@@ -57,18 +57,19 @@ mod tests {
     const ROOT: &str = "root";
 
     #[test]
-    fn series_routes_preserve_encoded_names_and_reject_nested_paths() {
+    fn stack_routes_preserve_ids_and_reject_nested_paths() {
         assert_eq!(
-            series_id("/library/series/%E6%98%9F%2F%E6%B5%B7/"),
-            Some("%E6%98%9F%2F%E6%B5%B7".into())
+            stack_id("/library/stacks/stack-123/"),
+            Some("stack-123".into())
         );
         for path in [
             "/library",
-            "/library/series/",
-            "/library/series/a/b",
-            "/library/series/..",
+            "/library/stacks/",
+            "/library/stacks/a/b",
+            "/library/stacks/..",
+            "/library/series/Saga",
         ] {
-            assert_eq!(series_id(path), None);
+            assert_eq!(stack_id(path), None);
         }
     }
 

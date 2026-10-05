@@ -23,12 +23,21 @@ pub struct SelectionManagement {
 }
 
 #[derive(Clone, Copy)]
+pub struct SelectionStackManagement {
+    pub busy: RwSignal<bool>,
+    pub on_stack: Callback<()>,
+    pub on_remove: Callback<()>,
+    pub can_remove: Signal<bool>,
+}
+
+#[derive(Clone, Copy)]
 pub struct SelectionMode {
     pub enabled: RwSignal<bool>,
     pub ids: RwSignal<HashSet<String>>,
     pub library_items: RwSignal<Vec<File>>,
     pub actions: RwSignal<Option<SelectionActions>>,
     pub management: RwSignal<Option<SelectionManagement>>,
+    pub stacks: RwSignal<Option<SelectionStackManagement>>,
 }
 
 impl SelectionMode {
@@ -39,6 +48,7 @@ impl SelectionMode {
             library_items: RwSignal::new(Vec::new()),
             actions: RwSignal::new(None),
             management: RwSignal::new(None),
+            stacks: RwSignal::new(None),
         }
     }
 
@@ -290,6 +300,10 @@ pub fn install_long_press(selection: SelectionMode) {
             let Ok(Some(card)) = target.closest("[data-selection-ids]") else {
                 return;
             };
+            // Stack details own their press gesture so holding can continue into a reorder.
+            if card.has_attribute("data-stack-book-id") {
+                return;
+            }
             if let Ok(Some(control)) = target.closest(INTERACTIVE_ELEMENTS)
                 && !matches!(
                     control.matches(".file-card,.library-card-open,.home-item"),

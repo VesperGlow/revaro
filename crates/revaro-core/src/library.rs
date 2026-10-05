@@ -17,18 +17,16 @@ pub struct LibraryItem {
     pub series: Option<String>,
     #[serde(default)]
     pub series_index: Option<f64>,
-    /// Nonzero only for an aggregated series card. Members reuse ordinary file actions.
     #[serde(default)]
-    pub series_files: Vec<File>,
+    pub stack: Option<crate::stacks::Stack>,
 }
 
 impl LibraryItem {
     pub fn selectable_files(&self) -> Vec<File> {
-        if self.series_files.is_empty() {
-            vec![self.file.clone()]
-        } else {
-            self.series_files.clone()
-        }
+        self.stack
+            .as_ref()
+            .map(|stack| stack.files.clone())
+            .unwrap_or_else(|| vec![self.file.clone()])
     }
 }
 

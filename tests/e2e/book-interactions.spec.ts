@@ -13,7 +13,8 @@ function epub(series: string, index: number, calibre = false) {
   const chapter = `<html><body><h1>第${index}卷</h1>${'<p>这是一段用于验证真实阅读进度的文字。书架、系列和触屏都应保持相同的阅读体验。</p>'.repeat(120)}</body></html>`
   return zip([
     ['META-INF/container.xml', Buffer.from('<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>')],
-    ['content.opf', Buffer.from(`<package><metadata><title>第${index}卷</title>${metadata}</metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>`) ],
+    ['content.opf', Buffer.from(`<package><metadata><title>第${index}卷</title>${metadata}</metadata><manifest><item id="cover" href="cover.png" media-type="image/png" properties="cover-image"/><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>`) ],
+    ['cover.png', png],
     ['chapter.xhtml', Buffer.from(chapter)],
   ])
 }
@@ -55,11 +56,46 @@ async function press(page: Page, card: Locator, touch: boolean, cancel: false | 
   } else await page.mouse.up()
 }
 
+async function stackMenu(page: Page, action: string) {
+  await page.getByLabel('堆叠更多操作', { exact: true }).click()
+  await page.locator('.stack-header .action-menu-panel').getByRole('button', { name: action, exact: true }).click()
+}
+
+async function holdDrag(page: Page, source: Locator, target: Locator, touch: boolean) {
+  await source.evaluate(async el => {
+    el.scrollIntoView({ block: 'center' })
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  })
+  const box = (await source.boundingBox())!
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  const session = touch ? await page.context().newCDPSession(page) : null
+  if (session) await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] })
+  else { await page.mouse.move(point.x, point.y); await page.mouse.down() }
+  await page.waitForTimeout(600)
+  await expect(page.getByRole('toolbar', { name: '管理堆叠书籍' })).toBeVisible()
+  // Entering management reveals its toolbar; use the target's new position.
+  const destination = (await target.boundingBox())!
+  const end = { x: destination.x + destination.width / 2, y: destination.y + destination.height / 2 }
+  for (let i = 1; i <= 8; i++) {
+    const next = { x: point.x + (end.x - point.x) * i / 8, y: point.y + (end.y - point.y) * i / 8 }
+    if (session) await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [next] })
+    else await page.mouse.move(next.x, next.y)
+  }
+  await expect(target).toHaveClass(/stack-order-target/)
+  if (session) {
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await session.detach()
+  } else await page.mouse.up()
+  await expect(page.locator('.stack-drag-preview')).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: '顺序已保存' })).toHaveCount(1)
+}
+
 for (const touch of [false, true]) {
   test.describe(touch ? 'touch book interactions' : 'mouse book interactions', () => {
     test.use({ hasTouch: touch, viewport: touch ? { width: 390, height: 844 } : { width: 1280, height: 800 } })
 
-    test('series cards reuse selection, show saved progress and restore all volumes after reading', async ({ page }) => {
+    test('manual stacks reuse long press selection, persist ordering and preserve files when dissolved', async ({ page }) => {
+      test.setTimeout(90_000)
       const errors: string[] = []
       page.on('pageerror', error => errors.push(error.message))
       const prefix = `series-${Date.now()}-${touch}`
@@ -77,9 +113,43 @@ for (const touch of [false, true]) {
       const saved = await page.request.put(`/api/files/${book.file.id}/book/progress`, { headers: { origin: new URL(page.url()).origin }, data: { anchor: { spine: 0, block: 20, offset: 0 }, percent: 37.5 } })
       expect(saved.ok()).toBeTruthy()
       await navigate(page, '书籍')
-      const card = page.locator('.series-card').filter({ hasText: seriesName })
+      await expect(page.locator('.series-card,.stack-card').filter({ hasText: seriesName })).toHaveCount(0)
+      // Recommendations leave every book independent until the user submits a stack.
+      await page.getByRole('button', { name: '推荐堆叠', exact: true }).click()
+      const stackDialog = page.getByRole('dialog', { name: '管理堆叠', exact: true })
+      await expect(stackDialog.getByRole('button', { name: new RegExp(seriesName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })).toBeVisible()
+      await stackDialog.getByRole('button', { name: '关闭堆叠对话框' }).click()
+      await expect(page.locator('.stack-card').filter({ hasText: seriesName })).toHaveCount(0)
+      const firstCard = page.locator('.library-card').filter({ has: page.getByRole('button', { name: `打开 ${first}`, exact: true }) })
+      await press(page, firstCard, touch)
+      await page.getByRole('button', { name: `打开 ${second}`, exact: true }).click({ force: true })
+      await expect(page.locator('.selection-summary b')).toHaveText('已选择 2 项')
+      await page.locator('.selection-toolbar').getByRole('button', { name: '堆叠', exact: true }).click()
+      await stackDialog.getByLabel('堆叠名称', { exact: true }).fill(seriesName)
+      await stackDialog.getByRole('button', { name: '新建堆叠', exact: true }).click()
+      await expect(stackDialog).toHaveCount(0)
+      const card = page.locator('.stack-card').filter({ hasText: seriesName })
       await expect(card).toHaveCount(1)
-      await expect(card.locator('.series-count')).toHaveText('2 本')
+      await expect(card.locator('.stack-count')).toHaveText('2 本')
+      await expect(card.locator('.stack-cover-layer')).toHaveCount(2)
+      // Manual order is editable independently of volume metadata.
+      await card.locator('.library-card-open').click()
+      await expect(page.locator('.stack-remove-book')).toHaveCount(0)
+      await expect(page.getByRole('toolbar', { name: '管理堆叠书籍' })).toHaveCount(0)
+      await expect(page.locator('.stack-header-actions > *')).toHaveCount(2)
+      await expect(page.getByRole('button', { name: '内部排序', exact: true })).toHaveCount(0)
+      const detailBook = (name: string) => page.locator('.library-card').filter({ has: page.getByRole('button', { name: `打开 ${name}`, exact: true }) })
+      await expect(detailBook(first).locator('.library-cover img')).toBeVisible()
+      await press(page, detailBook(first), touch, 'move')
+      await press(page, detailBook(first), touch, 'scroll')
+      await expect(page.getByRole('toolbar', { name: '管理堆叠书籍' })).toHaveCount(0)
+      await holdDrag(page, detailBook(first), detailBook(second), touch)
+      if (await page.locator('.library-card-open').first().getAttribute('aria-label') !== `打开 ${first}`) {
+        await holdDrag(page, detailBook(first), detailBook(second), touch)
+      }
+      await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${first}`)
+      await page.getByRole('toolbar', { name: '管理堆叠书籍' }).getByRole('button', { name: '完成', exact: true }).click()
+      await page.getByRole('button', { name: '返回书架', exact: true }).click()
       const progress = card.getByRole('progressbar', { name: '阅读进度' })
       await expect(progress).toHaveAttribute('aria-valuenow', '18.75')
       await expect(page.locator('.library-card').filter({ hasText: standalone }).locator('.book-reading-progress')).toHaveCount(0)
@@ -92,33 +162,75 @@ for (const touch of [false, true]) {
       }
       await press(page, card, touch)
       await expect(page.locator('.selection-summary b')).toHaveText('已选择 2 项')
-      await expect(page.locator('.series-header')).toHaveCount(0)
+      await expect(page.locator('.stack-header')).toHaveCount(0)
       await expect(page.locator('#reader-view')).toHaveCount(0)
       await page.locator('.selection-toolbar').getByRole('button', { name: '收藏', exact: true }).click()
       await expect.poll(async () => (await (await page.request.get(`/api/library/items?kind=book&q=${prefix}&favorite=true`)).json()).total).toBe(2)
       await page.locator('.selection-toolbar').getByRole('button', { name: '取消', exact: true }).click()
       await card.locator('.library-card-open').click()
-      await expect(page.locator('.series-header h1')).toHaveText(seriesName)
+      await expect(page.locator('.stack-header h1')).toHaveText(seriesName)
       await expect(page.locator('.library-card')).toHaveCount(2)
       await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${first}`)
       await expect(page.locator('.library-card-open').last()).toHaveAttribute('aria-label', `打开 ${second}`)
       const detailUrl = page.url()
       await page.reload()
-      await expect(page.locator('.series-header h1')).toHaveText(seriesName)
+      await expect(page.locator('.stack-header h1')).toHaveText(seriesName)
       await expect(page.locator('.library-card')).toHaveCount(2)
       await page.getByRole('button', { name: `打开 ${first}`, exact: true }).click()
       await expect(page.locator('#loading')).toBeHidden()
       await expect(page.locator('#flow')).toContainText('验证真实阅读进度')
       await page.locator('#reader-back').click()
       await expect(page).toHaveURL(detailUrl)
-      await expect(page.locator('.series-header h1')).toHaveText(seriesName)
+      await expect(page.locator('.stack-header h1')).toHaveText(seriesName)
       await expect(page.locator('.library-card')).toHaveCount(2)
       // A new reader save supplies the same percentage to the card and progress API.
       await expect.poll(async () => (await (await page.request.get(`/api/files/${book.file.id}/book/progress`)).json()).percent).not.toBe(37.5)
       const updated = await (await page.request.get(`/api/files/${book.file.id}/book/progress`)).json()
       if (updated.percent > 0) await expect(page.locator('.library-card').first().getByRole('progressbar')).toHaveAttribute('aria-valuenow', `${updated.percent}`)
-      await page.getByRole('button', { name: '← 返回书架' }).click()
+      await page.getByRole('button', { name: '返回书架', exact: true }).click()
       await expect(card).toHaveCount(1)
+      await card.locator('.library-card-open').click()
+      await stackMenu(page, '重命名')
+      await stackDialog.getByLabel('堆叠名称', { exact: true }).fill(`Renamed ${prefix}`)
+      await stackDialog.getByRole('button', { name: '保存名称', exact: true }).click()
+      await expect(page.locator('.stack-header h1')).toHaveText(`Renamed ${prefix}`)
+      await page.getByRole('button', { name: '添加书籍', exact: true }).click()
+      const picker = page.getByRole('dialog', { name: '添加书籍', exact: true })
+      await picker.getByLabel('搜索待添加书籍').fill(standalone)
+      await picker.getByRole('checkbox', { name: `添加 ${standalone}`, exact: true }).check()
+      await expect(picker.locator('.stack-picker-footer')).toContainText('已选 1 本')
+      await picker.getByRole('button', { name: '添加', exact: true }).click()
+      await expect(page.locator('.library-card')).toHaveCount(3)
+      await stackMenu(page, '管理书籍')
+      const management = page.getByRole('toolbar', { name: '管理堆叠书籍' })
+      await expect(management.getByRole('button', { name: '移出堆叠', exact: true })).toBeDisabled()
+      await management.getByRole('button', { name: '全选', exact: true }).click()
+      await expect(management).toContainText('已选 3 本')
+      await management.getByRole('button', { name: '取消全选', exact: true }).click()
+      await expect(management).toContainText('已选 0 本')
+      await page.getByRole('button', { name: `打开 ${standalone}`, exact: true }).click({ force: true })
+      await page.getByRole('button', { name: `打开 ${second}`, exact: true }).click({ force: true })
+      await expect(management).toContainText('已选 2 本')
+      await management.getByRole('button', { name: '移出堆叠', exact: true }).click()
+      await expect(page.locator('.library-card')).toHaveCount(1)
+      await expect(management).toHaveCount(0)
+      await page.getByRole('button', { name: '添加书籍', exact: true }).click()
+      await picker.getByLabel('搜索待添加书籍').fill(second)
+      await picker.getByRole('checkbox', { name: `添加 ${second}`, exact: true }).check()
+      await picker.getByRole('button', { name: '添加', exact: true }).click()
+      await expect(page.locator('.library-card')).toHaveCount(2)
+      expect((await (await page.request.get(`/api/library/items?kind=book&q=${standalone}`)).json()).total).toBe(1)
+      await page.getByLabel('堆叠更多操作', { exact: true }).click()
+      await expect(page.getByRole('button', { name: '解除堆叠', exact: true })).toHaveClass('danger')
+      await page.getByRole('button', { name: '解除堆叠', exact: true }).click()
+      await expect(page.locator('.stack-header')).toHaveCount(0)
+      await expect(page.getByRole('button', { name: `打开 ${first}`, exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: `打开 ${second}`, exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: `打开 ${standalone}`, exact: true })).toBeVisible()
+      const after = await (await page.request.get(`/api/library/items?kind=book&q=${prefix}`)).json()
+      expect(after.total).toBe(3)
+      expect(after.items.filter((item: any) => item.favorite)).toHaveLength(2)
+      if (touch) expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
       expect(errors).toEqual([])
     })
 
@@ -161,3 +273,54 @@ for (const touch of [false, true]) {
     })
   })
 }
+
+test('desktop book drags create a stack and append to its existing ordered members', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  const prefix = `drag-stack-${Date.now()}`
+  await login(page)
+  await page.locator('input[type=file]').first().setInputFiles([1, 2, 3].map(n => ({
+    name: `${prefix}-${n}.txt`, mimeType: 'text/plain', buffer: Buffer.from('手动拖放堆叠测试\n'.repeat(20)),
+  })))
+  await expect.poll(async () => (await (await page.request.get(`/api/library/items?kind=book&q=${prefix}`)).json()).total).toBe(3)
+  await navigate(page, '书籍')
+  const book = (n: number) => page.locator('.library-card').filter({ has: page.getByRole('button', { name: `打开 ${prefix}-${n}.txt`, exact: true }) })
+  await book(2).dragTo(book(1))
+  let stackId: string
+  await expect.poll(async () => {
+    const created = (await (await page.request.get('/api/library/stacks')).json()).find((stack: any) => stack.files.some((file: any) => file.name === `${prefix}-1.txt`))
+    stackId = created?.id
+    return created?.files.length
+  }).toBe(2)
+  const stack = page.locator(`.stack-card[data-stack-id="${stackId!}"]`)
+  await expect(stack.locator('.stack-count')).toHaveText('2 本')
+  await book(3).dragTo(stack)
+  await expect(stack.locator('.stack-count')).toHaveText('3 本')
+  await expect(stack.locator('.stack-cover-layer')).toHaveCount(3)
+  await stack.locator('.library-card-open').click()
+  await expect(page).toHaveURL(new RegExp(`/library/stacks/${stackId}$`))
+  await expect(page.locator('.library-card-open')).toHaveCount(3)
+  for (let n=1;n<=3;n++) await expect(page.locator('.library-card-open').nth(n-1)).toHaveAttribute('aria-label', `打开 ${prefix}-${n}.txt`)
+  await stackMenu(page, '管理书籍')
+  await holdDrag(page, book(3), book(1), false)
+  await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${prefix}-3.txt`)
+  await page.reload()
+  await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${prefix}-3.txt`)
+  await stackMenu(page, '管理书籍')
+  // A rejected save restores the server order and keeps the inline management controls usable.
+  const orderUrl = `**/api/library/stacks/${stackId}/order`
+  await page.route(orderUrl, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { status: 503, message: '暂时无法保存顺序' } }) }))
+  await page.getByRole('button', { name: `打开 ${prefix}-3.txt`, exact: true }).press('Alt+ArrowRight')
+  await expect(page.locator('.library-error')).toBeVisible()
+  await expect(page.locator('.library-error')).toContainText('暂时无法保存顺序')
+  await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${prefix}-3.txt`)
+  await expect(page.getByRole('toolbar', { name: '管理堆叠书籍' })).toBeVisible()
+  await page.unroute(orderUrl)
+  await page.getByRole('button', { name: `打开 ${prefix}-3.txt`, exact: true }).press('Alt+ArrowRight')
+  await expect(page.locator('.library-error')).toHaveCount(0)
+  await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${prefix}-1.txt`)
+  await expect(page.getByRole('status').filter({ hasText: '顺序已保存' })).toHaveCount(1)
+  await stackMenu(page, '解除堆叠')
+  await expect(page.locator(`[data-stack-id="${stackId}"]`)).toHaveCount(0)
+  expect(errors).toEqual([])
+})

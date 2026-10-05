@@ -124,6 +124,27 @@ pub fn more_horizontal() -> impl IntoView {
     }
 }
 
+/// Lucide `ellipsis-vertical` — compact Stack actions.
+pub fn more_vertical() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="5" r="1"></circle>
+            <circle cx="12" cy="12" r="1"></circle>
+            <circle cx="12" cy="19" r="1"></circle>
+        </svg>
+    }
+}
+
+pub fn arrow_left() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m12 19-7-7 7-7M5 12h14"></path>
+        </svg>
+    }
+}
+
 /// Lucide `x` — close a viewer or sheet.
 pub fn x() -> impl IntoView {
     view! {

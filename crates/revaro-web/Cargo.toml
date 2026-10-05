@@ -38,6 +38,7 @@ wasm-bindgen-futures.workspace = true
 # itself, so a dependency bump cannot silently take them away.
 web-sys = { workspace = true, features = [
     "Headers",
+    "AddEventListenerOptions",
     "IntersectionObserver",
     "ResizeObserver",
     "IntersectionObserverEntry",
@@ -78,6 +79,9 @@ web-sys = { workspace = true, features = [
     "Node",
     "NodeList",
     "PointerEvent",
+    "Touch",
+    "TouchEvent",
+    "TouchList",
     "ProgressEvent",
     "Range",
     "Response",
@@ -91,6 +95,7 @@ web-sys = { workspace = true, features = [
     "SubmitEvent",
     "Storage",
     "Window",
+    "VisualViewport",
     "TimeRanges",
     "File",
     "FileList",

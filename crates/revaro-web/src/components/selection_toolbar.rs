@@ -217,6 +217,14 @@ pub fn BatchActionBar(selection: SelectionMode, actions: SelectionActions) -> im
                     view! {
                         <div class="selection-management">
                             <button type="button" disabled=move || management.busy.get() on:click=move |_|management.on_favorite.run(true)>{icons::heart()}<span>"收藏"</span></button>
+                            {move || selection.stacks.get().map(|stacks| view! {
+                                <Show when=move ||selected_items().iter().any(classify::is_book) fallback=|| ()>
+                                    <button type="button" disabled=move ||stacks.busy.get() on:click=move |_|stacks.on_stack.run(())>{icons::plus()}<span>"堆叠"</span></button>
+                                    <Show when=move ||stacks.can_remove.get() fallback=|| ()>
+                                        <button type="button" disabled=move ||stacks.busy.get() on:click=move |_|stacks.on_remove.run(())>"移出堆叠"</button>
+                                    </Show>
+                                </Show>
+                            })}
                             <ActionMenu label="更多管理操作".to_owned() icon=MenuIcon::More text=Signal::derive(|| "更多".to_owned()) context=context disabled=management.busy panel_class="selection-management-panel".to_owned()>
                                 <button type="button" data-close-menu="true" disabled=move ||management.busy.get() on:click=move |_|management.on_favorite.run(false)>{icons::heart()}"取消收藏"</button>
                                 {[LibraryPage::Books, LibraryPage::Music, LibraryPage::Gallery, LibraryPage::Videos].into_iter().map(|page| view! {

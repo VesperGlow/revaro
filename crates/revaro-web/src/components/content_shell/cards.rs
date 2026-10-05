@@ -81,6 +81,23 @@ pub(super) fn LibraryCover(item: LibraryItem) -> impl IntoView {
     }
 }
 
+/// Render up to three real covers in the explicit member order.
+#[component]
+pub(super) fn StackCover(item: LibraryItem) -> impl IntoView {
+    if let Some(stack) = &item.stack {
+        let layers = stack.files.iter().take(3).enumerate().map(|(index, file)| {
+            let mut cover = item.clone();
+            cover.file = file.clone();
+            cover.stack = None;
+            if index>0 { cover.reading_progress=None; }
+            view! { <div class="stack-cover-layer" style:z-index=(3-index).to_string()><LibraryCover item=cover /></div> }
+        }).collect_view();
+        view! { <div class="stack-covers">{layers}</div> }.into_any()
+    } else {
+        view! { <LibraryCover item=item /> }.into_any()
+    }
+}
+
 /// Names and metadata stay within the cover instead of adding a second card boundary.
 #[component]
 pub(in crate::components) fn CardInfo(name: String, detail: Signal<String>) -> impl IntoView {

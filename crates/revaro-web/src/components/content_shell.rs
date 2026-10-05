@@ -1,12 +1,17 @@
 //! Personal content library, with file tools kept mounted during navigation.
+mod book_picker;
 mod cards;
 mod collections;
 mod home;
 mod loading;
+mod stack_management;
+mod stacks;
 
 use cards::LibraryCover;
 pub(super) use cards::{BookProgressBar, CardInfo};
 use home::*;
+use stack_management::{StackGesture, StackManagementBar};
+use stacks::{StackDialogs, StackOperation};
 
 use leptos::prelude::*;
 use revaro_core::{
@@ -57,8 +62,8 @@ struct CollectionTarget {
     files: Vec<File>,
 }
 
-fn series_name(path: &str) -> String {
-    crate::logic::routing::series_id(path)
+fn stack_id(path: &str) -> String {
+    crate::logic::routing::stack_id(path)
         .and_then(|name| js_sys::decode_uri_component(&name).ok())
         .and_then(|name| name.as_string())
         .unwrap_or_default()
@@ -98,7 +103,7 @@ pub fn ContentShell(
     let query = RwSignal::new(String::new());
     let favorites = RwSignal::new(false);
     let selected_collection = RwSignal::new(String::new());
-    let selected_series = RwSignal::new(series_name(&pathname()));
+    let selected_stack = RwSignal::new(stack_id(&pathname()));
     let collections = RwSignal::new(Vec::<Collection>::new());
     let items = RwSignal::new(Vec::<LibraryItem>::new());
     let total = RwSignal::new(0_i64);
@@ -119,11 +124,21 @@ pub fn ContentShell(
     let collection_target = RwSignal::new(None::<CollectionTarget>);
     let selection = SelectionMode::new();
     install_long_press(selection);
+    let stack_controller = stacks::StackController::install(
+        page,
+        selected_stack,
+        items,
+        selection,
+        refresh,
+        on_logout,
+    );
+    let stack_gesture = StackGesture::install(stack_controller, selection);
     let selection_overlay = Signal::derive(move || {
         reader.get().is_some()
             || image.get().is_some()
             || new_collection.get()
             || collection_target.get().is_some()
+            || stack_controller.dialog.get().is_some()
     });
     let selection_scope = Memo::new(move |_| {
         (
@@ -131,7 +146,7 @@ pub fn ContentShell(
             query.get(),
             favorites.get(),
             selected_collection.get(),
-            selected_series.get(),
+            selected_stack.get(),
         )
     });
     Effect::new(move |_| {
@@ -154,7 +169,7 @@ pub fn ContentShell(
         reader_revision.update(|revision| *revision += 1);
         reader.set(None);
         image.set(None);
-        selected_series.set(String::new());
+        selected_stack.set(String::new());
         if page.get_untracked() != next {
             query.set(String::new());
             query_text.set(String::new());
@@ -189,7 +204,7 @@ pub fn ContentShell(
         query,
         favorites,
         selected_collection,
-        selected_series,
+        selected_stack,
         items,
         total,
         generation,
@@ -338,12 +353,8 @@ pub fn ContentShell(
             selected_collection.set(String::new());
         }
         page.set(next);
-        selected_series.set(series_name(&path));
-        query_text.set(if selected_series.get_untracked().is_empty() {
-            query.get_untracked()
-        } else {
-            String::new()
-        });
+        selected_stack.set(stack_id(&path));
+        query_text.set(query.get_untracked());
         restore_reader.run((path, true));
         refresh.update(|r| *r += 1);
     });
@@ -356,7 +367,6 @@ pub fn ContentShell(
     } = collections::CollectionController::install(collections::CollectionContext {
         page,
         selected_collection,
-        selected_series,
         collection_target,
         collection_name,
         collection_busy,
@@ -413,26 +423,22 @@ pub fn ContentShell(
             }
         }),
         on_submit: Callback::new(move |()| {
-            if !selected_series.get_untracked().is_empty() {
-                selected_series.set(String::new());
-                route("/library", true);
-            }
             query.set(query_text.get_untracked());
         }),
     };
-    let open_series = Callback::new(move |name: String| {
-        selected_series.set(name.clone());
-        query_text.set(String::new());
+    let open_stack = Callback::new(move |id: String| {
+        selected_stack.set(id.clone());
         route(
-            &format!("/library/series/{}", js_sys::encode_uri_component(&name)),
+            &format!("/library/stacks/{}", js_sys::encode_uri_component(&id)),
             true,
         );
         if let Some(window) = web_sys::window() {
             window.scroll_to_with_x_and_y(0.0, 0.0);
         }
     });
-    let close_series = Callback::new(move |()| {
-        selected_series.set(String::new());
+    let close_stack = Callback::new(move |()| {
+        selection.exit();
+        selected_stack.set(String::new());
         query_text.set(query.get_untracked());
         route("/library", true);
     });
@@ -465,14 +471,25 @@ pub fn ContentShell(
             })}
             <Show when=move ||!page.get().is_file_workspace() fallback=|| ()>
                 <main class="library-main" on:click=move |event| selection.exit_from_blank(event)>
-                    {move || selection.actions.get().map(|actions| view! { <BatchActionBar selection=selection actions=actions /> })}
+                    <Show when=move ||selected_stack.get().is_empty() fallback=|| ()>
+                        {move || selection.actions.get().map(|actions| view! { <BatchActionBar selection=selection actions=actions /> })}
+                    </Show>
                     <Show when=move ||page.get()==LibraryPage::Home fallback=move ||view! {
 
-                        <Show when=move ||selected_series.get().is_empty() fallback=move ||view! {
-                            <header class="series-header">
-                                <button class="secondary" on:click=move |_|close_series.run(())>"← 返回书架"</button>
-                                <div><h1>{move ||selected_series.get()}</h1><small>{move ||format!("{} 本书",total.get())}</small></div>
+                        <Show when=move ||selected_stack.get().is_empty() fallback=move ||view! {
+                            <header class="stack-header">
+                                <button type="button" class="stack-icon-button" aria-label="返回书架" title="返回书架" on:click=move |_|close_stack.run(())>{icons::arrow_left()}</button>
+                                <div class="stack-header-title"><h1>{move ||stack_controller.all.get().into_iter().find(|s|s.id==selected_stack.get()).map(|s|s.name).unwrap_or_else(||"堆叠".to_owned())}</h1><small>{move ||format!("{} 本书",total.get())}</small></div>
+                                <div class="stack-header-actions">
+                                    <button type="button" class="stack-icon-button" aria-label="添加书籍" title="添加书籍" disabled=move ||stack_controller.busy.get() on:click=move |_|stack_controller.add_books.run(())>{icons::plus()}</button>
+                                    <ActionMenu label="堆叠更多操作".to_owned() icon=MenuIcon::MoreVertical disabled=Signal::derive(move ||stack_controller.busy.get())>
+                                        <button type="button" data-close-menu="true" on:click=move |_|stack_controller.rename()>"重命名"</button>
+                                        <button type="button" data-close-menu="true" on:click=move |_|{selection.clear();selection.enabled.set(true);stack_controller.order_notice.set(String::new());}>"管理书籍"</button>
+                                        <button type="button" class="danger" data-close-menu="true" on:click=move |_|stack_controller.run.run(StackOperation::Dissolve(selected_stack.get_untracked()))>"解除堆叠"</button>
+                                    </ActionMenu>
+                                </div>
                             </header>
+                            <StackManagementBar controller=stack_controller selection=selection />
                         }>
                         <div class="library-toolbar">
                             <div class="library-tabs">
@@ -502,6 +519,7 @@ pub fn ContentShell(
                                 </ActionMenu>
                             </div>
                             <div class="library-toolbar-actions">
+                                <Show when=move ||page.get()==LibraryPage::Books fallback=|| ()><button class="secondary stack-recommend" disabled=move ||stack_controller.busy.get() on:click=move |_|stack_controller.recommend.run(())>"推荐堆叠"</button></Show>
                                 <button class="secondary collection-create" type="button"
                                     title=move || format!("新建{}", page.get().collection_label())
                                     aria-label=move || format!("新建{}", page.get().collection_label())
@@ -515,37 +533,81 @@ pub fn ContentShell(
                             <Show when=move ||items.get().is_empty() && error.get().is_empty() fallback=|| ()><div class="library-empty"><span>"＋"</span><h2>"这里等着你的收藏"</h2><p>"已有文件会自动出现在对应内容库，也可以现在导入。"</p><button class="primary" on:click=move |_|import.run(())>"导入内容"</button></div></Show>
                             <div class="library-grid" class:selection-mode=move || selection.enabled.get() class:book-grid=move ||page.get()==LibraryPage::Books class:song-list=move ||page.get()==LibraryPage::Music class:photo-grid=move ||matches!(page.get(),LibraryPage::Gallery | LibraryPage::Videos) class:video-grid=move ||page.get()==LibraryPage::Videos>
                                 <For each=move || { items.get().into_iter().enumerate().collect::<Vec<_>>() }
-                                    key=|(_,i)|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.reading_progress.map(f64::to_bits),i.series_files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())
+                                    key=|(_,i)|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.reading_progress.map(f64::to_bits),i.stack.as_ref().map(|s|(s.id.clone(),s.name.clone(),s.files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())))
                                     children=move |(index,item)| {
                                         let file_id = item.file.id.clone();
                                         let group = item.selectable_files().into_iter().map(|f|f.id).collect::<Vec<_>>();
                                         let selected_group = group.clone();
                                         let background_group = group.clone();
-                                        let is_series = !item.series_files.is_empty();
-                                        let name = if is_series { item.series.clone().unwrap_or_default() } else { display_title(&item.file.name) };
-                                        let detail = if is_series { format!("{} 本书", item.series_files.len()) }
+                                        let is_stack = item.stack.is_some();
+                                        let name = if is_stack { item.stack.as_ref().unwrap().name.clone() } else { display_title(&item.file.name) };
+                                        let detail = if is_stack { format!("{} 本书", item.stack.as_ref().unwrap().files.len()) }
                                             else if item.kind == "book" {
                                                 let progress = item.reading_progress.map(|p|format!("已读 {p:.1}%")).unwrap_or_else(|| "未读".to_owned());
-                                                item.series_index.map(|n| format!("第 {n} 卷 · {progress}")).unwrap_or(progress)
+                                                progress
                                             } else if item.kind == "audio" { format!("{} · 本地音乐",revaro_core::classify::extension(&item.file.name).to_uppercase()) }
                                             else { format_date(&item.file.created_at.to_rfc3339()) };
-                                        let aria = if is_series { format!("打开系列 {name}，{} 本书",item.series_files.len()) } else { format!("打开 {}",item.file.name) };
+                                        let aria = if is_stack { format!("展开堆叠 {name}，{} 本书",item.stack.as_ref().unwrap().files.len()) } else { format!("打开 {}",item.file.name) };
                                         let open_item = item.clone();
                                         let open_group = group.clone();
+                                        let drag_item = item.clone();
+                                        let drop_item = item.clone();
+                                        let drag_file_id = item.file.id.clone();
+                                        let order_file_id = item.file.id.clone();
+                                        let gesture_file_id = item.file.id.clone();
+                                        let target_file_id = item.file.id.clone();
+                                        let stack_book_id = item.file.id.clone();
+                                        let drag_hover = RwSignal::new(false);
+                                        let draggable = item.kind=="book" && !is_stack;
                                         view! {
-                                            <article class="library-card" class:series-card=is_series data-selection-ids=serde_json::to_string(&group).unwrap_or_default()
+                                            <article class="library-card" class:stack-card=is_stack data-file-id=item.file.id.clone() data-stack-id=item.stack.as_ref().map(|s|s.id.clone()) data-selection-ids=serde_json::to_string(&group).unwrap_or_default()
+                                                data-stack-book-id=move ||(!selected_stack.get().is_empty() && draggable).then(||stack_book_id.clone())
+                                                draggable=move ||(draggable && selected_stack.get().is_empty() && !selection.enabled.get() && !stack_controller.busy.get()).to_string()
+                                                class:stack-drop-target=move ||drag_hover.get() && stack_controller.dragging.get().is_some()
+                                                class:stack-drag-source=move ||stack_gesture.dragging.get().as_ref()==Some(&gesture_file_id)
+                                                class:stack-order-target=move ||stack_gesture.target.get().as_ref()==Some(&target_file_id)
+                                                on:dragstart=move |ev: web_sys::DragEvent| {
+                                                    if !draggable || !selected_stack.get_untracked().is_empty() || selection.enabled.get_untracked() { ev.prevent_default(); return; }
+                                                    if let Some(data) = ev.data_transfer() {
+                                                        let _ = data.set_data("application/x-revaro-book", &drag_file_id);
+                                                        data.set_effect_allowed("move");
+                                                        stack_controller.dragging.set(Some(drag_file_id.clone()));
+                                                    }
+                                                }
+                                                on:dragend=move |_|{stack_controller.dragging.set(None);drag_hover.set(false);}
+                                                on:dragover=move |ev: web_sys::DragEvent| {
+                                                    if drag_item.kind=="book" && stack_controller.dragging.get_untracked().is_some_and(|id|id!=drag_item.file.id) {
+                                                        ev.prevent_default();
+                                                        if let Some(data)=ev.data_transfer(){data.set_drop_effect("move");}
+                                                        drag_hover.set(true);
+                                                    }
+                                                }
+                                                on:dragleave=move |_|drag_hover.set(false)
+                                                on:drop=move |ev: web_sys::DragEvent| {ev.prevent_default();drag_hover.set(false);stack_controller.drop_on.run(drop_item.clone());}
                                                 on:click=move |event|selection.toggle_group_from_card_background(event,&background_group)
                                                 class:selected=move ||selection.ids.with(|ids|selected_group.iter().all(|id|ids.contains(id)))
                                                 class:is-playing=move ||music.current().is_some_and(|f|f.id==file_id)>
                                                 <SelectionCheckbox id=item.file.id.clone() name=name.clone() group=group.clone() selection=selection />
                                                 <Show when=move ||page.get()==LibraryPage::Music fallback=|| ()><span class="song-number-slot"><span class="song-number">{format!("{:02}",index+1)}</span></span></Show>
-                                                <button class="library-card-open" aria-label=aria on:click=move |_| {
+                                                <button class="library-card-open" aria-label=aria aria-describedby=move ||(selection.enabled.get() && !selected_stack.get().is_empty()).then_some("stack-order-hint")
+                                                    on:keydown=move |event: web_sys::KeyboardEvent| {
+                                                        if !event.alt_key() || !selection.enabled.get_untracked() || selected_stack.get_untracked().is_empty() { return; }
+                                                        let direction = match event.key().as_str() { "ArrowLeft" | "ArrowUp"=>-1, "ArrowRight" | "ArrowDown"=>1, _=>return };
+                                                        event.prevent_default();event.stop_propagation();
+                                                        let books=items.get_untracked();
+                                                        if let Some(index)=books.iter().position(|item|item.file.id==order_file_id)
+                                                            && let Some(next)=index.checked_add_signed(direction)
+                                                            && let Some(target)=books.get(next) {
+                                                            stack_controller.reorder.run((order_file_id.clone(),target.file.id.clone()));
+                                                        }
+                                                    }
+                                                    on:click=move |_| {
                                                     if selection.enabled.get_untracked() { selection.toggle_group(&open_group); }
-                                                    else if is_series { open_series.run(open_item.series.clone().unwrap_or_default()); }
+                                                    else if is_stack { open_stack.run(open_item.stack.as_ref().unwrap().id.clone()); }
                                                     else { open.run(open_item.file.clone()); }
                                                 }>
-                                                    <LibraryCover item=item.clone() />
-                                                    {is_series.then(||view! { <span class="series-count">{format!("{} 本",item.series_files.len())}</span> })}
+                                                    <cards::StackCover item=item.clone() />
+                                                    {item.stack.as_ref().map(|s|view! { <span class="stack-count">{format!("{} 本",s.files.len())}</span> })}
                                                     <CardInfo name=name detail=Signal::derive(move ||detail.clone()) />
                                                 </button>
                                             </article>
@@ -558,10 +620,12 @@ pub fn ContentShell(
                         <HomeDashboard refresh=refresh on_open=open on_navigate=navigate on_import=Callback::new(move |()|import.run(())) on_unauthorized=logout />
                     </Show>
                     <Show when=move ||!error.get().is_empty() fallback=|| ()><div class="library-error" role="alert">{move ||error.get()}<button on:click=move |_|{refresh.update(|r|*r+=1);}>"重试"</button></div></Show>
+                    <Show when=move ||!stack_controller.error.get().is_empty() && stack_controller.dialog.get().is_none() fallback=|| ()><div class="library-error" role="alert">{move ||stack_controller.error.get()}<button on:click=move |_|{stack_controller.error.set(String::new());refresh.update(|r|*r+=1);}>"重试"</button></div></Show>
                     <Show when=move ||!notice.get().is_empty() fallback=|| ()><div class="library-notice" role="status">{move ||notice.get()}<button aria-label="关闭提示" on:click=move |_|notice.set(String::new())>"×"</button></div></Show>
                 </main>
             </Show>
             <FileBrowser session=session on_logout=on_logout on_username_changed=on_username_changed on_password_changed=on_password_changed on_header_ready=Callback::new(move |actions|header_actions.set(Some(actions))) />
+            <StackDialogs controller=stack_controller />
             <PersistentMusicPlayer controller=music />
             <AppNavigation page=page on_navigate=navigate mobile=true />
             <Show when=move ||reader.get().is_some() fallback=|| ()>{move ||reader.get().map(|file|view!{<ReaderView file=file on_close=close_reader on_unauthorized=on_logout />})}</Show>

@@ -1,4 +1,4 @@
-//! Candidate rows shared by ordinary listings and series-group pagination.
+//! Candidate rows shared by ordinary listings and manual-stack pagination.
 
 use revaro_core::{ApiError, Timestamp, library::LibraryItem};
 use rusqlite::{Connection, Row, params};
@@ -10,6 +10,7 @@ pub(super) struct Candidate {
     pub item: LibraryItem,
     pub progress: Option<String>,
     pub bucket: String,
+    pub stack: Option<(String, String)>,
 }
 
 fn scan_candidate(row: &Row<'_>) -> rusqlite::Result<Candidate> {
@@ -27,10 +28,14 @@ fn scan_candidate(row: &Row<'_>) -> rusqlite::Result<Candidate> {
             reading_progress: None,
             series: row.get("series")?,
             series_index: row.get("series_index")?,
-            series_files: Vec::new(),
+            stack: None,
         },
         progress: row.get("progress")?,
         bucket: row.get("bucket")?,
+        stack: row
+            .get::<_, Option<String>>("stack_id")?
+            .map(|id| row.get("stack_name").map(|name| (id, name)))
+            .transpose()?,
     })
 }
 
@@ -40,8 +45,8 @@ pub(super) fn load_listing(
     limit: i64,
     grouped: bool,
 ) -> Result<(i64, Vec<Candidate>), ApiError> {
-    let (sort, aggregate, direction) = if options.series.is_some() {
-        ("COALESCE(order_series_index,1e308)", "MIN", "ASC")
+    let (sort, aggregate, direction) = if options.stack.is_some() {
+        ("stack_position", "MIN", "ASC")
     } else if options.collection.is_some() {
         ("collection_position", "MIN", "ASC")
     } else if options.recent {
@@ -66,7 +71,9 @@ pub(super) fn load_listing(
                     THEN l.series END AS series,
                 CASE WHEN l.metadata_etag=COALESCE(f.etag,'')
                     THEN l.series_index END AS series_index,
-                l.series_index AS order_series_index,
+                bs.id AS stack_id,
+                bs.name AS stack_name,
+                si.position AS stack_position,
                 p.value AS progress,
                 cm.position AS collection_position
             FROM (SELECT {FILE_COLUMNS} FROM files) f
@@ -77,21 +84,20 @@ pub(super) fn load_listing(
             LEFT JOIN media_metadata m ON m.file_id=f.id AND m.source_etag=f.etag
             LEFT JOIN library_collection_items cm
                 ON cm.file_id=f.id AND cm.collection_id=?4
+            LEFT JOIN book_stack_items si ON si.file_id=f.id AND l.kind='book'
+            LEFT JOIN book_stacks bs ON bs.id=si.stack_id
             WHERE f.status='ready' AND f.deleted_at IS NULL
                 AND (?1 IS NULL OR l.kind=?1)
-                AND (instr(lower(f.name),lower(?2))>0 OR (
-                    l.metadata_etag=COALESCE(f.etag,'')
-                    AND instr(lower(l.series),lower(?2))>0
-                ))
+                AND (instr(lower(f.name),lower(?2))>0 OR instr(lower(bs.name),lower(?2))>0)
                 AND (?3=0 OR s.favorite=1)
                 AND (?4 IS NULL OR cm.collection_id IS NOT NULL)
                 AND (?5=0 OR s.last_opened IS NOT NULL
                     OR p.key IS NOT NULL OR mp.file_id IS NOT NULL)
-                AND (?6 IS NULL OR l.series=?6)
+                AND (?6 IS NULL OR bs.id=?6)
         ), candidates AS (
             SELECT classified.*,
-                CASE WHEN ?7 AND series IS NOT NULL
-                    THEN 'series:'||series ELSE 'file:'||id END AS bucket,
+                CASE WHEN ?7 AND stack_id IS NOT NULL
+                    THEN 'stack:'||stack_id ELSE 'file:'||id END AS bucket,
                 {sort} AS sort_key
             FROM classified
         )"
@@ -102,7 +108,7 @@ pub(super) fn load_listing(
         options.favorite,
         options.collection,
         options.recent,
-        options.series,
+        options.stack,
         grouped
     ];
     let count = if grouped {
@@ -126,7 +132,7 @@ pub(super) fn load_listing(
             )
             SELECT candidates.* FROM candidates JOIN groups USING(bucket)
             ORDER BY groups.sort_key {direction},groups.bucket,
-                candidates.series_index ASC NULLS LAST,candidates.name,candidates.id"
+                candidates.stack_position ASC NULLS LAST,candidates.name,candidates.id"
         )
     } else {
         format!(
@@ -144,7 +150,7 @@ pub(super) fn load_listing(
                 options.favorite,
                 options.collection,
                 options.recent,
-                options.series,
+                options.stack,
                 grouped,
                 limit,
                 options.offset

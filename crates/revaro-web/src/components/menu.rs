@@ -11,6 +11,7 @@ use web_sys::{Element, KeyboardEvent};
 pub enum MenuIcon {
     /// An overflow action menu.
     More,
+    MoreVertical,
     /// Topbar actions, shown as a mobile sheet.
     Menu,
     /// Playback settings.
@@ -230,6 +231,7 @@ pub fn ActionMenu(
 fn menu_icon(icon: MenuIcon, usage: Option<Signal<Option<f64>>>) -> AnyView {
     match icon {
         MenuIcon::More => icons::more_horizontal().into_any(),
+        MenuIcon::MoreVertical => icons::more_vertical().into_any(),
         MenuIcon::Menu => icons::menu().into_any(),
         MenuIcon::Settings => icons::settings_2().into_any(),
         MenuIcon::Volume => icons::volume_2().into_any(),

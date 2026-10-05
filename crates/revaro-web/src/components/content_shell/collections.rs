@@ -5,7 +5,6 @@ use super::*;
 pub(super) struct CollectionContext {
     pub page: RwSignal<LibraryPage>,
     pub selected_collection: RwSignal<String>,
-    pub selected_series: RwSignal<String>,
     pub collection_target: RwSignal<Option<CollectionTarget>>,
     pub collection_name: RwSignal<String>,
     pub collection_busy: RwSignal<bool>,
@@ -28,7 +27,6 @@ impl CollectionController {
         let CollectionContext {
             page,
             selected_collection,
-            selected_series,
             collection_target,
             collection_name,
             collection_busy,
@@ -191,7 +189,6 @@ impl CollectionController {
                 !page.get().is_file_workspace()
                     && page.get() != LibraryPage::Home
                     && !selected_collection.get().is_empty()
-                    && selected_series.get().is_empty()
             }),
         }));
         let delete_collection = Callback::new(move |()| {

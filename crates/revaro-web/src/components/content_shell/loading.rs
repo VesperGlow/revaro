@@ -7,7 +7,7 @@ pub(super) struct ListingController {
     pub query: RwSignal<String>,
     pub favorites: RwSignal<bool>,
     pub selected_collection: RwSignal<String>,
-    pub selected_series: RwSignal<String>,
+    pub selected_stack: RwSignal<String>,
     pub items: RwSignal<Vec<LibraryItem>>,
     pub total: RwSignal<i64>,
     pub generation: RwSignal<u64>,
@@ -26,7 +26,7 @@ impl ListingController {
             query,
             favorites,
             selected_collection,
-            selected_series,
+            selected_stack,
             items,
             total,
             generation,
@@ -48,20 +48,12 @@ impl ListingController {
             }
             let request = LibraryQuery {
                 kind: current_page.kind().to_owned(),
-                query: if selected_series.get_untracked().is_empty() {
-                    query.get_untracked()
-                } else {
-                    String::new()
-                },
-                favorite: selected_series.get_untracked().is_empty() && favorites.get_untracked(),
-                collection: if selected_series.get_untracked().is_empty() {
-                    selected_collection.get_untracked()
-                } else {
-                    String::new()
-                },
-                series: selected_series.get_untracked(),
-                group_series: current_page == LibraryPage::Books
-                    && selected_series.get_untracked().is_empty(),
+                query: query.get_untracked(),
+                favorite: favorites.get_untracked(),
+                collection: selected_collection.get_untracked(),
+                stack: selected_stack.get_untracked(),
+                group_stacks: current_page == LibraryPage::Books
+                    && selected_stack.get_untracked().is_empty(),
                 offset: if more {
                     items.get_untracked().len() as i64
                 } else {
@@ -106,7 +98,7 @@ impl ListingController {
                 query.get(),
                 favorites.get(),
                 selected_collection.get(),
-                selected_series.get(),
+                selected_stack.get(),
                 refresh.get(),
             );
             more_loading.set(false);
