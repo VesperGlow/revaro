@@ -14,6 +14,7 @@ mod directory_picker;
 mod editor;
 mod file_browser;
 mod file_browser_header;
+mod file_card;
 mod login;
 mod management;
 mod media;

@@ -5,6 +5,7 @@ use wasm_bindgen::closure::Closure;
 
 use super::stacks::{StackController, StackOperation};
 use super::*;
+use crate::components::music_player::display_title;
 
 #[component]
 pub(super) fn StackBookPicker(controller: StackController, stack_id: String) -> impl IntoView {

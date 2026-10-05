@@ -479,58 +479,6 @@ button {
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 18px;
 }
-.file-card {
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 8px 26px #33415509;
-  transition: 0.18s;
-}
-.file-card:hover {
-  border-color: var(--accent-border);
-  box-shadow: 0 14px 35px #33415514;
-  transform: translateY(-2px);
-}
-.card-preview {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 160px;
-  padding: 0;
-  overflow: hidden;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(145deg, var(--surface-subtle), var(--surface-hover));
-}
-.card-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.card-info {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 14px 14px 10px;
-  min-width: 0;
-}
-.card-info strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card-info small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 @media (max-width: 1100px) {
   .account-button {
     padding: 4px;
@@ -546,16 +494,10 @@ button {
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 12px;
   }
-  .card-preview {
-    height: 130px;
-  }
 }
 @media (max-width: 520px) {
   .file-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .card-preview {
-    height: 112px;
   }
 }
 
@@ -569,12 +511,6 @@ button {
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-.file-card {
-  position: relative;
-}
-.card-info {
-  padding-bottom: 14px;
 }
 
 

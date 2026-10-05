@@ -29,6 +29,15 @@ pub(super) fn LibraryCover(item: LibraryItem) -> impl IntoView {
     let failed = RwSignal::new(false);
     let kind = item.kind.clone();
     let class = format!("library-cover {}-cover", kind);
+    if item.kind == "audio" || revaro_core::classify::is_editable(&item.file) {
+        return view! {
+            <div class=class>
+                <div class="cover-placeholder">{file_icon(&item.file)}</div>
+                <BookProgressBar percent=item.reading_progress />
+            </div>
+        }
+        .into_any();
+    }
     let is_video = item.kind == "video";
     let duration = RwSignal::new(
         item.duration_ms
@@ -71,14 +80,14 @@ pub(super) fn LibraryCover(item: LibraryItem) -> impl IntoView {
     view! {
         <div class=class>
             <Show when=move || !failed.get() fallback=move || view! {
-                <div class="cover-placeholder"><span>{match kind.as_str() { "book" => view! { <span>"READ"</span> }.into_any(), "audio" => view! { <span>"♫"</span> }.into_any(), "video" => icons::video().into_any(), _ => icons::image().into_any() }}</span><strong>{display_title(&item.file.name)}</strong></div>
+                <div class="cover-placeholder">{file_icon(&item.file)}</div>
             }>
                 <img loading="lazy" src={let url = thumbnail_url.clone(); move || format!("{}&retry={}", url, retry.get())} alt="" on:error=retry_thumbnail />
             </Show>
             <BookProgressBar percent=item.reading_progress />
             {is_video.then(|| view! { <span class="video-cover-play">{icons::play()}</span><span class="video-duration">{move || duration.get().unwrap_or_else(|| "—:—".to_owned())}</span> })}
         </div>
-    }
+    }.into_any()
 }
 
 /// Render up to three real covers in the explicit member order.
@@ -95,16 +104,5 @@ pub(super) fn StackCover(item: LibraryItem) -> impl IntoView {
         view! { <div class="stack-covers">{layers}</div> }.into_any()
     } else {
         view! { <LibraryCover item=item /> }.into_any()
-    }
-}
-
-/// Names and metadata stay within the cover instead of adding a second card boundary.
-#[component]
-pub(in crate::components) fn CardInfo(name: String, detail: Signal<String>) -> impl IntoView {
-    view! {
-        <div class="card-info">
-            <strong title=name.clone()>{name.clone()}</strong>
-            <small>{move || detail.get()}</small>
-        </div>
     }
 }

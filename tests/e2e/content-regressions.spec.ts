@@ -244,7 +244,7 @@ test.describe('touch content captions', () => {
       await navigate(page, destination)
       const caption = page.getByRole('button', { name: `打开 ${file.name}`, exact: true }).locator('.card-info')
       await expect(caption).toHaveCSS('opacity', '1')
-      await expect(caption.locator('strong')).toHaveCSS('white-space', 'normal')
+      await expect(caption.locator('strong')).toHaveCSS('white-space', destination === '音乐' ? 'nowrap' : 'normal')
     }
     await navigate(page, '首页')
     for (const file of [book, song, photo, video]) {
@@ -279,12 +279,12 @@ test('home music always queues its visible songs after refresh and a filtered li
     if (visit === 'reload') await page.reload()
     await expect(section).toHaveAttribute('aria-busy', 'false')
     const visibleNames = await section.locator('.card-info strong').allTextContents()
-    expect(visibleNames).toContain(first.name.replace(/\.[^.]+$/, ''))
-    expect(visibleNames).toContain(second.name.replace(/\.[^.]+$/, ''))
+    expect(visibleNames).toContain(first.name)
+    expect(visibleNames).toContain(second.name)
     await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
     await expect(page.locator('audio')).toHaveJSProperty('paused', false)
     await page.getByRole('button', { name: '播放队列', exact: true }).click()
-    await expect(page.locator('.music-queue > button strong')).toHaveText(visibleNames)
+    await expect(page.locator('.music-queue > button strong')).toHaveText(visibleNames.map(name => name.replace(/\.[^.]+$/, '')))
     await page.getByRole('button', { name: '关闭播放队列', exact: true }).click()
     await page.getByRole('button', { name: '停止音乐', exact: true }).click()
   }

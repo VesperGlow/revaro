@@ -30,16 +30,27 @@ test('music cover playback stays functional and management uses only the batch t
   await login(page)
   const prefix = `managed-song-${Date.now()}`
   await upload(page, prefix, ['wav'])
+  // Reload after persisted uploads so completion refreshes cannot replace the row mid-measurement.
+  await page.reload()
   await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '音乐', exact: true }).click()
   const row = page.locator('.library-card').filter({ has: page.getByRole('button', { name: `打开 ${prefix}-1.wav`, exact: true }) })
   await expect(page.locator('.library-card-actions')).toHaveCount(0)
+  const captionPlacement = () => row.locator('.card-info').evaluate(element => {
+    const caption = element.getBoundingClientRect()
+    const content = element.closest('.file-card-content')!.getBoundingClientRect()
+    return { x: caption.x - content.x, y: caption.y - content.y, width: caption.width, height: caption.height }
+  })
   for (const width of [1600, 1280, 851, 390, 320]) {
     await page.setViewportSize({ width, height: 900 })
+    await expect(row).toBeVisible()
+    await row.scrollIntoViewIfNeeded()
     await page.mouse.move(1, 80)
     await expect(row.locator('.card-info')).toHaveCSS('opacity', '1')
-    await expect(row.locator('.card-info small')).toHaveCSS('opacity', '0')
+    await expect(row.locator('.card-info small')).toHaveCSS('opacity', '1')
+    const captionBounds = await captionPlacement()
     await row.hover()
     await expect(row.locator('.card-info small')).toHaveCSS('opacity', '1')
+    expect(await captionPlacement()).toEqual(captionBounds)
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
   }
   await row.getByRole('button', { name: `打开 ${prefix}-1.wav`, exact: true }).click()
@@ -109,7 +120,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await page.mouse.move(1, 80)
       await expect(page.locator('.library-card-actions')).toHaveCount(0)
       if (name !== '音乐') {
-        await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', width <= 850 ? '1' : '0')
+        await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', '1')
         await targets.first().hover()
         await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', '1')
         const surface = (await targets.first().boundingBox())!, caption = (await targets.first().locator('.card-info').boundingBox())!
@@ -119,7 +130,8 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
         expect(caption.y + caption.height).toBeLessThanOrEqual(surface.y + surface.height + 1)
         if (name !== '文件') {
           const cover = (await targets.first().locator('.library-cover').boundingBox())!
-          expect(Math.abs(surface.height - cover.height)).toBeLessThanOrEqual(1)
+          const preview = (await targets.first().locator('.card-preview').boundingBox())!
+          expect(Math.abs(preview.height - cover.height)).toBeLessThanOrEqual(1)
         }
       }
       await enterSelectionMode(page)
@@ -255,7 +267,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
 })
 
 
-test('batch bars match file margins and background dismissal never intercepts cards or controls', async ({ page }) => {
+test('batch bars follow listing widths and background dismissal never intercepts cards or controls', async ({ page }) => {
   test.setTimeout(180_000)
   await login(page)
   const prefix = `batch-layout-${Date.now()}`
@@ -272,6 +284,14 @@ test('batch bars match file margins and background dismissal never intercepts ca
         await page.getByLabel('打开搜索', { exact: true }).click()
         await page.getByLabel('搜索文件名', { exact: true }).fill(prefix)
         await page.getByLabel('搜索文件名', { exact: true }).press('Enter')
+      }
+      if (name === '音乐') {
+        await page.getByLabel('打开搜索', { exact: true }).click()
+        const search = page.getByLabel('搜索歌曲', { exact: true })
+        await search.fill(prefix)
+        await search.press('Enter')
+        await expect(page.locator('.song-row')).toHaveCount(2)
+        await search.press('Escape')
       }
       const cards = page.locator(name === '首页' ? '.home-card' : name === '文件' ? '.file-card' : '.library-card')
       await expect.poll(() => cards.count()).toBeGreaterThanOrEqual(2)
@@ -294,8 +314,9 @@ test('batch bars match file margins and background dismissal never intercepts ca
         return { padding: bar.padding, gap: bar.gap, alignment: bar.alignItems, actionGap: actions.gap, actionAlignment: actions.alignItems, separator: summary.borderRight, summaryPadding: summary.paddingRight }
       })
       if (!reference) reference = { x: box.x, width: box.width, styles }
-      expect(Math.abs(box.x - reference.x)).toBeLessThanOrEqual(0.1)
-      expect(Math.abs(box.width - reference.width)).toBeLessThanOrEqual(0.1)
+      const listingBounds = name === '音乐' ? (await page.locator('.song-list').boundingBox())! : reference
+      expect(Math.abs(box.x - listingBounds.x)).toBeLessThanOrEqual(0.1)
+      expect(Math.abs(box.width - listingBounds.width)).toBeLessThanOrEqual(0.1)
       expect(styles).toEqual(reference.styles)
       const centers = await toolbar.locator('.selection-actions>button').evaluateAll(buttons => buttons.map(button => { const rect = button.getBoundingClientRect(); return rect.y + rect.height / 2 }))
       expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(0.1)

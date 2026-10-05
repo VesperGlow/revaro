@@ -45,12 +45,10 @@ body {
 }
 
 /* File names must never contribute an unbounded intrinsic width. */
-.card-info,
 .editor-title > div {
   min-width: 0;
   max-width: 100%;
 }
-.card-info strong,
 .editor-title strong {
   display: block;
   min-width: 0;
@@ -176,26 +174,6 @@ button:disabled {
   background: var(--surface-hover);
 }
 
-.file-card {
-  border-color: var(--line);
-  border-radius: var(--radius-sm);
-}
-.file-card:hover {
-  border-color: var(--line-strong);
-}
-.card-preview {
-  background: var(--surface);
-}
-.preview-tile .card-preview {
-  background: var(--surface-subtle);
-}
-.card-info strong {
-  color: var(--ink);
-  font-weight: 600;
-}
-.card-info small {
-  color: var(--muted);
-}
 .modal-backdrop {
   background: #17212b66;
   backdrop-filter: none;
@@ -235,12 +213,6 @@ button:disabled {
   }
   .file-grid {
     gap: 7px;
-  }
-  .card-info {
-    min-height: 60px;
-  }
-  .card-preview {
-    padding-bottom: 60px;
   }
   .file-type-icon {
     width: 62px;
@@ -288,10 +260,6 @@ button:disabled {
   border-color: var(--accent-hover);
   background: var(--accent-hover);
   box-shadow: none;
-}
-.file-card:focus-visible {
-  border-color: var(--accent-border);
-  box-shadow: var(--focus-ring);
 }
 
 .progress i{

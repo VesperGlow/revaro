@@ -100,15 +100,9 @@ button img,
   .file-grid {
     gap: 10px;
   }
-  .card-preview {
-    height: 104px;
-  }
-  .card-info {
-    padding: 11px 11px 12px;
-  }
 }
 
-/* ===== Square Koofr-style tiles: plain files stay labelled, previews reveal labels on hover ===== */
+/* File grid sizing; card structure is shared in components/file-card.css. */
 .folder-meta {
   font-size: 13px !important;
 }
@@ -116,114 +110,6 @@ button img,
   grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr));
   gap: 10px;
   align-items: start;
-}
-.file-card {
-  position: relative;
-  display: block;
-  min-width: 0;
-  aspect-ratio: 1;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fff;
-  box-shadow: none;
-  outline: 0;
-  transition:
-    border-color 0.14s,
-    background-color 0.14s,
-    transform 0.14s;
-  touch-action: manipulation;
-}
-.file-card:hover {
-  border-color: var(--line-strong);
-  box-shadow: none;
-  transform: translateY(-1px);
-}
-.file-card:focus-visible {
-  border-color: var(--accent-border);
-  box-shadow: var(--focus-ring);
-}
-.card-preview {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  aspect-ratio: auto;
-  padding: 0 0 72px;
-  overflow: hidden;
-  border: 0;
-  background: #fff;
-  cursor: pointer;
-}
-.preview-tile .card-preview {
-  padding: 0;
-  background: var(--surface-subtle);
-}
-.card-preview.cannot-open {
-  cursor: default;
-}
-.card-preview img,
-.card-preview .video-thumb {
-  width: 100%;
-  height: 100%;
-}
-.card-preview img {
-  display: block;
-  object-fit: cover;
-}
-.card-info {
-  position: absolute;
-  z-index: 3;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 5px;
-  min-height: 72px;
-  min-width: 0;
-  padding: 11px 12px 13px;
-  background: transparent;
-  text-align: center;
-  pointer-events: none;
-}
-.card-info strong {
-  width: 100%;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 650;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card-info small {
-  width: 100%;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fallback-tile .card-preview {
-  background: var(--surface-subtle);
-}
-.folder-tile .card-preview {
-  background: var(--surface-subtle);
-}
-.document-tile .card-preview {
-  background: var(--surface-subtle);
-}
-.book-tile .card-preview {
-  background: var(--surface-subtle);
-}
-.audio-tile .card-preview {
-  background: var(--surface-subtle);
 }
 .file-type-icon {
   width: 92px;
@@ -327,23 +213,6 @@ button img,
   .file-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 9px;
-  }
-  .file-card {
-    border-radius: 5px;
-  }
-  .card-preview {
-    height: 100%;
-    aspect-ratio: auto;
-    padding-bottom: 62px;
-  }
-  .preview-tile .card-preview {
-    padding: 0;
-  }
-  .card-info {
-    padding: 11px 9px 12px;
-  }
-  .card-info strong {
-    font-size: 12px;
   }
   .file-type-icon {
     width: 70px;

@@ -145,6 +145,7 @@ fn HomeSection(
                         let open_file = file.clone();
                         let selected_id = file.id.clone();
                         let background_id = file.id.clone();
+                        let cover_item = item.clone();
                         view! {
                             <article class="home-card"
                                 data-selection-ids=serde_json::to_string(&vec![file.id.clone()]).unwrap_or_default()
@@ -153,11 +154,12 @@ fn HomeSection(
                                 <SelectionCheckbox id=file.id.clone() name=file.name.clone() selection=selection />
                                 <button class="home-item" aria-label=format!("打开 {}", file.name)
                                     on:click=move |_| open.run(open_file.clone())>
-                                    <LibraryCover item=item.clone() />
-                                    <CardInfo name=display_title(&item.file.name) detail=Signal::derive(move || {
+                                    <FileCard name=item.file.name.clone() detail=Signal::derive(move || {
                                         if item.last_opened.is_some() { "继续打开".to_owned() }
                                         else { "新加入你的内容库".to_owned() }
-                                    }) />
+                                    })>
+                                        <LibraryCover item=cover_item.clone() />
+                                    </FileCard>
                                 </button>
                             </article>
                         }

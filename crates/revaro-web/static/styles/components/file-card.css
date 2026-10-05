@@ -1,0 +1,128 @@
+/* One card surface and persistent caption across all screen sizes. */
+:is(.file-card,.library-card,.home-card) {
+  --file-card-caption-height: 68px;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+:is(.file-card,.library-card,.home-card):hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 2px 8px #17212b0a;
+}
+.file-card {
+  outline: 0;
+  touch-action: manipulation;
+}
+.file-card:focus-visible {
+  border-color: var(--accent-border);
+  box-shadow: var(--focus-ring);
+}
+.library-card-open,.home-card .home-item {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border-radius: inherit;
+}
+.file-card-content {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 128px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.card-preview {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template: minmax(0,1fr) / minmax(0,1fr);
+  place-items: center;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: var(--surface-subtle);
+  cursor: pointer;
+}
+.card-preview.cannot-open { cursor: default; }
+.card-preview img,.card-preview .video-thumb {
+  width: 100%;
+  height: 100%;
+}
+.card-preview img {
+  display: block;
+  object-fit: cover;
+}
+.card-preview .file-type-icon {
+  max-width: 70%;
+  max-height: 80%;
+}
+.card-preview .cover-placeholder {
+  min-height: 0;
+  grid-template: minmax(0,1fr) / minmax(0,1fr);
+}
+.card-info {
+  position: absolute;
+  z-index: 2;
+  inset: auto 0 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 0;
+  height: var(--file-card-caption-height);
+  margin: 0;
+  padding: 24px 10px 10px;
+  gap: 0;
+  background: linear-gradient(180deg,transparent,#141d26a8 22px,#141d26e0);
+  text-align: left;
+  pointer-events: none;
+}
+.card-info strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  width: 100%;
+  min-width: 0;
+  height: 2.8em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: normal;
+  margin: 0;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-shadow: 0 1px 2px #0006;
+}
+.card-info small { display: none; }
+
+/* Type icons use the content area above the same reserved filename space. */
+.file-card-content:has(.file-type-icon,.cover-placeholder,.thumb-fallback:not(.hidden)) .card-preview {
+  bottom: var(--file-card-caption-height);
+}
+.file-card-content:has(.file-type-icon,.cover-placeholder,.thumb-fallback:not(.hidden)) .card-info {
+  background: linear-gradient(180deg,transparent,var(--surface) 22px);
+}
+.file-card-content:has(.file-type-icon,.cover-placeholder,.thumb-fallback:not(.hidden)) .card-info strong {
+  color: var(--ink);
+  text-shadow: none;
+}
+.video-duration {
+  z-index: 3;
+  top: 8px;
+  bottom: auto;
+}
+.video-cover-play { bottom: var(--file-card-caption-height); }
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.file-card,.library-card,.home-card) { transition: none; }
+}

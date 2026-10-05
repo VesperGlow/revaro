@@ -44,10 +44,11 @@ use crate::logic::format::{format_date, format_size};
 use crate::logic::routing::{folder_id, folder_url, reader_id};
 
 use super::account::AccountSettings;
-use super::content_shell::{BookProgressBar, CardInfo, ShellContext};
+use super::content_shell::{BookProgressBar, ShellContext};
 use super::dialogs::{ActionDialog, DialogBackdrop, RenameDialog};
 use super::editor::{DocumentEditor, EditorMode};
 use super::file_browser_header::FileBrowserHeader;
+use super::file_card::{FileCard, file_icon};
 use super::media::MediaPreview;
 use super::reader::ReaderView;
 use super::selection::{SelectionCheckbox, SelectionMode};

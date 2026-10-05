@@ -4,11 +4,12 @@ mod cards;
 mod collections;
 mod home;
 mod loading;
+mod songs;
 mod stack_management;
 mod stacks;
 
+pub(super) use cards::BookProgressBar;
 use cards::LibraryCover;
-pub(super) use cards::{BookProgressBar, CardInfo};
 use home::*;
 use stack_management::{StackGesture, StackManagementBar};
 use stacks::{StackDialogs, StackOperation};
@@ -24,10 +25,11 @@ use wasm_bindgen::{JsCast, JsValue};
 use super::{
     FileBrowser,
     dialogs::DialogBackdrop,
+    file_card::{FileCard, file_icon},
     icons,
     media::MediaPreview,
     menu::{ActionMenu, MenuIcon},
-    music_player::{MusicController, PersistentMusicPlayer, display_title},
+    music_player::{MusicController, PersistentMusicPlayer},
     reader::ReaderView,
     selection::{SelectionCheckbox, SelectionManagement, SelectionMode, install_long_press},
     selection_toolbar::{BatchActionBar, matches_collection},
@@ -470,7 +472,7 @@ pub fn ContentShell(
                 }
             })}
             <Show when=move ||!page.get().is_file_workspace() fallback=|| ()>
-                <main class="library-main" on:click=move |event| selection.exit_from_blank(event)>
+                <main class="library-main" class:music-page=move || page.get()==LibraryPage::Music on:click=move |event| selection.exit_from_blank(event)>
                     <Show when=move ||selected_stack.get().is_empty() fallback=|| ()>
                         {move || selection.actions.get().map(|actions| view! { <BatchActionBar selection=selection actions=actions /> })}
                     </Show>
@@ -524,7 +526,7 @@ pub fn ContentShell(
                                     title=move || format!("新建{}", page.get().collection_label())
                                     aria-label=move || format!("新建{}", page.get().collection_label())
                                     on:click=move |_| { new_collection.set(true); error.set(String::new()); }>{icons::plus()}</button>
-                                <Show when=move || page.get() == LibraryPage::Music fallback=|| ()><button class="primary library-play" type="button" on:click=move |_| play_all.run(())>{icons::play()}"播放"</button></Show>
+                                <Show when=move || page.get() == LibraryPage::Music fallback=|| ()><button class="primary library-play" type="button" title="播放全部" aria-label="播放全部" on:click=move |_| play_all.run(())>{icons::play()}</button></Show>
                             </div>
                         </div>
                         <Show when=move ||!selected_collection.get().is_empty() fallback=|| ()><div class="collection-caption"><span>"集合中的内容仍保存在原文件夹，移除成员不会删除原文件。"</span><button on:click=move |_|delete_collection.run(())>"删除集合"</button></div></Show>
@@ -535,12 +537,31 @@ pub fn ContentShell(
                                 <For each=move || { items.get().into_iter().enumerate().collect::<Vec<_>>() }
                                     key=|(_,i)|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.reading_progress.map(f64::to_bits),i.stack.as_ref().map(|s|(s.id.clone(),s.name.clone(),s.files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())))
                                     children=move |(index,item)| {
+                                        if item.kind == "audio" {
+                                            return view! {
+                                                <songs::SongRow item=item index=index on_open=open busy=collection_busy.into()
+                                                    on_collect=Callback::new(move |file| collection_target.set(Some(CollectionTarget { page: LibraryPage::Music, files: vec![file] })))
+                                                    on_favorite=Callback::new(move |(file, favorite): (File, bool)| {
+                                                        if collection_busy.get_untracked() { return; }
+                                                        collection_busy.set(true);
+                                                        error.set(String::new());
+                                                        leptos::task::spawn_local(async move {
+                                                            match api::update_library_item(&file.id, &ItemUpdate { favorite: Some(favorite), opened: false }).await {
+                                                                Ok(()) => refresh.update(|value| *value += 1),
+                                                                Err(e) if e.is_unauthorized() => logout.run(()),
+                                                                Err(e) => error.set(e.message),
+                                                            }
+                                                            collection_busy.set(false);
+                                                        });
+                                                    }) />
+                                            }.into_any();
+                                        }
                                         let file_id = item.file.id.clone();
                                         let group = item.selectable_files().into_iter().map(|f|f.id).collect::<Vec<_>>();
                                         let selected_group = group.clone();
                                         let background_group = group.clone();
                                         let is_stack = item.stack.is_some();
-                                        let name = if is_stack { item.stack.as_ref().unwrap().name.clone() } else { display_title(&item.file.name) };
+                                        let name = if is_stack { item.stack.as_ref().unwrap().name.clone() } else { item.file.name.clone() };
                                         let detail = if is_stack { format!("{} 本书", item.stack.as_ref().unwrap().files.len()) }
                                             else if item.kind == "book" {
                                                 let progress = item.reading_progress.map(|p|format!("已读 {p:.1}%")).unwrap_or_else(|| "未读".to_owned());
@@ -549,6 +570,7 @@ pub fn ContentShell(
                                             else { format_date(&item.file.created_at.to_rfc3339()) };
                                         let aria = if is_stack { format!("展开堆叠 {name}，{} 本书",item.stack.as_ref().unwrap().files.len()) } else { format!("打开 {}",item.file.name) };
                                         let open_item = item.clone();
+                                        let cover_item = item.clone();
                                         let open_group = group.clone();
                                         let drag_item = item.clone();
                                         let drop_item = item.clone();
@@ -588,7 +610,6 @@ pub fn ContentShell(
                                                 class:selected=move ||selection.ids.with(|ids|selected_group.iter().all(|id|ids.contains(id)))
                                                 class:is-playing=move ||music.current().is_some_and(|f|f.id==file_id)>
                                                 <SelectionCheckbox id=item.file.id.clone() name=name.clone() group=group.clone() selection=selection />
-                                                <Show when=move ||page.get()==LibraryPage::Music fallback=|| ()><span class="song-number-slot"><span class="song-number">{format!("{:02}",index+1)}</span></span></Show>
                                                 <button class="library-card-open" aria-label=aria aria-describedby=move ||(selection.enabled.get() && !selected_stack.get().is_empty()).then_some("stack-order-hint")
                                                     on:keydown=move |event: web_sys::KeyboardEvent| {
                                                         if !event.alt_key() || !selection.enabled.get_untracked() || selected_stack.get_untracked().is_empty() { return; }
@@ -606,12 +627,13 @@ pub fn ContentShell(
                                                     else if is_stack { open_stack.run(open_item.stack.as_ref().unwrap().id.clone()); }
                                                     else { open.run(open_item.file.clone()); }
                                                 }>
-                                                    <cards::StackCover item=item.clone() />
-                                                    {item.stack.as_ref().map(|s|view! { <span class="stack-count">{format!("{} 本",s.files.len())}</span> })}
-                                                    <CardInfo name=name detail=Signal::derive(move ||detail.clone()) />
+                                                    <FileCard name=name detail=Signal::derive(move ||detail.clone())>
+                                                        <cards::StackCover item=cover_item.clone() />
+                                                        {cover_item.stack.as_ref().map(|s|view! { <span class="stack-count">{format!("{} 本",s.files.len())}</span> })}
+                                                    </FileCard>
                                                 </button>
                                             </article>
-                                        }
+                                        }.into_any()
                                     } />
                             </div>
                             <Show when=move || { (items.get().len() as i64)<total.get() } fallback=|| ()><div class="library-load-more"><button class="secondary" disabled=move ||more_loading.get() on:click=move |_|load.run(true)>{move ||if more_loading.get(){"正在加载…"}else{"加载更多"}}</button><small>{move ||format!("已显示 {} / {}",items.get().len(),total.get())}</small></div></Show>
