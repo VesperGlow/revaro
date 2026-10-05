@@ -152,7 +152,7 @@ test('gallery viewer prefetches beyond the first page and mobile layout stays wi
   await expect(page.getByRole('navigation', { name: '移动端导航' })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
   await page.getByRole('navigation', { name: '移动端导航' }).getByRole('link', { name: '首页', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '继续阅读', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '最近使用', exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
 })
 

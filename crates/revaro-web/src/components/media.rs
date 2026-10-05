@@ -60,6 +60,7 @@ pub fn MediaPreview(
     let drag = RwSignal::new(DragState::default());
     let click_timer = RwSignal::new(None::<i32>);
     let last_selected_id = StoredValue::new(String::new());
+    let shell = use_context::<super::content_shell::ShellContext>();
 
     let previous_focus = web_sys::window().and_then(|window| window.document()?.active_element());
     let previous_overflow = web_sys::window()
@@ -83,6 +84,26 @@ pub fn MediaPreview(
                 return;
             }
             last_selected_id.set_value(file.id.clone());
+            if file.deleted_at.is_none() {
+                let id = file.id.clone();
+                leptos::task::spawn_local(async move {
+                    let result = crate::api::update_library_item(
+                        &id,
+                        &revaro_core::library::ItemUpdate {
+                            favorite: None,
+                            opened: true,
+                        },
+                    )
+                    .await;
+                    if result.is_ok()
+                        && let Some(shell) = shell
+                        && shell.page.try_get_untracked()
+                            == Some(crate::logic::library::LibraryPage::Home)
+                    {
+                        shell.refresh.update(|r| *r += 1);
+                    }
+                });
+            }
             chrome_visible.set(true);
             loading.set(classify::is_image(&file));
             image_error.set(false);

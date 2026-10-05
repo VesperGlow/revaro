@@ -453,6 +453,7 @@ pub struct LibraryQuery {
     pub favorite: bool,
     pub collection: String,
     pub recent: bool,
+    pub opened_only: bool,
     pub group_stacks: bool,
     pub stack: String,
     pub offset: i64,
@@ -462,10 +463,11 @@ pub async fn fetch_library(
     query: &LibraryQuery,
 ) -> Result<revaro_core::library::LibraryListing, RequestError> {
     let mut path = format!(
-        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&group_stacks={}&q={}",
+        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&opened_only={}&group_stacks={}&q={}",
         query.offset,
         query.favorite,
         query.recent,
+        query.opened_only,
         query.group_stacks,
         js_sys::encode_uri_component(&query.query)
     );

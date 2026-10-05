@@ -255,10 +255,12 @@ pub fn ContentShell(
                 image_items.update(|v| v.push(file.clone()));
             }
             image.set(Some(file.clone()));
+            // The preview records each displayed image/video, including gallery navigation.
+            return;
         }
         let id = file.id;
         leptos::task::spawn_local(async move {
-            let _ = api::update_library_item(
+            let result = api::update_library_item(
                 &id,
                 &ItemUpdate {
                     favorite: None,
@@ -266,6 +268,9 @@ pub fn ContentShell(
                 },
             )
             .await;
+            if result.is_ok() && page.try_get_untracked() == Some(LibraryPage::Home) {
+                refresh.update(|r| *r += 1);
+            }
         });
     });
     provide_context(ShellContext {
@@ -330,7 +335,16 @@ pub fn ContentShell(
             }
             match result {
                 Ok(detail) if revaro_core::classify::is_book(&detail.file) => {
-                    reader.set(Some(detail.file))
+                    let id = detail.file.id.clone();
+                    reader.set(Some(detail.file));
+                    let _ = api::update_library_item(
+                        &id,
+                        &ItemUpdate {
+                            favorite: None,
+                            opened: true,
+                        },
+                    )
+                    .await;
                 }
                 Err(e) if e.is_unauthorized() => logout.run(()),
                 _ => {
@@ -639,7 +653,7 @@ pub fn ContentShell(
                             <Show when=move || { (items.get().len() as i64)<total.get() } fallback=|| ()><div class="library-load-more"><button class="secondary" disabled=move ||more_loading.get() on:click=move |_|load.run(true)>{move ||if more_loading.get(){"正在加载…"}else{"加载更多"}}</button><small>{move ||format!("已显示 {} / {}",items.get().len(),total.get())}</small></div></Show>
                         }><div class="library-loading"><div class="spinner"></div><p>"正在打开内容库…"</p></div></Show>
                     }>
-                        <HomeDashboard refresh=refresh on_open=open on_navigate=navigate on_import=Callback::new(move |()|import.run(())) on_unauthorized=logout />
+                        <HomeDashboard items=items refresh=refresh on_open=open on_navigate=navigate on_unauthorized=logout />
                     </Show>
                     <Show when=move ||!error.get().is_empty() fallback=|| ()><div class="library-error" role="alert">{move ||error.get()}<button on:click=move |_|{refresh.update(|r|*r+=1);}>"重试"</button></div></Show>
                     <Show when=move ||!stack_controller.error.get().is_empty() && stack_controller.dialog.get().is_none() fallback=|| ()><div class="library-error" role="alert">{move ||stack_controller.error.get()}<button on:click=move |_|{stack_controller.error.set(String::new());refresh.update(|r|*r+=1);}>"重试"</button></div></Show>
@@ -651,7 +665,7 @@ pub fn ContentShell(
             <PersistentMusicPlayer controller=music />
             <AppNavigation page=page on_navigate=navigate mobile=true />
             <Show when=move ||reader.get().is_some() fallback=|| ()>{move ||reader.get().map(|file|view!{<ReaderView file=file on_close=close_reader on_unauthorized=on_logout />})}</Show>
-            <Show when=move ||image.get().is_some() fallback=|| ()><MediaPreview selected=image items=image_items on_close=Callback::new(move |()|image.set(None)) on_download=Callback::new(|file:File|super::file_browser::download_file(&file)) on_move=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,false)));}) on_copy=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,true)));}) /></Show>
+            <Show when=move ||image.get().is_some() fallback=|| ()><MediaPreview selected=image items=image_items on_close=Callback::new(move |()|{image.set(None);refresh.update(|r|*r+=1);}) on_download=Callback::new(|file:File|super::file_browser::download_file(&file)) on_move=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,false)));}) on_copy=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,true)));}) /></Show>
             <Show when=move ||new_collection.get() ||collection_target.get().is_some() fallback=|| ()>
                 <DialogBackdrop on_close=Callback::new(move |()| {new_collection.set(false);collection_target.set(None);})><section class="modal library-collection-dialog" role="dialog" aria-modal="true" aria-label="管理集合">
                     <header><h2>{move ||format!("{}{}",if new_collection.get(){"新建"}else{"加入"},collection_page.get().collection_label())}</h2><button aria-label="关闭集合对话框" disabled=move ||collection_busy.get() on:click=move |_|{new_collection.set(false);collection_target.set(None);}>"×"</button></header>

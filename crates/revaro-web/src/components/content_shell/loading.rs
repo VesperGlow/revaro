@@ -42,8 +42,16 @@ impl ListingController {
             if matches!(
                 current_page,
                 LibraryPage::Home | LibraryPage::Files | LibraryPage::Trash
-            ) || (more && more_loading.get_untracked())
-            {
+            ) {
+                // Home owns the shared items signal while it is mounted.
+                // Invalidate requests from the library page we just left.
+                generation.update(|g| *g += 1);
+                loading.set(false);
+                more_loading.set(false);
+                error.set(String::new());
+                return;
+            }
+            if more && more_loading.get_untracked() {
                 return;
             }
             let request = LibraryQuery {

@@ -84,7 +84,7 @@ for (const device of [
         const audio = await upload(page, id, `${prefix}-${long}.wav`, 'audio/wav', wav())
         const photo = await upload(page, id, `${prefix}-${long}.png`, 'image/png', png)
         const video = await upload(page, id, `${prefix}-${long}.webm`, 'video/webm', readFileSync(new URL('./fixtures/preview.webm', import.meta.url)))
-        for (const file of [book, audio]) {
+        for (const file of [book, audio, photo, video]) {
           expect((await page.request.patch(`/api/library/items/${file.id}`, { headers, data: { opened: true } })).ok()).toBeTruthy()
         }
         expect((await page.request.post('/api/directories', { headers, data: { parent_id: id, name: '文件夹' } })).ok()).toBeTruthy()

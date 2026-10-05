@@ -153,19 +153,66 @@ test('late progress responses cannot seek another song or restart stopped music'
   } finally { gate.resolve() }
 })
 
-test('home shows newly added videos even when an older video was opened', async ({ page, contentRoot }) => {
-  const video = readFileSync(new URL('./fixtures/preview.webm', import.meta.url))
-  const old = await upload(page, contentRoot.id, `${contentRoot.prefix}-old.webm`, 'video/webm', video)
-  const opened = await page.request.patch(`/api/library/items/${old.id}`, {
-    headers: { origin: new URL(page.url()).origin }, data: { opened: true },
-  })
-  expect(opened.ok()).toBeTruthy()
-  const newest = await upload(page, contentRoot.id, `${contentRoot.prefix}-new.webm`, 'video/webm', video)
+test('home mixes only opened content in opening order and directly opens every kind', async ({ page, contentRoot }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  const book = await upload(page, contentRoot.id, `${contentRoot.prefix}.txt`, 'text/plain', bookText())
+  const song = await upload(page, contentRoot.id, `${contentRoot.prefix}.wav`, 'audio/wav', wav())
+  const photo = await upload(page, contentRoot.id, `${contentRoot.prefix}.png`, 'image/png', png)
+  const video = await upload(page, contentRoot.id, `${contentRoot.prefix}.webm`, 'video/webm', videoFixture())
+  const unopened = await upload(page, contentRoot.id, `${contentRoot.prefix}-new.png`, 'image/png', png)
+  const document = await upload(page, contentRoot.id, `${contentRoot.prefix}.md`, 'text/markdown', Buffer.from('notes'))
+  await markOpened(page, book.id)
+  await markOpened(page, song.id)
+  await markOpened(page, video.id)
+  await markOpened(page, document.id)
+  await markOpened(page, contentRoot.id)
+  // File-page previews must also enter home history.
+  await navigate(page, '文件')
+  await page.locator('.file-card').filter({ hasText: contentRoot.prefix }).click()
+  await page.locator('.file-card').filter({ hasText: photo.name }).click()
+  await expect(page.locator('.preview-modal img.preview-image')).toBeVisible()
+  await page.keyboard.press('Escape')
   await navigate(page, '首页')
-  const section = page.locator('.home-section').filter({ has: page.getByRole('heading', { name: '最近添加的视频', exact: true }) })
-  await expect(section.getByRole('button', { name: `打开 ${newest.name}`, exact: true })).toBeVisible()
-  await expect(section.getByRole('button', { name: `打开 ${old.name}`, exact: true })).toBeVisible()
-  await expect(section.locator('.home-item').first()).toHaveAttribute('aria-label', `打开 ${newest.name}`)
+  const section = homeSection(page, '最近使用')
+  await expect(section).toHaveAttribute('aria-busy', 'false')
+  await expect(page.locator('.home-section')).toHaveCount(1)
+  await expect(section.locator('.home-item').nth(0)).toHaveAttribute('aria-label', `打开 ${photo.name}`)
+  await expect(section.locator('.home-item').nth(1)).toHaveAttribute('aria-label', `打开 ${video.name}`)
+  await expect(section.locator('.home-item').nth(2)).toHaveAttribute('aria-label', `打开 ${song.name}`)
+  await expect(section.locator('.home-item').nth(3)).toHaveAttribute('aria-label', `打开 ${book.name}`)
+  for (const name of [unopened.name, document.name, contentRoot.prefix]) {
+    await expect(section.getByRole('button', { name: `打开 ${name}`, exact: true })).toHaveCount(0)
+  }
+  // A newer background save must not reorder the explicit opening history.
+  await savePosition(page, song.id, 5)
+  await page.reload()
+  await expect(section.locator('.home-item').first()).toHaveAttribute('aria-label', `打开 ${photo.name}`)
+  for (const width of [850, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    const columns = await section.locator('.home-content-row').evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length)
+    expect(columns).toBe(2)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+  }
+  await section.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
+  await expect(page.locator('audio')).toHaveJSProperty('paused', false)
+  await expect(section.locator('.home-item').first()).toHaveAttribute('aria-label', `打开 ${song.name}`)
+  await section.getByRole('button', { name: `打开 ${photo.name}`, exact: true }).click()
+  await expect(page.locator('.preview-modal img.preview-image')).toBeVisible()
+  await expect(page.locator('audio')).toHaveJSProperty('paused', false)
+  await page.keyboard.press('Escape')
+  await section.getByRole('button', { name: `打开 ${book.name}`, exact: true }).click()
+  await expect(page).toHaveURL(new RegExp(`/read/${book.id}$`))
+  await expect(page.locator('#reader-view')).toBeVisible()
+  await page.locator('#reader-back').click()
+  await expect(page).toHaveURL(new RegExp('/$'))
+  await section.getByRole('button', { name: `打开 ${video.name}`, exact: true }).click()
+  await expect(page.locator('video')).toHaveJSProperty('paused', false)
+  await expect(page.locator('audio')).toHaveJSProperty('paused', true)
+  await page.keyboard.press('Escape')
+  await page.reload()
+  await expect(section.locator('.home-item').first()).toHaveAttribute('aria-label', `打开 ${video.name}`)
+  expect(errors).toEqual([])
 })
 
 test('trash audio preview keeps saved and local resume positions, defaults and completion behavior', async ({ page, contentRoot }) => {
@@ -239,6 +286,8 @@ test.describe('touch content captions', () => {
     const video = await upload(page, contentRoot.id, `${contentRoot.prefix}-视频.webm`, 'video/webm', videoFixture())
     await markOpened(page, book.id)
     await markOpened(page, song.id)
+    await markOpened(page, photo.id)
+    await markOpened(page, video.id)
     expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true)
     for (const [destination, file] of [['书籍', book], ['音乐', song], ['图片', photo], ['视频', video]] as const) {
       await navigate(page, destination)
@@ -264,7 +313,7 @@ test('home music always queues its visible songs after refresh and a filtered li
   const second = await upload(page, contentRoot.id, `${contentRoot.prefix}-b.wav`, 'audio/wav', wav())
   await markOpened(page, first.id)
   await markOpened(page, second.id)
-  const section = homeSection(page, '最近播放与收藏')
+  const section = homeSection(page, '最近使用')
   for (const visit of ['fresh', 'filtered', 'reload']) {
     if (visit === 'filtered') {
       await navigate(page, '音乐')
@@ -278,7 +327,7 @@ test('home music always queues its visible songs after refresh and a filtered li
     await navigate(page, '首页')
     if (visit === 'reload') await page.reload()
     await expect(section).toHaveAttribute('aria-busy', 'false')
-    const visibleNames = await section.locator('.card-info strong').allTextContents()
+    const visibleNames = await section.locator('.home-card:has(.audio-cover) .card-info strong').allTextContents()
     expect(visibleNames).toContain(first.name)
     expect(visibleNames).toContain(second.name)
     await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
@@ -293,6 +342,7 @@ test('home music always queues its visible songs after refresh and a filtered li
 test('video playback pauses background music from home, video library and files', async ({ page, contentRoot }) => {
   const song = await upload(page, contentRoot.id, `${contentRoot.prefix}.wav`, 'audio/wav', wav())
   const video = await upload(page, contentRoot.id, `${contentRoot.prefix}.webm`, 'video/webm', videoFixture())
+  await markOpened(page, video.id)
   for (const destination of ['首页', '视频', '文件']) {
     await navigate(page, '音乐')
     await page.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
@@ -385,49 +435,101 @@ for (const entry of ['deep link', 'history forward']) {
   })
 }
 
-for (const [kind, title, retryLabel] of [['book', '继续阅读', '重试书籍'], ['video', '最近添加的视频', '重试视频']]) {
-  test(`home remains usable while ${kind} is slow or fails, and retries only that section`, async ({ page, contentRoot }) => {
-    const files = {
-      book: await upload(page, contentRoot.id, `${contentRoot.prefix}.txt`, 'text/plain', bookText()),
-      audio: await upload(page, contentRoot.id, `${contentRoot.prefix}.wav`, 'audio/wav', wav()),
-      image: await upload(page, contentRoot.id, `${contentRoot.prefix}.png`, 'image/png', png),
-      video: await upload(page, contentRoot.id, `${contentRoot.prefix}.webm`, 'video/webm', videoFixture()),
-    }
-    await markOpened(page, files.book.id)
-    await markOpened(page, files.audio.id)
-    const gate = deferred(), intercepted = deferred()
-    const requests = new Map<string, number>()
-    let fail = true
-    await page.route('**/api/library/items?*', async route => {
-      const requestedKind = new URL(route.request().url()).searchParams.get('kind') || ''
-      requests.set(requestedKind, (requests.get(requestedKind) || 0) + 1)
-      if (requestedKind === kind && fail) {
-        intercepted.resolve()
-        await gate.promise
-        await route.fulfill({ status: 500, json: { error: { status: 500, message: '模拟栏目加载失败' } } })
-      } else await route.continue()
-    })
-    try {
-      await navigate(page, '首页')
-      await intercepted.promise
-      const section = homeSection(page, title)
-      await expect(section.locator('.home-loading')).toBeVisible()
-      await expect(section.locator('.home-empty')).toHaveCount(0)
-      for (const [otherKind, file] of Object.entries(files)) {
-        if (otherKind !== kind) await expect(page.getByRole('button', { name: `打开 ${file.name}`, exact: true })).toBeVisible()
-      }
-      gate.resolve()
-      await expect(section.getByRole('alert')).toContainText('模拟栏目加载失败')
-      await expect(page.locator('.home-section')).toHaveCount(4)
-      const beforeRetry = new Map(requests)
-      fail = false
-      await section.getByRole('button', { name: retryLabel, exact: true }).click()
-      await expect(section.getByRole('button', { name: `打开 ${files[kind as 'book' | 'video'].name}`, exact: true })).toBeVisible()
-      await expect(section.getByRole('alert')).toHaveCount(0)
-      expect(requests.get(kind)).toBe(beforeRetry.get(kind)! + 1)
-      for (const otherKind of Object.keys(files)) {
-        if (otherKind !== kind) expect(requests.get(otherKind)).toBe(beforeRetry.get(otherKind))
-      }
-    } finally { gate.resolve() }
+test('home loads one mixed history, shows failures and retries without an unopened fallback', async ({ page, contentRoot }) => {
+  const book = await upload(page, contentRoot.id, `${contentRoot.prefix}.txt`, 'text/plain', bookText())
+  await markOpened(page, book.id)
+  const gate = deferred(), intercepted = deferred()
+  let requests = 0, fail = true
+  await page.route('**/api/library/items?*', async route => {
+    const query = new URL(route.request().url()).searchParams
+    if (query.get('opened_only') !== 'true') return route.continue()
+    requests++
+    expect(query.get('kind')).toBeNull()
+    expect(query.get('recent')).toBe('true')
+    if (fail) {
+      intercepted.resolve()
+      await gate.promise
+      await route.fulfill({ status: 500, json: { error: { status: 500, message: '模拟最近使用加载失败' } } })
+    } else await route.continue()
   })
-}
+  try {
+    await navigate(page, '首页')
+    await intercepted.promise
+    const section = homeSection(page, '最近使用')
+    await expect(section.locator('.home-loading')).toBeVisible()
+    await expect(section.locator('.home-empty')).toHaveCount(0)
+    gate.resolve()
+    await expect(section.getByRole('alert')).toContainText('模拟最近使用加载失败')
+    await expect(section.locator('.home-empty')).toHaveCount(0)
+    expect(requests).toBe(1)
+    fail = false
+    await section.getByRole('button', { name: '重试最近使用', exact: true }).click()
+    await expect(section.getByRole('button', { name: `打开 ${book.name}`, exact: true })).toBeVisible()
+    await expect(section.getByRole('alert')).toHaveCount(0)
+    expect(requests).toBe(2)
+  } finally { gate.resolve() }
+})
+
+test('empty home guides users to files and never falls back to unopened content', async ({ page, contentRoot }) => {
+  await upload(page, contentRoot.id, `${contentRoot.prefix}.png`, 'image/png', png)
+  const requests: string[] = []
+  await page.route('**/api/library/items?*', async route => {
+    const query = new URL(route.request().url()).searchParams
+    requests.push(query.get('opened_only') || '')
+    await route.fulfill({ json: { items: [], total: 0, offset: 0, limit: 60 } })
+  })
+  await navigate(page, '首页')
+  await expect(page.getByText('还没有最近使用的内容', { exact: true })).toBeVisible()
+  await expect(page.locator('.home-card')).toHaveCount(0)
+  expect(requests).toEqual(['true'])
+  await page.getByRole('button', { name: '前往文件', exact: true }).click()
+  await expect(page).toHaveURL(new RegExp('/files$'))
+  await expect(page.getByRole('navigation', { name: '当前路径', exact: true })).toBeVisible()
+})
+
+test('late library responses cannot replace home history with unopened content', async ({ page, contentRoot }) => {
+  const book = await upload(page, contentRoot.id, `${contentRoot.prefix}.txt`, 'text/plain', bookText())
+  const song = await upload(page, contentRoot.id, `${contentRoot.prefix}.wav`, 'audio/wav', wav())
+  await markOpened(page, book.id)
+  const gate = deferred(), intercepted = deferred(), fulfilled = deferred()
+  await page.route('**/api/library/items?*', async route => {
+    if (new URL(route.request().url()).searchParams.get('kind') !== 'audio') return route.continue()
+    const response = await route.fetch()
+    intercepted.resolve()
+    await gate.promise
+    await route.fulfill({ response })
+    fulfilled.resolve()
+  })
+  try {
+    await navigate(page, '音乐')
+    await intercepted.promise
+    await navigate(page, '首页')
+    const home = homeSection(page, '最近使用')
+    await expect(home.getByRole('button', { name: `打开 ${book.name}`, exact: true })).toBeVisible()
+    const names = await home.locator('.card-info strong').allTextContents()
+    expect(names).not.toContain(song.name)
+    gate.resolve()
+    await fulfilled.promise
+    await page.waitForTimeout(250)
+    await expect(home.locator('.card-info strong')).toHaveText(names)
+    await expect(home.getByRole('button', { name: `打开 ${song.name}`, exact: true })).toHaveCount(0)
+  } finally { gate.resolve() }
+})
+
+test('home can load older opened content beyond the first page', async ({ page, contentRoot }) => {
+  test.setTimeout(90_000)
+  let oldest: { id: string, name: string } | undefined
+  for (let index = 0; index < 61; index++) {
+    const file = await upload(page, contentRoot.id, `${contentRoot.prefix}-${index}.png`, 'image/png', png)
+    oldest ??= file
+    await markOpened(page, file.id)
+  }
+  await navigate(page, '首页')
+  const home = homeSection(page, '最近使用')
+  await expect(home.locator('.home-card')).toHaveCount(60)
+  await expect(home.getByRole('button', { name: `打开 ${oldest!.name}`, exact: true })).toHaveCount(0)
+  await home.getByRole('button', { name: '加载更多', exact: true }).click()
+  await expect(home.getByRole('button', { name: `打开 ${oldest!.name}`, exact: true })).toBeVisible()
+  const ids = await home.locator('.home-card').evaluateAll(cards => cards.map(card => card.getAttribute('data-selection-ids')))
+  expect(new Set(ids).size).toBe(ids.length)
+})

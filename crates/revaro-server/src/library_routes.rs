@@ -36,6 +36,9 @@ struct Options {
     group_stacks: bool,
     #[serde(default)]
     recent: bool,
+    /// Home history uses explicit opens, independently of background progress saves.
+    #[serde(default)]
+    opened_only: bool,
     #[serde(default)]
     offset: i64,
     limit: Option<i64>,
@@ -478,6 +481,73 @@ mod tests {
             assert_eq!(items[2]["last_opened"], "2026-01-04T00:00:00.1Z");
             assert_eq!(items[3]["last_opened"], "2026-01-03T00:00:00Z");
         }
+    }
+
+    #[tokio::test]
+    async fn opened_history_mixes_kinds_and_ignores_unopened_files_and_progress_saves() {
+        let state = state().await;
+        for (id, name) in [
+            ("book", "book.txt"),
+            ("audio", "song.wav"),
+            ("image", "photo.png"),
+            ("video", "clip.webm"),
+            ("unopened", "new.png"),
+            ("favorite", "favorite.txt"),
+            ("progress-only", "progress.wav"),
+            ("document", "notes.md"),
+            ("trashed", "trashed.png"),
+        ] {
+            seed(&state, id, name).await;
+        }
+        state.db.call(|c| {
+            for (id, timestamp) in [
+                ("audio", "2026-01-01T00:00:00Z"),
+                ("image", "2026-01-02T00:00:00.1Z"),
+                ("video", "2026-01-02T00:00:00.100000001Z"),
+                ("book", "2026-01-03T00:00:00Z"),
+                ("document", "2026-01-04T00:00:00Z"),
+                ("trashed", "2026-01-05T00:00:00Z"),
+            ] {
+                c.execute("INSERT INTO library_state(file_id,last_opened) VALUES(?1,?2)", rusqlite::params![id,timestamp])?;
+            }
+            c.execute("INSERT INTO library_state(file_id,favorite) VALUES('favorite',1)", [])?;
+            for id in ["audio", "progress-only"] {
+                c.execute("INSERT INTO media_progress(file_id,position_ms,duration_ms,updated_at) VALUES(?1,1000,10000,'2026-01-09T00:00:00Z')", [id])?;
+            }
+            c.execute("UPDATE files SET deleted_at='2026-01-06T00:00:00Z' WHERE id='trashed'", [])?;
+            c.execute("INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES('folder',?1,'folder.png','directory',NULL,0,'ready','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", [revaro_core::ids::ROOT_ID])?;
+            c.execute("INSERT INTO library_state(file_id,last_opened) VALUES('folder','2026-01-10T00:00:00Z')", [])?;
+            Ok(())
+        }).await.unwrap();
+        let path = "/api/library/items?recent=true&opened_only=true";
+        let (status, listing) = request(&state, "GET", path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listing["total"], 4);
+        let ids = |listing: &serde_json::Value| {
+            listing["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["file"]["id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&listing), ["book", "video", "image", "audio"]);
+        assert_eq!(listing["items"][3]["last_opened"], "2026-01-01T00:00:00Z");
+        let (status, page) =
+            request(&state, "GET", &format!("{path}&limit=2&offset=2"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 4);
+        assert_eq!(ids(&page), ["image", "audio"]);
+        let (status, _) = request(
+            &state,
+            "PATCH",
+            "/api/library/items/audio",
+            Some(serde_json::json!({"opened":true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, listing) = request(&state, "GET", path, None).await;
+        assert_eq!(ids(&listing), ["audio", "book", "video", "image"]);
     }
 
     fn file_ids(items: &serde_json::Value) -> Vec<&str> {

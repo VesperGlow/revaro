@@ -98,6 +98,13 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
   await login(page)
   const prefix = `selection-${Date.now()}`
   await upload(page, prefix, ['txt', 'wav', 'png', 'webm'])
+  const uploaded = await (await page.request.get(`/api/library/items?q=${prefix}`)).json()
+  for (const item of uploaded.items) {
+    const response = await page.request.patch(`/api/library/items/${item.file.id}`, {
+      headers: { origin: new URL(page.url()).origin }, data: { opened: true },
+    })
+    expect(response.ok()).toBeTruthy()
+  }
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
   const enter = page.locator('.selection-toggle[aria-label="进入选择模式"]')
   const exit = page.locator('.selection-toggle[aria-label="退出选择模式"]')
@@ -272,6 +279,13 @@ test('batch bars follow listing widths and background dismissal never intercepts
   await login(page)
   const prefix = `batch-layout-${Date.now()}`
   await upload(page, prefix, ['txt', 'wav', 'png', 'webm'])
+  const uploaded = await (await page.request.get(`/api/library/items?q=${prefix}`)).json()
+  for (const item of uploaded.items) {
+    const response = await page.request.patch(`/api/library/items/${item.file.id}`, {
+      headers: { origin: new URL(page.url()).origin }, data: { opened: true },
+    })
+    expect(response.ok()).toBeTruthy()
+  }
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
   const enter = page.locator('.selection-toggle[aria-label="进入选择模式"]')
   const exit = page.locator('.selection-toggle[aria-label="退出选择模式"]')

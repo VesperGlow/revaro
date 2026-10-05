@@ -49,7 +49,7 @@ pub(super) fn load_listing(
         ("stack_position", "MIN", "ASC")
     } else if options.collection.is_some() {
         ("collection_position", "MIN", "ASC")
-    } else if options.recent {
+    } else if options.recent || options.opened_only {
         ("last_opened", "MAX", "DESC")
     } else {
         ("created_at", "MAX", "DESC")
@@ -60,11 +60,11 @@ pub(super) fn load_listing(
             SELECT f.*,
                 l.kind AS library_kind,
                 COALESCE(s.favorite,0) AS favorite,
-                NULLIF(MAX(
+                CASE WHEN ?8 THEN revaro_timestamp(s.last_opened) ELSE NULLIF(MAX(
                     COALESCE(revaro_timestamp(s.last_opened),''),
                     COALESCE(revaro_timestamp(p.updated_at),''),
                     COALESCE(revaro_timestamp(mp.updated_at),'')
-                ),'') AS last_opened,
+                ),'') END AS last_opened,
                 COALESCE(m.video_codec<>'',0) AS has_cover,
                 m.duration_ms AS duration_ms,
                 CASE WHEN l.kind='book' AND l.metadata_etag=COALESCE(f.etag,'')
@@ -86,7 +86,7 @@ pub(super) fn load_listing(
                 ON cm.file_id=f.id AND cm.collection_id=?4
             LEFT JOIN book_stack_items si ON si.file_id=f.id AND l.kind='book'
             LEFT JOIN book_stacks bs ON bs.id=si.stack_id
-            WHERE f.status='ready' AND f.deleted_at IS NULL
+            WHERE f.kind='file' AND f.status='ready' AND f.deleted_at IS NULL
                 AND (?1 IS NULL OR l.kind=?1)
                 AND (instr(lower(f.name),lower(?2))>0 OR instr(lower(bs.name),lower(?2))>0)
                 AND (?3=0 OR s.favorite=1)
@@ -94,6 +94,7 @@ pub(super) fn load_listing(
                 AND (?5=0 OR s.last_opened IS NOT NULL
                     OR p.key IS NOT NULL OR mp.file_id IS NOT NULL)
                 AND (?6 IS NULL OR bs.id=?6)
+                AND (?8=0 OR s.last_opened IS NOT NULL)
         ), candidates AS (
             SELECT classified.*,
                 CASE WHEN ?7 AND stack_id IS NOT NULL
@@ -109,7 +110,8 @@ pub(super) fn load_listing(
         options.collection,
         options.recent,
         options.stack,
-        grouped
+        grouped,
+        options.opened_only
     ];
     let count = if grouped {
         "COUNT(DISTINCT bucket)"
@@ -128,7 +130,7 @@ pub(super) fn load_listing(
             "{candidates}, groups AS (
                 SELECT bucket,{aggregate}(sort_key) AS sort_key
                 FROM candidates GROUP BY bucket
-                ORDER BY sort_key {direction},bucket LIMIT ?8 OFFSET ?9
+                ORDER BY sort_key {direction},bucket LIMIT ?9 OFFSET ?10
             )
             SELECT candidates.* FROM candidates JOIN groups USING(bucket)
             ORDER BY groups.sort_key {direction},groups.bucket,
@@ -138,7 +140,7 @@ pub(super) fn load_listing(
         format!(
             "{candidates} SELECT * FROM candidates
             ORDER BY sort_key {direction},CASE WHEN ?6 IS NOT NULL THEN name END,id
-            LIMIT ?8 OFFSET ?9"
+            LIMIT ?9 OFFSET ?10"
         )
     };
     let mut query = connection.prepare(&sql).map_err(db)?;
@@ -152,6 +154,7 @@ pub(super) fn load_listing(
                 options.recent,
                 options.stack,
                 grouped,
+                options.opened_only,
                 limit,
                 options.offset
             ],
