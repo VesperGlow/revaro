@@ -1,9 +1,9 @@
 //! Move and copy dialog for live files and directories.
 
-use leptos::ev::MouseEvent;
 use leptos::prelude::*;
 use revaro_core::model::File;
 
+use super::dialogs::DialogBackdrop;
 use super::directory_picker::DirectoryPicker;
 
 /// The operation a transfer dialog performs.
@@ -51,14 +51,9 @@ pub fn TransferDialog(
     let confirm = on_confirm.clone();
 
     view! {
-        <div
+        <DialogBackdrop
             class="modal-backdrop transfer-backdrop"
-            role="presentation"
-            on:click=move |event: MouseEvent| {
-                if event.target() == event.current_target() {
-                    cancel_backdrop.run(())
-                }
-            }
+            on_close=cancel_backdrop
         >
             <section class="modal move-copy-dialog" role="dialog" aria-modal="true" aria-labelledby="transfer-dialog-title">
                 <header>
@@ -88,6 +83,6 @@ pub fn TransferDialog(
                     </button>
                 </footer>
             </section>
-        </div>
+        </DialogBackdrop>
     }
 }

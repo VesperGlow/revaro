@@ -4,49 +4,60 @@
   font-size: 13px;
 }
 
-.account-modal form {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
+.modal-backdrop.accounting {
+  z-index: 40;
 }
-
-.modal-backdrop.accounting { z-index: 40; }
 
 .account-modal {
-  width: min(780px, 100%);
+  width: min(440px, 100%);
   max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
   overflow: auto;
+  padding: 20px;
+  border: 0;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-dialog);
 }
 
-.account-layout {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 18px;
+.account-modal > header {
+  align-items: center;
+  margin-bottom: 16px;
 }
 
-.avatar-settings {
+.account-modal h2 {
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.account-modal header > button {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.account-profile {
   display: flex;
   align-items: center;
-  flex-direction: column;
-  padding: 22px 14px;
-  border: 1px solid var(--line);
-  border-radius: 15px;
-  background: var(--surface-subtle);
-  text-align: center;
+  gap: 14px;
+  padding: 2px 0 18px;
 }
 
 .avatar-large {
   display: grid;
+  flex-shrink: 0;
   place-items: center;
   overflow: hidden;
-  width: 104px;
-  height: 104px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 36px;
-  font-weight: 800;
-  box-shadow: 0 0 0 6px #fff, 0 10px 26px #3341551a;
+  font-size: 22px;
+  font-weight: 700;
 }
 
 .avatar-large img {
@@ -55,196 +66,122 @@
   object-fit: cover;
 }
 
-.avatar-settings h3,
-.account-modal form h3 {
-  margin: 18px 0 7px;
-  color: var(--ink);
-  font-size: 15px;
-}
-
-.account-modal form h3 {
-  margin-top: 0;
-}
-
-.avatar-settings > p:not(.form-error) {
-  margin: 0 0 15px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.55;
-}
-
-.avatar-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-}
-
-.avatar-actions .secondary {
-  padding: 9px 12px;
-}
-
-.avatar-settings .form-error {
-  margin-top: 12px;
-  font-size: 11px;
-}
-
-.account-modal .form-error {
-  margin: 0;
-}
-
-.account-overview {
+.account-profile-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 12px;
-}
-
-.account-setting-row {
-  display: flex;
-  min-height: 98px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 18px 20px;
-  border: 1px solid var(--line);
-  border-radius: 15px;
-  background: #fff;
-}
-
-.account-setting-row.security-row {
-  background: var(--surface-subtle);
-}
-
-.account-session-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 64px;
-  gap: 18px;
-  padding: 12px 18px;
-  border: 1px dashed var(--line);
-  border-radius: 15px;
-  background: var(--surface-subtle);
-}
-
-.account-session-row > div {
-  display: flex;
-  min-width: 0;
   align-items: flex-start;
-  flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
-.account-session-row p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.account-session-row > button {
-  flex: 0 0 auto;
-  padding: 8px 13px;
-  border: 1px solid var(--danger-border);
-  border-radius: 9px;
-  background: #fff;
-  color: var(--danger);
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.account-session-row > button:hover {
-  background: var(--danger-soft);
-}
-
-.setting-copy {
-  min-width: 0;
-}
-
-.setting-label {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 750;
-}
-
-.setting-title,
-.username-line {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.username-line {
-  min-height: 32px;
-  margin-top: 4px;
-}
-
-.username-line strong {
+.account-profile-copy strong {
+  max-width: 100%;
   overflow: hidden;
-  max-width: 260px;
   color: var(--ink);
-  font-size: 18px;
+  font-size: 16px;
+  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.edit-username {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 6px;
+.account-text-button {
+  min-height: 32px;
+  padding: 0;
   border: 0;
-  border-radius: 7px;
   background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
 }
 
-.edit-username:hover {
-  background: var(--accent-soft);
-  color: var(--accent-hover);
+.account-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
 }
 
-.edit-username svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.account-setting-row + .account-setting-row {
+  border-top: 1px solid var(--line);
 }
 
-.account-modal .username-input {
-  width: min(260px, 100%);
-  padding: 7px 9px;
-  border-radius: 8px;
+.account-setting-row .setting-label {
+  flex: 1;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.username-line small {
-  flex: 0 0 auto;
+.account-setting-row .setting-status {
+  max-width: 55%;
+  overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.username-error {
-  margin-top: 5px !important;
+.account-setting-row .setting-status.enabled {
+  color: var(--success);
 }
 
-.password-entry {
-  flex: 0 0 auto;
+.account-setting-row > svg {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  color: var(--muted-soft);
+  stroke-width: 1.7;
 }
 
-.security-row .setting-copy p {
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
+.account-modal .account-footer {
+  justify-content: flex-start;
+  margin-top: 12px;
+  padding: 0;
 }
 
+.account-logout {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.account-modal button:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.account-modal button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (hover: hover) {
+  .account-setting-row:hover:not(:disabled) {
+    background: var(--accent-faint);
+  }
+
+  .account-text-button:hover:not(:disabled) {
+    color: var(--accent-hover);
+  }
+
+  .account-logout:hover {
+    color: var(--danger-hover);
+  }
+}
+
+/* Explanations and forms only appear while a setting is being changed. */
 .account-subdialog-backdrop {
   position: fixed;
   z-index: 42;
@@ -252,42 +189,95 @@
   display: grid;
   place-items: center;
   padding: 20px;
-  background: #0f172a70;
-  backdrop-filter: blur(5px);
+  background: #17212b66;
 }
 
 .account-subdialog {
+  width: min(400px, 100%);
   max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
   overflow: auto;
-  box-shadow: 0 30px 90px #0f172a55;
+  padding: 20px;
+  border: 0;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-dialog);
 }
 
-.password-dialog {
-  width: min(440px, 100%);
+.account-subdialog > header {
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.account-subdialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.account-subdialog label {
+  font-weight: 500;
+}
+
+.account-subdialog input {
+  border-color: var(--line-strong);
+}
+
+.account-subdialog input:focus {
+  border-color: var(--accent-border);
+  box-shadow: var(--focus-ring);
+}
+
+.account-subdialog footer {
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.account-subdialog form > footer {
+  margin-top: 0;
+}
+
+.account-subdialog .secondary,
+.account-subdialog .danger-button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.account-subdialog .danger-button,
+.account-subdialog .danger-text {
+  color: var(--danger);
+}
+
+.account-modal .form-error {
+  margin: 0;
 }
 
 .totp-dialog {
-  width: min(720px, 100%);
+  width: min(520px, 100%);
+}
+
+.subdialog-hint,
+.login-totp-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
 }
 
 .subdialog-hint {
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.login-totp-hint {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
+  margin: 6px 0 0;
 }
 
 .totp-instructions h4 {
-  margin: 0 0 6px;
+  margin: 0;
   color: var(--ink);
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .two-factor-idle > p,
@@ -300,26 +290,11 @@
   line-height: 1.6;
 }
 
-.security-badge {
-  flex: 0 0 auto;
-  padding: 6px 9px;
-  border-radius: 999px;
-  background: var(--surface-subtle);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
-}
-
-.security-badge.enabled {
-  background: var(--success-soft);
-  color: var(--success);
-}
-
 .two-factor-loading {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 76px;
+  min-height: 64px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -329,39 +304,26 @@
   height: 18px;
 }
 
-.two-factor-idle {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 260px auto;
-  align-items: end;
-  gap: 14px;
-}
-
-.two-factor-idle > p {
-  align-self: center;
+.two-factor-idle,
+.totp-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .two-factor-idle .primary {
-  white-space: nowrap;
+  align-self: flex-end;
 }
 
 .totp-enroll {
   display: grid;
-  grid-template-columns: 188px minmax(0, 1fr);
-  gap: 24px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 15px;
-  background: var(--surface-subtle);
+  grid-template-columns: 140px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
 }
 
 .totp-qr {
-  display: grid;
-  place-items: center;
-  align-self: start;
-  overflow: hidden;
-  padding: 9px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
+  padding: 6px;
   background: #fff;
 }
 
@@ -371,21 +333,12 @@
   aspect-ratio: 1;
 }
 
-.totp-instructions {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
 .manual-secret code {
   display: block;
   overflow-wrap: anywhere;
   margin-top: 6px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--accent-soft);
-  color: var(--accent-hover);
-  font: 700 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--accent);
+  font: 600 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
   letter-spacing: .06em;
 }
 
@@ -393,39 +346,19 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  margin: 14px 0;
+  margin: 16px 0;
 }
 
 .two-factor-actions,
 .recovery-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 10px;
-}
-
-.danger-button {
-  padding: 11px 17px;
-  border: 1px solid var(--danger-border);
-  border-radius: 10px;
-  background: #fff;
-  color: var(--danger);
-  font-weight: 700;
-}
-
-.danger-button:hover {
-  background: var(--danger-soft);
-}
-
-.danger-button:disabled {
-  opacity: .55;
+  gap: 8px;
 }
 
 .recovery-panel {
   margin-bottom: 18px;
-  padding: 16px;
-  border: 1px solid var(--warning-border);
-  border-radius: 14px;
-  background: var(--warning-soft);
 }
 
 .recovery-panel strong {
@@ -437,17 +370,16 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
-  margin: 14px 0;
+  margin: 12px 0;
 }
 
 .recovery-grid code {
-  padding: 8px 10px;
-  border: 1px solid var(--warning-border);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--warning);
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--ink);
   text-align: center;
-  font: 700 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+  font: 600 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
   letter-spacing: .07em;
 }
 
@@ -455,68 +387,9 @@
   margin-top: 14px !important;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 520px) {
   .account-modal {
-    max-height: calc(100vh - 28px);
-    overflow: auto;
-  }
-
-  .account-layout{
-    grid-template-columns: 1fr;
-  }
-
-  .account-setting-row {
-    min-height: 88px;
-    padding: 15px 14px;
-  }
-
-  .avatar-settings {
-    display: grid;
-    grid-template-columns: 70px minmax(0, 1fr);
-    column-gap: 16px;
-    text-align: left;
-  }
-
-  .avatar-large {
-    grid-row: 1 / 4;
-    width: 70px;
-    height: 70px;
-    font-size: 25px;
-  }
-
-  .avatar-settings h3 {
-    margin: 0 0 4px;
-  }
-
-  .avatar-settings > p:not(.form-error) {
-    margin-bottom: 8px;
-  }
-
-  .avatar-actions {
-    justify-content: flex-start;
-  }
-
-  .two-factor-actions,
-  .recovery-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .two-factor-idle,
-  .totp-enroll,
-  .two-factor-fields,
-  .recovery-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .totp-qr {
-    width: min(220px, 100%);
-    margin: 0 auto;
-  }
-
-  .two-factor-actions button,
-  .recovery-actions button {
-    width: 100%;
+    padding: 18px 16px;
   }
 
   .account-subdialog-backdrop {
@@ -525,35 +398,17 @@
 
   .account-subdialog {
     max-height: calc(100vh - 20px);
+    max-height: calc(100dvh - 20px);
+    padding: 18px 16px;
+  }
+
+  .totp-enroll,
+  .two-factor-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .totp-qr {
+    width: 160px;
+    margin: 0 auto;
   }
 }
-
-@media (max-width: 460px) {
-  .account-modal {
-    padding: 19px 16px;
-  }
-
-  .account-setting-row {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .account-setting-row > button {
-    width: 100%;
-  }
-
-  .account-session-row {
-    align-items: flex-start;
-    padding: 13px 14px;
-  }
-
-  .username-line strong {
-    max-width: calc(100vw - 120px);
-  }
-}
-
-/* Keep account sheets inside the visual viewport on mobile WebViews. */
-.account-modal,.account-subdialog{max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px)}
-@media (max-width:850px){.account-modal,.account-subdialog{max-height:calc(100vh - 28px);max-height:calc(100dvh - 28px)}}
-@media (max-width:460px){.account-modal,.account-subdialog{max-height:calc(100vh - 20px);max-height:calc(100dvh - 20px)}}

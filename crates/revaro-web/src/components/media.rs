@@ -21,6 +21,7 @@ use crate::logic::format::format_size;
 use crate::logic::image_geometry::{Point, Size, clamp_image_pan, fit_image, zoom_image_pan};
 
 use super::audio::AudioPlayer;
+use super::dialogs::DialogBackdrop;
 use super::icons;
 use super::menu::{ActionMenu, MenuIcon};
 use super::video::VideoPlayer;
@@ -524,25 +525,15 @@ pub fn MediaPreview(
     let copy_item = on_copy.clone();
 
     view! {
-        <div
-            class="modal-backdrop previewing"
-            class:image-previewing=move || selected.get().as_ref().is_some_and(classify::is_image)
-            role="presentation"
-            on:click=move |event: MouseEvent| {
-                if !selected.get_untracked().as_ref().is_some_and(classify::is_image) {
-                    return;
+        <DialogBackdrop
+            class=Signal::derive(move || {
+                if selected.get().as_ref().is_some_and(classify::is_image) {
+                    "modal-backdrop previewing image-previewing".to_owned()
+                } else {
+                    "modal-backdrop previewing".to_owned()
                 }
-                let Some(target) = event.target().and_then(|target| target.dyn_into::<Element>().ok()) else {
-                    return;
-                };
-                // Only the empty containers close the viewer; clicks bubbling
-                // from images, toolbars, menus and other controls stay inside.
-                if target.matches(".modal-backdrop.previewing, .image-preview, .preview-stage, .preview-image-footer").unwrap_or(false)
-                    && !(target.matches(".preview-stage").unwrap_or(false) && drag.get_untracked().moved)
-                {
-                    on_close.run(());
-                }
-            }
+            })
+            on_close=on_close
         >
             <section
                 node_ref=root
@@ -557,6 +548,19 @@ pub fn MediaPreview(
                 aria-label=move || selected.get().map(|file| file.name).unwrap_or_else(|| "媒体预览".to_owned())
                 tabindex="-1"
                 on:keydown=on_key
+                on:click=move |event: MouseEvent| {
+                    let Some(target) = event.target().and_then(|target| target.dyn_into::<Element>().ok()) else {
+                        return;
+                    };
+                    // The media view fills the viewport, so its empty surface
+                    // also serves as the backdrop. Controls and media stay open.
+                    if target.matches(".preview-modal, .preview-stage, .preview-image-footer, .chapter-audio-player, .audio-main").unwrap_or(false)
+                        && !(target.matches(".preview-stage").unwrap_or(false) && drag.get_untracked().moved)
+                    {
+                        event.stop_propagation();
+                        on_close.run(());
+                    }
+                }
             >
                 {move || {
                     selected.get().map(|file| {
@@ -737,7 +741,7 @@ pub fn MediaPreview(
                     }
                 }}
             </section>
-        </div>
+        </DialogBackdrop>
     }
 }
 

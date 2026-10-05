@@ -297,16 +297,6 @@ button:disabled {
 .progress i{
   background: var(--accent);
 }
-.account-modal > header {
-  align-items: center;
-  margin-bottom: 24px;
-}
-.account-modal > header h2 {
-  line-height: 1.25;
-}
-.account-modal > header > button {
-  align-self: center;
-}
 .modal-backdrop.accounting {
   background: #17212b78;
   backdrop-filter: none;

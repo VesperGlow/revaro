@@ -13,6 +13,7 @@
 }
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 body {
   margin: 0;
@@ -365,7 +366,7 @@ button {
 }
 .modal-backdrop {
   position: fixed;
-  z-index: 30;
+  z-index: 40;
   inset: 0;
   background: #0f172a66;
   backdrop-filter: blur(3px);

@@ -1,7 +1,9 @@
 //! Document recovery panel, scoped to an open editor session.
 use crate::api;
+use crate::browser;
 use leptos::prelude::*;
 use revaro_core::features::DocumentVersion;
+use wasm_bindgen::JsCast;
 #[component]
 pub fn VersionHistory(
     file_id: String,
@@ -11,6 +13,27 @@ pub fn VersionHistory(
     on_restored: Callback<()>,
     on_close: Callback<()>,
 ) -> impl IntoView {
+    let panel = NodeRef::<leptos::html::Section>::new();
+    let mut outside = browser::on_click(move |event| {
+        let Some(target) = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        if panel
+            .get_untracked()
+            .is_some_and(|panel| !panel.contains(Some(&target)))
+            && target
+                .closest("[aria-controls='version-history']")
+                .ok()
+                .flatten()
+                .is_none()
+        {
+            on_close.run(());
+        }
+    });
+    on_cleanup(move || outside.release());
     let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let alive_cleanup = alive.clone();
     on_cleanup(move || alive_cleanup.store(false, std::sync::atomic::Ordering::Relaxed));
@@ -31,7 +54,7 @@ pub fn VersionHistory(
         let _ = busy.try_set(false);
     });
     view! {
-        <section class="version-history" role="dialog" aria-label="版本历史">
+        <section node_ref=panel id="version-history" class="version-history" role="dialog" aria-label="版本历史">
             <header><strong>"版本历史（最近 20 次保存）"</strong><button type="button" aria-label="关闭版本历史" on:click=move |_|on_close.run(())>"关闭"</button></header>
             <p>"每次保存前保留原内容；恢复前也会保存当前版本。"</p>
             <Show when=move || !error.get().is_empty() fallback=|| ()><p class="form-error">{move ||error.get()}</p></Show>

@@ -5,7 +5,7 @@
 //! password and TOTP recovery-code workflows here; keeping them together also
 //! makes the session boundary explicit when a password is changed.
 
-use leptos::ev::{MouseEvent, SubmitEvent};
+use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use revaro_core::api::auth::{
     AvatarRequest, ChangePasswordRequest, ChangeUsernameRequest, PasswordCodeRequest,
@@ -16,13 +16,15 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Event, File as BrowserFile, FileReader, HtmlElement, HtmlInputElement};
 
-use super::dialogs::ActionDialog;
+use super::dialogs::{ActionDialog, DialogBackdrop};
 use super::icons;
 use crate::api;
 use crate::logic::feedback::Feedback;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccountPanel {
+    Avatar,
+    Username,
     Password,
     Totp,
 }
@@ -53,7 +55,6 @@ pub fn AccountSettings(
     on_close: Callback<()>,
 ) -> impl IntoView {
     let account_username = RwSignal::new(username.get_untracked());
-    let username_editing = RwSignal::new(false);
     let username_saving = RwSignal::new(false);
     let username_error = RwSignal::new(String::new());
     let username_input = NodeRef::<leptos::html::Input>::new();
@@ -103,6 +104,9 @@ pub fn AccountSettings(
         let totp_error = totp_error;
         Callback::new(move |(): ()| {
             panel.set(None);
+            account_username.set(username.get_untracked());
+            username_error.set(String::new());
+            avatar_error.set(String::new());
             password_current.set(String::new());
             password_new.set(String::new());
             password_confirm.set(String::new());
@@ -143,7 +147,6 @@ pub fn AccountSettings(
     let start_username_edit = {
         let account_username = account_username;
         let username = username;
-        let username_editing = username_editing;
         let username_input = username_input;
         let username_saving = username_saving;
         let username_error = username_error;
@@ -153,7 +156,7 @@ pub fn AccountSettings(
             }
             account_username.set(username.get_untracked());
             username_error.set(String::new());
-            username_editing.set(true);
+            panel.set(Some(AccountPanel::Username));
             if let Some(window) = web_sys::window() {
                 let callback = Closure::once_into_js(move || {
                     if let Some(input) = username_input.get() {
@@ -168,27 +171,17 @@ pub fn AccountSettings(
             }
         })
     };
-    let cancel_username_edit = {
-        let account_username = account_username;
-        let username = username;
-        let username_editing = username_editing;
-        let username_error = username_error;
-        Callback::new(move |(): ()| {
-            account_username.set(username.get_untracked());
-            username_error.set(String::new());
-            username_editing.set(false);
-        })
-    };
     let save_username = {
         let account_username = account_username;
         let username = username;
-        let username_editing = username_editing;
         let username_saving = username_saving;
         let username_error = username_error;
         let on_notify = on_notify.clone();
         let on_username_changed = on_username_changed.clone();
         Callback::new(move |(): ()| {
-            if !username_editing.get_untracked() || username_saving.get_untracked() {
+            if panel.get_untracked() != Some(AccountPanel::Username)
+                || username_saving.get_untracked()
+            {
                 return;
             }
             let value = account_username.get_untracked().trim().to_owned();
@@ -197,7 +190,7 @@ pub fn AccountSettings(
                 return;
             }
             if value == username.get_untracked() {
-                username_editing.set(false);
+                close_panel.run(());
                 username_error.set(String::new());
                 return;
             }
@@ -212,7 +205,9 @@ pub fn AccountSettings(
                     Ok(()) => {
                         account_username.set(value.clone());
                         username.set(value.clone());
-                        username_editing.set(false);
+                        if panel.get_untracked() == Some(AccountPanel::Username) {
+                            panel.set(None);
+                        }
                         on_username_changed.run(value);
                         on_notify.run(Feedback::success("用户名已保存"));
                     }
@@ -416,6 +411,7 @@ pub fn AccountSettings(
             totp_stage.set(TotpStage::Idle);
             recovery_codes.set(Vec::new());
             recovery_copied.set(false);
+            load_totp.run(());
         })
     };
     let begin_totp_setup = {
@@ -671,115 +667,95 @@ pub fn AccountSettings(
     };
 
     view! {
-        <div
+        <DialogBackdrop
             class="modal-backdrop accounting"
-            role="presentation"
-            on:click=move |event: MouseEvent| {
-                if event.target() == event.current_target() {
-                    close.run(());
-                }
-            }
+            on_close=close
         >
             <section node_ref=modal class="modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
                 <header>
                     <div><h2 id="account-settings-title">"账户设置"</h2></div>
                     <button type="button" aria-label="关闭" on:click=move |_| close.run(())>"×"</button>
                 </header>
-                <div class="account-layout">
-                    <section class="avatar-settings">
-                        <div class="avatar-large">
-                            <Show
-                                when=move || has_avatar.get()
-                                fallback=move || view! { <span>{move || username.get().chars().next().unwrap_or('R').to_uppercase().collect::<String>()}</span> }
-                            >
-                                <img class="ui-image" src=move || format!("/api/profile/avatar?v={}", avatar_version.get()) alt="个人头像" draggable="false" />
-                            </Show>
-                        </div>
-                        <h3>"个人头像"</h3>
-                        <p>"支持 JPG、PNG、GIF 和 WebP，最大 2 MiB。"</p>
-                        <div class="avatar-actions">
-                            <button class="secondary" type="button" prop:disabled=move || avatar_busy.get() on:click=move |_| choose_avatar.run(())>
-                                {move || if avatar_busy.get() { "处理中…" } else if has_avatar.get() { "更换头像" } else { "上传头像" }}
-                            </button>
-                            <Show when=move || has_avatar.get() fallback=|| ()>
-                                <button class="danger-text" type="button" prop:disabled=move || avatar_busy.get() on:click=move |_| remove_avatar.run(())>"移除"</button>
-                            </Show>
-                        </div>
-                        <input node_ref=avatar_input hidden type="file" accept="image/jpeg,image/png,image/gif,image/webp" on:change=avatar_changed />
-                        <Show when=move || !avatar_error.get().is_empty() fallback=|| ()>
-                            <p class="form-error">{move || avatar_error.get()}</p>
-                        </Show>
-                    </section>
-                    <div class="account-overview">
-                        <section class="account-setting-row identity-row">
-                            <div class="setting-copy">
-                                <span class="setting-label">"用户名"</span>
-                                <div class="username-line">
-                                    <Show
-                                        when=move || username_editing.get()
-                                        fallback=move || view! {
-                                            <strong>{move || account_username.get()}</strong>
-                                            <button class="edit-username" type="button" aria-label="编辑用户名" on:click=move |_| start_username_edit.run(())>
-                                                {icons::edit()}
-                                                <span>"编辑"</span>
-                                            </button>
-                                        }
-                                    >
-                                        <input
-                                            node_ref=username_input
-                                            class="username-input"
-                                            type="text"
-                                            autocomplete="username"
-                                            maxlength="128"
-                                            aria-label="用户名"
-                                            autofocus
-                                            prop:value=move || account_username.get()
-                                            prop:disabled=move || username_saving.get()
-                                            on:input=move |event| account_username.set(event_target_value(&event))
-                                            on:blur=move |_| save_username.run(())
-                                            on:keydown=move |event: web_sys::KeyboardEvent| {
-                                                if event.key() == "Enter" {
-                                                    event.prevent_default();
-                                                    save_username.run(());
-                                                } else if event.key() == "Escape" {
-                                                    event.prevent_default();
-                                                    cancel_username_edit.run(());
-                                                }
-                                            }
-                                        />
-                                        <Show when=move || username_saving.get() fallback=|| ()><small>"保存中…"</small></Show>
-                                    </Show>
-                                </div>
-                                <Show when=move || !username_error.get().is_empty() fallback=|| ()>
-                                    <p class="form-error username-error">{move || username_error.get()}</p>
-                                </Show>
-                            </div>
-                            <button class="secondary password-entry" type="button" on:click=move |_| open_password.run(())>"修改密码"</button>
-                        </section>
-
-                        <section class="account-setting-row security-row">
-                            <div class="setting-copy">
-                                <div class="setting-title"><span class="setting-label">"两步验证"</span><span class:enabled=move || totp_enabled.get() class="security-badge">{move || if totp_enabled.get() { "已启用" } else { "未启用" }}</span></div>
-                                <p>{move || if totp_enabled.get() { format!("身份验证器已启用，剩余 {} 枚恢复码。", recovery_remaining.get()) } else { "使用 TOTP 验证码保护管理员登录。".to_owned() }}</p>
-                            </div>
-                            <button class="secondary" type="button" prop:disabled=move || totp_loading.get() on:click=move |_| open_totp.run(())>
-                                {move || if totp_loading.get() { "读取中…" } else if totp_enabled.get() { "管理" } else { "设置" }}
-                            </button>
-                        </section>
-                        <section class="account-session-row">
-                            <div><span class="setting-label">"当前会话"</span><p>"退出这台设备上的 Revaro 账户"</p></div>
-                            <button type="button" on:click=move |_| logout.run(())>"退出登录"</button>
-                        </section>
-                        <Show when=move || !totp_error.get().is_empty() && panel.get().is_none() fallback=|| ()>
-                            <p class="form-error">{move || totp_error.get()}</p>
+                <div class="account-profile">
+                    <div class="avatar-large">
+                        <Show
+                            when=move || has_avatar.get()
+                            fallback=move || view! { <span>{move || username.get().chars().next().unwrap_or('R').to_uppercase().collect::<String>()}</span> }
+                        >
+                            <img class="ui-image" src=move || format!("/api/profile/avatar?v={}", avatar_version.get()) alt="个人头像" draggable="false" />
                         </Show>
                     </div>
+                    <div class="account-profile-copy">
+                        <strong title=move || username.get()>{move || username.get()}</strong>
+                        <button class="account-text-button" type="button" prop:disabled=move || avatar_busy.get() on:click=move |_| {
+                            avatar_error.set(String::new());
+                            panel.set(Some(AccountPanel::Avatar));
+                        }>"更换头像"</button>
+                    </div>
                 </div>
+                <input node_ref=avatar_input hidden type="file" accept="image/jpeg,image/png,image/gif,image/webp" on:change=avatar_changed />
+                <div class="account-settings-list" role="group" aria-label="账户与安全设置">
+                    <button class="account-setting-row identity-row" type="button" aria-label="修改用户名" prop:disabled=move || username_saving.get() on:click=move |_| start_username_edit.run(())>
+                        <span class="setting-label">"用户名"</span>
+                        <span class="setting-status" title=move || username.get()>{move || username.get()}</span>
+                        {icons::chevron_right()}
+                    </button>
+                    <button class="account-setting-row password-entry" type="button" on:click=move |_| open_password.run(())>
+                        <span class="setting-label">"修改密码"</span>
+                        <span class="setting-status">"已设置"</span>
+                        {icons::chevron_right()}
+                    </button>
+                    <button class="account-setting-row security-row" type="button" aria-label="两步验证" prop:disabled=move || totp_loading.get() on:click=move |_| open_totp.run(())>
+                        <span class="setting-label">"两步验证"</span>
+                        <span class="setting-status" class:enabled=move || totp_enabled.get()>{move || if totp_loading.get() { "读取中…" } else if !totp_error.get().is_empty() { "读取失败" } else if totp_enabled.get() { "已启用" } else { "未启用" }}</span>
+                        {icons::chevron_right()}
+                    </button>
+                </div>
+                <footer class="account-footer">
+                    <button class="account-logout" type="button" on:click=move |_| logout.run(())>"退出登录"</button>
+                </footer>
+
+                <Show when=move || panel.get() == Some(AccountPanel::Avatar) fallback=|| ()>
+                    <DialogBackdrop class="account-subdialog-backdrop" on_close=close_panel>
+                        <section class="modal account-subdialog avatar-dialog" role="dialog" aria-modal="true" aria-labelledby="avatar-dialog-title">
+                            <header><div><h2 id="avatar-dialog-title">"更换头像"</h2><p class="subdialog-hint">"支持 JPG、PNG、GIF 和 WebP，最大 2 MiB。"</p></div><button type="button" aria-label="关闭" on:click=move |_| close_panel.run(())>"×"</button></header>
+                            <Show when=move || !avatar_error.get().is_empty() fallback=|| ()><p class="form-error" role="alert">{move || avatar_error.get()}</p></Show>
+                            <footer>
+                                <Show when=move || has_avatar.get() fallback=|| ()><button class="account-text-button danger-text" type="button" prop:disabled=move || avatar_busy.get() on:click=move |_| remove_avatar.run(())>"移除头像"</button></Show>
+                                <button class="primary" type="button" prop:disabled=move || avatar_busy.get() on:click=move |_| choose_avatar.run(())>{move || if avatar_busy.get() { "处理中…" } else { "选择图片" }}</button>
+                            </footer>
+                        </section>
+                    </DialogBackdrop>
+                </Show>
+
+                <Show when=move || panel.get() == Some(AccountPanel::Username) fallback=|| ()>
+                    <DialogBackdrop class="account-subdialog-backdrop" on_close=close_panel>
+                        <section class="modal account-subdialog username-dialog" role="dialog" aria-modal="true" aria-labelledby="username-dialog-title">
+                            <header><div><h2 id="username-dialog-title">"修改用户名"</h2><p class="subdialog-hint">"用户名用于登录，下次登录请使用修改后的名称。"</p></div><button type="button" aria-label="关闭" on:click=move |_| close_panel.run(())>"×"</button></header>
+                            <form on:submit=move |event: SubmitEvent| { event.prevent_default(); save_username.run(()) }>
+                                <label>"用户名"<input
+                                    node_ref=username_input type="text" autocomplete="username" maxlength="128" autofocus
+                                    prop:value=move || account_username.get() prop:disabled=move || username_saving.get()
+                                    on:input=move |event| account_username.set(event_target_value(&event))
+                                    on:keydown=move |event: web_sys::KeyboardEvent| {
+                                        if event.key() == "Escape" {
+                                            event.prevent_default();
+                                            event.stop_propagation();
+                                            close_panel.run(());
+                                        }
+                                    }
+                                /></label>
+                                <Show when=move || !username_error.get().is_empty() fallback=|| ()><p class="form-error" role="alert">{move || username_error.get()}</p></Show>
+                                <footer><button class="secondary" type="button" on:click=move |_| close_panel.run(())>"取消"</button><button class="primary" type="submit" prop:disabled=move || username_saving.get()>{move || if username_saving.get() { "保存中…" } else { "保存" }}</button></footer>
+                            </form>
+                        </section>
+                    </DialogBackdrop>
+                </Show>
 
                 <Show when=move || panel.get() == Some(AccountPanel::Password) fallback=|| ()>
-                    <div class="account-subdialog-backdrop" role="presentation" on:click=move |event: MouseEvent| if event.target() == event.current_target() { close_panel.run(()) }>
+                    <DialogBackdrop class="account-subdialog-backdrop" on_close=close_panel>
                         <section class="modal account-subdialog password-dialog" role="dialog" aria-modal="true">
-                            <header><div><p class="eyebrow dark">"SECURITY"</p><h2>"修改密码"</h2><p class="subdialog-hint">"修改成功后，所有设备都需要使用新密码重新登录。"</p></div><button type="button" aria-label="关闭" on:click=move |_| close_panel.run(())>"×"</button></header>
+                            <header><div><h2>"修改密码"</h2><p class="subdialog-hint">"修改成功后，所有设备都需要使用新密码重新登录。"</p></div><button type="button" aria-label="关闭" on:click=move |_| close_panel.run(())>"×"</button></header>
                             <form on:submit=move |event: SubmitEvent| { event.prevent_default(); save_password.run(()) }>
                                 <label>"当前密码"<input type="password" autocomplete="current-password" maxlength="1024" autofocus required prop:value=move || password_current.get() on:input=move |event| password_current.set(event_target_value(&event)) /></label>
                                 <label>"新密码"<input type="password" autocomplete="new-password" minlength="12" maxlength="1024" required prop:value=move || password_new.get() on:input=move |event| password_new.set(event_target_value(&event)) /></label>
@@ -788,13 +764,13 @@ pub fn AccountSettings(
                                 <footer><button class="secondary" type="button" on:click=move |_| close_panel.run(())>"取消"</button><button class="primary" type="submit" prop:disabled=move || password_busy.get()>{move || if password_busy.get() { "正在修改…" } else { "修改密码" }}</button></footer>
                             </form>
                         </section>
-                    </div>
+                    </DialogBackdrop>
                 </Show>
 
                 <Show when=move || panel.get() == Some(AccountPanel::Totp) fallback=|| ()>
-                    <div class="account-subdialog-backdrop" role="presentation" on:click=move |event: MouseEvent| if event.target() == event.current_target() { close_panel.run(()) }>
+                    <DialogBackdrop class="account-subdialog-backdrop" on_close=close_panel>
                         <section class="modal account-subdialog totp-dialog" role="dialog" aria-modal="true">
-                            <header><div><p class="eyebrow dark">"SECURITY"</p><h2>"两步验证"</h2><p class="subdialog-hint">"使用兼容 TOTP 的身份验证器保护管理员登录。"</p></div><button type="button" aria-label="关闭" on:click=move |_| close_panel.run(())>"×"</button></header>
+                            <header><div><h2>"两步验证"</h2></div><button type="button" aria-label="关闭" on:click=move |_| close_panel.run(())>"×"</button></header>
                             <Show when=move || totp_loading.get() fallback=move || view! {
                                 <>
                                     <Show when=move || !recovery_codes.get().is_empty() fallback=|| ()>
@@ -815,7 +791,7 @@ pub fn AccountSettings(
                                 <div class="two-factor-loading"><div class="spinner"></div><span>"正在读取安全设置…"</span></div>
                             </Show>
                         </section>
-                    </div>
+                    </DialogBackdrop>
                 </Show>
                 {move || match confirm_action.get() {
                     Some(ConfirmAction::RegenerateRecoveryCodes) => view! { <ActionDialog title="重新生成恢复码？".to_owned() message="现有恢复码会立即全部失效，请保存新生成的恢复码。".to_owned() confirm_label="重新生成".to_owned() danger=false input=false placeholder=None value=confirm_value busy=totp_busy error=totp_error on_cancel=confirm_cancel.clone() on_confirm=confirm_yes.clone() /> }.into_any(),
@@ -823,6 +799,6 @@ pub fn AccountSettings(
                     None => ().into_any(),
                 }}
             </section>
-        </div>
+        </DialogBackdrop>
     }
 }

@@ -45,7 +45,7 @@ use crate::logic::routing::{folder_id, folder_url, reader_id};
 
 use super::account::AccountSettings;
 use super::content_shell::{BookProgressBar, CardInfo, ShellContext};
-use super::dialogs::{ActionDialog, RenameDialog};
+use super::dialogs::{ActionDialog, DialogBackdrop, RenameDialog};
 use super::editor::{DocumentEditor, EditorMode};
 use super::file_browser_header::FileBrowserHeader;
 use super::media::MediaPreview;
@@ -1641,14 +1641,9 @@ pub fn FileBrowser(
                 }
             }}
             <Show when=move || editor_open.get() fallback=|| ()>
-                <div
+                <DialogBackdrop
                     class="modal-backdrop editing"
-                    role="presentation"
-                    on:click=move |event: web_sys::MouseEvent| {
-                        if event.target() == event.current_target() {
-                            close_editor.run(());
-                        }
-                    }
+                    on_close=close_editor
                 >
                     <DocumentEditor
                         file_id=editor_file_id
@@ -1665,7 +1660,7 @@ pub fn FileBrowser(
                         on_save=save_editor.clone()
                         on_close=close_editor.clone()
                     />
-                </div>
+                </DialogBackdrop>
             </Show>
             <Show when=move || account_open.get() fallback=|| ()>
                 <AccountSettings

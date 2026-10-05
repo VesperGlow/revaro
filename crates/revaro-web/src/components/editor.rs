@@ -81,7 +81,7 @@ pub fn DocumentEditor(
                         <span class="editor-header-message error">{move || error.get()}</span>
                     </Show>
                     <Show when=move || !readonly.get() && !is_new.get() fallback=|| ()>
-                        <button type="button" prop:disabled=move ||busy.get() on:click=move |_|history_open.set(true)>"版本历史"</button>
+                        <button type="button" aria-controls="version-history" aria-expanded=move ||history_open.get() prop:disabled=move ||busy.get() on:click=move |_|history_open.set(true)>"版本历史"</button>
                     </Show>
                     <Show when=move || !readonly.get() fallback=|| ()>
                         <Show when=move || is_new.get() || dirty.get() fallback=|| ()><span class="unsaved-dot">"未保存"</span></Show>

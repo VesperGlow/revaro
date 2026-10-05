@@ -5,12 +5,43 @@
 //! a validated name input and destructive confirmations, while the server
 //! remains the authority for name, parent and lifecycle validation.
 
-use leptos::ev::{MouseEvent, SubmitEvent};
+use leptos::ev::{MouseEvent, PointerEvent, SubmitEvent};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::icons;
+
+/// Shared outside-click dismissal for modal surfaces, including nested dialogs.
+#[component]
+pub fn DialogBackdrop(
+    on_close: Callback<()>,
+    #[prop(default = "modal-backdrop".to_owned().into(), into)] class: Signal<String>,
+    children: Children,
+) -> impl IntoView {
+    let started_inside = StoredValue::new(false);
+    view! {
+        <div
+            class=move || class.get()
+            role="presentation"
+            on:pointerdown=move |event: PointerEvent| {
+                started_inside.set_value(event.target() != event.current_target());
+            }
+            on:click=move |event: MouseEvent| {
+                // Releasing a drag or text selection outside the dialog must
+                // not dismiss it. Only a click on this backdrop closes it.
+                let inside = started_inside.get_value();
+                started_inside.set_value(false);
+                if !inside && event.target() == event.current_target() {
+                    event.stop_propagation();
+                    on_close.run(());
+                }
+            }
+        >
+            {children()}
+        </div>
+    }
+}
 
 /// A focused confirmation or text-entry modal.
 #[component]
@@ -63,14 +94,13 @@ pub fn ActionDialog(
     };
 
     view! {
-        <div
+        <DialogBackdrop
             class="dialog-backdrop"
-            role="presentation"
-            on:click=move |event: MouseEvent| {
-                if event.target() == event.current_target() && !busy.get_untracked() {
+            on_close=Callback::new(move |()| {
+                if !busy.get_untracked() {
                     cancel_from_backdrop.run(());
                 }
-            }
+            })
         >
             <form
                 class="app-dialog"
@@ -121,7 +151,7 @@ pub fn ActionDialog(
                     </button>
                 </footer>
             </form>
-        </div>
+        </DialogBackdrop>
     }
 }
 
@@ -141,15 +171,7 @@ pub fn RenameDialog(
     let confirm_input = on_confirm.clone();
     let confirm_button = on_confirm;
     view! {
-        <div
-            class="modal-backdrop"
-            role="presentation"
-            on:click=move |event: MouseEvent| {
-                if event.target() == event.current_target() {
-                    close_backdrop.run(())
-                }
-            }
-        >
+        <DialogBackdrop on_close=close_backdrop>
             <section
                 class="modal"
                 role="dialog"
@@ -196,7 +218,7 @@ pub fn RenameDialog(
                     </button>
                 </footer>
             </section>
-        </div>
+        </DialogBackdrop>
     }
 }
 

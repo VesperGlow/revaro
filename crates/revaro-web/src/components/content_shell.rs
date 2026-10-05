@@ -17,7 +17,9 @@ use revaro_core::{
 use wasm_bindgen::{JsCast, JsValue};
 
 use super::{
-    FileBrowser, icons,
+    FileBrowser,
+    dialogs::DialogBackdrop,
+    icons,
     media::MediaPreview,
     menu::{ActionMenu, MenuIcon},
     music_player::{MusicController, PersistentMusicPlayer, display_title},
@@ -565,7 +567,7 @@ pub fn ContentShell(
             <Show when=move ||reader.get().is_some() fallback=|| ()>{move ||reader.get().map(|file|view!{<ReaderView file=file on_close=close_reader on_unauthorized=on_logout />})}</Show>
             <Show when=move ||image.get().is_some() fallback=|| ()><MediaPreview selected=image items=image_items on_close=Callback::new(move |()|image.set(None)) on_download=Callback::new(|file:File|super::file_browser::download_file(&file)) on_move=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,false)));}) on_copy=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,true)));}) /></Show>
             <Show when=move ||new_collection.get() ||collection_target.get().is_some() fallback=|| ()>
-                <div class="modal-backdrop"><section class="modal library-collection-dialog" role="dialog" aria-modal="true" aria-label="管理集合">
+                <DialogBackdrop on_close=Callback::new(move |()| {new_collection.set(false);collection_target.set(None);})><section class="modal library-collection-dialog" role="dialog" aria-modal="true" aria-label="管理集合">
                     <header><h2>{move ||format!("{}{}",if new_collection.get(){"新建"}else{"加入"},collection_page.get().collection_label())}</h2><button aria-label="关闭集合对话框" disabled=move ||collection_busy.get() on:click=move |_|{new_collection.set(false);collection_target.set(None);}>"×"</button></header>
                     <Show when=move ||collection_target.get().is_some() fallback=|| ()><p class="collection-target-count">{move ||collection_target.get().map(|target|format!("将所选的 {} 项{}加入{}",target.files.len(),target.page.label(),target.page.collection_label())).unwrap_or_default()}</p></Show>
                     <Show when=move ||new_collection.get() fallback=move ||view! {
@@ -580,7 +582,7 @@ pub fn ContentShell(
                         <form on:submit=move |ev|{ev.prevent_default();create.run(());}><label>"名称"<input aria-label="集合名称" maxlength="80" placeholder="给它一个名字" prop:value=move ||collection_name.get() on:input=move |ev|collection_name.set(event_target_value(&ev)) /></label><footer><button class="primary" type="submit" disabled=move ||collection_busy.get() ||collection_name.get().trim().is_empty()>"创建"</button></footer></form>
                     </Show>
                     <Show when=move ||!error.get().is_empty() fallback=|| ()><p class="form-error" role="alert">{move ||error.get()}</p></Show>
-                </section></div>
+                </section></DialogBackdrop>
             </Show>
         </div>
     }

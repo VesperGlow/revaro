@@ -4,10 +4,10 @@
 //! client let users inspect an existing link, copy it, regenerate it, or stop
 //! sharing without leaving the file browser.
 
-use leptos::ev::MouseEvent;
 use leptos::prelude::*;
 use revaro_core::model::File;
 
+use super::dialogs::DialogBackdrop;
 use crate::logic::format::format_date;
 
 /// The reference share dialog's complete state and actions.
@@ -36,19 +36,7 @@ pub fn ShareDialog(
     let create = on_create;
 
     view! {
-        <div
-            class="modal-backdrop"
-            role="presentation"
-            on:click=move |event: MouseEvent| {
-                // The reference modal remains dismissible while its initial
-                // read or a create/revoke request is in flight. The request
-                // may finish after the overlay has been removed; keeping the
-                // close path independent of `busy` preserves that behavior.
-                if event.target() == event.current_target() {
-                    close_backdrop.run(());
-                }
-            }
-        >
+        <DialogBackdrop on_close=close_backdrop>
             <section class="modal share-modal" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
                 <header>
                     <div class="share-title">
@@ -115,6 +103,6 @@ pub fn ShareDialog(
                     </Show>
                 </Show>
             </section>
-        </div>
+        </DialogBackdrop>
     }
 }

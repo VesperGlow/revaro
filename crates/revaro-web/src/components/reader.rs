@@ -321,6 +321,19 @@ pub fn ReaderView(
         })
     };
 
+    let mut outside_font = browser::on_click(move |event| {
+        if !font_open.get_untracked() {
+            return;
+        }
+        let inside = event
+            .target()
+            .and_then(|target| target.dyn_into::<Element>().ok())
+            .and_then(|target| target.closest("#font-popover, #font-button").ok().flatten())
+            .is_some();
+        if !inside {
+            font_open.set(false);
+        }
+    });
     let lifecycle_listeners = install_progress_listeners(runtime.clone(), file_id.clone());
 
     let open_runtime = runtime.clone();
@@ -380,6 +393,7 @@ pub fn ReaderView(
         clear_runtime_timers(&mut runtime);
         drop(runtime);
         key_listener.release();
+        outside_font.release();
         resize_listener.release();
         drop(cleanup_lifecycle);
         if let Some(body) = body {
