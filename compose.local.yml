@@ -3,29 +3,20 @@ services:
     image: "${REVARO_IMAGE:-ghcr.io/vesperglow/revaro:latest}"
     restart: unless-stopped
     ports:
-      - "80:80/tcp"
-      - "443:443/tcp"
-      - "443:443/udp"
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
     environment:
-      APP_DOMAIN: "${APP_DOMAIN:?Set APP_DOMAIN in .env to your public DNS hostname}"
-      APP_ADDR: "${APP_ADDR:-0.0.0.0:80}"
-      ACME_EMAIL: "${ACME_EMAIL:-}"
-      ACME_STAGING: "${ACME_STAGING:-false}"
-      ACME_CACHE_DIR: /data/acme
-      ACME_DIRECTORY_URL: "${ACME_DIRECTORY_URL:-}"
-      ACME_CA_FILE: "${ACME_CA_FILE:-}"
+      APP_ADDR: ":8080"
       APP_DATA_DIR: /data
       APP_OBJECTS_DIR: /objects
       APP_CACHES_DIR: /caches
       APP_WEB_DIR: /opt/revaro/web
-      APP_BASE_URL: "${APP_BASE_URL:-}"
+      APP_BASE_URL: "${APP_BASE_URL:-http://localhost:${APP_PORT:-8080}}"
       APP_HTTP2_BASE_URL: "${APP_HTTP2_BASE_URL:-}"
-      APP_TLS_ADDR: "${APP_TLS_ADDR:-0.0.0.0:443}"
+      APP_TLS_ADDR: "${APP_TLS_ADDR:-}"
       APP_TLS_CERT: "${APP_TLS_CERT:-}"
       APP_TLS_KEY: "${APP_TLS_KEY:-}"
       APP_HTTP2_ADDR: "${APP_HTTP2_ADDR:-}"
-      APP_QUIC_ADDR: "${APP_QUIC_ADDR:-0.0.0.0:443}"
-      APP_QUIC_PUBLIC_PORT: "${APP_QUIC_PUBLIC_PORT:-443}"
+      APP_QUIC_ADDR: "${APP_QUIC_ADDR:-}"
       QUIC_CC_MODE: "${QUIC_CC_MODE:-aggressive}"
       QUIC_TARGET_MBPS: "${QUIC_TARGET_MBPS:-auto}"
       QUIC_MAX_MBPS: "${QUIC_MAX_MBPS:-250}"
@@ -36,7 +27,7 @@ services:
       COOKIE_SECURE: "${COOKIE_SECURE:-}"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
-      TRUSTED_PROXIES: ""
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       MEDIA_CACHE_CAPACITY: "${MEDIA_CACHE_CAPACITY:-2147483648}"
       UPLOAD_EXPIRES: "${UPLOAD_EXPIRES:-24h}"
       UPLOAD_IDLE_TIMEOUT: "${UPLOAD_IDLE_TIMEOUT:-60s}"
@@ -58,14 +49,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    sysctls:
-      net.ipv4.ip_unprivileged_port_start: "80"
     healthcheck:
-      test: ["CMD", "wget", "--no-check-certificate", "-q", "-O", "-", "https://127.0.0.1:443/readyz"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]
       interval: 15s
       timeout: 3s
       retries: 5
-      start_period: 300s
+      start_period: 30s
 
 volumes:
   revaro-data:

@@ -14,7 +14,7 @@ use std::{
 use tower::ServiceExt;
 
 use super::{
-    CongestionMode, QuicConfig,
+    CongestionMode, QuicConfig, TlsIdentity,
     controller::AggressiveFactory,
     pacing::{MAX_DATAGRAM, PacedSocket, PacingRegistry},
 };
@@ -24,6 +24,7 @@ use crate::Config;
 pub struct NativeTransport {
     tasks: tokio::task::JoinSet<()>,
     control: ShutdownControl,
+    http: Option<Router>,
 }
 
 /// Cloneable shutdown signal for main's existing graceful-shutdown future.
@@ -31,9 +32,11 @@ pub struct NativeTransport {
 pub struct ShutdownControl {
     endpoint: Option<quinn::Endpoint>,
     tls: Vec<axum_server::Handle<SocketAddr>>,
+    cancel: tokio_util::sync::CancellationToken,
 }
 impl ShutdownControl {
     pub fn shutdown(&self) {
+        self.cancel.cancel();
         if let Some(endpoint) = &self.endpoint {
             endpoint.close(0_u32.into(), b"server shutdown");
         }
@@ -49,24 +52,42 @@ impl NativeTransport {
         let mut result = Self {
             tasks: tokio::task::JoinSet::new(),
             control: ShutdownControl::default(),
+            http: None,
         };
         let Some(tls) = &config.tls else {
             return Ok(result);
         };
-        let cert_bytes = tokio::fs::read(&tls.cert).await?;
-        let key_bytes = tokio::fs::read(&tls.key).await?;
-        let certs = rustls_pemfile::certs(&mut io::Cursor::new(cert_bytes))
-            .collect::<Result<Vec<_>, _>>()?;
-        let key = rustls_pemfile::private_key(&mut io::Cursor::new(key_bytes))?
-            .ok_or_else(|| io::Error::other("TLS PEM contains no private key"))?;
-        let mut tcp_crypto = rustls::ServerConfig::builder_with_provider(Arc::new(
+        let builder = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
         .map_err(io::Error::other)?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(io::Error::other)?;
+        .with_no_client_auth();
+        let mut acme_state = None;
+        let mut tcp_crypto = match &tls.identity {
+            TlsIdentity::Pem { cert, key } => {
+                let cert_bytes = tokio::fs::read(cert).await?;
+                let key_bytes = tokio::fs::read(key).await?;
+                let certs = rustls_pemfile::certs(&mut io::Cursor::new(cert_bytes))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let key = rustls_pemfile::private_key(&mut io::Cursor::new(key_bytes))?
+                    .ok_or_else(|| io::Error::other("TLS PEM contains no private key"))?;
+                builder
+                    .with_single_cert(certs, key)
+                    .map_err(io::Error::other)?
+            }
+            TlsIdentity::Acme => {
+                let settings = config
+                    .acme
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("missing ACME settings"))?;
+                let state = settings.state().await?;
+                result.http = Some(crate::ingress::http_router(&state, &config.base_url));
+                let crypto = builder.with_cert_resolver(state.resolver());
+                acme_state = Some(state);
+                crypto
+            }
+        };
         tcp_crypto.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         // Default 0-RTT stays disabled: mutating uploads must not be replayed.
         let tls_config =
@@ -79,7 +100,9 @@ impl NativeTransport {
             server_config.migration(false);
             server_config
                 .transport_config(Arc::new(transport_config(Arc::new(CubicConfig::default()))));
-            let socket = std::net::UdpSocket::bind(quic.addr)?;
+            let socket = std::net::UdpSocket::bind(quic.addr).map_err(|error| {
+                io::Error::new(error.kind(), format!("UDP {}: {error}", quic.addr))
+            })?;
             socket.set_nonblocking(true)?;
             let registry = PacingRegistry::new(quic.clone());
             let socket = Arc::new(PacedSocket::new(
@@ -102,9 +125,8 @@ impl NativeTransport {
                 global_max_mbps=quic.global_max_mbps, "native HTTP/3 listening");
         }
         let advertised = config
-            .quic
-            .as_ref()
-            .map(|q| format!("h3=\":{}\"; ma=300", q.addr.port()));
+            .quic_public_port
+            .map(|port| format!("h3=\":{port}\"; ma=300"));
         let primary = app.clone().layer(axum::middleware::from_fn(
             move |request: axum::extract::Request, next: axum::middleware::Next| {
                 let advertised = advertised.clone();
@@ -124,6 +146,23 @@ impl NativeTransport {
         if let Some(addr) = tls.http2_addr {
             result.add_tls(addr, tls_config, app)?;
         }
+        if let Some(mut state) = acme_state {
+            let cancel = result.control.cancel.clone();
+            result.tasks.spawn(async move {
+                loop {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        event = state.next() => match event {
+                            Some(Ok(event)) => tracing::info!(?event, "ACME certificate lifecycle"),
+                            Some(Err(error)) => tracing::warn!(%error, "ACME operation failed; automatic retry remains active"),
+                            None => break,
+                        }
+                    }
+                }
+            });
+            tracing::info!(domain=%config.acme.as_ref().expect("ACME settings").domain,
+                "public HTTP-01 ingress enabled; certificates reload on new TLS/QUIC handshakes");
+        }
         Ok(result)
     }
 
@@ -133,7 +172,18 @@ impl NativeTransport {
         config: axum_server::tls_rustls::RustlsConfig,
         app: Router,
     ) -> io::Result<()> {
-        let listener = std::net::TcpListener::bind(addr)?;
+        let socket = socket2::Socket::new(
+            socket2::Domain::for_address(addr),
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )?;
+        #[cfg(unix)]
+        socket.set_reuse_address(true)?;
+        socket
+            .bind(&addr.into())
+            .map_err(|error| io::Error::new(error.kind(), format!("TCP {addr}: {error}")))?;
+        socket.listen(1024)?;
+        let listener: std::net::TcpListener = socket.into();
         listener.set_nonblocking(true)?;
         let handle = axum_server::Handle::new();
         self.control.tls.push(handle.clone());
@@ -153,9 +203,15 @@ impl NativeTransport {
     pub fn shutdown_control(&self) -> ShutdownControl {
         self.control.clone()
     }
+    pub fn http_router(&self, app: Router) -> Router {
+        self.http.clone().unwrap_or(app)
+    }
     pub async fn finish(mut self) {
         self.control.shutdown();
         while self.tasks.join_next().await.is_some() {}
+        if let Some(endpoint) = self.control.endpoint.take() {
+            endpoint.wait_idle().await;
+        }
     }
 }
 impl Drop for NativeTransport {

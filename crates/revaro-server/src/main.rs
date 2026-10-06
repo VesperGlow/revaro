@@ -139,7 +139,9 @@ async fn main() -> ExitCode {
 
     let result = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        native
+            .http_router(app)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         shutdown_signal().await;

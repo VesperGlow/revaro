@@ -1,0 +1,68 @@
+{
+  "date": "2026-10-06",
+  "feature": "Direct Revaro public ingress, HTTP-01 ACME and shared TCP/QUIC certificate resolver",
+  "rust": {
+    "command": "CARGO_INCREMENTAL=0 cargo xtask check",
+    "passed": true,
+    "tests_passed": 470,
+    "fmt": true,
+    "clippy_deny_warnings": true,
+    "wasm_check": true
+  },
+  "protocols": {
+    "test": "public_ingress",
+    "real_https_acme_jws_and_csr": true,
+    "http01_key_authorization_verified": true,
+    "temporary_ca_error_recovered": true,
+    "tcp_http1_http2": true,
+    "standard_http3_aggressive_auto": true,
+    "hot_reload_tcp_and_quic": true,
+    "existing_http3_connection_survives_renewal": true,
+    "offline_ca_restart_with_persisted_cert": true,
+    "private_atomic_cache": true
+  },
+  "file_transport": {
+    "real_quic_all_mime_lifecycle": "passed",
+    "node_recovery_tests_passed": 9,
+    "chromium_shared_worker_real_disconnect_and_upload_retry": "passed"
+  },
+  "compose": {
+    "public_internal_ports": [
+      "80/tcp",
+      "443/tcp",
+      "443/udp"
+    ],
+    "production_hardening": "passed",
+    "host_network_configuration": "passed",
+    "local_http_configuration": "passed"
+  },
+  "rootless_low_ports": {
+    "local_test_executed": false,
+    "reason": "This environment mounts /proc/sys read-only and has no Podman runtime; changing the private network namespace sysctl is denied.",
+    "ci_test_added": "Verify public ports without capabilities",
+    "host_requirement": "net.ipv4.ip_unprivileged_port_start=80"
+  },
+  "public_letsencrypt": {
+    "executed": false,
+    "reason": "No deployment .env or public domain is configured in this workspace."
+  },
+  "local_instance": {
+    "url": "http://localhost:8081",
+    "updated_and_ready": true,
+    "public_domain_configured": false
+  },
+  "dependency_audit": {
+    "command": "cargo audit --file Cargo.lock",
+    "passed": true,
+    "vulnerabilities": 0,
+    "allowed_existing_unmaintained_warnings": [
+      "paste",
+      "proc-macro-error2",
+      "rustls-pemfile"
+    ]
+  },
+  "configuration": {
+    "dotenv_loading": "passed",
+    "process_environment_overrides_dotenv": "passed"
+  }
+}

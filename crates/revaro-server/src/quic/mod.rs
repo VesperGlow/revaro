@@ -7,5 +7,5 @@ mod controller;
 mod pacing;
 mod server;
 
-pub use config::{CongestionMode, QuicConfig, TlsConfig};
+pub use config::{CongestionMode, QuicConfig, TlsConfig, TlsIdentity};
 pub use server::NativeTransport;

@@ -39,56 +39,19 @@ Service Worker 在 WASM 应用挂载之前激活并接管页面，因此原生 `
 
 浏览器原生 QUIC 管理拥塞、ACK、重传和协议协商。标准 Fetch API 不允许应用设置 Hy2 Brutal 拥塞控制、UDP FEC 或选择具体 HTTP 版本。本实现提供应用层补偿：并行独立 Range、保留字节前缀、缩短停滞阈值、受限 hedge 与快速局部重连；这些策略也适用于 HTTP/1.1 和 HTTP/2。协议识别使用可用的 Resource Timing `nextHopProtocol`，不可用时使用保守默认值。
 
-真正可控的 HTTP/2 回退需要独立 authority，示例：
+默认公网部署由 Revaro 自身直接提供 TCP/UDP 443，浏览器在 UDP 或 HTTP/3 握手不可用时正常回退同一入口的 TCP HTTP/2；共享 transport 的 Range、重试与停滞恢复继续适用于所有文件类型。
+
+如需应用层明确选择 HTTP/2，可启用 Revaro 的独立 TCP TLS listener，无需任何反向代理：
 
 ```env
-APP_BASE_URL=https://files.example.com
-APP_HTTP2_BASE_URL=https://files.example.com:8443
+APP_DOMAIN=files.example.com
+APP_HTTP2_ADDR=0.0.0.0:8444
+APP_HTTP2_BASE_URL=https://files.example.com:8444
 ```
 
-在同一个主机的另一个 TLS 端口提供 **仅 HTTP/2/HTTP/1.1** 的反向代理，不发布 HTTP/3 Alt-Svc。客户端在连续连接失败或停滞后自动切换该入口，保持 5 分钟，之后再次尝试主入口。配置会拒绝其他主机、降级 HTTP 和相同 authority，以保留 host-only 会话 Cookie 与 TLS 安全边界。浏览器兼容的凭证 CORS、Range/校验头和 CSP 已由服务端按该配置开启。
+开放额外 TCP 8444。该 listener 复用同一 ACME 证书，仅配置 HTTP/2 与 HTTP/1.1，不发布 Alt-Svc。客户端连续连接失败或停滞时自动切换该入口，保持 5 分钟，之后再次尝试主入口。配置要求相同 hostname 和不同 HTTPS authority，保留 host-only 会话 Cookie；服务端按该配置开启凭证 CORS、Range/校验头和 CSP。标准 Fetch 不能指定同一 authority 的 HTTP 版本；不配置额外端口时由浏览器完成协议回退。
 
-例如使用支持 HTTP/3 的 nginx 构建（证书路径按部署替换）：
-
-```nginx
-server {
-    listen 443 ssl;
-    listen 443 quic reuseport;
-    http2 on;
-    server_name files.example.com;
-    ssl_certificate /etc/ssl/files/fullchain.pem;
-    ssl_certificate_key /etc/ssl/files/privkey.pem;
-    add_header Alt-Svc 'h3=":443"; ma=300' always;
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        client_max_body_size 0;
-    }
-}
-server {
-    listen 8443 ssl;
-    http2 on;
-    server_name files.example.com;
-    ssl_certificate /etc/ssl/files/fullchain.pem;
-    ssl_certificate_key /etc/ssl/files/privkey.pem;
-    # 不在此监听 QUIC，不添加 Alt-Svc；避免共用开启了 QUIC 的全局模板。
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_buffering off;
-        proxy_request_buffering off;
-        client_max_body_size 0;
-    }
-}
-```
-
-需要开放 TCP 443/8443 与 UDP 443。未配置独立入口时浏览器负责自己的协议回退；应用继续重试，但不能保证强制从 HTTP/3 转成 HTTP/2。同主机不同端口仍可能共享物理瓶颈，回退用于避开 QUIC/UDP 路径故障。
-
-协议依据：[HTTP Range 与 If-Range](https://www.rfc-editor.org/rfc/rfc9110.html#section-14)、[Fetch 标准](https://fetch.spec.whatwg.org/)、[Service Workers](https://www.w3.org/TR/service-workers/)、[nginx HTTP/3 模块](https://nginx.org/en/docs/http/ngx_http_v3_module.html)。
+部署与 ACME 生命周期见 [公网入口部署](public-ingress.md)，标准 HTTP/3 拥塞控制见 [QUIC 传输说明](quic-transport.md)。协议依据：[HTTP Range 与 If-Range](https://www.rfc-editor.org/rfc/rfc9110.html#section-14)、[Fetch 标准](https://fetch.spec.whatwg.org/)、[Service Workers](https://www.w3.org/TR/service-workers/)。
 
 ## 批量 ZIP 与验证
 

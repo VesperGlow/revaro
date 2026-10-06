@@ -1,11 +1,10 @@
+# Rootless host networking: configure the host sysctl described in docs/public-ingress.md.
+# Standalone file: podman-compose -f compose.host.yml up -d
 services:
   revaro:
     image: "${REVARO_IMAGE:-ghcr.io/vesperglow/revaro:latest}"
     restart: unless-stopped
-    ports:
-      - "80:80/tcp"
-      - "443:443/tcp"
-      - "443:443/udp"
+    network_mode: host
     environment:
       APP_DOMAIN: "${APP_DOMAIN:?Set APP_DOMAIN in .env to your public DNS hostname}"
       APP_ADDR: "${APP_ADDR:-0.0.0.0:80}"
@@ -58,8 +57,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    sysctls:
-      net.ipv4.ip_unprivileged_port_start: "80"
     healthcheck:
       test: ["CMD", "wget", "--no-check-certificate", "-q", "-O", "-", "https://127.0.0.1:443/readyz"]
       interval: 15s

@@ -78,6 +78,10 @@ pub struct Config {
     /// Optional native TLS and QUIC listeners, in addition to APP_ADDR.
     pub tls: Option<crate::quic::TlsConfig>,
     pub quic: Option<crate::quic::QuicConfig>,
+    /// Direct public ingress and automatically managed certificates.
+    pub acme: Option<crate::ingress::AcmeSettings>,
+    /// Public UDP port; independent of container/NAT listener addresses.
+    pub quic_public_port: Option<u16>,
     /// Whether session cookies carry the `Secure` attribute.
     pub cookie_secure: bool,
     /// Bootstrap administrator name, empty to use the stored one.
@@ -114,7 +118,18 @@ impl Config {
     /// # Errors
     /// Returns a [`ConfigError`] naming the first invalid value.
     pub fn from_env() -> Result<Self, ConfigError> {
-        let env: HashMap<String, String> = std::env::vars().collect();
+        let mut env: HashMap<String, String> = std::env::vars().collect();
+        match dotenvy::from_path_iter(".env") {
+            Ok(values) => {
+                for value in values {
+                    let (name, value) = value
+                        .map_err(|error| ConfigError::new(format!("invalid .env: {error}")))?;
+                    env.entry(name).or_insert(value);
+                }
+            }
+            Err(dotenvy::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ConfigError::new(format!("could not read .env: {error}"))),
+        }
         Self::from_lookup(&|name| env.get(name).cloned())
     }
 
@@ -131,7 +146,13 @@ impl Config {
         };
 
         let data_dir = PathBuf::from(value("APP_DATA_DIR", DEFAULT_DATA_DIR));
-        let base_url = value("APP_BASE_URL", DEFAULT_BASE_URL)
+        let acme =
+            crate::ingress::AcmeSettings::load(lookup, &data_dir).map_err(ConfigError::new)?;
+        let default_base = acme.as_ref().map_or_else(
+            || DEFAULT_BASE_URL.to_owned(),
+            |a| format!("https://{}", a.domain),
+        );
+        let base_url = value("APP_BASE_URL", &default_base)
             .trim()
             .trim_end_matches('/')
             .to_owned();
@@ -159,8 +180,17 @@ impl Config {
                 }
                 Ok(fallback.origin().ascii_serialization())
             }).transpose()?;
-        let tls = crate::quic::TlsConfig::load(lookup).map_err(ConfigError::new)?;
-        let quic = crate::quic::QuicConfig::load(lookup).map_err(ConfigError::new)?;
+        let native_lookup = |key: &str| {
+            lookup(key).filter(|v| !v.trim().is_empty()).or_else(|| {
+                acme.as_ref().and_then(|_| match key {
+                    "APP_TLS_ADDR" | "APP_QUIC_ADDR" => Some("0.0.0.0:443".into()),
+                    _ => None,
+                })
+            })
+        };
+        let tls = crate::quic::TlsConfig::load(&native_lookup, acme.is_some())
+            .map_err(ConfigError::new)?;
+        let quic = crate::quic::QuicConfig::load(&native_lookup).map_err(ConfigError::new)?;
         if quic.is_some() && tls.is_none() {
             return Err(ConfigError::new(
                 "APP_QUIC_ADDR requires native APP_TLS_ADDR and TLS certificates",
@@ -168,24 +198,16 @@ impl Config {
         }
         if let Some(tls) = &tls {
             let primary = url::Url::parse(&base_url).expect("validated base URL");
-            if primary.scheme() != "https"
-                || primary.port_or_known_default() != Some(tls.addr.port())
-            {
+            if primary.scheme() != "https" {
                 return Err(ConfigError::new(
-                    "APP_BASE_URL must use HTTPS and the APP_TLS_ADDR port",
+                    "APP_BASE_URL must use HTTPS with native TLS",
                 ));
             }
             if let Some(addr) = tls.http2_addr
-                && (addr == tls.addr
-                    || http2_origin.as_ref().is_none_or(|v| {
-                        url::Url::parse(v)
-                            .ok()
-                            .and_then(|u| u.port_or_known_default())
-                            != Some(addr.port())
-                    }))
+                && (addr == tls.addr || http2_origin.is_none())
             {
                 return Err(ConfigError::new(
-                    "APP_HTTP2_ADDR must match a distinct APP_HTTP2_BASE_URL port",
+                    "APP_HTTP2_ADDR requires a distinct listener and APP_HTTP2_BASE_URL",
                 ));
             }
         }
@@ -193,6 +215,44 @@ impl Config {
             Some(raw) if !raw.is_empty() => parse_bool("COOKIE_SECURE", &raw)?,
             _ => base_url.starts_with("https://"),
         };
+        if let Some(settings) = &acme {
+            let primary = url::Url::parse(&base_url).expect("validated base URL");
+            if primary.host_str() != Some(settings.domain.as_str())
+                || primary.path() != "/"
+                || !primary.username().is_empty()
+                || primary.password().is_some()
+                || primary.query().is_some()
+                || primary.fragment().is_some()
+            {
+                return Err(ConfigError::new(
+                    "APP_BASE_URL must be the HTTPS origin of APP_DOMAIN",
+                ));
+            }
+            if !cookie_secure {
+                return Err(ConfigError::new(
+                    "COOKIE_SECURE must be true with APP_DOMAIN",
+                ));
+            }
+        }
+        let quic_public_port = quic
+            .as_ref()
+            .map(|_| {
+                let raw = lookup("APP_QUIC_PUBLIC_PORT").filter(|v| !v.trim().is_empty());
+                let port = match raw {
+                    Some(raw) => raw
+                        .parse::<u16>()
+                        .map_err(|_| ConfigError::new("invalid APP_QUIC_PUBLIC_PORT"))?,
+                    None => url::Url::parse(&base_url)
+                        .expect("validated base URL")
+                        .port_or_known_default()
+                        .expect("HTTP port"),
+                };
+                if port == 0 {
+                    return Err(ConfigError::new("APP_QUIC_PUBLIC_PORT must be nonzero"));
+                }
+                Ok(port)
+            })
+            .transpose()?;
 
         let caches_dir_raw = value("APP_CACHES_DIR", DEFAULT_CACHES_DIR);
         if caches_dir_raw.trim().is_empty() {
@@ -260,7 +320,14 @@ impl Config {
         };
 
         Ok(Self {
-            addr: value("APP_ADDR", DEFAULT_ADDR),
+            addr: value(
+                "APP_ADDR",
+                if acme.is_some() {
+                    "0.0.0.0:80"
+                } else {
+                    DEFAULT_ADDR
+                },
+            ),
             data_dir,
             objects_dir: PathBuf::from(value("APP_OBJECTS_DIR", DEFAULT_OBJECTS_DIR)),
             caches_dir: PathBuf::from(caches_dir_raw),
@@ -269,6 +336,8 @@ impl Config {
             http2_origin,
             tls,
             quic,
+            acme,
+            quic_public_port,
             cookie_secure,
             admin_username: lookup("ADMIN_USERNAME").unwrap_or_default(),
             admin_password: lookup("ADMIN_PASSWORD").unwrap_or_default(),
@@ -533,13 +602,68 @@ mod tests {
                 .is_err()
             );
         }
-        for bad in [
-            "http://files.example.test:8443",
+        let mut values = valid.to_vec();
+        values.push(("APP_BASE_URL", "http://files.example.test:8443"));
+        assert!(config_from(&values).is_err());
+        let mut mapped = valid.to_vec();
+        mapped.push(("APP_BASE_URL", "https://files.example.test"));
+        let mapped = config_from(&mapped).unwrap();
+        assert_eq!(mapped.quic_public_port, Some(443));
+    }
+
+    #[test]
+    fn public_domain_enables_acme_and_all_three_public_ports() {
+        let config = config_from(&[
+            ("APP_DOMAIN", "Files.Example.Test."),
+            ("APP_DATA_DIR", "/state"),
+        ])
+        .unwrap();
+        assert_eq!(config.base_url, "https://files.example.test");
+        assert_eq!(config.listen_addr().unwrap().port(), 80);
+        assert_eq!(config.tls.as_ref().unwrap().addr.port(), 443);
+        assert_eq!(
+            config.tls.as_ref().unwrap().identity,
+            crate::quic::TlsIdentity::Acme
+        );
+        assert_eq!(config.quic.as_ref().unwrap().addr.port(), 443);
+        assert_eq!(config.quic_public_port, Some(443));
+        assert_eq!(
+            config.quic.as_ref().unwrap().mode,
+            crate::quic::CongestionMode::Aggressive
+        );
+        assert_eq!(config.quic.as_ref().unwrap().target_mbps, None);
+        assert_eq!(config.acme.unwrap().cache_dir, PathBuf::from("/state/acme"));
+        assert!(config.cookie_secure);
+    }
+
+    #[test]
+    fn public_domain_rejects_ambiguous_or_insecure_settings() {
+        for domain in [
+            "localhost",
+            "127.0.0.1",
             "https://files.example.test",
+            "files.example.test:443",
+            "*.example.test",
+            "bad_.example.test",
+            "a..example.test",
         ] {
-            let mut values = valid.to_vec();
-            values.push(("APP_BASE_URL", bad));
-            assert!(config_from(&values).is_err());
+            assert!(config_from(&[("APP_DOMAIN", domain)]).is_err(), "{domain}");
+        }
+        for (key, value) in [
+            ("APP_BASE_URL", "https://other.example.test"),
+            ("APP_BASE_URL", "http://files.example.test"),
+            ("APP_BASE_URL", "https://files.example.test/path"),
+            ("APP_TLS_CERT", "/cert.pem"),
+            ("APP_TLS_KEY", "/key.pem"),
+            ("ACME_DIRECTORY_URL", "http://ca.example.test/directory"),
+            ("ACME_STAGING", "yes"),
+            ("COOKIE_SECURE", "false"),
+            ("APP_QUIC_PUBLIC_PORT", "0"),
+        ] {
+            assert!(
+                config_from(&[("APP_DOMAIN", "files.example.test"), (key, value)]).is_err(),
+                "{key}"
+            );
         }
     }
 

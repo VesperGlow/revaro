@@ -42,9 +42,9 @@ Controller 只决定本地窗口和发送预算；QUIC 丢包检测、PTO、重�
 | `QUIC_MAX_WINDOW_MIB` | 8 | 窗口上限，1～64 MiB |
 | `QUIC_MAX_CONNECTIONS` | 32 | 全 endpoint 同时连接上限，1～128 |
 
-固定 aggressive 要求 `target ≤ peer max ≤ global max`；auto 始终受 `peer max ≤ global max` 硬上限约束。默认上限是管理预算，既不是固定 target，也不是保证的线路容量。原生监听端口必须与 `APP_BASE_URL` / `APP_HTTP2_BASE_URL` 的对应 HTTPS 端口一致，地址不接受端口 0。
+固定 aggressive 要求 `target ≤ peer max ≤ global max`；auto 始终受 `peer max ≤ global max` 硬上限约束。默认上限是管理预算，既不是固定 target，也不是保证的线路容量。原生监听地址不接受端口 0；公网 URL 与内部监听端口可以因 NAT 映射而不同。`APP_QUIC_PUBLIC_PORT` 默认从公网 URL 推导，Alt-Svc 公布公网 UDP 端口。
 
-例如启用默认自动带宽模式：
+公网部署现在通过 `APP_DOMAIN` 自动启用 ACME、TCP 80/443 与 UDP 443，无需反向代理；容器内也是 80/443，可使用宿主机网络。见 [公网入口部署](public-ingress.md)。以下手工 PEM 示例用于兼容与诊断：
 
 ```dotenv
 APP_BASE_URL=https://files.example.com:8443
@@ -66,7 +66,7 @@ QUIC_MAX_COMPENSATION_PERCENT=125
 Compose 可使用 `compose.quic.yml` override；设置示例中的两个 HTTPS URL，以及 `REVARO_TLS_DIR`，确保容器 uid 10001 可读取证书，然后：
 
 ```sh
-docker compose -f compose.yml -f compose.quic.yml up -d
+docker compose -f compose.local.yml -f compose.quic.yml up -d
 ```
 
 如果 nginx/CDN 终止 QUIC，实际拥塞控制由代理决定，Revaro 的自定义 Controller 不会作用于那条连接。需要让 UDP QUIC 直接到 Quinn，或者做 UDP 透传；只给上游 HTTP 加配置不能改变代理的 QUIC sender。独立 HTTP/2 authority 配合共享层的 retry/停滞检测避开 QUIC/UDP 故障，浏览器自身也能回退主入口的 TCP。CORS、凭据和 Resource Timing 只向配置的同 hostname 主 HTTPS origin 开放。

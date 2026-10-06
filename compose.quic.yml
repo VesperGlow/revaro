@@ -2,7 +2,7 @@
 # APP_BASE_URL=https://files.example.com:8443
 # APP_HTTP2_BASE_URL=https://files.example.com:8444
 # REVARO_TLS_DIR=/absolute/path/to/certs
-# docker compose -f compose.yml -f compose.quic.yml up -d
+# docker compose -f compose.local.yml -f compose.quic.yml up -d
 services:
   revaro:
     ports:

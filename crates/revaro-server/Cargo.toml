@@ -37,7 +37,7 @@ sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -59,6 +59,10 @@ h3 = "0.0.8"
 h3-quinn = "0.0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
+rustls-acme = { version = "0.15.4", default-features = false, features = ["ring", "tower", "webpki-roots"] }
+async-trait = "0.1"
+dotenvy = "0.15"
+socket2 = "0.6"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 http-body-util.workspace = true
 
@@ -69,4 +73,7 @@ zip.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+h2 = "0.4"
+ring = "0.17"

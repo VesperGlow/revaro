@@ -102,5 +102,5 @@ ENV HOME=/data \
 WORKDIR /data
 USER revaro
 VOLUME ["/data", "/objects", "/caches"]
-EXPOSE 8080
+EXPOSE 80/tcp 443/tcp 443/udp 8080/tcp
 ENTRYPOINT ["/usr/local/bin/revaro"]

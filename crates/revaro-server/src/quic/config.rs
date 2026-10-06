@@ -5,8 +5,13 @@ use std::{net::SocketAddr, path::PathBuf};
 pub struct TlsConfig {
     pub addr: SocketAddr,
     pub http2_addr: Option<SocketAddr>,
-    pub cert: PathBuf,
-    pub key: PathBuf,
+    pub identity: TlsIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TlsIdentity {
+    Acme,
+    Pem { cert: PathBuf, key: PathBuf },
 }
 
 /// Sender policy; Cubic remains available for compatibility and diagnosis.
@@ -68,7 +73,10 @@ fn address(
 }
 
 impl TlsConfig {
-    pub(crate) fn load(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Option<Self>, String> {
+    pub(crate) fn load(
+        lookup: &dyn Fn(&str) -> Option<String>,
+        managed: bool,
+    ) -> Result<Option<Self>, String> {
         let Some(addr) = address(lookup, "APP_TLS_ADDR")? else {
             if address(lookup, "APP_HTTP2_ADDR")?.is_some() {
                 return Err("APP_HTTP2_ADDR requires APP_TLS_ADDR".into());
@@ -84,8 +92,21 @@ impl TlsConfig {
         Ok(Some(Self {
             addr,
             http2_addr: address(lookup, "APP_HTTP2_ADDR")?,
-            cert: path("APP_TLS_CERT")?,
-            key: path("APP_TLS_KEY")?,
+            identity: if managed {
+                if lookup("APP_TLS_CERT").is_some_and(|v| !v.trim().is_empty())
+                    || lookup("APP_TLS_KEY").is_some_and(|v| !v.trim().is_empty())
+                {
+                    return Err(
+                        "APP_DOMAIN cannot be combined with manual APP_TLS_CERT/APP_TLS_KEY".into(),
+                    );
+                }
+                TlsIdentity::Acme
+            } else {
+                TlsIdentity::Pem {
+                    cert: path("APP_TLS_CERT")?,
+                    key: path("APP_TLS_KEY")?,
+                }
+            },
         }))
     }
 }
@@ -212,7 +233,7 @@ mod tests {
                 "{key}={value}"
             );
         }
-        assert!(TlsConfig::load(&lookup(&[("APP_HTTP2_ADDR", "127.0.0.1:4434")])).is_err());
-        assert!(TlsConfig::load(&lookup(&[("APP_TLS_ADDR", "127.0.0.1:443")])).is_err());
+        assert!(TlsConfig::load(&lookup(&[("APP_HTTP2_ADDR", "127.0.0.1:4434")]), false).is_err());
+        assert!(TlsConfig::load(&lookup(&[("APP_TLS_ADDR", "127.0.0.1:443")]), false).is_err());
     }
 }

@@ -56,6 +56,12 @@ jobs:
       - name: Check the workspace
         # fmt + clippy (-D warnings) + the full test suite + wasm32 type-check.
         run: cargo xtask check
+      - name: Verify public ports without capabilities
+        # Only the disposable host's low-port threshold changes; the test still
+        # runs as its unprivileged user, as in rootless host networking.
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+          REVARO_INGRESS_TEST_PUBLIC_PORTS=1 cargo test -p revaro-server --test public_ingress
       - name: Audit Rust dependencies
         uses: actions/cache@v5
         with:
@@ -90,19 +96,19 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Validate Compose origin defaults
         run: |
-          compose_default_base_url="$(APP_PORT=18081 APP_BASE_URL= docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
+          compose_default_base_url="$(APP_PORT=18081 APP_BASE_URL= docker compose -f compose.local.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
           test "$compose_default_base_url" = "http://localhost:18081"
-          compose_custom_base_url="$(APP_PORT=18081 APP_BASE_URL=https://files.example.test docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
+          compose_custom_base_url="$(APP_DOMAIN=files.example.test APP_BASE_URL=https://files.example.test docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
           test "$compose_custom_base_url" = "https://files.example.test"
-          compose_http_cookie_secure="$(APP_PORT=18081 APP_BASE_URL= COOKIE_SECURE= docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.COOKIE_SECURE')"
-          test -z "$compose_http_cookie_secure"
-          compose_https_cookie_secure="$(APP_PORT=18081 APP_BASE_URL=https://files.example.test COOKIE_SECURE= docker compose -f compose.yml config --format json | jq -r '.services.revaro.environment.COOKIE_SECURE')"
-          test -z "$compose_https_cookie_secure"
+          public_compose="$(APP_DOMAIN=files.example.test APP_BASE_URL= COOKIE_SECURE= docker compose -f compose.yml config --format json)"
+          jq -e '.services.revaro.environment.APP_DOMAIN == "files.example.test" and .services.revaro.environment.APP_BASE_URL == "" and .services.revaro.environment.COOKIE_SECURE == ""' <<<"$public_compose" >/dev/null
+          host_compose="$(APP_DOMAIN=files.example.test docker compose -f compose.host.yml config --format json)"
+          jq -e '.services.revaro.network_mode == "host" and (.services.revaro.ports // [] | length) == 0 and (.services.revaro.sysctls // {} | length) == 0' <<<"$host_compose" >/dev/null
           example_cookie_secure="$(sed -n 's/^COOKIE_SECURE=//p' .env.example)"
           test -z "$example_cookie_secure"
       - name: Validate production Compose hardening
         run: |
-          compose_json="$(docker compose -f compose.yml config --format json)"
+          compose_json="$(APP_DOMAIN=files.example.test docker compose -f compose.yml config --format json)"
           jq -e '.services.revaro.read_only == true' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.restart == "unless-stopped"' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.security_opt | index("no-new-privileges:true") != null' <<<"$compose_json" >/dev/null
@@ -112,8 +118,9 @@ jobs:
           jq -e '.services.revaro.volumes | any(.[]; .type == "volume" and .target == "/objects")' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.volumes | any(.[]; .type == "volume" and .target == "/caches")' <<<"$compose_json" >/dev/null
           jq -e '.services.revaro.environment.APP_DATA_DIR == "/data" and .services.revaro.environment.APP_OBJECTS_DIR == "/objects" and .services.revaro.environment.APP_CACHES_DIR == "/caches" and .services.revaro.environment.APP_WEB_DIR == "/opt/revaro/web"' <<<"$compose_json" >/dev/null
-          jq -e '.services.revaro.healthcheck.test == ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/readyz"]' <<<"$compose_json" >/dev/null
-          jq -e '.services.revaro.ports | length == 1 and .[0].host_ip == "127.0.0.1" and .[0].target == 8080 and .[0].protocol == "tcp"' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.healthcheck.test == ["CMD", "wget", "--no-check-certificate", "-q", "-O", "-", "https://127.0.0.1:443/readyz"]' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.ports | length == 3 and any(.[]; .target == 80 and .published == "80" and .protocol == "tcp") and any(.[]; .target == 443 and .published == "443" and .protocol == "tcp") and any(.[]; .target == 443 and .published == "443" and .protocol == "udp")' <<<"$compose_json" >/dev/null
+          jq -e '.services.revaro.environment.APP_ADDR == "0.0.0.0:80" and .services.revaro.environment.APP_TLS_ADDR == "0.0.0.0:443" and .services.revaro.environment.APP_QUIC_ADDR == "0.0.0.0:443" and .services.revaro.environment.ACME_CACHE_DIR == "/data/acme" and .services.revaro.sysctls["net.ipv4.ip_unprivileged_port_start"] == "80"' <<<"$compose_json" >/dev/null
       - name: Generate tested image metadata
         id: tested-meta
         uses: docker/metadata-action@v6.2.0

@@ -30,19 +30,22 @@ python3 scripts/seed-stack-preview.py
 
 ## 部署
 
-复制 `.env.example` 为 `.env`，填写访问地址后启动：
+复制 `.env.example` 为 `.env`，设置 `APP_DOMAIN=files.example.com`，让域名的 A/AAAA 记录指向本机，并开放 TCP 80、TCP 443 和 UDP 443。无需外部反向代理：
 
 ```sh
 docker compose up -d
+# rootless Podman，宿主机网络（先按部署说明设置低端口 sysctl）：
+podman-compose -f compose.host.yml up -d
 ```
 
-默认访问 `http://localhost:8080`。首次启动时，若未设置 `ADMIN_PASSWORD`，系统生成随机管理员密码并写入容器 `/data/initial-admin-credentials`，文件权限为 0600。登录后请在账户设置中修改凭据，并删除该凭据文件。支持 TOTP 两步验证与恢复码。
+访问 `https://files.example.com`。容器内也直接监听 80/443：80 完成 HTTP-01 验证，其余请求 308 跳转 HTTPS；TCP 443 提供 HTTP/1.1 + HTTP/2，UDP 443 提供标准 HTTP/3，默认 aggressive + auto。`rustls-acme` 自动申请、持久化并续期证书，TCP 与 QUIC 在新连接中自动使用新证书。首次签发完成前 HTTPS 尚不可用；已有缓存可直接恢复。部署前提、宿主机网络、续期与诊断见 [公网入口部署](docs/public-ingress.md)。
 
-镜像为 `ghcr.io/vesperglow/revaro:latest`，以 UID/GID 10001 运行。默认仅将端口映射到主机回环地址；公网使用时通过反向代理提供 HTTPS，并将 `APP_BASE_URL` 设为实际访问地址。`TRUSTED_PROXIES` 只填写受信代理的 CIDR。
+镜像为 `ghcr.io/vesperglow/revaro:latest`，以 UID/GID 10001 运行。首次启动时，若未设置 `ADMIN_PASSWORD`，系统生成随机管理员密码并写入容器 `/data/initial-admin-credentials`，文件权限为 0600。登录后请在账户设置中修改凭据，并删除该凭据文件。支持 TOTP 两步验证与恢复码。本地 HTTP 开发使用 `docker compose -f compose.local.yml up -d`，访问 `http://localhost:8080`。
 
 本地目录：
 
 - `/data/revaro.db`：SQLite 元数据。
+- `/data/acme/`：ACME 账户及证书/私钥，随数据卷持久化。
 - `/objects/blobs/<UUID>`：普通文件内容。
 - `/objects/profile/`、`thumbs/` 及阅读对象：持久化附属内容。
 - `/objects/.multipart/`：正在上传的分片。
@@ -75,11 +78,16 @@ docker compose up -d
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
-| `APP_ADDR` | `:8080` | 应用监听地址 |
+| `APP_DOMAIN` | 空（公网 Compose 必填） | ACME 域名，启用直接公网入口 |
+| `ACME_EMAIL` | 空 | ACME 账户联系邮箱 |
+| `ACME_STAGING` | `false` | 测试签发，证书不被普通浏览器信任 |
+| `ACME_CACHE_DIR` | `$APP_DATA_DIR/acme` | 私有账户/证书持久化目录 |
+| `APP_ADDR` | 公网 `0.0.0.0:80`；本地 `:8080` | HTTP-01 / 重定向或本地 HTTP |
+| `APP_TLS_ADDR` / `APP_QUIC_ADDR` | 公网 `0.0.0.0:443` | TCP TLS / UDP HTTP/3 |
 | `APP_DATA_DIR` | `/data` | 数据库和配置目录 |
 | `APP_OBJECTS_DIR` | `/objects` | 持久对象和上传分片根目录 |
 | `APP_CACHES_DIR` | `/caches` | 可重建的媒体和阅读缓存目录 |
-| `APP_BASE_URL` | `http://localhost:8080`（Compose 会随 `APP_PORT` 推导） | 公网访问地址、同源检查和分享链接 |
+| `APP_BASE_URL` | 公网 `https://$APP_DOMAIN`；本地 `http://localhost:8080` | 公网访问地址、同源检查和分享链接 |
 | `COOKIE_SECURE` | 随 HTTPS 地址启用 | Cookie Secure |
 | `UPLOAD_EXPIRES` | `24h` | 上传会话有效期 |
 | `UPLOAD_IDLE_TIMEOUT` | `60s` | 上传请求无字节进展超时 |
