@@ -13,18 +13,20 @@ test('lost creation and completion responses reuse one session and do not retran
   const keys: string[] = []
   let dataRequests = 0
   let completionRequests = 0
-  await page.route('**/api/uploads', async route => {
+  await page.context().route('**/api/uploads', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     keys.push(route.request().postDataJSON().idempotency_key)
     const response = await route.fetch()
     ids.push((await response.json()).upload_id)
     if (ids.length === 1) await route.abort('connectionreset')
     else await route.fulfill({ response })
   })
-  await page.route('**/api/uploads/*/data', async route => {
+  await page.route(/\/api\/uploads\/[^/]+\/data(?:\/\d+)?$/, async route => {
     dataRequests++
     await route.continue()
   })
-  await page.route('**/api/uploads/*/complete', async route => {
+  await page.context().route('**/api/uploads/*/complete', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     completionRequests++
     const response = await route.fetch()
     expect(response.status()).toBe(200)
@@ -58,7 +60,8 @@ test('multipart retry uses server acknowledgements and only sends the missing pa
   page.on('request', request => {
     if (/\/api\/uploads\/[^/]+\/parts(?:\/|$)/.test(new URL(request.url()).pathname)) legacyRequests.push(request.url())
   })
-  await page.route('**/api/uploads', async route => {
+  await page.context().route('**/api/uploads', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     const response = await route.fetch()
     ids.push((await response.json()).upload_id)
     await route.fulfill({ response })
@@ -107,12 +110,13 @@ test('uploads appear automatically in a bounded scrolling overlay and disappear 
   const ids = new Map<string, string>()
   const waiting = new Map<string, () => void>()
   let releaseAll = false
-  await page.route('**/api/uploads', async route => {
+  await page.context().route('**/api/uploads', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     const response = await route.fetch()
     ids.set(route.request().postDataJSON().name, (await response.json()).upload_id)
     await route.fulfill({ response })
   })
-  await page.route('**/api/uploads/*/data', async route => {
+  await page.route(/\/api\/uploads\/[^/]+\/data(?:\/\d+)?$/, async route => {
     const id = new URL(route.request().url()).pathname.split('/')[3]
     if (!releaseAll) await new Promise<void>(resolve => waiting.set(id, resolve))
     await route.continue().catch(() => {})
@@ -177,16 +181,18 @@ test('failed uploads remain with retry, processing progress and cancellation reu
   let hold = true
   let release!: () => void
   const ids: string[] = []
-  await page.route('**/api/uploads', async route => {
+  await page.context().route('**/api/uploads', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     const response = await route.fetch()
     ids.push((await response.json()).upload_id)
     await route.fulfill({ response })
   })
-  await page.route('**/api/uploads/*/data', async route => {
+  await page.route(/\/api\/uploads\/[^/]+\/data(?:\/\d+)?$/, async route => {
     if (fail) await route.fulfill({ status: 422, json: { error: { message: '上传失败，请重试' } } })
     else await route.continue()
   })
-  await page.route('**/api/uploads/*/complete', async route => {
+  await page.context().route('**/api/uploads/*/complete', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     if (hold) await new Promise<void>(resolve => { release = resolve })
     await route.continue().catch(() => {})
   })
@@ -222,7 +228,7 @@ test('failed uploads remain with retry, processing progress and cancellation reu
 
 test('failed rows stay only in the current browser session and refresh does not reopen an upload history', async ({ page }) => {
   await login(page)
-  await page.route('**/api/uploads/*/data', route => route.fulfill({ status: 422, json: { error: { message: '上传失败' } } }))
+  await page.route(/\/api\/uploads\/[^/]+\/data(?:\/\d+)?$/, route => route.fulfill({ status: 422, json: { error: { message: '上传失败' } } }))
   const name = `temporary-failure-${Date.now()}.txt`
   await page.getByLabel('选择文件上传', { exact: true }).setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('temporary') })
   await expect(row(page, name)).toContainText('上传失败')

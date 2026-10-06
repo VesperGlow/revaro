@@ -1,6 +1,6 @@
 import { expect, test as base, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login, navigate } from './helpers'
+import { login, navigate, uploadFixture as upload } from './helpers'
 
 const test = base.extend<{ contentRoot: { id: string, prefix: string } }>({
   contentRoot: async ({ page }, use) => {
@@ -33,17 +33,6 @@ function wav() {
   return data
 }
 
-async function upload(page: Page, parent_id: string, name: string, mime_type: string, data: Buffer) {
-  const headers = { origin: new URL(page.url()).origin }
-  const created = await page.request.post('/api/uploads', { headers, data: { parent_id, name, mime_type, size: data.length } })
-  expect(created.status()).toBe(201)
-  const session = await created.json()
-  const sent = await page.request.put(`/api/uploads/${session.upload_id}/data`, { headers, data })
-  expect(sent.ok()).toBeTruthy()
-  const completed = await page.request.post(`/api/uploads/${session.upload_id}/complete`, { headers, data: { parts: [] } })
-  expect(completed.ok()).toBeTruthy()
-  return completed.json()
-}
 
 async function savePosition(page: Page, id: string, position: number) {
   const response = await page.request.put(`/api/files/${id}/media/progress`, {
@@ -72,7 +61,8 @@ test('music restores saved progress after delayed metadata and reload without er
       else if (request.method() === 'PUT') progressWrites.push(request.postDataJSON().position)
     }
   })
-  await page.route(`**/api/files/${song.id}/preview`, async route => {
+  await page.context().route(`**/api/files/${song.id}/preview`, async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     await metadata.promise
     await route.continue()
   })
@@ -85,26 +75,26 @@ test('music restores saved progress after delayed metadata and reload without er
     expect((await (await page.request.get(`/api/files/${song.id}/media/progress`)).json()).position).toBe(60)
     metadata.resolve()
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
-    await expect.poll(() => page.locator('audio').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(60)
-    expect(await page.locator('audio').evaluate(audio => audio.currentTime)).toBeLessThan(65)
+    await expect.poll(() => page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(60)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeLessThan(65)
     await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
     await expect.poll(async () => (await (await page.request.get(`/api/files/${song.id}/media/progress`)).json()).position).toBeGreaterThanOrEqual(60)
     await page.getByRole('button', { name: '停止音乐', exact: true }).click()
     await page.reload()
     await page.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
-    expect(await page.locator('audio').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(60)
-    expect(await page.locator('audio').evaluate(audio => audio.currentTime)).toBeLessThan(65)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(60)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeLessThan(65)
     expect(progressWrites.every(position => position >= 60)).toBeTruthy()
     // Single-track repeat must restart instead of restoring its end position.
     await page.getByRole('button', { name: '循环模式', exact: true }).click()
     await page.getByRole('button', { name: '循环模式', exact: true }).click()
     const restarted = page.waitForEvent('request', { predicate: request => request.url().endsWith(`/api/files/${song.id}/preview`) })
-    await page.locator('audio').evaluate(audio => { audio.currentTime = audio.duration - 0.1 })
+    await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => { audio.currentTime = audio.duration - 0.1 })
     await restarted
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
-    await expect.poll(() => page.locator('audio').evaluate(audio => audio.paused)).toBe(false)
-    expect(await page.locator('audio').evaluate(audio => audio.currentTime)).toBeLessThan(5)
+    await expect.poll(() => page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.paused)).toBe(false)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeLessThan(5)
     expect(errors).toEqual([])
   } finally { metadata.resolve() }
 })
@@ -118,7 +108,8 @@ test('late progress responses cannot seek another song or restart stopped music'
   await savePosition(page, second.id, 30)
   let gate = deferred()
   let intercepted = deferred()
-  await page.route(`**/api/files/${first.id}/media/progress`, async route => {
+  await page.context().route(`**/api/files/${first.id}/media/progress`, async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     if (route.request().method() !== 'GET') return route.continue()
     const release = gate.promise
     const response = await route.fetch()
@@ -130,16 +121,16 @@ test('late progress responses cannot seek another song or restart stopped music'
     await navigate(page, '音乐')
     await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
     await intercepted.promise
-    await expect.poll(() => page.locator('audio').evaluate(audio => audio.readyState)).toBeGreaterThanOrEqual(1)
-    expect(await page.locator('audio').evaluate(audio => audio.paused)).toBe(true)
+    await expect.poll(() => page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.readyState)).toBeGreaterThanOrEqual(1)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.paused)).toBe(true)
     expect((await (await page.request.get(`/api/files/${first.id}/media/progress`)).json()).position).toBe(60)
     await page.getByRole('button', { name: `打开 ${second.name}`, exact: true }).click()
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
     gate.resolve()
     await page.waitForTimeout(250)
-    expect(await page.locator('audio').evaluate(audio => audio.currentSrc)).toContain(`/api/files/${second.id}/preview`)
-    expect(await page.locator('audio').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(30)
-    expect(await page.locator('audio').evaluate(audio => audio.currentTime)).toBeLessThan(35)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentSrc)).toContain(`/api/files/${second.id}/preview`)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(30)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeLessThan(35)
     gate = deferred(); intercepted = deferred()
     await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
     await intercepted.promise
@@ -147,7 +138,7 @@ test('late progress responses cannot seek another song or restart stopped music'
     gate.resolve()
     await page.waitForTimeout(250)
     await expect(page.locator('.music-dock')).toHaveCount(0)
-    expect(await page.locator('audio').evaluate(audio => audio.paused)).toBe(true)
+    expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.paused)).toBe(true)
     expect((await (await page.request.get(`/api/files/${first.id}/media/progress`)).json()).position).toBe(60)
     expect(errors).toEqual([])
   } finally { gate.resolve() }
@@ -195,11 +186,11 @@ test('home mixes only opened content in opening order and directly opens every k
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
   }
   await section.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
-  await expect(page.locator('audio')).toHaveJSProperty('paused', false)
+  await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
   await expect(section.locator('.home-item').first()).toHaveAttribute('aria-label', `打开 ${song.name}`)
   await section.getByRole('button', { name: `打开 ${photo.name}`, exact: true }).click()
   await expect(page.locator('.preview-modal img.preview-image')).toBeVisible()
-  await expect(page.locator('audio')).toHaveJSProperty('paused', false)
+  await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
   await page.keyboard.press('Escape')
   await section.getByRole('button', { name: `打开 ${book.name}`, exact: true }).click()
   await expect(page).toHaveURL(new RegExp(`/read/${book.id}$`))
@@ -208,7 +199,7 @@ test('home mixes only opened content in opening order and directly opens every k
   await expect(page).toHaveURL(new RegExp('/$'))
   await section.getByRole('button', { name: `打开 ${video.name}`, exact: true }).click()
   await expect(page.locator('video')).toHaveJSProperty('paused', false)
-  await expect(page.locator('audio')).toHaveJSProperty('paused', true)
+  await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', true)
   await page.keyboard.press('Escape')
   await page.reload()
   await expect(section.locator('.home-item').first()).toHaveAttribute('aria-label', `打开 ${video.name}`)
@@ -224,7 +215,8 @@ test('trash audio preview keeps saved and local resume positions, defaults and c
   const headers = { origin: new URL(page.url()).origin }
   // Regular file clicks use the music dock; trash audio opens the full preview.
   // Supply progress explicitly because the live progress API excludes trash.
-  await page.route(`**/api/files/${song.id}/media/progress`, route => {
+  await page.context().route(`**/api/files/${song.id}/media/progress`, route => {
+    if (!route.request().serviceWorker()) return route.continue()
     if (route.request().method() === 'GET') return route.fulfill({ json: saved })
     return route.continue()
   })
@@ -330,11 +322,18 @@ test('home music always queues its visible songs after refresh and a filtered li
     const visibleNames = await section.locator('.home-card:has(.audio-cover) .card-info strong').allTextContents()
     expect(visibleNames).toContain(first.name)
     expect(visibleNames).toContain(second.name)
-    await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
-    await expect(page.locator('audio')).toHaveJSProperty('paused', false)
-    await page.getByRole('button', { name: '播放队列', exact: true }).click()
-    await expect(page.locator('.music-queue > button strong')).toHaveText(visibleNames.map(name => name.replace(/\.[^.]+$/, '')))
-    await page.getByRole('button', { name: '关闭播放队列', exact: true }).click()
+    await page.getByRole('button', { name: `打开 ${visibleNames[0]}`, exact: true }).click()
+    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
+    // The restored player omits the queue menu. Verify its actual playback
+    // order and boundary through the dock's next-track control instead.
+    const title = page.locator('.dock-track strong')
+    const next = page.getByRole('button', { name: '下一首', exact: true })
+    for (const name of visibleNames) {
+      await expect(title).toHaveText(name.replace(/\.[^.]+$/, ''))
+      await next.click()
+    }
+    await expect(title).toHaveText(visibleNames.at(-1)!.replace(/\.[^.]+$/, ''))
+    await expect(page.locator('audio[aria-hidden="true"]')).toHaveAttribute('src', '')
     await page.getByRole('button', { name: '停止音乐', exact: true }).click()
   }
 })
@@ -346,7 +345,7 @@ test('video playback pauses background music from home, video library and files'
   for (const destination of ['首页', '视频', '文件']) {
     await navigate(page, '音乐')
     await page.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
-    await expect(page.locator('audio')).toHaveJSProperty('paused', false)
+    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
     await navigate(page, destination)
     if (destination === '文件') {
       await page.locator('.file-card').filter({ hasText: contentRoot.prefix }).click()
@@ -355,14 +354,15 @@ test('video playback pauses background music from home, video library and files'
       await page.getByRole('button', { name: `打开 ${video.name}`, exact: true }).click()
     }
     await expect(page.locator('video')).toHaveJSProperty('paused', false)
-    await expect(page.locator('audio')).toHaveJSProperty('paused', true)
+    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', true)
     await page.keyboard.press('Escape')
     await expect(page.locator('video')).toHaveCount(0)
     await page.getByRole('button', { name: '停止音乐', exact: true }).click()
   }
   // Opening a video must also cancel music that is still waiting for metadata.
   const metadata = deferred(), intercepted = deferred()
-  await page.route(`**/api/files/${song.id}/preview`, async route => {
+  await page.context().route(`**/api/files/${song.id}/preview`, async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     intercepted.resolve()
     await metadata.promise
     await route.continue()
@@ -371,18 +371,18 @@ test('video playback pauses background music from home, video library and files'
     await navigate(page, '音乐')
     await page.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
     await intercepted.promise
-    await expect(page.locator('audio')).toHaveJSProperty('readyState', 0)
+    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('readyState', 0)
     await navigate(page, '视频')
     await page.getByRole('button', { name: `打开 ${video.name}`, exact: true }).click()
     await expect(page.locator('video')).toHaveJSProperty('paused', false)
     metadata.resolve()
-    await expect.poll(() => page.locator('audio').evaluate(audio => audio.readyState)).toBeGreaterThanOrEqual(1)
+    await expect.poll(() => page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.readyState)).toBeGreaterThanOrEqual(1)
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
-    await expect(page.locator('audio')).toHaveJSProperty('paused', true)
+    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', true)
     await page.keyboard.press('Escape')
     await expect(page.locator('video')).toHaveCount(0)
     await page.getByRole('button', { name: '播放音乐', exact: true }).click()
-    await expect(page.locator('audio')).toHaveJSProperty('paused', false)
+    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
   } finally {
     metadata.resolve()
     if (await page.locator('video').count()) await page.keyboard.press('Escape')
@@ -405,7 +405,8 @@ for (const entry of ['deep link', 'history forward']) {
         await expect(page).toHaveURL(`${origin}/library`)
       }
       const gate = deferred(), intercepted = deferred(), fulfilled = deferred()
-      await page.route(endpoint, async route => {
+      await page.context().route(endpoint, async route => {
+        if (!route.request().serviceWorker()) return route.continue()
         const response = status === 200 ? await route.fetch() : null
         intercepted.resolve()
         await gate.promise
@@ -428,7 +429,7 @@ for (const entry of ['deep link', 'history forward']) {
         await expect(page.locator('.library-error')).toHaveCount(0)
       } finally {
         gate.resolve()
-        await page.unroute(endpoint)
+        await page.context().unroute(endpoint)
       }
     }
     expect(errors).toEqual([])
@@ -440,7 +441,8 @@ test('home loads one mixed history, shows failures and retries without an unopen
   await markOpened(page, book.id)
   const gate = deferred(), intercepted = deferred()
   let requests = 0, fail = true
-  await page.route('**/api/library/items?*', async route => {
+  await page.context().route('**/api/library/items?*', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     const query = new URL(route.request().url()).searchParams
     if (query.get('opened_only') !== 'true') return route.continue()
     requests++
@@ -449,7 +451,8 @@ test('home loads one mixed history, shows failures and retries without an unopen
     if (fail) {
       intercepted.resolve()
       await gate.promise
-      await route.fulfill({ status: 500, json: { error: { status: 500, message: '模拟最近使用加载失败' } } })
+      // A terminal error reaches the UI; transient 5xx retries are covered by file-transport.spec.ts.
+      await route.fulfill({ status: 422, json: { error: { status: 422, message: '模拟最近使用加载失败' } } })
     } else await route.continue()
   })
   try {
@@ -473,7 +476,8 @@ test('home loads one mixed history, shows failures and retries without an unopen
 test('empty home guides users to files and never falls back to unopened content', async ({ page, contentRoot }) => {
   await upload(page, contentRoot.id, `${contentRoot.prefix}.png`, 'image/png', png)
   const requests: string[] = []
-  await page.route('**/api/library/items?*', async route => {
+  await page.context().route('**/api/library/items?*', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     const query = new URL(route.request().url()).searchParams
     requests.push(query.get('opened_only') || '')
     await route.fulfill({ json: { items: [], total: 0, offset: 0, limit: 60 } })
@@ -492,7 +496,8 @@ test('late library responses cannot replace home history with unopened content',
   const song = await upload(page, contentRoot.id, `${contentRoot.prefix}.wav`, 'audio/wav', wav())
   await markOpened(page, book.id)
   const gate = deferred(), intercepted = deferred(), fulfilled = deferred()
-  await page.route('**/api/library/items?*', async route => {
+  await page.context().route('**/api/library/items?*', async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     if (new URL(route.request().url()).searchParams.get('kind') !== 'audio') return route.continue()
     const response = await route.fetch()
     intercepted.resolve()

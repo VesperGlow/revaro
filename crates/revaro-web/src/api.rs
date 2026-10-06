@@ -1,21 +1,6 @@
-//! The slice of the HTTP client the shell needs.
-//!
-//! The Vue app funnelled every request through `web/src/api.ts`, which merged a
-//! caller `AbortSignal` with a 60 s timeout, defaulted `Content-Type` to JSON and
-//! unwrapped the `{error:{status,code,message}}` envelope into an `ApiError`.
-//! This module is the same contract for the authenticated shell: session and
-//! login, logout, folder metadata/children, file mutations and trash actions.
-//!
-//! The request/response bodies are the shared types from
-//! [`revaro_core::api::auth`], so a field rename on the server breaks this build
-//! rather than failing at runtime. The error envelope is likewise the shared
-//! [`ErrorEnvelope`], which is how the login form can branch on the
-//! `totp_required` code without string-matching a message.
-//!
-//! Raw upload bytes intentionally use the browser XHR API in
-//! [`crate::components::uploads`], where progress and cancellation are
-//! available; this module owns the JSON session and commit calls. Only compiled
-//! for wasm; the pure parts of the client live in `crate::logic`.
+//! Typed API operations. The shared Service Worker transport owns request
+//! progress deadlines, safe retries and recovery for every file consumer.
+//! Mutations without an idempotency contract are never blindly replayed.
 
 use gloo_net::http::{Request, RequestBuilder};
 use js_sys::{Object, Reflect};
@@ -40,8 +25,10 @@ use revaro_core::{ErrorCode, ErrorEnvelope};
 use wasm_bindgen::JsValue;
 use web_sys::{AbortSignal, Request as BrowserRequest, RequestCredentials, RequestInit};
 
-const API_TIMEOUT_MS: u32 = 60_000;
-const READER_FLOW_TIMEOUT_MS: u32 = 120_000;
+// The shared transport owns stall deadlines and retries; a second timer
+// would prematurely abort a healthy reconnecting transfer.
+const API_TIMEOUT_MS: u32 = 0;
+const READER_FLOW_TIMEOUT_MS: u32 = 0;
 
 /// A failed request to an authenticated JSON endpoint.
 ///
@@ -180,8 +167,7 @@ pub async fn fetch_book_flow(id: &str) -> Result<FlowManifest, RequestError> {
 
 /// Fetch one sanitized flow chunk as HTML.
 pub async fn fetch_book_chunk(id: &str, index: i32) -> Result<String, RequestError> {
-    // The reference reader deliberately used a raw same-origin fetch for
-    // chunks, so a large chapter is not cut off by the generic 60s JSON timer.
+    // The shared transport intercepts this request, including body stalls.
     let response = Request::get(&format!("/api/files/{id}/book/flow/chunks/{index}"))
         .credentials(RequestCredentials::SameOrigin)
         .send()
@@ -632,7 +618,7 @@ pub async fn revoke_share(id: &str) -> Result<(), RequestError> {
     send_empty(request).await
 }
 
-/// Reserve the one-use ZIP download ticket for multiple files.
+/// Reserve a resumable, user-bound ZIP download ticket for multiple files.
 pub async fn prepare_batch_download(ids: Vec<String>) -> Result<BatchDownloadTicket, RequestError> {
     let request = api_request(Request::post("/api/files/batch-download/prepare"))
         .json(&BatchDownloadRequest { ids })

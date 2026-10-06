@@ -1,0 +1,134 @@
+2026-10-06T15:11:02.090874Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:11:02.091684Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:11:02.094699Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:11:02.094941Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:11:02.094965Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:11:02.094981Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:11:27.385077Z  INFO termination signal received, shutting down
+2026-10-06T15:11:27.385821Z  INFO QUIC connection transfer statistics remote=127.0.0.1:54455 sent_bytes=56671958 acked_bytes=53198510 lost_bytes=243354 loss_ppm=0 pacing_bps=18094280 target_bps=18094280 cubic_fallback=false rtt_ms=280 sent_packets=45440 lost_packets=204
+2026-10-06T15:11:27.386344Z  INFO server stopped
+2026-10-06T15:11:27.428575Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:11:27.429429Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:11:27.432738Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:11:27.433008Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:11:27.433025Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:11:27.433043Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:11:52.723583Z  INFO termination signal received, shutting down
+2026-10-06T15:11:52.723947Z  INFO QUIC connection transfer statistics remote=127.0.0.1:33252 sent_bytes=56671570 acked_bytes=53221536 lost_bytes=236802 loss_ppm=0 pacing_bps=18155800 target_bps=18155800 cubic_fallback=false rtt_ms=272 sent_packets=45439 lost_packets=198
+2026-10-06T15:11:52.724401Z  INFO server stopped
+2026-10-06T15:11:52.768654Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:11:52.769309Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:11:52.772908Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:11:52.773148Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:11:52.773162Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:11:52.773179Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:12:18.061429Z  INFO termination signal received, shutting down
+2026-10-06T15:12:18.062192Z  INFO QUIC connection transfer statistics remote=127.0.0.1:47649 sent_bytes=58784708 acked_bytes=53781004 lost_bytes=1863257 loss_ppm=0 pacing_bps=20493896 target_bps=20493896 cubic_fallback=false rtt_ms=170 sent_packets=47222 lost_packets=1555
+2026-10-06T15:12:18.062872Z  INFO server stopped
+2026-10-06T15:12:18.107918Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:12:18.108969Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:12:18.113006Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:12:18.113328Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:12:18.113357Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:12:18.113377Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:12:43.403948Z  INFO termination signal received, shutting down
+2026-10-06T15:12:43.404587Z  INFO QUIC connection transfer statistics remote=127.0.0.1:39943 sent_bytes=59335673 acked_bytes=52437198 lost_bytes=3300645 loss_ppm=50949 pacing_bps=23227680 target_bps=22044232 cubic_fallback=false rtt_ms=266 sent_packets=47621 lost_packets=2754
+2026-10-06T15:12:43.405055Z  INFO server stopped
+2026-10-06T15:12:43.454691Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:12:43.455494Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:12:43.459512Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:12:43.459912Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:12:43.460121Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:12:43.460304Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:13:08.747623Z  INFO termination signal received, shutting down
+2026-10-06T15:13:08.748429Z  INFO QUIC connection transfer statistics remote=127.0.0.1:47958 sent_bytes=59747691 acked_bytes=53147398 lost_bytes=3219582 loss_ppm=49216 pacing_bps=22232824 target_bps=21138608 cubic_fallback=false rtt_ms=202 sent_packets=47925 lost_packets=2683
+2026-10-06T15:13:08.748825Z  INFO server stopped
+2026-10-06T15:13:08.844139Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:13:08.844910Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:13:08.848904Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:13:08.849302Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:13:08.849599Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:13:08.849856Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:13:34.138388Z  INFO termination signal received, shutting down
+2026-10-06T15:13:34.139058Z  INFO QUIC connection transfer statistics remote=127.0.0.1:40637 sent_bytes=59366691 acked_bytes=53219841 lost_bytes=2764939 loss_ppm=47987 pacing_bps=21850616 target_bps=20802072 cubic_fallback=false rtt_ms=212 sent_packets=47601 lost_packets=2305
+2026-10-06T15:13:34.139564Z  INFO server stopped
+2026-10-06T15:13:34.182651Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:13:34.183639Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:13:34.187467Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:13:34.187740Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:13:34.187767Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:13:34.187787Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:13:59.477887Z  INFO termination signal received, shutting down
+2026-10-06T15:13:59.479095Z  INFO QUIC connection transfer statistics remote=127.0.0.1:44054 sent_bytes=62591282 acked_bytes=53177905 lost_bytes=6116163 loss_ppm=100460 pacing_bps=23074544 target_bps=20756480 cubic_fallback=false rtt_ms=153 sent_packets=50279 lost_packets=5114
+2026-10-06T15:13:59.479834Z  INFO server stopped
+2026-10-06T15:13:59.522866Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:13:59.523648Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:13:59.526974Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:13:59.527237Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:13:59.527277Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:13:59.527304Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:14:24.815286Z  INFO termination signal received, shutting down
+2026-10-06T15:14:24.815704Z  INFO QUIC connection transfer statistics remote=127.0.0.1:48247 sent_bytes=60790756 acked_bytes=51606172 lost_bytes=5690323 loss_ppm=95631 pacing_bps=20377768 target_bps=18429008 cubic_fallback=false rtt_ms=268 sent_packets=48762 lost_packets=4748
+2026-10-06T15:14:24.816178Z  INFO server stopped
+2026-10-06T15:14:24.864206Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:14:24.865146Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:14:24.869417Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:14:24.869816Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:14:24.869869Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:14:24.869908Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:14:50.157128Z  INFO termination signal received, shutting down
+2026-10-06T15:14:50.157983Z  INFO QUIC connection transfer statistics remote=127.0.0.1:43731 sent_bytes=51988717 acked_bytes=45029615 lost_bytes=4952197 loss_ppm=97650 pacing_bps=20653808 target_bps=18636952 cubic_fallback=false rtt_ms=125 sent_packets=41799 lost_packets=4143
+2026-10-06T15:14:50.158607Z  INFO server stopped
+2026-10-06T15:14:50.202846Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:14:50.203584Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:14:50.207525Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:14:50.207851Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:14:50.207870Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:14:50.207900Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:15:15.499481Z  INFO termination signal received, shutting down
+2026-10-06T15:15:15.500282Z  INFO QUIC connection transfer statistics remote=127.0.0.1:60500 sent_bytes=59281565 acked_bytes=47934400 lost_bytes=9056512 loss_ppm=143449 pacing_bps=20719112 target_bps=17746976 cubic_fallback=false rtt_ms=129 sent_packets=47664 lost_packets=7568
+2026-10-06T15:15:15.500786Z  INFO server stopped
+2026-10-06T15:15:15.546381Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:15:15.547651Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:15:15.551993Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:15:15.552320Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:15:15.552348Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:15:15.552374Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:15:40.840105Z  INFO termination signal received, shutting down
+2026-10-06T15:15:40.840804Z  INFO QUIC connection transfer statistics remote=127.0.0.1:49438 sent_bytes=64237409 acked_bytes=50823613 lost_bytes=8958352 loss_ppm=147451 pacing_bps=26240072 target_bps=22370944 cubic_fallback=false rtt_ms=421 sent_packets=51583 lost_packets=7481
+2026-10-06T15:15:40.841359Z  INFO server stopped
+2026-10-06T15:15:40.885934Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:15:40.886670Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:15:40.890098Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:15:40.890444Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:15:40.890470Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:15:40.890489Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:16:06.177763Z  INFO termination signal received, shutting down
+2026-10-06T15:16:06.178234Z  INFO QUIC connection transfer statistics remote=127.0.0.1:47426 sent_bytes=61056055 acked_bytes=48824297 lost_bytes=8662347 loss_ppm=146871 pacing_bps=22075112 target_bps=18832920 cubic_fallback=false rtt_ms=253 sent_packets=49004 lost_packets=7230
+2026-10-06T15:16:06.178780Z  INFO server stopped
+2026-10-06T15:16:06.227688Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:16:06.228565Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:16:06.232152Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:16:06.232480Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:16:06.232518Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:16:06.232553Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:16:14.218809Z  INFO QUIC aggressive controller switched to Cubic reason="persistent congestion"
+2026-10-06T15:16:19.612691Z  INFO termination signal received, shutting down
+2026-10-06T15:16:19.613566Z  INFO QUIC connection transfer statistics remote=127.0.0.1:55955 sent_bytes=8346880 acked_bytes=7070189 lost_bytes=952686 loss_ppm=59175 pacing_bps=16402488 target_bps=16402488 cubic_fallback=true rtt_ms=127 sent_packets=6734 lost_packets=798
+2026-10-06T15:16:19.614485Z  INFO server stopped
+2026-10-06T15:16:19.657216Z  INFO database ready path=/tmp/revaro-netem-bdyqwf2y/data/revaro.db
+2026-10-06T15:16:19.658081Z  INFO local object storage ready path=/tmp/revaro-netem-bdyqwf2y/objects
+2026-10-06T15:16:19.661459Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:16:19.661714Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:16:19.661762Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:16:19.661839Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-bdyqwf2y/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:16:32.891675Z  INFO QUIC aggressive controller switched to Cubic reason="high measured loss"
+2026-10-06T15:16:37.956368Z  INFO QUIC healthy path restarting bounded bandwidth probe episodes=1
+2026-10-06T15:16:47.699792Z  INFO user logged in user=admin
+2026-10-06T15:16:58.863065Z  INFO QUIC aggressive controller switched to Cubic reason="persistent congestion"
+2026-10-06T15:17:04.358906Z  INFO QUIC healthy path restarting bounded bandwidth probe episodes=1
+2026-10-06T15:17:14.749002Z  INFO QUIC connection transfer statistics remote=127.0.0.1:43191 sent_bytes=26812466 acked_bytes=21921005 lost_bytes=2563199 loss_ppm=52412 pacing_bps=19605880 target_bps=18578296 cubic_fallback=false rtt_ms=261 sent_packets=21563 lost_packets=2143
+2026-10-06T15:17:26.623462Z  INFO QUIC connection transfer statistics remote=127.0.0.1:54785 sent_bytes=13862 acked_bytes=12451 lost_bytes=0 loss_ppm=0 pacing_bps=4000000 target_bps=4000000 cubic_fallback=false rtt_ms=0 sent_packets=26 lost_packets=0
+2026-10-06T15:17:26.697422Z  INFO termination signal received, shutting down
+2026-10-06T15:17:26.698076Z  INFO QUIC connection transfer statistics remote=127.0.0.1:59751 sent_bytes=18556381 acked_bytes=15935117 lost_bytes=2007372 loss_ppm=151030 pacing_bps=4384880 target_bps=3722632 cubic_fallback=false rtt_ms=124 sent_packets=12677 lost_packets=1400
+2026-10-06T15:17:26.698615Z  INFO server stopped

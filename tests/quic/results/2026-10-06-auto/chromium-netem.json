@@ -1,0 +1,53 @@
+{
+  "engine": "chromium",
+  "browser": "154.0.8037.57",
+  "protocol": "h3",
+  "testForcedQuic": true,
+  "netem": true,
+  "results": [
+    {
+      "extension": "pdf",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 1.226199999988079,
+      "maxProgressGapSeconds": 0.001699999988079071
+    },
+    {
+      "extension": "zip",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 1.3472000000178814,
+      "maxProgressGapSeconds": 0.00030000001192092895
+    },
+    {
+      "extension": "txt",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 1.1172000000178814,
+      "maxProgressGapSeconds": 0.11259999999403954
+    },
+    {
+      "extension": "dat",
+      "bytes": 6291456,
+      "hashVerified": true,
+      "seconds": 17.813299999982117,
+      "maxProgressGapSeconds": 11.175700000017882
+    },
+    {
+      "http2Fallback": {
+        "seconds": 15.757100000023842,
+        "state": {
+          "protocol": "h3",
+          "fallback": true,
+          "http2Origin": "https://localhost:18444"
+        },
+        "primaryProtocol": null,
+        "nextHopProtocol": "h2"
+      }
+    }
+  ],
+  "fallbackRequests": [
+    "https://localhost:18444/api/transport/config?fallback_probe=1",
+    "https://localhost:18444/api/transport/config?protocol_probe=1"
+  ]
+}

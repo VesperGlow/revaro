@@ -1,4 +1,31 @@
 import { expect, type Page } from '@playwright/test'
+import { createHash } from 'node:crypto'
+
+// Fixture setup follows the server's upload geometry for every MIME type.
+// Recovery itself is exercised through the browser UI in upload-progress.spec.ts.
+export async function uploadFixture(page: Page, parent_id: string, name: string, mime_type: string, data: Buffer) {
+  const headers = { origin: new URL(page.url()).origin }
+  const created = await page.request.post('/api/uploads', { headers, data: { parent_id, name, mime_type, size: data.length } })
+  expect(created.status(), await created.text()).toBe(201)
+  const session = await created.json()
+  if (session.mode === 'multipart') {
+    for (let number = 1; number <= session.part_count; number++) {
+      const bytes = data.subarray((number - 1) * session.part_size, number * session.part_size)
+      const hash = createHash('sha256').update(bytes).digest('hex')
+      const sent = await page.request.put(`/api/uploads/${session.upload_id}/data/${number}`, {
+        headers: { ...headers, 'X-Content-SHA256': hash }, data: bytes,
+      })
+      expect(sent.status(), await sent.text()).toBe(204)
+      expect(sent.headers()['x-content-sha256']).toBe(hash)
+    }
+  } else {
+    const sent = await page.request.put(`/api/uploads/${session.upload_id}/data`, { headers, data })
+    expect(sent.ok(), await sent.text()).toBeTruthy()
+  }
+  const completed = await page.request.post(`/api/uploads/${session.upload_id}/complete`, { headers, data: { parts: [] } })
+  expect(completed.ok(), await completed.text()).toBeTruthy()
+  return completed.json()
+}
 
 export async function enterSelectionMode(page: Page) {
   await openTopbarMenu(page)
@@ -28,6 +55,15 @@ export async function openTopbarMenu(page: Page) {
     await page.getByLabel('更多操作', { exact: true }).click()
   }
   await expect(page.locator('.topbar-menu-panel')).toBeVisible()
+}
+
+// Existing instances can contain more than one page of files. Newly uploaded
+// fixtures should remain visible without depending on an empty root folder.
+export async function showRecentFiles(page: Page) {
+  await page.getByRole('button', { name: '选择排序字段', exact: true }).click()
+  await page.getByRole('group', { name: '排序字段', exact: true }).getByRole('button', { name: '时间', exact: true }).click()
+  const direction = page.getByRole('button', { name: '切换排序方向', exact: true })
+  if ((await direction.getAttribute('aria-description'))?.includes('当前升序')) await direction.click()
 }
 
 export async function navigate(page: Page, name: string) {

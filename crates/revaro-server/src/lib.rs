@@ -29,6 +29,7 @@ pub mod media_routes;
 pub mod media_runtime;
 pub mod middleware;
 pub mod proxy;
+pub mod quic;
 pub mod reader_routes;
 pub mod router;
 pub mod share_routes;

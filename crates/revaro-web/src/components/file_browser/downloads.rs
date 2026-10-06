@@ -1,19 +1,12 @@
-//! Original-file and prepared ZIP downloads.
+//! Original-file and prepared ZIP downloads through the shared transport.
 
 use super::*;
 
 pub(in crate::components) fn download_file(file: &File) {
-    start_download_with_name(
-        &format!("/api/files/{}/download", file.id),
-        Some(&file.name),
-    );
+    start_download(&format!("/api/files/{}/download", file.id));
 }
 
 pub(super) fn start_download(path: &str) {
-    start_download_with_name(path, None);
-}
-
-pub(super) fn start_download_with_name(path: &str, name: Option<&str>) {
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -27,9 +20,9 @@ pub(super) fn start_download_with_name(path: &str, name: Option<&str>) {
         return;
     };
     let _ = anchor.set_attribute("href", path);
-    if let Some(name) = name {
-        let _ = anchor.set_attribute("download", name);
-    }
+    // Chromium bypasses Service Workers for the HTML `download` attribute.
+    // Use ordinary navigation: the shared worker streams a response carrying
+    // Content-Disposition: attachment and the server's safe filename.
     let _ = anchor.set_attribute("hidden", "");
     if body.append_child(&anchor).is_ok()
         && let Ok(anchor) = anchor.dyn_into::<web_sys::HtmlElement>()

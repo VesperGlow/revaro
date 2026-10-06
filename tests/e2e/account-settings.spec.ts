@@ -18,7 +18,10 @@ for (const mobile of [false, true]) {
     test.beforeEach(async ({ page }) => {
       errors = []
       page.on('pageerror', error => errors.push(error.message))
-      await page.route('**/api/auth/totp', route => route.fulfill({ json: { enabled: true, recovery_codes: 5 } }))
+      await page.context().route('**/api/auth/totp', route => {
+        if (!route.request().serviceWorker()) return route.continue()
+        return route.fulfill({ json: { enabled: true, recovery_codes: 5 } })
+      })
       await login(page)
       await page.getByLabel('打开账户设置', { exact: true }).click()
     })
@@ -69,7 +72,8 @@ for (const mobile of [false, true]) {
 
     test('username changes require saving and update both the profile and row', async ({ page }) => {
       const submitted: unknown[] = []
-      await page.route('**/api/profile/username', route => {
+      await page.context().route('**/api/profile/username', route => {
+        if (!route.request().serviceWorker()) return route.continue()
         submitted.push(route.request().postDataJSON())
         return route.fulfill({ status: 204 })
       })
@@ -100,7 +104,8 @@ for (const mobile of [false, true]) {
 
     test('avatar requirements appear on demand and image changes keep the list intact', async ({ page }) => {
       const uploads: string[] = []
-      await page.route('**/api/profile/avatar*', route => {
+      await page.context().route('**/api/profile/avatar*', route => {
+        if (!route.request().serviceWorker()) return route.continue()
         if (route.request().method() === 'PUT') {
           uploads.push(route.request().postDataJSON().data_url)
           return route.fulfill({ status: 204 })

@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
+// Playwright 1.55 gates routing/observing worker-owned network requests.
+process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = '1'
+
 const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH
 
 export default defineConfig({

@@ -1,34 +1,23 @@
-//! Short-lived batch-download tickets and streaming ZIP responses.
-//!
-//! Preparation and delivery are separate on purpose. The prepare request does
-//! all database validation before the browser starts a native download, while
-//! the ticket keeps only server-side file metadata. The download URL therefore
-//! never accepts object-store keys or paths from the client and can be consumed
-//! exactly once.
-//!
-//! The ZIP is written on a blocking worker through zip's forward-only stream
-//! writer. A bounded channel connects that worker to the HTTP body, so a slow
-//! client applies backpressure without buffering an entire archive in memory.
+//! User-bound resumable ZIP tickets. Archives are generated once into the
+//! rebuildable cache, then served by the same Range transport as any file.
+//! Generation stays on a bounded blocking worker and survives client disconnects.
 
 use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::response::Response;
 use axum::routing::{get, post};
-use axum::{Router, body::Body};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bytes::Bytes;
 use revaro_core::ApiError;
 use revaro_core::api::BatchDownloadTicket;
 use revaro_core::model::{File, FileKind, FileStatus};
 use revaro_core::validate::validate_batch_download_ids;
 use rusqlite::Connection;
-use tokio::sync::mpsc;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
@@ -41,11 +30,9 @@ use crate::storage::{LocalStore, StorageError};
 /// Maximum number of files in one prepared archive.
 pub use revaro_core::limits::MAX_BATCH_DOWNLOAD_FILES;
 /// How long a prepared URL remains redeemable.
-pub const BATCH_DOWNLOAD_TOKEN_TTL: Duration = Duration::from_secs(2 * 60);
+pub const BATCH_DOWNLOAD_TOKEN_TTL: Duration = Duration::from_secs(24 * 3600);
 /// Maximum number of outstanding prepared URLs.
 pub const MAX_BATCH_DOWNLOAD_TOKENS: usize = 256;
-/// Number of chunks retained while a ZIP is being sent.
-const ZIP_CHANNEL_CAPACITY: usize = 8;
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -93,7 +80,7 @@ impl BatchDownloadRuntime {
         }
     }
 
-    /// Reserve a one-time URL for one authenticated user.
+    /// Reserve a resumable URL for one authenticated user.
     pub(crate) fn issue(
         &self,
         user: String,
@@ -131,7 +118,7 @@ impl BatchDownloadRuntime {
         }
     }
 
-    /// Consume a URL if it belongs to user and has not expired.
+    /// Resolve a URL if it belongs to user and has not expired.
     pub(crate) fn consume(&self, user: &str, token: &str) -> Option<Vec<BatchDownloadEntry>> {
         if !(32..=128).contains(&token.len()) {
             return None;
@@ -143,7 +130,10 @@ impl BatchDownloadRuntime {
         if !belongs_to_user {
             return None;
         }
-        tickets.remove(token).map(|ticket| ticket.entries)
+        tickets.get_mut(token).map(|ticket| {
+            ticket.expires_at = now + BATCH_DOWNLOAD_TOKEN_TTL;
+            ticket.entries.clone()
+        })
     }
 }
 
@@ -268,63 +258,122 @@ async fn download(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
     PathParam(token): PathParam<String>,
+    headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    let permit =
-        state.zip_slots.clone().try_acquire_owned().map_err(|_| {
-            ApiError::too_many_requests("ZIP downloads are busy; try again shortly")
-        })?;
+    let _guard = state.uploads.lock(&format!("batch:{token}")).await;
     let entries = state
         .batch_download
         .consume(&user.username, &token)
         .ok_or_else(|| ApiError::not_found("batch download token not found or expired"))?;
-
-    // Reject a corrupt object key before committing the response headers. Normal
-    // rows always contain blobs/<uuid>, but this check keeps a manually edited
-    // database from turning the blocking worker into an arbitrary path reader.
-    for entry in &entries {
-        if entry.file.kind == FileKind::Directory {
-            continue;
-        }
-        state
-            .store
-            .path_for(&entry.file.object_key)
-            .map_err(|error| {
-                tracing::error!(%error, file_id = %entry.file.id, "batch download object key is invalid");
-                ApiError::internal("file content is unavailable")
+    let store = LocalStore::open(state.config.caches_dir.join("batch-downloads"))
+        .await
+        .map_err(|_| ApiError::new(507, "archive cache unavailable"))?;
+    let key = format!("{token}.zip");
+    if store.head(&key).await.is_err() {
+        let permit = state.zip_slots.clone().try_acquire_owned().map_err(|_| {
+            ApiError::too_many_requests("ZIP preparation is busy; try again shortly")
+        })?;
+        let required = entries
+            .iter()
+            .map(|entry| entry.file.size.max(0) as u64)
+            .sum::<u64>()
+            .saturating_add(1 << 20);
+        let root = state.config.caches_dir.join("batch-downloads");
+        let reservation = state
+            .uploads
+            .reserve_space(required, state.config.upload_min_free_bytes as u64, || {
+                fs2::available_space(&root)
+            })
+            .map_err(|_| ApiError::new(507, "archive cache space unavailable"))?
+            .ok_or_else(|| {
+                ApiError::new(
+                    507,
+                    "insufficient disk space to prepare a resumable archive",
+                )
             })?;
+        let temporary = store
+            .path_for(&format!("{token}.tmp"))
+            .map_err(|_| ApiError::internal("invalid archive key"))?;
+        let destination = store
+            .path_for(&key)
+            .map_err(|_| ApiError::internal("invalid archive key"))?;
+        let source = state.store.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let _reservation = reservation;
+            let _generation_guard = _guard;
+            let result = (|| -> Result<(), BatchZipError> {
+                let file = std::fs::File::create(&temporary)?;
+                write_zip(&source, entries, file)?;
+                std::fs::rename(&temporary, &destination)?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temporary);
+            }
+            result
+        })
+        .await
+        .map_err(|_| ApiError::new(502, "archive preparation interrupted"))?
+        .map_err(|error| {
+            tracing::warn!(%error, "archive preparation failed");
+            ApiError::new(502, "archive preparation failed")
+        })?;
     }
-
-    let (sender, receiver) = mpsc::channel(ZIP_CHANNEL_CAPACITY);
-    let store = state.store.clone();
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        if let Err(error) = write_zip(&store, entries, sender) {
-            tracing::warn!(%error, "batch download stream failed");
-        }
-    });
-
-    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
-        receiver
-            .recv()
-            .await
-            .map(|chunk| (Ok::<Bytes, Infallible>(chunk), receiver))
-    });
-    let mut response = Response::new(Body::from_stream(stream));
-    response.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        "application/zip".parse().expect("valid header value"),
-    );
-    response.headers_mut().insert(
-        http::header::CONTENT_DISPOSITION,
-        "attachment; filename=\"revaro-download.zip\""
-            .parse()
-            .expect("valid header value"),
-    );
+    let object = store
+        .open_object(&key)
+        .await
+        .map_err(|_| ApiError::new(502, "archive read failed"))?;
+    let mut response = crate::transfer::serve_reader(
+        Box::new(object.file),
+        object.size as u64,
+        &object.etag,
+        "application/zip",
+        "attachment; filename=\"revaro-download.zip\"",
+        headers,
+    )
+    .await?;
     response.headers_mut().insert(
         http::header::CACHE_CONTROL,
-        "no-store".parse().expect("valid header value"),
+        "private, no-cache".parse().unwrap(),
     );
     Ok(response)
+}
+
+/// Remove abandoned archive artifacts, while retaining all live tickets.
+pub(crate) async fn cleanup_archives(state: &AppState) -> Result<(), String> {
+    let live = {
+        let mut tickets = state
+            .batch_download
+            .tickets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        tickets.retain(|_, ticket| ticket.expires_at > Instant::now());
+        tickets.keys().cloned().collect::<HashSet<_>>()
+    };
+    let directory = state.config.caches_dir.join("batch-downloads");
+    let mut entries = match tokio::fs::read_dir(directory).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stem = name.split('.').next().unwrap_or_default();
+        if live.contains(stem) {
+            continue;
+        }
+        let metadata = entry.metadata().await.map_err(|e| e.to_string())?;
+        let old = metadata
+            .modified()
+            .ok()
+            .and_then(|v| v.elapsed().ok())
+            .is_some_and(|age| age > BATCH_DOWNLOAD_TOKEN_TTL);
+        if metadata.is_file() && old {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+    Ok(())
 }
 
 /// Convert a legacy or corrupt display name into one ZIP path component.
@@ -385,36 +434,13 @@ enum BatchZipError {
     Zip(#[from] zip::result::ZipError),
 }
 
-/// A blocking Write sink backed by the response body channel.
-struct ChunkWriter {
-    sender: mpsc::Sender<Bytes>,
-}
-
-impl Write for ChunkWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if buffer.is_empty() {
-            return Ok(0);
-        }
-        self.sender
-            .blocking_send(Bytes::copy_from_slice(buffer))
-            .map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "batch download client closed")
-            })?;
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Generate one ZIP directly into the response stream.
+/// Generate a ZIP into a bounded disk artifact; no whole-archive memory buffer.
 fn write_zip(
     store: &LocalStore,
     entries: Vec<BatchDownloadEntry>,
-    sender: mpsc::Sender<Bytes>,
+    sink: impl Write,
 ) -> Result<(), BatchZipError> {
-    let mut archive = ZipWriter::new_stream(ChunkWriter { sender });
+    let mut archive = ZipWriter::new_stream(sink);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     for entry in entries {
         if entry.file.kind == FileKind::Directory {
@@ -473,6 +499,7 @@ mod tests {
         let config = crate::config::Config::from_lookup(&|name| match name {
             "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
+            "APP_CACHES_DIR" => Some(root.0.join("caches").to_string_lossy().into_owned()),
             _ => None,
         })
         .unwrap();
@@ -621,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn tickets_are_user_bound_one_time_and_expire() {
+    fn tickets_are_user_bound_resumable_and_expire() {
         let runtime = BatchDownloadRuntime::new();
         let now = Instant::now();
         let token = runtime
@@ -630,7 +657,7 @@ mod tests {
         assert_eq!(token.len(), 43);
         assert!(runtime.consume("bob", &token).is_none());
         assert!(runtime.consume("alice", &token).is_some());
-        assert!(runtime.consume("alice", &token).is_none());
+        assert!(runtime.consume("alice", &token).is_some());
 
         let expired = runtime
             .issue_at(
@@ -798,7 +825,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn download_token_is_consumed_once() {
+    async fn download_token_can_resume() {
         let context = context().await;
         let state = &context.state;
         let file = add_file(state, ROOT_ID, "once.txt", b"once").await;
@@ -832,11 +859,10 @@ mod tests {
             true,
         )
         .await;
-        let (status, body) = json_body(second).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(
-            body["error"]["message"],
-            "batch download token not found or expired"
-        );
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(second.headers()[http::header::ACCEPT_RANGES], "bytes");
+        assert!(second.headers().contains_key(http::header::ETAG));
+        let second_bytes = second.into_body().collect().await.unwrap().to_bytes();
+        assert!(second_bytes.starts_with(b"PK"));
     }
 }

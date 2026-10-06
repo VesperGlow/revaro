@@ -25,12 +25,14 @@ pub fn build(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
+        .route("/api/transport/config", get(transport_config))
         // The public share table is deliberately outside `/api`: it is reached
         // with a URL-borne token and must not require a session.
         .merge(crate::file_routes::public_routes())
         .nest("/api", api())
         .fallback(web::serve)
         .with_state(state.clone())
+        .layer(axum::middleware::from_fn(crate::transfer::file_resources))
         // Order matters, and matches the Go chain: security headers wrap the
         // origin guard, which wraps the routes.
         .layer(axum::middleware::from_fn_with_state(
@@ -41,6 +43,10 @@ pub fn build(state: Arc<AppState>) -> Router {
             state,
             middleware::security_headers,
         ))
+}
+
+async fn transport_config(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "http2_origin": state.config.http2_origin }))
 }
 
 /// Liveness probe: the process is up.

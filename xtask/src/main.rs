@@ -127,10 +127,10 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
         return Err(format!("expected wasm artifact at {}", artifact.display()));
     }
 
-    let dist = dist_dir(root);
-    // Start from an empty directory: `copy_static_assets` only adds and
-    // overwrites, so a stylesheet deleted from `static/` would otherwise keep
-    // being served from a stale `dist/web` copy.
+    // Assemble a complete bundle beside the live directory. The existing
+    // instance keeps serving its matched JS/WASM while wasm-bindgen runs.
+    let published_dist = dist_dir(root);
+    let dist = published_dist.with_file_name(format!("web-build-{}", std::process::id()));
     if dist.is_dir() {
         std::fs::remove_dir_all(&dist)
             .map_err(|error| format!("could not clear {}: {error}", dist.display()))?;
@@ -159,7 +159,23 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
     }
 
     copy_static_assets(root, &dist)?;
-    println!("web bundle written to {}", dist.display());
+    let previous = published_dist.with_file_name(format!("web-previous-{}", std::process::id()));
+    let had_previous = published_dist.is_dir();
+    if had_previous {
+        std::fs::rename(&published_dist, &previous)
+            .map_err(|error| format!("could not preserve live web bundle: {error}"))?;
+    }
+    if let Err(error) = std::fs::rename(&dist, &published_dist) {
+        if had_previous {
+            let _ = std::fs::rename(&previous, &published_dist);
+        }
+        return Err(format!("could not publish web bundle: {error}"));
+    }
+    if had_previous {
+        std::fs::remove_dir_all(&previous)
+            .map_err(|error| format!("could not remove previous web bundle: {error}"))?;
+    }
+    println!("web bundle written to {}", published_dist.display());
     Ok(())
 }
 
@@ -177,7 +193,31 @@ fn copy_static_assets(root: &Path, dist: &Path) -> Result<(), String> {
     if !source.is_dir() {
         return Ok(());
     }
-    copy_tree(&source, dist)
+    copy_tree(&source, dist)?;
+    // Emit a classic service worker for Firefox as well as Chromium/Edge.
+    // Both worker and ESM upload adapter are generated from one policy source.
+    let core = std::fs::read_to_string(source.join("transport-core.js"))
+        .map_err(|error| format!("read shared transport policy: {error}"))?;
+    let worker = std::fs::read_to_string(source.join("transport-sw.js"))
+        .map_err(|error| format!("read transport worker: {error}"))?;
+    let import = "import { fileResponse, bufferedRequest, configureTransport, clearTransportCache } from './transport-core.js';\n";
+    let worker = worker.strip_prefix(import).ok_or_else(|| {
+        "transport worker imports changed; update classic worker bundling".to_owned()
+    })?;
+    if core.lines().any(|line| line.starts_with("import ")) {
+        return Err(
+            "shared transport policy imports require updating classic worker bundling".into(),
+        );
+    }
+    let core = core
+        .lines()
+        .map(|line| line.strip_prefix("export ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dist.join("transport-worker.js"), format!(
+        "// Generated from transport-core.js + transport-sw.js by cargo xtask web-build.\n{core}\n{worker}"
+    )).map_err(|error| format!("write classic transport worker: {error}"))?;
+    Ok(())
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {

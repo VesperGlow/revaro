@@ -1,10 +1,11 @@
 //! Uploads: creating a session, streaming bytes, and committing the file.
 //!
-//! Two transfer modes, chosen by size:
+//! Upload sessions retain two wire modes:
 //!
-//! * **single** — one `PUT` carries the whole body (files below 16 MiB).
-//! * **multipart** — each part PUT persists its own acknowledgement. Completion
-//!   can use that authoritative list; the legacy URL and ACK routes remain.
+//! * **single** — empty files and existing legacy sessions use one `PUT`.
+//! * **multipart** — all new nonempty files use durable, checksummed chunks.
+//!   Completion can use the authoritative acknowledgements; the legacy URL
+//!   remains available for single-part sessions, along with the ACK routes.
 //!
 //! The bytes always go to [`LocalStore`]; this module only owns the session
 //! bookkeeping in `uploads`/`upload_parts` and the commit transaction.
@@ -709,6 +710,23 @@ async fn accepted_hash(state: &AppState, key: &str) -> Result<Option<String>, Ap
     }
 }
 
+fn claimed_hash(request: &Request, known: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(raw) = request.headers().get("x-content-sha256") else {
+        return Ok(None);
+    };
+    let hash = raw
+        .to_str()
+        .map_err(|_| ApiError::bad_request("invalid SHA-256"))?
+        .to_ascii_lowercase();
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ApiError::bad_request("invalid SHA-256"));
+    }
+    if known.is_some_and(|v| v != hash) {
+        return Err(ApiError::conflict("upload retry contains different bytes"));
+    }
+    Ok(Some(hash))
+}
+
 fn content_length_mismatch(request: &Request, expected: i64) -> bool {
     request
         .headers()
@@ -726,11 +744,16 @@ async fn upload_content(
     request: Request,
 ) -> Result<http::Response<Body>, ApiError> {
     let _guard = state.uploads.lock_part(&id, 0).await;
-    let _slot = io_slot(&state).await?;
     let record = state.db.call_api(move |c| require_pending(c, &id)).await?;
     if record.is_multipart() {
-        return Err(ApiError::bad_request("invalid part number"));
+        // Compatibility for existing API clients sending a one-block file to /data.
+        if limits::multipart_part_count(record.expected_size, record.part_size) == Ok(1) {
+            return upload_content_part(State(state), _user, PathParam((record.id, 1)), request)
+                .await;
+        }
+        return Err(ApiError::bad_request("use numbered chunks for this upload"));
     }
+    let _slot = io_slot(&state).await?;
     if content_length_mismatch(&request, record.expected_size) {
         return Err(ApiError::bad_request("upload size mismatch"));
     }
@@ -738,6 +761,7 @@ async fn upload_content(
         Some(hash) => Some(hash),
         None => accepted_hash(&state, &record.object_key).await?,
     };
+    let claimed = claimed_hash(&request, known_hash.as_deref())?;
     let _space = reserve_space(&state, record.expected_size).await?;
     let mut reader = body_reader(
         request.into_body(),
@@ -746,15 +770,20 @@ async fn upload_content(
     );
     let stored = state
         .store
-        .write_stream_hashed(
+        .write_stream_checked(
             &record.object_key,
             &mut reader,
             record.expected_size,
             known_hash.as_deref(),
+            claimed.as_deref(),
         )
         .await
         .map_err(write_error)?;
-    let (upload_id, etag, hash) = (record.id, stored.info.etag.clone(), stored.content_hash);
+    let (upload_id, etag, hash) = (
+        record.id,
+        stored.info.etag.clone(),
+        stored.content_hash.clone(),
+    );
     state
         .db
         .call_api(move |connection| {
@@ -771,7 +800,7 @@ async fn upload_content(
             Ok(())
         })
         .await?;
-    Ok(etag_response(&stored.info.etag))
+    Ok(etag_response(&stored.info.etag, &stored.content_hash))
 }
 
 /// A successful part PUT includes the durable database acknowledgement.
@@ -825,6 +854,7 @@ async fn upload_content_part(
         Some(hash) => Some(hash),
         None => accepted_hash(&state, &key).await?,
     };
+    let claimed = claimed_hash(&request, known_hash.as_deref())?;
     let _space = reserve_space(&state, expected).await?;
     let mut reader = body_reader(
         request.into_body(),
@@ -833,10 +863,17 @@ async fn upload_content_part(
     );
     let stored = state
         .store
-        .write_stream_hashed(&key, &mut reader, expected, known_hash.as_deref())
+        .write_stream_checked(
+            &key,
+            &mut reader,
+            expected,
+            known_hash.as_deref(),
+            claimed.as_deref(),
+        )
         .await
         .map_err(write_error)?;
     let etag = stored.info.etag.clone();
+    let hash = stored.content_hash.clone();
     state
         .db
         .call_api(move |connection| {
@@ -845,13 +882,13 @@ async fn upload_content_part(
                     "INSERT INTO upload_parts(upload_id,part_number,size,etag,content_hash,completed_at) \
                      VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(upload_id,part_number) DO UPDATE \
                      SET size=excluded.size,etag=excluded.etag,content_hash=excluded.content_hash,completed_at=excluded.completed_at",
-                    rusqlite::params![id, part, expected, etag, stored.content_hash, Timestamp::now().to_rfc3339()],
+                    rusqlite::params![id, part, expected, etag, hash, Timestamp::now().to_rfc3339()],
                 )
                 .map_err(|error| database_error(DbError::Query(error)))?;
             Ok(())
         })
         .await?;
-    Ok(etag_response(&stored.info.etag))
+    Ok(etag_response(&stored.info.etag, &stored.content_hash))
 }
 
 /// `POST /api/uploads/{id}/parts` — legacy batch of authenticated local URLs.
@@ -1424,12 +1461,16 @@ async fn abort_pending_upload(
     Ok(())
 }
 
-fn etag_response(etag: &str) -> http::Response<Body> {
+fn etag_response(etag: &str, hash: &str) -> http::Response<Body> {
     let mut response = http::Response::new(Body::empty());
     *response.status_mut() = StatusCode::NO_CONTENT;
     if let Ok(value) = etag.parse() {
         response.headers_mut().insert(http::header::ETAG, value);
     }
+    response.headers_mut().insert(
+        http::header::HeaderName::from_static("x-content-sha256"),
+        hash.parse().expect("SHA-256 header"),
+    );
     response
 }
 

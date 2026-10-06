@@ -1,0 +1,21 @@
+# Optional override. TLS files must be readable by container uid 10001.
+# APP_BASE_URL=https://files.example.com:8443
+# APP_HTTP2_BASE_URL=https://files.example.com:8444
+# REVARO_TLS_DIR=/absolute/path/to/certs
+# docker compose -f compose.yml -f compose.quic.yml up -d
+services:
+  revaro:
+    ports:
+      - "8443:8443/tcp"
+      - "8443:8443/udp"
+      - "8444:8444/tcp"
+    environment:
+      APP_BASE_URL: "${APP_BASE_URL:?Set APP_BASE_URL to your public https hostname and port 8443}"
+      APP_HTTP2_BASE_URL: "${APP_HTTP2_BASE_URL:?Set APP_HTTP2_BASE_URL to the same https hostname and port 8444}"
+      APP_TLS_ADDR: "0.0.0.0:8443"
+      APP_TLS_CERT: /tls/fullchain.pem
+      APP_TLS_KEY: /tls/privkey.pem
+      APP_HTTP2_ADDR: "0.0.0.0:8444"
+      APP_QUIC_ADDR: "0.0.0.0:8443"
+    volumes:
+      - "${REVARO_TLS_DIR:?Set REVARO_TLS_DIR to the certificate directory}:/tls:ro"

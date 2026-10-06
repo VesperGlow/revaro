@@ -35,6 +35,19 @@ pub async fn serve(
     file_response(&path, &metadata, &request_headers).await
 }
 
+/// Minimal public-download bootstrap, independent of login or the WASM shell.
+pub(crate) async fn download_shell(state: &AppState, headers: &HeaderMap) -> Response {
+    let path = state.config.web_dir.join("share-download.html");
+    match tokio::fs::metadata(&path).await {
+        Ok(metadata) => file_response(&path, &metadata, headers).await,
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "download client unavailable",
+        )
+            .into_response(),
+    }
+}
+
 /// Reject anything that could escape the bundle directory.
 ///
 /// Percent-encoded separators and traversal segments are refused rather than

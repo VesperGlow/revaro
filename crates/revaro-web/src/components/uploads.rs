@@ -1,15 +1,9 @@
-//! Browser upload queue.
-//!
-//! The queue owns the browser `File` handles and the lifetime of every raw
-//! byte request. JSON session operations are kept in [`crate::api`], while
-//! this module deals with progress, cancellation, retries, local resume
-//! records and directory selection. A cancelled request is aborted before the
-//! remote upload session is deleted, so a late XHR callback cannot resurrect an
-//! upload in the visible queue.
+//! Browser upload queue. This module owns file selection, block geometry,
+//! progress and resume records. The shared transport owns all network recovery.
+//! Cancellation aborts transfers before abandoning the remote upload session.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::future::Future;
 use std::rc::Rc;
 
 use futures_channel::oneshot;
@@ -24,10 +18,7 @@ use revaro_core::model::{
 };
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{
-    AbortController, Blob, DragEvent, File as BrowserFile, FileList, HtmlInputElement,
-    ProgressEvent, XmlHttpRequest,
-};
+use web_sys::{AbortController, Blob, DragEvent, File as BrowserFile, FileList, HtmlInputElement};
 
 use crate::api::{self, RequestError};
 use crate::logic::feedback::Feedback;
@@ -35,7 +26,6 @@ use crate::logic::upload::{directory_paths, part_size, relative_path_parts, tran
 
 const FILE_CONCURRENCY: usize = 3;
 const MULTIPART_CONCURRENCY: usize = 4;
-const UPLOAD_RETRIES: usize = 5;
 const RESUME_KEY: &str = "revaro.uploads.v1";
 
 /// The local lifecycle of a browser-selected file.
@@ -105,7 +95,7 @@ struct ActiveUpload {
     abandon_remote: Cell<bool>,
     remote_upload_id: RefCell<Option<String>>,
     remote_abort_sent: Cell<bool>,
-    requests: RefCell<Vec<XmlHttpRequest>>,
+    transfer: AbortController,
     verifier: RefCell<Option<AbortController>>,
 }
 
@@ -116,7 +106,7 @@ impl ActiveUpload {
             abandon_remote: Cell::new(false),
             remote_upload_id: RefCell::new(None),
             remote_abort_sent: Cell::new(false),
-            requests: RefCell::new(Vec::new()),
+            transfer: AbortController::new().expect("browser abort controller"),
             verifier: RefCell::new(None),
         }
     }
@@ -145,9 +135,7 @@ impl ActiveUpload {
         if let Some(controller) = self.verifier.borrow().as_ref() {
             controller.abort();
         }
-        for request in self.requests.borrow().iter() {
-            let _ = request.abort();
-        }
+        self.transfer.abort();
     }
 
     fn abandon(&self) {
@@ -686,14 +674,13 @@ impl UploadController {
                         Rc::new(RefCell::new(vec![0_i64])),
                         0,
                     );
-                    self.retrying(Rc::clone(active), || {
-                        let active = Rc::clone(active);
-                        let body = body.clone();
-                        let url = resolved.url.clone();
-                        let progress = Rc::clone(&progress);
-                        let mime_type = Some(file_mime(&item.file));
-                        async move { xhr_put(active, url, body, mime_type, progress).await }
-                    })
+                    crate::transport::put_blob(
+                        &resolved.url,
+                        &body,
+                        Some(&file_mime(&item.file)),
+                        &active.transfer.signal(),
+                        progress,
+                    )
                     .await?;
                     Vec::new()
                 }
@@ -723,16 +710,14 @@ impl UploadController {
             AbortController::new().map_err(|error| js_error("无法创建提交控制器", error))?;
         let signal = verifier.signal();
         active.verifier.borrow_mut().replace(verifier);
-        let result = self
-            .retrying(Rc::clone(active), || {
-                let signal = signal.clone();
-                let request = CompleteUploadRequest {
-                    parts: completed_parts.clone(),
-                };
-                let upload_id = resolved.upload_id.clone();
-                async move { api::complete_upload(&upload_id, &request, Some(&signal)).await }
-            })
-            .await;
+        let result = api::complete_upload(
+            &resolved.upload_id,
+            &CompleteUploadRequest {
+                parts: completed_parts,
+            },
+            Some(&signal),
+        )
+        .await;
         active.verifier.borrow_mut().take();
         result?;
         Ok(())
@@ -809,9 +794,7 @@ impl UploadController {
             mime_type: file_mime(&item.file),
             idempotency_key: item.creation_key.clone(),
         };
-        let created = self
-            .retrying(Rc::clone(active), || api::create_upload(&request))
-            .await?;
+        let created = api::create_upload(&request).await?;
         // Replaying creation can find an already transferred or committed file.
         active.remember_upload(&created.upload_id);
         self.update_item_if_current(&item.id, item.run_id, |item| {
@@ -860,6 +843,23 @@ impl UploadController {
             };
             let size_matches = part.size.is_none_or(|size| size == expected);
             if index < part_count && size_matches && !part.etag.trim().is_empty() {
+                if let Some(expected_hash) = part.content_hash.as_deref().filter(|h| !h.is_empty())
+                {
+                    let start = index as i64 * part_size_value;
+                    let body = Blob::slice_with_f64_and_f64(
+                        file_blob(file),
+                        start as f64,
+                        (start + expected) as f64,
+                    )
+                    .map_err(|e| js_error("无法读取续传分片", e))?;
+                    if crate::transport::blob_hash(&body).await? != expected_hash {
+                        return Err(local_error("本地文件与已上传分片不一致，请取消后重新上传"));
+                    }
+                } else {
+                    // Legacy acknowledgements lack a content hash: resend this
+                    // block so the server compares it with its durable bytes.
+                    continue;
+                }
                 sent[index] = expected;
                 completed[index] = Some(revaro_core::storage::CompletedPart {
                     part_number: part.part_number,
@@ -939,15 +939,14 @@ impl UploadController {
                                 );
                             })
                         };
-                        let etag = controller
-                            .retrying(Rc::clone(&active), || {
-                                let active = Rc::clone(&active);
-                                let body = body.clone();
-                                let url = part.url.clone();
-                                let progress = Rc::clone(&progress);
-                                async move { xhr_put(active, url, body, None, progress).await }
-                            })
-                            .await?;
+                        let etag = crate::transport::put_blob(
+                            &part.url,
+                            &body,
+                            None,
+                            &active.transfer.signal(),
+                            progress,
+                        )
+                        .await?;
                         if etag.trim().is_empty() {
                             return Err(local_error("服务器没有返回分片校验信息"));
                         }
@@ -990,44 +989,6 @@ impl UploadController {
             let done = sent.borrow().iter().sum();
             controller.set_item_progress(&item_id, run_id, transfer_progress(done, total_size));
         })
-    }
-
-    fn retrying<T, F, Fut>(
-        &self,
-        active: Rc<ActiveUpload>,
-        mut operation: F,
-    ) -> impl Future<Output = Result<T, RequestError>>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = Result<T, RequestError>>,
-    {
-        async move {
-            let mut last = local_error("上传失败");
-            for attempt in 0..UPLOAD_RETRIES {
-                ensure_not_cancelled(&active)?;
-                match operation().await {
-                    Ok(value) => return Ok(value),
-                    Err(error) => {
-                        if active.cancelled.get() {
-                            return Err(cancelled_error());
-                        }
-                        if attempt + 1 == UPLOAD_RETRIES
-                            || !(error.status == 0
-                                || error.status == 408
-                                || error.status == 429
-                                || error.status >= 500)
-                        {
-                            return Err(error);
-                        }
-                        last = error;
-                        let base = 500_u32.saturating_mul(1_u32 << attempt.min(4)).min(8_000);
-                        let jitter = (Math::random() * 250.0) as u32;
-                        sleep_ms(base.saturating_add(jitter)).await?;
-                    }
-                }
-            }
-            Err(last)
-        }
     }
 
     fn set_item_progress(&self, item_id: &str, run_id: u64, progress: u8) {
@@ -1278,12 +1239,8 @@ fn validate_upload_shape(
     total_size: i64,
 ) -> Result<(), RequestError> {
     match mode {
-        UploadMode::Single if limits::uses_multipart_upload(total_size) => {
-            Err(local_error("服务端返回了错误的上传模式"))
-        }
-        // The reference browser client ignores multipart geometry for single
-        // uploads. A legacy response may omit or null those fields, so only
-        // the mode/size boundary above is meaningful here.
+        // Existing single-request sessions remain resumable after the global
+        // multipart migration. New sessions are always assigned by the server.
         UploadMode::Single => Ok(()),
         UploadMode::Multipart => {
             let expected_count = limits::multipart_part_count(total_size, part_size_value)
@@ -1438,127 +1395,4 @@ fn js_error(context: &str, error: JsValue) -> RequestError {
         Some(detail) if !detail.is_empty() => format!("{context}: {detail}"),
         _ => context.to_owned(),
     })
-}
-
-async fn sleep_ms(milliseconds: u32) -> Result<(), RequestError> {
-    let Some(window) = web_sys::window() else {
-        return Err(local_error("浏览器计时器不可用"));
-    };
-    let (sender, receiver) = oneshot::channel();
-    let callback = Closure::once_into_js(move || {
-        let _ = sender.send(());
-    });
-    window
-        .set_timeout_with_callback_and_timeout_and_arguments_0(
-            callback.unchecked_ref(),
-            i32::try_from(milliseconds).unwrap_or(i32::MAX),
-        )
-        .map_err(|error| js_error("无法安排上传重试", error))?;
-    receiver
-        .await
-        .map_err(|_| local_error("上传重试计时器已关闭"))
-}
-
-async fn xhr_put(
-    active: Rc<ActiveUpload>,
-    url: String,
-    body: Blob,
-    content_type: Option<String>,
-    on_progress: Rc<dyn Fn(u64)>,
-) -> Result<String, RequestError> {
-    let xhr = XmlHttpRequest::new().map_err(|error| js_error("无法创建上传请求", error))?;
-    xhr.open_with_async("PUT", &url, true)
-        .map_err(|error| js_error("无法打开上传请求", error))?;
-    xhr.set_with_credentials(true);
-    if let Some(content_type) = content_type.as_deref() {
-        xhr.set_request_header("Content-Type", content_type)
-            .map_err(|error| js_error("无法设置上传请求头", error))?;
-    }
-    let upload = xhr
-        .upload()
-        .map_err(|error| js_error("无法监听上传进度", error))?;
-
-    let (sender, receiver) = oneshot::channel::<Result<String, RequestError>>();
-    let sender = Rc::new(RefCell::new(Some(sender)));
-    let onload = {
-        let sender = Rc::clone(&sender);
-        let xhr = xhr.clone();
-        Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-            let result = match xhr.status() {
-                Ok(status) if (200..300).contains(&status) => xhr
-                    .get_response_header("ETag")
-                    .map(|etag| etag.unwrap_or_default())
-                    .map_err(|error| js_error("无法读取上传校验信息", error)),
-                Ok(status) => Err(xhr_error(&xhr, status)),
-                Err(error) => Err(js_error("无法读取上传状态", error)),
-            };
-            finish_xhr(&sender, result);
-        })
-    };
-    let onerror = {
-        let sender = Rc::clone(&sender);
-        Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-            finish_xhr(&sender, Err(local_error("无法连接服务器，请检查网络")));
-        })
-    };
-    let onabort = {
-        let sender = Rc::clone(&sender);
-        Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-            finish_xhr(&sender, Err(cancelled_error()));
-        })
-    };
-    let onprogress = {
-        let on_progress = Rc::clone(&on_progress);
-        Closure::<dyn FnMut(ProgressEvent)>::new(move |event: ProgressEvent| {
-            if event.length_computable() {
-                on_progress(event.loaded().max(0.0) as u64);
-            }
-        })
-    };
-    xhr.set_onload(Some(onload.as_ref().unchecked_ref()));
-    xhr.set_onerror(Some(onerror.as_ref().unchecked_ref()));
-    xhr.set_onabort(Some(onabort.as_ref().unchecked_ref()));
-    upload.set_onprogress(Some(onprogress.as_ref().unchecked_ref()));
-    active.requests.borrow_mut().push(xhr.clone());
-
-    let send_result = xhr
-        .send_with_opt_blob(Some(&body))
-        .map_err(|error| js_error("无法发送上传数据", error));
-    if let Err(error) = send_result {
-        active
-            .requests
-            .borrow_mut()
-            .retain(|request| request != &xhr);
-        return Err(error);
-    }
-    let result = receiver.await.map_err(|_| local_error("上传请求已关闭"))?;
-    upload.set_onprogress(None);
-    xhr.set_onload(None);
-    xhr.set_onerror(None);
-    xhr.set_onabort(None);
-    active
-        .requests
-        .borrow_mut()
-        .retain(|request| request != &xhr);
-    result
-}
-
-fn finish_xhr(
-    sender: &Rc<RefCell<Option<oneshot::Sender<Result<String, RequestError>>>>>,
-    result: Result<String, RequestError>,
-) {
-    if let Some(sender) = sender.borrow_mut().take() {
-        let _ = sender.send(result);
-    }
-}
-
-fn xhr_error(_xhr: &XmlHttpRequest, status: u16) -> RequestError {
-    // The historical XHR wrapper did not decode the JSON error envelope for
-    // raw byte requests; it exposed the status-shaped message to the local
-    // upload item and retried that error in the same way as any other failure.
-    RequestError {
-        status,
-        code: None,
-        message: format!("上传失败 ({status})"),
-    }
 }

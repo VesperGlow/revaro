@@ -24,10 +24,10 @@ pub const MAX_UPLOAD_PARTS: usize = 10_000;
 pub const MAX_UPLOAD_PART_BATCH: usize = 100;
 
 /// Files at or above this size use the multipart path.
-pub const MULTIPART_UPLOAD_THRESHOLD: i64 = 16 << 20;
+pub const MULTIPART_UPLOAD_THRESHOLD: i64 = 1;
 
 /// Preferred multipart part size.
-pub const DEFAULT_MULTIPART_PART_SIZE: i64 = 16 << 20;
+pub const DEFAULT_MULTIPART_PART_SIZE: i64 = 1 << 20;
 
 /// Maximum number of files in one prepared batch-download archive.
 pub const MAX_BATCH_DOWNLOAD_FILES: usize = 1000;
@@ -58,7 +58,7 @@ pub fn uses_multipart_upload(size: i64) -> bool {
 
 /// The part size the server will assign to an upload of `size` bytes.
 ///
-/// Mirrors the historical server rule: 16 MiB by default, grown and rounded up
+/// Mirrors the historical server rule: 1 MiB by default, grown and rounded up
 /// to whole MiB for very large files so the 10,000-part ceiling can never be
 /// exceeded and the browser slices on friendly boundaries.
 #[must_use]
@@ -95,7 +95,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn small_files_use_the_single_request_path() {
+    fn every_nonempty_file_uses_chunks() {
         assert!(!uses_multipart_upload(0));
         assert!(!uses_multipart_upload(MULTIPART_UPLOAD_THRESHOLD - 1));
         assert!(uses_multipart_upload(MULTIPART_UPLOAD_THRESHOLD));

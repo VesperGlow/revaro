@@ -289,6 +289,7 @@ impl MaintenanceRuntime {
                     })
                     .await
                     .map_err(|error| error.to_string())?;
+                crate::batch_download::cleanup_archives(&state).await?;
                 state
                     .store
                     .cleanup_temporary_except(

@@ -22,10 +22,9 @@
 .upload-progress-actions>button:hover{background:var(--surface-hover);color:var(--accent)}
 .upload-progress-actions>button:focus-visible{outline:0;box-shadow:var(--focus-ring)}
 .upload-progress-actions svg{width:15px;height:15px;stroke-width:1.7}
-.content-library.has-music .upload-progress{--upload-bottom:calc(87px + var(--upload-edge) + env(safe-area-inset-bottom,0px))}
+.content-library.has-music .upload-progress{--upload-bottom:calc(var(--music-dock-height) + var(--music-dock-bottom) + var(--upload-edge))}
 @media(max-width:850px){
  .upload-progress{--upload-edge:12px;--upload-bottom:calc(58px + env(safe-area-inset-bottom,0px) + var(--upload-edge))}
- .content-library.has-music .upload-progress{--upload-bottom:calc(126px + env(safe-area-inset-bottom,0px) + var(--upload-edge))}
  .upload-progress-actions>button{min-width:32px;min-height:32px}
 }
 @media(max-height:320px){

@@ -37,7 +37,54 @@ pub async fn security_headers(
     next: Next,
 ) -> Response {
     let is_api = request.uri().path().starts_with("/api/");
-    let mut response = next.run(request).await;
+    let cors = state.config.http2_origin.is_some()
+        && request
+            .headers()
+            .get(http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| same_origin(&state.config.base_url, v));
+    let preflight = cors && request.method() == Method::OPTIONS;
+    let origin = request.headers().get(http::header::ORIGIN).cloned();
+    let mut response = if preflight {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        next.run(request).await
+    };
+    if cors {
+        let headers = response.headers_mut();
+        headers.insert(
+            http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            origin.clone().expect("checked origin"),
+        );
+        headers.insert("timing-allow-origin", origin.expect("checked origin"));
+        headers.insert(
+            http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            "true".parse().unwrap(),
+        );
+        headers.insert(
+            http::header::ACCESS_CONTROL_ALLOW_METHODS,
+            "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+            "Content-Type, Range, If-Range, If-Match, If-None-Match, X-Content-SHA256, X-Revaro-Managed".parse().unwrap());
+        headers.insert(http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            "ETag, Content-Range, Content-Length, Accept-Ranges, Content-Disposition, X-Content-SHA256, Retry-After".parse().unwrap());
+        headers.append(http::header::VARY, "Origin".parse().unwrap());
+    }
+    if let Some(origin) = &state.config.http2_origin {
+        let csp = CONTENT_SECURITY_POLICY.replace(
+            "connect-src 'self'",
+            &format!("connect-src 'self' {origin}"),
+        );
+        if !response.headers().contains_key("content-security-policy") {
+            response.headers_mut().insert(
+                http::header::CONTENT_SECURITY_POLICY,
+                csp.parse().expect("validated CSP origin"),
+            );
+        }
+    }
 
     // Insert only when the header is absent. Axum middleware wraps the handler,
     // so by this point the handler has already set its own headers; a plain

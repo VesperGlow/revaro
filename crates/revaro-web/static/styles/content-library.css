@@ -1,5 +1,5 @@
 /* The content shell shares file, reader and preview primitives, with its own layout. */
-.content-library { --workspace-width:1440px; --workspace-gutter:5vw; --library-gutter:var(--workspace-gutter); --library-ink:var(--ink); --library-muted:var(--muted); --library-accent:var(--accent); min-height:100dvh; background:var(--paper); color:var(--library-ink); padding-bottom:48px; }
+.content-library { --workspace-width:1440px; --workspace-gutter:5vw; --library-gutter:var(--workspace-gutter); --library-ink:var(--ink); --library-muted:var(--muted); --library-accent:var(--accent); --music-dock-height:87px; --music-dock-bottom:0px; min-height:100dvh; background:var(--paper); color:var(--library-ink); padding-bottom:48px; }
 .library-main { max-width:var(--workspace-width); padding:24px var(--library-gutter) 40px; margin:auto; }
 /* Align the batch bar with files while retaining the library card layout. */
 .library-main>.selection-toolbar { margin-inline:calc(var(--workspace-gutter) - var(--library-gutter)); }
@@ -70,7 +70,7 @@
 .content-library>.app-shell.file-tools-background>.content { display:none; }
 .content-library>.app-shell>.content { max-width:var(--workspace-width); margin:auto; padding-left:var(--workspace-gutter); padding-right:var(--workspace-gutter); }
 .content-library.has-music { padding-bottom:100px; }
-.music-dock { position:fixed; bottom:0; left:0; right:0; height:87px; background:#fffffff5; backdrop-filter:blur(18px); border-top:1px solid var(--line); padding:0 4%; display:flex; gap:25px; align-items:center; z-index:35; box-shadow:0 -5px 24px #17212b07; }
+.music-dock { position:fixed; bottom:var(--music-dock-bottom); left:0; right:0; height:var(--music-dock-height); background:#fffffff5; backdrop-filter:blur(18px); border-top:1px solid var(--line); padding:0 4%; display:flex; gap:25px; align-items:center; z-index:35; box-shadow:0 -5px 24px #17212b07; }
 .dock-track { display:flex; align-items:center; gap:12px; width:26%; min-width:130px; }
 .dock-cover { height:47px; width:47px; flex-shrink:0; overflow:hidden; display:grid; place-items:center; border-radius:7px; background:var(--accent-soft); color:var(--accent); }
 .dock-cover img { width:100%; height:100%; object-fit:cover; }
@@ -118,6 +118,7 @@
 @media(min-width:1600px) { .content-library { --library-gutter:65px; } }
 @media(max-width:1100px) { .library-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } .photo-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .dock-options input { display:none; } .music-dock { gap:17px; } .home-content-row { grid-template-columns:repeat(4,minmax(0,1fr)); gap:15px; } }
 @media(max-width:850px) {
+ .content-library { --music-dock-height:94px; --music-dock-bottom:calc(58px + env(safe-area-inset-bottom,0px)); }
  .content-library { padding-bottom:80px; }
  .library-main { padding-top:18px; padding-bottom:32px; }
 
@@ -135,7 +136,7 @@
 
 
  .content-library.has-music { padding-bottom:150px; }
- .music-dock { bottom:calc(58px + env(safe-area-inset-bottom,0px)); height:68px; padding:0 4%; gap:12px; }
+ .music-dock { padding:0 4%; gap:12px; }
  .dock-track { flex:1; width:auto; min-width:0; }
  .dock-cover { width:38px; height:38px; }
  .dock-track strong { font-size:11px; }
@@ -149,6 +150,8 @@
  .collection-caption { font-size:10px; line-height:1.7; }
 }
 @media(prefers-reduced-motion:reduce) { .library-cover { transition:none; } }
+/* Keep cards square without shrinking their reserved filename area. */
+@media(max-width:480px) { .library-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 /* Keep playback accessible without covering the reader's own bottom controls. */
 .content-library:has(#reader-view) .mobile-navigation,
 .content-library:has(#reader-view) .music-queue { display:none; }
@@ -162,7 +165,7 @@
 
 @media(max-width:850px) {
  .content-library.has-music { padding-bottom:176px; }
- .music-dock { height:94px; padding-bottom:26px; }
+ .music-dock { padding-bottom:26px; }
  .music-dock .dock-progress { display:flex; position:absolute; bottom:4px; left:4%; right:4%; height:24px; }
  .music-queue { bottom:calc(204px + env(safe-area-inset-bottom,0px)); }
 }

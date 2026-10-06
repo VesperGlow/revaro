@@ -1,0 +1,38 @@
+{
+  "engine": "Microsoft Edge",
+  "browser": "154.0.4258.62",
+  "protocol": "h3",
+  "testForcedQuic": true,
+  "netem": false,
+  "results": [
+    {
+      "extension": "pdf",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 1.1849000000059604,
+      "maxProgressGapSeconds": 0.0005
+    },
+    {
+      "extension": "zip",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 1.1625,
+      "maxProgressGapSeconds": 0.0007999999821186065
+    },
+    {
+      "extension": "txt",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 0.7925999999940395,
+      "maxProgressGapSeconds": 0.000699999988079071
+    },
+    {
+      "extension": "dat",
+      "bytes": 6291456,
+      "hashVerified": true,
+      "seconds": 4.71740000000596,
+      "maxProgressGapSeconds": 1.4927000000178814
+    }
+  ],
+  "fallbackRequests": []
+}

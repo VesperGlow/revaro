@@ -1,0 +1,112 @@
+{
+  "date": "2026-10-06",
+  "defaults": {
+    "mode": "aggressive",
+    "target_mbps": "auto",
+    "max_mbps": 250,
+    "global_max_mbps": 1000,
+    "max_compensation_percent": 125
+  },
+  "cargo_xtask_check": {
+    "passed": true,
+    "rust_tests": 467,
+    "includes": [
+      "fmt",
+      "native clippy -D warnings",
+      "workspace tests",
+      "WASM type check"
+    ]
+  },
+  "node_transport_tests": {
+    "passed": true,
+    "tests": 9
+  },
+  "existing_instance_browser_e2e": {
+    "passed": true,
+    "tests": 1,
+    "seconds": 11.4
+  },
+  "compose_configs": {
+    "default": true,
+    "optional_quic_override": true
+  },
+  "existing_instance": {
+    "url": "http://localhost:8081",
+    "pid": 131169,
+    "ready_status": 200,
+    "native_quic_enabled": false
+  },
+  "combined_audio_ui_transport_ci_e2e": {
+    "passed": true,
+    "unique_scenarios_passed": 63,
+    "skipped": 1,
+    "skip_reason": "Large external native FLAC fixture not configured",
+    "validation_strategy": "Full CI selection followed by 14 corrected or pending scenarios; one desktop scenario repeated",
+    "followup_scenarios_passed": 14,
+    "scenarios": [
+      "account-settings.spec.ts › desktop account settings › avatar requirements appear on demand and image changes keep the list intact",
+      "account-settings.spec.ts › desktop account settings › compact settings stay on one line and explain security only when opened",
+      "account-settings.spec.ts › desktop account settings › username changes require saving and update both the profile and row",
+      "account-settings.spec.ts › mobile account settings › avatar requirements appear on demand and image changes keep the list intact",
+      "account-settings.spec.ts › mobile account settings › compact settings stay on one line and explain security only when opened",
+      "account-settings.spec.ts › mobile account settings › username changes require saving and update both the profile and row",
+      "audio-playback.spec.ts › audio categories keep files, chapters and resume independent",
+      "content-regressions.spec.ts › empty home guides users to files and never falls back to unopened content",
+      "content-regressions.spec.ts › home can load older opened content beyond the first page",
+      "content-regressions.spec.ts › home loads one mixed history, shows failures and retries without an unopened fallback",
+      "content-regressions.spec.ts › home mixes only opened content in opening order and directly opens every kind",
+      "content-regressions.spec.ts › home music always queues its visible songs after refresh and a filtered library visit",
+      "content-regressions.spec.ts › late library responses cannot replace home history with unopened content",
+      "content-regressions.spec.ts › late progress responses cannot seek another song or restart stopped music",
+      "content-regressions.spec.ts › late reader responses from deep link cannot reopen books, redirect or sign out",
+      "content-regressions.spec.ts › late reader responses from history forward cannot reopen books, redirect or sign out",
+      "content-regressions.spec.ts › music restores saved progress after delayed metadata and reload without erasing it",
+      "content-regressions.spec.ts › touch content captions › book and home titles are readable before tapping, including video captions",
+      "content-regressions.spec.ts › trash audio preview keeps saved and local resume positions, defaults and completion behavior",
+      "content-regressions.spec.ts › video playback pauses background music from home, video library and files",
+      "dialog-dismissal.spec.ts › desktop dialogs › audio controls stay open and empty player space closes the preview",
+      "dialog-dismissal.spec.ts › desktop dialogs › creation and every collection dialog close only on their backdrop",
+      "dialog-dismissal.spec.ts › desktop dialogs › file operation backdrops preserve the file and the editor keeps unsaved-change confirmation",
+      "dialog-dismissal.spec.ts › desktop dialogs › nested account backdrops close their own dialog and a drag out stays open",
+      "dialog-dismissal.spec.ts › desktop dialogs › reader typography and image surfaces dismiss without treating content clicks as outside",
+      "dialog-dismissal.spec.ts › desktop dialogs › tap highlights are transparent and keyboard focus remains visible",
+      "dialog-dismissal.spec.ts › touch dialogs › audio controls stay open and empty player space closes the preview",
+      "dialog-dismissal.spec.ts › touch dialogs › creation and every collection dialog close only on their backdrop",
+      "dialog-dismissal.spec.ts › touch dialogs › file operation backdrops preserve the file and the editor keeps unsaved-change confirmation",
+      "dialog-dismissal.spec.ts › touch dialogs › nested account backdrops close their own dialog and a drag out stays open",
+      "dialog-dismissal.spec.ts › touch dialogs › reader typography and image surfaces dismiss without treating content clicks as outside",
+      "dialog-dismissal.spec.ts › touch dialogs › tap highlights are transparent and keyboard focus remains visible",
+      "features.spec.ts › browser login accepts a one-time TOTP recovery code and logout clears reader caches",
+      "features.spec.ts › continuous scrolling preserves files and selection, with aligned sorting and expandable topbar search",
+      "features.spec.ts › directory actions offer recursive copy and a downloadable ZIP",
+      "features.spec.ts › editor saves history, previews an old version and restores its contents",
+      "features.spec.ts › expiring share links are visible in the topbar popover and can be revoked",
+      "features.spec.ts › mobile search expands left inside the header, preserving other controls and keyboard dismissal",
+      "features.spec.ts › refreshing an unfinished multipart upload lets the user reselect and resume the original file",
+      "features.spec.ts › scroll loading reconnects automatically and ignores a late batch after search changes",
+      "features.spec.ts › trash items can be restored and permanently removed from the browser",
+      "file-card-layout.spec.ts › compact mobile › file, home and library cards keep equal heights and persistent two-line filenames",
+      "file-card-layout.spec.ts › desktop › file, home and library cards keep equal heights and persistent two-line filenames",
+      "file-card-layout.spec.ts › mobile › file, home and library cards keep equal heights and persistent two-line filenames",
+      "file-card-layout.spec.ts › wide touch › file, home and library cards keep equal heights and persistent two-line filenames",
+      "file-transport.spec.ts › all file types, native downloads and uploads recover through the shared worker",
+      "library-selection.spec.ts › batch bars follow listing widths and background dismissal never intercepts cards or controls",
+      "library-selection.spec.ts › global selection mode shares subtle motion, selected surfaces, batch actions and dismissal across every listing",
+      "library-selection.spec.ts › mixed file selections share typed batch management, retry failures and keep menus visible on mobile",
+      "library-selection.spec.ts › music cover playback stays functional and management uses only the batch toolbar",
+      "music-cards-and-player.spec.ts › compact › square music cards and the restored player share one native audio session",
+      "music-cards-and-player.spec.ts › desktop › square music cards and the restored player share one native audio session",
+      "music-cards-and-player.spec.ts › mobile › square music cards and the restored player share one native audio session",
+      "rust-media-ui.spec.ts › Rust bundle serves the media viewer and live transfer dialog",
+      "rust-reader-ui.spec.ts › Markdown 预览保留 reference 的 GFM 元素并清理主动 HTML",
+      "rust-reader-ui.spec.ts › Rust bundle opens an EPUB reader, follows its TOC and restores progress",
+      "rust-reader-ui.spec.ts › Rust bundle opens editable TXT files in the document editor",
+      "rust-reader-ui.spec.ts › 文档编辑器按文件名和内容共同判断未保存状态，并格式化字节数",
+      "upload-progress.spec.ts › failed rows stay only in the current browser session and refresh does not reopen an upload history",
+      "upload-progress.spec.ts › failed uploads remain with retry, processing progress and cancellation reuse upload sessions",
+      "upload-progress.spec.ts › lost creation and completion responses reuse one session and do not retransmit accepted bytes",
+      "upload-progress.spec.ts › multipart retry uses server acknowledgements and only sends the missing part",
+      "upload-progress.spec.ts › uploads appear automatically in a bounded scrolling overlay and disappear as each file finishes"
+    ]
+  }
+}

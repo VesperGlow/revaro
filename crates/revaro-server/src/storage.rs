@@ -401,6 +401,23 @@ impl LocalStore {
     where
         R: AsyncRead + Unpin,
     {
+        self.write_stream_checked(key, reader, size, accepted_hash, None)
+            .await
+    }
+
+    /// Verify the sender digest before publishing a new block. Accepted hashes
+    /// protect retries, while expected hashes also apply to first-time writes.
+    pub async fn write_stream_checked<R>(
+        &self,
+        key: &str,
+        reader: &mut R,
+        size: i64,
+        accepted_hash: Option<&str>,
+        expected_hash: Option<&str>,
+    ) -> Result<HashedObject, StorageError>
+    where
+        R: AsyncRead + Unpin,
+    {
         let path = self.path_for(key)?;
         self.ensure_parent(&path, true).await?;
         let temp = temp_path_for(&path);
@@ -424,6 +441,9 @@ impl LocalStore {
                 });
             }
             let content_hash = hex_digest(&hasher.finalize());
+            if expected_hash.is_some_and(|expected| expected != content_hash) {
+                return Err(StorageError::ContentMismatch);
+            }
             if let Some(accepted) = accepted_hash {
                 if content_hash != accepted {
                     return Err(StorageError::ContentMismatch);
@@ -1121,6 +1141,32 @@ mod tests {
         let modified = UNIX_EPOCH + Duration::from_nanos(0x1f);
         assert_eq!(LocalStore::etag(255, modified), "ff-1f");
         assert_eq!(LocalStore::etag(0, UNIX_EPOCH), "0-0");
+    }
+
+    #[tokio::test]
+    async fn claimed_sha256_is_verified_before_first_publish_and_on_retry() {
+        let (_root, store) = store().await;
+        let hash = keys::sha256_hex(b"correct");
+        let mut wrong = std::io::Cursor::new(b"corrupt");
+        assert!(matches!(
+            store
+                .write_stream_checked("blobs/checksum", &mut wrong, 7, None, Some(&hash))
+                .await,
+            Err(StorageError::ContentMismatch)
+        ));
+        assert!(store.head("blobs/checksum").await.is_err());
+        let mut correct = std::io::Cursor::new(b"correct");
+        let first = store
+            .write_stream_checked("blobs/checksum", &mut correct, 7, None, Some(&hash))
+            .await
+            .unwrap();
+        let mut retry = std::io::Cursor::new(b"correct");
+        let second = store
+            .write_stream_checked("blobs/checksum", &mut retry, 7, Some(&hash), Some(&hash))
+            .await
+            .unwrap();
+        assert_eq!(first.info.etag, second.info.etag);
+        assert_eq!(second.content_hash, hash);
     }
 
     #[tokio::test]

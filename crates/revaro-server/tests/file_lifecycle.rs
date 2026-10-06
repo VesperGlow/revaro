@@ -25,6 +25,70 @@ use tower::ServiceExt as _;
 const ROOT_ID: &str = "00000000-0000-0000-0000-000000000000";
 const PASSWORD: &str = "correct-horse-battery";
 
+#[tokio::test]
+async fn fallback_authority_allows_credentialed_transfer_headers_only_from_primary() {
+    let harness = Harness::start_with_database_and_fallback(false, true).await;
+    for origin in [
+        "https://files.example.test",
+        "https://untrusted.example.test",
+    ] {
+        let response = harness
+            .router()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/uploads")
+                    .header("origin", origin)
+                    .header("access-control-request-method", "PUT")
+                    .header(
+                        "access-control-request-headers",
+                        "range,if-match,x-content-sha256,x-revaro-managed",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if origin == "https://files.example.test" {
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            let headers = response.headers();
+            assert_eq!(headers["access-control-allow-origin"], origin);
+            assert_eq!(headers["access-control-allow-credentials"], "true");
+            let allowed = headers["access-control-allow-headers"]
+                .to_str()
+                .unwrap()
+                .to_lowercase();
+            for required in ["range", "if-match", "x-content-sha256", "x-revaro-managed"] {
+                assert!(allowed.contains(required));
+            }
+            assert!(
+                headers["access-control-allow-methods"]
+                    .to_str()
+                    .unwrap()
+                    .contains("PATCH")
+            );
+            assert!(
+                headers["content-security-policy"]
+                    .to_str()
+                    .unwrap()
+                    .contains("https://files.example.test:8443")
+            );
+            assert!(
+                headers["access-control-expose-headers"]
+                    .to_str()
+                    .unwrap()
+                    .contains("ETag")
+            );
+        } else {
+            assert!(
+                !response
+                    .headers()
+                    .contains_key("access-control-allow-origin")
+            );
+        }
+    }
+}
+
 /// A running-in-process server with a scratch object store.
 struct Harness {
     state: Arc<AppState>,
@@ -47,6 +111,10 @@ impl Harness {
     }
 
     async fn start_with_database(persistent: bool) -> Self {
+        Self::start_with_database_and_fallback(persistent, false).await
+    }
+
+    async fn start_with_database_and_fallback(persistent: bool, fallback: bool) -> Self {
         let scratch = ScratchDir(std::env::temp_dir().join(format!(
             "revaro-lifecycle-{}-{:?}",
             std::process::id(),
@@ -55,7 +123,12 @@ impl Harness {
         let _ = std::fs::remove_dir_all(&scratch.0);
 
         let config = Config::from_lookup(&|name| match name {
-            "APP_BASE_URL" => Some("http://localhost:8080".to_owned()),
+            "APP_BASE_URL" => Some(if fallback {
+                "https://files.example.test".to_owned()
+            } else {
+                "http://localhost:8080".to_owned()
+            }),
+            "APP_HTTP2_BASE_URL" if fallback => Some("https://files.example.test:8443".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
             "APP_DATA_DIR" => Some(scratch.0.display().to_string()),
             "APP_OBJECTS_DIR" => Some(scratch.0.join("objects").display().to_string()),
@@ -101,7 +174,7 @@ impl Harness {
                 Request::builder()
                     .method("POST")
                     .uri("/api/auth/login")
-                    .header("origin", "http://localhost:8080")
+                    .header("origin", &self.state.config.base_url)
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::json!({"username": "admin", "password": PASSWORD}).to_string(),
@@ -217,7 +290,7 @@ async fn a_file_can_be_created_uploaded_browsed_copied_shared_trashed_and_purged
         )
         .await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(upload["mode"], "single");
+    assert_eq!(upload["mode"], "multipart");
     let upload_id = upload["upload_id"].as_str().unwrap().to_owned();
     let file_id = upload["file_id"].as_str().unwrap().to_owned();
 
@@ -480,7 +553,7 @@ async fn unauthenticated_and_cross_origin_requests_are_refused() {
 #[tokio::test]
 async fn multipart_upload_commits_a_streamed_sha256_and_rejects_short_completion() {
     let harness = Harness::start().await;
-    let size = revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1;
+    let size = revaro_core::limits::DEFAULT_MULTIPART_PART_SIZE as usize + 1;
     let payload: Vec<u8> = (0..=u8::MAX).cycle().take(size).collect();
     let expected_hash = revaro_core::keys::sha256_hex(&payload);
 
@@ -1340,7 +1413,7 @@ async fn upload_creation_is_idempotent_and_expired_names_are_reclaimed() {
 }
 
 #[tokio::test]
-async fn single_upload_retries_preserve_accepted_bytes_and_etag() {
+async fn one_block_upload_retries_preserve_accepted_bytes_and_etag() {
     let h = Harness::start().await;
     let upload = prepare_upload(&h, "single-retry.bin", 3).await;
     let url = upload["url"].as_str().unwrap();
@@ -1360,7 +1433,11 @@ async fn single_upload_retries_preserve_accepted_bytes_and_etag() {
     let (_, status) = h
         .request("GET", &format!("/api/uploads/{id}"), None, None)
         .await;
-    assert_eq!(status["data_received"], true);
+    assert_eq!(status["parts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        status["parts"][0]["content_hash"],
+        revaro_core::keys::sha256_hex(b"abc")
+    );
     let (status, file) = h
         .json(
             "POST",
@@ -1384,7 +1461,7 @@ async fn single_upload_retries_preserve_accepted_bytes_and_etag() {
 #[tokio::test]
 async fn multipart_put_acknowledges_parts_and_conflicting_retries_cannot_replace_them() {
     let h = Harness::start().await;
-    let size = revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1;
+    let size = revaro_core::limits::DEFAULT_MULTIPART_PART_SIZE as usize + 1;
     let upload = prepare_upload(&h, "automatic-parts.bin", size).await;
     let id = upload["upload_id"].as_str().unwrap();
     let part = vec![17; size - 1];
@@ -1540,7 +1617,7 @@ async fn different_upload_parts_progress_concurrently_and_completion_waits_for_w
 #[tokio::test]
 async fn failed_upload_metadata_commit_retains_parts_and_retry_reuses_staged_object() {
     let h = Harness::start().await;
-    let payload = vec![41; revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1];
+    let payload = vec![41; revaro_core::limits::DEFAULT_MULTIPART_PART_SIZE as usize + 1];
     let upload = prepare_upload(&h, "recover-staged.bin", payload.len()).await;
     send_parts(&h, &upload, &payload).await;
     h.state.db.call(|c| {
@@ -1618,7 +1695,7 @@ async fn failed_upload_metadata_commit_retains_parts_and_retry_reuses_staged_obj
 #[tokio::test]
 async fn startup_recovers_a_publication_interrupted_before_its_checkpoint() {
     let mut h = Harness::start_with_database(true).await;
-    let payload = vec![53; revaro_core::limits::MULTIPART_UPLOAD_THRESHOLD as usize + 1];
+    let payload = vec![53; revaro_core::limits::DEFAULT_MULTIPART_PART_SIZE as usize + 1];
     let upload = prepare_upload(&h, "recover-publication.bin", payload.len()).await;
     send_parts(&h, &upload, &payload).await;
     h.state.db.call(|c| {

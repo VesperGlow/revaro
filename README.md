@@ -145,3 +145,9 @@ Rust 本地编译需要 FFmpeg 开发库、clang 和 cmake；Dockerfile 包含�
 `main` 推送会触发 GitHub Actions：Rust workspace 检查、依赖扫描、镜像构建和 Chromium E2E 通过后发布 GHCR 镜像。浏览器测试使用 `compose.e2e.yml` 启动全新本地存储服务。
 
 媒体与存储边界见 [data-plane.md](docs/data-plane.md)。
+
+### 统一文件传输
+
+所有文件类型的读取、预览、原生下载、公开链接、阅读资源与分块上传共享传输层。支持 Range/206、强 ETag、2～4 路并行下载、局部断点恢复、停滞检测、退避重试与小资源补发；所有非空文件统一以 1 MiB 起的分片上传并校验 SHA-256。批量 ZIP 生成可复用的缓存文件，支持断流后续传。客户端需要 HTTPS 或 localhost。HTTP/3 使用浏览器原生 QUIC；可配置同主机不同 HTTPS 端口的 HTTP/2 专用入口自动回退。部署说明、参数与验证边界见 [文件传输说明](docs/file-transport.md)。
+
+可选的原生 Quinn HTTP/3 listener 提供 `standard` / `aggressive` 拥塞控制。默认 `aggressive + auto` 以真实 ACK 吞吐和持续排队反馈动态探测带宽，也支持显式固定 target；`standard` 保留 upstream Cubic，供兼容、诊断和手动回退。aggressive 使用有限损失补偿与双层 UDP pacing；持续拥塞和严重丢包转回 Cubic，确认路径恢复后只允许有限次数的带宽探测。保持标准 HTTP/3，复用现有全部路由与共享恢复层。配置、TLS/UDP 部署及真实 tc netem 测量见 [QUIC 传输说明](docs/quic-transport.md)。

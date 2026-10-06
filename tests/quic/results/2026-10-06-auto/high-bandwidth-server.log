@@ -1,0 +1,35 @@
+2026-10-06T15:09:44.475566Z  INFO database ready path=/tmp/revaro-netem-qa0uznwm/data/revaro.db
+2026-10-06T15:09:44.476091Z  INFO local object storage ready path=/tmp/revaro-netem-qa0uznwm/objects
+2026-10-06T15:09:44.479297Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:09:44.479600Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:09:44.479617Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:09:44.479637Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-qa0uznwm/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:10:04.770615Z  INFO termination signal received, shutting down
+2026-10-06T15:10:04.771387Z  INFO QUIC connection transfer statistics remote=127.0.0.1:58657 sent_bytes=277900559 acked_bytes=262847554 lost_bytes=168079 loss_ppm=1915 pacing_bps=231102696 target_bps=230660136 cubic_fallback=false rtt_ms=120 sent_packets=250333 lost_packets=162
+2026-10-06T15:10:04.771883Z  INFO server stopped
+2026-10-06T15:10:04.814784Z  INFO database ready path=/tmp/revaro-netem-qa0uznwm/data/revaro.db
+2026-10-06T15:10:04.815712Z  INFO local object storage ready path=/tmp/revaro-netem-qa0uznwm/objects
+2026-10-06T15:10:04.818966Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:10:04.819249Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:10:04.819274Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:10:04.819290Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-qa0uznwm/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:10:25.111513Z  INFO termination signal received, shutting down
+2026-10-06T15:10:25.111909Z  INFO QUIC connection transfer statistics remote=127.0.0.1:60491 sent_bytes=287497409 acked_bytes=270658662 lost_bytes=123057 loss_ppm=247 pacing_bps=184573744 target_bps=184528104 cubic_fallback=false rtt_ms=120 sent_packets=258698 lost_packets=118
+2026-10-06T15:10:25.112291Z  INFO server stopped
+2026-10-06T15:10:25.154114Z  INFO database ready path=/tmp/revaro-netem-qa0uznwm/data/revaro.db
+2026-10-06T15:10:25.154896Z  INFO local object storage ready path=/tmp/revaro-netem-qa0uznwm/objects
+2026-10-06T15:10:25.158904Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:10:25.159221Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:10:25.159245Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:10:25.159264Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-qa0uznwm/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:10:45.441060Z  INFO termination signal received, shutting down
+2026-10-06T15:10:45.442014Z  INFO QUIC connection transfer statistics remote=127.0.0.1:35382 sent_bytes=270303729 acked_bytes=255041876 lost_bytes=193243 loss_ppm=241 pacing_bps=230715752 target_bps=230660136 cubic_fallback=false rtt_ms=121 sent_packets=243074 lost_packets=187
+2026-10-06T15:10:45.442618Z  INFO server stopped
+2026-10-06T15:10:45.486966Z  INFO database ready path=/tmp/revaro-netem-qa0uznwm/data/revaro.db
+2026-10-06T15:10:45.488029Z  INFO local object storage ready path=/tmp/revaro-netem-qa0uznwm/objects
+2026-10-06T15:10:45.492140Z  INFO native HTTP/3 listening addr=127.0.0.1:18443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000
+2026-10-06T15:10:45.492443Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18443
+2026-10-06T15:10:45.492464Z  INFO native HTTP/2 HTTPS listening addr=127.0.0.1:18444
+2026-10-06T15:10:45.492484Z  INFO server started addr=127.0.0.1:18081 data_dir=/tmp/revaro-netem-qa0uznwm/data web_dir=/config/revaro/dist/web base_url=https://localhost:18443
+2026-10-06T15:10:45.564580Z  INFO termination signal received, shutting down
+2026-10-06T15:10:45.566108Z  INFO server stopped

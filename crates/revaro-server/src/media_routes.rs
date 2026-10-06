@@ -7,12 +7,11 @@
 
 use std::sync::Arc;
 
-use axum::body::Body;
 use axum::extract::{Path as PathParam, State};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
-use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderValue};
+use http::header::{CACHE_CONTROL, HeaderValue};
 use revaro_core::classify;
 use revaro_core::media::MediaProbe;
 use revaro_core::model::{File, FileKind, FileStatus};
@@ -395,11 +394,12 @@ async fn thumbnail(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
+    headers: http::HeaderMap,
 ) -> Result<Response, revaro_core::ApiError> {
     let file = ready_media_file(state.clone(), id, MediaKind::Any, "ready file not found").await?;
     let typed_key = thumbnail_key(&file);
     if let Some(data) = read_thumbnail(&state, &typed_key).await {
-        return Ok(thumbnail_response(data));
+        return thumbnail_response(data, headers).await;
     }
     if !classify::is_video(&file) {
         let legacy_key = keys::thumbnail_v2_key(&file.object_key);
@@ -407,7 +407,7 @@ async fn thumbnail(
             if let Err(error) = state.store.put_immutable(&typed_key, &data).await {
                 tracing::warn!(%error, "could not migrate legacy thumbnail key");
             }
-            return Ok(thumbnail_response(data));
+            return thumbnail_response(data, headers).await;
         }
     }
     if classify::is_audio(&file) {
@@ -417,7 +417,7 @@ async fn thumbnail(
                 tracing::warn!(file = %file.id, %error, "audio thumbnail failed");
                 revaro_core::ApiError::not_found("audio cover is unavailable")
             })?;
-        return Ok(thumbnail_response(data));
+        return thumbnail_response(data, headers).await;
     }
     if classify::is_video(&file) {
         schedule_video_thumbnail(state, file, typed_key);
@@ -434,7 +434,7 @@ async fn thumbnail(
     if let Err(error) = state.store.put_immutable(&typed_key, &data).await {
         tracing::warn!(%error, "could not persist generated thumbnail");
     }
-    Ok(thumbnail_response(data))
+    thumbnail_response(data, headers).await
 }
 
 async fn read_thumbnail(state: &Arc<AppState>, key: &str) -> Option<Vec<u8>> {
@@ -514,25 +514,17 @@ fn is_jpeg(data: &[u8]) -> bool {
     data.len() >= 2 && data[..2] == [0xff, 0xd8]
 }
 
-fn thumbnail_response(data: Vec<u8>) -> Response {
-    let etag = format!("\"{}\"", keys::sha256_hex(&data));
-    let mut response = Response::new(Body::from(data.clone()));
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
-    response.headers_mut().insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&data.len().to_string()).expect("length is a valid header"),
-    );
+async fn thumbnail_response(
+    data: Vec<u8>,
+    headers: http::HeaderMap,
+) -> Result<Response, revaro_core::ApiError> {
+    let mut response =
+        crate::transfer::serve_bytes(data.into(), "image/jpeg", "inline", headers).await?;
     response.headers_mut().insert(
         CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
-    response.headers_mut().insert(
-        ETAG,
-        HeaderValue::from_str(&etag).expect("digest is a valid etag"),
-    );
-    response
+    Ok(response)
 }
 
 fn schedule_video_thumbnail(state: Arc<AppState>, file: File, key: String) {
@@ -576,6 +568,7 @@ fn schedule_video_thumbnail(state: Arc<AppState>, file: File, key: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
     use std::io::Cursor;
 
     use axum::body::Body;

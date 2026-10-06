@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login, openTopbarMenu } from './helpers'
+import { login, openTopbarMenu, showRecentFiles } from './helpers'
 import { zip } from './fixtures/epub'
 
 
@@ -43,6 +43,7 @@ test('Rust bundle opens editable TXT files in the document editor', async ({ pag
   const name = `rust-reader-${Date.now().toString(36)}.txt`
 
   await login(page)
+  await showRecentFiles(page)
   await page.locator('input[type=file]').first().setInputFiles({
     name,
     mimeType: 'text/plain',
@@ -65,6 +66,7 @@ test('文档编辑器按文件名和内容共同判断未保存状态，并格�
   const name = `editor-bytes-${Date.now().toString(36)}.txt`
 
   await login(page)
+  await showRecentFiles(page)
   await page.locator('input[type=file]').first().setInputFiles({
     name,
     mimeType: 'text/plain',
@@ -100,6 +102,7 @@ test('Markdown 预览保留 reference 的 GFM 元素并清理主动 HTML', async
   const content = '# Title\n\n#### Deep heading\n\n1. one\n2. two\n\n- [x] done\n- [ ] todo\n\n| a | b |\n| --- | :---: |\n| 1 | 2 |\n\n[link](https://example.com "T") and ![alt](cover.png)\n\n~~gone~~ and <u>under</u>\n\n<script>alert(1)</script>'
 
   await login(page)
+  await showRecentFiles(page)
   await page.locator('input[type=file]').first().setInputFiles({
     name,
     mimeType: 'text/markdown',
@@ -131,6 +134,7 @@ test('Rust bundle opens an EPUB reader, follows its TOC and restores progress', 
   const name = `rust-reader-${Date.now().toString(36)}.epub`
 
   await login(page)
+  await showRecentFiles(page)
   await page.locator('input[type=file]').first().setInputFiles({
     name,
     mimeType: 'application/epub+zip',

@@ -282,7 +282,7 @@ pub mod files {
     /// Response of `POST /api/files/batch-download/prepare`.
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct BatchDownloadTicket {
-        /// Opaque, short-lived token for the streaming download URL.
+        /// Opaque, reusable token for the resumable archive download URL.
         pub token: String,
     }
 }

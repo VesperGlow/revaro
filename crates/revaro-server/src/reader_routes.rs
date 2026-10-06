@@ -16,7 +16,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use http::StatusCode;
-use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue};
+use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, HeaderValue};
 use revaro_core::ApiError;
 use revaro_core::api::book::{Info as BookInfo, Progress as BookProgress, SaveProgressRequest};
 use revaro_core::model::{File, FileKind, FileStatus};
@@ -205,6 +205,7 @@ async fn book_asset(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam((id, index)): PathParam<(String, String)>,
+    headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let file = reader_file(Arc::clone(&state), id).await?;
     let book = load_book(state, &file).await?;
@@ -214,18 +215,20 @@ async fn book_asset(
     let Some(asset) = book.assets.get(index) else {
         return Err(ApiError::not_found("asset not found"));
     };
-    Ok(bytes_response(
-        StatusCode::OK,
+    bytes_response(
         &revaro_core::classify::safe_delivery_mime(&asset.content_type),
         asset.data.clone(),
         "private, max-age=31536000, immutable",
-    ))
+        headers,
+    )
+    .await
 }
 
 async fn book_cover(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
+    headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let file = reader_file(Arc::clone(&state), id).await?;
     let book = load_book(state, &file).await?;
@@ -236,11 +239,12 @@ async fn book_cover(
         revaro_reader::asset_content_type(&book.cover_ext),
     );
     let mut response = bytes_response(
-        StatusCode::OK,
         &content_type,
         book.cover.clone(),
         "private, max-age=3600",
-    );
+        headers,
+    )
+    .await?;
     if content_type == "application/octet-stream" {
         response
             .headers_mut()
@@ -249,30 +253,19 @@ async fn book_cover(
     Ok(response)
 }
 
-fn bytes_response(
-    status: StatusCode,
+async fn bytes_response(
     content_type: &str,
     data: Vec<u8>,
     cache_control: &str,
-) -> Response {
-    let length = data.len();
-    let mut response = Response::new(axum::body::Body::from(data));
-    *response.status_mut() = status;
-    let headers = response.headers_mut();
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_str(content_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
-    headers.insert(
+    headers: http::HeaderMap,
+) -> Result<Response, ApiError> {
+    let mut response =
+        crate::transfer::serve_bytes(data.into(), content_type, "inline", headers).await?;
+    response.headers_mut().insert(
         CACHE_CONTROL,
-        HeaderValue::from_str(cache_control).expect("cache policy is a valid header value"),
+        HeaderValue::from_str(cache_control).expect("cache policy"),
     );
-    headers.insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&length.to_string()).expect("a length is a valid header value"),
-    );
-    response
+    Ok(response)
 }
 
 fn progress_key(file_id: &str) -> String {
@@ -372,6 +365,7 @@ async fn book_flow(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam(id): PathParam<String>,
+    headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let file = reader_file(Arc::clone(&state), id).await?;
     ensure_flow(Arc::clone(&state), &file).await?;
@@ -383,18 +377,20 @@ async fn book_flow(
         tracing::error!(%error, "flow manifest is invalid");
         ApiError::internal("could not read flow manifest")
     })?;
-    Ok(bytes_response(
-        StatusCode::OK,
+    bytes_response(
         "application/json; charset=utf-8",
         data,
         "private, no-cache",
-    ))
+        headers,
+    )
+    .await
 }
 
 async fn book_flow_chunk(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
     PathParam((id, index)): PathParam<(String, String)>,
+    headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let index = index
         .parse::<u64>()
@@ -442,12 +438,13 @@ async fn book_flow_chunk(
             return Err(ApiError::internal("could not read flow chunk"));
         }
     };
-    Ok(bytes_response(
-        StatusCode::OK,
+    bytes_response(
         "text/html; charset=utf-8",
         bind_asset_urls(data, &file.id)?,
         "private, max-age=31536000, immutable",
-    ))
+        headers,
+    )
+    .await
 }
 
 fn bind_asset_urls(data: Vec<u8>, file_id: &str) -> Result<Vec<u8>, ApiError> {
@@ -660,6 +657,7 @@ fn flow_cache_api_error(error: CacheError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
     use std::io::{Cursor, Write};
 
     use crate::db::DbError;

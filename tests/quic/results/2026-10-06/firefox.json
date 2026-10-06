@@ -1,0 +1,38 @@
+{
+  "engine": "firefox",
+  "browser": "141.0",
+  "protocol": "h3",
+  "testForcedQuic": false,
+  "netem": false,
+  "results": [
+    {
+      "extension": "pdf",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 1.267,
+      "maxProgressGapSeconds": 0.002
+    },
+    {
+      "extension": "zip",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 0.913,
+      "maxProgressGapSeconds": 0.003
+    },
+    {
+      "extension": "txt",
+      "bytes": 1048576,
+      "hashVerified": true,
+      "seconds": 0.833,
+      "maxProgressGapSeconds": 0.001
+    },
+    {
+      "extension": "dat",
+      "bytes": 6291456,
+      "hashVerified": true,
+      "seconds": 4.846,
+      "maxProgressGapSeconds": 1.57
+    }
+  ],
+  "fallbackRequests": []
+}

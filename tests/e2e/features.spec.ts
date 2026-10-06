@@ -153,7 +153,7 @@ test('continuous scrolling preserves files and selection, with aligned sorting a
   await expect(input).toHaveValue(`${prefix}-outside`)
 })
 
-test('scroll loading can retry and ignores a late batch after search changes', async ({ page }) => {
+test('scroll loading reconnects automatically and ignores a late batch after search changes', async ({ page }) => {
   test.setTimeout(90_000)
   await login(page)
   const prefix = `retry-${Date.now().toString(36)}`
@@ -162,13 +162,17 @@ test('scroll loading can retry and ignores a late batch after search changes', a
   await page.goto(`/f/${folder.id}`)
   await expect(page.locator('.file-card')).toHaveCount(100)
   const batch = '**/api/files?**offset=100&**'
-  await page.route(batch, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'temporary listing error' }) }))
+  let failedRequests = 0
+  await page.context().route(batch, async route => {
+    if (!route.request().serviceWorker()) return route.continue()
+    if (failedRequests++ === 0) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'temporary listing error' }) })
+    return route.continue()
+  })
   await page.locator('.listing-end').scrollIntoViewIfNeeded()
-  await expect(page.getByRole('button', { name: '重试加载' })).toBeVisible()
-  await expect(page.locator('.file-card')).toHaveCount(100)
-  await page.unroute(batch)
-  await page.getByRole('button', { name: '重试加载' }).click()
   await expect(page.locator('.file-card')).toHaveCount(103)
+  expect(failedRequests).toBeGreaterThanOrEqual(2)
+  await expect(page.getByRole('button', { name: '重试加载' })).toHaveCount(0)
+  await page.context().unroute(batch)
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.getByRole('button', { name: '切换排序方向', exact: true }).click()
   await expect(page.locator('.file-card')).toHaveCount(100)
@@ -178,7 +182,8 @@ test('scroll loading can retry and ignores a late batch after search changes', a
   const pending = new Promise<void>(resolve => { fetched = resolve })
   let delivered!: () => void
   const delivery = new Promise<void>(resolve => { delivered = resolve })
-  await page.route(batch, async route => {
+  await page.context().route(batch, async route => {
+    if (!route.request().serviceWorker()) return route.continue()
     const response = await route.fetch()
     fetched()
     await gate
@@ -193,7 +198,7 @@ test('scroll loading can retry and ignores a late batch after search changes', a
   await delivery
   await (await lateResponse).finished()
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
-  await page.unroute(batch)
+  await page.context().unroute(batch)
   await expect(page.locator('.file-card')).toHaveCount(1)
   await expect(page.locator('.file-card strong')).toHaveText(`${prefix}-102.md`)
 })
@@ -323,7 +328,9 @@ test('expiring share links are visible in the topbar popover and can be revoked'
   await row.getByRole('button', { name: '撤销链接' }).click()
   await expect(row).toHaveCount(0)
   expect((await page.request.get(url)).status()).toBe(404)
-  await expect(page.locator('.public-links-popover').getByText('暂无公开链接', { exact: true })).toBeVisible()
+  // An existing local instance may have other prepared public links.
+  if (await page.locator('.public-links-popover .public-link-row').count() === 0)
+    await expect(page.locator('.public-links-popover').getByText('暂无公开链接', { exact: true })).toBeVisible()
   await expect(page.locator('.public-links-popover').getByRole('button', { name: '上一页', exact: true })).toHaveCount(0)
   await expect(page.locator('.public-links-popover').getByRole('button', { name: '下一页', exact: true })).toHaveCount(0)
 })

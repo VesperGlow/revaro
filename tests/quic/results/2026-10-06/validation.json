@@ -1,0 +1,9 @@
+{
+  "rust_tests": 462,
+  "xtask_check": "passed (fmt, native Clippy -D warnings, tests, WASM check)",
+  "node_transport_tests": 9,
+  "existing_instance_transport_e2e": "passed",
+  "profile": "debug",
+  "date_utc": "2026-10-06",
+  "target_bandwidth_mbps": 12
+}

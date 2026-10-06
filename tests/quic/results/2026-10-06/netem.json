@@ -1,0 +1,1967 @@
+{
+  "settings": {
+    "rtt_ms": 120,
+    "jitter_per_direction_ms": 10,
+    "line_mbps": 20,
+    "target_mbps": 12,
+    "max_mbps": 20,
+    "global_max_mbps": 40,
+    "max_compensation_percent": 125,
+    "seconds": 20,
+    "note": "netem affects both directions on isolated loopback; timed prefix transfers"
+  },
+  "samples": [
+    {
+      "mode": "standard",
+      "loss_percent": 0,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 43737141,
+      "seconds": 20,
+      "first_byte_seconds": 0.2738730690034572,
+      "goodput_mbps": 17.4948564,
+      "steady_mbps": 18.19353270588235,
+      "per_second_mbps": [
+        3.984008,
+        18.320968,
+        18.302096,
+        18.3022,
+        18.320928,
+        18.311552,
+        18.3116,
+        18.321008,
+        18.30228,
+        18.292704,
+        18.292752,
+        7.08036,
+        27.5732,
+        18.30256,
+        18.302488,
+        18.293096,
+        18.302616,
+        18.293168,
+        18.292296,
+        18.395248
+      ],
+      "max_progress_gap_seconds": 0.6677179750113282,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "114ef264f94e33379657f31e8d3eac99d21cee904793aba72856e30079eac6d9",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8040:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 4349896085061421538,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 47839422,
+          "packets": 55441,
+          "drops": 33,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 715572,
+          "qlen": 823
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 43737141 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 0,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 43776148,
+      "seconds": 20,
+      "first_byte_seconds": 0.290800904011121,
+      "goodput_mbps": 17.5104592,
+      "steady_mbps": 18.23176188235294,
+      "per_second_mbps": [
+        3.711672,
+        18.245984,
+        18.311576,
+        18.302144,
+        18.302232,
+        18.311592,
+        18.302032,
+        18.292656,
+        18.311384,
+        18.292872,
+        18.28344,
+        6.132,
+        18.526776,
+        29.00476,
+        18.293064,
+        18.311872,
+        18.30244,
+        18.293072,
+        18.291904,
+        18.385712
+      ],
+      "max_progress_gap_seconds": 0.6835726159915794,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "b0877953dafd4dfc3eee848ba2d398a8598d0ab3a4b3552a3d9407e7054c7ba6",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8041:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 5123305354229331625,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 47884827,
+          "packets": 55703,
+          "drops": 147,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 635890,
+          "qlen": 735
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 43776148 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 0,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 43902817,
+      "seconds": 20,
+      "first_byte_seconds": 0.2763440900016576,
+      "goodput_mbps": 17.5611268,
+      "steady_mbps": 18.281946352941176,
+      "per_second_mbps": [
+        3.768088,
+        18.321328,
+        18.340032,
+        18.31168,
+        18.302096,
+        18.311496,
+        18.302192,
+        18.311384,
+        18.30216,
+        18.265048,
+        18.283864,
+        18.321416,
+        18.3496,
+        18.31192,
+        18.246192,
+        18.330832,
+        18.330888,
+        18.283776,
+        18.236512,
+        17.992032
+      ],
+      "max_progress_gap_seconds": 0.12692308600526303,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "4a29d6e80261a96638898fd96798c215543bfa1a73320ba6c42d6dba01e2618e",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8042:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 8574330608388095323,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 47982751,
+          "packets": 54582,
+          "drops": 0,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 202613,
+          "qlen": 226
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 43902817 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 5,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 945567,
+      "seconds": 20,
+      "first_byte_seconds": 0.28262164298212156,
+      "goodput_mbps": 0.3782268,
+      "steady_mbps": 0.33277270588235297,
+      "per_second_mbps": [
+        0.81732,
+        0.695392,
+        0.394688,
+        0.319456,
+        0.432208,
+        0.244392,
+        0.225488,
+        0.281928,
+        0.31956,
+        0.488696,
+        0.385264,
+        0.281928,
+        0.216128,
+        0.4416,
+        0.62028,
+        0.413456,
+        0.422936,
+        0.216104,
+        0.197376,
+        0.150336
+      ],
+      "max_progress_gap_seconds": 0.39182892700773664,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.14574203500524163,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "f1b7c008a7e0d62fa978ec433b08a6b42382e3faad3478701c8f15871533c6d9",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8043:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 10440354571976479131,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 1048515,
+          "packets": 1308,
+          "drops": 72,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 158,
+          "qlen": 2
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 945567 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 5,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 909734,
+      "seconds": 20,
+      "first_byte_seconds": 0.7383717490010895,
+      "goodput_mbps": 0.3638936,
+      "steady_mbps": 0.36314917647058825,
+      "per_second_mbps": [
+        0.117408,
+        0.46056,
+        0.526368,
+        0.70472,
+        0.216072,
+        0.338152,
+        0.394664,
+        0.22556,
+        0.3194,
+        0.413576,
+        0.432256,
+        0.300624,
+        0.366536,
+        0.394712,
+        0.356968,
+        0.498144,
+        0.272528,
+        0.225336,
+        0.34776,
+        0.366528
+      ],
+      "max_progress_gap_seconds": 0.4978488019842189,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.06431742999120615,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "cbb861eeecce4a8b92df6161a527592b2729a5195f750b4e7a4f419ddd19360e",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8044:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 7679545737573869978,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 1011594,
+          "packets": 1247,
+          "drops": 74,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 3884,
+          "qlen": 5
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 909734 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 5,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 956177,
+      "seconds": 20,
+      "first_byte_seconds": 0.2683752979792189,
+      "goodput_mbps": 0.3824708,
+      "steady_mbps": 0.3830696470588235,
+      "per_second_mbps": [
+        0.423072,
+        0.38532,
+        0.32884,
+        0.375912,
+        0.33828,
+        0.357,
+        0.385344,
+        0.42288,
+        0.33824,
+        0.25376,
+        0.310136,
+        0.422888,
+        0.38516,
+        0.366552,
+        0.394568,
+        0.253672,
+        0.375936,
+        0.507448,
+        0.394736,
+        0.629672
+      ],
+      "max_progress_gap_seconds": 0.38877389501431026,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.001432032004231587,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "292e9fd5a03eeb437588fd297fcce104d008f85b284d63789dd29957f201274f",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8045:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 17244476647900522966,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 1056644,
+          "packets": 1306,
+          "drops": 63,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 239,
+          "qlen": 3
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20001 milliseconds with 956177 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 10,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 636549,
+      "seconds": 20,
+      "first_byte_seconds": 0.28140876500401646,
+      "goodput_mbps": 0.2546196,
+      "steady_mbps": 0.2658564705882353,
+      "per_second_mbps": [
+        0.262712,
+        0.122176,
+        0.187944,
+        0.366536,
+        0.253632,
+        0.206672,
+        0.272488,
+        0.216104,
+        0.159752,
+        0.281848,
+        0.272528,
+        0.234984,
+        0.310112,
+        0.394624,
+        0.300776,
+        0.328856,
+        0.18768,
+        0.197328,
+        0.244312,
+        0.291328
+      ],
+      "max_progress_gap_seconds": 0.557675517979078,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.011388503975467756,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "42bdcdfb1db0e07b5755931ed3e064e0c2ac2755c7d8a8c3ebd17795ea28b3c8",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8046:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.1,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 3944588899050025237,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 706080,
+          "packets": 879,
+          "drops": 95,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 159,
+          "qlen": 2
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 636549 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 10,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 635349,
+      "seconds": 20,
+      "first_byte_seconds": 1.4194892800005618,
+      "goodput_mbps": 0.2541396,
+      "steady_mbps": 0.2724701176470588,
+      "per_second_mbps": [
+        0.0,
+        0.262856,
+        0.187944,
+        0.187856,
+        0.29132,
+        0.263016,
+        0.178568,
+        0.28184,
+        0.469952,
+        0.338216,
+        0.328648,
+        0.225552,
+        0.150352,
+        0.11264,
+        0.310032,
+        0.451152,
+        0.300576,
+        0.263136,
+        0.244248,
+        0.234888
+      ],
+      "max_progress_gap_seconds": 0.39989253497333266,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.01326875199447386,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "7d78d67bcea1415745d29d526f462a4d36f2785e280965365f5cd9eb57c8a3d4",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8047:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.1,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 6805814921382169882,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 706420,
+          "packets": 869,
+          "drops": 103,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 158,
+          "qlen": 2
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20001 milliseconds with 635349 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 10,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 563671,
+      "seconds": 20,
+      "first_byte_seconds": 0.895764312997926,
+      "goodput_mbps": 0.22546839999999999,
+      "steady_mbps": 0.22106682352941176,
+      "per_second_mbps": [
+        0.08436,
+        0.32852,
+        0.338352,
+        0.234936,
+        0.093856,
+        0.328768,
+        0.262976,
+        0.1316,
+        0.206712,
+        0.460496,
+        0.244288,
+        0.206808,
+        0.197312,
+        0.037512,
+        0.197136,
+        0.253656,
+        0.197376,
+        0.216192,
+        0.33816,
+        0.150352
+      ],
+      "max_progress_gap_seconds": 1.1770093250088394,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.5988531979965046,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "dc3b359f584e00434671b1974a4c4f89a486a40efd2238d65bc2d1ca18179149",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8048:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.1,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 13418518301303862417,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 643404,
+          "packets": 814,
+          "drops": 91,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 1401,
+          "qlen": 3
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 563671 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 15,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 388178,
+      "seconds": 18.206372221990023,
+      "first_byte_seconds": 1.3996788329968695,
+      "goodput_mbps": 0.17056797269305557,
+      "steady_mbps": 0.15305129411764706,
+      "per_second_mbps": [
+        0.0,
+        0.212256,
+        0.291296,
+        0.094008,
+        0.187816,
+        0.300608,
+        0.263016,
+        0.206656,
+        0.253672,
+        0.244376,
+        0.0564,
+        0.0,
+        0.112232,
+        0.263136,
+        0.169064,
+        0.056344,
+        0.131376,
+        0.22556,
+        0.037608,
+        0.0
+      ],
+      "max_progress_gap_seconds": 2.845206898986362,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.021413695998489857,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "3a1cdd680467dd85a9c56470025a2b4a0b6cd6c83ba0f3065154364d63da6999",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8049:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.15,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 16412655799641838256,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 436772,
+          "packets": 541,
+          "drops": 105,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 0,
+          "qlen": 0
+        }
+      ],
+      "curl_exit": 18,
+      "curl_stderr": "curl: (18) HTTP/3 stream 0 reset by server\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 15,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 242559,
+      "seconds": 8.287152770993998,
+      "first_byte_seconds": 0.39931250098743476,
+      "goodput_mbps": 0.234154244964794,
+      "steady_mbps": 0.07792329411764706,
+      "per_second_mbps": [
+        0.22112,
+        0.169152,
+        0.225504,
+        0.281888,
+        0.206656,
+        0.216136,
+        0.272504,
+        0.244256,
+        0.103256,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_progress_gap_seconds": 0.4603105160058476,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.10742897601448931,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "f4edc9e463b33b7c5e22e7406f5030e7e76c7b24849ffb986f5976a61321b837",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "804a:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.15,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 10824592383861513958,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 274674,
+          "packets": 348,
+          "drops": 47,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 236,
+          "qlen": 3
+        }
+      ],
+      "curl_exit": 18,
+      "curl_stderr": "curl: (18) HTTP/3 stream 0 reset by server\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 15,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 533084,
+      "seconds": 20,
+      "first_byte_seconds": 0.2797606959939003,
+      "goodput_mbps": 0.2132336,
+      "steady_mbps": 0.2016870588235294,
+      "per_second_mbps": [
+        0.422712,
+        0.310008,
+        0.103272,
+        0.075144,
+        0.140872,
+        0.187816,
+        0.18792,
+        0.018728,
+        0.20644,
+        0.225472,
+        0.338256,
+        0.291352,
+        0.18788,
+        0.272592,
+        0.22556,
+        0.216,
+        0.18784,
+        0.206728,
+        0.159536,
+        0.300544
+      ],
+      "max_progress_gap_seconds": 0.6846878369979095,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.058194721990730613,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "7f13b328d3fe4b09f0dd68794b34be707d39aac47370922db40f8e4648bf0efd",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "804b:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.15,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 8437285908063558422,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 594818,
+          "packets": 739,
+          "drops": 119,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 5635,
+          "qlen": 6
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 533084 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "standard",
+      "loss_percent": 5,
+      "repetition": 1,
+      "dropout": true,
+      "bytes": 873875,
+      "seconds": 20,
+      "first_byte_seconds": 0.2745119239843916,
+      "goodput_mbps": 0.34955,
+      "steady_mbps": 0.3388334117647059,
+      "per_second_mbps": [
+        0.667032,
+        0.272512,
+        0.291288,
+        0.460496,
+        0.488616,
+        0.037608,
+        0.0,
+        0.0564,
+        0.338184,
+        0.413512,
+        0.422848,
+        0.479352,
+        0.422776,
+        0.310072,
+        0.281968,
+        0.291208,
+        0.263032,
+        0.39472,
+        0.516752,
+        0.582624
+      ],
+      "max_progress_gap_seconds": 2.711261791002471,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.0503147030249238,
+      "resume_after_outage_seconds": 0.7968510659993626,
+      "prefix_sha256": "8338606db3e6d28c325c5841dbf8419de0184d5348532e63bad40647507390f9",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "804c:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 10362451961541439625,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 966937,
+          "packets": 1189,
+          "drops": 74,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 3966,
+          "qlen": 6
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 873875 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 0,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 26647872,
+      "seconds": 20,
+      "first_byte_seconds": 0.2781765109975822,
+      "goodput_mbps": 10.6591488,
+      "steady_mbps": 11.284755764705883,
+      "per_second_mbps": [
+        2.819896,
+        7.545088,
+        10.977144,
+        11.26824,
+        11.277528,
+        11.315136,
+        11.25876,
+        11.258808,
+        11.32448,
+        11.28696,
+        11.26808,
+        11.305728,
+        11.277632,
+        11.258784,
+        11.343264,
+        11.230608,
+        11.286944,
+        11.268208,
+        11.26828,
+        11.343408
+      ],
+      "max_progress_gap_seconds": 0.01457343198126182,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "b84d0a8acf9b527024da333e6b34f37558eca42b9e34e3a9012c39de9ec0dfa2",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "804d:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 7487311038541011217,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 29187054,
+          "packets": 34179,
+          "drops": 0,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 109859,
+          "qlen": 126
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20002 milliseconds with 26647872 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 0,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 26141478,
+      "seconds": 20,
+      "first_byte_seconds": 0.28248974902089685,
+      "goodput_mbps": 10.4565912,
+      "steady_mbps": 11.060242352941177,
+      "per_second_mbps": [
+        2.726008,
+        7.48892,
+        10.892776,
+        11.240128,
+        11.324488,
+        11.287072,
+        11.183768,
+        11.258936,
+        11.249544,
+        11.259032,
+        11.230752,
+        11.221272,
+        11.230664,
+        10.57388,
+        10.620928,
+        10.874224,
+        10.649368,
+        10.893024,
+        10.939992,
+        10.987048
+      ],
+      "max_progress_gap_seconds": 0.02410316202440299,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "ce30dc951a303f0c392a75fde2cf405470e751a42228c2c83723021110a7c3da",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "804e:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 10386271261527051613,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 28549745,
+          "packets": 32651,
+          "drops": 0,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 105486,
+          "qlen": 118
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 26141478 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 0,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 25996101,
+      "seconds": 20,
+      "first_byte_seconds": 0.2915835190215148,
+      "goodput_mbps": 10.3984404,
+      "steady_mbps": 11.013350588235294,
+      "per_second_mbps": [
+        2.697792,
+        7.376088,
+        10.667968,
+        11.118312,
+        10.911728,
+        10.799256,
+        10.526872,
+        10.996304,
+        10.715136,
+        10.676944,
+        10.808528,
+        11.230928,
+        11.062016,
+        11.04316,
+        11.1932,
+        11.183992,
+        11.024496,
+        11.305672,
+        11.28696,
+        11.343456
+      ],
+      "max_progress_gap_seconds": 0.032240239990642294,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "66f675bf0e0ffbeab19fa4556490947b4e906968c4c77ad3fdcc529b7032ac19",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "804f:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 5852475330306992592,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 28374567,
+          "packets": 32166,
+          "drops": 0,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 111115,
+          "qlen": 129
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 25996101 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 5,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 26451131,
+      "seconds": 20,
+      "first_byte_seconds": 0.28653867499087937,
+      "goodput_mbps": 10.5804524,
+      "steady_mbps": 11.298511529411764,
+      "per_second_mbps": [
+        2.143096,
+        7.130544,
+        10.260712,
+        10.390832,
+        12.260096,
+        11.836568,
+        8.007408,
+        12.551512,
+        9.799624,
+        14.916376,
+        9.752952,
+        10.617048,
+        12.025488,
+        10.477096,
+        11.453024,
+        12.569296,
+        10.946048,
+        11.77212,
+        11.218384,
+        11.480824
+      ],
+      "max_progress_gap_seconds": 0.28673165701911785,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "dd2eb0b04cab77efde4003bab22fe49d961895d68fb4f162b481f7421bcc1091",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8050:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 2627710974213302285,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 29084254,
+          "packets": 33654,
+          "drops": 1807,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 86526,
+          "qlen": 100
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 26451131 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 5,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 26224004,
+      "seconds": 20,
+      "first_byte_seconds": 0.28984296397538856,
+      "goodput_mbps": 10.4896016,
+      "steady_mbps": 11.24908894117647,
+      "per_second_mbps": [
+        1.673136,
+        7.618952,
+        9.265432,
+        12.231688,
+        11.358176,
+        11.772048,
+        9.641312,
+        11.067776,
+        12.702056,
+        11.527848,
+        9.941792,
+        11.367584,
+        12.597864,
+        11.237744,
+        11.208432,
+        10.062856,
+        12.316536,
+        11.313144,
+        11.302952,
+        9.584704
+      ],
+      "max_progress_gap_seconds": 0.3131581220077351,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.10875562400906347,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "9ae4283d7cb8734bd733be5b9fcfe0d28261e2153f25c60afb9f1b551e151e8d",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8051:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 12547677467437477820,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 29083235,
+          "packets": 33680,
+          "drops": 1771,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 103584,
+          "qlen": 117
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 26224004 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 5,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 26285691,
+      "seconds": 20,
+      "first_byte_seconds": 0.5658040120033547,
+      "goodput_mbps": 10.5142764,
+      "steady_mbps": 11.26046588235294,
+      "per_second_mbps": [
+        1.353696,
+        6.83008,
+        10.673832,
+        11.349024,
+        11.462328,
+        11.058992,
+        11.329696,
+        10.195056,
+        12.335848,
+        11.30204,
+        11.15244,
+        11.339896,
+        8.90844,
+        13.67616,
+        11.227824,
+        11.518088,
+        11.134144,
+        11.490088,
+        11.358488,
+        10.589368
+      ],
+      "max_progress_gap_seconds": 0.283611007995205,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.04844401599257253,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "ccdc4c14bedda12f38bb3e09e44a471c93c977239c97d582b9aa906257634a16",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8052:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 15270231753271024224,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 29001227,
+          "packets": 33598,
+          "drops": 1788,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 108267,
+          "qlen": 120
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 26285691 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 10,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 2129931,
+      "seconds": 10.45004771600361,
+      "first_byte_seconds": 0.7387916969892103,
+      "goodput_mbps": 1.630561741254552,
+      "steady_mbps": 0.011545882352941177,
+      "per_second_mbps": [
+        0.291608,
+        6.528536,
+        10.023024,
+        0.19628,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max_progress_gap_seconds": 0.2700721379951574,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 7.435120317997644,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "18b195d65a405d6ecf492d951e6d4a4b58b2c9611fb989176746333fc78d6d0e",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8053:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.1,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 4554658462542865651,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 2333903,
+          "packets": 2719,
+          "drops": 333,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 74,
+          "qlen": 1
+        }
+      ],
+      "curl_exit": 18,
+      "curl_stderr": "curl: (18) HTTP/3 stream 0 reset by server\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 10,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 26229883,
+      "seconds": 20,
+      "first_byte_seconds": 0.2668589100067038,
+      "goodput_mbps": 10.4919532,
+      "steady_mbps": 11.255653647058823,
+      "per_second_mbps": [
+        2.15248,
+        6.068264,
+        10.272208,
+        11.159672,
+        9.974664,
+        11.101952,
+        13.336312,
+        11.374272,
+        10.052152,
+        12.294384,
+        11.591152,
+        9.319016,
+        11.965144,
+        11.722584,
+        9.826064,
+        11.965488,
+        10.35948,
+        12.414752,
+        11.346272,
+        11.542752
+      ],
+      "max_progress_gap_seconds": 0.3305934780219104,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.01757900998927653,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "99eb44b3629f9c75752d6c2e001faa0df69b5d95cc2135906e8df07f509fcf4b",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8054:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.1,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 16327347070335050472,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 28951117,
+          "packets": 33199,
+          "drops": 3633,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 99983,
+          "qlen": 119
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 26229883 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 10,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 26308357,
+      "seconds": 20,
+      "first_byte_seconds": 0.27676012201118283,
+      "goodput_mbps": 10.5233428,
+      "steady_mbps": 11.237632470588235,
+      "per_second_mbps": [
+        1.56044,
+        6.031312,
+        11.835352,
+        8.81084,
+        12.235216,
+        12.838288,
+        10.266584,
+        11.62828,
+        12.480856,
+        10.462872,
+        11.186184,
+        10.237664,
+        11.581304,
+        11.815736,
+        10.632128,
+        9.78884,
+        12.13508,
+        12.339536,
+        11.140584,
+        11.45976
+      ],
+      "max_progress_gap_seconds": 0.4356176540022716,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "619be677eb5169bf4dfbf15c17a5effa2b8b578601a5ea0fdf0cdec718b02b3c",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8055:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.1,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 13735388405693661747,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 29048919,
+          "packets": 33416,
+          "drops": 3612,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 111653,
+          "qlen": 126
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 26308357 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 15,
+      "repetition": 1,
+      "dropout": false,
+      "bytes": 25148401,
+      "seconds": 20,
+      "first_byte_seconds": 0.5448986410046928,
+      "goodput_mbps": 10.059360400000001,
+      "steady_mbps": 11.191857882352942,
+      "per_second_mbps": [
+        1.659608,
+        4.843888,
+        4.422128,
+        8.95804,
+        11.155608,
+        12.320408,
+        12.938688,
+        9.673992,
+        12.270872,
+        11.68832,
+        10.996328,
+        10.176736,
+        10.451336,
+        11.427704,
+        12.310672,
+        12.233976,
+        11.429248,
+        11.623744,
+        10.856976,
+        9.748936
+      ],
+      "max_progress_gap_seconds": 0.36768503597704694,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.10831455100560561,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "ec32576e707aa052aba453e670adc2b2dd995d18fcedfef6fec6214f2c26a99f",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8056:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.15,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 5185231647644835074,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 28024312,
+          "packets": 32161,
+          "drops": 5706,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 105840,
+          "qlen": 118
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 25148401 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 15,
+      "repetition": 2,
+      "dropout": false,
+      "bytes": 25781816,
+      "seconds": 20,
+      "first_byte_seconds": 0.2630247400084045,
+      "goodput_mbps": 10.3127264,
+      "steady_mbps": 11.076395294117647,
+      "per_second_mbps": [
+        1.531808,
+        5.764048,
+        10.659952,
+        9.484816,
+        12.889016,
+        10.170408,
+        11.990792,
+        9.47488,
+        14.015856,
+        9.887776,
+        12.347032,
+        7.524272,
+        14.355784,
+        11.822344,
+        8.913584,
+        12.262096,
+        12.693728,
+        11.503496,
+        8.041368,
+        10.921472
+      ],
+      "max_progress_gap_seconds": 0.5220873299986124,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.12790031399345025,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "76133c99d59d9fbb31560bc36a3dcdb9132b08b8e3c86677d69ad5337e05b54a",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8057:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.15,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 15237460160594104171,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 28920086,
+          "packets": 32993,
+          "drops": 5773,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 103605,
+          "qlen": 119
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 25781816 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 15,
+      "repetition": 3,
+      "dropout": false,
+      "bytes": 25449355,
+      "seconds": 20,
+      "first_byte_seconds": 0.2765167480101809,
+      "goodput_mbps": 10.179742,
+      "steady_mbps": 11.089938352941177,
+      "per_second_mbps": [
+        1.635416,
+        5.769424,
+        7.661048,
+        10.694832,
+        6.163416,
+        14.868928,
+        10.929424,
+        10.565288,
+        9.738632,
+        14.869472,
+        10.413728,
+        12.281104,
+        11.990288,
+        9.23108,
+        12.468984,
+        11.52912,
+        9.334952,
+        11.098976,
+        12.695952,
+        9.654776
+      ],
+      "max_progress_gap_seconds": 0.4245855589979328,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.11942474599345587,
+      "resume_after_outage_seconds": null,
+      "prefix_sha256": "e9ea2bee46cdd10595cc214cad452b9821e6cd231c7afe5c27805dd63e70ed2b",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8058:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.15,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 14813951736488261439,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 28359234,
+          "packets": 32366,
+          "drops": 5829,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 116858,
+          "qlen": 133
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 25449355 out of 67108864 bytes received\n"
+    },
+    {
+      "mode": "aggressive",
+      "loss_percent": 5,
+      "repetition": 1,
+      "dropout": true,
+      "bytes": 13847462,
+      "seconds": 20,
+      "first_byte_seconds": 0.2833278629987035,
+      "goodput_mbps": 5.5389848,
+      "steady_mbps": 5.375038588235294,
+      "per_second_mbps": [
+        1.494688,
+        7.440808,
+        10.468544,
+        9.75372,
+        12.728168,
+        1.041872,
+        0.0,
+        0.0,
+        1.632912,
+        0.291304,
+        0.441568,
+        0.357112,
+        0.310152,
+        1.992184,
+        5.826176,
+        11.35892,
+        11.85652,
+        11.12376,
+        11.358736,
+        11.302552
+      ],
+      "max_progress_gap_seconds": 3.1826208230049815,
+      "prefix_verified": true,
+      "terminal_silence_seconds": 0.032128013990586624,
+      "resume_after_outage_seconds": 1.235411338013364,
+      "prefix_sha256": "d24273372f08927e019d1abfb5505f16d4126ee08bc7df53ddad007a0c7af043",
+      "tc": [
+        {
+          "kind": "netem",
+          "handle": "8059:",
+          "root": true,
+          "refcnt": 2,
+          "options": {
+            "limit": 1000,
+            "delay": {
+              "delay": 0.06,
+              "jitter": 0.01,
+              "correlation": 0
+            },
+            "loss-random": {
+              "loss": 0.05,
+              "correlation": 0
+            },
+            "rate": {
+              "rate": 2500000,
+              "packetoverhead": 0,
+              "cellsize": 0,
+              "celloverhead": 0
+            },
+            "seed": 6354775717802239822,
+            "ecn": false,
+            "gap": 0
+          },
+          "bytes": 15321479,
+          "packets": 17742,
+          "drops": 1282,
+          "overlimits": 0,
+          "requeues": 0,
+          "backlog": 113420,
+          "qlen": 130
+        }
+      ],
+      "curl_exit": 28,
+      "curl_stderr": "curl: (28) Operation timed out after 20000 milliseconds with 13847462 out of 67108864 bytes received\n"
+    }
+  ]
+}

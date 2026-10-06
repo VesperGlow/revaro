@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { login, navigate, enterSelectionMode } from './helpers'
+import { login, navigate, enterSelectionMode, uploadFixture } from './helpers'
 import { readFileSync } from 'node:fs'
 
 const nativeFlac = readFileSync(new URL('../../crates/revaro-server/tests/fixtures/preview-chapters.flac', import.meta.url))
@@ -19,14 +19,7 @@ function wav() {
 }
 
 async function upload(page: Page, parent_id: string, name: string, data = wav(), mime = 'audio/wav') {
-  const headers = { origin: new URL(page.url()).origin }
-  const created = await page.request.post('/api/uploads', { headers, data: { parent_id, name, mime_type: mime, size: data.length } })
-  expect(created.status()).toBe(201)
-  const session = await created.json()
-  expect((await page.request.put(`/api/uploads/${session.upload_id}/data`, { headers, data })).ok()).toBeTruthy()
-  const completed = await page.request.post(`/api/uploads/${session.upload_id}/complete`, { headers, data: { parts: [] } })
-  expect(completed.ok()).toBeTruthy()
-  return completed.json()
+  return uploadFixture(page, parent_id, name, mime, data)
 }
 
 for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name: 'mobile', width: 390, hasTouch: true }, { name: 'compact', width: 320, hasTouch: true }]) {
@@ -53,7 +46,7 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
         collectionId = (await createdCollection.json()).id
         for (const file of files) expect((await page.request.put(`/api/library/collections/${collectionId}/items/${file.id}`, { headers })).status()).toBe(204)
         await navigate(page, '音乐')
-        await page.getByRole('button', { name: '选择集合', exact: true }).click()
+        await page.getByLabel('选择集合', { exact: true }).click()
         await page.getByRole('button', { name: `${prefix} · 6`, exact: true }).click()
         await expect(page.locator('.audio-stack-card,.stack-header')).toHaveCount(0)
         const cards = page.locator('.library-grid > .library-card')
@@ -115,8 +108,9 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
         await expect(player.locator('.audio-chapter-list > button')).toHaveCount(6)
         await player.locator('.audio-chapter-list > button').filter({ hasText: 'Chapter 3' }).click()
         await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThanOrEqual(10)
-        await player.getByRole('button', { name: '暂停', exact: true }).click()
+        // On phones the chapter sheet covers the playback controls.
         await player.locator('.audio-panel .media-icon-button').click()
+        await player.getByRole('button', { name: '暂停', exact: true }).click()
         await lyrics.getByRole('button', { name: 'Line 21', exact: true }).click()
         await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(20, 1)
         await expect(lyrics.locator('[aria-current="true"]')).toHaveText('Line 21')

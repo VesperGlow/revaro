@@ -119,6 +119,14 @@ async fn main() -> ExitCode {
         }
     };
 
+    let native = match revaro_server::quic::NativeTransport::start(&config, app.clone()).await {
+        Ok(native) => native,
+        Err(error) => {
+            tracing::error!(%error, "native TLS/QUIC listener startup failed");
+            return ExitCode::FAILURE;
+        }
+    };
+    let native_shutdown = native.shutdown_control();
     state.maintenance.start();
 
     tracing::info!(
@@ -133,8 +141,12 @@ async fn main() -> ExitCode {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        native_shutdown.shutdown();
+    })
     .await;
+    native.finish().await;
     state.maintenance.close().await;
     state.cache.close().await;
     match result {

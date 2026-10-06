@@ -32,7 +32,7 @@ test('audio categories keep files, chapters and resume independent', async ({ pa
     expect((await page.request.put(`/api/library/collections/${collection.id}/items/${file.id}`, { headers })).status()).toBe(204)
   }
   await navigate(page, '音乐')
-  await page.getByRole('button', { name: '选择集合', exact: true }).click()
+  await page.getByLabel('选择集合', { exact: true }).click()
   await page.getByRole('button', { name: `${prefix} · 2`, exact: true }).click()
   await expect(page.locator('.library-grid > .library-card')).toHaveCount(2)
   await expect(page.locator('.stack-card,.stack-header')).toHaveCount(0)

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login, navigate } from './helpers'
+import { login, navigate, uploadFixture as upload } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -15,16 +15,6 @@ function wav() {
   return data
 }
 
-async function upload(page: Page, parent_id: string, name: string, mime_type: string, data: Buffer) {
-  const headers = { origin: new URL(page.url()).origin }
-  const created = await page.request.post('/api/uploads', { headers, data: { parent_id, name, mime_type, size: data.length } })
-  expect(created.status()).toBe(201)
-  const session = await created.json()
-  expect((await page.request.put(`/api/uploads/${session.upload_id}/data`, { headers, data })).ok()).toBeTruthy()
-  const completed = await page.request.post(`/api/uploads/${session.upload_id}/complete`, { headers, data: { parts: [] } })
-  expect(completed.ok()).toBeTruthy()
-  return completed.json()
-}
 
 async function stableCaption(page: Page, card: Locator) {
   await card.scrollIntoViewIfNeeded()
@@ -117,8 +107,8 @@ for (const device of [
         expect(Math.max(...homeHeights) - Math.min(...homeHeights)).toBeLessThan(1)
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(device.width)
 
-        await page.route(`**/api/files/${photo.id}/thumbnail*`, route => route.fulfill({ status: 404 }))
-        await page.route(`**/api/files/${photo.id}/preview`, route => route.fulfill({ status: 404 }))
+        await page.context().route(`**/api/files/${photo.id}/thumbnail*`, route => route.request().serviceWorker() ? route.fulfill({ status: 404 }) : route.continue())
+        await page.context().route(`**/api/files/${photo.id}/preview`, route => route.request().serviceWorker() ? route.fulfill({ status: 404 }) : route.continue())
         await page.goto(`/f/${id}`)
         const broken = page.locator('.file-card').filter({ hasText: photo.name })
         await expect(broken.locator('.file-type-icon')).toBeVisible()

@@ -73,6 +73,11 @@ pub struct Config {
     pub web_dir: PathBuf,
     /// Public base URL, used for share links and the same-origin check.
     pub base_url: String,
+    /// Optional HTTPS authority on the same hostname, serving HTTP/2 only.
+    pub http2_origin: Option<String>,
+    /// Optional native TLS and QUIC listeners, in addition to APP_ADDR.
+    pub tls: Option<crate::quic::TlsConfig>,
+    pub quic: Option<crate::quic::QuicConfig>,
     /// Whether session cookies carry the `Secure` attribute.
     pub cookie_secure: bool,
     /// Bootstrap administrator name, empty to use the stored one.
@@ -141,6 +146,49 @@ impl Config {
             .as_str()
             .trim_end_matches('/')
             .to_owned();
+        let http2_origin = lookup("APP_HTTP2_BASE_URL").filter(|v| !v.trim().is_empty())
+            .map(|raw| {
+                let fallback = url::Url::parse(raw.trim()).map_err(|_| ConfigError::new("invalid APP_HTTP2_BASE_URL"))?;
+                let primary = url::Url::parse(&base_url).expect("validated base URL");
+                if primary.scheme() != "https" || fallback.scheme() != "https"
+                    || fallback.host_str() != primary.host_str() || fallback.origin() == primary.origin()
+                    || !fallback.username().is_empty() || fallback.password().is_some()
+                    || fallback.query().is_some() || fallback.fragment().is_some()
+                    || fallback.path() != "/" {
+                    return Err(ConfigError::new("APP_HTTP2_BASE_URL must be a distinct HTTPS port on the APP_BASE_URL hostname"));
+                }
+                Ok(fallback.origin().ascii_serialization())
+            }).transpose()?;
+        let tls = crate::quic::TlsConfig::load(lookup).map_err(ConfigError::new)?;
+        let quic = crate::quic::QuicConfig::load(lookup).map_err(ConfigError::new)?;
+        if quic.is_some() && tls.is_none() {
+            return Err(ConfigError::new(
+                "APP_QUIC_ADDR requires native APP_TLS_ADDR and TLS certificates",
+            ));
+        }
+        if let Some(tls) = &tls {
+            let primary = url::Url::parse(&base_url).expect("validated base URL");
+            if primary.scheme() != "https"
+                || primary.port_or_known_default() != Some(tls.addr.port())
+            {
+                return Err(ConfigError::new(
+                    "APP_BASE_URL must use HTTPS and the APP_TLS_ADDR port",
+                ));
+            }
+            if let Some(addr) = tls.http2_addr
+                && (addr == tls.addr
+                    || http2_origin.as_ref().is_none_or(|v| {
+                        url::Url::parse(v)
+                            .ok()
+                            .and_then(|u| u.port_or_known_default())
+                            != Some(addr.port())
+                    }))
+            {
+                return Err(ConfigError::new(
+                    "APP_HTTP2_ADDR must match a distinct APP_HTTP2_BASE_URL port",
+                ));
+            }
+        }
         let cookie_secure = match lookup("COOKIE_SECURE") {
             Some(raw) if !raw.is_empty() => parse_bool("COOKIE_SECURE", &raw)?,
             _ => base_url.starts_with("https://"),
@@ -218,6 +266,9 @@ impl Config {
             caches_dir: PathBuf::from(caches_dir_raw),
             web_dir: PathBuf::from(value("APP_WEB_DIR", DEFAULT_WEB_DIR)),
             base_url,
+            http2_origin,
+            tls,
+            quic,
             cookie_secure,
             admin_username: lookup("ADMIN_USERNAME").unwrap_or_default(),
             admin_password: lookup("ADMIN_PASSWORD").unwrap_or_default(),
@@ -409,6 +460,35 @@ mod tests {
     }
 
     #[test]
+    fn http2_fallback_preserves_host_only_cookie_scope() {
+        let config = Config::from_lookup(&|name| match name {
+            "APP_BASE_URL" => Some("https://files.example.test".into()),
+            "APP_HTTP2_BASE_URL" => Some("https://files.example.test:8443".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(
+            config.http2_origin.as_deref(),
+            Some("https://files.example.test:8443")
+        );
+        for bad in [
+            "http://files.example.test:8443",
+            "https://evil.example.test",
+            "https://files.example.test",
+            "https://files.example.test:8443/path",
+        ] {
+            assert!(
+                Config::from_lookup(&|name| match name {
+                    "APP_BASE_URL" => Some("https://files.example.test".into()),
+                    "APP_HTTP2_BASE_URL" => Some(bad.into()),
+                    _ => None,
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn defaults_match_the_documented_values() {
         let config = config_from(&[]).unwrap();
         assert_eq!(config.addr, DEFAULT_ADDR);
@@ -418,6 +498,8 @@ mod tests {
         assert_eq!(config.web_dir, PathBuf::from(DEFAULT_WEB_DIR));
         assert_eq!(config.base_url, DEFAULT_BASE_URL);
         assert!(!config.cookie_secure);
+        assert!(config.tls.is_none());
+        assert!(config.quic.is_none());
         assert_eq!(config.media_cache_capacity, 2 * 1024 * 1024 * 1024);
         assert_eq!(config.upload_expires, Duration::from_secs(24 * 3600));
         assert_eq!(config.trash_retention, Duration::from_secs(30 * 24 * 3600));
@@ -425,6 +507,40 @@ mod tests {
         assert_eq!(config.flow_cache_ttl, Duration::from_secs(720 * 3600));
         assert_eq!(config.flow_cache_capacity, 1 << 30);
         assert!(config.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn native_quic_requires_https_and_a_matching_native_fallback_authority() {
+        let valid = [
+            ("APP_BASE_URL", "https://files.example.test:8443"),
+            ("APP_TLS_ADDR", "0.0.0.0:8443"),
+            ("APP_TLS_CERT", "/tls/cert.pem"),
+            ("APP_TLS_KEY", "/tls/key.pem"),
+            ("APP_QUIC_ADDR", "0.0.0.0:8443"),
+            ("APP_HTTP2_ADDR", "0.0.0.0:8444"),
+            ("APP_HTTP2_BASE_URL", "https://files.example.test:8444"),
+        ];
+        assert!(config_from(&valid).is_ok());
+        for omitted in ["APP_TLS_ADDR", "APP_TLS_CERT", "APP_HTTP2_BASE_URL"] {
+            assert!(
+                config_from(
+                    &valid
+                        .iter()
+                        .copied()
+                        .filter(|(key, _)| *key != omitted)
+                        .collect::<Vec<_>>()
+                )
+                .is_err()
+            );
+        }
+        for bad in [
+            "http://files.example.test:8443",
+            "https://files.example.test",
+        ] {
+            let mut values = valid.to_vec();
+            values.push(("APP_BASE_URL", bad));
+            assert!(config_from(&values).is_err());
+        }
     }
 
     #[test]
