@@ -98,12 +98,129 @@ pub struct AudioMedia {
     /// Chapter marks.
     #[serde(default, deserialize_with = "null_default")]
     pub chapters: Vec<AudioChapter>,
+    /// Same-name external WebVTT cues; the frontend synchronizes to its audio clock.
+    #[serde(default, deserialize_with = "null_default")]
+    pub subtitles: Vec<VttCue>,
     /// Thumbnail URL for the embedded cover, empty when there is none.
     #[serde(default, deserialize_with = "null_default")]
     pub cover_url: String,
     /// Whether an embedded cover exists.
     #[serde(default, deserialize_with = "null_default")]
     pub has_cover: bool,
+}
+
+/// A timed cue within one track, never a separate audio file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VttCue {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// Parse UTF-8 WebVTT, allowing cue IDs, settings, BOM and CRLF. Invalid cues
+/// and NOTE/STYLE/REGION blocks are skipped independently of valid cues.
+#[must_use]
+pub fn parse_webvtt(source: &str) -> Vec<VttCue> {
+    let normalized = source
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let mut lines = normalized.lines();
+    if !lines.next().is_some_and(|line| {
+        line == "WEBVTT" || line.starts_with("WEBVTT ") || line.starts_with("WEBVTT\t")
+    }) {
+        return Vec::new();
+    }
+    let mut cues = Vec::new();
+    let mut block = Vec::new();
+    for line in lines.chain(std::iter::once("")) {
+        if line.trim().is_empty() {
+            if let Some(cue) = parse_vtt_block(&block) {
+                cues.push(cue);
+            }
+            block.clear();
+        } else {
+            block.push(line);
+        }
+    }
+    cues.sort_by(|a, b| a.start.total_cmp(&b.start));
+    cues
+}
+
+fn parse_vtt_block(lines: &[&str]) -> Option<VttCue> {
+    let first = *lines.first()?;
+    if first == "NOTE"
+        || first.starts_with("NOTE ")
+        || first.starts_with("NOTE\t")
+        || matches!(first, "STYLE" | "REGION")
+    {
+        return None;
+    }
+    let index = if first.contains("-->") { 0 } else { 1 };
+    let (start, end) = lines.get(index)?.split_once("-->")?;
+    let start = vtt_timestamp(start.trim())?;
+    let end = vtt_timestamp(end.split_whitespace().next()?)?;
+    if end <= start {
+        return None;
+    }
+    Some(VttCue {
+        start,
+        end,
+        text: vtt_plain_text(&lines[index + 1..].join("\n")),
+    })
+}
+
+fn vtt_timestamp(value: &str) -> Option<f64> {
+    let parts = value.split(':').collect::<Vec<_>>();
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
+    let number = |s: &str| -> Option<u64> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse().ok()
+    };
+    let (seconds, millis) = parts.last()?.split_once('.')?;
+    if seconds.len() != 2 || millis.len() != 3 {
+        return None;
+    }
+    let seconds = number(seconds)?;
+    let minutes_text = parts[parts.len() - 2];
+    let minutes = number(minutes_text)?;
+    let hours = if parts.len() == 3 {
+        number(parts[0])?
+    } else {
+        0
+    };
+    if minutes_text.len() != 2 || minutes >= 60 || seconds >= 60 {
+        return None;
+    }
+    let total = hours
+        .checked_mul(3600)?
+        .checked_add(minutes * 60 + seconds)?;
+    Some(total as f64 + number(millis)? as f64 / 1000.0)
+}
+
+fn vtt_plain_text(value: &str) -> String {
+    // Render as text, never HTML. Strip cue styling/voice/timestamp tags.
+    let mut result = String::new();
+    let mut tag = false;
+    for ch in value.chars() {
+        match ch {
+            '<' => tag = true,
+            '>' if tag => tag = false,
+            _ if !tag => result.push(ch),
+            _ => (),
+        }
+    }
+    result
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", "\u{a0}")
+        .replace("&lrm;", "\u{200e}")
+        .replace("&rlm;", "\u{200f}")
+        .replace("&amp;", "&")
 }
 
 #[cfg(test)]
@@ -164,6 +281,7 @@ mod tests {
             }],
             cover_url: "/api/files/x/thumbnail?v=1".into(),
             has_cover: true,
+            subtitles: Vec::new(),
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["chapters"][0]["id"], 1);
@@ -216,5 +334,18 @@ mod tests {
         assert!(audio.chapters.is_empty());
         assert!(audio.cover_url.is_empty());
         assert!(!audio.has_cover);
+    }
+
+    #[test]
+    fn webvtt_parses_ids_settings_multiline_and_skips_invalid_blocks() {
+        let cues = parse_webvtt(
+            "\u{feff}WEBVTT\r\n\r\nNOTE ignored\r\n00:00.000 --> 00:01.000\r\nno\r\n\r\nsecond\r\n00:01:00.100 --> 00:01:02.250 align:start\r\n<v voice><b>Second</b> &amp; &lt;text&gt;\r\nline 2\r\n\r\n00:00.500 --> 00:02.000\r\nFirst\r\n\r\n00:99.000 --> 00:02.000\r\nbad\r\n\r\n00:02.000 --> 00:01.000\r\nbad\r\n",
+        );
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cues[0].start, 0.5);
+        assert_eq!(cues[1].start, 60.1);
+        assert_eq!(cues[1].end, 62.25);
+        assert_eq!(cues[1].text, "Second & <text>\nline 2");
+        assert!(parse_webvtt("00:00.000 --> 00:01.000\nmissing header").is_empty());
     }
 }

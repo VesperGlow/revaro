@@ -29,7 +29,7 @@ pub(super) fn LibraryCover(item: LibraryItem) -> impl IntoView {
     let failed = RwSignal::new(false);
     let kind = item.kind.clone();
     let class = format!("library-cover {}-cover", kind);
-    if item.kind == "audio" || revaro_core::classify::is_editable(&item.file) {
+    if revaro_core::classify::is_editable(&item.file) {
         return view! {
             <div class=class>
                 <div class="cover-placeholder">{file_icon(&item.file)}</div>

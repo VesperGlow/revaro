@@ -293,6 +293,14 @@ pub fn on_popstate(callback: impl Fn(web_sys::PopStateEvent) + 'static) -> Owned
     ))))
 }
 
+/// Flush playback state when navigating away or entering the back/forward cache.
+pub fn on_pagehide(callback: impl Fn(web_sys::PageTransitionEvent) + 'static) -> OwnedListener {
+    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
+        ev::pagehide,
+        callback,
+    ))))
+}
+
 /// A document/window listener that unregisters when dropped or released.
 ///
 /// Leptos's raw [`WindowListenerHandle`] is a remove-only handle; wrapping it

@@ -1084,7 +1084,7 @@ fn preload_adjacent(selected: &File, items: &[File]) {
     }
 }
 
-fn trap_focus(root: NodeRef<leptos::html::Section>, event: &KeyboardEvent) {
+pub(super) fn trap_focus(root: NodeRef<leptos::html::Section>, event: &KeyboardEvent) {
     let Some(root) = root.get() else {
         return;
     };

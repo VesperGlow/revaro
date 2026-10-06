@@ -32,8 +32,8 @@
 .library-tabs>button:hover,.library-tabs .action-menu>summary:hover { background:var(--surface-hover); }
 .library-tabs>button.active { color:var(--accent-hover); background:var(--accent-soft); border-color:var(--accent-border); }
 .library-tabs small { flex-shrink:0; font-size:10px; font-weight:400; padding:2px 6px; background:var(--surface-subtle); border-radius:4px; }
-.library-tabs .favorite-filter,.library-toolbar-actions .collection-create,.library-toolbar-actions .library-play { flex:0 0 var(--library-control-height); width:var(--library-control-height); padding:0; }
-.favorite-filter svg,.collection-create svg,.library-toolbar-actions .library-play svg { width:18px; height:18px; }
+.library-tabs .favorite-filter,.library-toolbar-actions .collection-create { flex:0 0 var(--library-control-height); width:var(--library-control-height); padding:0; }
+.favorite-filter svg,.collection-create svg { width:18px; height:18px; }
 
 .library-tabs .collection-menu { flex:1; min-width:0; }
 .library-tabs .collection-menu>summary { width:100%; min-width:0; padding:0 10px; }
@@ -98,6 +98,22 @@
 .music-queue>button.active { background:var(--accent-soft); color:var(--accent-hover); }
 .music-queue>button span { font-size:10px; }
 .music-queue>button strong { font-size:12px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+
+/* Preserve the dock layout and layer buffer/chapters behind its native seek input. */
+.dock-timeline { position:relative; flex:1; min-width:20px; height:24px; }
+.dock-timeline-track { position:absolute; inset:10px 0 auto; height:4px; border-radius:3px; background:var(--line); pointer-events:none; }
+.dock-timeline-track .dock-buffer { position:absolute; height:100%; background:var(--accent-border); }
+.dock-timeline-track .dock-played { position:absolute; height:100%; background:var(--accent); }
+.dock-chapter-marker { position:absolute; top:-2px; height:8px; width:2px; background:var(--ink-subtle); }
+.music-dock .dock-timeline input { position:absolute; inset:0; width:100%; height:24px; margin:0; background:transparent; appearance:none; }
+.dock-timeline input::-webkit-slider-runnable-track { height:4px; background:transparent; }
+.dock-timeline input::-moz-range-track { height:4px; background:transparent; }
+.dock-timeline input::-webkit-slider-thumb { appearance:none; height:12px; width:12px; margin-top:-4px; border-radius:50%; background:var(--accent); }
+.dock-timeline input::-moz-range-thumb { height:12px; width:12px; border:0; border-radius:50%; background:var(--accent); }
+.audio-subtitles { white-space:pre-line; text-align:center; line-height:1.6; font-size:14px; color:var(--ink); }
+.music-dock .audio-subtitles { position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%); width:max-content; max-width:min(90vw,720px); padding:8px 18px; border:1px solid var(--line); border-radius:10px; background:var(--surface); box-shadow:0 3px 12px #17212b12; pointer-events:none; }
+.music-chapters small { margin-left:auto; white-space:nowrap; color:var(--muted); font-size:11px; }
+.music-chapters p { color:var(--muted); font-size:12px; }
 .content-library button:focus-visible,.content-library a:focus-visible,.content-library input:focus-visible { outline:none; box-shadow:var(--focus-ring); }
 @media(min-width:1600px) { .content-library { --library-gutter:65px; } }
 @media(max-width:1100px) { .library-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } .photo-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .dock-options input { display:none; } .music-dock { gap:17px; } .home-content-row { grid-template-columns:repeat(4,minmax(0,1fr)); gap:15px; } }
@@ -143,6 +159,14 @@
 .content-library:has(#reader-view) .dock-prev { display:none; }
 .content-library:has(#reader-view) .dock-controls { gap:0; }
 .content-library:has(#reader-view) .dock-controls button { width:34px; height:34px; }
+
+@media(max-width:850px) {
+ .content-library.has-music { padding-bottom:176px; }
+ .music-dock { height:94px; padding-bottom:26px; }
+ .music-dock .dock-progress { display:flex; position:absolute; bottom:4px; left:4%; right:4%; height:24px; }
+ .music-queue { bottom:calc(204px + env(safe-area-inset-bottom,0px)); }
+}
+.content-library:has(#reader-view) .dock-progress { display:none; }
 .content-library.has-music:has(#reader-view) .reader-bar-title { padding-right:100px; }
 .content-library:has(.toc-drawer.open) .music-dock { visibility:hidden; }
 

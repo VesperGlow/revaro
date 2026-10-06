@@ -1232,6 +1232,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audio_uses_categories_and_rejects_stack_operations() {
+        let state = state().await;
+        seed(&state, "audio-1", "01.flac").await;
+        seed(&state, "audio-2", "02.flac").await;
+        let (status, _) = request(
+            &state,
+            "POST",
+            "/api/library/stacks",
+            Some(serde_json::json!({"name":"Audio", "file_ids":["audio-1","audio-2"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = request(
+            &state,
+            "GET",
+            "/api/library/items?kind=audio&group_stacks=true",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, collection) = request(
+            &state,
+            "POST",
+            "/api/library/collections",
+            Some(serde_json::json!({"name":"ASMR", "kind":"audio"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let id = collection["id"].as_str().unwrap();
+        for file in ["audio-1", "audio-2"] {
+            assert_eq!(
+                request(
+                    &state,
+                    "PUT",
+                    &format!("/api/library/collections/{id}/items/{file}"),
+                    None
+                )
+                .await
+                .0,
+                StatusCode::NO_CONTENT
+            );
+        }
+        let (status, listing) = request(
+            &state,
+            "GET",
+            &format!("/api/library/items?kind=audio&collection={id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listing["total"], 2);
+        assert!(
+            listing["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["stack"].is_null())
+        );
+    }
+
+    #[tokio::test]
     async fn library_search_is_paginated_and_requires_authentication() {
         let state = state().await;
         for i in 0..73 {

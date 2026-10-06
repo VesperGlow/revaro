@@ -4,7 +4,6 @@ mod cards;
 mod collections;
 mod home;
 mod loading;
-mod songs;
 mod stack_management;
 mod stacks;
 
@@ -99,7 +98,7 @@ pub fn ContentShell(
     let page = RwSignal::new(LibraryPage::from_path(&pathname()));
     let header_actions = RwSignal::new(None::<TopbarActions>);
     let refresh = RwSignal::new(0_u64);
-    let music = MusicController::new();
+    let music = MusicController::new(&session.username);
     let transfer = RwSignal::new(None::<(File, bool)>);
     let query_text = RwSignal::new(String::new());
     let query = RwSignal::new(String::new());
@@ -138,6 +137,7 @@ pub fn ContentShell(
     let selection_overlay = Signal::derive(move || {
         reader.get().is_some()
             || image.get().is_some()
+            || music.full_open.get()
             || new_collection.get()
             || collection_target.get().is_some()
             || stack_controller.dialog.get().is_some()
@@ -230,7 +230,12 @@ pub fn ContentShell(
             reader.set(Some(file.clone()));
             route(&format!("/read/{}", file.id), true);
         } else if revaro_core::classify::is_audio(&file) {
-            music.play(
+            let collection = collections
+                .get_untracked()
+                .into_iter()
+                .find(|c| c.kind == "audio" && c.id == selected_collection.get_untracked())
+                .map(|c| (c.id, c.name));
+            music.play_collection(
                 file.clone(),
                 items
                     .get_untracked()
@@ -238,6 +243,7 @@ pub fn ContentShell(
                     .filter(|i| i.kind == "audio")
                     .map(|i| i.file)
                     .collect(),
+                collection,
             );
         } else if revaro_core::classify::is_image(&file) || revaro_core::classify::is_video(&file) {
             if revaro_core::classify::is_video(&file) {
@@ -392,44 +398,6 @@ pub fn ContentShell(
         error,
         logout,
     });
-    let play_all = Callback::new(move |()| {
-        let request = LibraryQuery {
-            kind: "audio".to_owned(),
-            query: query.get_untracked(),
-            favorite: favorites.get_untracked(),
-            collection: selected_collection.get_untracked(),
-            ..Default::default()
-        };
-        notice.set("正在准备播放队列…".to_owned());
-        leptos::task::spawn_local(async move {
-            let mut request = request;
-            let mut queue = Vec::new();
-            loop {
-                match api::fetch_library(&request).await {
-                    Ok(batch) => {
-                        request.offset += batch.items.len() as i64;
-                        queue.extend(batch.items.into_iter().map(|i| i.file));
-                        if request.offset >= batch.total {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        if e.is_unauthorized() {
-                            logout.run(());
-                        } else {
-                            error.set(e.message);
-                        }
-                        notice.set(String::new());
-                        return;
-                    }
-                }
-            }
-            notice.set(String::new());
-            if let Some(first) = queue.first().cloned() {
-                music.play(first, queue);
-            }
-        });
-    });
     let library_search = TopbarSearch {
         text: query_text,
         on_input: Callback::new(move |text: String| {
@@ -443,9 +411,19 @@ pub fn ContentShell(
         }),
     };
     let open_stack = Callback::new(move |id: String| {
+        if page.get_untracked() == LibraryPage::Music {
+            query.set(String::new());
+            query_text.set(String::new());
+            favorites.set(false);
+            selected_collection.set(String::new());
+        }
         selected_stack.set(id.clone());
         route(
-            &format!("/library/stacks/{}", js_sys::encode_uri_component(&id)),
+            &format!(
+                "{}/stacks/{}",
+                page.get_untracked().path(),
+                js_sys::encode_uri_component(&id)
+            ),
             true,
         );
         if let Some(window) = web_sys::window() {
@@ -456,7 +434,7 @@ pub fn ContentShell(
         selection.exit();
         selected_stack.set(String::new());
         query_text.set(query.get_untracked());
-        route("/library", true);
+        route(page.get_untracked().path(), true);
     });
     let collection_text = Signal::derive(move || {
         collections
@@ -486,7 +464,7 @@ pub fn ContentShell(
                 }
             })}
             <Show when=move ||!page.get().is_file_workspace() fallback=|| ()>
-                <main class="library-main" class:music-page=move || page.get()==LibraryPage::Music on:click=move |event| selection.exit_from_blank(event)>
+                <main class="library-main" on:click=move |event| selection.exit_from_blank(event)>
                     <Show when=move ||selected_stack.get().is_empty() fallback=|| ()>
                         {move || selection.actions.get().map(|actions| view! { <BatchActionBar selection=selection actions=actions /> })}
                     </Show>
@@ -540,36 +518,16 @@ pub fn ContentShell(
                                     title=move || format!("新建{}", page.get().collection_label())
                                     aria-label=move || format!("新建{}", page.get().collection_label())
                                     on:click=move |_| { new_collection.set(true); error.set(String::new()); }>{icons::plus()}</button>
-                                <Show when=move || page.get() == LibraryPage::Music fallback=|| ()><button class="primary library-play" type="button" title="播放全部" aria-label="播放全部" on:click=move |_| play_all.run(())>{icons::play()}</button></Show>
                             </div>
                         </div>
                         <Show when=move ||!selected_collection.get().is_empty() fallback=|| ()><div class="collection-caption"><span>"集合中的内容仍保存在原文件夹，移除成员不会删除原文件。"</span><button on:click=move |_|delete_collection.run(())>"删除集合"</button></div></Show>
                         </Show>
                         <Show when=move ||loading.get() fallback=move ||view! {
                             <Show when=move ||items.get().is_empty() && error.get().is_empty() fallback=|| ()><div class="library-empty"><span>"＋"</span><h2>"这里等着你的收藏"</h2><p>"已有文件会自动出现在对应内容库，也可以现在导入。"</p><button class="primary" on:click=move |_|import.run(())>"导入内容"</button></div></Show>
-                            <div class="library-grid" class:selection-mode=move || selection.enabled.get() class:book-grid=move ||page.get()==LibraryPage::Books class:song-list=move ||page.get()==LibraryPage::Music class:photo-grid=move ||matches!(page.get(),LibraryPage::Gallery | LibraryPage::Videos) class:video-grid=move ||page.get()==LibraryPage::Videos>
-                                <For each=move || { items.get().into_iter().enumerate().collect::<Vec<_>>() }
-                                    key=|(_,i)|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.reading_progress.map(f64::to_bits),i.stack.as_ref().map(|s|(s.id.clone(),s.name.clone(),s.files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())))
-                                    children=move |(index,item)| {
-                                        if item.kind == "audio" {
-                                            return view! {
-                                                <songs::SongRow item=item index=index on_open=open busy=collection_busy.into()
-                                                    on_collect=Callback::new(move |file| collection_target.set(Some(CollectionTarget { page: LibraryPage::Music, files: vec![file] })))
-                                                    on_favorite=Callback::new(move |(file, favorite): (File, bool)| {
-                                                        if collection_busy.get_untracked() { return; }
-                                                        collection_busy.set(true);
-                                                        error.set(String::new());
-                                                        leptos::task::spawn_local(async move {
-                                                            match api::update_library_item(&file.id, &ItemUpdate { favorite: Some(favorite), opened: false }).await {
-                                                                Ok(()) => refresh.update(|value| *value += 1),
-                                                                Err(e) if e.is_unauthorized() => logout.run(()),
-                                                                Err(e) => error.set(e.message),
-                                                            }
-                                                            collection_busy.set(false);
-                                                        });
-                                                    }) />
-                                            }.into_any();
-                                        }
+                            <div class="library-grid" class:selection-mode=move || selection.enabled.get() class:book-grid=move ||page.get()==LibraryPage::Books class:photo-grid=move ||matches!(page.get(),LibraryPage::Gallery | LibraryPage::Videos) class:video-grid=move ||page.get()==LibraryPage::Videos>
+                                <For each=move || { items.get() }
+                                    key=|i|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.reading_progress.map(f64::to_bits),i.stack.as_ref().map(|s|(s.id.clone(),s.name.clone(),s.files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())))
+                                    children=move |item| {
                                         let file_id = item.file.id.clone();
                                         let group = item.selectable_files().into_iter().map(|f|f.id).collect::<Vec<_>>();
                                         let selected_group = group.clone();
@@ -594,7 +552,7 @@ pub fn ContentShell(
                                         let target_file_id = item.file.id.clone();
                                         let stack_book_id = item.file.id.clone();
                                         let drag_hover = RwSignal::new(false);
-                                        let draggable = item.kind=="book" && !is_stack;
+                                        let draggable = item.kind == "book" && !is_stack;
                                         view! {
                                             <article class="library-card" class:stack-card=is_stack data-file-id=item.file.id.clone() data-stack-id=item.stack.as_ref().map(|s|s.id.clone()) data-selection-ids=serde_json::to_string(&group).unwrap_or_default()
                                                 data-stack-book-id=move ||(!selected_stack.get().is_empty() && draggable).then(||stack_book_id.clone())
@@ -612,7 +570,7 @@ pub fn ContentShell(
                                                 }
                                                 on:dragend=move |_|{stack_controller.dragging.set(None);drag_hover.set(false);}
                                                 on:dragover=move |ev: web_sys::DragEvent| {
-                                                    if drag_item.kind=="book" && stack_controller.dragging.get_untracked().is_some_and(|id|id!=drag_item.file.id) {
+                                                    if drag_item.kind == "book" && stack_controller.dragging.get_untracked().is_some_and(|id|id!=drag_item.file.id) {
                                                         ev.prevent_default();
                                                         if let Some(data)=ev.data_transfer(){data.set_drop_effect("move");}
                                                         drag_hover.set(true);

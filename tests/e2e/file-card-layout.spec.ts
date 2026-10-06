@@ -31,15 +31,14 @@ async function stableCaption(page: Page, card: Locator) {
   await page.mouse.move(0, 0)
   const caption = card.locator('.card-info')
   const title = caption.locator('strong')
-  const musicRow = await card.evaluate(element => !!element.closest('.song-list'))
   const placement = () => title.evaluate(element => {
     const titleBounds = element.getBoundingClientRect()
     const contentBounds = element.closest('.file-card-content')!.getBoundingClientRect()
     return { x: titleBounds.x - contentBounds.x, y: titleBounds.y - contentBounds.y, width: titleBounds.width, height: titleBounds.height }
   })
   await expect(caption).toHaveCSS('opacity', '1')
-  await expect(title).toHaveCSS('-webkit-line-clamp', musicRow ? 'none' : '2')
-  await expect(title).toHaveCSS('white-space', musicRow ? 'nowrap' : 'normal')
+  await expect(title).toHaveCSS('-webkit-line-clamp', '2')
+  await expect(title).toHaveCSS('white-space', 'normal')
   const before = await title.boundingBox()
   const beforePlacement = await placement()
   const bounds = (await card.boundingBox())!
@@ -51,9 +50,7 @@ async function stableCaption(page: Page, card: Locator) {
     expect(iconBounds.y + iconBounds.height).toBeLessThanOrEqual(previewBounds.y + previewBounds.height)
   }
   expect(before!.y + before!.height).toBeLessThanOrEqual(bounds.y + bounds.height)
-  if (await card.evaluate(element => !element.closest('.song-list'))) {
-    expect(before!.y).toBeGreaterThan(bounds.y + bounds.height / 2)
-  }
+  expect(before!.y).toBeGreaterThan(bounds.y + bounds.height / 2)
   await card.hover()
   expect(await placement()).toEqual(beforePlacement)
   await title.evaluate(element => ((element.closest('button') || element.closest('article')) as HTMLElement).focus())

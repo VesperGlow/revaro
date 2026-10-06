@@ -4,7 +4,30 @@
 //! rules that decide which chapter is active and how a seek competes with saved
 //! progress stay here so native tests can exercise edge cases without a browser.
 
-use revaro_core::media::AudioChapter;
+use revaro_core::media::{AudioChapter, VttCue};
+
+/// Support overlapping cues and leave subtitle gaps blank, including after seek.
+#[must_use]
+pub fn subtitle_text(cues: &[VttCue], time: f64) -> String {
+    active_subtitle_indices(cues, time)
+        .into_iter()
+        .map(|index| cues[index].text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The transcript can highlight multiple speakers while leaving pauses unlit.
+#[must_use]
+pub fn active_subtitle_indices(cues: &[VttCue], time: f64) -> Vec<usize> {
+    if !time.is_finite() {
+        return Vec::new();
+    }
+    cues[..cues.partition_point(|cue| cue.start <= time)]
+        .iter()
+        .enumerate()
+        .filter_map(|(index, cue)| (time < cue.end).then_some(index))
+        .collect()
+}
 
 /// Clamp a visual progress value to the range accepted by CSS widths.
 #[must_use]
@@ -26,11 +49,8 @@ pub fn active_chapter_index(chapters: &[AudioChapter], time: f64) -> usize {
     let time = if time.is_finite() { time.max(0.0) } else { 0.0 };
     chapters
         .iter()
-        .enumerate()
-        .find(|(index, chapter)| {
-            time >= chapter.start && (time < chapter.end || *index == chapters.len() - 1)
-        })
-        .map_or(0, |(index, _)| index)
+        .rposition(|chapter| time >= chapter.start)
+        .unwrap_or(0)
 }
 
 /// Resolve the first seek that wins over a stored resume position.
@@ -104,6 +124,31 @@ mod tests {
             start,
             end,
         }
+    }
+
+    #[test]
+    fn subtitles_follow_clock_gaps_overlap_and_backwards_seek() {
+        let cues = revaro_core::media::parse_webvtt(
+            "WEBVTT\n\n00:01.000 --> 00:03.000\nOne\n\n00:02.000 --> 00:04.000\nTwo\n\n00:06.000 --> 00:07.000\nThree\n",
+        );
+        assert_eq!(subtitle_text(&cues, 0.0), "");
+        assert_eq!(subtitle_text(&cues, 2.5), "One\nTwo");
+        assert_eq!(subtitle_text(&cues, 3.0), "Two");
+        assert_eq!(subtitle_text(&cues, 5.0), "");
+        assert_eq!(subtitle_text(&cues, 6.1), "Three");
+        assert_eq!(subtitle_text(&cues, 1.5), "One");
+        assert_eq!(subtitle_text(&cues, f64::NAN), "");
+        assert!(active_subtitle_indices(&cues, 0.0).is_empty());
+        assert_eq!(active_subtitle_indices(&cues, 2.5), [0, 1]);
+        assert_eq!(active_subtitle_indices(&cues, 3.0), [1]);
+        assert!(active_subtitle_indices(&cues, 5.0).is_empty());
+        assert_eq!(active_subtitle_indices(&cues, 6.1), [2]);
+        assert_eq!(active_subtitle_indices(&cues, 1.5), [0]);
+        assert!(active_subtitle_indices(&cues, f64::INFINITY).is_empty());
+        assert_eq!(
+            active_chapter_index(&[chapter(0.0, 1.0), chapter(2.0, 3.0)], 4.0),
+            1
+        );
     }
 
     #[test]

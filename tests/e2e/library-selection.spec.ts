@@ -126,7 +126,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       await expect(targets.first()).toHaveCSS('animation-name', 'none')
       await page.mouse.move(1, 80)
       await expect(page.locator('.library-card-actions')).toHaveCount(0)
-      if (name !== '音乐') {
+      {
         await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', '1')
         await targets.first().hover()
         await expect(targets.first().locator('.card-info')).toHaveCSS('opacity', '1')
@@ -164,9 +164,6 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
       expect(motion.origin[1]).toBeCloseTo(motion.center[1], 2)
       expect(new Set(motion.delays).size).toBeGreaterThan(1)
       const dimensions = await targets.first().evaluate(el => ({ width: el.clientWidth, height: el.clientHeight }))
-      if (name === '音乐') {
-        await expect(page.locator('.song-number')).toHaveCount(await cards.count())
-      }
       await clickCard(page, targets.first())
       await expect(toolbar).toBeVisible()
       await expect(page.locator('.selection-toolbar')).toHaveCount(1)
@@ -304,7 +301,7 @@ test('batch bars follow listing widths and background dismissal never intercepts
         const search = page.getByLabel('搜索歌曲', { exact: true })
         await search.fill(prefix)
         await search.press('Enter')
-        await expect(page.locator('.song-row')).toHaveCount(2)
+        await expect(page.locator('.library-grid > .library-card')).toHaveCount(2)
         await search.press('Escape')
       }
       const cards = page.locator(name === '首页' ? '.home-card' : name === '文件' ? '.file-card' : '.library-card')
@@ -317,7 +314,7 @@ test('batch bars follow listing widths and background dismissal never intercepts
       await expect(page.locator('.selection-checkbox')).toHaveCount(0)
       await enterSelectionMode(page)
       await cards.first().getByRole('checkbox').press('Space')
-      // Click card padding (or the music row number), without relying on any corner control.
+      // Click card padding without relying on any corner control.
       const second = (await cards.nth(1).boundingBox())!
       await page.mouse.click(second.x + 5, second.y + second.height / 2)
       await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 2 项')
@@ -328,7 +325,7 @@ test('batch bars follow listing widths and background dismissal never intercepts
         return { padding: bar.padding, gap: bar.gap, alignment: bar.alignItems, actionGap: actions.gap, actionAlignment: actions.alignItems, separator: summary.borderRight, summaryPadding: summary.paddingRight }
       })
       if (!reference) reference = { x: box.x, width: box.width, styles }
-      const listingBounds = name === '音乐' ? (await page.locator('.song-list').boundingBox())! : reference
+      const listingBounds = reference
       expect(Math.abs(box.x - listingBounds.x)).toBeLessThanOrEqual(0.1)
       expect(Math.abs(box.width - listingBounds.width)).toBeLessThanOrEqual(0.1)
       expect(styles).toEqual(reference.styles)

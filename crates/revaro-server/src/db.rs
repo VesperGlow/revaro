@@ -99,6 +99,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "010_upload_commits.sql",
         sql: include_str!("../migrations/010_upload_commits.sql"),
     },
+    Migration {
+        version: 11,
+        name: "011_audio_stacks.sql",
+        sql: include_str!("../migrations/011_audio_stacks.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "012_audio_categories.sql",
+        sql: include_str!("../migrations/012_audio_categories.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -541,6 +551,55 @@ fn secure_file(path: &Path) -> Result<(), DbError> {
 mod tests {
     use super::*;
     use revaro_core::ids::ROOT_ID;
+
+    #[test]
+    fn audio_groups_migrate_to_categories_without_changing_books_or_files() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        for migration in &MIGRATIONS[..11] {
+            c.execute_batch(migration.sql).unwrap();
+        }
+        c.execute_batch("INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES
+            ('audio-1','00000000-0000-0000-0000-000000000000','01.flac','file','blobs/1',100,'audio/flac','etag-1','ready','2026-01-01','2026-01-01'),
+            ('audio-2','00000000-0000-0000-0000-000000000000','02.flac','file','blobs/2',200,'audio/flac','etag-2','ready','2026-01-01','2026-01-01'),
+            ('book','00000000-0000-0000-0000-000000000000','Book.txt','file','blobs/3',300,'text/plain','etag-3','ready','2026-01-01','2026-01-01');
+            INSERT INTO book_stacks VALUES('audio-group','ASMR','2026-01-01','audio'),('book-group','Books','2026-01-01','book');
+            INSERT INTO book_stack_items VALUES('audio-group','audio-2',0),('audio-group','audio-1',1),('book-group','book',0);
+            INSERT INTO library_collections VALUES('existing','Favorites','audio','2026-01-01');
+            INSERT INTO library_collection_items VALUES('existing','audio-1',0);").unwrap();
+        c.execute_batch(MIGRATIONS[11].sql).unwrap();
+        let category: (String, String) = c
+            .query_row(
+                "SELECT name,kind FROM library_collections WHERE id='audio-group'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(category, ("ASMR".to_owned(), "audio".to_owned()));
+        let members = c.prepare("SELECT file_id FROM library_collection_items WHERE collection_id='audio-group' ORDER BY position").unwrap().query_map([], |r|r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(members, ["audio-2", "audio-1"]);
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM library_collection_items WHERE collection_id='existing'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row("SELECT stack_id FROM book_stack_items", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "book-group"
+        );
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM files WHERE kind='file'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+    }
 
     #[test]
     fn migrations_are_ordered_and_named_consistently() {

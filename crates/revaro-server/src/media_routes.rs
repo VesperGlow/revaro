@@ -287,12 +287,12 @@ async fn audio_media_info(
         "ready audio file not found",
     )
     .await?;
-    let probe = ensure_media_metadata(state, file.clone())
+    let probe = ensure_media_metadata(state.clone(), file.clone())
         .await
         .map_err(|_| revaro_core::ApiError::not_found("audio metadata is not available"))?;
     let has_cover = probe.has_video_stream();
     let duration = probe.duration_seconds();
-    let chapters = probe
+    let mut chapters = probe
         .chapters
         .into_iter()
         .enumerate()
@@ -302,10 +302,27 @@ async fn audio_media_info(
             start: chapter.start_ms as f64 / 1000.0,
             end: chapter.end_ms as f64 / 1000.0,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let subtitles = audio_sidecar(&state, &file, ".vtt").await?;
+    // Native FLAC CUESHEET/Vorbis chapters retain the source's names and
+    // timing. Optional sidecars only supply chapters when the source has none.
+    if chapters.is_empty() {
+        chapters = audio_sidecar(&state, &file, ".chapters.vtt")
+            .await?
+            .into_iter()
+            .enumerate()
+            .map(|(index, cue)| revaro_core::media::AudioChapter {
+                id: (index + 1) as i32,
+                title: cue.text,
+                start: cue.start,
+                end: cue.end,
+            })
+            .collect();
+    }
     Ok(Json(revaro_core::api::media::AudioMedia {
         duration,
         chapters,
+        subtitles,
         cover_url: if has_cover {
             format!("/api/files/{}/thumbnail?v={}", file.id, file.etag)
         } else {
@@ -313,6 +330,38 @@ async fn audio_media_info(
         },
         has_cover,
     }))
+}
+
+/// Sidecars are ordinary library files in the same logical folder. Object keys
+/// remain opaque; no paths outside the authenticated object store are read.
+async fn audio_sidecar(
+    state: &Arc<AppState>,
+    file: &File,
+    suffix: &str,
+) -> Result<Vec<revaro_core::media::VttCue>, revaro_core::ApiError> {
+    let stem = file
+        .name
+        .rsplit_once('.')
+        .map_or(file.name.as_str(), |(stem, _)| stem);
+    let name = format!("{stem}{suffix}");
+    let extended_name = format!("{}{suffix}", file.name);
+    let parent = file.parent_id.clone();
+    let key = state.db.call_api(move |c| {
+        c.query_row(
+            "SELECT object_key FROM files WHERE parent_id IS ?1 AND name IN (?2,?3) AND kind='file' AND status='ready' AND deleted_at IS NULL ORDER BY CASE WHEN name=?2 THEN 0 ELSE 1 END,id LIMIT 1",
+            rusqlite::params![parent,name,extended_name], |r| r.get::<_, String>(0),
+        ).optional().map_err(|error| file_routes::database_error(error.into()))
+    }).await?;
+    let Some(key) = key else {
+        return Ok(Vec::new());
+    };
+    // Optional invalid, missing or oversized sidecars must not prevent playback.
+    let Ok(bytes) = state.store.read(&key, 4 << 20).await else {
+        return Ok(Vec::new());
+    };
+    Ok(std::str::from_utf8(&bytes)
+        .map(revaro_core::media::parse_webvtt)
+        .unwrap_or_default())
 }
 
 /// Video metadata uses the same bounded probe and etag-aware cache as audio.
@@ -751,5 +800,134 @@ mod tests {
         assert_eq!(persisted.0, MEDIA_PROBE_VERSION);
         assert_eq!(persisted.1, "etag-audio-1");
         assert_eq!(persisted.2, "pcm_s16le");
+    }
+
+    #[tokio::test]
+    async fn native_flac_chapters_survive_external_sidecars_and_metadata_caching() {
+        let state = state().await;
+        insert_ready_file(
+            &state,
+            "native-flac",
+            "01.flac",
+            "audio/flac",
+            include_bytes!("../../../tests/e2e/fixtures/preview-chapters.flac"),
+        )
+        .await;
+        insert_ready_file(
+            &state,
+            "captions",
+            "01.vtt",
+            "text/vtt",
+            b"WEBVTT\n\n00:01.000 --> 00:04.000\nCaption\n",
+        )
+        .await;
+        insert_ready_file(
+            &state,
+            "synthetic-chapters",
+            "01.chapters.vtt",
+            "text/vtt",
+            b"WEBVTT\n\n00:00.000 --> 00:30.000\nSynthetic chapter\n",
+        )
+        .await;
+        for _ in 0..2 {
+            let (status, _, bytes) = request(&state, "GET", "/api/files/native-flac/audio").await;
+            assert_eq!(status, StatusCode::OK);
+            let media: revaro_core::media::AudioMedia = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(media.duration, 30.0);
+            assert_eq!(media.subtitles[0].text, "Caption");
+            assert_eq!(media.chapters.len(), 6);
+            for (index, chapter) in media.chapters.iter().enumerate() {
+                assert_eq!(chapter.title, format!("Chapter {}", index + 1));
+                assert_eq!(chapter.start, index as f64 * 5.0);
+                assert_eq!(chapter.end, (index + 1) as f64 * 5.0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn audio_sidecars_follow_folder_name_and_live_file_state() {
+        let state = state().await;
+        insert_ready_file(&state, "audio", "01.wav", "audio/wav", &wav_fixture()).await;
+        insert_ready_file(
+            &state,
+            "captions",
+            "01.vtt",
+            "text/vtt",
+            b"WEBVTT\n\n00:00.100 --> 00:00.900\nCaption\n",
+        )
+        .await;
+        insert_ready_file(
+            &state,
+            "chapters",
+            "01.chapters.vtt",
+            "text/vtt",
+            b"WEBVTT\n\n00:00.000 --> 00:00.500\nIntro\n\n00:00.500 --> 00:01.000\nOutro\n",
+        )
+        .await;
+        let (status, _, bytes) = request(&state, "GET", "/api/files/audio/audio").await;
+        assert_eq!(status, StatusCode::OK);
+        let media: revaro_core::media::AudioMedia = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(media.subtitles.len(), 1);
+        assert_eq!(media.subtitles[0].text, "Caption");
+        assert_eq!(media.chapters.len(), 2);
+        assert_eq!(media.chapters[1].start, 0.5);
+        // Live sidecars are re-read even when the audio's probe is cached.
+        state
+            .store
+            .put(
+                &keys::blob_key("captions"),
+                b"WEBVTT\n\n00:00.100 --> 00:00.900\nUpdated\n",
+            )
+            .await
+            .unwrap();
+        let (_, _, bytes) = request(&state, "GET", "/api/files/audio/audio").await;
+        let media: revaro_core::media::AudioMedia = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(media.subtitles[0].text, "Updated");
+        state.db.call(|c| {
+            c.execute("INSERT INTO files(id,parent_id,name,kind,status,created_at,updated_at) VALUES('folder',?1,'Other','directory','ready','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", [ROOT_ID])?;
+            c.execute("UPDATE files SET parent_id='folder' WHERE id='captions'", [])?;
+            c.execute("UPDATE files SET deleted_at='2026-01-01T00:00:00Z' WHERE id='chapters'", [])?;
+            Ok(())
+        }).await.unwrap();
+        let (_, _, bytes) = request(&state, "GET", "/api/files/audio/audio").await;
+        let media: revaro_core::media::AudioMedia = serde_json::from_slice(&bytes).unwrap();
+        assert!(media.subtitles.is_empty());
+        assert!(media.chapters.is_empty());
+        insert_ready_file(
+            &state,
+            "extended-captions",
+            "01.wav.vtt",
+            "text/vtt",
+            b"WEBVTT\n\n00:00.100 --> 00:00.900\nOriginal subtitle\n",
+        )
+        .await;
+        insert_ready_file(
+            &state,
+            "extended-chapters",
+            "01.wav.chapters.vtt",
+            "text/vtt",
+            b"WEBVTT\n\n00:00.000 --> 00:01.000\nOriginal chapter\n",
+        )
+        .await;
+        let (_, _, bytes) = request(&state, "GET", "/api/files/audio/audio").await;
+        let media: revaro_core::media::AudioMedia = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(media.subtitles[0].text, "Original subtitle");
+        assert_eq!(media.chapters[0].title, "Original chapter");
+        state
+            .db
+            .call(|c| {
+                c.execute(
+                    "UPDATE files SET parent_id=?1 WHERE id='captions'",
+                    [ROOT_ID],
+                )?;
+                c.execute("UPDATE files SET deleted_at=NULL WHERE id='chapters'", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (_, _, bytes) = request(&state, "GET", "/api/files/audio/audio").await;
+        let media: revaro_core::media::AudioMedia = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(media.subtitles[0].text, "Updated");
+        assert_eq!(media.chapters[0].title, "Intro");
     }
 }

@@ -22,29 +22,162 @@ use crate::logic::media::{active_chapter_index, clamp_percent, media_element_tim
 
 use super::icons;
 use super::menu::{ActionMenu, MenuIcon};
+use super::music_player::MusicController;
 use super::playback::{
     PlaybackProgress, ProgressDestination, clear_timer, debounce, persist_progress, stored_volume,
     throttle,
 };
 
+/// Shared plain-text subtitle overlay for the existing preview and music dock.
+#[component]
+pub(super) fn AudioSubtitles(
+    cues: Signal<Vec<revaro_core::media::VttCue>>,
+    current_time: Signal<f64>,
+) -> impl IntoView {
+    let cues = Memo::new(move |_| cues.get());
+    let text = Memo::new(move |_| {
+        cues.with(|cues| crate::logic::media::subtitle_text(cues, current_time.get()))
+    });
+    view! {
+        <Show when=move ||!text.get().is_empty() fallback=|| ()>
+            <div class="audio-subtitles" aria-label="音频字幕">{move ||text.get()}</div>
+        </Show>
+    }
+}
+
+/// The full player follows the subtitle clock without scrolling its controls.
+#[component]
+fn AudioTranscript(
+    cues: Signal<Vec<revaro_core::media::VttCue>>,
+    current_time: Signal<f64>,
+    layout_changed: Signal<bool>,
+    on_seek: Callback<f64>,
+) -> impl IntoView {
+    let viewport = NodeRef::<leptos::html::Div>::new();
+    let cues = Memo::new(move |_| cues.get());
+    let active = Memo::new(move |_| {
+        cues.with(|cues| crate::logic::media::active_subtitle_indices(cues, current_time.get()))
+    });
+    let cursor = Memo::new(move |_| {
+        if let Some(index) = active.with(|indices| indices.last().copied()) {
+            return Some(index);
+        }
+        let time = media_element_time(current_time.get());
+        cues.with(|cues| {
+            if cues.is_empty() {
+                None
+            } else {
+                Some(
+                    cues.partition_point(|cue| cue.start <= time)
+                        .saturating_sub(1),
+                )
+            }
+        })
+    });
+    let following = RwSignal::new(true);
+    let scroll_timer = RwSignal::new(None::<i32>);
+    let reveal = Callback::new(move |()| {
+        if !following.get_untracked() {
+            return;
+        }
+        debounce(scroll_timer, 0, move || {
+            let Some(viewport) = viewport.get() else {
+                return;
+            };
+            let Some(index) = cursor.get_untracked() else {
+                return;
+            };
+            let viewport: web_sys::HtmlElement = viewport.unchecked_into();
+            let _ = viewport.style().set_property(
+                "--transcript-inset",
+                &format!(
+                    "{}px",
+                    (f64::from(viewport.client_height()) / 2.0 - 24.0).max(0.0)
+                ),
+            );
+            let Ok(Some(line)) = viewport.query_selector(&format!("[data-cue-index=\"{index}\"]"))
+            else {
+                return;
+            };
+            let bounds = line.get_bounding_client_rect();
+            let top = f64::from(viewport.scroll_top()) + bounds.top()
+                - viewport.get_bounding_client_rect().top()
+                - (f64::from(viewport.client_height()) - bounds.height()) / 2.0;
+            viewport.scroll_to_with_x_and_y(0.0, top.max(0.0));
+        });
+    });
+    Effect::new(move |_| {
+        let _ = viewport.get();
+        let _ = cursor.get();
+        let _ = layout_changed.get();
+        if following.get() {
+            reveal.run(());
+        } else {
+            clear_timer(scroll_timer);
+        }
+    });
+    let mut resize = browser::on_resize(move |_| reveal.run(()));
+    on_cleanup(move || {
+        resize.release();
+        clear_timer(scroll_timer);
+    });
+    view! {
+        <section class="audio-transcript" aria-label="滚动台词">
+            <div node_ref=viewport class="audio-transcript-scroll" class:empty=move ||cues.with(|cues|cues.is_empty()) tabindex="0" aria-label="台词内容"
+                on:wheel=move |_|following.set(false)
+                on:pointerdown=move |_|following.set(false)
+                on:keydown=move |event: KeyboardEvent| {
+                    if matches!(event.key().as_str(), "ArrowUp" | "ArrowDown" | "PageUp" | "PageDown" | "Home" | "End") {
+                        following.set(false);
+                        event.stop_propagation();
+                    }
+                }>
+                <Show when=move ||cues.with(|cues|cues.is_empty()) fallback=|| ()>
+                    <p class="audio-transcript-empty">"暂无台词"</p>
+                </Show>
+                <div class="audio-transcript-lines">
+                    <For each=move ||{cues.get().into_iter().enumerate().collect::<Vec<_>>()} key=|(index,_)|*index children=move |(index,cue)|view! {
+                        <button type="button" class="audio-transcript-line" data-cue-index=index
+                            class:active=move ||active.with(|indices|indices.contains(&index))
+                            aria-current=move ||active.with(|indices|indices.contains(&index)).then_some("true")
+                            title=format_media_time(cue.start)
+                            on:click=move |_| {following.set(true);on_seek.run(cue.start);}>
+                            {cue.text}
+                        </button>
+                    } />
+                </div>
+            </div>
+            <Show when=move ||!following.get() && !cues.with(|cues|cues.is_empty()) fallback=|| ()>
+                <button type="button" class="audio-transcript-follow" on:click=move |_|following.set(true)>"回到当前台词"</button>
+            </Show>
+        </section>
+    }
+}
+
 /// Full-screen audio player mounted inside [`super::media::MediaPreview`].
 #[component]
-pub fn AudioPlayer(item: File) -> impl IntoView {
+pub fn AudioPlayer(
+    item: File,
+    #[prop(optional)] controller: Option<MusicController>,
+) -> impl IntoView {
     let player = NodeRef::<leptos::html::Div>::new();
-    let audio = NodeRef::<leptos::html::Audio>::new();
+    let audio = controller.map_or_else(NodeRef::new, |c| c.audio);
     let media = RwSignal::new(None::<AudioMedia>);
     let panel_open = RwSignal::new(false);
     let cover_failed = RwSignal::new(false);
     let loading = RwSignal::new(true);
-    let waiting = RwSignal::new(false);
-    let playing = RwSignal::new(false);
-    let current_time = RwSignal::new(0.0_f64);
-    let native_duration = RwSignal::new(0.0_f64);
+    let waiting = controller.map_or_else(|| RwSignal::new(false), |c| c.waiting);
+    let playing = controller.map_or_else(|| RwSignal::new(false), |c| c.playing);
+    let current_time = controller.map_or_else(|| RwSignal::new(0.0_f64), |c| c.position);
+    let native_duration = controller.map_or_else(|| RwSignal::new(0.0_f64), |c| c.duration);
     let buffered = RwSignal::new(0.0_f64);
-    let rate = RwSignal::new(1.0_f64);
-    let volume = RwSignal::new(stored_volume("revaro-audio-volume", 0.85));
-    let muted = RwSignal::new(audio_muted());
-    let error = RwSignal::new(String::new());
+    let rate = controller.map_or_else(|| RwSignal::new(1.0_f64), |c| c.rate);
+    let volume = controller.map_or_else(
+        || RwSignal::new(stored_volume("revaro-audio-volume", 0.85)),
+        |c| c.volume,
+    );
+    let muted = controller.map_or_else(|| RwSignal::new(audio_muted()), |c| c.muted);
+    let error = controller.map_or_else(|| RwSignal::new(String::new()), |c| c.error);
     let seek_preview = RwSignal::new(None::<f64>);
     let seek_hover = RwSignal::new(None::<SeekHover>);
     let playback = PlaybackProgress::new();
@@ -54,7 +187,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
 
     let source = format!("/api/files/{}/preview", item.id);
     let item_name = item.name.clone();
-    let title = stem(&item.name);
     let position_key = format!("revaro-audio-position:{}", item.id);
     let item_id = item.id.clone();
 
@@ -64,6 +196,9 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
         move || {
             media.get().map_or_else(
                 || {
+                    if controller.is_some() {
+                        return Vec::new();
+                    }
                     vec![AudioChapter {
                         id: 1,
                         title: stem(&item_name),
@@ -72,7 +207,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                     }]
                 },
                 |value| {
-                    if value.chapters.is_empty() {
+                    if value.chapters.is_empty() && controller.is_none() {
                         vec![AudioChapter {
                             id: 1,
                             title: stem(&item_name),
@@ -104,6 +239,9 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let restore_position = {
         let position_key = position_key.clone();
         move || {
+            if controller.is_some() {
+                return;
+            }
             if duration() > 0.0
                 && let Some(saved) = playback.restore(duration(), 0.0, false, Some(&position_key))
                 && saved > 0.0
@@ -116,6 +254,10 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
         let position_key = position_key.clone();
         let item_id = item_id.clone();
         move |remote: bool| {
+            if let Some(controller) = controller {
+                controller.save();
+                return;
+            }
             let position = current_time.get_untracked().max(0.0);
             if position > 0.0 {
                 persist_progress(
@@ -199,6 +341,10 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     };
 
     let toggle_playback = move || {
+        if let Some(controller) = controller {
+            controller.toggle();
+            return;
+        }
         let Some(element) = audio_element(audio) else {
             return;
         };
@@ -220,6 +366,13 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     let seek = {
         let restore_position = restore_position.clone();
         move |target: f64, play: bool| {
+            if let Some(controller) = controller {
+                controller.seek(target);
+                if play {
+                    controller.start();
+                }
+                return;
+            }
             seek_audio(audio, current_time, duration(), target, play);
             restore_position();
         }
@@ -412,7 +565,14 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
             .clamp(0.0, 1.0);
         volume.set(value);
         muted.set(value == 0.0);
-        browser::local_storage_set("revaro-audio-volume", &value.to_string());
+        browser::local_storage_set(
+            if controller.is_some() {
+                "revaro-music-volume"
+            } else {
+                "revaro-audio-volume"
+            },
+            &value.to_string(),
+        );
         browser::local_storage_set("revaro-audio-muted", &(value == 0.0).to_string());
         if let Some(audio) = audio_element(audio) {
             audio.set_volume(value);
@@ -472,17 +632,23 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     // first; `restore_position` only acts after both media duration and the
     // server response are available. These reads belong to the player: unlike
     // durable progress writes, they must stop when its reactive owner is gone.
-    {
+    if controller.is_none() {
         let restore_position = restore_position.clone();
         playback.load(item.id.clone(), Callback::new(move |()| restore_position()));
     }
-    {
+    if controller.is_none() {
         let id = item.id.clone();
         leptos::task::spawn_local_scoped_with_cancellation(async move {
             if let Ok(value) = api::fetch_audio_media(&id).await {
                 media.set(Some(value));
                 restore_position();
             }
+        });
+    }
+    if let Some(controller) = controller {
+        Effect::new(move |_| {
+            media.set(Some(controller.metadata.get()));
+            loading.set(controller.duration.get() <= 0.0 && controller.error.get().is_empty());
         });
     }
 
@@ -498,6 +664,14 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                 return;
             };
             mounted.set(true);
+            if let Some(element) = player.get() {
+                let options = web_sys::FocusOptions::new();
+                options.set_prevent_scroll(true);
+                let _ = element.focus_with_options(&options);
+            }
+            if controller.is_some() {
+                return;
+            }
             element.set_src(&source);
             let _ = element
                 .unchecked_ref::<web_sys::Element>()
@@ -506,11 +680,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
             element.set_autoplay(true);
             element.set_volume(volume.get_untracked());
             element.set_muted(muted.get_untracked());
-            if let Some(element) = player.get() {
-                let options = web_sys::FocusOptions::new();
-                options.set_prevent_scroll(true);
-                let _ = element.focus_with_options(&options);
-            }
             element.load();
             play_ignoring_rejection(&element);
         });
@@ -521,6 +690,10 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
     on_cleanup(move || {
         clear_timer(save_timer);
         clear_timer(remote_save_timer);
+        if let Some(controller) = controller {
+            controller.save();
+            return;
+        }
         cleanup_save(false);
         let position = current_time.get_untracked().max(0.0);
         if position > 0.0 {
@@ -540,8 +713,6 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
         }
     });
 
-    let book_title = title.clone();
-    let heading_title = title.clone();
     let cover_name = item.name.clone();
     view! {
         <div node_ref=player class="chapter-audio-player" class:panel-open=move || panel_open.get() tabindex="0" on:keydown=on_key>
@@ -557,21 +728,17 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                             }
                         }}
                     </div>
-                    <div class="audio-chapter-current">
-                        <span>{move || if playing.get() { "正在播放" } else { "暂停中" }}</span>
-                        <Show when=move || chapters().len().gt(&1) fallback=|| ()>
-                            <p class="audio-book-title">{book_title.clone()}</p>
-                        </Show>
-                        <h1>{move || chapters().get(current_chapter_index()).map_or_else(|| heading_title.clone(), |chapter| if chapter.title.is_empty() { heading_title.clone() } else { chapter.title.clone() })}</h1>
-                        <Show when=move || chapters().len().gt(&1) fallback=|| ()>
-                            <small>{move || format!("第 {} / {} 章", current_chapter_index() + 1, chapters().len())}</small>
-                        </Show>
-                    </div>
                 </section>
+                <AudioTranscript
+                    cues=Signal::derive(move ||media.get().map(|m|m.subtitles).unwrap_or_default())
+                    current_time=current_time.into()
+                    layout_changed=panel_open.into()
+                    on_seek=Callback::new(move |time|seek_callback.with_value(|seek|seek(time,playing.get_untracked())))
+                />
                 <section class="audio-playback" aria-label="音频播放控制">
                     <AudioProgress
                         percent=progress
-                        buffered=move || buffered.get()
+                        buffered=move || controller.map_or_else(|| vec![(0.0, buffered.get())], |c| c.buffered.get())
                         markers=move || chapter_markers(&chapters(), duration())
                         duration=duration
                         current_time=displayed_time
@@ -595,7 +762,7 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                         <label class="audio-rate"><span class="media-sr-only">"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=set_rate>
                             <option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
                         </select></label>
-                        <button type="button" data-panel-trigger="chapters" aria-expanded=move || if panel_open.get() { "true" } else { "false" } on:click=toggle_panel>{icons::list()}<span>"章节"</span></button>
+                        <button type="button" data-panel-trigger="chapters" aria-expanded=move || panel_open.get().to_string() on:click=toggle_panel>{icons::list()}<span>"章节"</span></button>
                         <ActionMenu label="音量".to_owned() icon=MenuIcon::Volume volume=volume muted=muted>
                             <div class="audio-volume">
                                 <button type="button" aria-label=move || if muted.get() { "取消静音" } else { "静音" } on:click=toggle_mute>
@@ -609,15 +776,15 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                     <Show when=move || !error.get().is_empty() fallback=|| ()>
                         <p class="audio-player-error" role="alert">{move || error.get()}</p>
                     </Show>
-                    <audio node_ref=audio src=source.clone() autoplay preload="metadata" on:loadedmetadata=on_loaded_metadata on:timeupdate=on_time_update on:progress=move |_| update_buffer(audio, duration, buffered) on:play=on_play on:pause=on_pause on:ended=on_ended on:waiting=on_waiting on:canplay=on_can_play on:error=on_error></audio>
+                    {controller.is_none().then(|| view! { <audio node_ref=audio src=source.clone() autoplay preload="metadata" on:loadedmetadata=on_loaded_metadata on:timeupdate=on_time_update on:progress=move |_| update_buffer(audio, duration, buffered) on:play=on_play on:pause=on_pause on:ended=on_ended on:waiting=on_waiting on:canplay=on_can_play on:error=on_error></audio> })}
                 </section>
             </main>
             <Show when=move || panel_open.get() fallback=|| ()>
                 <button class="audio-panel-scrim" type="button" aria-label="收起面板" on:click=close_panel></button>
                 <aside class="audio-panel" data-preview-sheet aria-label="音频章节">
-                    <header><div class="audio-panel-tabs"><span>"章节"</span></div><button class="media-icon-button" type="button" aria-label="收起面板" on:click=close_panel>{icons::x()}</button></header>
+                    <header><strong>"章节"</strong><button class="media-icon-button" type="button" aria-label="收起面板" on:click=close_panel>{icons::x()}</button></header>
                     <div class="audio-chapter-navigation">
-                        <button type="button" prop:disabled={move || duration() <= 0.0} on:click=move |_| previous_chapter_callback.with_value(|callback| callback())>{icons::skip_back()}<span>"上一章"</span></button>
+                        <button type="button" prop:disabled={move || duration() <= 0.0 || chapters().is_empty()} on:click=move |_| previous_chapter_callback.with_value(|callback| callback())>{icons::skip_back()}<span>"上一章"</span></button>
                         <button type="button" prop:disabled={move || current_chapter_index() >= chapters().len().saturating_sub(1)} on:click=move |_| _next_chapter_callback.with_value(|callback| callback())><span>"下一章"</span>{icons::skip_forward()}</button>
                     </div>
                     <div class="audio-chapter-list">
@@ -632,9 +799,60 @@ pub fn AudioPlayer(item: File) -> impl IntoView {
                             </button>
                         </For>
                     </div>
+                    <Show when=move ||chapters().is_empty() fallback=|| ()><p class="audio-panel-empty">"暂无章节"</p></Show>
                 </aside>
             </Show>
         </div>
+    }
+}
+
+/// The historical player view controls the persistent element. Opening or
+/// closing this dialog never reloads the source or interrupts playback.
+#[component]
+pub(super) fn AudioPlayerDialog(controller: MusicController) -> impl IntoView {
+    let root = NodeRef::<leptos::html::Section>::new();
+    let document = web_sys::window().and_then(|window| window.document());
+    let previous_focus = document.as_ref().and_then(|d| d.active_element());
+    let body = document.and_then(|d| d.body());
+    let previous_overflow = body
+        .as_ref()
+        .and_then(|b| b.style().get_property_value("overflow").ok());
+    if let Some(body) = &body {
+        let _ = body.style().set_property("overflow", "hidden");
+    }
+    on_cleanup(move || {
+        if let Some(body) = body {
+            let _ = body
+                .style()
+                .set_property("overflow", previous_overflow.as_deref().unwrap_or_default());
+        }
+        if let Some(element) =
+            previous_focus.and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+            && element.is_connected()
+        {
+            let options = web_sys::FocusOptions::new();
+            options.set_prevent_scroll(true);
+            let _ = element.focus_with_options(&options);
+        }
+    });
+    view! {
+        <super::dialogs::DialogBackdrop class="modal-backdrop previewing" on_close=Callback::new(move |()|controller.full_open.set(false))>
+            <section node_ref=root class="preview-modal audio-preview music-player-dialog" role="dialog" aria-modal="true" aria-label="音频播放器" tabindex="-1"
+                on:keydown=move |event: KeyboardEvent| {
+                    if event.key()=="Escape" && !event.default_prevented() {
+                        event.prevent_default();event.stop_propagation();controller.full_open.set(false);
+                    } else if event.key()=="Tab" {
+                        super::media::trap_focus(root,&event);
+                    }
+                }>
+                <header class="preview-commandbar"><div class="preview-file-meta"><strong>{move ||controller.current().map(|f|stem(&f.name)).unwrap_or_default()}</strong></div>
+                    <button type="button" class="media-icon-button preview-close" aria-label="收起音频播放器" on:click=move |_|controller.full_open.set(false)>{icons::chevron_down()}</button>
+                </header>
+                <div class="preview-stage">
+                    <For each=move ||{controller.current().into_iter().collect::<Vec<_>>()} key=|file|file.id.clone() children=move |file|view! { <AudioPlayer item=file controller=controller /> } />
+                </div>
+            </section>
+        </super::dialogs::DialogBackdrop>
     }
 }
 
@@ -647,7 +865,7 @@ struct SeekHover {
 #[component]
 fn AudioProgress(
     percent: impl Fn() -> f64 + Copy + Send + 'static,
-    buffered: impl Fn() -> f64 + Copy + Send + 'static,
+    buffered: impl Fn() -> Vec<(f64, f64)> + Copy + Send + 'static,
     markers: impl Fn() -> Vec<f64> + Send + 'static,
     duration: impl Fn() -> f64 + Copy + Send + 'static,
     current_time: impl Fn() -> f64 + Copy + Send + 'static,
@@ -662,7 +880,9 @@ fn AudioProgress(
     view! {
         <div class="full-bleed-progress full-bleed-progress--audio">
             <div class="full-bleed-progress__track" aria-hidden="true">
-                <span class="full-bleed-progress__buffer" style=move || format!("width:{}%;", clamp_percent(buffered()))></span>
+                <For each=buffered key=|(start, end)| (start.to_bits(), end.to_bits()) children=move |(start, end)| view! {
+                    <span class="full-bleed-progress__buffer" style=format!("left:{}%;width:{}%;", clamp_percent(start), clamp_percent(end-start))></span>
+                } />
                 <span class="full-bleed-progress__played" style=move || format!("width:{}%;", clamp_percent(percent()))></span>
                 <For each=move || markers() key=|marker| marker.to_bits() let:marker>
                     <i style=move || format!("left:{}%;", clamp_percent(marker))></i>
@@ -777,7 +997,7 @@ fn chapter_markers(chapters: &[AudioChapter], duration: f64) -> Vec<f64> {
     }
     chapters
         .iter()
-        .skip(1)
+        .filter(|chapter| chapter.start > 0.0 && chapter.start < duration)
         .map(|chapter| clamp_percent(chapter.start / duration * 100.0))
         .collect()
 }

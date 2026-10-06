@@ -293,7 +293,7 @@ test.describe('touch content captions', () => {
       await navigate(page, destination)
       const caption = page.getByRole('button', { name: `打开 ${file.name}`, exact: true }).locator('.card-info')
       await expect(caption).toHaveCSS('opacity', '1')
-      await expect(caption.locator('strong')).toHaveCSS('white-space', destination === '音乐' ? 'nowrap' : 'normal')
+      await expect(caption.locator('strong')).toHaveCSS('white-space', 'normal')
     }
     await navigate(page, '首页')
     for (const file of [book, song, photo, video]) {

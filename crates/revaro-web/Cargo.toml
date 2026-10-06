@@ -79,6 +79,7 @@ web-sys = { workspace = true, features = [
     "Node",
     "NodeList",
     "PointerEvent",
+    "PageTransitionEvent",
     "Touch",
     "TouchEvent",
     "TouchList",
