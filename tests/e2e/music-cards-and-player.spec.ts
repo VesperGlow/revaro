@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { login, navigate, enterSelectionMode } from './helpers'
 import { readFileSync } from 'node:fs'
 
-const nativeFlac = readFileSync(new URL('./fixtures/preview-chapters.flac', import.meta.url))
+const nativeFlac = readFileSync(new URL('../../crates/revaro-server/tests/fixtures/preview-chapters.flac', import.meta.url))
 const transcript = Buffer.from('WEBVTT\n\n' + Array.from({ length: 28 }, (_, index) => {
   const second = String(index).padStart(2, '0')
   return `00:00:${second}.000 --> 00:00:${second}.750\nLine ${String(index + 1).padStart(2, '0')}\n`

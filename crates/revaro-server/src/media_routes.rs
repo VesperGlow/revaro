@@ -810,7 +810,7 @@ mod tests {
             "native-flac",
             "01.flac",
             "audio/flac",
-            include_bytes!("../../../tests/e2e/fixtures/preview-chapters.flac"),
+            include_bytes!("../tests/fixtures/preview-chapters.flac"),
         )
         .await;
         insert_ready_file(

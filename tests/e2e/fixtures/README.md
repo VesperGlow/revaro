@@ -13,10 +13,12 @@ npm test
 ```
 
 `preview.flac` is an original 30-second mono silent FLAC (8 kHz, 16-bit),
-encoded once with libFLAC for native audio tests. `preview-chapters.flac` keeps
-those same samples and adds six native CUESHEET/Vorbis chapters at 0, 5, 10, 15,
-20 and 25 seconds. Rust API tests verify those titles/times survive a conflicting
-chapter sidecar and a cached probe.
+encoded once with libFLAC for native audio tests. The shared fixture at
+`crates/revaro-server/tests/fixtures/preview-chapters.flac` keeps those same
+samples and adds six native CUESHEET/Vorbis chapters at 0, 5, 10, 15, 20 and 25
+seconds. It lives in the Cargo workspace so Rust API tests can also compile in
+the Docker build, where browser tests are excluded. Rust API tests verify those
+titles/times survive a conflicting chapter sidecar and a cached probe.
 
 `audio-playback.spec.ts` covers ordinary categories, chapter/subtitle sidecars,
 seeking, buffered ranges, next-track metadata, automatic advancement, refresh
