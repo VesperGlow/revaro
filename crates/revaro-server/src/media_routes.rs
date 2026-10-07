@@ -796,6 +796,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flac_png_cover_is_generated_without_cached_metadata_and_survives_a_cache_hit() {
+        let state = state().await;
+        insert_ready_file(
+            &state,
+            "flac-cover",
+            "cover.flac",
+            "audio/flac",
+            include_bytes!("../../revaro-media/tests/fixtures/preview-cover.flac"),
+        )
+        .await;
+
+        let (status, headers, first) =
+            request(&state, "GET", "/api/files/flac-cover/thumbnail").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "image/jpeg");
+        let decoded = image::load_from_memory(&first).expect("embedded PNG becomes a JPEG");
+        assert_eq!(decoded.dimensions(), (640, 320));
+
+        let (status, _, body) = request(&state, "GET", "/api/files/flac-cover/audio").await;
+        assert_eq!(status, StatusCode::OK);
+        let media: revaro_core::media::AudioMedia = serde_json::from_slice(&body).unwrap();
+        assert!(media.has_cover);
+        assert_eq!(
+            media.cover_url,
+            "/api/files/flac-cover/thumbnail?v=etag-flac-cover"
+        );
+        assert_eq!(media.chapters.len(), 6);
+
+        let key = keys::audio_thumbnail_key("blobs/flac-cover");
+        assert!(state.store.head(&key).await.is_ok());
+        state.store.delete("blobs/flac-cover").await.unwrap();
+        let (status, _, second) = request(&state, "GET", &media.cover_url).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second, first, "the cover is persisted and reused");
+    }
+
+    #[tokio::test]
     async fn native_flac_chapters_survive_external_sidecars_and_metadata_caching() {
         let state = state().await;
         insert_ready_file(

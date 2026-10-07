@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { login, navigate, enterSelectionMode, uploadFixture } from './helpers'
 import { readFileSync } from 'node:fs'
 
-const nativeFlac = readFileSync(new URL('../../crates/revaro-server/tests/fixtures/preview-chapters.flac', import.meta.url))
+const nativeFlac = readFileSync(new URL('../../crates/revaro-media/tests/fixtures/preview-cover.flac', import.meta.url))
 const transcript = Buffer.from('WEBVTT\n\n' + Array.from({ length: 28 }, (_, index) => {
   const second = String(index).padStart(2, '0')
   return `00:00:${second}.000 --> 00:00:${second}.750\nLine ${String(index + 1).padStart(2, '0')}\n`
@@ -51,6 +51,9 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
         await expect(page.locator('.audio-stack-card,.stack-header')).toHaveCount(0)
         const cards = page.locator('.library-grid > .library-card')
         await expect(cards).toHaveCount(6)
+        const cardCover = cards.first().locator('.library-cover img')
+        await expect(cardCover).toBeVisible()
+        await expect.poll(() => cardCover.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(640)
         await expect(page.locator('.song-list,.song-row,.song-play,.song-menu-panel')).toHaveCount(0)
         await expect(page.getByRole('button', { name: '播放全部', exact: true })).toHaveCount(0)
         await expect(cards.first().locator('.card-info strong')).toHaveCSS('white-space', 'normal')
@@ -68,6 +71,9 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
         await page.getByRole('button', { name: '打开音频播放器', exact: true }).click()
         const player = page.getByRole('dialog', { name: '音频播放器', exact: true })
         await expect(player.locator('.chapter-audio-player')).toBeVisible()
+        const playerCover = player.locator('.audio-cover img')
+        await expect(playerCover).toBeVisible()
+        await expect.poll(() => playerCover.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(640)
         await expect(player.getByRole('button', { name: '播放', exact: true })).toBeVisible()
         await expect(page.locator('audio')).toHaveCount(audioCount)
         await expect(audio).toHaveAttribute('src', source!)

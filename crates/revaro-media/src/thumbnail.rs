@@ -244,6 +244,30 @@ mod tests {
     }
 
     #[test]
+    fn extracts_a_png_cover_from_flac_without_a_sidecar_process() {
+        // Run against the same shared libraries as the server, including the
+        // Docker build with autodetection disabled. A command-generated JPEG
+        // fixture alone would miss a build without zlib/PNG decoding support.
+        let bytes = include_bytes!("../tests/fixtures/preview-cover.flac");
+        let probe = crate::MediaEngine
+            .probe(std::io::Cursor::new(bytes), CancellationToken::new())
+            .expect("FLAC with embedded PNG artwork probes");
+        assert_eq!(probe.audio_codec, "flac");
+        assert_eq!(probe.video_codec, "png");
+
+        let jpeg = crate::MediaEngine
+            .thumbnail(
+                std::io::Cursor::new(bytes),
+                640,
+                true,
+                CancellationToken::new(),
+            )
+            .expect("the runtime must decode PNG artwork even without an ffmpeg binary");
+        let decoded = image::load_from_memory(&jpeg).expect("cover is a JPEG");
+        assert_eq!((decoded.width(), decoded.height()), (640, 320));
+    }
+
+    #[test]
     fn extracts_a_thumbnail_from_a_real_video_stream() {
         let Ok(version) = Command::new("ffmpeg").arg("-version").output() else {
             return;

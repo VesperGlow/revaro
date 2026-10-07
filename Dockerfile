@@ -6,7 +6,7 @@ ARG FFMPEG_VERSION=5.1.10
 ARG FFMPEG_SHA256=392306d6fc45dab0e9e0ea55381e071842e83a2fb31d320aeda40477a7766293
 RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    build-essential curl ca-certificates xz-utils nasm cmake pkg-config \
+    build-essential curl ca-certificates xz-utils nasm cmake pkg-config zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
@@ -15,11 +15,13 @@ RUN curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
     && mkdir -p ffmpeg \
     && tar -xf ffmpeg.tar.xz -C ffmpeg --strip-components=1
 WORKDIR /src/ffmpeg
+# PNG artwork in FLAC needs zlib even when external library autodetection is off.
 RUN ./configure \
       --prefix=/opt/revaro/ffmpeg \
       --disable-autodetect \
       --disable-doc --disable-debug --disable-ffplay --disable-network --disable-postproc \
       --disable-programs --disable-encoders --disable-muxers \
+      --enable-zlib --enable-decoder=png,mjpeg \
       --enable-avdevice --enable-shared --enable-pthreads \
     && make -j"$(nproc)" && make install \
     && rm -rf /src

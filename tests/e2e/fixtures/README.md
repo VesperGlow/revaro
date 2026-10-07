@@ -20,6 +20,12 @@ seconds. It lives in the Cargo workspace so Rust API tests can also compile in
 the Docker build, where browser tests are excluded. Rust API tests verify those
 titles/times survive a conflicting chapter sidecar and a cached probe.
 
+`crates/revaro-media/tests/fixtures/preview-cover.flac` adds an original 800 × 400
+PNG front cover to that chapter fixture. Native engine/API tests and the music
+card/player browser test decode its artwork without requiring an `ffmpeg`
+executable. These tests also run in the Docker build against the production
+FFmpeg libraries, so a missing PNG decoder fails the image release gate.
+
 `audio-playback.spec.ts` covers ordinary categories, chapter/subtitle sidecars,
 seeking, buffered ranges, next-track metadata, automatic advancement, refresh
 resume and HTTP HEAD/206. `music-cards-and-player.spec.ts` checks square cards,
