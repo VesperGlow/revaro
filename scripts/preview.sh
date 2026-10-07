@@ -5,12 +5,7 @@ cd "$preview_project_root"
 preview_port="${PREVIEW_PORT:-8081}"
 preview_root="${PREVIEW_ROOT:-$preview_project_root/data/content-preview}"
 if [[ "${1:-}" != "--no-build" ]]; then
-    cargo build -p revaro-web --target wasm32-unknown-unknown
-    mkdir -p dist/content-preview-web
-    wasm-bindgen --target web --out-dir dist/content-preview-web \
-        --out-name revaro_web --no-typescript \
-        target/wasm32-unknown-unknown/debug/revaro_web.wasm
-    cp -a crates/revaro-web/static/. dist/content-preview-web/
+    cargo xtask web-build --out-dir dist/content-preview-web
     cargo build -p revaro-server
 fi
 mkdir -p "$preview_root"

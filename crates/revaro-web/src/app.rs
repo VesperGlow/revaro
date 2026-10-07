@@ -7,15 +7,21 @@
 
 use leptos::prelude::*;
 use revaro_core::api::auth::Session;
+use wasm_bindgen::JsCast as _;
 
 use crate::api;
 use crate::components::{ContentShell, LoginView};
 
-/// Mount the application into the page body.
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
+/// Called by the bootstrap only after WASM, styles and transport are ready.
+#[wasm_bindgen::prelude::wasm_bindgen]
 pub fn start() {
     console_error_panic_hook::set_once();
-    leptos::mount::mount_to_body(App);
+    let app = document()
+        .get_element_by_id("app")
+        .expect("HTML shell provides #app")
+        .unchecked_into::<web_sys::HtmlElement>();
+    app.set_inner_html("");
+    leptos::mount::mount_to(app, App).forget();
 }
 
 #[component]

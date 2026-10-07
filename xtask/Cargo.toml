@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# Deliberately dependency-free: the build driver must not add to the dependency
-# graph it is responsible for producing.
+# Compression runs only while building; the server streams the finished files.
 [dependencies]
+brotli = "8"
+flate2 = "1"
+sha2.workspace = true

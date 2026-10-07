@@ -11,15 +11,32 @@
     <link rel="icon" href="/favicon.png" sizes="64x64" type="image/png" />
     <link rel="shortcut icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <!-- The ported cascade manifest; it @imports every stylesheet in order. -->
-    <link rel="stylesheet" href="/styles.css" />
+    <!-- The loader must paint before the full stylesheet cascade is ready. -->
+    <style>
+      body { margin: 0; background: #f8f9f6; }
+      .boot-splash { min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 20px; padding: 24px; box-sizing: border-box; color: #426b5e; font: 16px/1.5 system-ui, sans-serif; text-align: center; }
+      .boot-splash img { width: 77px; height: 64px; }
+      .boot-spinner { width: 22px; height: 22px; border: 2px solid #d9e4dc; border-top-color: #426b5e; border-radius: 50%; animation: boot-spin .8s linear infinite; }
+      .boot-splash [hidden] { display: none; }
+      .boot-splash p { margin: 0; }
+      .boot-splash button { padding: 8px 20px; border: 1px solid #426b5e; border-radius: 8px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .boot-spinner { animation: none; } }
+    </style>
+    <link id="app-styles" rel="preload" href="/styles.css" as="style" />
+    <link rel="preload" href="/__REVARO_WASM__" as="fetch" type="application/wasm" crossorigin />
+    <link rel="modulepreload" href="/__REVARO_MODULE__" />
   </head>
   <body>
-    <!-- Leptos mounts the Rust wasm application here and the ported
-         `responsive.css` styles `#app` (`min-width/max-width/min-height`), so
-         the mount id is part of the DOM contract and is kept. -->
-    <div id="app"></div>
+    <div id="app" data-wasm="/__REVARO_WASM__" data-module="/__REVARO_MODULE__">
+      <main class="boot-splash" aria-label="正在加载 Revaro">
+        <img src="/revaro-logo.svg" alt="Revaro" width="77" height="64" draggable="false" />
+        <div id="boot-spinner" class="boot-spinner" aria-hidden="true"></div>
+        <p id="boot-status" role="status" aria-live="polite">正在加载 Revaro…</p>
+        <button id="boot-retry" type="button" hidden>重新加载</button>
+        <noscript>Revaro 需要启用 JavaScript。</noscript>
+      </main>
+    </div>
     <script type="module" src="/revaro_boot.js"></script>
-    <noscript>Revaro 需要启用 JavaScript。</noscript>
   </body>
 </html>

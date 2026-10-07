@@ -107,6 +107,12 @@ async fn lifecycle() {
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr: SocketAddr = reservation.local_addr().unwrap();
     let origin = format!("https://localhost:{}", addr.port());
+    let web = scratch.0.join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    let wasm_name = format!("core.{}.wasm", "a".repeat(64));
+    std::fs::write(web.join(&wasm_name), b"WASM fixture").unwrap();
+    std::fs::write(web.join(format!("{wasm_name}.br")), b"Brotli fixture").unwrap();
+    std::fs::write(web.join(format!("{wasm_name}.gz")), b"gzip fixture").unwrap();
     let config = Config::from_lookup(&|key| match key {
         "APP_BASE_URL" => Some(origin.clone()),
         "APP_TLS_ADDR" | "APP_QUIC_ADDR" => Some(addr.to_string()),
@@ -115,7 +121,7 @@ async fn lifecycle() {
         "APP_DATA_DIR" => Some(scratch.0.join("database").display().to_string()),
         "APP_OBJECTS_DIR" => Some(scratch.0.join("objects").display().to_string()),
         "APP_CACHES_DIR" => Some(scratch.0.join("caches").display().to_string()),
-        "APP_WEB_DIR" => Some("/nonexistent".into()),
+        "APP_WEB_DIR" => Some(web.display().to_string()),
         _ => None,
     })
     .unwrap();
@@ -159,6 +165,41 @@ async fn lifecycle() {
     };
     let (response, _) = client.request("GET", "/readyz", &[], Bytes::new()).await;
     assert_eq!(response.status(), StatusCode::OK);
+    let wasm_url = format!("/{wasm_name}");
+    for (accept, encoding, expected) in [
+        ("br, gzip", "br", b"Brotli fixture".as_slice()),
+        ("gzip", "gzip", b"gzip fixture".as_slice()),
+    ] {
+        let (response, body) = client
+            .request(
+                "GET",
+                &wasm_url,
+                &[("accept-encoding", accept)],
+                Bytes::new(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "application/wasm");
+        assert_eq!(response.headers()["content-encoding"], encoding);
+        assert_eq!(response.headers()["vary"], "Accept-Encoding");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(body.as_ref(), expected);
+        let etag = response.headers()["etag"].to_str().unwrap();
+        let (cached, body) = client
+            .request(
+                "GET",
+                &wasm_url,
+                &[("accept-encoding", accept), ("if-none-match", etag)],
+                Bytes::new(),
+            )
+            .await;
+        assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(cached.headers()["vary"], "Accept-Encoding");
+        assert!(body.is_empty());
+    }
     let (headers, _) = client
         .json(
             "POST",

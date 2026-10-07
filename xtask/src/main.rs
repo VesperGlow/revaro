@@ -17,8 +17,11 @@
 //! Usage failures exit with code 2 so CI can distinguish "you asked for
 //! something impossible" from "the build failed".
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+
+use sha2::{Digest as _, Sha256};
 
 /// The wasm target the browser bundle is compiled for.
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
@@ -30,8 +33,8 @@ const WEB_PACKAGE: &str = "revaro-web";
 ///
 /// This has to match the `wasm-bindgen` crate pinned in the workspace manifest
 /// exactly; the generated glue and the compiled module share a private ABI
-/// version. `xtask` is dependency-free so the pin is duplicated here on
-/// purpose, and `cargo xtask check` fails loudly if the two drift apart.
+/// version. The pin is duplicated here on purpose, and `cargo xtask check`
+/// fails loudly if the two drift apart.
 const WASM_BINDGEN_CLI_VERSION: &str = "0.2.128";
 
 fn main() -> ExitCode {
@@ -129,7 +132,11 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
 
     // Assemble a complete bundle beside the live directory. The existing
     // instance keeps serving its matched JS/WASM while wasm-bindgen runs.
-    let published_dist = dist_dir(root);
+    let published_dist = args
+        .windows(2)
+        .find(|pair| pair[0] == "--out-dir")
+        .map(|pair| root.join(&pair[1]))
+        .unwrap_or_else(|| dist_dir(root));
     let dist = published_dist.with_file_name(format!("web-build-{}", std::process::id()));
     if dist.is_dir() {
         std::fs::remove_dir_all(&dist)
@@ -159,6 +166,10 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
     }
 
     copy_static_assets(root, &dist)?;
+    fingerprint_bundle(&dist)?;
+    // Old HTML or an in-flight module import can still reference the previous
+    // hashes during a rebuild. Keep those immutable URLs available.
+    preserve_hashed_assets(&published_dist, &dist)?;
     let previous = published_dist.with_file_name(format!("web-previous-{}", std::process::id()));
     let had_previous = published_dist.is_dir();
     if had_previous {
@@ -176,6 +187,89 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
             .map_err(|error| format!("could not remove previous web bundle: {error}"))?;
     }
     println!("web bundle written to {}", published_dist.display());
+    Ok(())
+}
+
+/// Name the paired WASM/JS by their contents and precompress the WASM once.
+fn fingerprint_bundle(dist: &Path) -> Result<(), String> {
+    let wasm_path = dist.join("revaro_web_bg.wasm");
+    let wasm = std::fs::read(&wasm_path).map_err(|error| format!("read WASM: {error}"))?;
+    let wasm_name = format!("core.{:x}.wasm", Sha256::digest(&wasm));
+    std::fs::rename(&wasm_path, dist.join(&wasm_name))
+        .map_err(|error| format!("fingerprint WASM: {error}"))?;
+
+    let mut compressed = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 11, 22);
+        writer
+            .write_all(&wasm)
+            .map_err(|error| format!("compress WASM with Brotli: {error}"))?;
+    }
+    std::fs::write(dist.join(format!("{wasm_name}.br")), &compressed)
+        .map_err(|error| format!("write Brotli WASM: {error}"))?;
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    gzip.write_all(&wasm)
+        .map_err(|error| format!("compress WASM with gzip: {error}"))?;
+    let gzip = gzip
+        .finish()
+        .map_err(|error| format!("finish gzip WASM: {error}"))?;
+    std::fs::write(dist.join(format!("{wasm_name}.gz")), &gzip)
+        .map_err(|error| format!("write gzip WASM: {error}"))?;
+
+    let glue_path = dist.join("revaro_web.js");
+    let glue =
+        std::fs::read_to_string(&glue_path).map_err(|error| format!("read WASM glue: {error}"))?;
+    if !glue.contains("new URL('revaro_web_bg.wasm', import.meta.url)") {
+        return Err("wasm-bindgen default WASM URL changed; update fingerprinting".to_owned());
+    }
+    let glue = glue.replace("revaro_web_bg.wasm", &wasm_name);
+    let glue_name = format!("revaro_web.{:x}.js", Sha256::digest(glue.as_bytes()));
+    std::fs::write(dist.join(&glue_name), glue)
+        .map_err(|error| format!("write fingerprinted WASM glue: {error}"))?;
+    std::fs::remove_file(&glue_path)
+        .map_err(|error| format!("remove unfingerprinted WASM glue: {error}"))?;
+
+    let index_path = dist.join("index.html");
+    let index = std::fs::read_to_string(&index_path)
+        .map_err(|error| format!("read HTML shell: {error}"))?;
+    if !index.contains("__REVARO_WASM__") || !index.contains("__REVARO_MODULE__") {
+        return Err("HTML shell is missing bundle URL placeholders".to_owned());
+    }
+    std::fs::write(
+        index_path,
+        index
+            .replace("__REVARO_WASM__", &wasm_name)
+            .replace("__REVARO_MODULE__", &glue_name),
+    )
+    .map_err(|error| format!("write HTML bundle URLs: {error}"))?;
+    println!(
+        "WASM: {} bytes, Brotli: {} bytes, gzip: {} bytes ({wasm_name})",
+        wasm.len(),
+        compressed.len(),
+        gzip.len()
+    );
+    Ok(())
+}
+
+fn preserve_hashed_assets(previous: &Path, dist: &Path) -> Result<(), String> {
+    if !previous.is_dir() {
+        return Ok(());
+    }
+    for entry in
+        std::fs::read_dir(previous).map_err(|error| format!("read previous bundle: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("read previous asset: {error}"))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if (name.starts_with("core.")
+            || (name.starts_with("revaro_web.") && name != "revaro_web.js"))
+            && entry.path().is_file()
+            && !dist.join(name.as_ref()).exists()
+        {
+            std::fs::copy(entry.path(), dist.join(name.as_ref()))
+                .map_err(|error| format!("preserve previous hashed asset: {error}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -389,6 +483,66 @@ fn run(command: &mut Command, description: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_hashes_match_contents_and_compression_round_trips() {
+        use std::io::Read as _;
+
+        let dist = std::env::temp_dir().join(format!("revaro-bundle-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dist).unwrap();
+        let wasm = b"\0asm\x01\0\0\0";
+        std::fs::write(dist.join("revaro_web_bg.wasm"), wasm).unwrap();
+        std::fs::write(
+            dist.join("revaro_web.js"),
+            "const path = new URL('revaro_web_bg.wasm', import.meta.url);",
+        )
+        .unwrap();
+        std::fs::write(
+            dist.join("index.html"),
+            "<link href='/__REVARO_WASM__'><script src='/__REVARO_MODULE__'></script>",
+        )
+        .unwrap();
+        fingerprint_bundle(&dist).unwrap();
+        let wasm_name = format!("core.{:x}.wasm", Sha256::digest(wasm));
+        let index = std::fs::read_to_string(dist.join("index.html")).unwrap();
+        assert!(index.contains(&wasm_name));
+        assert!(!index.contains("__REVARO_"));
+        let module_name = index
+            .split("<script src='/")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        let module = std::fs::read(dist.join(module_name)).unwrap();
+        assert_eq!(
+            module_name,
+            format!("revaro_web.{:x}.js", Sha256::digest(&module))
+        );
+        assert!(String::from_utf8(module).unwrap().contains(&wasm_name));
+        for encoding in ["br", "gz"] {
+            let compressed = std::fs::read(dist.join(format!("{wasm_name}.{encoding}"))).unwrap();
+            let mut decoded = Vec::new();
+            if encoding == "br" {
+                brotli::Decompressor::new(compressed.as_slice(), 4096)
+                    .read_to_end(&mut decoded)
+                    .unwrap();
+            } else {
+                flate2::read::GzDecoder::new(compressed.as_slice())
+                    .read_to_end(&mut decoded)
+                    .unwrap();
+            }
+            assert_eq!(decoded, wasm);
+        }
+        let next = dist.with_file_name(format!("revaro-bundle-next-{}", std::process::id()));
+        std::fs::create_dir_all(&next).unwrap();
+        preserve_hashed_assets(&dist, &next).unwrap();
+        assert_eq!(std::fs::read(next.join(&wasm_name)).unwrap(), wasm);
+        assert!(next.join(module_name).is_file());
+        assert!(!next.join("index.html").exists());
+        std::fs::remove_dir_all(dist).unwrap();
+        std::fs::remove_dir_all(next).unwrap();
+    }
 
     #[test]
     fn extracts_a_plain_version_string() {

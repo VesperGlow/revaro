@@ -144,6 +144,16 @@ cargo xtask build         # release 服务端 + 前端产物
 `wasm-bindgen` CLI 版本必须与 workspace 固定的版本一致
 （`cargo install wasm-bindgen-cli --version 0.2.128`）。
 
+前端构建生成 `core.<SHA-256>.wasm` 和配套的 `.br` / `.gz` 预压缩文件，
+配套 JS 也使用内容 hash。服务端根据 `Accept-Encoding` 协商压缩格式，
+同等优先级下选择 Brotli，保留 gzip 和原始 WASM；各表示使用独立 ETag，
+返回 `application/wasm` 和 `Vary: Accept-Encoding`。带 hash 的 WASM/JS
+缓存一年并使用 `immutable`，HTML、bootstrap 和传输 Worker 仍每次重新验证。
+HTML 先显示加载界面，浏览器通过 `instantiateStreaming` 边下载边编译，
+同时初始化原有传输层；仅在传输层和样式就绪后挂载应用。
+重建会保留旧 hash 资源，避免正在加载的页面出现版本错配；部署时应保留
+仍可能被旧页面引用的资源。预览也复用同一构建流程，默认使用 release 前端。
+
 浏览器行为测试使用 `tests/e2e/` 中仅包含 Playwright 的 npm 包；它不参与生产
 构建或运行。CI 会对 Rust 镜像执行 `cargo xtask build`，并在真实容器中运行 Rust
 媒体与阅读器 E2E。
