@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Locator } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login, navigate, enterSelectionMode, openTopbarMenu } from './helpers'
+import { openMusicPlayer, login, navigate, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -54,6 +54,7 @@ test('music cover playback stays functional and management uses only the batch t
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
   }
   await row.getByRole('button', { name: `打开 ${prefix}-1.wav`, exact: true }).click()
+  await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
   await page.route(/\/api\/uploads\/[^/]+\/data(?:\/\d+)?$/, route => route.fulfill({ status: 422, json: { error: { message: '上传失败' } } }))
   await page.getByLabel('选择文件上传', { exact: true }).setInputFiles({ name: `${prefix}-float.txt`, mimeType: 'text/plain', buffer: Buffer.from('floating') })
@@ -62,8 +63,12 @@ test('music cover playback stays functional and management uses only the batch t
   for (const width of [1280, 851, 390, 320]) {
     await page.setViewportSize({ width, height: 900 })
     const bounds = (await progress.boundingBox())!
-    const player = (await page.getByLabel('全局音乐播放器', { exact: true }).boundingBox())!
-    expect(bounds.y + bounds.height).toBeLessThanOrEqual(player.y - 12)
+    const player = (await page.getByRole('dialog', { name: '详细音频播放器', exact: true }).boundingBox())!
+    if (width >= 1024) {
+      expect(bounds.x).toBeGreaterThanOrEqual(player.x + player.width + 12)
+    } else {
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(player.y - 12)
+    }
     expect(bounds.x).toBeGreaterThanOrEqual(0)
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)

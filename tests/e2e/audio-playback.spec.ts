@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { mkdirSync, readFileSync } from 'node:fs'
-import { pauseMusic, login, navigate, enterSelectionMode } from './helpers'
+import { openMusicPlayer, pauseMusic, login, navigate, enterSelectionMode } from './helpers'
 
 test.use({ reducedMotion: 'reduce' })
 
@@ -43,6 +43,7 @@ test('audio categories keep files, chapters and resume independent', async ({ pa
   await page.getByRole('button', { name: `打开 ${names[0]}`, exact: true }).click()
   const audio = page.locator('audio').first()
   await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.readyState)).toBeGreaterThanOrEqual(1)
+  await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
   await expect(audio).toHaveAttribute('preload', 'metadata')
   await expect(page.locator('audio').nth(1)).toHaveAttribute('preload', 'metadata')
@@ -75,18 +76,21 @@ test('audio categories keep files, chapters and resume independent', async ({ pa
   if (process.env.E2E_AUDIO_SCREENSHOTS) await page.screenshot({ path: `${process.env.E2E_AUDIO_SCREENSHOTS}/audio-mobile.png` })
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.reload()
+  await openMusicPlayer(page)
   await expect.poll(() => page.locator('audio').first().evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(10, 1)
   await expect(page.locator('.dock-track small')).toContainText('第 1 / 2 轨')
   await expect(page.locator('.audio-subtitles')).toHaveText('Second subtitle')
   await page.getByRole('button', { name: '播放音乐', exact: true }).click()
   await seek.evaluate((input: HTMLInputElement) => { input.value = '29.8'; input.dispatchEvent(new Event('change', { bubbles: true })) })
   await expect(page.locator('.dock-track strong')).toHaveText(names[1].replace('.flac', ''))
+  await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
   await expect(page.locator('.dock-chapter-marker')).toHaveCount(0)
   await expect(page.locator('.audio-subtitles')).toHaveCount(0)
   await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
   await seek.evaluate((input: HTMLInputElement) => { input.value = '7'; input.dispatchEvent(new Event('change', { bubbles: true })) })
   await page.reload()
+  await openMusicPlayer(page)
   await expect(page.locator('.dock-track strong')).toHaveText(names[1].replace('.flac', ''))
   await expect.poll(() => page.locator('audio').first().evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(7, 1)
   await page.getByRole('button', { name: '播放音乐', exact: true }).click()
@@ -133,6 +137,7 @@ test('large native FLAC seeks with partial requests and real external subtitles'
   await page.getByRole('button', { name: `打开 ${file.name}`, exact: true }).click()
   const audio = page.locator('audio').first()
   await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.readyState), { timeout: 45_000 }).toBeGreaterThanOrEqual(1)
+  await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
   const source = await audio.getAttribute('src')

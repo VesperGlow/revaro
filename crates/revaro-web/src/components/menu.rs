@@ -26,11 +26,11 @@ pub enum MenuIcon {
     SystemStatus,
 }
 
-/// A disclosure menu that closes when focus moves outside it.
+/// A disclosure menu with the shared transient-popover lifecycle.
 ///
-/// Native `<details>` preserves keyboard and screen-reader semantics. The
-/// document listener only adds the outside-pointer behaviour that native
-/// disclosure elements do not provide consistently across browsers.
+/// Native `<details>` preserves keyboard and screen-reader semantics.
+/// Shared dismissal adds outside clicks, Escape and mutual exclusion. Mark
+/// actions with `data-close-menu`; sliders and other settings stay open.
 #[component]
 pub fn ActionMenu(
     label: String,
@@ -43,6 +43,9 @@ pub fn ActionMenu(
     #[prop(optional)] text: Option<Signal<String>>,
     #[prop(optional)] usage: Option<Signal<Option<f64>>>,
     #[prop(optional, into)] panel_class: String,
+    /// Identifies the parent layer even when its panel is rendered through a portal.
+    #[prop(optional, into)]
+    scope: String,
     #[prop(optional)] embedded: bool,
     #[prop(optional)] sheet: bool,
     children: Children,
@@ -62,29 +65,31 @@ pub fn ActionMenu(
             let _ = summary.focus();
         }
     });
-    let outside_menu = menu;
-    let mut outside = browser::on_pointerdown(move |event| {
-        let Some(details) = outside_menu.get() else {
-            return;
-        };
-        if !details.open() {
-            return;
-        }
-        let inside = event
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
-            .is_some_and(|target| {
-                details.contains(Some(&target))
-                    || (embedded
-                        && details
-                            .parent_element()
-                            .is_some_and(|parent| parent.contains(Some(&target))))
-            });
-        if !inside {
-            details.set_open(false);
-        }
-    });
-    on_cleanup(move || outside.release());
+    if !embedded {
+        browser::dismiss_popover(
+            Signal::derive(move || {
+                let _ = open.get();
+                menu.get().is_some_and(|node| node.open())
+            }),
+            move || menu.get_untracked().map(|node| node.unchecked_into()),
+            move |target| {
+                menu.get_untracked()
+                    .is_some_and(|node| node.contains(Some(target)))
+                    || panel
+                        .get_untracked()
+                        .is_some_and(|node| node.contains(Some(target)))
+            },
+            Callback::new(move |restore_focus| {
+                if let Some(details) = menu.get_untracked() {
+                    details.set_open(false);
+                    open.set(false);
+                }
+                if restore_focus {
+                    close.run(());
+                }
+            }),
+        );
+    }
 
     if sheet {
         let mut resize = browser::on_resize(move |_| {
@@ -114,6 +119,7 @@ pub fn ActionMenu(
             class:collection-menu=text.is_some()
             class:embedded-menu=embedded
             class:topbar-menu=sheet
+            data-popover-scope=(!scope.is_empty()).then(||scope.clone())
             name=embedded.then_some("topbar-actions")
             on:focusout=move |event| {
                 if let Some(details) = menu.get() {
@@ -121,6 +127,7 @@ pub fn ActionMenu(
                         .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
                         .is_some_and(|target| {
                             details.contains(Some(&target))
+                                || panel.get_untracked().is_some_and(|panel|panel.contains(Some(&target)))
                                 || (embedded && details.parent_element().is_some_and(|parent| parent.contains(Some(&target))))
                         });
                     // A revoke can remove the focused row. Keep the disclosure open
@@ -129,9 +136,9 @@ pub fn ActionMenu(
                 }
             }
             on:toggle=move |_| {
-                if let Some(position) = position { position.run(()); }
                 if let Some(details) = menu_for_escape.get() {
                     open.set(details.open());
+                    if let Some(position) = position { position.run(()); }
                     if let Some(callback) = on_toggle.as_ref() { callback.run(details.open()); }
                     if sheet && !details.open()
                         && let Ok(sections) = details.query_selector_all("details[open]")
@@ -209,6 +216,9 @@ pub fn ActionMenu(
             {sheet.then(|| view! { <div class="topbar-menu-backdrop" aria-hidden="true" on:click=move |_| close.run(())></div> })}
             <div
                 node_ref=panel class=format!("action-menu-panel {panel_class}")
+                data-popover-scope=(!scope.is_empty()).then_some(scope.clone())
+                data-popover-open=move ||open.get().to_string()
+                hidden=move ||!open.get()
                 on:click=move |event: MouseEvent| {
                     let Some(target) = event
                         .target()

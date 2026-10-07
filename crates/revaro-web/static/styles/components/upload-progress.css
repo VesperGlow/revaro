@@ -22,7 +22,12 @@
 .upload-progress-actions>button:hover{background:var(--surface-hover);color:var(--accent)}
 .upload-progress-actions>button:focus-visible{outline:0;box-shadow:var(--focus-ring)}
 .upload-progress-actions svg{width:15px;height:15px;stroke-width:1.7}
-.content-library.has-music .upload-progress{--upload-bottom:calc(var(--music-dock-height) + var(--music-dock-bottom) + var(--upload-edge))}
+/* Desktop floats fit side by side; narrow screens keep uploads above the player. */
+@media(max-width:1023px){
+ .content-library.has-music .upload-progress{--upload-bottom:calc(var(--music-float-bottom) + var(--music-orb-size) + var(--upload-edge))}
+ .content-library:has(.music-dock.is-expanded) .upload-progress{top:calc(90px + env(safe-area-inset-top,0px));bottom:auto;max-height:min(360px,calc(50dvh - 102px - env(safe-area-inset-top,0px)))}
+ .content-library:has(.upload-progress) .music-dock.is-expanded .dock-body{max-height:calc(50dvh - var(--music-float-bottom) - 180px)}
+}
 @media(max-width:850px){
  .upload-progress{--upload-edge:12px;--upload-bottom:calc(58px + env(safe-area-inset-bottom,0px) + var(--upload-edge))}
  .upload-progress-actions>button{min-width:32px;min-height:32px}

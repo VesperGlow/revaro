@@ -31,36 +31,25 @@ pub fn FileBrowserHeader(
     let sort_panel = NodeRef::<leptos::html::Div>::new();
     browser::anchor_popover(sort_toggle, sort_panel);
 
-    let mut outside = browser::on_pointerdown(move |event| {
-        let target = event
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::Node>().ok());
-        let Some(target) = target else {
-            return;
-        };
-        if sort_open.get_untracked()
-            && !sort_container
-                .get()
-                .is_some_and(|container| container.contains(Some(&target)))
-        {
+    browser::dismiss_popover(
+        sort_open.into(),
+        move || {
+            sort_container
+                .get_untracked()
+                .map(|node| node.unchecked_into())
+        },
+        move |target| {
+            sort_container
+                .get_untracked()
+                .is_some_and(|node| node.contains(Some(target)))
+        },
+        Callback::new(move |restore_focus| {
             sort_open.set(false);
-        }
-    });
-    let mut escape = browser::on_keydown(move |event| {
-        if event.key() != "Escape" {
-            return;
-        }
-        if sort_open.get_untracked() {
-            sort_open.set(false);
-            if let Some(button) = sort_toggle.get() {
+            if restore_focus && let Some(button) = sort_toggle.get() {
                 let _ = button.focus();
             }
-        }
-    });
-    on_cleanup(move || {
-        outside.release();
-        escape.release();
-    });
+        }),
+    );
 
     let path_items = Signal::derive_local(move || {
         let path = breadcrumbs.get();

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { pauseMusic, login, enterSelectionMode, openTopbarMenu } from './helpers'
+import { openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://localhost:18083').replace(/\/$/, '')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -33,7 +33,9 @@ test('content libraries share real uploads, keep music alive during reading and 
   const nav = page.getByRole('navigation', { name: '主导航', exact: true })
   await nav.getByRole('link', { name: '音乐', exact: true }).click()
   await page.getByRole('button', { name: `打开 ${song}`, exact: true }).click()
+  await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '收起播放器', exact: true }).click()
   await page.evaluate(() => { (window as any).__audio = document.querySelector('audio') })
   await nav.getByRole('link', { name: '书籍', exact: true }).click()
   await page.getByRole('button', { name: `打开 ${book}`, exact: true }).click()
@@ -55,7 +57,9 @@ test('content libraries share real uploads, keep music alive during reading and 
   const deepLink = page.url()
   await page.locator('#reader-back').click()
   await expect(page.getByRole('navigation', { name: '主导航', exact: true }).locator('[aria-current=page]')).toHaveAttribute('aria-label', '书籍')
+  await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '收起播放器', exact: true }).click()
   await nav.getByRole('link', { name: '图片', exact: true }).click()
   await page.getByRole('button', { name: `打开 ${photo}`, exact: true }).click()
   await expect(page.locator('.preview-image')).toBeVisible()

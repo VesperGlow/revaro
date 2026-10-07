@@ -16,6 +16,40 @@ pub fn subtitle_text(cues: &[VttCue], time: f64) -> String {
         .join("\n")
 }
 
+/// Nearby lyric lines follow seeks and preserve blank gaps and overlapping cues.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SubtitleContext {
+    pub previous: String,
+    pub current: String,
+    pub next: String,
+}
+
+#[must_use]
+pub fn subtitle_context(cues: &[VttCue], time: f64) -> SubtitleContext {
+    if !time.is_finite() {
+        return SubtitleContext::default();
+    }
+    let active = active_subtitle_indices(cues, time);
+    let cursor = cues.partition_point(|cue| cue.start <= time);
+    let previous = active.first().copied().unwrap_or(cursor).checked_sub(1);
+    let next = active.last().map_or(cursor, |index| index + 1);
+    SubtitleContext {
+        previous: previous
+            .and_then(|index| cues.get(index))
+            .map(|cue| cue.text.clone())
+            .unwrap_or_default(),
+        current: active
+            .into_iter()
+            .map(|index| cues[index].text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        next: cues
+            .get(next)
+            .map(|cue| cue.text.clone())
+            .unwrap_or_default(),
+    }
+}
+
 /// The transcript can highlight multiple speakers while leaving pauses unlit.
 #[must_use]
 pub fn active_subtitle_indices(cues: &[VttCue], time: f64) -> Vec<usize> {
@@ -149,6 +183,33 @@ mod tests {
             active_chapter_index(&[chapter(0.0, 1.0), chapter(2.0, 3.0)], 4.0),
             1
         );
+    }
+
+    #[test]
+    fn lyric_neighbors_preserve_gaps_overlap_and_seek_direction() {
+        let cues = revaro_core::media::parse_webvtt(
+            "WEBVTT\n\n00:01.000 --> 00:03.000\nOne\n\n00:02.000 --> 00:04.000\nTwo\n\n00:06.000 --> 00:07.000\nThree\n",
+        );
+        let context = |previous: &str, current: &str, next: &str| SubtitleContext {
+            previous: previous.to_owned(),
+            current: current.to_owned(),
+            next: next.to_owned(),
+        };
+        assert_eq!(subtitle_context(&cues, 0.0), context("", "", "One"));
+        assert_eq!(
+            subtitle_context(&cues, 2.5),
+            context("", "One\nTwo", "Three")
+        );
+        assert_eq!(subtitle_context(&cues, 3.0), context("One", "Two", "Three"));
+        assert_eq!(subtitle_context(&cues, 5.0), context("Two", "", "Three"));
+        assert_eq!(subtitle_context(&cues, 6.5), context("Two", "Three", ""));
+        assert_eq!(subtitle_context(&cues, 1.5), context("", "One", "Two"));
+        assert_eq!(subtitle_context(&cues, 8.0), context("Three", "", ""));
+        assert_eq!(
+            subtitle_context(&cues, f64::NAN),
+            SubtitleContext::default()
+        );
+        assert_eq!(subtitle_context(&[], 5.0), SubtitleContext::default());
     }
 
     #[test]

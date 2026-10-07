@@ -28,20 +28,24 @@ use super::playback::{
     throttle,
 };
 
-/// Shared plain-text subtitle overlay for the existing preview and music dock.
+/// A small lyric window leaves the detailed player's transport controls in place.
 #[component]
-pub(super) fn AudioSubtitles(
+pub(super) fn AudioLyricPreview(
     cues: Signal<Vec<revaro_core::media::VttCue>>,
     current_time: Signal<f64>,
 ) -> impl IntoView {
     let cues = Memo::new(move |_| cues.get());
-    let text = Memo::new(move |_| {
-        cues.with(|cues| crate::logic::media::subtitle_text(cues, current_time.get()))
+    let lines = Memo::new(move |_| {
+        cues.with(|cues| crate::logic::media::subtitle_context(cues, current_time.get()))
     });
     view! {
-        <Show when=move ||!text.get().is_empty() fallback=|| ()>
-            <div class="audio-subtitles" aria-label="音频字幕">{move ||text.get()}</div>
-        </Show>
+        <section class="dock-lyrics" aria-label="歌词与字幕">
+            <Show when=move ||!cues.with(Vec::is_empty) fallback=||view! {<p class="dock-lyrics-empty">"暂无歌词/字幕"</p>}>
+                <p class="dock-lyric-neighbor" aria-hidden="true">{move ||lines.with(|lines|lines.previous.clone())}</p>
+                <div class="audio-subtitles" aria-label="音频字幕">{move ||lines.with(|lines|lines.current.clone())}</div>
+                <p class="dock-lyric-neighbor" aria-hidden="true">{move ||lines.with(|lines|lines.next.clone())}</p>
+            </Show>
+        </section>
     }
 }
 

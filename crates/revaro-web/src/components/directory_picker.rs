@@ -215,36 +215,23 @@ pub fn DirectoryPicker(
         })
     };
 
-    let mut outside_listener = {
-        let root = root;
-        let panel = panel;
-        let close_flyout = close_flyout.clone();
-        browser::on_pointerdown(move |event| {
-            if !expanded.get_untracked() {
-                return;
+    browser::dismiss_popover(
+        expanded.into(),
+        move || root.get_untracked().map(|node| node.unchecked_into()),
+        move |target| {
+            root.get_untracked()
+                .is_some_and(|node| node.contains(Some(target)))
+                || panel
+                    .get_untracked()
+                    .is_some_and(|node| node.contains(Some(target)))
+        },
+        Callback::new(move |restore_focus| {
+            close_flyout.run(());
+            if restore_focus && let Some(button) = trigger.get() {
+                let _ = button.focus();
             }
-            let inside = event
-                .target()
-                .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
-                .map(|target| {
-                    root.get().is_some_and(|root| root.contains(Some(&target)))
-                        || panel
-                            .get()
-                            .is_some_and(|panel| panel.contains(Some(&target)))
-                })
-                .unwrap_or(false);
-            if !inside {
-                close_flyout.run(());
-            }
-        })
-    };
-    let close_flyout_for_escape = close_flyout.clone();
-    let mut escape_listener = browser::on_document_keydown_capture(move |event| {
-        if event.key() == "Escape" && expanded.get_untracked() {
-            event.stop_propagation();
-            close_flyout_for_escape.run(());
-        }
-    });
+        }),
+    );
     let mut resize_listener = {
         let update_position = update_position;
         browser::on_resize(move |_| {
@@ -269,8 +256,6 @@ pub fn DirectoryPicker(
     });
     let flyout_timer_for_cleanup = flyout_timer;
     on_cleanup(move || {
-        outside_listener.release();
-        escape_listener.release();
         resize_listener.release();
         scroll_listener.release();
         clear_timeout(flyout_timer_for_cleanup);

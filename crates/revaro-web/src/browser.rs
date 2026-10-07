@@ -78,14 +78,6 @@ pub fn on_document_keydown_capture(
     }))))
 }
 
-/// Listen for a pointer press anywhere in the window.
-pub fn on_pointerdown(callback: impl Fn(web_sys::PointerEvent) + 'static) -> OwnedListener {
-    OwnedListener(Some(ListenerHandle::Window(window_event_listener(
-        ev::pointerdown,
-        callback,
-    ))))
-}
-
 /// Dismiss layout-changing controls after the target has received its click.
 /// Closing them on pointerdown can move navigation before pointerup is delivered.
 pub fn on_click(callback: impl Fn(web_sys::MouseEvent) + 'static) -> OwnedListener {
@@ -93,6 +85,117 @@ pub fn on_click(callback: impl Fn(web_sys::MouseEvent) + 'static) -> OwnedListen
         ev::click,
         callback,
     ))))
+}
+
+fn on_document_event(
+    kind: &'static str,
+    capture: bool,
+    callback: impl Fn(web_sys::Event) + 'static,
+) -> OwnedListener {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return OwnedListener(None);
+    };
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(callback).into_js_value();
+    let _ =
+        document.add_event_listener_with_callback_and_bool(kind, listener.unchecked_ref(), capture);
+    let cleanup = leptos::__reexports::send_wrapper::SendWrapper::new((document, listener));
+    OwnedListener(Some(ListenerHandle::Raw(Box::new(move || {
+        let (document, listener) = cleanup.take();
+        let _ = document.remove_event_listener_with_callback_and_bool(
+            kind,
+            listener.unchecked_ref(),
+            capture,
+        );
+    }))))
+}
+
+/// Parent layers run before document-level child menus, regardless of mount order.
+pub fn on_window_capture(
+    kind: &'static str,
+    callback: impl Fn(web_sys::Event) + 'static,
+) -> OwnedListener {
+    let Some(window) = web_sys::window() else {
+        return OwnedListener(None);
+    };
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(callback).into_js_value();
+    let _ = window.add_event_listener_with_callback_and_bool(kind, listener.unchecked_ref(), true);
+    let cleanup = leptos::__reexports::send_wrapper::SendWrapper::new((window, listener));
+    OwnedListener(Some(ListenerHandle::Raw(Box::new(move || {
+        let (window, listener) = cleanup.take();
+        let _ = window.remove_event_listener_with_callback_and_bool(
+            kind,
+            listener.unchecked_ref(),
+            true,
+        );
+    }))))
+}
+
+/// Composed paths include shadow roots; registered portal panels need no DOM ancestry.
+pub fn event_inside(event: &web_sys::Event, contains: impl Fn(&web_sys::Node) -> bool) -> bool {
+    event
+        .composed_path()
+        .iter()
+        .filter_map(|target| target.dyn_into::<web_sys::Node>().ok())
+        .any(|target| contains(&target))
+        || event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+            .is_some_and(|target| contains(&target))
+}
+
+/// Transient menus share outside dismissal, Escape and one active floating surface.
+/// Nested sections belong to their containing surface; ordinary input stays open.
+/// `close(true)` restores keyboard focus, while pointer dismissal preserves its target.
+pub fn dismiss_popover(
+    open: Signal<bool>,
+    owner: impl Fn() -> Option<web_sys::Element> + Copy + Send + Sync + 'static,
+    contains: impl Fn(&web_sys::Node) -> bool + 'static,
+    close: Callback<bool>,
+) {
+    // Click capture sees stopped events after their pointer target is settled.
+    let mut outside = on_document_event("click", true, move |event| {
+        if open.get_untracked() && !event_inside(&event, &contains) {
+            close.run(false);
+        }
+    });
+    let mut escape = on_document_keydown_capture(move |event| {
+        if open.get_untracked() && event.key() == "Escape" && !event.default_prevented() {
+            event.prevent_default();
+            event.stop_propagation();
+            close.run(true);
+        }
+    });
+    let mut exclusive = on_document_event("revaro:popover-open", false, move |event| {
+        if open.get_untracked()
+            && let Some(current) = owner()
+            && let Some(other) = event
+                .dyn_into::<web_sys::CustomEvent>()
+                .ok()
+                .and_then(|event| event.detail().dyn_into::<web_sys::Element>().ok())
+            && !current.contains(Some(&other))
+        {
+            close.run(false);
+        }
+    });
+    Effect::new(move |_| {
+        if open.get()
+            && let Some(owner) = owner()
+            && let Some(document) = web_sys::window().and_then(|window| window.document())
+        {
+            let options = web_sys::CustomEventInit::new();
+            options.set_detail(&owner);
+            if let Ok(event) =
+                web_sys::CustomEvent::new_with_event_init_dict("revaro:popover-open", &options)
+            {
+                let _ = document.dispatch_event(&event);
+            }
+        }
+    });
+    on_cleanup(move || {
+        outside.release();
+        escape.release();
+        exclusive.release();
+    });
 }
 
 /// Listen for viewport changes while a transient browser view is mounted.

@@ -1,6 +1,6 @@
 import { expect, test, type Locator } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
-import { pauseMusic, login, navigate, uploadFixture } from './helpers'
+import { openMusicPlayer, pauseMusic, login, navigate, uploadFixture } from './helpers'
 
 function wav() {
   const data = Buffer.alloc(44 + 16000 * 30)
@@ -42,6 +42,7 @@ for (const device of [{ name: 'desktop', width: 1280, hasTouch: false }, { name:
         await page.getByLabel('选择集合', { exact: true }).click()
         await page.getByRole('button', { name: `${prefix} · 3`, exact: true }).click()
         await page.getByRole('button', { name: `打开 ${files[0].name}`, exact: true }).click()
+        await openMusicPlayer(page)
         await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
         const audio = page.locator('audio').first()
         const audioCount = await page.locator('audio').count()
@@ -49,7 +50,7 @@ for (const device of [{ name: 'desktop', width: 1280, hasTouch: false }, { name:
         await page.getByLabel('音乐播放进度', { exact: true }).evaluate((input: HTMLInputElement) => { input.value = '8'; input.dispatchEvent(new Event('change', { bubbles: true })) })
         await expect(page.getByRole('button', { name: '随机播放', exact: true })).toHaveCount(0)
         await expect(page.getByRole('button', { name: '循环模式', exact: true })).toHaveCount(0)
-        if (!device.hasTouch) await expect(page.locator('.music-dock').getByRole('combobox', { name: '播放模式', exact: true })).toHaveValue('sequential')
+        await expect(page.locator('.music-dock .playback-mode')).toHaveAttribute('data-playback-mode', 'sequential')
 
         const verifyClose = async (panel: Locator) => {
           const close = panel.getByRole('button', { name: '关闭章节', exact: true })
@@ -100,14 +101,15 @@ for (const device of [{ name: 'desktop', width: 1280, hasTouch: false }, { name:
         await player.getByRole('button', { name: '暂停', exact: true }).click()
         await mode.selectOption('shuffle')
         await page.getByRole('button', { name: '收起音频播放器', exact: true }).click()
-        if (!device.hasTouch) await expect(page.locator('.music-dock').getByRole('combobox', { name: '播放模式', exact: true })).toHaveValue('shuffle')
+        await expect(page.locator('.music-dock .playback-mode')).toHaveAttribute('data-playback-mode', 'shuffle')
 
         // A chaptered file in a one-track collection is still a single audio.
         await page.getByLabel('选择集合', { exact: true }).click()
         await page.getByRole('button', { name: `${prefix}-single · 1`, exact: true }).click()
         await page.getByRole('button', { name: `打开 ${files[0].name}`, exact: true }).click()
+        await openMusicPlayer(page)
         await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
-        if (!device.hasTouch) await expect(page.locator('.music-dock').getByRole('combobox', { name: '播放模式', exact: true })).toHaveValue('sequential')
+        await expect(page.locator('.music-dock .playback-mode')).toHaveAttribute('data-playback-mode', 'sequential')
         await page.getByRole('button', { name: '打开音频播放器', exact: true }).click()
         await expect(mode.locator('option')).toHaveText(['播放一次', '单曲循环'])
         await expect(mode).toHaveValue('sequential')

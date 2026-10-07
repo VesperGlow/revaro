@@ -321,19 +321,29 @@ pub fn ReaderView(
         })
     };
 
-    let mut outside_font = browser::on_click(move |event| {
-        if !font_open.get_untracked() {
-            return;
-        }
-        let inside = event
-            .target()
-            .and_then(|target| target.dyn_into::<Element>().ok())
-            .and_then(|target| target.closest("#font-popover, #font-button").ok().flatten())
-            .is_some();
-        if !inside {
+    browser::dismiss_popover(
+        font_open.into(),
+        || {
+            web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id("font-popover"))
+        },
+        |target| {
+            target.dyn_ref::<Element>().is_some_and(|target| {
+                target
+                    .closest("#font-popover, #font-button")
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+        },
+        Callback::new(move |restore_focus| {
             font_open.set(false);
-        }
-    });
+            if restore_focus {
+                focus_element_by_id("font-button");
+            }
+        }),
+    );
     let lifecycle_listeners = install_progress_listeners(runtime.clone(), file_id.clone());
 
     let open_runtime = runtime.clone();
@@ -393,7 +403,6 @@ pub fn ReaderView(
         clear_runtime_timers(&mut runtime);
         drop(runtime);
         key_listener.release();
-        outside_font.release();
         resize_listener.release();
         drop(cleanup_lifecycle);
         if let Some(body) = body {

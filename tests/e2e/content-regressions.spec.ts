@@ -1,6 +1,6 @@
 import { expect, test as base, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { pauseMusic, login, navigate, uploadFixture as upload } from './helpers'
+import { openMusicPlayer, selectMusicMode, pauseMusic, login, navigate, uploadFixture as upload } from './helpers'
 
 const test = base.extend<{ contentRoot: { id: string, prefix: string } }>({
   contentRoot: async ({ page }, use) => {
@@ -75,17 +75,19 @@ test('music restores saved progress after delayed metadata and reload without er
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
     await expect.poll(() => page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(60)
     expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeLessThan(65)
+    await openMusicPlayer(page)
     await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
     await expect.poll(async () => (await (await page.request.get(`/api/files/${song.id}/media/progress`)).json()).position).toBeGreaterThanOrEqual(60)
     await pauseMusic(page)
     await page.reload()
     await page.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
+    await openMusicPlayer(page)
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
     expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(60)
     expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeLessThan(65)
     expect(progressWrites.every(position => position >= 60)).toBeTruthy()
     // Single-track repeat must restart instead of restoring its end position.
-    await page.getByRole('combobox', { name: '播放模式', exact: true }).selectOption('repeat-one')
+    await selectMusicMode(page, 'repeat-one')
     const restarted = page.waitForEvent('request', { predicate: request => request.url().endsWith(`/api/files/${song.id}/preview`) })
     await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => { audio.currentTime = audio.duration - 0.1 })
     await restarted
@@ -96,7 +98,7 @@ test('music restores saved progress after delayed metadata and reload without er
   } finally { metadata.resolve() }
 })
 
-test('late progress responses cannot seek another song and a hidden dock keeps pending playback', async ({ page, contentRoot }) => {
+test('late progress responses cannot seek another song or restart an ended session', async ({ page, contentRoot }) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   const first = await upload(page, contentRoot.id, `${contentRoot.prefix}-a.wav`, 'audio/wav', wav())
@@ -131,13 +133,15 @@ test('late progress responses cannot seek another song and a hidden dock keeps p
     gate = deferred(); intercepted = deferred()
     await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
     await intercepted.promise
-    await page.getByRole('button', { name: '收起播放条', exact: true }).click()
+    await openMusicPlayer(page)
+    await page.locator('.music-dock').getByLabel('播放器更多操作', { exact: true }).click()
+    await page.locator('.music-dock').getByRole('button', { name: '结束播放', exact: true }).click()
     gate.resolve()
-    await expect(page.locator('.music-dock')).toBeHidden()
-    await expect(page.getByRole('button', { name: '展开播放条', exact: true })).toBeVisible()
-    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
-    await expect.poll(() => page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeGreaterThanOrEqual(60)
-    expect((await (await page.request.get(`/api/files/${first.id}/media/progress`)).json()).position).toBeGreaterThanOrEqual(60)
+    await page.waitForTimeout(250)
+    await expect(page.locator('.music-dock, .music-orb')).toHaveCount(0)
+    await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', true)
+    await expect(page.locator('audio:not([aria-hidden="true"])')).not.toHaveAttribute('src')
+    expect((await (await page.request.get(`/api/files/${first.id}/media/progress`)).json()).position).toBe(60)
     expect(errors).toEqual([])
   } finally { gate.resolve() }
 })
@@ -322,6 +326,7 @@ test('home music always queues its visible songs after refresh and a filtered li
     expect(visibleNames).toContain(second.name)
     await page.getByRole('button', { name: `打开 ${visibleNames[0]}`, exact: true }).click()
     await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
+    await openMusicPlayer(page)
     // The restored player omits the queue menu. Verify its actual playback
     // order and boundary through the dock's next-track control instead.
     const title = page.locator('.dock-track strong')
@@ -331,7 +336,7 @@ test('home music always queues its visible songs after refresh and a filtered li
       await next.click()
     }
     await expect(title).toHaveText(visibleNames.at(-1)!.replace(/\.[^.]+$/, ''))
-    await expect(page.locator('audio[aria-hidden="true"]')).toHaveAttribute('src', '')
+    await expect(page.locator('audio[aria-hidden="true"]')).not.toHaveAttribute('src')
     await pauseMusic(page)
   }
 })
@@ -379,6 +384,7 @@ test('video playback pauses background music from home, video library and files'
     await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', true)
     await page.keyboard.press('Escape')
     await expect(page.locator('video')).toHaveCount(0)
+    await openMusicPlayer(page)
     await page.getByRole('button', { name: '播放音乐', exact: true }).click()
     await expect(page.locator('audio:not([aria-hidden="true"])')).toHaveJSProperty('paused', false)
   } finally {

@@ -47,6 +47,8 @@ web-sys = { workspace = true, features = [
     "DomRect",
     "DomRectList",
     "CssStyleDeclaration",
+    "CustomEvent",
+    "CustomEventInit",
     "AbortController",
     "AbortSignal",
     "Blob",

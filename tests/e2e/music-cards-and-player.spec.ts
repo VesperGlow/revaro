@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { pauseMusic, login, navigate, enterSelectionMode, uploadFixture } from './helpers'
+import { openMusicPlayer, pauseMusic, login, navigate, enterSelectionMode, uploadFixture } from './helpers'
 import { mkdirSync, readFileSync } from 'node:fs'
 
 const nativeFlac = readFileSync(new URL('../../crates/revaro-media/tests/fixtures/preview-cover.flac', import.meta.url))
@@ -68,45 +68,29 @@ for (const device of [
         expect(Math.abs(bounds.width - bounds.height)).toBeLessThanOrEqual(1)
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(device.width)
         await cards.first().getByRole('button', { name: `打开 ${files[0].name}`, exact: true }).click()
+        await openMusicPlayer(page)
         await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
         await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
-        const dock = page.getByLabel('全局音乐播放器', { exact: true })
+        const dock = page.getByRole('dialog', { name: '详细音频播放器', exact: true })
         const dockBounds = (await dock.boundingBox())!
-        const timelineBounds = (await dock.locator('.dock-timeline-track').boundingBox())!
-        await expect(dock.locator('.dock-progress')).toHaveCSS('position', 'absolute')
-        expect(Math.abs(timelineBounds.y + timelineBounds.height / 2 - dockBounds.y)).toBeLessThanOrEqual(1)
-        expect(timelineBounds.x).toBeGreaterThanOrEqual(16)
-        expect(timelineBounds.x).toBeLessThanOrEqual(32)
-        expect(device.width - timelineBounds.x - timelineBounds.width).toBeGreaterThanOrEqual(16)
-        expect(device.width - timelineBounds.x - timelineBounds.width).toBeLessThanOrEqual(32)
-        await expect(dock.locator('.dock-progress > span')).toHaveCount(2)
-        for (const time of await dock.locator('.dock-progress > span').all()) {
-          await expect(time).toHaveCSS('position', 'absolute')
-          await expect(time).toHaveCSS('font-size', '10px')
-        }
-        const row = await Promise.all(['.dock-track', '.dock-controls', '.dock-options'].map(selector => dock.locator(selector).boundingBox()))
-        for (const bounds of row) expect(Math.abs(bounds!.y + bounds!.height / 2 - dockBounds.y - dockBounds.height / 2)).toBeLessThanOrEqual(1)
-        if (device.width >= 1024) {
-          expect((await dock.boundingBox())!.height).toBe(104)
-          expect((await dock.locator('.dock-play').boundingBox())!.width).toBe(52)
-          expect((await dock.getByLabel('音乐播放进度', { exact: true }).boundingBox())!.height).toBe(44)
-          const sections = await Promise.all(['.dock-track', '.dock-controls', '.dock-options', '.dock-collapse'].map(selector => dock.locator(selector).boundingBox()))
-          for (let index = 1; index < sections.length; index++) expect(sections[index]!.x).toBeGreaterThanOrEqual(sections[index - 1]!.x + sections[index - 1]!.width)
-          expect(sections.at(-1)!.x + sections.at(-1)!.width).toBeLessThanOrEqual(device.width)
-          const rowWidth = sections.at(-1)!.x + sections.at(-1)!.width - sections[0]!.x
-          expect(rowWidth).toBeLessThanOrEqual(920)
-          expect(Math.abs(sections[0]!.x + rowWidth / 2 - device.width / 2)).toBeLessThanOrEqual(1)
-        } else {
-          expect((await dock.locator('.dock-play').boundingBox())!.width).toBeGreaterThanOrEqual(44)
-          expect((await dock.getByRole('button', { name: '音轨章节', exact: true }).boundingBox())!.height).toBeGreaterThanOrEqual(44)
-        }
+        expect(dockBounds.width).toBe(device.width >= 1024 ? 400 : device.width - 24)
+        expect(dockBounds.height).toBeLessThan(device.height - 90)
+        const progressBounds = (await dock.getByLabel('音乐播放进度', { exact: true }).boundingBox())!
+        expect(progressBounds.height).toBe(44)
+        expect(progressBounds.width).toBeGreaterThan(240)
+        await expect(dock.getByRole('button', { name: '上一首', exact: true })).toBeVisible()
+        await expect(dock.getByRole('button', { name: '下一首', exact: true })).toBeVisible()
+        await expect(dock.getByLabel('播放模式', { exact: true })).toBeVisible()
+        await expect(dock.getByLabel('音乐音量设置', { exact: true })).toBeVisible()
+        await expect(dock.getByLabel('音乐音量', { exact: true })).toBeHidden()
+        expect((await dock.locator('.dock-play').boundingBox())!.width).toBeGreaterThanOrEqual(52)
         const audio = page.locator('audio').first()
         const audioCount = await page.locator('audio').count()
         const source = await audio.getAttribute('src')
         const dockSeek = page.getByLabel('音乐播放进度', { exact: true })
         await dockSeek.click({ position: { x: (await dockSeek.boundingBox())!.width / 2, y: 4 } })
         await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => Math.abs(a.currentTime - a.duration / 2))).toBeLessThan(1)
-        // Dragging the boundary slider still commits a seek through its native input.
+        // Dragging the panel slider still commits a seek through its native input.
         const seekBounds = (await dockSeek.boundingBox())!
         await dockSeek.click({ position: { x: seekBounds.width / 4, y: seekBounds.height / 2 } })
         await page.mouse.move(seekBounds.x + seekBounds.width / 4, seekBounds.y + seekBounds.height / 2)
@@ -222,9 +206,11 @@ for (const device of [
         await expect(page.locator('audio')).toHaveCount(audioCount)
         await page.getByRole('button', { name: '收起音频播放器', exact: true }).click()
         await expect(player).toHaveCount(0)
+        await openMusicPlayer(page)
         await expect(page.getByRole('button', { name: '播放音乐', exact: true })).toBeVisible()
         await expect(audio).toHaveAttribute('src', source!)
         await cards.last().getByRole('button', { name: `打开 ${files[5].name}`, exact: true }).click()
+        await openMusicPlayer(page)
         await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
         await expect(page.locator('.dock-track small')).toContainText('第 6 / 6 轨')
         await expect(audio).toHaveAttribute('src', `/api/files/${files[5].id}/preview`)

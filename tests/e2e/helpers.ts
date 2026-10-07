@@ -49,11 +49,30 @@ export async function login(page: Page) {
   await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true })).toBeVisible()
 }
 
-// Pause through the remaining playback controls, including a collapsed desktop dock.
+export async function openMusicPlayer(page: Page) {
+  const panel = page.getByRole('dialog', { name: '详细音频播放器', exact: true })
+  if (await panel.isVisible()) return
+  const expand = page.getByRole('button', { name: '展开播放器', exact: true })
+  await expect(expand).toBeVisible()
+  await expand.click()
+  await expect(panel).toBeVisible()
+}
+
+export async function selectMusicMode(page: Page, value: string) {
+  await openMusicPlayer(page)
+  const mode = page.locator('.music-dock .playback-mode')
+  await mode.getByLabel('播放模式', { exact: true }).click()
+  const labels: Record<string, RegExp> = {
+    sequential: /^(顺序播放|播放一次)$/, shuffle: /^随机播放$/, 'repeat-all': /^列表循环$/, 'repeat-one': /^单曲循环$/,
+  }
+  await mode.getByRole('button', { name: labels[value] }).click()
+  await expect(mode).toHaveAttribute('data-playback-mode', value)
+}
+
+// The player starts as an orb; pausing remains an explicit playback action.
 export async function pauseMusic(page: Page) {
-  const expand = page.getByRole('button', { name: '展开播放条', exact: true })
-  if (await expand.isVisible()) await expand.click()
-  const pause = page.getByRole('button', { name: '暂停音乐', exact: true })
+  if (await page.getByRole('button', { name: '展开播放器', exact: true }).isVisible()) await openMusicPlayer(page)
+  const pause = page.locator('.music-dock').getByRole('button', { name: '暂停音乐', exact: true })
   if (await pause.isVisible()) await pause.click()
 }
 

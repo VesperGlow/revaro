@@ -136,7 +136,8 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   await page.locator('.file-card').filter({ hasText: audio }).click()
   await page.locator('audio').first().waitFor({ state: 'attached' })
   await page.waitForFunction(() => document.querySelector('audio')?.readyState >= 1)
-  await expect(page.getByRole('complementary', { name: '全局音乐播放器' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '展开播放器', exact: true })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '详细音频播放器', exact: true })).toBeHidden()
   await pauseMusic(page)
 
   await page.locator('.file-card').filter({ hasText: video }).click()

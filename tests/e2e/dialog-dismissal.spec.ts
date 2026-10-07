@@ -69,6 +69,43 @@ for (const mobile of [false, true]) {
       await expect(account).not.toHaveCSS('box-shadow', 'none')
     })
 
+    test('popover menus dismiss outside and on Escape, preserve internal clicks and exclude other menus', async ({ page }) => {
+      const sort = page.getByRole('button', { name: '选择排序字段', exact: true })
+      const fields = page.getByRole('group', { name: '排序字段', exact: true })
+      await sort.click()
+      await expect(fields).toBeVisible()
+      if (mobile) await fields.tap({ position: { x: 8, y: 3 } })
+      else await fields.click({ position: { x: 8, y: 3 } })
+      await expect(fields).toBeVisible()
+      // No pointer or focus change: native disclosure opening must still close sorting.
+      const menu = page.locator('.topbar .topbar-menu')
+      await menu.evaluate((details: HTMLDetailsElement) => { details.open = true })
+      await expect(menu).toHaveAttribute('open', '')
+      await expect(fields).toBeHidden()
+      await expect(page.locator('.action-menu[open]:not(.embedded-menu)')).toHaveCount(1)
+      await page.keyboard.press('Escape')
+      await expect(menu).not.toHaveAttribute('open', '')
+      await expect(menu.locator(':scope > summary')).toBeFocused()
+
+      await sort.click()
+      await fields.getByRole('button', { name: '大小', exact: true }).click()
+      await expect(fields).toBeHidden()
+      await expect(sort).toHaveText('大小')
+      await sort.click()
+      await page.locator('.folder-meta').click()
+      await expect(fields).toBeHidden()
+
+      await openTopbarMenu(page)
+      await menu.locator('.topbar-menu-heading h2').click()
+      await expect(menu).toHaveAttribute('open', '')
+      await page.getByLabel('新建', { exact: true }).click()
+      await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
+      await expect(menu).not.toHaveAttribute('open', '')
+      await expect(page.locator('.app-dialog')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.app-dialog')).toBeHidden()
+    })
+
     test('creation and every collection dialog close only on their backdrop', async ({ page }) => {
       await openTopbarMenu(page)
       await page.getByLabel('新建', { exact: true }).click()

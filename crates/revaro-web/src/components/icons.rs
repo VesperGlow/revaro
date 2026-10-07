@@ -101,26 +101,6 @@ pub fn chevron_right() -> impl IntoView {
     }
 }
 
-/// Lucide `chevrons-left` — collapse the desktop music dock.
-pub fn chevrons_left() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m11 17-5-5 5-5m7 10-5-5 5-5"></path>
-        </svg>
-    }
-}
-
-/// Lucide `chevrons-right` — expand the desktop music dock.
-pub fn chevrons_right() -> impl IntoView {
-    view! {
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m6 17 5-5-5-5m7 10 5-5-5-5"></path>
-        </svg>
-    }
-}
-
 /// Lucide `chevron-right` — the separator used by the file-browser path.
 pub fn breadcrumb_separator() -> impl IntoView {
     view! {
@@ -346,6 +326,16 @@ pub fn chevron_down() -> impl IntoView {
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="m6 9 6 6 6-6"></path>
+        </svg>
+    }
+}
+
+/// Lucide `chevron-up` — restore the mobile music dock.
+pub fn chevron_up() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m18 15-6-6-6 6"></path>
         </svg>
     }
 }
