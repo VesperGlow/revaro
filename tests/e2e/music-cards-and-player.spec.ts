@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
-import { login, navigate, enterSelectionMode, uploadFixture } from './helpers'
-import { readFileSync } from 'node:fs'
+import { pauseMusic, login, navigate, enterSelectionMode, uploadFixture } from './helpers'
+import { mkdirSync, readFileSync } from 'node:fs'
 
 const nativeFlac = readFileSync(new URL('../../crates/revaro-media/tests/fixtures/preview-cover.flac', import.meta.url))
 const transcript = Buffer.from('WEBVTT\n\n' + Array.from({ length: 28 }, (_, index) => {
@@ -22,9 +22,16 @@ async function upload(page: Page, parent_id: string, name: string, data = wav(),
   return uploadFixture(page, parent_id, name, mime, data)
 }
 
-for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name: 'mobile', width: 390, hasTouch: true }, { name: 'compact', width: 320, hasTouch: true }]) {
+for (const device of [
+  { name: 'desktop', width: 1600, height: 900, hasTouch: false },
+  { name: 'laptop', width: 1280, height: 720, hasTouch: false },
+  { name: 'desktop-boundary', width: 1024, height: 768, hasTouch: false },
+  { name: 'short-desktop', width: 1366, height: 600, hasTouch: false },
+  { name: 'mobile', width: 390, height: 900, hasTouch: true },
+  { name: 'compact', width: 320, height: 900, hasTouch: true },
+]) {
   test.describe(device.name, () => {
-    test.use({ viewport: { width: device.width, height: 900 }, hasTouch: device.hasTouch, reducedMotion: 'reduce' })
+    test.use({ viewport: { width: device.width, height: device.height }, hasTouch: device.hasTouch, reducedMotion: 'reduce' })
 
     test('square music cards and the restored player share one native audio session', async ({ page }) => {
       test.setTimeout(90_000)
@@ -63,11 +70,56 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
         await cards.first().getByRole('button', { name: `打开 ${files[0].name}`, exact: true }).click()
         await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
         await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
+        const dock = page.getByLabel('全局音乐播放器', { exact: true })
+        const dockBounds = (await dock.boundingBox())!
+        const timelineBounds = (await dock.locator('.dock-timeline-track').boundingBox())!
+        await expect(dock.locator('.dock-progress')).toHaveCSS('position', 'absolute')
+        expect(Math.abs(timelineBounds.y + timelineBounds.height / 2 - dockBounds.y)).toBeLessThanOrEqual(1)
+        expect(timelineBounds.x).toBeGreaterThanOrEqual(16)
+        expect(timelineBounds.x).toBeLessThanOrEqual(32)
+        expect(device.width - timelineBounds.x - timelineBounds.width).toBeGreaterThanOrEqual(16)
+        expect(device.width - timelineBounds.x - timelineBounds.width).toBeLessThanOrEqual(32)
+        await expect(dock.locator('.dock-progress > span')).toHaveCount(2)
+        for (const time of await dock.locator('.dock-progress > span').all()) {
+          await expect(time).toHaveCSS('position', 'absolute')
+          await expect(time).toHaveCSS('font-size', '10px')
+        }
+        const row = await Promise.all(['.dock-track', '.dock-controls', '.dock-options'].map(selector => dock.locator(selector).boundingBox()))
+        for (const bounds of row) expect(Math.abs(bounds!.y + bounds!.height / 2 - dockBounds.y - dockBounds.height / 2)).toBeLessThanOrEqual(1)
+        if (device.width >= 1024) {
+          expect((await dock.boundingBox())!.height).toBe(104)
+          expect((await dock.locator('.dock-play').boundingBox())!.width).toBe(52)
+          expect((await dock.getByLabel('音乐播放进度', { exact: true }).boundingBox())!.height).toBe(44)
+          const sections = await Promise.all(['.dock-track', '.dock-controls', '.dock-options', '.dock-collapse'].map(selector => dock.locator(selector).boundingBox()))
+          for (let index = 1; index < sections.length; index++) expect(sections[index]!.x).toBeGreaterThanOrEqual(sections[index - 1]!.x + sections[index - 1]!.width)
+          expect(sections.at(-1)!.x + sections.at(-1)!.width).toBeLessThanOrEqual(device.width)
+          const rowWidth = sections.at(-1)!.x + sections.at(-1)!.width - sections[0]!.x
+          expect(rowWidth).toBeLessThanOrEqual(920)
+          expect(Math.abs(sections[0]!.x + rowWidth / 2 - device.width / 2)).toBeLessThanOrEqual(1)
+        } else {
+          expect((await dock.locator('.dock-play').boundingBox())!.width).toBeGreaterThanOrEqual(44)
+          expect((await dock.getByRole('button', { name: '音轨章节', exact: true }).boundingBox())!.height).toBeGreaterThanOrEqual(44)
+        }
         const audio = page.locator('audio').first()
         const audioCount = await page.locator('audio').count()
         const source = await audio.getAttribute('src')
+        const dockSeek = page.getByLabel('音乐播放进度', { exact: true })
+        await dockSeek.click({ position: { x: (await dockSeek.boundingBox())!.width / 2, y: 4 } })
+        await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => Math.abs(a.currentTime - a.duration / 2))).toBeLessThan(1)
+        // Dragging the boundary slider still commits a seek through its native input.
+        const seekBounds = (await dockSeek.boundingBox())!
+        await dockSeek.click({ position: { x: seekBounds.width / 4, y: seekBounds.height / 2 } })
+        await page.mouse.move(seekBounds.x + seekBounds.width / 4, seekBounds.y + seekBounds.height / 2)
+        await page.mouse.down()
+        await page.mouse.move(seekBounds.x + seekBounds.width * 3 / 4, seekBounds.y + seekBounds.height / 2, { steps: 8 })
+        await page.mouse.up()
+        await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => Math.abs(a.currentTime - a.duration * 3 / 4))).toBeLessThan(1)
         await page.getByLabel('音乐播放进度', { exact: true }).evaluate((input: HTMLInputElement) => { input.value = '8'; input.dispatchEvent(new Event('change', { bubbles: true })) })
         await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(8, 1)
+        if (process.env.E2E_AUDIO_SCREENSHOTS) {
+          mkdirSync(process.env.E2E_AUDIO_SCREENSHOTS, { recursive: true })
+          await page.screenshot({ path: `${process.env.E2E_AUDIO_SCREENSHOTS}/mini-${device.name}.png` })
+        }
         await page.getByRole('button', { name: '打开音频播放器', exact: true }).click()
         const player = page.getByRole('dialog', { name: '音频播放器', exact: true })
         await expect(player.locator('.chapter-audio-player')).toBeVisible()
@@ -93,9 +145,32 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
         const coverBounds = (await player.locator('.audio-cover').boundingBox())!
         const lyricsBounds = (await lyrics.boundingBox())!
         const controlBounds = (await player.locator('.audio-playback').boundingBox())!
-        expect(lyricsBounds.y).toBeGreaterThanOrEqual(coverBounds.y + coverBounds.height)
+        if (device.width >= 1024) {
+          const mainBounds = (await player.locator('.audio-main').boundingBox())!
+          const progressBounds = (await player.getByLabel('播放进度', { exact: true }).boundingBox())!
+          expect(mainBounds.width).toBe(Math.min(1160, device.width - 64))
+          expect(coverBounds.width).toBeGreaterThanOrEqual(320)
+          expect(coverBounds.width).toBeLessThanOrEqual(380)
+          expect(lyricsBounds.x).toBeGreaterThanOrEqual(coverBounds.x + coverBounds.width)
+          expect(lyricsBounds.height).toBeGreaterThanOrEqual(220)
+          expect(lyricsBounds.height).toBeLessThanOrEqual(280)
+          expect(progressBounds.width).toBeGreaterThanOrEqual(560)
+          expect(progressBounds.width).toBeLessThanOrEqual(700)
+          expect(progressBounds.height).toBe(44)
+          expect((await player.locator('.audio-play').boundingBox())!.width).toBe(68)
+          expect((await player.getByRole('button', { name: '后退15秒', exact: true }).boundingBox())!.width).toBe(48)
+          await expect(player.locator('.audio-track-info h1')).toHaveText(files[0].name.replace('.flac', ''))
+          await expect(player.locator('.audio-track-info p')).toHaveText(prefix)
+        } else {
+          expect(lyricsBounds.y).toBeGreaterThanOrEqual(coverBounds.y + coverBounds.height)
+          await expect(player.locator('.audio-track-info')).toBeHidden()
+        }
         expect(lyricsBounds.y + lyricsBounds.height).toBeLessThanOrEqual(controlBounds.y)
-        expect(controlBounds.y + controlBounds.height).toBeLessThanOrEqual(900)
+        expect(controlBounds.y + controlBounds.height).toBeLessThanOrEqual(device.height)
+        if (process.env.E2E_AUDIO_SCREENSHOTS) {
+          mkdirSync(process.env.E2E_AUDIO_SCREENSHOTS, { recursive: true })
+          await page.screenshot({ path: `${process.env.E2E_AUDIO_SCREENSHOTS}/player-${device.name}.png` })
+        }
         await scroll.dispatchEvent('wheel', { deltaY: -100 })
         await scroll.evaluate((element: HTMLElement) => { element.scrollTop = 0 })
         await expect(lyrics.getByRole('button', { name: '回到当前台词', exact: true })).toBeVisible()
@@ -110,13 +185,34 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
         await expect(lyrics.getByRole('button', { name: '回到当前台词', exact: true })).toHaveCount(0)
         await player.getByLabel('播放速度', { exact: true }).selectOption('1.25')
         await expect(audio).toHaveJSProperty('playbackRate', 1.25)
+        const beforePanel = (await player.locator('.audio-main').boundingBox())!
         await player.locator('[data-panel-trigger="chapters"]').click()
         await expect(player.locator('.audio-chapter-list > button')).toHaveCount(6)
+        const panelBounds = (await player.locator('.audio-panel').boundingBox())!
+        if (device.width >= 1024) {
+          expect(panelBounds.width).toBeGreaterThanOrEqual(380)
+          expect(panelBounds.width).toBeLessThanOrEqual(460)
+          expect(panelBounds.x + panelBounds.width).toBe(device.width)
+          expect((await player.locator('.audio-main').boundingBox())!).toEqual(beforePanel)
+          await expect(player.locator('.audio-panel-scrim')).toBeVisible()
+        } else {
+          expect(panelBounds.width).toBe(device.width)
+          expect(panelBounds.y + panelBounds.height).toBe(device.height)
+          await expect(player.locator('.audio-panel')).toHaveCSS('border-top-left-radius', '20px')
+        }
+        if (process.env.E2E_AUDIO_SCREENSHOTS) await page.screenshot({ path: `${process.env.E2E_AUDIO_SCREENSHOTS}/chapters-${device.name}.png` })
         await player.locator('.audio-chapter-list > button').filter({ hasText: 'Chapter 3' }).click()
         await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThanOrEqual(10)
         // On phones the chapter sheet covers the playback controls.
-        await player.locator('.audio-panel .media-icon-button').click()
+        await player.getByRole('button', { name: '关闭章节', exact: true }).click()
+        await expect(player.locator('.audio-panel')).toBeHidden()
+        if (device.width >= 1024) {
+          await expect.poll(async () => (await player.locator('.audio-main').boundingBox())!).toEqual(beforePanel)
+        }
         await player.getByRole('button', { name: '暂停', exact: true }).click()
+        // Browse to the offscreen cue before clicking, as a user would.
+        await scroll.dispatchEvent('wheel', { deltaY: 500 })
+        await lyrics.getByRole('button', { name: 'Line 21', exact: true }).scrollIntoViewIfNeeded()
         await lyrics.getByRole('button', { name: 'Line 21', exact: true }).click()
         await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(20, 1)
         await expect(lyrics.locator('[aria-current="true"]')).toHaveText('Line 21')
@@ -144,8 +240,7 @@ for (const device of [{ name: 'desktop', width: 1600, hasTouch: false }, { name:
       } finally {
         const collapse = page.getByRole('button', { name: '收起音频播放器', exact: true })
         if (await collapse.count()) await collapse.click()
-        const stop = page.getByRole('button', { name: '停止音乐', exact: true })
-        if (await stop.count()) await stop.click()
+        await pauseMusic(page)
         if (collectionId) await page.request.delete(`/api/library/collections/${collectionId}`, { headers })
         await page.request.delete(`/api/files/${id}`, { headers })
         await page.request.delete(`/api/trash/${id}`, { headers })

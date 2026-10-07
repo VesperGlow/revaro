@@ -473,7 +473,7 @@ pub fn AudioPlayer(
                 if let Some(element) = player.get() {
                     let _ = element
                         .unchecked_into::<web_sys::Element>()
-                        .query_selector(".audio-panel .media-icon-button")
+                        .query_selector(".audio-panel .chapter-panel-close")
                         .ok()
                         .flatten()
                         .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
@@ -714,6 +714,7 @@ pub fn AudioPlayer(
     });
 
     let cover_name = item.name.clone();
+    let track_title = stem(&item.name);
     view! {
         <div node_ref=player class="chapter-audio-player" class:panel-open=move || panel_open.get() tabindex="0" on:keydown=on_key>
             <main class="audio-main">
@@ -727,6 +728,10 @@ pub fn AudioPlayer(
                                 view! { {icons::music_2()} }.into_any()
                             }
                         }}
+                    </div>
+                    <div class="audio-track-info">
+                        <h1>{track_title}</h1>
+                        <p>{move || controller.and_then(|c| c.collection.get().map(|(_, name)| name)).unwrap_or_else(|| "正在播放你的音乐".to_owned())}</p>
                     </div>
                 </section>
                 <AudioTranscript
@@ -762,6 +767,7 @@ pub fn AudioPlayer(
                         <label class="audio-rate"><span class="media-sr-only">"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=set_rate>
                             <option value="0.75">"0.75×"</option><option value="1">"1×"</option><option value="1.25">"1.25×"</option><option value="1.5">"1.5×"</option><option value="2">"2×"</option>
                         </select></label>
+                        {controller.map(|controller| view! { <super::music_player::PlaybackModeControl controller=controller /> })}
                         <button type="button" data-panel-trigger="chapters" aria-expanded=move || panel_open.get().to_string() on:click=toggle_panel>{icons::list()}<span>"章节"</span></button>
                         <ActionMenu label="音量".to_owned() icon=MenuIcon::Volume volume=volume muted=muted>
                             <div class="audio-volume">
@@ -782,7 +788,7 @@ pub fn AudioPlayer(
             <Show when=move || panel_open.get() fallback=|| ()>
                 <button class="audio-panel-scrim" type="button" aria-label="收起面板" on:click=close_panel></button>
                 <aside class="audio-panel" data-preview-sheet aria-label="音频章节">
-                    <header><strong>"章节"</strong><button class="media-icon-button" type="button" aria-label="收起面板" on:click=close_panel>{icons::x()}</button></header>
+                    <header><strong>"章节"</strong><button class="chapter-panel-close" type="button" aria-label="关闭章节" title="关闭章节" on:click=close_panel>{icons::x()}</button></header>
                     <div class="audio-chapter-navigation">
                         <button type="button" prop:disabled={move || duration() <= 0.0 || chapters().is_empty()} on:click=move |_| previous_chapter_callback.with_value(|callback| callback())>{icons::skip_back()}<span>"上一章"</span></button>
                         <button type="button" prop:disabled={move || current_chapter_index() >= chapters().len().saturating_sub(1)} on:click=move |_| _next_chapter_callback.with_value(|callback| callback())><span>"下一章"</span>{icons::skip_forward()}</button>

@@ -81,6 +81,44 @@ impl LibraryPage {
     }
 }
 
+/// Playback modes are mutually exclusive; a single track only needs once or repeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlaybackMode {
+    #[default]
+    Sequential,
+    Shuffle,
+    RepeatAll,
+    RepeatOne,
+}
+
+impl PlaybackMode {
+    pub fn value(self) -> &'static str {
+        match self {
+            Self::Sequential => "sequential",
+            Self::Shuffle => "shuffle",
+            Self::RepeatAll => "repeat-all",
+            Self::RepeatOne => "repeat-one",
+        }
+    }
+
+    pub fn from_value(value: &str) -> Self {
+        match value {
+            "shuffle" => Self::Shuffle,
+            "repeat-all" => Self::RepeatAll,
+            "repeat-one" => Self::RepeatOne,
+            _ => Self::Sequential,
+        }
+    }
+
+    pub fn for_queue(self, len: usize) -> Self {
+        if len <= 1 && matches!(self, Self::Shuffle | Self::RepeatAll) {
+            Self::Sequential
+        } else {
+            self
+        }
+    }
+}
+
 /// Queue boundaries do not depend on the HTML media element.
 pub fn next_index(index: usize, len: usize, direction: i32, repeat: bool) -> Option<usize> {
     if len == 0 {

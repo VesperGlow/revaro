@@ -70,7 +70,7 @@
 .content-library>.app-shell.file-tools-background>.content { display:none; }
 .content-library>.app-shell>.content { max-width:var(--workspace-width); margin:auto; padding-left:var(--workspace-gutter); padding-right:var(--workspace-gutter); }
 .content-library.has-music { padding-bottom:100px; }
-.music-dock { position:fixed; bottom:var(--music-dock-bottom); left:0; right:0; height:var(--music-dock-height); background:#fffffff5; backdrop-filter:blur(18px); border-top:1px solid var(--line); padding:0 4%; display:flex; gap:25px; align-items:center; z-index:35; box-shadow:0 -5px 24px #17212b07; }
+.music-dock { position:fixed; bottom:var(--music-dock-bottom); left:0; right:0; height:var(--music-dock-height); background:#fffffff5; backdrop-filter:blur(18px); border-top:1px solid var(--line); padding:0 4%; display:flex; justify-content:center; gap:25px; align-items:center; z-index:35; box-shadow:0 -5px 24px #17212b07; }
 .dock-track { display:flex; align-items:center; gap:12px; width:26%; min-width:130px; }
 .dock-cover { height:47px; width:47px; flex-shrink:0; overflow:hidden; display:grid; place-items:center; border-radius:7px; background:var(--accent-soft); color:var(--accent); }
 .dock-cover img { width:100%; height:100%; object-fit:cover; }
@@ -83,13 +83,21 @@
 .music-dock button.active { color:var(--accent-hover); background:var(--accent-soft); border-radius:6px; }
 .dock-controls svg { width:17px; height:17px; }
 .dock-controls .dock-play { width:39px; height:39px; border-radius:50%; background:var(--accent); color:#fff; }
-.dock-progress { flex:1; display:flex; align-items:center; gap:10px; min-width:70px; }
-.dock-progress span { font-size:10px; color:var(--muted); }
+/* The seek layer straddles the dock's top border and never occupies the control row. */
+.dock-progress { position:absolute; z-index:2; top:-23px; left:clamp(16px,2vw,32px); right:clamp(16px,2vw,32px); height:44px; pointer-events:none; }
+.dock-progress > span { position:absolute; top:30px; color:var(--muted); font-size:10px; line-height:14px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.dock-progress > span:first-child { left:0; }
+.dock-progress > span:last-child { right:0; }
 .music-dock input[type=range] { accent-color:var(--accent); height:3px; cursor:pointer; }
 .dock-progress input { width:100%; min-width:20px; }
 .dock-options { display:flex; align-items:center; gap:9px; }
 .dock-options input { width:65px; }
 .dock-options button span { margin-left:5px; font-size:9px; }
+.playback-mode { display: flex; align-items: center; flex: 0 0 auto; color: var(--muted); }
+.playback-mode select { height: 44px; min-width: 96px; padding: 0 6px; border: 0; border-radius: 9px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.playback-mode select:hover { background: var(--surface-hover); }
+.playback-mode select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.audio-options .playback-mode select { font-size: 14px; }
 .music-queue { position:fixed; right:30px; bottom:101px; width:340px; max-height:55dvh; overflow:auto; z-index:36; padding:17px; border:1px solid var(--line); background:var(--surface); border-radius:14px; box-shadow:0 12px 35px #17212b1a; }
 .music-queue header { display:flex; justify-content:space-between; align-items:center; padding-bottom:12px; }
 .music-queue header strong { font-size:14px; }
@@ -99,13 +107,13 @@
 .music-queue>button span { font-size:10px; }
 .music-queue>button strong { font-size:12px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 
-/* Preserve the dock layout and layer buffer/chapters behind its native seek input. */
-.dock-timeline { position:relative; flex:1; min-width:20px; height:24px; }
-.dock-timeline-track { position:absolute; inset:10px 0 auto; height:4px; border-radius:3px; background:var(--line); pointer-events:none; }
+/* Buffer and chapter markers stay behind the existing native seek input. */
+.dock-timeline { position:relative; width:100%; min-width:20px; height:44px; }
+.dock-timeline-track { position:absolute; inset:20px 0 auto; height:4px; border-radius:3px; background:var(--line); pointer-events:none; }
 .dock-timeline-track .dock-buffer { position:absolute; height:100%; background:var(--accent-border); }
 .dock-timeline-track .dock-played { position:absolute; height:100%; background:var(--accent); }
 .dock-chapter-marker { position:absolute; top:-2px; height:8px; width:2px; background:var(--ink-subtle); }
-.music-dock .dock-timeline input { position:absolute; inset:0; width:100%; height:24px; margin:0; background:transparent; appearance:none; }
+.music-dock .dock-timeline input { position:absolute; inset:0; width:100%; height:44px; margin:0; background:transparent; appearance:none; pointer-events:auto; }
 .dock-timeline input::-webkit-slider-runnable-track { height:4px; background:transparent; }
 .dock-timeline input::-moz-range-track { height:4px; background:transparent; }
 .dock-timeline input::-webkit-slider-thumb { appearance:none; height:12px; width:12px; margin-top:-4px; border-radius:50%; background:var(--accent); }
@@ -115,6 +123,7 @@
 .music-chapters small { margin-left:auto; white-space:nowrap; color:var(--muted); font-size:11px; }
 .music-chapters p { color:var(--muted); font-size:12px; }
 .content-library button:focus-visible,.content-library a:focus-visible,.content-library input:focus-visible { outline:none; box-shadow:var(--focus-ring); }
+.music-dock .dock-collapse, .dock-expand { display:none; }
 @media(min-width:1600px) { .content-library { --library-gutter:65px; } }
 @media(max-width:1100px) { .library-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } .photo-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .dock-options input { display:none; } .music-dock { gap:17px; } .home-content-row { grid-template-columns:repeat(4,minmax(0,1fr)); gap:15px; } }
 @media(max-width:850px) {
@@ -142,31 +151,70 @@
  .dock-track strong { font-size:11px; }
  .dock-track small { font-size:8px; }
  .dock-controls { gap:2px; }
- .dock-controls .dock-prev,.dock-progress,.dock-options input,.dock-options>button:nth-child(-n+2) { display:none; }
+ .dock-controls .dock-prev,.dock-options input,.dock-options .playback-mode { display:none; }
  .dock-controls .dock-play { width:33px; height:33px; }
  .dock-options { gap:3px; }
  .dock-options button { padding:4px; font-size:10px; }
+ .music-dock button { min-width:44px; min-height:44px; }
+ .dock-cover, .dock-controls .dock-play { width:44px; height:44px; }
  .music-queue { right:4%; width:92%; bottom:calc(140px + env(safe-area-inset-bottom,0px)); }
  .collection-caption { font-size:10px; line-height:1.7; }
 }
 @media(prefers-reduced-motion:reduce) { .library-cover { transition:none; } }
+/* Desktop controls form one compact, centered row under the independent seek layer. */
+@media(min-width:1024px) {
+ .content-library { --music-dock-height:104px; }
+ .content-library.has-music { padding-bottom:calc(var(--music-dock-height) + 24px); }
+ .music-dock { gap:clamp(20px,2vw,32px); padding-inline:clamp(24px,4vw,64px); }
+ .music-dock { transform:translateX(0); visibility:visible; transition:transform .24s ease, visibility 0s; }
+ .music-dock.dock-collapsed { transform:translateX(-100%); visibility:hidden; transition:transform .24s ease, visibility 0s .24s; }
+ .music-dock .dock-collapse { display:grid; place-items:center; flex:0 0 auto; width:clamp(32px,2.5vw,40px); height:44px; min-width:0; padding:0; border:0; border-radius:8px; background:transparent; color:var(--muted); outline:none; box-shadow:none; }
+ .dock-expand { position:fixed; z-index:35; left:0; bottom:calc(var(--music-dock-bottom) + (var(--music-dock-height) - 64px)/2); display:grid; place-items:center; width:28px; height:64px; padding:0; border:0; border-radius:0 10px 10px 0; background:#fffffff5; color:var(--muted); outline:none; box-shadow:none; opacity:0; visibility:hidden; pointer-events:none; transition:opacity .24s ease, visibility 0s .24s; }
+ .dock-expand.is-visible { opacity:1; visibility:visible; pointer-events:auto; transition-delay:0s; }
+ .music-dock .dock-collapse svg, .dock-expand svg { width:20px; height:20px; }
+ .music-dock .dock-collapse:hover, .dock-expand:hover { background:var(--surface-hover); color:var(--accent); }
+ .music-dock .dock-collapse:focus, .content-library .dock-expand:focus { outline:none; box-shadow:none; }
+ .music-dock .dock-collapse:focus-visible, .content-library .dock-expand:focus-visible { outline:1px solid var(--accent); outline-offset:-2px; box-shadow:none; }
+ .music-dock.pointer-interaction .dock-collapse:focus-visible, .dock-expand.pointer-interaction:focus-visible { outline:none; box-shadow:none; }
+ .dock-track { width:clamp(240px,28vw,360px); min-width:220px; gap:16px; }
+ .music-dock .dock-cover { width:60px; height:60px; }
+ .dock-track strong { font-size:14px; }
+ .dock-track small { font-size:12px; }
+ .dock-controls { flex:0 0 auto; gap:8px; }
+ .music-dock button { min-width:44px; min-height:44px; padding:8px; font-size:12px; }
+ .dock-controls svg { width:22px; height:22px; }
+ .dock-controls .dock-play { width:52px; height:52px; }
+ .dock-timeline-track { top:calc(50% - 2.5px); height:5px; }
+ .dock-timeline input::-webkit-slider-runnable-track { height:5px; }
+ .dock-timeline input::-moz-range-track { height:5px; }
+ .dock-timeline input::-webkit-slider-thumb { width:16px; height:16px; margin-top:-5.5px; }
+ .dock-timeline input::-moz-range-thumb { width:16px; height:16px; }
+ .dock-options { flex:0 0 auto; gap:6px; }
+ .dock-options input { display:block; width:80px; }
+ .music-dock .dock-options input { height:44px; }
+ .music-queue { right:clamp(24px,4vw,64px); bottom:calc(var(--music-dock-height) + var(--music-dock-bottom) + 14px); width:420px; max-height:min(60dvh,560px); }
+ .music-queue header button { min-width:44px; min-height:44px; }
+ .music-queue > button { min-height:56px; }
+ .music-queue > button strong { font-size:14px; }
+ .music-chapters small { font-size:12px; }
+}
+@media(prefers-reduced-motion:reduce) { .music-dock, .dock-expand { transition:none; } }
 /* Keep cards square without shrinking their reserved filename area. */
 @media(max-width:480px) { .library-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 /* Keep playback accessible without covering the reader's own bottom controls. */
 .content-library:has(#reader-view) .mobile-navigation,
 .content-library:has(#reader-view) .music-queue { display:none; }
-.content-library:has(#reader-view) .music-dock { top:calc(8px + env(safe-area-inset-top,0px)); bottom:auto; left:auto; right:calc(68px + env(safe-area-inset-right,0px)); width:auto; height:42px; padding:0 5px; gap:0; border:1px solid var(--line); border-radius:24px; box-shadow:none; }
+.content-library:has(#reader-view) .music-dock { display:flex; top:calc(8px + env(safe-area-inset-top,0px)); bottom:auto; left:auto; right:calc(68px + env(safe-area-inset-right,0px)); width:auto; height:42px; padding:0 5px; gap:0; border:1px solid var(--line); border-radius:24px; box-shadow:none; }
 .content-library:has(#reader-view) .dock-track,
 .content-library:has(#reader-view) .dock-progress,
 .content-library:has(#reader-view) .dock-options,
+.content-library:has(#reader-view) .dock-collapse,
 .content-library:has(#reader-view) .dock-prev { display:none; }
 .content-library:has(#reader-view) .dock-controls { gap:0; }
-.content-library:has(#reader-view) .dock-controls button { width:34px; height:34px; }
+.content-library:has(#reader-view) .dock-controls button { width:34px; height:34px; min-width:0; min-height:0; }
 
 @media(max-width:850px) {
  .content-library.has-music { padding-bottom:176px; }
- .music-dock { padding-bottom:26px; }
- .music-dock .dock-progress { display:flex; position:absolute; bottom:4px; left:4%; right:4%; height:24px; }
  .music-queue { bottom:calc(204px + env(safe-area-inset-bottom,0px)); }
 }
 .content-library:has(#reader-view) .dock-progress { display:none; }

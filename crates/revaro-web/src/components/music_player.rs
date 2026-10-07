@@ -4,6 +4,7 @@ use revaro_core::media::AudioMedia;
 use revaro_core::model::File;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use super::icons;
 use super::playback::{PlaybackProgress, ProgressDestination, persist_progress, stored_volume};
@@ -12,7 +13,7 @@ use crate::{
     api, browser,
     logic::{
         format::format_media_time,
-        library::next_index,
+        library::{PlaybackMode, next_index},
         media::{active_chapter_index, clamp_percent, media_element_time},
     },
 };
@@ -34,8 +35,7 @@ pub struct MusicController {
     pub position: RwSignal<f64>,
     pub duration: RwSignal<f64>,
     pub error: RwSignal<String>,
-    pub repeat: RwSignal<u8>,
-    pub shuffle: RwSignal<bool>,
+    pub mode: RwSignal<PlaybackMode>,
     pub collection: RwSignal<Option<(String, String)>>,
     pub metadata: RwSignal<AudioMedia>,
     pub buffered: RwSignal<Vec<(f64, f64)>>,
@@ -59,8 +59,7 @@ impl MusicController {
             position: RwSignal::new(0.0),
             duration: RwSignal::new(0.0),
             error: RwSignal::new(String::new()),
-            repeat: RwSignal::new(0),
-            shuffle: RwSignal::new(false),
+            mode: RwSignal::new(PlaybackMode::default()),
             collection: RwSignal::new(None),
             metadata: RwSignal::new(AudioMedia::default()),
             buffered: RwSignal::new(Vec::new()),
@@ -156,6 +155,7 @@ impl MusicController {
             queue.insert(0, file.clone());
         }
         let index = queue.iter().position(|f| f.id == file.id).unwrap_or(0);
+        self.mode.update(|mode| *mode = mode.for_queue(queue.len()));
         self.queue.set(queue);
         self.index.set(index);
         self.collection.set(collection);
@@ -172,33 +172,19 @@ impl MusicController {
     pub fn advance(self, direction: i32, ended: bool) {
         let len = self.queue.get_untracked().len();
         let index = self.index.get_untracked();
-        let next = if ended && self.repeat.get_untracked() == 2 {
+        let mode = self.mode.get_untracked().for_queue(len);
+        let next = if ended && mode == PlaybackMode::RepeatOne {
             Some(index)
-        } else if self.shuffle.get_untracked() && len > 1 {
+        } else if mode == PlaybackMode::Shuffle && len > 1 {
             Some((index + 1 + (js_sys::Math::random() * (len - 1) as f64).floor() as usize) % len)
         } else {
-            next_index(index, len, direction, self.repeat.get_untracked() == 1)
+            next_index(index, len, direction, mode == PlaybackMode::RepeatAll)
         };
         if let Some(next) = next {
             self.select(next, ended);
         } else if ended {
             self.save();
             self.playing.set(false);
-        }
-    }
-    pub fn stop(self) {
-        self.save();
-        self.progress.reset(None);
-        self.progress.revision.update(|r| *r += 1);
-        self.pause();
-        self.queue.set(Vec::new());
-        self.collection.set(None);
-        browser::local_storage_set(&self.session_key.get_value(), "");
-        self.playing.set(false);
-        self.full_open.set(false);
-        if let Some(audio) = self.element() {
-            audio.set_src("");
-            audio.load();
         }
     }
     fn restore_position(self) {
@@ -295,9 +281,71 @@ impl MusicController {
     }
 }
 
+/// Both player surfaces share the same current mode and native keyboard picker.
+#[component]
+pub(super) fn PlaybackModeControl(controller: MusicController) -> impl IntoView {
+    let multiple = move || controller.queue.with(|queue| queue.len() > 1);
+    view! {
+        <label class="playback-mode">
+            <span class="media-sr-only">"播放模式"</span>
+            <select aria-label="播放模式" title="播放模式" prop:value=move || controller.mode.get().value()
+                on:change=move |event| {
+                    controller.mode.set(PlaybackMode::from_value(&event_target_value(&event)).for_queue(controller.queue.with(|queue| queue.len())));
+                }>
+                <option value="sequential">{move || if multiple() { "顺序播放" } else { "播放一次" }}</option>
+                <Show when=multiple fallback=|| ()>
+                    <option value="shuffle">"随机播放"</option>
+                    <option value="repeat-all">"列表循环"</option>
+                </Show>
+                <option value="repeat-one">"单曲循环"</option>
+            </select>
+        </label>
+    }
+}
+
 #[component]
 pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
     let chapters_open = RwSignal::new(false);
+    let dock_collapsed = RwSignal::new(false);
+    let pointer_interaction = RwSignal::new(false);
+    let collapse_control = NodeRef::<leptos::html::Button>::new();
+    let expand_control = NodeRef::<leptos::html::Button>::new();
+    let desktop_viewport = || {
+        web_sys::window()
+            .and_then(|window| window.inner_width().ok())
+            .and_then(|width| width.as_f64())
+            .is_some_and(|width| width >= 1024.0)
+    };
+    let desktop = RwSignal::new(desktop_viewport());
+    let dock_hidden = Signal::derive(move || desktop.get() && dock_collapsed.get());
+    let mut dock_resize = browser::on_resize(move |_| desktop.set(desktop_viewport()));
+    let mut dock_keyboard =
+        browser::on_document_keydown_capture(move |_| pointer_interaction.set(false));
+    on_cleanup(move || {
+        dock_resize.release();
+        dock_keyboard.release();
+    });
+    let set_dock_collapsed = move |collapsed, event: leptos::ev::MouseEvent| {
+        pointer_interaction.set(event.detail() != 0);
+        dock_collapsed.set(collapsed);
+        // Only presentation changes; the native audio and controller stay mounted.
+        let control = if collapsed {
+            expand_control
+        } else {
+            collapse_control
+        };
+        if let Some(window) = web_sys::window() {
+            let callback = Closure::once_into_js(move || {
+                if let Some(control) = control.get() {
+                    let options = web_sys::FocusOptions::new();
+                    options.set_prevent_scroll(true);
+                    let _ = control.focus_with_options(&options);
+                }
+            });
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
+        }
+    };
     let seek_preview = RwSignal::new(None::<f64>);
     let next_audio = NodeRef::<leptos::html::Audio>::new();
     let cover_failed = RwSignal::new(false);
@@ -438,7 +486,9 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
         ></audio>
         <audio node_ref=next_audio preload="metadata" aria-hidden="true"></audio>
         <Show when=move || controller.current().is_some() fallback=|| ()>
-            <aside class="music-dock" aria-label="全局音乐播放器" inert=move ||controller.full_open.get()>
+            <aside id="music-dock" class="music-dock" class:dock-collapsed=move ||dock_hidden.get() class:pointer-interaction=move ||pointer_interaction.get()
+                aria-label="全局音乐播放器" aria-hidden=move ||dock_hidden.get().to_string() inert=move ||controller.full_open.get() || dock_hidden.get()
+                on:pointerdown=move |_|pointer_interaction.set(true)>
                 <super::audio::AudioSubtitles cues=Signal::derive(move ||controller.metadata.get().subtitles) current_time=controller.position.into() />
                 <div class="dock-track">
                     <button type="button" class="dock-cover" aria-label="打开音频播放器" on:click=move |_| {chapters_open.set(false);controller.full_open.set(true);}>
@@ -470,15 +520,19 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
                     <span>{move ||format_media_time(controller.duration.get())}</span>
                 </div>
                 <div class="dock-options">
-                    <button class:active=move ||controller.shuffle.get() aria-label="随机播放" aria-pressed=move ||controller.shuffle.get().to_string() on:click=move |_|controller.shuffle.update(|v|*v = !*v)>"随机"</button>
-                    <button aria-label="循环模式" on:click=move |_|controller.repeat.update(|r|*r=(*r+1)%3)>{move ||match controller.repeat.get(){1=>"列表循环",2=>"单曲循环",_=>"顺序"}}</button>
+                    <PlaybackModeControl controller=controller />
                     <input aria-label="音乐音量" type="range" min="0" max="1" step="0.05" prop:value=move ||volume.get().to_string() on:input=move |ev|{if let Ok(value)=event_target_value(&ev).parse::<f64>() {volume.set(value);browser::local_storage_set("revaro-music-volume",&value.to_string());if let Some(audio)=controller.element(){audio.set_volume(value);}}} />
                     <button aria-label="音轨章节" class:active=move ||chapters_open.get() aria-expanded=move ||chapters_open.get().to_string() on:click=move |_|{chapters_open.update(|v|*v = !*v);}>"章节"</button>
-                    <button aria-label="停止音乐" on:click=move |_|controller.stop()>"×"</button>
                 </div>
+                <button node_ref=collapse_control class="dock-collapse" type="button" aria-label="收起播放条" title="收起播放条" aria-controls="music-dock" aria-expanded="true" on:click=move |event|set_dock_collapsed(true,event)>{icons::chevrons_left()}</button>
             </aside>
+            <button node_ref=expand_control class="dock-expand" class:is-visible=move ||dock_hidden.get() class:pointer-interaction=move ||pointer_interaction.get()
+                type="button" aria-label="展开播放条" title="展开播放条" aria-controls="music-dock" aria-expanded="false" aria-hidden=move ||(!dock_hidden.get()).to_string()
+                inert=move ||controller.full_open.get() || !dock_hidden.get()
+                on:pointerdown=move |_|pointer_interaction.set(true)
+                on:click=move |event|set_dock_collapsed(false,event)>{icons::chevrons_right()}</button>
             <Show when=move ||chapters_open.get() fallback=|| ()>
-                <section class="music-queue music-chapters" aria-label="当前音轨章节"><header><strong>"章节"</strong><button aria-label="关闭章节" on:click=move |_|chapters_open.set(false)>"×"</button></header>
+                <section class="music-queue music-chapters" aria-label="当前音轨章节"><header><strong>"章节"</strong><button class="chapter-panel-close" type="button" aria-label="关闭章节" title="关闭章节" on:click=move |_|chapters_open.set(false)>{icons::x()}</button></header>
                     <Show when=move ||controller.metadata.get().chapters.is_empty() fallback=|| ()><p>"暂无章节"</p></Show>
                     <For each=move ||{controller.metadata.get().chapters.into_iter().enumerate().collect::<Vec<_>>()} key=|(i,c)|(*i,c.start.to_bits()) children=move |(i,chapter)|view!{
                         <button data-chapter-index=i aria-current=move ||if controller.metadata.with(|m|active_chapter_index(&m.chapters,controller.position.get()))==i{Some("true")}else{None}

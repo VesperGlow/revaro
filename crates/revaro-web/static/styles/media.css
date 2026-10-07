@@ -81,6 +81,7 @@
 .chapter-audio-player.panel-open { grid-template-columns: minmax(0, 1fr) minmax(300px, 38%); }
 .audio-main { display: grid; grid-template-rows: auto minmax(0,1fr) auto; justify-items: center; gap: 20px; min-width: 0; min-height: 0; overflow: hidden; padding: 24px 32px max(28px, env(safe-area-inset-bottom, 0px)); }
 .audio-now-playing { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; width: 100%; max-width: 500px; text-align: center; }
+.audio-track-info { display: none; }
 .audio-cover { display: grid; place-items: center; width: min(280px, 32dvh); aspect-ratio: 1; overflow: hidden; border: 1px solid #ffffff80; border-radius: 18px; background: var(--accent-soft); color: var(--accent); box-shadow: 0 12px 34px #293d4d12; }
 .audio-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .audio-cover > svg { width: 28%; height: 28%; stroke-width: 1; }
@@ -93,7 +94,7 @@
 .audio-transcript-empty { display: grid; place-items: center; height: 100%; margin: 0; color: var(--media-muted); font-size: 13px; }
 .audio-transcript-scroll.empty { mask-image: none; }
 .audio-transcript-scroll.empty .audio-transcript-lines { display: none; }
-.audio-transcript-follow { position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); min-height: 36px; padding: 6px 14px; border: 1px solid var(--media-line); border-radius: 18px; background: var(--media-panel); color: var(--media-accent); box-shadow: var(--shadow-popover); font-size: 12px; white-space: nowrap; }
+.audio-transcript-follow { position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); min-height: 44px; padding: 6px 14px; border: 1px solid var(--media-line); border-radius: 18px; background: var(--media-panel); color: var(--media-accent); box-shadow: var(--shadow-popover); font-size: 12px; white-space: nowrap; }
 .audio-playback { flex-shrink: 0; width: 100%; max-width: 460px; }
 .audio-playback > audio { display: none; }
 .audio-playback .full-bleed-progress--audio { --progress-center: 12px; --progress-height: 3px; --progress-thumb-size: 12px; --progress-track: var(--line); --progress-buffer: var(--line-strong); --progress-played: var(--media-accent); --progress-thumb: var(--media-accent); --progress-thumb-border: var(--media-surface); }
@@ -108,7 +109,7 @@
 .audio-controls .audio-play svg { width: 26px; height: 26px; }
 .audio-control-spinner { width: 24px; height: 24px; border: 2px solid #ffffff40; border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
 .audio-options { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--media-muted); }
-.audio-options > button { display: flex; align-items: center; justify-content: center; gap: 7px; min-width: 44px; height: 44px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; color: inherit; font-size: 12px; }
+.audio-options > button { display: flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 7px; min-width: 44px; height: 44px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; color: inherit; font-size: 12px; white-space: nowrap; }
 .audio-options > button:hover, .audio-options > button[aria-expanded="true"] { background: var(--media-hover); color: var(--media-accent); }
 .audio-rate select { height: 44px; min-width: 66px; padding: 0 6px; border: 0; border-radius: 9px; background: transparent; color: var(--media-muted); font: inherit; font-size: 13px; cursor: pointer; }
 .audio-volume { display: flex; align-items: center; gap: 8px; width: 220px; }
@@ -119,6 +120,14 @@
 .audio-panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--media-line); background: var(--media-panel); }
 .audio-panel > header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--media-line); }
 .audio-panel > header strong { font-size: 13px; font-weight: 600; }
+.audio-panel .chapter-panel-close,
+.music-queue .chapter-panel-close { display: grid; place-items: center; flex: 0 0 auto; width: 36px; height: 36px; min-width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted); }
+.audio-panel .chapter-panel-close svg,
+.music-queue .chapter-panel-close svg { width: 18px; height: 18px; stroke-width: 1.7; }
+.audio-panel .chapter-panel-close:hover,
+.music-queue .chapter-panel-close:hover { background: var(--surface-hover); color: var(--ink); }
+.audio-panel .chapter-panel-close:focus-visible,
+.music-queue .chapter-panel-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
 .audio-panel-empty { padding:0 24px; color:var(--media-muted); font-size:12px; }
 .music-player-dialog { z-index:60; }
 .music-dock .dock-cover { padding:0; }
@@ -138,6 +147,9 @@
   .audio-main { gap: 16px; padding: 16px 24px max(24px, env(safe-area-inset-bottom, 0px)); }
   .audio-cover { width: min(260px, 30dvh); }
   .audio-options { gap: 4px; }
+  .audio-options > button { padding-inline: 6px; }
+  .audio-options .audio-rate select { width: 66px; }
+  .audio-preview .audio-options .playback-mode select { min-width: 84px; width: 84px; padding-inline: 4px; font-size: 12px; }
   .audio-panel { position: absolute; z-index: 22; right: 0; bottom: 0; left: 0; height: min(72dvh, 600px); padding-bottom: env(safe-area-inset-bottom, 0px); border: 1px solid var(--media-line); border-bottom: 0; border-radius: 20px 20px 0 0; box-shadow: 0 -12px 40px #17212b14; }
   .audio-panel-scrim { position: absolute; z-index: 21; inset: 0; display: block; width: 100%; padding: 0; border: 0; background: #17212b40; }
   .preview-prev { left: 8px; } .preview-next { right: 8px; }
@@ -147,11 +159,54 @@
   .audio-cover { width: min(180px, 20dvh); }
   .audio-controls { margin: 12px 0 8px; }
 }
-@media (max-height: 600px) and (min-width: 620px) {
+@media (max-height: 600px) and (min-width: 620px) and (max-width: 1023px) {
   .audio-main { grid-template-columns: auto minmax(0,1fr); grid-template-rows: minmax(0,1fr) auto; column-gap: 32px; }
   .audio-now-playing { align-self: center; }
   .audio-cover { width: min(200px, 28dvh); }
   .audio-playback { grid-column: 1 / -1; }
+}
+/* Desktop listening uses the cover and transcript as two independent columns. */
+@media (min-width: 1024px) {
+  .chapter-audio-player.panel-open { grid-template-columns: minmax(0, 1fr); }
+  .audio-main {
+    align-self: center; justify-content: space-between; align-items: center;
+    grid-template-columns: clamp(320px, 28vw, 380px) minmax(0, 700px);
+    grid-template-rows: clamp(220px, 30dvh, 280px) auto;
+    column-gap: clamp(40px, 4vw, 64px); row-gap: 24px;
+    width: calc(100% - 64px); max-width: 1160px; max-height: 100%; margin: 0 auto;
+    padding: 24px 0 max(24px, env(safe-area-inset-bottom, 0px)); overflow-y: auto;
+  }
+  .audio-now-playing { grid-column: 1; grid-row: 1 / -1; align-self: center; max-width: none; }
+  .audio-cover { width: 100%; max-width: 380px; }
+  .audio-track-info { display: block; width: 100%; margin-top: 24px; }
+  .audio-track-info h1 { margin: 0; font-size: clamp(22px, 1.8vw, 28px); font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+  .audio-track-info p { margin: 10px 0 0; color: var(--media-muted); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+  .audio-transcript { grid-column: 2; grid-row: 1; max-width: none; }
+  .audio-transcript-lines { padding-inline: 8px; }
+  .audio-transcript-line { padding: 14px 24px; font-size: 18px; }
+  .audio-transcript-line.active { font-size: 24px; line-height: 1.6; }
+  .audio-playback { grid-column: 2; grid-row: 2; max-width: none; }
+  .audio-playback .full-bleed-progress--audio { --progress-center: 22px; --progress-height: 6px; --progress-thumb-size: 18px; height: 44px; }
+  .audio-playback .full-bleed-progress__track { border-radius: 3px; }
+  .audio-time { margin-top: 0; font-size: 13px; }
+  .audio-controls { gap: 32px; margin: 28px 0 20px; }
+  .audio-controls .audio-play { width: 68px; height: 68px; }
+  .audio-controls .audio-play svg { width: 30px; height: 30px; }
+  .audio-options { gap: 20px; }
+  .audio-options > button, .audio-rate select { font-size: 14px; }
+  .audio-panel { position: absolute; z-index: 22; top: 0; right: 0; bottom: 0; width: clamp(380px, 30vw, 460px); box-shadow: -12px 0 40px #17212b14; }
+  .audio-panel-scrim { position: absolute; z-index: 21; inset: 0; display: block; width: 100%; padding: 0; border: 0; background: #17212b40; }
+  .audio-panel > header { padding: 16px 24px; }
+  .audio-panel > header strong { font-size: 16px; }
+  .audio-chapter-navigation { padding-inline: 24px; }
+  .audio-chapter-list { padding-inline: 16px; }
+  .audio-chapter-list strong { font-size: 14px; }
+  .audio-chapter-list small, .audio-chapter-number { font-size: 12px; }
+}
+@media (min-width: 1024px) and (max-height: 600px) {
+  .audio-main { row-gap: 16px; padding-top: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom, 0px)); }
+  .audio-controls { margin: 12px 0 8px; }
+  .audio-track-info { margin-top: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .image-preview .preview-commandbar, .preview-image-footer, .preview-nav, .audio-transcript-line { transition: none; }

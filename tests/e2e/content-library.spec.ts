@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login, enterSelectionMode, openTopbarMenu } from './helpers'
+import { pauseMusic, login, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://localhost:18083').replace(/\/$/, '')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -60,7 +60,7 @@ test('content libraries share real uploads, keep music alive during reading and 
   await page.getByRole('button', { name: `打开 ${photo}`, exact: true }).click()
   await expect(page.locator('.preview-image')).toBeVisible()
   await page.locator('.preview-close').click()
-  await page.getByRole('button', { name: '停止音乐' }).click()
+  await pauseMusic(page)
   await page.goto(deepLink)
   await expect(page.locator('#reader-view')).toBeVisible()
   await expect(page.locator('#loading')).toBeHidden()

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { deflateSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
-import { login, openTopbarMenu, showRecentFiles } from './helpers'
+import { pauseMusic, login, openTopbarMenu, showRecentFiles } from './helpers'
 
 function png(width: number, height: number, colours: [number, number, number][]) {
   const rows: Buffer[] = []
@@ -137,7 +137,7 @@ test('Rust bundle serves the media viewer and live transfer dialog', async ({ pa
   await page.locator('audio').first().waitFor({ state: 'attached' })
   await page.waitForFunction(() => document.querySelector('audio')?.readyState >= 1)
   await expect(page.getByRole('complementary', { name: '全局音乐播放器' })).toBeVisible()
-  await page.getByRole('button', { name: '停止音乐' }).click()
+  await pauseMusic(page)
 
   await page.locator('.file-card').filter({ hasText: video }).click()
   const videoElement = page.locator('video').last()

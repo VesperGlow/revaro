@@ -49,6 +49,14 @@ export async function login(page: Page) {
   await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true })).toBeVisible()
 }
 
+// Pause through the remaining playback controls, including a collapsed desktop dock.
+export async function pauseMusic(page: Page) {
+  const expand = page.getByRole('button', { name: '展开播放条', exact: true })
+  if (await expand.isVisible()) await expand.click()
+  const pause = page.getByRole('button', { name: '暂停音乐', exact: true })
+  if (await pause.isVisible()) await pause.click()
+}
+
 export async function openTopbarMenu(page: Page) {
   const menu = page.locator('.topbar .topbar-menu')
   if (!await menu.evaluate(element => (element as HTMLDetailsElement).open)) {

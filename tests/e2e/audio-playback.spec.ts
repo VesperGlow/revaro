@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { mkdirSync, readFileSync } from 'node:fs'
-import { login, navigate, enterSelectionMode } from './helpers'
+import { pauseMusic, login, navigate, enterSelectionMode } from './helpers'
 
 test.use({ reducedMotion: 'reduce' })
 
@@ -102,7 +102,7 @@ test('audio categories keep files, chapters and resume independent', async ({ pa
   expect(partial.headers()['content-range']).toBe(`bytes 4-31/${flac.length}`)
   expect(await partial.body()).toEqual(flac.subarray(4, 32))
   expect(errors).toEqual([])
-  await page.getByRole('button', { name: '停止音乐', exact: true }).click()
+  await pauseMusic(page)
   await page.request.delete(`/api/library/collections/${collection.id}`, { headers })
 })
 
@@ -153,5 +153,5 @@ test('large native FLAC seeks with partial requests and real external subtitles'
   await expect(page.locator('.audio-subtitles')).toContainText(cue.text)
   await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime), { timeout: 30_000 }).toBeCloseTo(cue.start + 0.25, 1)
   console.log(JSON.stringify({ largeFlacBytes: file.size, duration: metadata.duration, subtitles: metadata.subtitles.length, chapters: metadata.chapters.length, partialRequests: ranges }))
-  await page.getByRole('button', { name: '停止音乐', exact: true }).click()
+  await pauseMusic(page)
 })
