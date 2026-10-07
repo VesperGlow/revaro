@@ -96,7 +96,10 @@ pub(super) fn tile_class(file: &File, preview_available: bool) -> String {
 }
 
 pub(super) fn initial_preview_available(file: &File) -> bool {
-    classify::is_image(file) || classify::is_video(file) || is_epub_file(file)
+    classify::is_image(file)
+        || classify::is_video(file)
+        || classify::is_audio(file)
+        || is_epub_file(file)
 }
 
 pub(super) fn is_epub_file(file: &File) -> bool {
@@ -174,13 +177,15 @@ pub(super) fn file_preview_with_state(
 }
 
 /// Card/row thumbnails follow the old two-step fallback policy: images try a
-/// generated thumbnail and then the original preview, while EPUB covers
+/// generated thumbnail and then the original preview, while EPUB/audio covers
 /// fall back directly to their type icon when the thumbnail is unavailable.
-/// Audio files always use their type icon in file cards.
 #[component]
 pub(super) fn FilePreview(file: File, preview_available: Option<RwSignal<bool>>) -> impl IntoView {
     let is_image = classify::is_image(&file);
     let is_epub = is_epub_file(&file);
+    // Artwork is generated on demand, so an unprobed file's has_cover=false
+    // must not prevent the first thumbnail request.
+    let is_audio = classify::is_audio(&file);
     let is_video = classify::is_video(&file);
     let thumbnail = thumbnail_url(&file);
     let preview = format!("/api/files/{}/preview", file.id);
@@ -191,12 +196,7 @@ pub(super) fn FilePreview(file: File, preview_available: Option<RwSignal<bool>>)
     let preview_available_for_error = preview_available;
     let file_for_error = file.clone();
     let on_image_error = move |_| {
-        if is_epub {
-            broken.set(true);
-            if let Some(preview_available) = preview_available_for_error {
-                preview_available.set(false);
-            }
-        } else if fallback_to_preview.get_untracked() {
+        if is_epub || is_audio || fallback_to_preview.get_untracked() {
             broken.set(true);
             if let Some(preview_available) = preview_available_for_error {
                 preview_available.set(false);
@@ -210,7 +210,7 @@ pub(super) fn FilePreview(file: File, preview_available: Option<RwSignal<bool>>)
         {move || {
             if is_video {
                 view! { <VideoThumbnail file=file.clone() /> }.into_any()
-            } else if (is_image || is_epub) && !broken.get() {
+            } else if (is_image || is_epub || is_audio) && !broken.get() {
                 let file = file_for_error.clone();
                 let preview = preview_for_src.clone();
                 let thumbnail = thumbnail_for_src.clone();

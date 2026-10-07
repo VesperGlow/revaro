@@ -30,7 +30,9 @@ FFmpeg libraries, so a missing PNG decoder fails the image release gate.
 seeking, buffered ranges, next-track metadata, automatic advancement, refresh
 resume and HTTP HEAD/206. `music-cards-and-player.spec.ts` checks square cards,
 native chapters, transcript highlighting/scrolling/seeking and the shared full
-player at desktop and mobile widths.
+player at desktop and mobile widths. `file-card-layout.spec.ts` also checks PNG
+artwork on the first folder visit, cached artwork after navigation and audio
+icon fallback when artwork is absent or its thumbnail request fails.
 
 For the optional large-file browser check, import the supplied FLAC and its
 same-name VTT and set `E2E_LARGE_AUDIO_ID` to that file's ID. Its six embedded

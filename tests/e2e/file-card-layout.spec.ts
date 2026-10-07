@@ -4,6 +4,7 @@ import { login, navigate, uploadFixture as upload } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+const flacWithCover = readFileSync(new URL('../../crates/revaro-media/tests/fixtures/preview-cover.flac', import.meta.url))
 
 function wav() {
   const data = Buffer.alloc(44 + 16000)
@@ -69,17 +70,25 @@ for (const device of [
       try {
         const book = await upload(page, id, `${prefix}-${long}.txt`, 'text/plain', Buffer.from('第一章\n\n这是一份用于卡片布局检查的文本。'))
         const audio = await upload(page, id, `${prefix}-${long}.wav`, 'audio/wav', wav())
+        const coveredAudio = await upload(page, id, `${prefix}-${long}.flac`, 'audio/flac', flacWithCover)
         const photo = await upload(page, id, `${prefix}-${long}.png`, 'image/png', png)
         const video = await upload(page, id, `${prefix}-${long}.webm`, 'video/webm', readFileSync(new URL('./fixtures/preview.webm', import.meta.url)))
-        for (const file of [book, audio, photo, video]) {
+        const listing = await page.request.get(`/api/files?parent_id=${id}`)
+        expect(listing.ok()).toBeTruthy()
+        expect((await listing.json()).items.find((file: any) => file.id === coveredAudio.id).has_cover).toBeFalsy()
+        for (const file of [book, audio, coveredAudio, photo, video]) {
           expect((await page.request.patch(`/api/library/items/${file.id}`, { headers, data: { opened: true } })).ok()).toBeTruthy()
         }
         expect((await page.request.post('/api/directories', { headers, data: { parent_id: id, name: '文件夹' } })).ok()).toBeTruthy()
 
         await page.goto(`/f/${id}`)
         const cards = page.locator('.file-grid>.file-card')
-        await expect(cards).toHaveCount(5)
-        await expect(page.locator('.preview-tile .card-preview img')).toHaveCount(2)
+        await expect(cards).toHaveCount(6)
+        const audioCover = cards.filter({ hasText: coveredAudio.name }).locator('.card-preview img')
+        await expect(audioCover).toBeVisible()
+        await expect.poll(() => audioCover.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(640)
+        await expect(cards.filter({ hasText: audio.name }).locator('.card-preview img')).toHaveCount(0)
+        await expect(page.locator('.preview-tile .card-preview img')).toHaveCount(3)
         for (const icon of ['.folder-type-icon', '.audio-type-icon', '.document-type-icon']) {
           await expect(page.locator(`.file-grid ${icon}`)).toBeVisible()
           const iconBounds = (await page.locator(`.file-grid ${icon}`).boundingBox())!
@@ -97,6 +106,9 @@ for (const device of [
           await stableCaption(page, card)
           await expect(card.locator('.file-card-content>.card-preview')).toHaveCount(1)
         }
+        await page.goto(`/f/${id}`)
+        await expect(audioCover).toBeVisible()
+        await expect.poll(() => audioCover.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(640)
         await navigate(page, '首页')
         const homeHeights: number[] = []
         for (const file of [book, audio, photo, video]) {
@@ -115,6 +127,22 @@ for (const device of [
         await stableCaption(page, broken)
         const fallbackHeights = await cards.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height))
         expect(Math.max(...fallbackHeights) - Math.min(...fallbackHeights)).toBeLessThan(1)
+
+        // Audio thumbnail failures must use the icon, never request raw audio
+        // through the image preview URL, and retain the same card layout.
+        let audioPreviewRequested = false
+        await page.context().route(`**/api/files/${coveredAudio.id}/preview*`, route => {
+          audioPreviewRequested = true
+          return route.fulfill({ status: 500 })
+        })
+        await page.context().route(`**/api/files/${coveredAudio.id}/thumbnail*`, route => route.fulfill({ status: 404 }))
+        await page.goto(`/f/${id}`)
+        const brokenAudio = cards.filter({ hasText: coveredAudio.name })
+        await expect(brokenAudio.locator('.audio-type-icon')).toBeVisible()
+        await expect(brokenAudio.locator('.card-preview img')).toHaveCount(0)
+        await expect(brokenAudio).toHaveClass(/fallback-tile/)
+        await stableCaption(page, brokenAudio)
+        expect(audioPreviewRequested).toBe(false)
       } finally {
         await page.request.delete(`/api/files/${id}`, { headers })
         await page.request.delete(`/api/trash/${id}`, { headers })
