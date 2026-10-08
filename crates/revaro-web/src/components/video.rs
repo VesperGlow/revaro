@@ -117,12 +117,8 @@ pub fn VideoPlayer(
         let position_key = StoredValue::new(position_key.clone());
         move || {
             if duration.get_untracked() > 0.0
-                && let Some(target) = playback.restore(
-                    duration.get_untracked(),
-                    current_time.get_untracked(),
-                    user_seeked.get_untracked(),
-                    Some(&position_key.get_value()),
-                )
+                && let Some(target) =
+                    playback.restore(duration.get_untracked(), Some(&position_key.get_value()))
                 && target > 0.0
                 && let Some(video) = video_media_element(video)
             {
@@ -134,6 +130,9 @@ pub fn VideoPlayer(
     let save_progress = {
         let item_id = item_id.clone();
         move |remote: bool| {
+            if !playback.ready.get_untracked() {
+                return;
+            }
             let position = current_time.get_untracked().max(0.0);
             if position > 0.0 || user_seeked.get_untracked() {
                 persist_progress(
@@ -240,6 +239,7 @@ pub fn VideoPlayer(
                 duration.set(native_duration);
             }
         }
+        restore_position();
         buffering.set(false);
         starting.set(false);
         show_video_controls(
@@ -293,6 +293,7 @@ pub fn VideoPlayer(
                 .min(if limit > 0.0 { limit } else { target.max(0.0) });
             if let Some(video) = video_media_element(video) {
                 video.set_current_time(target);
+                playback.accept_seek();
                 current_time.set(media_element_time(video.current_time()));
             } else {
                 current_time.set(target);
@@ -671,7 +672,7 @@ pub fn VideoPlayer(
         fullscreen_listener.release();
         cleanup_save(false);
         let position = current_time.get_untracked().max(0.0);
-        if position > 0.0 {
+        if playback.ready.get_untracked() && (position > 0.0 || user_seeked.get_untracked()) {
             persist_progress(
                 &cleanup_item_id,
                 position,

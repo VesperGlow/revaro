@@ -6,14 +6,14 @@ use wasm_bindgen::{JsCast, closure::Closure};
 
 use crate::{
     api, browser,
-    logic::media::{authoritative_seek_target, media_element_time, resume_time},
+    logic::media::{PlaybackPosition, media_element_time},
 };
 
 #[derive(Clone, Copy)]
 pub(super) struct PlaybackProgress {
     pub revision: RwSignal<u64>,
     pub loaded_file: RwSignal<Option<String>>,
-    pub pending: RwSignal<Option<f64>>,
+    pending: RwSignal<Option<PlaybackPosition>>,
     pub ready: RwSignal<bool>,
 }
 
@@ -31,7 +31,19 @@ impl PlaybackProgress {
     pub fn reset(self, pending: Option<f64>) {
         self.ready.set(false);
         self.loaded_file.set(None);
-        self.pending.set(pending);
+        self.pending.set(pending.map(PlaybackPosition::Seek));
+    }
+
+    /// Restoring a listening session still applies the completion policy.
+    pub fn reset_saved(self, position: f64) {
+        self.reset(None);
+        self.pending.set(Some(PlaybackPosition::Resume(position)));
+    }
+
+    /// A user seek wins immediately over any outstanding history request.
+    pub fn accept_seek(self) {
+        self.pending.set(None);
+        self.ready.set(true);
     }
 
     pub fn load(self, id: String, on_loaded: Callback<()>) {
@@ -45,42 +57,31 @@ impl PlaybackProgress {
             let progress = api::fetch_media_progress(&id).await;
             if self.revision.try_get_untracked() != Some(revision)
                 || self.loaded_file.try_get_untracked().flatten().as_deref() != Some(&id)
+                || self.ready.try_get_untracked() != Some(false)
             {
                 return;
             }
-            self.pending.set(Some(
+            self.pending.set(Some(PlaybackPosition::Resume(
                 progress.map_or(0.0, |p| media_element_time(p.position)),
-            ));
+            )));
             on_loaded.run(());
         });
     }
 
-    /// The caller supplies its metadata readiness and user-seek policy.
+    /// The caller supplies its metadata readiness.
     /// Zero means there is no resume seek; previews leave their current clock alone.
-    pub fn restore(
-        self,
-        duration: f64,
-        current: f64,
-        user_seeked: bool,
-        local_key: Option<&str>,
-    ) -> Option<f64> {
+    pub fn restore(self, duration: f64, local_key: Option<&str>) -> Option<f64> {
         if self.ready.get_untracked() {
             return None;
         }
-        let server = self.pending.get_untracked()?;
-        let saved = if server > 0.0 {
-            server
-        } else {
-            local_key
-                .and_then(browser::local_storage_get)
-                .and_then(|value| value.parse::<f64>().ok())
-                .filter(|value| value.is_finite() && *value > 0.0)
-                .unwrap_or(0.0)
-        };
-        let target = authoritative_seek_target(current, saved, user_seeked);
+        let pending = self.pending.get_untracked()?;
+        let local = local_key
+            .and_then(browser::local_storage_get)
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0);
         self.pending.set(None);
         self.ready.set(true);
-        Some(resume_time(target, duration))
+        Some(pending.resolve(duration, local))
     }
 }
 

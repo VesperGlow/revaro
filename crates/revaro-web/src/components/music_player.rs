@@ -235,7 +235,7 @@ impl MusicController {
             .loaded_file
             .get_untracked()
             .map(|id| format!("revaro-audio-position:{id}"));
-        let Some(position) = self.progress.restore(duration, 0.0, false, key.as_deref()) else {
+        let Some(position) = self.progress.restore(duration, key.as_deref()) else {
             return;
         };
         audio.set_current_time(position);
@@ -267,14 +267,21 @@ impl MusicController {
         );
     }
     pub fn seek(self, position: f64) {
-        if !self.progress.ready.get_untracked() {
+        if !position.is_finite() || self.duration.get_untracked() <= 0.0 {
             return;
         }
-        if let Some(audio) = self.element() {
+        if let Some(audio) = self.element()
+            && audio.ready_state() >= 1
+        {
+            let was_ready = self.progress.ready.get_untracked();
             let position = media_element_time(position).min(self.duration.get_untracked());
             audio.set_current_time(position);
+            self.progress.accept_seek();
             self.position.set(position);
             self.save();
+            if !was_ready && self.autoplay_requested.get_untracked() {
+                self.start();
+            }
         }
     }
     pub fn pause(self) {
@@ -304,6 +311,7 @@ impl MusicController {
             leptos::task::spawn_local(async move {
                 if wasm_bindgen_futures::JsFuture::from(promise).await.is_err()
                     && self.progress.revision.try_get_untracked() == Some(revision)
+                    && self.autoplay_requested.try_get_untracked() == Some(true)
                 {
                     self.error
                         .set("点击播放以开始，或检查浏览器是否支持此音频格式".to_owned());
@@ -567,7 +575,7 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
             } else {
                 0.0
             };
-            controller.progress.reset(Some(position));
+            controller.progress.reset_saved(position);
             controller.collection.set(collection);
             controller.queue.set(queue);
             controller.index.set(index);
@@ -656,7 +664,7 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
                                 <For each=move ||controller.metadata.get().chapters key=|chapter|chapter.start.to_bits() children=move |chapter|view! {<i class="dock-chapter-marker" title=chapter.title style:left=move ||format!("{}%",clamp_percent(chapter.start/controller.duration.get()*100.0))></i>} />
                             </div>
                             <input aria-label="音乐播放进度" type="range" min="0" max=move ||controller.duration.get().max(1.0).to_string() step="0.1"
-                                prop:disabled=move || !controller.progress.ready.get()
+                                prop:disabled=move ||controller.duration.get() <= 0.0
                                 prop:value=move ||seek_preview.get().unwrap_or(controller.position.get()).to_string()
                                 on:input=move |event| {if let Ok(value)=event_target_value(&event).parse::<f64>() {seek_preview.set(Some(value));}}
                                 on:change=move |event| {if let Ok(value)=event_target_value(&event).parse::<f64>() {controller.seek(value);}seek_preview.set(None);}
@@ -692,7 +700,7 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
                                 if let Some(audio)=controller.element() {audio.set_muted(controller.muted.get_untracked());}
                             }>{move ||if controller.muted.get(){icons::volume_x().into_any()}else{icons::volume_2().into_any()}}</button>
                             <input aria-label="音乐音量" type="range" min="0" max="1" step="0.05" prop:value=move ||volume.get().to_string() on:input=move |event|{
-                                if let Ok(value)=event_target_value(&event).parse::<f64>() {volume.set(value);browser::local_storage_set("revaro-music-volume",&value.to_string());if let Some(audio)=controller.element(){audio.set_volume(value);}}
+                                if let Ok(value)=event_target_value(&event).parse::<f64>() {let value=value.clamp(0.0,1.0);volume.set(value);controller.muted.set(value==0.0);browser::local_storage_set("revaro-music-volume",&value.to_string());if let Some(audio)=controller.element(){audio.set_volume(value);audio.set_muted(value==0.0);}}
                             } />
                             <output aria-label="当前音乐音量">{move ||format!("{}%",if controller.muted.get(){0}else{(volume.get()*100.0).round() as u64})}</output>
                         </div>

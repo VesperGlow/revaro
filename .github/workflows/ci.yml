@@ -168,7 +168,7 @@ jobs:
           exit 1
       - name: Run Rust browser E2E
         working-directory: tests/e2e
-        run: npx playwright test startup.spec.ts rust-media-ui.spec.ts rust-reader-ui.spec.ts file-transport.spec.ts features.spec.ts library-selection.spec.ts content-regressions.spec.ts file-card-layout.spec.ts audio-playback.spec.ts music-cards-and-player.spec.ts mini-player-collapse.spec.ts player-controls.spec.ts dialog-dismissal.spec.ts account-settings.spec.ts upload-progress.spec.ts --config=playwright.config.ts
+        run: npx playwright test startup.spec.ts rust-media-ui.spec.ts rust-reader-ui.spec.ts file-transport.spec.ts features.spec.ts library-selection.spec.ts content-regressions.spec.ts file-card-layout.spec.ts audio-playback.spec.ts music-cards-and-player.spec.ts mini-player-collapse.spec.ts player-controls.spec.ts player-regressions.spec.ts dialog-dismissal.spec.ts account-settings.spec.ts upload-progress.spec.ts --config=playwright.config.ts
       - name: Export the tested image
         if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: docker save --output /tmp/revaro-e2e.tar revaro-e2e:local

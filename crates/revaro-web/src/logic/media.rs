@@ -87,18 +87,28 @@ pub fn active_chapter_index(chapters: &[AudioChapter], time: f64) -> usize {
         .unwrap_or(0)
 }
 
-/// Resolve the first seek that wins over a stored resume position.
-#[must_use]
-pub fn authoritative_seek_target(current: f64, saved: f64, user_seeked: bool) -> f64 {
-    if user_seeked && current.is_finite() {
-        return current.max(0.0);
-    }
-    if current.is_finite() && current > 0.0 {
-        current
-    } else if saved.is_finite() {
-        saved.max(0.0)
-    } else {
-        0.0
+/// Explicit source transitions preserve their target, including zero and the
+/// final seconds. Only historical progress uses the completed-media policy.
+#[derive(Clone, Copy)]
+pub enum PlaybackPosition {
+    Resume(f64),
+    Seek(f64),
+}
+
+impl PlaybackPosition {
+    #[must_use]
+    pub fn resolve(self, duration: f64, local: Option<f64>) -> f64 {
+        match self {
+            Self::Resume(saved) => {
+                let saved = if saved > 0.0 {
+                    saved
+                } else {
+                    local.unwrap_or(0.0)
+                };
+                resume_time(saved, duration)
+            }
+            Self::Seek(target) => media_element_time(target).min(media_element_time(duration)),
+        }
     }
 }
 
@@ -231,11 +241,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_zero_seek_beats_saved_resume_position() {
-        assert_eq!(authoritative_seek_target(0.0, 86.0, true), 0.0);
-        assert_eq!(authoritative_seek_target(0.0, 86.0, false), 86.0);
-        assert_eq!(authoritative_seek_target(80.0, 86.0, false), 80.0);
-        assert_eq!(authoritative_seek_target(0.0, f64::NAN, false), 0.0);
+    fn explicit_seeks_ignore_local_resume_and_completion_rules() {
+        assert_eq!(PlaybackPosition::Seek(0.0).resolve(90.0, Some(60.0)), 0.0);
+        assert_eq!(PlaybackPosition::Seek(88.0).resolve(90.0, None), 88.0);
+        assert_eq!(PlaybackPosition::Seek(100.0).resolve(90.0, None), 90.0);
+        assert_eq!(PlaybackPosition::Seek(f64::NAN).resolve(90.0, None), 0.0);
+        assert_eq!(
+            PlaybackPosition::Resume(0.0).resolve(90.0, Some(60.0)),
+            60.0
+        );
+        assert_eq!(PlaybackPosition::Resume(88.0).resolve(90.0, None), 0.0);
     }
 
     #[test]
@@ -245,10 +260,6 @@ mod tests {
         assert_eq!(resume_time(90.0, 90.0), 0.0);
         assert_eq!(resume_time(f64::NAN, 90.0), 0.0);
         assert_eq!(resume_time(60.0, 0.0), 0.0);
-        assert_eq!(
-            resume_time(authoritative_seek_target(0.0, 60.0, true), 90.0),
-            0.0
-        );
     }
 
     #[test]

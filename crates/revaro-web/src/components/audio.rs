@@ -246,8 +246,10 @@ pub fn AudioPlayer(
             if controller.is_some() {
                 return;
             }
-            if duration() > 0.0
-                && let Some(saved) = playback.restore(duration(), 0.0, false, Some(&position_key))
+            if native_duration.get_untracked() > 0.0
+                && let Some(element) = audio_element(audio)
+                && element.ready_state() >= 1
+                && let Some(saved) = playback.restore(duration(), Some(&position_key))
                 && saved > 0.0
             {
                 seek_audio(audio, current_time, duration(), saved, false);
@@ -262,8 +264,11 @@ pub fn AudioPlayer(
                 controller.save();
                 return;
             }
-            let position = current_time.get_untracked().max(0.0);
-            if position > 0.0 {
+            if playback.ready.get_untracked() {
+                let position = audio_element(audio).map_or_else(
+                    || current_time.get_untracked().max(0.0),
+                    |element| media_element_time(element.current_time()),
+                );
                 persist_progress(
                     &item_id,
                     position,
@@ -368,7 +373,6 @@ pub fn AudioPlayer(
         }
     };
     let seek = {
-        let restore_position = restore_position.clone();
         move |target: f64, play: bool| {
             if let Some(controller) = controller {
                 controller.seek(target);
@@ -377,8 +381,13 @@ pub fn AudioPlayer(
                 }
                 return;
             }
-            seek_audio(audio, current_time, duration(), target, play);
-            restore_position();
+            if target.is_finite()
+                && let Some(element) = audio_element(audio)
+                && element.ready_state() >= 1
+            {
+                seek_audio(audio, current_time, duration(), target, play);
+                playback.accept_seek();
+            }
         }
     };
     let previous_chapter = {
@@ -699,8 +708,11 @@ pub fn AudioPlayer(
             return;
         }
         cleanup_save(false);
-        let position = current_time.get_untracked().max(0.0);
-        if position > 0.0 {
+        let position = audio_element(audio).map_or_else(
+            || current_time.get_untracked().max(0.0),
+            |element| media_element_time(element.current_time()),
+        );
+        if playback.ready.get_untracked() {
             persist_progress(
                 &cleanup_item_id,
                 position,
@@ -750,6 +762,7 @@ pub fn AudioPlayer(
                         buffered=move || controller.map_or_else(|| vec![(0.0, buffered.get())], |c| c.buffered.get())
                         markers=move || chapter_markers(&chapters(), duration())
                         duration=duration
+                        enabled={move || native_duration.get() > 0.0}
                         current_time=displayed_time
                         hover=seek_hover
                         on_input=preview_seek
@@ -759,13 +772,13 @@ pub fn AudioPlayer(
                     />
                     <div class="audio-time"><span>{move || format_media_time(displayed_time())}</span><span>{move || format_media_time(duration())}</span></div>
                     <div class="audio-controls">
-                        <button type="button" aria-label="后退15秒" title="后退 15 秒" prop:disabled={move || duration() <= 0.0} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() - 15.0, false))>{icons::rotate_ccw()}<small>"15"</small></button>
+                        <button type="button" aria-label="后退15秒" title="后退 15 秒" prop:disabled={move || native_duration.get() <= 0.0} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() - 15.0, false))>{icons::rotate_ccw()}<small>"15"</small></button>
                         <button class="audio-play" type="button" prop:disabled=move || loading.get() aria-label=move || if playing.get() { "暂停" } else { "播放" } on:click=move |_| toggle_playback()>
                             <Show when=move || loading.get() || waiting.get() fallback=move || if playing.get() { icons::pause().into_any() } else { icons::play().into_any() }>
                                 <span class="audio-control-spinner"></span>
                             </Show>
                         </button>
-                        <button type="button" aria-label="前进30秒" title="前进 30 秒" prop:disabled={move || duration() <= 0.0} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() + 30.0, false))>{icons::rotate_cw()}<small>"30"</small></button>
+                        <button type="button" aria-label="前进30秒" title="前进 30 秒" prop:disabled={move || native_duration.get() <= 0.0} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() + 30.0, false))>{icons::rotate_cw()}<small>"30"</small></button>
                     </div>
                     <div class="audio-options">
                         <label class="audio-rate"><span class="media-sr-only">"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=set_rate>
@@ -878,6 +891,7 @@ fn AudioProgress(
     buffered: impl Fn() -> Vec<(f64, f64)> + Copy + Send + 'static,
     markers: impl Fn() -> Vec<f64> + Send + 'static,
     duration: impl Fn() -> f64 + Copy + Send + 'static,
+    enabled: impl Fn() -> bool + Copy + Send + 'static,
     current_time: impl Fn() -> f64 + Copy + Send + 'static,
     hover: RwSignal<Option<SeekHover>>,
     on_input: impl Fn(Event) + Send + 'static,
@@ -914,7 +928,7 @@ fn AudioProgress(
                 max=move || duration().max(0.0).to_string()
                 step="0.1"
                 prop:value=move || current_time().clamp(0.0, duration().max(0.0)).to_string()
-                prop:disabled={move || duration() <= 0.0}
+                prop:disabled=move || !enabled()
                 aria-label="播放进度"
                 on:input=on_input
                 on:change=on_change
