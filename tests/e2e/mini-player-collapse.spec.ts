@@ -22,7 +22,7 @@ for (const width of [1600, 1024, 900, 850, 390, 320]) {
       const activate = (control: Locator) => mobile ? control.tap() : control.click()
       const outsideBlank = () => mobile ? page.touchscreen.tap(width - 4, 120) : page.mouse.click(width - 4, 120)
       const errors: string[] = []
-      page.on('pageerror', error => errors.push(error.message))
+      page.on('pageerror', error => errors.push(error.stack || error.message))
       await login(page)
       await expect(page.locator('.music-orb, .music-dock')).toHaveCount(0)
       const headers = { origin: new URL(page.url()).origin }
@@ -269,7 +269,7 @@ for (const width of [1600, 1024, 900, 850, 390, 320]) {
         await activate(orb)
         await expect(panel.locator('.dock-track small')).toContainText('第 2 / 2 轨')
         await expect(panel.locator('.dock-lyrics-empty')).toHaveText('暂无歌词/字幕')
-        expect((await panel.locator('.dock-lyrics').boundingBox())!.height).toBe(lyricBounds.height)
+        await expect.poll(async () => (await panel.locator('.dock-lyrics').boundingBox())?.height).toBe(lyricBounds.height)
 
         // Low-frequency actions remain in the detailed player's menu on every device.
         await panel.getByLabel('播放器更多操作', { exact: true }).click()

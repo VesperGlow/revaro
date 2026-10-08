@@ -418,6 +418,8 @@ test('mixed file selections share typed batch management, retry failures and kee
   const menu = page.locator('.selection-management-panel')
   for (const [kind, label] of [['book', '书架'], ['audio', '歌单'], ['image', '相册']]) {
     await more.click()
+    await expect(menu).toBeVisible()
+    await expect.poll(() => menu.evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(320)
     const bounds = (await menu.boundingBox())!
     expect(bounds.x).toBeGreaterThanOrEqual(0)
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(320)

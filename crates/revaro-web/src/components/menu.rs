@@ -120,14 +120,18 @@ pub fn ActionMenu(
             class:embedded-menu=embedded
             class:topbar-menu=sheet
             data-popover-scope=(!scope.is_empty()).then(||scope.clone())
-            name=embedded.then_some("topbar-actions")
+            // Native grouping closes the old disclosure synchronously, even when
+            // scripts open a new one before the old toggle event is delivered.
+            name=if embedded { "topbar-actions" } else { "revaro-popovers" }
             on:focusout=move |event| {
-                if let Some(details) = menu.get() {
+                // Removing a focused menu dispatches focusout while its owner is
+                // already disposed, before the DOM listener has been removed.
+                if let Some(details) = menu.try_get_untracked().flatten() {
                     let inside = event.related_target()
                         .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
                         .is_some_and(|target| {
                             details.contains(Some(&target))
-                                || panel.get_untracked().is_some_and(|panel|panel.contains(Some(&target)))
+                                || panel.try_get_untracked().flatten().is_some_and(|panel|panel.contains(Some(&target)))
                                 || (embedded && details.parent_element().is_some_and(|parent| parent.contains(Some(&target))))
                         });
                     // A revoke can remove the focused row. Keep the disclosure open
