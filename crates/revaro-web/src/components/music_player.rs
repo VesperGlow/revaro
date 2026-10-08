@@ -564,18 +564,29 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
             .await;
         });
     });
-    // A separate, silent element only asks the browser for the next track's
-    // metadata. Seeking always changes the primary element's currentTime.
+    // Expose a deterministic next URL without starting a native background
+    // download. The worker warms it only when the current buffer allows it.
     Effect::new(move |_| {
-        let next = controller
-            .queue
-            .get()
-            .get(controller.index.get() + 1)
-            .cloned();
+        let queue = controller.queue.get();
+        let mode = controller.mode.get().for_queue(queue.len());
+        let next = if matches!(mode, PlaybackMode::Shuffle | PlaybackMode::RepeatOne) {
+            None
+        } else {
+            next_index(
+                controller.index.get(),
+                queue.len(),
+                1,
+                mode == PlaybackMode::RepeatAll,
+            )
+            .and_then(|index| queue.get(index).cloned())
+        };
         if let Some(element) = next_audio.get() {
             let audio: web_sys::HtmlAudioElement = element.unchecked_into();
             if let Some(file) = next {
-                audio.set_src(&format!("/api/files/{}/preview", file.id));
+                audio.set_src(&format!(
+                    "/api/files/{}/preview?revaro_priority=background",
+                    file.id
+                ));
             } else {
                 let _ = audio.remove_attribute("src");
             }
@@ -654,7 +665,7 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
             on:ended=move |_| controller.advance(1,true)
             on:error=move |_| {if controller.current().is_some() {controller.progress.ready.set(false);controller.playing.set(false);controller.error.set("此音频无法播放，可在文件管理中下载原文件".to_owned());}}
         ></audio>
-        <audio node_ref=next_audio preload="metadata" aria-hidden="true"></audio>
+        <audio node_ref=next_audio preload="none" aria-hidden="true" data-revaro-next="true"></audio>
         <Show when=move || controller.current().is_some() fallback=|| ()>
             <div class="music-orb-shell" class:is-hidden=move ||orb_hidden.get() class:pointer-interaction=move ||pointer_interaction.get()
                 aria-hidden=move ||orb_hidden.get().to_string() inert=move ||orb_hidden.get()

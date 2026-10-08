@@ -11,6 +11,7 @@ test('all file types, native downloads and uploads recover through the shared wo
   const upstream = new URL(baseURL!)
   const tracked = new Set<string>(), sharedPaths = new Set<string>(), ranges: string[] = [], puts = new Map<string, number>()
   let faulted = false, lostAck = false, requests = 0, active = 0, maximum = 0, faults = 0
+  let resumedRange = ''
   const proxy: Server = createServer((req, res) => {
     const headers = { ...req.headers, host: upstream.host }
     if (headers.origin) headers.origin = upstream.origin
@@ -23,8 +24,10 @@ test('all file types, native downloads and uploads recover through the shared wo
         const finish = () => { if (!finished) { active--; finished = true } }
         res.on('close', finish)
         if (requests % 7 === 0) { faults++; response.destroy(); res.destroy(); return }
-        if (!faulted && range === 'bytes=524288-1048575') {
+        const block = /^bytes=(\d+)-(\d+)$/.exec(range)
+        if (!faulted && block && Number(block[1]) > 0 && Number(block[2]) - Number(block[1]) >= 32768) {
           faulted = true; faults++
+          resumedRange = `bytes=${Number(block[1]) + 32768}-${block[2]}`
           res.writeHead(response.statusCode!, response.headers)
           let sent = 0
           response.on('data', chunk => {
@@ -103,7 +106,7 @@ test('all file types, native downloads and uploads recover through the shared wo
       }
     }
     expect(faulted).toBe(true); expect(faults).toBeGreaterThan(1)
-    expect(ranges).toContain('bytes=557056-1048575')
+    expect(ranges).toContain(resumedRange)
     expect(maximum).toBeGreaterThanOrEqual(2)
 
     const archive = await context.request.post(new URL('/api/files/batch-download/prepare', upstream).href,

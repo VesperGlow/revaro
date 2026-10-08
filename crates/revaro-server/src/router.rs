@@ -33,6 +33,10 @@ pub fn build(state: Arc<AppState>) -> Router {
         .fallback(web::serve)
         .with_state(state.clone())
         .layer(axum::middleware::from_fn(crate::transfer::file_resources))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::delivery::schedule,
+        ))
         // Order matters, and matches the Go chain: security headers wrap the
         // origin guard, which wraps the routes.
         .layer(axum::middleware::from_fn_with_state(

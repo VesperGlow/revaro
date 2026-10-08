@@ -19,6 +19,7 @@ async function engine(fetch, cache = new MemoryCache(), location = 'http://local
 }
 const payload = Uint8Array.from({ length: 512 * 1024 + 123 }, (_, i) => (i * 31 + 7) % 251);
 function bytesResponse(data, start, end, etag = '"version-1"', mime = 'application/octet-stream') {
+  end = Math.min(end, data.length - 1);
   return new Response(data.slice(start, end + 1), { status: 206, headers: {
     'content-range': `bytes ${start}-${end}/${data.length}`, 'content-length': String(end - start + 1),
     etag, 'accept-ranges': 'bytes', 'content-type': mime, 'cache-control': 'private, no-cache',
@@ -84,14 +85,14 @@ test('slow small bodies hedge; healthy response wins and cancels the stalled ori
   let calls = 0, aborted = 0;
   const core = await engine(async (url, init) => {
     const [start, end] = bounds(init);
-    if (++calls === 2) {
+    if (++calls === 1) {
       return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => { aborted++; reject(init.signal.reason); }, { once: true }));
     }
     return bytesResponse(payload.slice(0, 2048), start, end);
   });
-  const result = await (await core.fileResponse(request())).arrayBuffer();
+  const result = await (await core.fileResponse(new Request(new URL('/api/files/file.bin/preview', location)))).arrayBuffer();
   assert.deepEqual(new Uint8Array(result), payload.slice(0, 2048));
-  assert.equal(calls, 3); assert.equal(aborted, 1);
+  assert.equal(calls, 2); assert.equal(aborted, 1);
 });
 
 test('changed ETag restarts before headers and never joins different versions', async () => {
@@ -102,7 +103,7 @@ test('changed ETag restarts before headers and never joins different versions', 
     const data = version === 1 ? payload : Uint8Array.from(payload, b => b ^ 255);
     return bytesResponse(data, start, end, `"version-${version}"`);
   });
-  assert.deepEqual(new Uint8Array(await (await core.fileResponse(request())).arrayBuffer()), Uint8Array.from(payload, b => b ^ 255));
+  assert.deepEqual(new Uint8Array(await (await core.fileResponse(request('changed', { headers: { range: 'bytes=65536-' } }))).arrayBuffer()), Uint8Array.from(payload.slice(65536), b => b ^ 255));
 });
 
 test('native suffix ranges and If-Range follow HTTP semantics', async () => {
@@ -138,7 +139,7 @@ test('long FLAC/WAV streams seek in bounded windows and cancel without downloadi
         etag: '"long-audio"', 'accept-ranges': 'bytes', 'content-type': mime,
       } });
     });
-    for (const start of [5 * 1024 ** 3, 1024 ** 2]) {
+    for (const start of [5 * 1024 ** 3, 1024 ** 2, 5 * 1024 ** 3 + 12345]) {
       calls.length = 0;
       const response = await core.fileResponse(request('long-audio', { headers: { range: `bytes=${start}-` } }));
       assert.equal(response.status, 206);
@@ -146,12 +147,12 @@ test('long FLAC/WAV streams seek in bounded windows and cancel without downloadi
       assert.equal(response.headers.get('content-type'), mime);
       const reader = response.body.getReader();
       const { value } = await reader.read();
-      assert.equal(value.length, core.policy.chunkBytes);
+      assert.equal(value.length, core.policy.blockBytes - start % core.policy.blockBytes);
       assert.equal(value[0], start % 251);
       await reader.cancel();
       await response.transportComplete;
       assert.deepEqual(calls[0], [0, 0], 'one-byte authentication probe');
-      assert.ok(calls.slice(1).every(([offset]) => offset >= start), 'no preceding audio is downloaded');
+      assert.ok(calls.slice(1).every(([offset]) => offset >= Math.floor(start / core.policy.blockBytes) * core.policy.blockBytes), 'only the containing block and following audio are downloaded');
       assert.ok(calls.length <= 8, 'cancellation bounds speculative download windows');
       assert.ok(calls.every(([offset, end]) => end - offset < core.policy.chunkBytes));
     }
@@ -191,4 +192,180 @@ test('upload lost acknowledgements resend only that block and verify SHA-256', a
   assert.equal(counts.get('http://localhost:8081/api/uploads/session/data/2'), 2);
   assert.equal(counts.get('http://localhost:8081/api/uploads/session/data/3'), 1);
   assert.equal(durable.size, 3); assert.ok(progress.includes(0));
+});
+
+test('cold small resources use one authenticated data request', async () => {
+  const data = payload.slice(0, 3072), calls = [];
+  const core = await engine(async (url, init) => {
+    const [start, end] = bounds(init); calls.push([start, end]); return bytesResponse(data, start, end);
+  });
+  const response = await core.fileResponse(request('small'));
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), data);
+  assert.equal(calls.length, 1, 'no separate one-byte round trip');
+});
+
+test('subsequent windows adapt to measured throughput instead of always fetching 512 KiB', async () => {
+  const calls = [];
+  const core = await engine(async (url, init) => {
+    const [start, end] = bounds(init); calls.push([start, end]);
+    await new Promise(resolve => setTimeout(resolve, 160));
+    return bytesResponse(payload, start, end);
+  });
+  Object.assign(core.policy, { chunkBytes: 512 * 1024, headersMs: 1000, idleMs: 1000 });
+  const response = await core.fileResponse(request('adaptive'));
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), payload);
+  await response.transportComplete;
+  assert.deepEqual(calls[0], [0, 65535]);
+  assert.ok(calls.slice(1).some(([start, end]) => end - start + 1 > 65536 && end - start + 1 < 512 * 1024));
+  assert.ok(calls.every(([start, end]) => end - start + 1 <= 512 * 1024));
+});
+
+test('slow persistent cache writes do not delay first bytes or body delivery', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const cache = new MemoryCache();
+  const put = cache.put.bind(cache); cache.put = async (...args) => { await gate; return put(...args); };
+  const data = payload.slice(0, 2048);
+  const core = await engine(async (url, init) => { const [start, end] = bounds(init); return bytesResponse(data, start, end); }, cache);
+  try {
+    const delivered = await Promise.race([
+      core.fileResponse(request('slow-cache')).then(async response => new Uint8Array(await response.arrayBuffer())),
+      new Promise((resolve, reject) => setTimeout(() => reject(new Error('cache blocked the response')), 500)),
+    ]);
+    assert.deepEqual(delivered, data);
+    assert.ok(core.transportState().queuedCacheBytes > 0);
+  } finally { release(); await core.clearTransportCache(); }
+});
+
+test('unaligned seeks reuse canonical blocks while always checking current permissions', async () => {
+  const calls = [], cache = new MemoryCache();
+  const network = async (url, init) => { const [start, end] = bounds(init); calls.push([start, end]); return bytesResponse(payload, start, end); };
+  const core = await engine(network, cache);
+  const first = await core.fileResponse(request('seek-cache', { headers: { range: 'bytes=65541-131068' } }));
+  assert.deepEqual(new Uint8Array(await first.arrayBuffer()), payload.slice(65541, 131069)); await first.transportComplete;
+  calls.length = 0;
+  const second = await core.fileResponse(request('seek-cache', { headers: { range: 'bytes=70000-90000' } }));
+  assert.deepEqual(new Uint8Array(await second.arrayBuffer()), payload.slice(70000, 90001));
+  assert.deepEqual(calls, [[0, 0]], 'the overlapping seek only reauthenticates');
+  const revoked = await engine(async () => new Response('revoked', { status: 403 }), cache);
+  assert.equal((await revoked.fileResponse(request('seek-cache', { headers: { range: 'bytes=70000-90000' } }))).status, 403);
+});
+
+test('concurrent consumers share a block and one cancellation does not abort the other', async () => {
+  let release, started; const gate = new Promise(resolve => { release = resolve; }), entered = new Promise(resolve => { started = resolve; });
+  let ranges = 0, aborts = 0;
+  const core = await engine(async (url, init) => {
+    const [start, end] = bounds(init);
+    if (start >= 65536) {
+      ranges++; started();
+      await Promise.race([gate, new Promise((resolve, reject) => init.signal.addEventListener('abort', () => { aborts++; reject(init.signal.reason); }, { once: true }))]);
+    }
+    return bytesResponse(payload, start, end);
+  });
+  const cancelled = new AbortController();
+  const first = core.fileResponse(request('shared', { signal: cancelled.signal, headers: { range: 'bytes=65536-131071' } })).catch(error => error);
+  await entered;
+  const second = core.fileResponse(request('shared', { headers: { range: 'bytes=65541-131068' } }));
+  await new Promise(resolve => setTimeout(resolve, 5)); cancelled.abort(); release();
+  assert.equal((await first).name, 'AbortError');
+  assert.deepEqual(new Uint8Array(await (await second).arrayBuffer()), payload.slice(65541, 131069));
+  assert.equal(ranges, 1);
+  // A completed fetch is cancelled when its reader is disposed; the important
+  // invariant is that no live shared request was aborted before gate release.
+  assert.ok(aborts <= 1);
+});
+
+test('next-track prefetch and normal playback share the same cache identity', async () => {
+  const calls = [];
+  const core = await engine(async (url, init) => { const [start, end] = bounds(init); calls.push([start, end]); return bytesResponse(payload, start, end); });
+  const warm = await core.fileResponse(new Request(new URL('/api/files/next/preview?revaro_priority=background', location), {
+    headers: { range: 'bytes=0-131071', 'x-revaro-priority': 'background' },
+  }));
+  await warm.arrayBuffer(); await warm.transportComplete; calls.length = 0;
+  const played = await core.fileResponse(new Request(new URL('/api/files/next/preview', location), { headers: { range: 'bytes=0-131071' } }));
+  assert.deepEqual(new Uint8Array(await played.arrayBuffer()), payload.slice(0, 131072));
+  assert.deepEqual(calls, [[0, 0]]);
+});
+
+test('buffer pressure bounds bulk requests and admits a foreground click ahead of queued bulk work', async () => {
+  const gates = [], order = [];
+  const core = await engine(async (url, init) => {
+    const name = new URL(url).pathname.split('/').at(-2); order.push(name);
+    await new Promise(resolve => gates.push(resolve));
+    return new Response('ok', { headers: { 'content-length': '2' } });
+  });
+  core.setPlaybackState({ key: 'player', playing: true, bufferSeconds: 2 });
+  const bulk = [1, 2, 3, 4].map(number => core.bufferedRequest(request(`bulk-${number}`)));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(order.length, 2, 'only two bulk requests compete with the starving player');
+  const foreground = core.bufferedRequest(new Request(new URL('/api/files/click/preview', location)));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(order[2], 'click');
+  while (gates.length) gates.shift()();
+  for (let i = 0; i < 4; i++) { await new Promise(resolve => setTimeout(resolve, 3)); while (gates.length) gates.shift()(); }
+  await Promise.all([...bulk, foreground]);
+  assert.equal(core.transportState().activeRequests, 0);
+});
+
+test('a stalled primary races the backup before the ordinary header deadline', async () => {
+  const calls = [];
+  const core = await engine(async (url, init) => {
+    calls.push(url);
+    if (new URL(url).port !== '8443') {
+      return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    }
+    const [start, end] = bounds(init); return bytesResponse(payload.slice(0, 2048), start, end);
+  }, undefined, 'https://files.example.test/');
+  core.configureTransport({ http2_origin: 'https://files.example.test:8443' });
+  core.policy.headersMs = 500;
+  const before = Date.now();
+  assert.deepEqual(new Uint8Array(await (await core.fileResponse(new Request('https://files.example.test/api/files/failover/preview'))).arrayBuffer()), payload.slice(0, 2048));
+  assert.ok(Date.now() - before < core.policy.headersMs);
+  assert.equal(core.transportState().fallback, true);
+  assert.equal(calls.length, 2);
+});
+
+test('no-store resources never write body blocks or persistent descriptors', async () => {
+  const cache = new MemoryCache();
+  const core = await engine(async (url, init) => {
+    const [start, end] = bounds(init), response = bytesResponse(payload.slice(0, 2048), start, end);
+    response.headers.set('cache-control', 'no-store'); return response;
+  }, cache);
+  const response = await core.fileResponse(request('private-share'));
+  await response.arrayBuffer(); await response.transportComplete;
+  assert.equal(cache.entries.size, 0); assert.equal(core.transportState().memoryBytes, 0);
+});
+
+test('cache clearing during an authenticated probe prevents late cache repopulation', async () => {
+  const cache = new MemoryCache(); let release, started;
+  const waiting = new Promise(resolve => { started = resolve; });
+  const core = await engine(async (url, init) => {
+    const [start, end] = bounds(init); started();
+    await new Promise(resolve => { release = resolve; });
+    return bytesResponse(payload, start, end);
+  }, cache);
+  const response = core.fileResponse(request('logout-race'));
+  const rejected = assert.rejects(response, { name: 'AbortError' });
+  await waiting; await core.clearTransportCache(); release(); await rejected;
+  assert.equal(cache.entries.size, 0);
+  assert.equal(core.transportState().memoryBytes, 0);
+});
+
+test('cache clearing also prevents a late disk read from restoring private memory blocks', async () => {
+  const cache = new MemoryCache();
+  const network = async (url, init) => { const [start, end] = bounds(init); return bytesResponse(payload, start, end); };
+  const first = await engine(network, cache);
+  const warm = await first.fileResponse(request('delayed-cache', { headers: { range: 'bytes=65536-131071' } }));
+  await warm.arrayBuffer(); await warm.transportComplete;
+  let release, started;
+  const entered = new Promise(resolve => { started = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  cache.match = async key => {
+    const hit = await MemoryCache.prototype.match.call(cache, key);
+    if (new URL(key).pathname === '/.revaro-transport-cache') { started(); await gate; }
+    return hit;
+  };
+  const core = await engine(network, cache);
+  const response = core.fileResponse(request('delayed-cache', { headers: { range: 'bytes=65540-131070' } }));
+  const rejected = assert.rejects(response, { name: 'AbortError' });
+  await entered; await core.clearTransportCache(); release(); await rejected;
+  assert.equal(core.transportState().memoryBytes, 0);
 });

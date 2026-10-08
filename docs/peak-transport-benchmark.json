@@ -1,0 +1,14 @@
+{
+  "baselineCommit": "ca09c35",
+  "model": {
+    "bytesPerSecond": 131072,
+    "latencyMs": 80,
+    "fairSharing": true
+  },
+  "results": [
+    { "label": "before", "scenario": "cold-large", "firstDeliveryMs": 12347, "firstBytes": 524288, "requests": 5 },
+    { "label": "after", "scenario": "cold-large", "firstDeliveryMs": 587, "firstBytes": 65536, "requests": 1 },
+    { "label": "before", "scenario": "foreground-with-bulk", "firstDeliveryMs": 6152, "firstBytes": 2048, "requests": 13 },
+    { "label": "after", "scenario": "foreground-with-bulk", "firstDeliveryMs": 131, "firstBytes": 2048, "requests": 3 }
+  ]
+}

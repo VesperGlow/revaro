@@ -166,6 +166,6 @@ Rust 本地编译需要 FFmpeg 开发库、clang 和 cmake；Dockerfile 包含�
 
 ### 统一文件传输
 
-所有文件类型的读取、预览、原生下载、公开链接、阅读资源与分块上传共享传输层。支持 Range/206、强 ETag、2～4 路并行下载、局部断点恢复、停滞检测、退避重试与小资源补发；所有非空文件统一以 1 MiB 起的分片上传并校验 SHA-256。批量 ZIP 生成可复用的缓存文件，支持断流后续传。客户端需要 HTTPS 或 localhost。HTTP/3 使用浏览器原生 QUIC；可配置同主机不同 HTTPS 端口的 HTTP/2 专用入口自动回退。部署说明、参数与验证边界见 [文件传输说明](docs/file-transport.md)。
+所有文件类型的读取、预览、原生下载、公开链接、阅读资源与分块上传共享传输层。首次最多读取 64 KiB 即可开始交付，后续窗口按吞吐调整；支持 Range/206、强 ETag、局部恢复、停滞检测、退避重试与受限补发。播放缓冲不足时限制后台下载与上传，下一首仅在缓冲充足时有界预取；对齐缓存块、共享在途读取和异步缓存写入减少重复流量与等待。所有非空文件以 1 MiB 起的分片上传并校验 SHA-256，批量 ZIP 支持断流后续传。客户端需要 HTTPS 或 localhost；可配置同主机不同 HTTPS 端口的 HTTP/2 专用入口快速回退。参数、部署与验证边界见 [文件传输说明](docs/file-transport.md)。
 
 可选的原生 Quinn HTTP/3 listener 提供 `standard` / `aggressive` 拥塞控制。默认 `aggressive + auto` 以真实 ACK 吞吐和持续排队反馈动态探测带宽，也支持显式固定 target；`standard` 保留 upstream Cubic，供兼容、诊断和手动回退。aggressive 使用有限损失补偿与双层 UDP pacing；持续拥塞和严重丢包转回 Cubic，确认路径恢复后只允许有限次数的带宽探测。保持标准 HTTP/3，复用现有全部路由与共享恢复层。配置、TLS/UDP 部署及真实 tc netem 测量见 [QUIC 传输说明](docs/quic-transport.md)。

@@ -42,7 +42,7 @@ async fn fallback_authority_allows_credentialed_transfer_headers_only_from_prima
                     .header("access-control-request-method", "PUT")
                     .header(
                         "access-control-request-headers",
-                        "range,if-match,x-content-sha256,x-revaro-managed",
+                        "range,if-match,priority,x-content-sha256,x-revaro-managed",
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -58,7 +58,13 @@ async fn fallback_authority_allows_credentialed_transfer_headers_only_from_prima
                 .to_str()
                 .unwrap()
                 .to_lowercase();
-            for required in ["range", "if-match", "x-content-sha256", "x-revaro-managed"] {
+            for required in [
+                "range",
+                "if-match",
+                "priority",
+                "x-content-sha256",
+                "x-revaro-managed",
+            ] {
                 assert!(allowed.contains(required));
             }
             assert!(

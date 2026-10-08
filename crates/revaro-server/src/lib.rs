@@ -19,6 +19,7 @@ pub mod batch_download;
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod delivery;
 pub mod error;
 pub mod file_routes;
 pub mod ids;

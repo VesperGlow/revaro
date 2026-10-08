@@ -68,7 +68,7 @@ pub async fn security_headers(
                 .unwrap(),
         );
         headers.insert(http::header::ACCESS_CONTROL_ALLOW_HEADERS,
-            "Content-Type, Range, If-Range, If-Match, If-None-Match, X-Content-SHA256, X-Revaro-Managed".parse().unwrap());
+            "Content-Type, Range, If-Range, If-Match, If-None-Match, Priority, X-Content-SHA256, X-Revaro-Managed".parse().unwrap());
         headers.insert(http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
             "ETag, Content-Range, Content-Length, Accept-Ranges, Content-Disposition, X-Content-SHA256, Retry-After".parse().unwrap());
         headers.append(http::header::VARY, "Origin".parse().unwrap());

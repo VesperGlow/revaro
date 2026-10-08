@@ -294,7 +294,7 @@ fn copy_static_assets(root: &Path, dist: &Path) -> Result<(), String> {
         .map_err(|error| format!("read shared transport policy: {error}"))?;
     let worker = std::fs::read_to_string(source.join("transport-sw.js"))
         .map_err(|error| format!("read transport worker: {error}"))?;
-    let import = "import { fileResponse, bufferedRequest, configureTransport, clearTransportCache } from './transport-core.js';\n";
+    let import = "import { fileResponse, bufferedRequest, configureTransport, clearTransportCache, setPlaybackState, policy } from './transport-core.js';\n";
     let worker = worker.strip_prefix(import).ok_or_else(|| {
         "transport worker imports changed; update classic worker bundling".to_owned()
     })?;

@@ -52,7 +52,7 @@ jobs:
         with:
           node-version: 24
       - name: Test shared transport recovery
-        run: node --test tests/transport/transport.test.mjs
+        run: node --test tests/transport/*.test.mjs
       - name: Check the workspace
         # fmt + clippy (-D warnings) + the full test suite + wasm32 type-check.
         run: cargo xtask check

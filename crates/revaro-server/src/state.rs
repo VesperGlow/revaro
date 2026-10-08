@@ -194,6 +194,8 @@ impl Default for ReaderRuntime {
 /// Everything a handler can reach.
 #[derive(Debug)]
 pub struct AppState {
+    /// Response budgets with reserved capacity for interactive readers.
+    pub delivery: crate::delivery::DeliveryRuntime,
     /// Process configuration.
     pub config: Arc<Config>,
     /// The migrated SQLite database.
@@ -237,6 +239,7 @@ impl AppState {
         let maintenance = crate::maintenance::MaintenanceRuntime::new();
         let uploads = UploadRuntime::with_concurrency(config.upload_concurrency);
         let state = Arc::new(Self {
+            delivery: crate::delivery::DeliveryRuntime::default(),
             config,
             db,
             store,
