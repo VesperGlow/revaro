@@ -8,6 +8,7 @@ pub mod icons;
 
 mod account;
 mod audio;
+mod audio_timeline;
 mod content_shell;
 mod dialogs;
 mod directory_picker;

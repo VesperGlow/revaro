@@ -125,6 +125,39 @@ test('HTTP/3 connection failure uses the configured HTTP/2-only authority', asyn
   assert.ok(urls.some(url => new URL(url).port === '8443')); assert.equal(core.transportState().fallback, true);
 });
 
+test('long FLAC/WAV streams seek in bounded windows and cancel without downloading the file', async () => {
+  const size = 8 * 1024 ** 3;
+  for (const mime of ['audio/flac', 'audio/wav']) {
+    const calls = [];
+    const core = await engine(async (url, init) => {
+      const [start, end] = bounds(init);
+      calls.push([start, end]);
+      const data = Uint8Array.from({ length: end - start + 1 }, (_, index) => (start + index) % 251);
+      return new Response(data, { status: 206, headers: {
+        'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(data.length),
+        etag: '"long-audio"', 'accept-ranges': 'bytes', 'content-type': mime,
+      } });
+    });
+    for (const start of [5 * 1024 ** 3, 1024 ** 2]) {
+      calls.length = 0;
+      const response = await core.fileResponse(request('long-audio', { headers: { range: `bytes=${start}-` } }));
+      assert.equal(response.status, 206);
+      assert.equal(response.headers.get('content-range'), `bytes ${start}-${size - 1}/${size}`);
+      assert.equal(response.headers.get('content-type'), mime);
+      const reader = response.body.getReader();
+      const { value } = await reader.read();
+      assert.equal(value.length, core.policy.chunkBytes);
+      assert.equal(value[0], start % 251);
+      await reader.cancel();
+      await response.transportComplete;
+      assert.deepEqual(calls[0], [0, 0], 'one-byte authentication probe');
+      assert.ok(calls.slice(1).every(([offset]) => offset >= start), 'no preceding audio is downloaded');
+      assert.ok(calls.length <= 8, 'cancellation bounds speculative download windows');
+      assert.ok(calls.every(([offset, end]) => end - offset < core.policy.chunkBytes));
+    }
+  }
+});
+
 test('cancellation interrupts backoff immediately; permanent HTTP errors are not retried', async () => {
   const core = await engine(async () => { throw new Error('unused'); });
   const controller = new AbortController(); let attempts = 0;

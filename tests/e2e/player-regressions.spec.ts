@@ -91,6 +91,111 @@ test('full audio player accepts seeks while saved progress is still loading', as
   })
 })
 
+test('both players use backend duration for an unknown native clock and follow durationchange', async ({ page }) => {
+  await page.addInitScript(() => {
+    const duration = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration')!
+    ;(window as any).nativeDuration = NaN
+    Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
+      configurable: true,
+      get() { return (window as any).nativeDuration ?? duration.get!.call(this) },
+    })
+  })
+  await fixture(page, async ([first]) => {
+    await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
+    await openMusicPlayer(page)
+    const audio = page.locator('audio').first()
+    const mini = page.getByLabel('音乐播放进度', { exact: true })
+    await expect(mini).toBeEnabled()
+    await expect(mini).toHaveAttribute('max', '30')
+    await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
+    await seek(mini, 18)
+    await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(18, 1)
+    await page.getByRole('button', { name: '打开音频播放器', exact: true }).click()
+    const full = page.getByLabel('播放进度', { exact: true })
+    await expect(full).toHaveAttribute('max', '30')
+    await audio.evaluate(element => {
+      ;(window as any).nativeDuration = 32.5
+      element.dispatchEvent(new Event('durationchange'))
+    })
+    await expect(full).toHaveAttribute('max', '32.5')
+    await expect(mini).toHaveAttribute('max', '32.5')
+    await seek(full, 22)
+    await expect.poll(async () => (await (await page.request.get(`/api/files/${first.id}/media/progress`)).json()).duration).toBe(32.5)
+    await audio.evaluate(element => {
+      ;(window as any).nativeDuration = null
+      element.dispatchEvent(new Event('durationchange'))
+    })
+    await expect(full).toHaveAttribute('max', '30')
+    await expect(mini).toHaveAttribute('max', '30')
+    await expect.poll(() => full.inputValue().then(Number)).toBeCloseTo(22, 1)
+  })
+})
+
+for (const touch of [false, true]) {
+  test.describe(touch ? 'touch timeline' : 'mouse timeline', () => {
+    test.use({ viewport: touch ? { width: 390, height: 844 } : { width: 1280, height: 720 }, hasTouch: touch, isMobile: touch })
+    test('click, captured drag, keyboard and chapter nodes share one audio element', async ({ page }) => {
+      await fixture(page, async ([first]) => {
+        const detail = await (await page.request.get(`/api/files/${first.id}`)).json()
+        await uploadFixture(page, detail.file.parent_id, `${first.name}.chapters.vtt`, 'text/vtt', Buffer.from('WEBVTT\n\n00:00.000 --> 00:10.000\nIntro\n\n00:10.000 --> 00:20.000\nMiddle\n\n00:20.000 --> 00:30.000\nEnd\n'))
+        await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
+        await openMusicPlayer(page)
+        const audio = page.locator('audio').first()
+        await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
+        await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
+        await audio.evaluate(element => {
+          ;(window as any).timelineLoads = 0
+          element.addEventListener('loadstart', () => { (window as any).timelineLoads++ })
+        })
+        const cdp = touch ? await page.context().newCDPSession(page) : undefined
+        const drag = async (input: Locator, from: number, to: number, cancel = false) => {
+          const bounds = (await input.boundingBox())!
+          const y = bounds.y + bounds.height / 2
+          const x = (ratio: number) => bounds.x + bounds.width * ratio
+          const before = await audio.evaluate((a: HTMLAudioElement) => a.currentTime)
+          if (cdp) {
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: x(from), y }] })
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x(to), y }] })
+          } else {
+            await page.mouse.move(x(from), y)
+            await page.mouse.down()
+            await page.mouse.move(x(to), y + bounds.height + 5, { steps: 6 })
+          }
+          // Preview can move without seeking the native decoder.
+          await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(before, 1)
+          // Chromium adjusts touch contacts to integer screen coordinates.
+          await expect.poll(async () => Math.abs(Number(await input.inputValue()) - to * 30)).toBeLessThan(touch ? 1 : 0.2)
+          const preview = Number(await input.inputValue())
+          if (cdp) await cdp.send('Input.dispatchTouchEvent', { type: cancel ? 'touchCancel' : 'touchEnd', touchPoints: [] })
+          else if (cancel) { await input.dispatchEvent('pointercancel'); await page.mouse.up() }
+          else await page.mouse.up()
+          await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(cancel ? before : preview, 1)
+        }
+        const mini = page.getByLabel('音乐播放进度', { exact: true })
+        await expect(page.locator('.dock-chapter-marker')).toHaveCount(3)
+        await drag(mini, 0.25, 0.85)
+        await drag(mini, 0.85, 0.15)
+        await drag(mini, 0.15, 0.6, true)
+        await page.locator('.dock-chapter-marker[data-chapter-start="10"]').click()
+        await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(10, 1)
+        await page.getByRole('button', { name: '打开音频播放器', exact: true }).click()
+        const full = page.getByLabel('播放进度', { exact: true })
+        await expect.poll(() => full.inputValue().then(Number)).toBeCloseTo(10, 1)
+        await drag(full, 0.4, 0.8)
+        await drag(full, 0.8, 0.2)
+        const beforeKey = await audio.evaluate((a: HTMLAudioElement) => a.currentTime)
+        await full.focus()
+        await full.press('ArrowRight')
+        await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeCloseTo(beforeKey + 0.1, 1)
+        await page.locator('.full-bleed-progress__chapter-marker[data-chapter-start="20"]').click()
+        await expect.poll(() => mini.inputValue().then(Number)).toBeCloseTo(20, 1)
+        expect(await page.evaluate(() => (window as any).timelineLoads)).toBe(0)
+        await expect(audio).toHaveJSProperty('paused', true)
+      })
+    })
+  })
+}
+
 test('full audio timeline waits for native metadata before accepting a seek', async ({ page }) => {
   await fixture(page, async ([first]) => {
     let release!: () => void
@@ -102,6 +207,10 @@ test('full audio timeline waits for native metadata before accepting a seek', as
     try {
       await page.getByRole('button', { name: `打开 ${first.name}`, exact: true }).click()
       await openMusicPlayer(page)
+      const mini = page.getByLabel('音乐播放进度', { exact: true })
+      await expect(mini).toHaveAttribute('max', '30')
+      await expect(mini).toBeDisabled()
+      await expect(page.locator('.dock-progress > span').last()).toHaveText('0:30')
       await page.getByRole('button', { name: '打开音频播放器', exact: true }).click()
       const input = page.getByLabel('播放进度', { exact: true })
       // The server has a duration before the native element can accept currentTime.

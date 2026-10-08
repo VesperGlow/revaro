@@ -132,6 +132,33 @@ pub fn media_element_time(value: f64) -> f64 {
     }
 }
 
+/// The browser's finite duration defines its seek clock. The server can supply
+/// the length while native metadata is unavailable (NaN/Infinity/zero).
+#[must_use]
+pub fn audio_duration(native: f64, backend: f64) -> f64 {
+    let native = media_element_time(native);
+    if native > 0.0 {
+        native
+    } else {
+        media_element_time(backend)
+    }
+}
+
+/// Keep invalid/out-of-track chapter starts out of the seek controls.
+#[must_use]
+pub fn timeline_chapters(chapters: &[AudioChapter], duration: f64) -> Vec<AudioChapter> {
+    if !duration.is_finite() || duration <= 0.0 {
+        return Vec::new();
+    }
+    chapters
+        .iter()
+        .filter(|chapter| {
+            chapter.start.is_finite() && chapter.start >= 0.0 && chapter.start < duration
+        })
+        .cloned()
+        .collect()
+}
+
 /// Hide the pointer only while playback is unobstructed by a state overlay.
 #[must_use]
 pub fn should_hide_video_cursor(
@@ -229,6 +256,31 @@ mod tests {
         assert_eq!(clamp_percent(-1.0), 0.0);
         assert_eq!(clamp_percent(42.5), 42.5);
         assert_eq!(clamp_percent(101.0), 100.0);
+    }
+
+    #[test]
+    fn audio_duration_uses_one_finite_clock_and_server_fallback() {
+        for native in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(audio_duration(native, 7200.25), 7200.25);
+        }
+        assert_eq!(audio_duration(30.125, 30.0), 30.125);
+        assert_eq!(audio_duration(30.0, f64::NAN), 30.0);
+        assert_eq!(audio_duration(f64::NAN, f64::INFINITY), 0.0);
+        assert_eq!(audio_duration(0.0, -1.0), 0.0);
+    }
+
+    #[test]
+    fn chapter_nodes_require_a_valid_start_inside_the_audio() {
+        let chapters = [
+            chapter(0.0, 10.0),
+            chapter(10.0, 30.0),
+            chapter(-1.0, 0.0),
+            chapter(f64::NAN, 30.0),
+            chapter(30.0, 40.0),
+        ];
+        assert_eq!(timeline_chapters(&chapters, 30.0).len(), 2);
+        assert!(timeline_chapters(&chapters, f64::INFINITY).is_empty());
+        assert!(timeline_chapters(&chapters, 0.0).is_empty());
     }
 
     #[test]

@@ -37,3 +37,11 @@ icon fallback when artwork is absent or its thumbnail request fails.
 For the optional large-file browser check, import the supplied FLAC and its
 same-name VTT and set `E2E_LARGE_AUDIO_ID` to that file's ID. Its six embedded
 chapters provide the seek targets; no synthetic chapter file is needed.
+
+`audio-range-seeking.spec.ts` also generates its own one-hour WAV and FLAC,
+checks HEAD and byte slices, throttles the browser connection, and seeks forward
+and backward before the whole file arrives. WAV generation needs no tools.
+Set `E2E_FFMPEG` to an FFmpeg executable (or put `ffmpeg` on PATH) to run the
+generated FLAC case. `player-regressions.spec.ts` covers native-duration fallback
+and updates, mouse/touch drags and cancellation, keyboard seeks, chapter nodes,
+late history responses, and mini/full player synchronization.

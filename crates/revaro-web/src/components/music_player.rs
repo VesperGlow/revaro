@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
+use super::audio_timeline::AudioSeekInput;
 use super::icons;
 use super::menu::{ActionMenu, MenuIcon};
 use super::playback::{PlaybackProgress, ProgressDestination, persist_progress, stored_volume};
@@ -15,7 +16,10 @@ use crate::{
     logic::{
         format::format_media_time,
         library::{PlaybackMode, next_index},
-        media::{active_chapter_index, clamp_percent, media_element_time},
+        media::{
+            active_chapter_index, audio_duration, clamp_percent, media_element_time,
+            timeline_chapters,
+        },
     },
 };
 
@@ -35,6 +39,7 @@ pub struct MusicController {
     pub playing: RwSignal<bool>,
     pub position: RwSignal<f64>,
     pub duration: RwSignal<f64>,
+    pub media_ready: RwSignal<bool>,
     pub error: RwSignal<String>,
     pub mode: RwSignal<PlaybackMode>,
     pub collection: RwSignal<Option<(String, String)>>,
@@ -49,6 +54,7 @@ pub struct MusicController {
     session_key: StoredValue<String>,
     autoplay_requested: RwSignal<bool>,
     progress: PlaybackProgress,
+    pending_seek: RwSignal<Option<f64>>,
 }
 
 impl MusicController {
@@ -60,6 +66,7 @@ impl MusicController {
             playing: RwSignal::new(false),
             position: RwSignal::new(0.0),
             duration: RwSignal::new(0.0),
+            media_ready: RwSignal::new(false),
             error: RwSignal::new(String::new()),
             mode: RwSignal::new(PlaybackMode::default()),
             collection: RwSignal::new(None),
@@ -74,6 +81,7 @@ impl MusicController {
             session_key: StoredValue::new(format!("revaro-listening:{username}")),
             autoplay_requested: RwSignal::new(false),
             progress: PlaybackProgress::new(),
+            pending_seek: RwSignal::new(None),
         }
     }
     pub fn current(self) -> Option<File> {
@@ -89,15 +97,13 @@ impl MusicController {
         if let Some(file) = self.current()
             && self.progress.loaded_file.get_untracked().as_deref() == Some(&file.id)
         {
-            let (position, duration) = self.element().map_or(
-                (self.position.get_untracked(), self.duration.get_untracked()),
-                |audio| {
-                    (
-                        media_element_time(audio.current_time()),
-                        media_element_time(audio.duration()),
-                    )
-                },
-            );
+            let position = self.pending_seek.get_untracked().unwrap_or_else(|| {
+                self.element()
+                    .map_or(self.position.get_untracked(), |audio| {
+                        media_element_time(audio.current_time())
+                    })
+            });
+            let duration = self.duration.get_untracked();
             persist_progress(
                 &file.id,
                 position,
@@ -140,6 +146,8 @@ impl MusicController {
         // Disable writes before changing the queue or audio source: load()
         // can dispatch pause/timeupdate events for the previous source.
         self.progress.reset(resume);
+        self.pending_seek.set(None);
+        self.media_ready.set(false);
         self.autoplay_requested.set(true);
         self.playing.set(false);
     }
@@ -203,6 +211,8 @@ impl MusicController {
         self.collection.set(None);
         self.position.set(0.0);
         self.duration.set(0.0);
+        self.media_ready.set(false);
+        self.pending_seek.set(None);
         self.metadata.set(AudioMedia::default());
         self.buffered.set(Vec::new());
         self.error.set(String::new());
@@ -229,7 +239,10 @@ impl MusicController {
         if audio.ready_state() < 1 || self.progress.loaded_file.get_untracked().is_none() {
             return;
         }
-        let duration = media_element_time(audio.duration());
+        let duration = self.duration.get_untracked();
+        if duration <= 0.0 {
+            return;
+        }
         let key = self
             .progress
             .loaded_file
@@ -238,13 +251,37 @@ impl MusicController {
         let Some(position) = self.progress.restore(duration, key.as_deref()) else {
             return;
         };
+        self.pending_seek.set(Some(position));
         audio.set_current_time(position);
         self.position.set(position);
-        self.duration.set(duration);
         self.update_buffer();
         if self.autoplay_requested.get_untracked() {
             self.start();
         }
+    }
+    fn sync_duration(self) {
+        let native = self.element().map_or(0.0, |audio| {
+            let ready = audio.ready_state() >= 1;
+            self.media_ready.set(ready);
+            if ready { audio.duration() } else { 0.0 }
+        });
+        let duration = audio_duration(native, self.metadata.with_untracked(|media| media.duration));
+        if duration > 0.0 {
+            self.duration.set(duration);
+        }
+        self.update_buffer();
+        self.restore_position();
+    }
+    fn sync_position(self) {
+        if !self.progress.ready.get_untracked() || self.pending_seek.get_untracked().is_some() {
+            return;
+        }
+        if let Some(audio) = self.element() {
+            self.position.set(media_element_time(audio.current_time()));
+        }
+    }
+    pub fn can_seek(self) -> bool {
+        self.media_ready.get() && self.duration.get() > 0.0
     }
     fn update_buffer(self) {
         let Some(audio) = self.element() else {
@@ -275,6 +312,7 @@ impl MusicController {
         {
             let was_ready = self.progress.ready.get_untracked();
             let position = media_element_time(position).min(self.duration.get_untracked());
+            self.pending_seek.set(Some(position));
             audio.set_current_time(position);
             self.progress.accept_seek();
             self.position.set(position);
@@ -512,6 +550,7 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
                 && controller.progress.revision.try_get_untracked() == Some(revision)
             {
                 controller.metadata.set(metadata);
+                controller.sync_duration();
             }
         });
         leptos::task::spawn_local_scoped_with_cancellation(async move {
@@ -595,19 +634,23 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
     });
     view! {
         <audio node_ref=controller.audio preload="metadata"
-            on:loadedmetadata=move |_| {if let Some(audio)=controller.element() {controller.duration.set(media_element_time(audio.duration()));controller.restore_position();}}
+            on:loadedmetadata=move |_|controller.sync_duration()
+            on:durationchange=move |_|controller.sync_duration()
             on:timeupdate=move |_| {
                 if !controller.progress.ready.get_untracked() {return;}
-                if let Some(audio)=controller.element() {controller.position.set(audio.current_time());}
+                controller.sync_position();
                 let now=js_sys::Date::now();
                 if now-last_save.get_untracked()>5000.0 {last_save.set(now);controller.save();}
             }
             on:play=move |_| {if controller.current().is_some() {controller.playing.set(true);controller.error.set(String::new());}}
             on:pause=move |_| {controller.playing.set(false);controller.save();}
             on:progress=move |_|controller.update_buffer()
-            on:seeked=move |_| {controller.update_buffer();controller.save();}
+            on:seeked=move |_| {
+                if controller.element().is_some_and(|audio|audio.seeking()) {return;}
+                controller.pending_seek.set(None);controller.sync_position();controller.update_buffer();controller.save();
+            }
             on:waiting=move |_|controller.waiting.set(true)
-            on:canplay=move |_|controller.waiting.set(false)
+            on:canplay=move |_| {controller.sync_duration();controller.waiting.set(false);}
             on:ended=move |_| controller.advance(1,true)
             on:error=move |_| {if controller.current().is_some() {controller.progress.ready.set(false);controller.playing.set(false);controller.error.set("此音频无法播放，可在文件管理中下载原文件".to_owned());}}
         ></audio>
@@ -656,19 +699,26 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
                         </div>
                     </div>
                     <super::audio::AudioLyricPreview cues=Signal::derive(move ||controller.metadata.get().subtitles) current_time=controller.position.into() />
-                    <div class="dock-progress"><span>{move ||format_media_time(controller.position.get())}</span>
+                    <div class="dock-progress"><span>{move ||format_media_time(seek_preview.get().unwrap_or(controller.position.get()))}</span>
                         <div class="dock-timeline">
                             <div class="dock-timeline-track" aria-hidden="true">
                                 <For each=move ||controller.buffered.get() key=|(start,end)|(start.to_bits(),end.to_bits()) children=|(start,end)|view! { <span class="dock-buffer" style=format!("left:{start}%;width:{}%;",end-start)></span> } />
                                 <span class="dock-played" style:width=move ||format!("{}%",clamp_percent(seek_preview.get().unwrap_or(controller.position.get())/controller.duration.get()*100.0))></span>
-                                <For each=move ||controller.metadata.get().chapters key=|chapter|chapter.start.to_bits() children=move |chapter|view! {<i class="dock-chapter-marker" title=chapter.title style:left=move ||format!("{}%",clamp_percent(chapter.start/controller.duration.get()*100.0))></i>} />
                             </div>
-                            <input aria-label="音乐播放进度" type="range" min="0" max=move ||controller.duration.get().max(1.0).to_string() step="0.1"
-                                prop:disabled=move ||controller.duration.get() <= 0.0
-                                prop:value=move ||seek_preview.get().unwrap_or(controller.position.get()).to_string()
-                                on:input=move |event| {if let Ok(value)=event_target_value(&event).parse::<f64>() {seek_preview.set(Some(value));}}
-                                on:change=move |event| {if let Ok(value)=event_target_value(&event).parse::<f64>() {controller.seek(value);}seek_preview.set(None);}
-                                on:pointercancel=move |_|seek_preview.set(None) />
+                            <AudioSeekInput label="音乐播放进度" duration=controller.duration.into()
+                                enabled=Signal::derive(move ||controller.can_seek())
+                                position=Signal::derive(move ||seek_preview.get().unwrap_or(controller.position.get()))
+                                on_preview=Callback::new(move |value|seek_preview.set(Some(value)))
+                                on_commit=Callback::new(move |value| {controller.seek(value);seek_preview.set(None);})
+                                on_cancel=Callback::new(move |()|seek_preview.set(None)) />
+                            <For each=move ||controller.metadata.with(|media|timeline_chapters(&media.chapters,controller.duration.get()))
+                                key=|chapter|chapter.start.to_bits() children=move |chapter|view! {
+                                <button type="button" class="dock-chapter-marker" title=chapter.title.clone()
+                                    aria-label=format!("跳转章节：{}",chapter.title) data-chapter-start=chapter.start.to_string()
+                                    prop:disabled=move ||!controller.can_seek()
+                                    style:left=move ||format!("{}%",clamp_percent(chapter.start/controller.duration.get()*100.0))
+                                    on:click=move |_|controller.seek(chapter.start)></button>
+                            } />
                         </div>
                         <span>{move ||format_media_time(controller.duration.get())}</span>
                     </div>
@@ -691,12 +741,12 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
                 </div>
                 <footer class="dock-options">
                     <PlaybackModeMenu controller=controller />
-                    <button type="button" aria-label="音轨章节" class:active=move ||chapters_open.get() aria-expanded=move ||chapters_open.get().to_string() on:click=move |_|chapters_open.update(|open|*open=!*open)>{icons::list()}"章节"</button>
+                    <button type="button" aria-label="音轨章节" class:active=move ||chapters_open.get() aria-expanded=move ||chapters_open.get().to_string() on:click=move |_|chapters_open.update(|open|*open = !*open)>{icons::list()}"章节"</button>
                     <ActionMenu label="音乐音量设置".to_owned() icon=MenuIcon::Volume volume=volume muted=controller.muted scope="music-dock"
                         context=Signal::derive(move ||panel_hidden.get().to_string()) panel_class="dock-volume-popover">
                         <div class="dock-volume">
                             <button type="button" aria-label=move ||if controller.muted.get(){"取消静音"}else{"静音"} on:click=move |_|{
-                                controller.muted.update(|muted|*muted=!*muted);
+                                controller.muted.update(|muted|*muted = !*muted);
                                 if let Some(audio)=controller.element() {audio.set_muted(controller.muted.get_untracked());}
                             }>{move ||if controller.muted.get(){icons::volume_x().into_any()}else{icons::volume_2().into_any()}}</button>
                             <input aria-label="音乐音量" type="range" min="0" max="1" step="0.05" prop:value=move ||volume.get().to_string() on:input=move |event|{

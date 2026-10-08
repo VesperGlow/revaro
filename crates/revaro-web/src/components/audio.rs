@@ -18,8 +18,11 @@ use web_sys::{
 use crate::api;
 use crate::browser;
 use crate::logic::format::format_media_time;
-use crate::logic::media::{active_chapter_index, clamp_percent, media_element_time};
+use crate::logic::media::{
+    active_chapter_index, audio_duration, clamp_percent, media_element_time, timeline_chapters,
+};
 
+use super::audio_timeline::AudioSeekInput;
 use super::icons;
 use super::menu::{ActionMenu, MenuIcon};
 use super::music_player::MusicController;
@@ -174,6 +177,8 @@ pub fn AudioPlayer(
     let playing = controller.map_or_else(|| RwSignal::new(false), |c| c.playing);
     let current_time = controller.map_or_else(|| RwSignal::new(0.0_f64), |c| c.position);
     let native_duration = controller.map_or_else(|| RwSignal::new(0.0_f64), |c| c.duration);
+    let media_ready = controller.map_or_else(|| RwSignal::new(false), |c| c.media_ready);
+    let pending_seek = RwSignal::new(None::<f64>);
     let buffered = RwSignal::new(0.0_f64);
     let rate = controller.map_or_else(|| RwSignal::new(1.0_f64), |c| c.rate);
     let volume = controller.map_or_else(
@@ -194,7 +199,13 @@ pub fn AudioPlayer(
     let position_key = format!("revaro-audio-position:{}", item.id);
     let item_id = item.id.clone();
 
-    let duration = move || audio_duration(media.get(), native_duration.get());
+    let duration = move || {
+        audio_duration(
+            native_duration.get(),
+            media.with(|media| media.as_ref().map_or(0.0, |media| media.duration)),
+        )
+    };
+    let can_seek = move || media_ready.get() && duration() > 0.0;
     let chapters_factory = StoredValue::new({
         let item_name = item_name.clone();
         move || {
@@ -246,13 +257,13 @@ pub fn AudioPlayer(
             if controller.is_some() {
                 return;
             }
-            if native_duration.get_untracked() > 0.0
+            if duration() > 0.0
                 && let Some(element) = audio_element(audio)
                 && element.ready_state() >= 1
                 && let Some(saved) = playback.restore(duration(), Some(&position_key))
                 && saved > 0.0
             {
-                seek_audio(audio, current_time, duration(), saved, false);
+                seek_audio(audio, current_time, pending_seek, duration(), saved, false);
             }
         }
     };
@@ -265,10 +276,12 @@ pub fn AudioPlayer(
                 return;
             }
             if playback.ready.get_untracked() {
-                let position = audio_element(audio).map_or_else(
-                    || current_time.get_untracked().max(0.0),
-                    |element| media_element_time(element.current_time()),
-                );
+                let position = pending_seek.get_untracked().unwrap_or_else(|| {
+                    audio_element(audio).map_or_else(
+                        || current_time.get_untracked().max(0.0),
+                        |element| media_element_time(element.current_time()),
+                    )
+                });
                 persist_progress(
                     &item_id,
                     position,
@@ -302,7 +315,11 @@ pub fn AudioPlayer(
         let restore_position = restore_position.clone();
         move |_| {
             if let Some(element) = audio_element(audio) {
-                native_duration.set(media_element_time(element.duration()));
+                media_ready.set(element.ready_state() >= 1);
+                let value = media_element_time(element.duration());
+                if value > 0.0 {
+                    native_duration.set(value);
+                }
                 element.set_volume(volume.get_untracked());
                 element.set_muted(muted.get_untracked());
                 element.set_playback_rate(rate.get_untracked());
@@ -317,7 +334,9 @@ pub fn AudioPlayer(
         let schedule_local_save = schedule_local_save.clone();
         let schedule_remote_save = schedule_remote_save.clone();
         move |_| {
-            if let Some(element) = audio_element(audio) {
+            if pending_seek.get_untracked().is_none()
+                && let Some(element) = audio_element(audio)
+            {
                 current_time.set(media_element_time(element.current_time()));
             }
             update_buffer(audio, duration, buffered);
@@ -331,6 +350,19 @@ pub fn AudioPlayer(
             playing.set(false);
             clear_timer(remote_save_timer);
             save_progress(true);
+        }
+    };
+    let on_seeked = {
+        let save_progress = save_progress.clone();
+        move |_| {
+            if let Some(element) = audio_element(audio)
+                && !element.seeking()
+            {
+                pending_seek.set(None);
+                current_time.set(media_element_time(element.current_time()));
+                update_buffer(audio, duration, buffered);
+                save_progress(true);
+            }
         }
     };
     let on_play = move |_| playing.set(true);
@@ -385,7 +417,7 @@ pub fn AudioPlayer(
                 && let Some(element) = audio_element(audio)
                 && element.ready_state() >= 1
             {
-                seek_audio(audio, current_time, duration(), target, play);
+                seek_audio(audio, current_time, pending_seek, duration(), target, play);
                 playback.accept_seek();
             }
         }
@@ -600,27 +632,13 @@ pub fn AudioPlayer(
             audio.set_muted(next);
         }
     };
-    let preview_seek = move |event: Event| {
-        if let Some(input) = event
-            .target()
-            .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
-            && let Ok(value) = input.value().parse::<f64>()
-        {
-            seek_preview.set(Some(value));
-        }
-    };
+    let preview_seek = Callback::new(move |value| seek_preview.set(Some(value)));
     let commit_seek = {
         let seek = seek.clone();
-        move |event: Event| {
-            let target = event
-                .target()
-                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
-                .and_then(|input| input.value().parse::<f64>().ok());
+        Callback::new(move |target| {
+            seek(target, playing.get_untracked());
             seek_preview.set(None);
-            if let Some(target) = target {
-                seek(target, playing.get_untracked());
-            }
-        }
+        })
     };
     let hover_seek = move |event: PointerEvent| {
         let Some(target) = event
@@ -661,7 +679,10 @@ pub fn AudioPlayer(
     if let Some(controller) = controller {
         Effect::new(move |_| {
             media.set(Some(controller.metadata.get()));
-            loading.set(controller.duration.get() <= 0.0 && controller.error.get().is_empty());
+            loading.set(
+                (!controller.media_ready.get() || controller.duration.get() <= 0.0)
+                    && controller.error.get().is_empty(),
+            );
         });
     }
 
@@ -708,15 +729,20 @@ pub fn AudioPlayer(
             return;
         }
         cleanup_save(false);
-        let position = audio_element(audio).map_or_else(
-            || current_time.get_untracked().max(0.0),
-            |element| media_element_time(element.current_time()),
-        );
+        let position = pending_seek.get_untracked().unwrap_or_else(|| {
+            audio_element(audio).map_or_else(
+                || current_time.get_untracked().max(0.0),
+                |element| media_element_time(element.current_time()),
+            )
+        });
         if playback.ready.get_untracked() {
             persist_progress(
                 &cleanup_item_id,
                 position,
-                audio_duration(media.get_untracked(), native_duration.get_untracked()),
+                audio_duration(
+                    native_duration.get_untracked(),
+                    media.get_untracked().map_or(0.0, |media| media.duration),
+                ),
                 None,
                 ProgressDestination::Keepalive,
             );
@@ -760,25 +786,27 @@ pub fn AudioPlayer(
                     <AudioProgress
                         percent=progress
                         buffered=move || controller.map_or_else(|| vec![(0.0, buffered.get())], |c| c.buffered.get())
-                        markers=move || chapter_markers(&chapters(), duration())
+                        markers=move || timeline_chapters(&chapters(), duration())
                         duration=duration
-                        enabled={move || native_duration.get() > 0.0}
+                        enabled=can_seek
                         current_time=displayed_time
                         hover=seek_hover
                         on_input=preview_seek
                         on_change=commit_seek
+                        on_cancel=Callback::new(move |()|seek_preview.set(None))
+                        on_chapter_seek=Callback::new(move |time|seek_callback.with_value(|seek|seek(time,playing.get_untracked())))
                         on_pointer_move=hover_seek
                         on_pointer_leave=leave_seek
                     />
                     <div class="audio-time"><span>{move || format_media_time(displayed_time())}</span><span>{move || format_media_time(duration())}</span></div>
                     <div class="audio-controls">
-                        <button type="button" aria-label="后退15秒" title="后退 15 秒" prop:disabled={move || native_duration.get() <= 0.0} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() - 15.0, false))>{icons::rotate_ccw()}<small>"15"</small></button>
+                        <button type="button" aria-label="后退15秒" title="后退 15 秒" prop:disabled={move || !can_seek()} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() - 15.0, false))>{icons::rotate_ccw()}<small>"15"</small></button>
                         <button class="audio-play" type="button" prop:disabled=move || loading.get() aria-label=move || if playing.get() { "暂停" } else { "播放" } on:click=move |_| toggle_playback()>
                             <Show when=move || loading.get() || waiting.get() fallback=move || if playing.get() { icons::pause().into_any() } else { icons::play().into_any() }>
                                 <span class="audio-control-spinner"></span>
                             </Show>
                         </button>
-                        <button type="button" aria-label="前进30秒" title="前进 30 秒" prop:disabled={move || native_duration.get() <= 0.0} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() + 30.0, false))>{icons::rotate_cw()}<small>"30"</small></button>
+                        <button type="button" aria-label="前进30秒" title="前进 30 秒" prop:disabled={move || !can_seek()} on:click=move |_| seek_callback.with_value(|seek| seek(current_time.get_untracked() + 30.0, false))>{icons::rotate_cw()}<small>"30"</small></button>
                     </div>
                     <div class="audio-options">
                         <label class="audio-rate"><span class="media-sr-only">"播放速度"</span><select aria-label="播放速度" prop:value=move || rate.get().to_string() on:change=set_rate>
@@ -799,7 +827,7 @@ pub fn AudioPlayer(
                     <Show when=move || !error.get().is_empty() fallback=|| ()>
                         <p class="audio-player-error" role="alert">{move || error.get()}</p>
                     </Show>
-                    {controller.is_none().then(|| view! { <audio node_ref=audio src=source.clone() autoplay preload="metadata" on:loadedmetadata=on_loaded_metadata on:timeupdate=on_time_update on:progress=move |_| update_buffer(audio, duration, buffered) on:play=on_play on:pause=on_pause on:ended=on_ended on:waiting=on_waiting on:canplay=on_can_play on:error=on_error></audio> })}
+                    {controller.is_none().then(|| view! { <audio node_ref=audio src=source.clone() autoplay preload="metadata" on:loadedmetadata=on_loaded_metadata.clone() on:durationchange=on_loaded_metadata on:timeupdate=on_time_update on:seeked=on_seeked on:progress=move |_| update_buffer(audio, duration, buffered) on:play=on_play on:pause=on_pause on:ended=on_ended on:waiting=on_waiting on:canplay=on_can_play on:error=on_error></audio> })}
                 </section>
             </main>
             <Show when=move || panel_open.get() fallback=|| ()>
@@ -887,17 +915,19 @@ struct SeekHover {
 
 #[component]
 fn AudioProgress(
-    percent: impl Fn() -> f64 + Copy + Send + 'static,
-    buffered: impl Fn() -> Vec<(f64, f64)> + Copy + Send + 'static,
-    markers: impl Fn() -> Vec<f64> + Send + 'static,
-    duration: impl Fn() -> f64 + Copy + Send + 'static,
-    enabled: impl Fn() -> bool + Copy + Send + 'static,
-    current_time: impl Fn() -> f64 + Copy + Send + 'static,
+    percent: impl Fn() -> f64 + Copy + Send + Sync + 'static,
+    buffered: impl Fn() -> Vec<(f64, f64)> + Copy + Send + Sync + 'static,
+    markers: impl Fn() -> Vec<AudioChapter> + Send + Sync + 'static,
+    duration: impl Fn() -> f64 + Copy + Send + Sync + 'static,
+    enabled: impl Fn() -> bool + Copy + Send + Sync + 'static,
+    current_time: impl Fn() -> f64 + Copy + Send + Sync + 'static,
     hover: RwSignal<Option<SeekHover>>,
-    on_input: impl Fn(Event) + Send + 'static,
-    on_change: impl Fn(Event) + Send + 'static,
-    on_pointer_move: impl Fn(PointerEvent) + Send + 'static,
-    on_pointer_leave: impl Fn(PointerEvent) + Send + 'static,
+    on_input: Callback<f64>,
+    on_change: Callback<f64>,
+    on_cancel: Callback<()>,
+    on_chapter_seek: Callback<f64>,
+    on_pointer_move: impl Fn(PointerEvent) + Send + Sync + 'static,
+    on_pointer_leave: impl Fn(PointerEvent) + Send + Sync + 'static,
 ) -> impl IntoView {
     // This component only groups the layered track. The input remains the
     // focusable/control authority, while the visible bars are inert decoration.
@@ -908,9 +938,6 @@ fn AudioProgress(
                     <span class="full-bleed-progress__buffer" style=format!("left:{}%;width:{}%;", clamp_percent(start), clamp_percent(end-start))></span>
                 } />
                 <span class="full-bleed-progress__played" style=move || format!("width:{}%;", clamp_percent(percent()))></span>
-                <For each=move || markers() key=|marker| marker.to_bits() let:marker>
-                    <i style=move || format!("left:{}%;", clamp_percent(marker))></i>
-                </For>
             </div>
             <div class="full-bleed-progress__runway" aria-hidden="true">
                 <span class="full-bleed-progress__thumb" style=move || format!("left:{}%;", clamp_percent(percent()))></span>
@@ -921,20 +948,25 @@ fn AudioProgress(
                     }>{move || format_media_time(hover.get().map_or(0.0, |value| value.time))}</output>
                 </Show>
             </div>
-            <input
+            <AudioSeekInput
                 class="full-bleed-progress__input"
-                type="range"
-                min="0"
-                max=move || duration().max(0.0).to_string()
-                step="0.1"
-                prop:value=move || current_time().clamp(0.0, duration().max(0.0)).to_string()
-                prop:disabled=move || !enabled()
-                aria-label="播放进度"
-                on:input=on_input
-                on:change=on_change
-                on:pointermove=on_pointer_move
-                on:pointerleave=on_pointer_leave
+                duration=Signal::derive(duration)
+                position=Signal::derive(current_time)
+                enabled=Signal::derive(enabled)
+                label="播放进度"
+                on_preview=on_input
+                on_commit=on_change
+                on_cancel=on_cancel
+                on_hover=Callback::new(on_pointer_move)
+                on_leave=Callback::new(on_pointer_leave)
             />
+            <For each=markers key=|chapter|chapter.start.to_bits() children=move |chapter|view! {
+                <button type="button" class="full-bleed-progress__chapter-marker" title=chapter.title.clone()
+                    aria-label=format!("跳转章节：{}",chapter.title) data-chapter-start=chapter.start.to_string()
+                    prop:disabled=move ||!enabled()
+                    style:left=move ||format!("{}%",clamp_percent(chapter.start/duration()*100.0))
+                    on:click=move |_|on_chapter_seek.run(chapter.start)></button>
+            } />
         </div>
     }
 }
@@ -947,14 +979,6 @@ fn audio_element(node: NodeRef<leptos::html::Audio>) -> Option<HtmlMediaElement>
     })
 }
 
-fn audio_duration(media: Option<AudioMedia>, native: f64) -> f64 {
-    media
-        .and_then(|value| {
-            (value.duration.is_finite() && value.duration > 0.0).then_some(value.duration)
-        })
-        .unwrap_or(native.max(0.0))
-}
-
 fn indexed_chapters(chapters: Vec<AudioChapter>) -> Vec<(usize, AudioChapter)> {
     chapters.into_iter().enumerate().collect()
 }
@@ -962,6 +986,7 @@ fn indexed_chapters(chapters: Vec<AudioChapter>) -> Vec<(usize, AudioChapter)> {
 fn seek_audio(
     audio: NodeRef<leptos::html::Audio>,
     current_time: RwSignal<f64>,
+    pending_seek: RwSignal<Option<f64>>,
     duration: f64,
     target: f64,
     play: bool,
@@ -975,8 +1000,9 @@ fn seek_audio(
         target.max(0.0)
     });
     if let Some(element) = audio_element(audio) {
+        pending_seek.set(Some(target));
         element.set_current_time(target);
-        current_time.set(media_element_time(element.current_time()));
+        current_time.set(target);
         if play {
             play_ignoring_rejection(&element);
         }
@@ -1013,17 +1039,6 @@ fn update_buffer(
         .filter(|value| value.is_finite())
         .unwrap_or(0.0);
     buffered.set(clamp_percent(end / total * 100.0));
-}
-
-fn chapter_markers(chapters: &[AudioChapter], duration: f64) -> Vec<f64> {
-    if duration <= 0.0 {
-        return Vec::new();
-    }
-    chapters
-        .iter()
-        .filter(|chapter| chapter.start > 0.0 && chapter.start < duration)
-        .map(|chapter| clamp_percent(chapter.start / duration * 100.0))
-        .collect()
 }
 
 fn stem(name: &str) -> String {

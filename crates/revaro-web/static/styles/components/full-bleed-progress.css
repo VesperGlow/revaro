@@ -1,6 +1,6 @@
 /* FullBleedProgress's component styles, retained for the layered audio range.
- * The transparent native input owns interaction; track, buffer, markers and
- * thumb are decorative layers sharing its full-width container. */
+ * The transparent native input owns seek gestures; the track, buffer and thumb
+ * share its coordinates. Chapter buttons sit above it for exact jumps. */
 .full-bleed-progress {
   --progress-center: 0px;
   --progress-height: 4px;
@@ -13,7 +13,7 @@
   height: 22px;
   min-width: 0;
   overflow: visible;
-  touch-action: pan-y;
+  touch-action: none;
 }
 
 .full-bleed-progress__track {
@@ -43,23 +43,33 @@
   background: var(--progress-played, var(--accent));
 }
 
-.full-bleed-progress__track > i {
+.full-bleed-progress__chapter-marker {
   position: absolute;
-  z-index: 1;
-  top: 50%;
+  z-index: 6;
+  top: var(--progress-center);
+  width: 12px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+.full-bleed-progress__chapter-marker::before {
+  content: "";
+  display: block;
   width: 2px;
   height: calc(var(--progress-height) + 4px);
+  margin: auto;
   background: var(--progress-marker, #fff);
   box-shadow: 0 0 0 1px #7990ad52;
-  pointer-events: none;
-  transform: translate(-50%, -50%);
 }
 
 .full-bleed-progress__runway {
   position: absolute;
   top: var(--progress-center);
-  right: var(--progress-edge-end);
-  left: var(--progress-edge-start);
+  right: 0;
+  left: 0;
   height: 0;
   pointer-events: none;
 }
@@ -115,13 +125,12 @@
   width: 100%;
   height: 44px;
   margin: 0;
-  padding-right: var(--progress-edge-end);
-  padding-left: var(--progress-edge-start);
+  padding: 0;
   border: 0;
   background: transparent;
   cursor: grab;
   opacity: 0;
-  touch-action: pan-y;
+  touch-action: none;
 }
 
 .full-bleed-progress__input:active {

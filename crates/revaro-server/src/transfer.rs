@@ -572,6 +572,120 @@ pub async fn file_resources(
 mod tests {
     use super::*;
     use http_body_util::BodyExt as _;
+    use std::{
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
+    /// A seekable 8 GiB object that records actual reads without allocating it.
+    struct CountedAudio {
+        position: u64,
+        size: u64,
+        read: Arc<AtomicU64>,
+    }
+    impl AsyncRead for CountedAudio {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let length = (self.size - self.position).min(buffer.remaining() as u64) as usize;
+            for offset in 0..length {
+                buffer.put_slice(&[((self.position + offset as u64) % 251) as u8]);
+            }
+            self.position += length as u64;
+            self.read.fetch_add(length as u64, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+    }
+    impl AsyncSeek for CountedAudio {
+        fn start_seek(
+            mut self: Pin<&mut Self>,
+            position: std::io::SeekFrom,
+        ) -> std::io::Result<()> {
+            self.position = match position {
+                std::io::SeekFrom::Start(offset) => offset,
+                std::io::SeekFrom::End(offset) => self.size.checked_add_signed(offset).unwrap(),
+                std::io::SeekFrom::Current(offset) => {
+                    self.position.checked_add_signed(offset).unwrap()
+                }
+            };
+            Ok(())
+        }
+        fn poll_complete(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<u64>> {
+            Poll::Ready(Ok(self.position))
+        }
+    }
+
+    #[tokio::test]
+    async fn long_audio_ranges_seek_without_reading_the_prefix_or_whole_object() {
+        let size = 8_u64 * 1024 * 1024 * 1024;
+        for mime in ["audio/flac", "audio/wav"] {
+            for (header, start, length) in [
+                (
+                    "bytes=5368709120-5368713215",
+                    5_u64 * 1024 * 1024 * 1024,
+                    4096_u64,
+                ),
+                ("bytes=-4096", size - 4096, 4096),
+                ("bytes=8192-", 8192, size - 8192),
+            ] {
+                let read = Arc::new(AtomicU64::new(0));
+                let reader = CountedAudio {
+                    position: 0,
+                    size,
+                    read: read.clone(),
+                };
+                let mut headers = http::HeaderMap::new();
+                headers.insert(http::header::RANGE, header.parse().unwrap());
+                let response = serve_reader(
+                    Box::new(reader),
+                    size,
+                    "audio-version",
+                    mime,
+                    "inline",
+                    headers,
+                )
+                .await
+                .unwrap();
+                assert_eq!(response.status(), http::StatusCode::PARTIAL_CONTENT);
+                assert_eq!(response.headers()[http::header::CONTENT_TYPE], mime);
+                assert_eq!(response.headers()[http::header::ACCEPT_RANGES], "bytes");
+                assert_eq!(
+                    response.headers()[http::header::CONTENT_RANGE],
+                    format!("bytes {start}-{}/{size}", start + length - 1)
+                );
+                assert_eq!(
+                    response.headers()[http::header::CONTENT_LENGTH],
+                    length.to_string()
+                );
+                assert_eq!(
+                    read.load(Ordering::SeqCst),
+                    0,
+                    "headers do not require a full download"
+                );
+                let mut body = response.into_body();
+                let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
+                assert!(frame.len() <= 4096);
+                for (index, byte) in frame.iter().enumerate() {
+                    assert_eq!(*byte, ((start + index as u64) % 251) as u8);
+                }
+                assert_eq!(read.load(Ordering::SeqCst), frame.len() as u64);
+                if length == 4096 {
+                    assert!(body.frame().await.is_none());
+                }
+                drop(body);
+                assert!(
+                    read.load(Ordering::SeqCst) <= 4096,
+                    "cancellation stops streaming"
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn generated_resources_share_ranges_and_strong_preconditions() {
