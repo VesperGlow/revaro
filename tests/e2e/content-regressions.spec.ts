@@ -100,7 +100,7 @@ test('music restores saved progress after delayed metadata and reload without er
 
 test('late progress responses cannot seek another song or restart an ended session', async ({ page, contentRoot }) => {
   const errors: string[] = []
-  page.on('pageerror', error => errors.push(error.message))
+  page.on('pageerror', error => errors.push(error.stack || error.message))
   const first = await upload(page, contentRoot.id, `${contentRoot.prefix}-a.wav`, 'audio/wav', wav())
   const second = await upload(page, contentRoot.id, `${contentRoot.prefix}-b.wav`, 'audio/wav', wav())
   await savePosition(page, first.id, 60)

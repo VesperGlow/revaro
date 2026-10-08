@@ -209,6 +209,8 @@ for (const device of [
         await openMusicPlayer(page)
         await expect(page.getByRole('button', { name: '播放音乐', exact: true })).toBeVisible()
         await expect(audio).toHaveAttribute('src', source!)
+        // The detail card can cover the last song on narrow viewports.
+        await dock.getByRole('button', { name: '收起播放器', exact: true }).click()
         await cards.last().getByRole('button', { name: `打开 ${files[5].name}`, exact: true }).click()
         await openMusicPlayer(page)
         await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()

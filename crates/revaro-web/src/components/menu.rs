@@ -136,7 +136,12 @@ pub fn ActionMenu(
                 }
             }
             on:toggle=move |_| {
-                if let Some(details) = menu_for_escape.get() {
+                if let Some(details) = menu_for_escape.try_get_untracked().flatten() {
+                    // Native toggle can arrive before the reactive hidden attribute.
+                    // Reveal the panel before measuring its first visible position.
+                    if let Some(surface) = panel.try_get_untracked().flatten() {
+                        surface.set_hidden(!details.open());
+                    }
                     open.set(details.open());
                     if let Some(position) = position { position.run(()); }
                     if let Some(callback) = on_toggle.as_ref() { callback.run(details.open()); }
@@ -220,15 +225,17 @@ pub fn ActionMenu(
                 data-popover-open=move ||open.get().to_string()
                 hidden=move ||!open.get()
                 on:click=move |event: MouseEvent| {
+                    // The selected action can unmount this menu before its click bubbles here.
+                    let Some(details) = menu.try_get_untracked().flatten() else {
+                        return;
+                    };
                     let Some(target) = event
                         .target()
                         .and_then(|target| target.dyn_into::<Element>().ok())
                     else {
                         return;
                     };
-                    if target.closest("[data-close-menu]").ok().flatten().is_some()
-                        && let Some(details) = menu.get()
-                    {
+                    if target.closest("[data-close-menu]").ok().flatten().is_some() {
                         details.set_open(false);
                         if sheet { close.run(()); }
                     }

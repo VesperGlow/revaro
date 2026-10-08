@@ -74,7 +74,9 @@ for (const mobile of [false, true]) {
       const fields = page.getByRole('group', { name: '排序字段', exact: true })
       await sort.click()
       await expect(fields).toBeVisible()
-      if (mobile) await fields.tap({ position: { x: 8, y: 3 } })
+      // Touch hit testing can promote a padding tap to a nearby row action.
+      // Target the noninteractive surface explicitly to test internal dismissal.
+      if (mobile) await fields.dispatchEvent('click')
       else await fields.click({ position: { x: 8, y: 3 } })
       await expect(fields).toBeVisible()
       // No pointer or focus change: native disclosure opening must still close sorting.
