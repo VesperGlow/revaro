@@ -4,14 +4,21 @@
 `clippy -D warnings`、完整测试、wasm32 类型检查、Rust 依赖审计和 release
 构建，以及 10 万文件、8 并发、600 次请求的独立负载检查（各接口 p95 不超过
 2 秒），并验证突发过载、分片续传、存储空间不足和强制终止后的恢复。
-所有 Rust 原生依赖由 runner 安装，wasm-bindgen 使用与 workspace 锁定
-版本相同的 CLI。
+所有 Rust 原生依赖由 runner 安装。该 job 只编译负载测试所需的 release 服务端，
+前端 release 包和与 workspace 锁定版本相同的 wasm-bindgen CLI 由 Docker 构建负责。
 
-`container` job 等待 Rust 质量门通过后构建同一个 Rust Dockerfile，并启动真实
+`container` job 与 Rust job 并行构建同一个 Rust Dockerfile，并启动真实
 容器执行全部 Chromium E2E、Firefox 启动/草稿恢复/菜单回归，以及 160 轮
 编辑器和菜单资源检查。生成长音频测试夹具的 FFmpeg 命令只安装在测试 runner。
 浏览器测试位于独立的 `tests/e2e/` npm
 包，只包含 Playwright；`.dockerignore` 和 Dockerfile 都保证它不进入生产镜像。
+
+Rust job 使用固定提交版本的 [rust-cache](https://github.com/Swatinem/rust-cache)
+缓存依赖的编译产物与 registry，缓存键包含工具链、Cargo 配置和依赖清单。
+只有 main 写入缓存，PR 可以读取 main 的缓存。CI 原生检查关闭调试符号和增量文件，
+控制磁盘与缓存体积；release 优化配置保持不变。Docker 检查后保留编译结果，
+不再执行 `cargo clean`，后续构建可复用 xtask 和已有依赖。
+前端 release 包只构建一次。两个 job 都成功才允许发布，发布继续复用通过验收的镜像。
 
 生产 Compose 的 `APP_BASE_URL` 默认值会从 `APP_PORT` 推导；留空时例如
 `APP_PORT=18081` 会得到 `http://localhost:18081`，显式设置公网地址则保持原值。

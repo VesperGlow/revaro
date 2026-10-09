@@ -24,7 +24,9 @@
       @media (prefers-reduced-motion: reduce) { .boot-spinner { animation: none; } }
     </style>
     <link id="app-styles" rel="preload" href="/styles.css" as="style" />
-    <link rel="preload" href="/__REVARO_WASM__" as="fetch" type="application/wasm" crossorigin />
+    <!-- Fetch WASM once from the boot module: WebKit can download an as=fetch
+         preload again when the module consumes it. Preload the small driver. -->
+    <link rel="modulepreload" href="/revaro_boot.js" />
     <link rel="modulepreload" href="/__REVARO_MODULE__" />
   </head>
   <body>

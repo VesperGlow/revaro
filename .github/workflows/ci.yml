@@ -19,28 +19,21 @@ jobs:
     name: Rust workspace
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         # rust-toolchain.toml pins the channel, components and wasm target.
         run: rustup show active-toolchain
-      - name: Restore the cargo registry
-        uses: actions/cache@v5
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
-      - name: Install wasm-bindgen CLI
-        # The CLI and wasm-bindgen crate share a private ABI version.
-        run: |
-          curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
-            -o /tmp/wasm-bindgen.tar.gz \
-            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.128/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl.tar.gz"
-          tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp
-          install -m 0755 /tmp/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl/wasm-bindgen "$HOME/.cargo/bin/"
-          wasm-bindgen --version
+          prefix-key: revaro-rust-v1
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install native build dependencies
         run: |
           sudo apt-get update
@@ -72,8 +65,9 @@ jobs:
           export PATH="$HOME/.cargo-audit/bin:$PATH"
           command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked --version 0.22.2 --root "$HOME/.cargo-audit"
           cargo audit --file Cargo.lock
-      - name: Build release artifacts
-        run: cargo xtask build
+      - name: Build the release server for load checks
+        # The release web bundle is built and exercised by the container job.
+        run: cargo build --locked --release -p revaro-server
       - name: Check personal-library load and interrupted-upload recovery
         run: python3 tests/load/resilience.py --binary target/release/revaro --files 100000 --requests 600 --workers 8 --max-p95-ms 2000 --output target/resilience-load.json
       - name: Upload resilience measurements
@@ -85,7 +79,6 @@ jobs:
 
   container:
     name: Build Rust image and Chromium E2E
-    needs: rust
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

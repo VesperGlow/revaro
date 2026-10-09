@@ -44,7 +44,10 @@ ENV PATH=/opt/revaro/ffmpeg/bin:$PATH \
     PKG_CONFIG_PATH=/opt/revaro/ffmpeg/lib/pkgconfig \
     LD_LIBRARY_PATH=/opt/revaro/ffmpeg/lib \
     CARGO_NET_RETRY=10 \
-    CARGO_HTTP_TIMEOUT=120
+    CARGO_HTTP_TIMEOUT=120 \
+    CARGO_INCREMENTAL=0 \
+    CARGO_PROFILE_DEV_DEBUG=0 \
+    CARGO_PROFILE_TEST_DEBUG=0
 
 # xtask invokes wasm-bindgen after compiling the Leptos client. Download the
 # pinned static CLI instead of adding it to the workspace dependency graph.
@@ -69,11 +72,12 @@ COPY xtask ./xtask
 # run by the Rust CI job, while this layer guarantees that a publishable image
 # cannot be assembled from a source tree that fails its own checks.
 FROM rust-base AS rust-checked
-RUN CARGO_INCREMENTAL=0 cargo xtask check \
-    && cargo clean
+# Keep the checked dependencies for the release build. CI does not need debug
+# symbols or incremental files, which would inflate exported BuildKit layers.
+RUN cargo xtask check
 
 FROM rust-checked AS rust-build
-RUN CARGO_INCREMENTAL=0 cargo xtask build
+RUN cargo xtask build
 
 # ---- Runtime ----
 FROM debian:bookworm-slim
