@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use revaro_media::MediaEngine;
 
+const MAX_VIDEO_THUMBNAIL_JOBS: usize = 8;
+
 /// Runtime state shared by media routes and their short-lived background jobs.
 #[derive(Debug)]
 pub struct MediaRuntime {
@@ -19,6 +21,8 @@ pub struct MediaRuntime {
     pub light_slots: Arc<tokio::sync::Semaphore>,
     /// Maximum simultaneous still-image/EPUB thumbnail decodes.
     pub image_slots: Arc<tokio::sync::Semaphore>,
+    /// Background video decoding may use only one of the two native slots.
+    pub video_slots: Arc<tokio::sync::Semaphore>,
     metadata_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     thumbnail_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     video_thumbnail_jobs: Mutex<HashSet<String>>,
@@ -32,6 +36,7 @@ impl MediaRuntime {
             engine: MediaEngine,
             light_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             image_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            video_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             metadata_locks: Mutex::new(HashMap::new()),
             thumbnail_locks: Mutex::new(HashMap::new()),
             video_thumbnail_jobs: Mutex::new(HashSet::new()),
@@ -51,12 +56,13 @@ impl MediaRuntime {
     }
 
     /// Claim a video thumbnail job. Returns false when an equivalent job is
-    /// already queued or running.
+    /// already queued/running, or the bounded background queue is full.
     pub fn claim_video_thumbnail(&self, key: &str) -> bool {
-        self.video_thumbnail_jobs
+        let mut jobs = self
+            .video_thumbnail_jobs
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key.to_owned())
+            .unwrap_or_else(PoisonError::into_inner);
+        jobs.len() < MAX_VIDEO_THUMBNAIL_JOBS && jobs.insert(key.to_owned())
     }
 
     /// Release a video thumbnail job after it has settled.
@@ -92,6 +98,24 @@ impl Default for MediaRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_thumbnail_admission_is_bounded_and_recovers_after_completion() {
+        let runtime = MediaRuntime::new();
+        for index in 0..MAX_VIDEO_THUMBNAIL_JOBS {
+            assert!(runtime.claim_video_thumbnail(&format!("video-{index}")));
+        }
+        for index in 0..1000 {
+            assert!(!runtime.claim_video_thumbnail(&format!("overflow-{index}")));
+        }
+        assert_eq!(
+            runtime.video_thumbnail_jobs.lock().unwrap().len(),
+            MAX_VIDEO_THUMBNAIL_JOBS
+        );
+        runtime.release_video_thumbnail("video-0");
+        assert!(runtime.claim_video_thumbnail("next-video"));
+        assert!(!runtime.claim_video_thumbnail("next-video"));
+    }
 
     #[tokio::test]
     async fn media_locks_prune_idle_keys_and_keep_jobs_deduplicated() {

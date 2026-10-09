@@ -271,6 +271,35 @@ where
 
 struct CancelOnDrop(CancellationToken);
 
+async fn run_background_video<T, F>(
+    state: &Arc<AppState>,
+    file: &File,
+    operation: F,
+) -> Result<T, MediaError>
+where
+    T: Send + 'static,
+    F: FnOnce(MediaEngine, std::fs::File, CancellationToken) -> Result<T, MediaError>
+        + Send
+        + 'static,
+{
+    // Acquire this first: queued thumbnails cannot reserve the native slot
+    // left for foreground probes. Both permits survive request cancellation.
+    let background = Arc::clone(&state.media.video_slots)
+        .acquire_owned()
+        .await
+        .map_err(|_| MediaError::Cancelled)?;
+    run_engine(
+        state,
+        file,
+        Arc::clone(&state.media.light_slots),
+        move |engine, reader, cancel| {
+            let _background = background;
+            operation(engine, reader, cancel)
+        },
+    )
+    .await
+}
+
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
@@ -541,14 +570,9 @@ fn schedule_video_thumbnail(state: Arc<AppState>, file: File, key: String) {
             if read_thumbnail(&state, &key).await.is_some() {
                 return Ok::<(), MediaError>(());
             }
-            let data = run_engine(
-                &state,
-                &file,
-                Arc::clone(&state.media.light_slots),
-                |engine, reader, cancel| {
-                    engine.thumbnail(reader, THUMB_MAX_DIMENSION, false, cancel)
-                },
-            )
+            let data = run_background_video(&state, &file, |engine, reader, cancel| {
+                engine.thumbnail(reader, THUMB_MAX_DIMENSION, false, cancel)
+            })
             .await?;
             if data.len() > MAX_THUMB_BYTES || !is_jpeg(&data) {
                 return Err(MediaError::InvalidData(
@@ -771,6 +795,70 @@ mod tests {
             .unwrap();
         drop(recovered);
         assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn queued_video_thumbnails_leave_native_capacity_for_foreground_probes() {
+        let state = state().await;
+        insert_ready_file(
+            &state,
+            "background-worker",
+            "source.wav",
+            "audio/wav",
+            &wav_fixture(),
+        )
+        .await;
+        let file = state
+            .db
+            .call(|c| file_routes::lookup_file(c, "background-worker"))
+            .await
+            .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let active_state = Arc::clone(&state);
+        let active_file = file.clone();
+        let active = tokio::spawn(async move {
+            run_background_video(&active_state, &active_file, move |_, _, _| {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Ok(())
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        let queued_state = Arc::clone(&state);
+        let queued_file = file.clone();
+        let (queued_started_tx, mut queued_started_rx) = tokio::sync::oneshot::channel();
+        let queued = tokio::spawn(async move {
+            run_background_video(&queued_state, &queued_file, move |_, _, _| {
+                let _ = queued_started_tx.send(());
+                Ok(())
+            })
+            .await
+        });
+        let foreground = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run_engine(
+                &state,
+                &file,
+                Arc::clone(&state.media.light_slots),
+                |_, _, _| Ok(()),
+            ),
+        )
+        .await;
+        assert_eq!(
+            queued_started_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+        queued.abort();
+        let _ = queued.await;
+        release_tx.send(()).unwrap();
+        active.await.unwrap().unwrap();
+        foreground
+            .expect("background thumbnails must not occupy every native worker")
+            .unwrap();
+        assert_eq!(state.media.light_slots.available_permits(), 2);
+        assert_eq!(state.media.video_slots.available_permits(), 1);
     }
 
     #[tokio::test]
