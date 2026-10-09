@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu, failApplicationRequest } from './helpers'
 
-const origin = (process.env.E2E_BASE_URL || 'http://localhost:18083').replace(/\/$/, '')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 
 function wav() {
@@ -119,11 +118,12 @@ test('favorites and albums persist, and removing membership preserves the origin
 
 test('gallery viewer prefetches beyond the first page and mobile layout stays within the viewport', async ({ page }) => {
   await login(page)
+  const origin = new URL(page.url()).origin
   const suffix = Date.now().toString(36)
   for (let start = 0; start < 65; start += 8) {
     await Promise.all(Array.from({ length: Math.min(8, 65 - start) }, async (_, i) => {
       const created = await page.request.post('/api/uploads', { headers: { Origin: origin }, data: { parent_id: '00000000-0000-0000-0000-000000000000', name: `gallery-batch-${suffix}-${start + i}.png`, size: png.length, mime_type: 'image/png' } })
-      expect(created.ok()).toBeTruthy()
+      expect(created.ok(), `upload session: ${created.status()} ${await created.text()}`).toBeTruthy()
       const session = await created.json()
       expect((await page.request.put(session.url, { headers: { Origin: origin, 'Content-Type': 'image/png' }, data: png })).ok()).toBeTruthy()
       expect((await page.request.post(`/api/uploads/${session.upload_id}/complete`, { headers: { Origin: origin }, data: {} })).ok()).toBeTruthy()

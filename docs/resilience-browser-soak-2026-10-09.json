@@ -2,22 +2,22 @@
   "rounds": 160,
   "edited_bytes_per_round": 262144,
   "warm": {
-    "heap_bytes": 2926228,
-    "dom_nodes": 996,
+    "heap_bytes": 2926200,
+    "dom_nodes": 998,
     "documents": 3,
     "wasm_bytes": 3014656
   },
   "middle": {
-    "heap_bytes": 3176080,
-    "dom_nodes": 996,
+    "heap_bytes": 3161580,
+    "dom_nodes": 998,
     "documents": 3,
     "wasm_bytes": 3014656
   },
   "end": {
-    "heap_bytes": 3251688,
-    "dom_nodes": 996,
+    "heap_bytes": 3244112,
+    "dom_nodes": 998,
     "documents": 3,
-    "wasm_bytes": 3342336
+    "wasm_bytes": 4259840
   },
   "errors": []
 }

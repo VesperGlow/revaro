@@ -10,6 +10,42 @@ use leptos::ev;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
+
+/// Release both the event callback and native file buffer on completion or
+/// cancellation. A forgotten load handler can keep its FileReader alive forever.
+pub async fn read_file_data_url(file: &web_sys::File) -> Result<String, wasm_bindgen::JsValue> {
+    struct Reading {
+        reader: web_sys::FileReader,
+        _completed: Closure<dyn FnMut(web_sys::Event)>,
+    }
+    impl Drop for Reading {
+        fn drop(&mut self) {
+            self.reader.set_onloadend(None);
+            self.reader.abort();
+        }
+    }
+
+    let reader = web_sys::FileReader::new()?;
+    let (send, receive) = futures_channel::oneshot::channel();
+    let completed = Closure::once(move |_: web_sys::Event| {
+        let _ = send.send(());
+    });
+    reader.set_onloadend(Some(completed.as_ref().unchecked_ref()));
+    let reading = Reading {
+        reader,
+        _completed: completed,
+    };
+    reading.reader.read_as_data_url(file.unchecked_ref())?;
+    receive
+        .await
+        .map_err(|_| wasm_bindgen::JsValue::from_str("file read cancelled"))?;
+    reading
+        .reader
+        .result()?
+        .as_string()
+        .ok_or_else(|| wasm_bindgen::JsValue::from_str("file read failed"))
+}
+
 /// Read a `localStorage` value, treating any storage failure as "absent".
 ///
 /// Private-mode browsers throw on access; the Vue helpers wrapped every call in

@@ -190,8 +190,49 @@ def main():
             results["integrity_check"]=db.execute("PRAGMA integrity_check").fetchone()[0]
             results["foreign_key_violations"]=db.execute("PRAGMA foreign_key_check").fetchall()
             db.close()
+            binary = str(Path(args.binary).resolve())
+            blocked_backup = directory / "blocked-backup"
+            blocked = subprocess.run([binary, "backup", str(blocked_backup)], env=env,
+                                     capture_output=True, text=True, timeout=30)
+            results["live_backup_rejected"] = blocked.returncode != 0 and "data directory is in use" in blocked.stderr + blocked.stdout
+            assert results["live_backup_rejected"] and not blocked_backup.exists()
             stop()
-            results["peak_server_rss_kib"]=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+            backup = directory / "backup"
+            saved = subprocess.run([binary, "backup", str(backup)], env=env,
+                                   capture_output=True, text=True, timeout=120)
+            assert saved.returncode == 0, saved.stderr + saved.stdout
+            restored = directory / "restored"
+            env.update(APP_DATA_DIR=str(restored / "data"), APP_OBJECTS_DIR=str(restored / "objects"),
+                       APP_CACHES_DIR=str(restored / "cache"))
+            recovered = subprocess.run([binary, "restore", str(backup)], env=env,
+                                       capture_output=True, text=True, timeout=120)
+            assert recovered.returncode == 0, recovered.stderr + recovered.stdout
+            # The restored database includes the same session and file identity.
+            start()
+            _, restored_bytes, _ = request(f'/api/files/{file["id"]}/download')
+            results["backup_restore_bytes_valid"] = hashlib.sha256(restored_bytes).digest() == hashlib.sha256(payload).digest()
+            assert results["backup_restore_bytes_valid"]
+            stop()
+            overwrite = subprocess.run([binary, "restore", str(backup)], env=env,
+                                       capture_output=True, text=True, timeout=30)
+            results["restore_overwrite_rejected"] = overwrite.returncode != 0 and "empty data directory" in overwrite.stderr + overwrite.stdout
+            assert results["restore_overwrite_rejected"]
+            manifest = json.loads((backup / "manifest.json").read_text())
+            blob = next(name for name in manifest["files"] if name.startswith("objects/") and "/blobs/" in name)
+            with (backup / blob).open("r+b") as damaged:
+                first = damaged.read(1)
+                damaged.seek(0)
+                damaged.write(bytes([first[0] ^ 255]))
+            rejected = directory / "corrupt-restore"
+            rejection_env = {**env, "APP_DATA_DIR": str(rejected / "data"),
+                             "APP_OBJECTS_DIR": str(rejected / "objects")}
+            corrupt = subprocess.run([binary, "restore", str(backup)], env=rejection_env,
+                                     capture_output=True, text=True, timeout=120)
+            results["corrupt_backup_rejected"] = corrupt.returncode != 0 and "checksum mismatch" in corrupt.stderr + corrupt.stdout
+            assert results["corrupt_backup_rejected"]
+            assert not (rejected / "data/revaro.db").exists() and not (rejected / "objects").exists()
+            # This now includes both server processes and the offline CLI.
+            results["peak_process_rss_kib"]=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
             results["logical_cpus"]=os.cpu_count()
             Path(args.output).write_text(json.dumps(results,ensure_ascii=False,indent=2)+"\n")
             print(json.dumps(results,ensure_ascii=False,indent=2))

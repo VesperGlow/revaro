@@ -14,7 +14,7 @@ use revaro_core::api::auth::{
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Event, File as BrowserFile, FileReader, HtmlElement, HtmlInputElement};
+use web_sys::{Event, File as BrowserFile, HtmlElement, HtmlInputElement};
 
 use super::dialogs::{ActionDialog, DialogBackdrop};
 use super::icons;
@@ -62,6 +62,15 @@ pub fn AccountSettings(
     let avatar_busy = RwSignal::new(false);
     let avatar_error = RwSignal::new(String::new());
     let avatar_input = NodeRef::<leptos::html::Input>::new();
+    let avatar_owner = Owner::current().expect("avatar uploads belong to account settings");
+    let avatar_abort = StoredValue::new(None::<futures_util::future::AbortHandle>);
+    on_cleanup(move || {
+        avatar_abort.with_value(|pending| {
+            if let Some(pending) = pending {
+                pending.abort();
+            }
+        });
+    });
 
     let panel = RwSignal::new(None::<AccountPanel>);
     let password_current = RwSignal::new(String::new());
@@ -234,6 +243,9 @@ pub fn AccountSettings(
         let avatar_version = avatar_version;
         let on_notify = on_notify.clone();
         Callback::new(move |file: BrowserFile| {
+            if avatar_busy.get_untracked() {
+                return;
+            }
             avatar_error.set(String::new());
             let accepted = ["image/jpeg", "image/png", "image/gif", "image/webp"];
             if !accepted.iter().any(|mime| *mime == file.type_()) {
@@ -244,60 +256,45 @@ pub fn AccountSettings(
                 avatar_error.set("头像不能超过 2 MiB".to_owned());
                 return;
             }
-            let reader = match FileReader::new() {
-                Ok(reader) => reader,
-                Err(_) => {
-                    avatar_error.set("无法读取图片".to_owned());
-                    return;
-                }
-            };
             avatar_busy.set(true);
-            let reader_for_load = reader.clone();
             let avatar_busy_for_load = avatar_busy;
             let avatar_error_for_load = avatar_error;
             let has_avatar_for_load = has_avatar;
             let avatar_version_for_load = avatar_version;
             let on_notify_for_load = on_notify.clone();
-            let onload = Closure::<dyn FnMut(Event)>::new(move |_| {
-                let result = reader_for_load
-                    .result()
-                    .ok()
-                    .and_then(|value| value.as_string());
-                let Some(data_url) = result else {
-                    avatar_busy_for_load.set(false);
-                    avatar_error_for_load.set("无法读取图片".to_owned());
-                    return;
-                };
-                leptos::task::spawn_local(async move {
-                    match api::update_avatar(&AvatarRequest { data_url }).await {
-                        Ok(()) => {
-                            has_avatar_for_load.set(true);
-                            avatar_version_for_load
-                                .update(|version| *version = version.wrapping_add(1));
-                            on_notify_for_load.run(Feedback::success("头像已更新"));
-                        }
-                        Err(error) => avatar_error_for_load.set(error.message),
+            let (abort, registration) = futures_util::future::AbortHandle::new_pair();
+            avatar_abort.set_value(Some(abort));
+            avatar_owner.with(|| {
+                leptos::task::spawn_local_scoped(async move {
+                    let result = futures_util::future::Abortable::new(
+                        async move {
+                            let data_url = match crate::browser::read_file_data_url(&file).await {
+                                Ok(data_url) => data_url,
+                                Err(_) => {
+                                    avatar_busy_for_load.set(false);
+                                    avatar_error_for_load.set("无法读取图片".to_owned());
+                                    return;
+                                }
+                            };
+                            match api::update_avatar(&AvatarRequest { data_url }).await {
+                                Ok(()) => {
+                                    has_avatar_for_load.set(true);
+                                    avatar_version_for_load
+                                        .update(|version| *version = version.wrapping_add(1));
+                                    on_notify_for_load.run(Feedback::success("头像已更新"));
+                                }
+                                Err(error) => avatar_error_for_load.set(error.message),
+                            }
+                            avatar_busy_for_load.set(false);
+                        },
+                        registration,
+                    )
+                    .await;
+                    if result.is_ok() {
+                        avatar_abort.set_value(None);
                     }
-                    avatar_busy_for_load.set(false);
                 });
             });
-            let avatar_busy_for_error = avatar_busy;
-            let avatar_error_for_error = avatar_error;
-            let onerror = Closure::<dyn FnMut(Event)>::new(move |_| {
-                avatar_busy_for_error.set(false);
-                avatar_error_for_error.set("无法读取图片".to_owned());
-            });
-            reader.set_onload(Some(onload.as_ref().unchecked_ref()));
-            reader.set_onerror(Some(onerror.as_ref().unchecked_ref()));
-            if reader
-                .read_as_data_url(file.unchecked_ref::<web_sys::Blob>())
-                .is_err()
-            {
-                avatar_busy.set(false);
-                avatar_error.set("无法读取图片".to_owned());
-            }
-            onload.forget();
-            onerror.forget();
         })
     };
     let avatar_changed = {

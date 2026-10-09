@@ -94,7 +94,7 @@ jobs:
         # production application dependency.
         run: |
           npm ci --ignore-scripts
-          npx playwright install --with-deps chromium firefox
+          npx playwright install --with-deps chromium firefox webkit
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Validate Compose origin defaults
         run: |
@@ -171,9 +171,12 @@ jobs:
       - name: Run Rust browser E2E
         working-directory: tests/e2e
         run: npx playwright test --config=playwright.config.ts
-      - name: Check Firefox startup, editor recovery and menus
+      - name: Check Firefox startup, editor and account recovery
         working-directory: tests/e2e
-        run: E2E_BROWSER=firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts --config=playwright.config.ts
+        run: E2E_BROWSER=firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --grep-invert 'mobile account settings' --config=playwright.config.ts
+      - name: Check WebKit startup, editor, touch layout and accounts
+        working-directory: tests/e2e
+        run: E2E_BROWSER=webkit npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --config=playwright.config.ts
       - name: Check repeated editor and menu resource usage
         run: SOAK_OUTPUT=browser-soak.json node tests/load/browser-soak.cjs
       - name: Upload browser resource measurements

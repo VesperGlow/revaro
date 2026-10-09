@@ -171,15 +171,18 @@ pub fn AppTopbar(
             .unwrap_or_else(|| "R".to_owned())
     };
     let avatar_url = move || format!("/api/profile/avatar?v={}", avatar_version.get());
-    let avatar_fallback = {
-        let has_avatar = has_avatar;
-        move |_| has_avatar.set(false)
-    };
+    let avatar_failed = RwSignal::new(false);
+    Effect::new(move |_| {
+        avatar_version.get();
+        has_avatar.get();
+        avatar_failed.set(false);
+    });
+    let avatar_fallback = move |_| avatar_failed.set(true);
     let account_avatar = move || {
         view! {
             <span class="avatar-badge">
                 <Show
-                    when=move || has_avatar.get()
+                    when=move || has_avatar.get() && !avatar_failed.get()
                     fallback=move || view! { <span>{initial()}</span> }
                 >
                     <img
