@@ -61,6 +61,23 @@ async function stackMenu(page: Page, action: string) {
   await page.locator('.stack-header .action-menu-panel').getByRole('button', { name: action, exact: true }).click()
 }
 
+async function dragBook(page: Page, source: Locator, target: Locator) {
+  await expect(source).toHaveAttribute('draggable', 'true')
+  await source.hover()
+  await expect(target).toBeVisible()
+  const box = (await target.boundingBox())!
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  await page.mouse.down()
+  try {
+    await page.mouse.move(point.x, point.y, { steps: 8 })
+    // A second move lets the browser deliver dragover after native dragstart.
+    await page.mouse.move(point.x, point.y)
+    await expect(target).toHaveClass(/stack-drop-target/)
+  } finally {
+    await page.mouse.up()
+  }
+}
+
 async function holdDrag(page: Page, source: Locator, target: Locator, touch: boolean) {
   await source.evaluate(async el => {
     el.scrollIntoView({ block: 'center' })
@@ -285,7 +302,35 @@ test('desktop book drags create a stack and append to its existing ordered membe
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?kind=book&q=${prefix}`)).json()).total).toBe(3)
   await navigate(page, '书籍')
   const book = (n: number) => page.locator('.library-card').filter({ has: page.getByRole('button', { name: `打开 ${prefix}-${n}.txt`, exact: true }) })
-  await book(2).dragTo(book(1))
+  await expect(book(2)).toBeVisible()
+  const sourceId = await book(2).getAttribute('data-file-id')
+  await page.evaluate(sourceId => {
+    const original = window.fetch.bind(window)
+    const state = (window as any).libraryRefreshProbe = {
+      seen: false, completed: false, release: () => {}, restore: () => { window.fetch = original },
+      source: document.querySelector(`[data-file-id="${sourceId}"]`),
+    }
+    window.fetch = async (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href)
+      if (url.pathname === '/api/library/items' && url.searchParams.get('kind') === 'book' && !state.seen) {
+        state.seen = true
+        await new Promise<void>(resolve => { state.release = resolve })
+        const response = await original(input, init)
+        state.completed = true
+        return response
+      }
+      return original(input, init)
+    }
+  }, sourceId)
+  await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '书籍', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (window as any).libraryRefreshProbe.seen)).toBe(true)
+  await expect(book(2), 'background refresh keeps the drag source mounted').toBeVisible()
+  await page.evaluate(() => (window as any).libraryRefreshProbe.release())
+  await expect.poll(() => page.evaluate(() => (window as any).libraryRefreshProbe.completed)).toBe(true)
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  expect(await page.evaluate(sourceId => (window as any).libraryRefreshProbe.source === document.querySelector(`[data-file-id="${sourceId}"]`), sourceId)).toBe(true)
+  await page.evaluate(() => { (window as any).libraryRefreshProbe.restore(); delete (window as any).libraryRefreshProbe })
+  await dragBook(page, book(2), book(1))
   let stackId: string
   await expect.poll(async () => {
     const created = (await (await page.request.get('/api/library/stacks')).json()).find((stack: any) => stack.files.some((file: any) => file.name === `${prefix}-1.txt`))
@@ -294,7 +339,7 @@ test('desktop book drags create a stack and append to its existing ordered membe
   }).toBe(2)
   const stack = page.locator(`.stack-card[data-stack-id="${stackId!}"]`)
   await expect(stack.locator('.stack-count')).toHaveText('2 本')
-  await book(3).dragTo(stack)
+  await dragBook(page, book(3), stack)
   await expect(stack.locator('.stack-count')).toHaveText('3 本')
   await expect(stack.locator('.stack-cover-layer')).toHaveCount(3)
   await stack.locator('.library-card-open').click()

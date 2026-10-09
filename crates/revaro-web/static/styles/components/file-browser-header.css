@@ -22,7 +22,8 @@
   border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
 }
 .content-head .file-sort .sort-direction {
-  flex: 0 0 38px; border-left: 1px solid var(--line);
+  /* WebKit's max-content sizing needs a width as well as the flex basis. */
+  flex: 0 0 38px; width: 38px; border-left: 1px solid var(--line);
   border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0;
   color: var(--accent); font-size: 22px; line-height: 1;
 }

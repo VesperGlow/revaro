@@ -78,7 +78,7 @@ jobs:
           path: target/resilience-load.json
 
   container:
-    name: Build Rust image and Chromium E2E
+    name: Build Rust image and browser E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -170,13 +170,13 @@ jobs:
           exit 1
       - name: Run Rust browser E2E
         working-directory: tests/e2e
-        run: npx playwright test --config=playwright.config.ts
+        run: PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/chromium npx playwright test --config=playwright.config.ts --output=test-results/chromium
       - name: Check Firefox startup, editor and account recovery
         working-directory: tests/e2e
-        run: E2E_BROWSER=firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --grep-invert 'mobile account settings' --config=playwright.config.ts
+        run: E2E_BROWSER=firefox PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --grep-invert 'mobile account settings' --config=playwright.config.ts --output=test-results/firefox
       - name: Check WebKit startup, editor, touch layout and accounts
         working-directory: tests/e2e
-        run: E2E_BROWSER=webkit npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --config=playwright.config.ts
+        run: E2E_BROWSER=webkit PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/webkit npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --config=playwright.config.ts --output=test-results/webkit
       - name: Check repeated editor and menu resource usage
         run: SOAK_OUTPUT=browser-soak.json node tests/load/browser-soak.cjs
       - name: Upload browser resource measurements

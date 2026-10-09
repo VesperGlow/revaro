@@ -21,6 +21,8 @@ Rust job 使用固定提交版本的 [rust-cache](https://github.com/Swatinem/ru
 前端 release 包只构建一次。两个 job 都成功才允许发布，发布继续复用通过验收的镜像。
 Firefox 不使用其不支持的移动设备模拟；WebKit 额外覆盖触屏账户界面。
 头像重复读取的垃圾回收测量使用 Chromium CDP，其余浏览器不执行该测量。
+三种浏览器各用独立的 HTML 报告和结果子目录，后续测试不会清除此前的
+截图、视频及 trace；诊断 artifact 包含这三个目录。
 
 生产 Compose 的 `APP_BASE_URL` 默认值会从 `APP_PORT` 推导；留空时例如
 `APP_PORT=18081` 会得到 `http://localhost:18081`，显式设置公网地址则保持原值。

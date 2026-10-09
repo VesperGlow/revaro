@@ -210,6 +210,12 @@ for (const mobile of [false, true]) {
           expect(size.height).toBeLessThanOrEqual(56)
           expect(status.x + status.width).toBeLessThan(size.x + size.width)
         }
+        const sort = page.getByRole('group', { name: '文件排序', exact: true })
+        const sortBounds = (await sort.boundingBox())!
+        for (const button of await sort.getByRole('button').all()) {
+          const bounds = (await button.boundingBox())!
+          expect(bounds.x + bounds.width, 'sorting buttons stay inside their group').toBeLessThanOrEqual(sortBounds.x + sortBounds.width)
+        }
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
       }
       mkdirSync('/tmp/revaro-account-preview', { recursive: true })

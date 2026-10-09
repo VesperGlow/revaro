@@ -2,6 +2,15 @@
 
 use super::*;
 
+#[derive(PartialEq, Eq)]
+struct LibraryScope {
+    page: LibraryPage,
+    query: String,
+    favorite: bool,
+    collection: String,
+    stack: String,
+}
+
 pub(super) struct ListingController {
     pub page: RwSignal<LibraryPage>,
     pub query: RwSignal<String>,
@@ -37,6 +46,7 @@ impl ListingController {
             collections,
             logout,
         } = self;
+        let last_scope = StoredValue::new(None::<LibraryScope>);
         let load = Callback::new(move |more: bool| {
             let current_page = page.get_untracked();
             if matches!(
@@ -46,6 +56,7 @@ impl ListingController {
                 // Home owns the shared items signal while it is mounted.
                 // Invalidate requests from the library page we just left.
                 generation.update(|g| *g += 1);
+                last_scope.set_value(None);
                 loading.set(false);
                 more_loading.set(false);
                 error.set(String::new());
@@ -70,10 +81,25 @@ impl ListingController {
                 ..Default::default()
             };
             if !more {
+                let scope = LibraryScope {
+                    page: current_page,
+                    query: request.query.clone(),
+                    favorite: request.favorite,
+                    collection: request.collection.clone(),
+                    stack: request.stack.clone(),
+                };
+                // Upload callbacks can refresh while a card is being dragged.
+                // Keep those keyed nodes until the same listing is replaced.
+                let keep_items = last_scope
+                    .with_value(|previous| previous.as_ref() == Some(&scope))
+                    && items.with_untracked(|list| !list.is_empty());
+                last_scope.set_value(Some(scope));
                 generation.update(|g| *g += 1);
-                loading.set(true);
-                items.set(Vec::new());
-                total.set(0);
+                if !keep_items {
+                    loading.set(true);
+                    items.set(Vec::new());
+                    total.set(0);
+                }
             } else {
                 more_loading.set(true);
             }
