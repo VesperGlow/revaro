@@ -1064,7 +1064,7 @@ impl UploadController {
         }
         let controller = self.clone();
         let callback =
-            Closure::once_into_js(move || controller.refresh_if_current(parent_id, None));
+            Closure::once(move || controller.refresh_if_current(parent_id, None)).into_js_value();
         if let Ok(timer) = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 250)
         {

@@ -72,14 +72,15 @@ pub fn FileBrowserHeader(
             return;
         };
         let nav = breadcrumb_nav;
-        let callback = Closure::once_into_js(move || {
+        let callback = Closure::once(move || {
             if let Some(nav) = nav.get() {
                 let options = web_sys::ScrollToOptions::new();
                 options.set_left(f64::from(nav.scroll_width()));
                 options.set_behavior(web_sys::ScrollBehavior::Smooth);
                 nav.scroll_to_with_scroll_to_options(&options);
             }
-        });
+        })
+        .into_js_value();
         let _ = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
     });

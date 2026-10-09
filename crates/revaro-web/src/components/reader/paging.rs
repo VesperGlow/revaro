@@ -20,7 +20,7 @@ pub(super) fn schedule_window_sync(
         return;
     };
     let callback_runtime = runtime.clone();
-    let callback = Closure::once_into_js(move || {
+    let callback = Closure::once(move || {
         callback_runtime.borrow_mut().sync_timer = None;
         leptos::task::spawn_local(window_sync(
             callback_runtime,
@@ -31,7 +31,8 @@ pub(super) fn schedule_window_sync(
             toc_active,
             percent,
         ));
-    });
+    })
+    .into_js_value();
     if let Ok(timer) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
         callback.unchecked_ref(),
         WINDOW_SYNC_DELAY_MS,
@@ -251,9 +252,10 @@ pub(super) async fn pause(milliseconds: i32) {
         return;
     };
     let (sender, receiver) = oneshot::channel::<()>();
-    let callback = Closure::once_into_js(move || {
+    let callback = Closure::once(move || {
         let _ = sender.send(());
-    });
+    })
+    .into_js_value();
     if window
         .set_timeout_with_callback_and_timeout_and_arguments_0(
             callback.unchecked_ref(),
@@ -282,7 +284,7 @@ pub(super) fn schedule_relayout(
         return;
     };
     let callback_runtime = runtime.clone();
-    let callback = Closure::once_into_js(move || {
+    let callback = Closure::once(move || {
         callback_runtime.borrow_mut().relayout_timer = None;
         relayout(
             callback_runtime,
@@ -292,7 +294,8 @@ pub(super) fn schedule_relayout(
             prefs,
             stage,
         );
-    });
+    })
+    .into_js_value();
     if let Ok(timer) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
         callback.unchecked_ref(),
         RELAYOUT_DELAY_MS,

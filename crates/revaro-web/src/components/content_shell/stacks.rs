@@ -33,6 +33,7 @@ pub(super) struct StackController {
     pub pick_loading: RwSignal<bool>,
     pub picked: RwSignal<HashSet<String>>,
     pub suggestions: RwSignal<Vec<StackSuggestion>>,
+    pub recommendation_loading: RwSignal<bool>,
     pub dragging: RwSignal<Option<String>>,
     pub run: Callback<StackOperation>,
     pub drop_on: Callback<LibraryItem>,
@@ -62,9 +63,12 @@ impl StackController {
         let pick_revision = RwSignal::new(0_u64);
         let picked = RwSignal::new(HashSet::<String>::new());
         let suggestions = RwSignal::new(Vec::<StackSuggestion>::new());
+        let recommendation_loading = RwSignal::new(false);
         let dragging = RwSignal::new(None::<String>);
         let order_notice = RwSignal::new(String::new());
         let revision = RwSignal::new(0_u64);
+        let recommendation_revision = RwSignal::new(0_u64);
+        let owner = Owner::current().expect("stacks belong to the content shell");
         let run = Callback::new(move |operation: StackOperation| {
             if busy.get_untracked() {
                 return;
@@ -235,14 +239,45 @@ impl StackController {
             error.set(String::new());
             suggestions.set(Vec::new());
             dialog.set(Some(StackDialog::Suggestions));
-            busy.set(true);
-            leptos::task::spawn_local(async move {
-                match api::fetch_stack_suggestions().await {
-                    Ok(list) => suggestions.set(list),
-                    Err(e) if e.is_unauthorized() => logout.run(()),
-                    Err(e) => error.set(e.message),
-                }
-                busy.set(false);
+            recommendation_loading.set(true);
+            recommendation_revision.update(|r| *r += 1);
+            let current = recommendation_revision.get_untracked();
+            // The refresh button may unmount when loading starts. Attach the
+            // task to the persistent shell, and only poll while this dialog lives.
+            owner.with(|| {
+                leptos::task::spawn_local_scoped_with_cancellation(async move {
+                    for attempt in 0..20 {
+                        let result = api::fetch_stack_suggestions().await;
+                        if recommendation_revision.try_get_untracked() != Some(current) {
+                            return;
+                        }
+                        if !matches!(
+                            dialog.try_get_untracked().flatten(),
+                            Some(StackDialog::Suggestions)
+                        ) {
+                            let _ = recommendation_loading.try_set(false);
+                            return;
+                        }
+                        match result {
+                            Ok((list, pending)) => {
+                                suggestions.set(list);
+                                if !pending || attempt == 19 {
+                                    break;
+                                }
+                            }
+                            Err(e) if e.is_unauthorized() => {
+                                logout.run(());
+                                return;
+                            }
+                            Err(e) => {
+                                error.set(e.message);
+                                break;
+                            }
+                        }
+                        browser::delay(500).await;
+                    }
+                    recommendation_loading.set(false);
+                })
             });
         });
         let add_books = Callback::new(move |()| {
@@ -315,6 +350,7 @@ impl StackController {
             pick_loading,
             picked,
             suggestions,
+            recommendation_loading,
             dragging,
             run,
             drop_on,
@@ -394,7 +430,8 @@ pub(super) fn StackDialogs(controller: StackController) -> impl IntoView {
                                 c.dialog.set(Some(StackDialog::Group(suggestion.file_ids.clone())));
                             }>{suggestion.name.clone()}<small>{format!("{} 本",suggestion.file_ids.len())}</small></button>
                         } /></div>
-                        <Show when=move ||!c.busy.get() && c.suggestions.get().is_empty() fallback=|| ()><p>"暂无可推荐的同系列书籍；你仍可多选书籍手动堆叠。"</p></Show>
+                        <Show when=move ||!c.recommendation_loading.get() && c.suggestions.get().is_empty() fallback=|| ()><p>"暂无可推荐的同系列书籍。新导入书籍的系列信息会在后台整理，稍后可重新打开查看；你也可以手动堆叠。"</p><button type="button" on:click=move |_|c.recommend.run(())>"刷新推荐"</button></Show>
+                        <Show when=move ||c.recommendation_loading.get() fallback=|| ()><p role="status">"正在读取推荐，系列信息会自动更新…"</p></Show>
                     }.into_any(),
                 })}
                 <Show when=move ||c.busy.get() fallback=|| ()><p role="status">"正在处理…"</p></Show>

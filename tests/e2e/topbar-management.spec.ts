@@ -26,8 +26,8 @@ async function attached(page: Page, trigger: string, panel: string) {
 test('links use the menu and storage stays anchored', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   let revoked = false
-  await page.route('**/api/shares?**', route => route.fulfill({ json: revoked ? [] : [{ file_id: 'link-test', name: '公开文件', active: true, url: 'http://localhost/s/link-test', created_at: '2026-10-03T00:00:00Z' }] }))
-  await page.route('**/api/files/link-test/share', route => { revoked = true; return route.fulfill({ status: 204 }) })
+  await page.context().route('**/api/shares?**', route => route.fulfill({ json: revoked ? [] : [{ file_id: 'link-test', name: '公开文件', active: true, url: 'http://localhost/s/link-test', created_at: '2026-10-03T00:00:00Z' }] }))
+  await page.context().route('**/api/files/link-test/share', route => { revoked = true; return route.fulfill({ status: 204 }) })
   await login(page)
   await openTopbarMenu(page)
   await page.getByLabel('公开链接', { exact: true }).click()
@@ -71,7 +71,7 @@ test('links use the menu and storage stays anchored', async ({ page, context }) 
 test('status ball and numeric metrics reserve their geometry during loading and expose real storage ratio', async ({ page }) => {
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  await page.route('**/api/system/status', async route => { await gate; await route.fulfill({ json: { disk_total_bytes: 100 * 1024 ** 3, disk_used_bytes: 42 * 1024 ** 3, disk_available_bytes: 58 * 1024 ** 3, cache: { memory_bytes: 2 * 1024 ** 2, disk_bytes: 3 * 1024 ** 2 } } }) })
+  await page.context().route('**/api/system/status', async route => { await gate; await route.fulfill({ json: { disk_total_bytes: 100 * 1024 ** 3, disk_used_bytes: 42 * 1024 ** 3, disk_available_bytes: 58 * 1024 ** 3, cache: { memory_bytes: 2 * 1024 ** 2, disk_bytes: 3 * 1024 ** 2 } } }) })
   await login(page)
   const ball = page.locator('.system-status-ball')
   await expect(ball).toHaveClass(/pending/)
@@ -97,8 +97,8 @@ test('status ball and numeric metrics reserve their geometry during loading and 
 test('public link pagination returns to an existing page after its last link is revoked', async ({ page }) => {
   let count = 201
   const links = Array.from({ length: 201 }, (_, index) => ({ file_id: `test-link-${index}`, name: `公开文件 ${index}`, active: true, url: `http://localhost/s/test-link-${index}`, created_at: '2026-10-03T00:00:00Z' }))
-  await page.route('**/api/shares?**', route => { const offset = Number(new URL(route.request().url()).searchParams.get('offset')); return route.fulfill({ json: links.slice(0, count).slice(offset, offset + 200) }) })
-  await page.route('**/api/files/test-link-200/share', route => { count = 200; return route.fulfill({ status: 204 }) })
+  await page.context().route('**/api/shares?**', route => { const offset = Number(new URL(route.request().url()).searchParams.get('offset')); return route.fulfill({ json: links.slice(0, count).slice(offset, offset + 200) }) })
+  await page.context().route('**/api/files/test-link-200/share', route => { count = 200; return route.fulfill({ status: 204 }) })
   await login(page)
   await openTopbarMenu(page)
   await page.getByLabel('公开链接', { exact: true }).click()

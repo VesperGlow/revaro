@@ -6,3 +6,4 @@
 @media(max-width:720px){.editor-meta>span{display:none}.editor-meta{padding-left:8px}.editor-header-message{display:none}}
 @media(max-width:520px){.editor-title{gap:7px}.editor-title>span:first-child{width:36px;height:36px}.editor-meta{padding-left:7px;font-size:9px}}
 .document-editor{height:min(880px,calc(100vh - 36px));height:min(880px,calc(100dvh - 36px))}
+.editor-draft-recovery { padding: .75rem 1rem; background: var(--surface); display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }

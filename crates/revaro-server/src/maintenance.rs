@@ -191,6 +191,19 @@ impl MaintenanceRuntime {
         let minute = Duration::from_secs(60);
 
         self.register(
+            "book-series",
+            minute,
+            minute,
+            true,
+            state_job(state.clone(), |state| async move {
+                crate::library_routes::index_book_series(&state)
+                    .await
+                    .map_err(|error| error.message)
+            }),
+        )
+        .expect("production maintenance job names are unique");
+
+        self.register(
             "cache",
             minute.saturating_mul(5),
             minute,

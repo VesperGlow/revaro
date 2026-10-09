@@ -16,6 +16,7 @@ pub(super) struct FileActionContext {
     pub load_folder_request: Callback<FolderLoadRequest>,
     pub on_logout: Callback<()>,
     pub editor_open: RwSignal<bool>,
+    pub editor_draft_key: Signal<String>,
     pub share_file: RwSignal<Option<File>>,
     pub share_sequence: RwSignal<u64>,
     pub share_active: RwSignal<bool>,
@@ -47,6 +48,7 @@ impl FileActionContext {
             load_folder_request,
             on_logout,
             editor_open,
+            editor_draft_key,
             share_file,
             share_sequence,
             share_active,
@@ -288,6 +290,9 @@ impl FileActionContext {
                                 // The share dialog remains open; only its link state
                                 // changes after the confirmation is dismissed.
                             } else if discard_editor {
+                                super::super::editor_draft::remove(
+                                    &editor_draft_key.get_untracked(),
+                                );
                                 selected_ids.set(HashSet::new());
                                 if !request_overlay_close(nav_actions, history_suppressed) {
                                     editor_open.set(false);

@@ -145,7 +145,7 @@ pub fn MediaPreview(
     // NodeRef is populated after the view is inserted. The zero-delay callback
     // gives the browser one layout turn before moving focus to the dialog.
     if let Some(window) = web_sys::window() {
-        let callback = Closure::once_into_js(move || {
+        let callback = Closure::once(move || {
             if let Some(element) = root_for_mount.get() {
                 let options = web_sys::FocusOptions::new();
                 options.set_prevent_scroll(true);
@@ -153,7 +153,8 @@ pub fn MediaPreview(
             }
             update_stage_size(stage_for_resize, resize_size);
             clamp_pan(resize_pan, resize_natural, resize_size, resize_zoom);
-        });
+        })
+        .into_js_value();
         let _ = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
         mounted = true;
@@ -492,10 +493,11 @@ pub fn MediaPreview(
             window.clear_timeout_with_handle(timer);
         }
         if event.detail() < 2 {
-            let timer = Closure::once_into_js(move || {
+            let timer = Closure::once(move || {
                 click_timer.set(None);
                 chrome_visible.update(|visible| *visible = !*visible);
-            });
+            })
+            .into_js_value();
             if let Some(window) = web_sys::window()
                 && let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                     timer.unchecked_ref(),
@@ -1051,7 +1053,7 @@ fn reveal_thumbnail(root: NodeRef<leptos::html::Section>) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let callback = Closure::once_into_js(move || {
+    let callback = Closure::once(move || {
         let Some(root) = root.get() else {
             return;
         };
@@ -1063,7 +1065,8 @@ fn reveal_thumbnail(root: NodeRef<leptos::html::Section>) {
         options.set_block(web_sys::ScrollLogicalPosition::Nearest);
         options.set_inline(web_sys::ScrollLogicalPosition::Center);
         element.scroll_into_view_with_scroll_into_view_options(&options);
-    });
+    })
+    .into_js_value();
     let _ =
         window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
 }

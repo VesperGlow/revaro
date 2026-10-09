@@ -13,10 +13,11 @@ pub(super) fn schedule_progress_save(runtime: Rc<RefCell<ReaderRuntime>>, file_i
     };
     let callback_state = runtime.clone();
     let callback_id = file_id;
-    let callback = Closure::once_into_js(move || {
+    let callback = Closure::once(move || {
         callback_state.borrow_mut().progress_timer = None;
         save_current_progress(callback_state, callback_id);
-    });
+    })
+    .into_js_value();
     if let Ok(timer) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
         callback.unchecked_ref(),
         PROGRESS_DELAY_MS,
@@ -76,5 +77,18 @@ pub(super) fn flush_progress(runtime: Rc<RefCell<ReaderRuntime>>, file_id: Strin
                 let _ = refresh.try_update(|r| *r += 1);
             }
         });
+    }
+}
+
+pub(super) fn flush_progress_keepalive(runtime: &Rc<RefCell<ReaderRuntime>>, file_id: &str) {
+    let state = runtime.borrow();
+    if let Some(anchor) = state.top_anchor.clone() {
+        api::save_book_progress_keepalive(
+            file_id,
+            &SaveProgressRequest {
+                anchor: Some(anchor),
+                percent: Some(state.top_percent),
+            },
+        );
     }
 }

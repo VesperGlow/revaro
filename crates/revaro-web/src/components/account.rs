@@ -158,12 +158,13 @@ pub fn AccountSettings(
             username_error.set(String::new());
             panel.set(Some(AccountPanel::Username));
             if let Some(window) = web_sys::window() {
-                let callback = Closure::once_into_js(move || {
+                let callback = Closure::once(move || {
                     if let Some(input) = username_input.get() {
                         let _ = input.focus();
                         let _ = input.select();
                     }
-                });
+                })
+                .into_js_value();
                 let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                     callback.unchecked_ref(),
                     0,
@@ -662,6 +663,7 @@ pub fn AccountSettings(
             leptos::task::spawn_local(async move {
                 api::logout().await;
                 on_logout.run(());
+                super::editor_draft::clear_all();
             });
         })
     };

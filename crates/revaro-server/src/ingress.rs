@@ -14,6 +14,7 @@ use axum::{
     http::{Response, StatusCode, Uri},
     routing::get_service,
 };
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use rustls_acme::{AccountCache, AcmeConfig, AcmeState, CertCache, UseChallenge};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -112,8 +113,10 @@ impl AcmeSettings {
         if let Some(path) = &self.ca_file {
             let pem = tokio::fs::read(path).await?;
             let mut roots = rustls::RootCertStore::empty();
-            for cert in rustls_pemfile::certs(&mut io::Cursor::new(pem)) {
-                roots.add(cert?).map_err(io::Error::other)?;
+            for cert in CertificateDer::pem_slice_iter(&pem) {
+                roots
+                    .add(cert.map_err(io::Error::other)?)
+                    .map_err(io::Error::other)?;
             }
             if roots.is_empty() {
                 return Err(io::Error::other("ACME_CA_FILE contains no certificates"));

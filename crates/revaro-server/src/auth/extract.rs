@@ -58,7 +58,15 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         let token = cookie.value().to_owned();
         match state.auth.authenticate(&token).await {
             Ok(username) => Ok(Self { username, token }),
-            Err(_) => Err(ApiError::unauthorized("authentication required")),
+            Err(super::AuthError::InvalidSession | super::AuthError::ExpiredSession) => {
+                Err(ApiError::unauthorized("authentication required"))
+            }
+            Err(error) => {
+                tracing::warn!(%error,"session verification is temporarily unavailable");
+                Err(ApiError::unavailable(
+                    "session verification is temporarily unavailable; retry shortly",
+                ))
+            }
         }
     }
 }

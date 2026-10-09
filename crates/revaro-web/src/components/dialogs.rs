@@ -226,11 +226,12 @@ fn focus_input_after_render(input: NodeRef<leptos::html::Input>) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let callback = Closure::once_into_js(move || {
+    let callback = Closure::once(move || {
         if let Some(input) = input.get() {
             let _ = input.focus();
         }
-    });
+    })
+    .into_js_value();
     let _ =
         window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
 }

@@ -72,18 +72,24 @@ impl RequestError {
 
 /// Fetch the current session, or `None` when the visitor is not signed in.
 ///
-/// A 401 is the ordinary "logged out" answer, not an error worth surfacing:
-/// `checkSession` in the Vue app swallowed every failure and showed the login
-/// page, and the shell keeps that behaviour.
-pub async fn fetch_session() -> Option<Session> {
+/// Only 401 means signed out. A temporary network/server error must preserve
+/// the cookie and offer a retry instead of showing an unrelated login form.
+pub async fn fetch_session() -> Result<Option<Session>, RequestError> {
     let response = api_request(Request::get("/api/auth/me"))
         .send()
         .await
-        .ok()?;
-    if !response.ok() {
-        return None;
+        .map_err(|error| request_transport(error.to_string()))?;
+    if response.status() == 401 {
+        return Ok(None);
     }
-    response.json::<Session>().await.ok()
+    if !response.ok() {
+        return Err(decode_request_error(response).await);
+    }
+    response
+        .json::<Session>()
+        .await
+        .map(Some)
+        .map_err(|error| request_transport(error.to_string()))
 }
 
 /// Fetch a directory's metadata and breadcrumb trail.
@@ -211,10 +217,18 @@ pub async fn save_media_progress(
 /// `web-sys` does not expose that dictionary member in the pinned version, so
 /// set it through the DOM dictionary object before constructing the request.
 pub fn save_media_progress_keepalive(id: &str, progress: &MediaProgress) {
+    save_json_keepalive(&format!("/api/files/{id}/media/progress"), progress);
+}
+
+pub fn save_book_progress_keepalive(id: &str, progress: &SaveProgressRequest) {
+    save_json_keepalive(&format!("/api/files/{id}/book/progress"), progress);
+}
+
+fn save_json_keepalive(path: &str, value: &impl serde::Serialize) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let Ok(body) = serde_json::to_string(progress) else {
+    let Ok(body) = serde_json::to_string(value) else {
         return;
     };
 
@@ -236,9 +250,7 @@ pub fn save_media_progress_keepalive(id: &str, progress: &MediaProgress) {
     );
     init.set_headers(headers.as_ref());
 
-    let Ok(request) =
-        BrowserRequest::new_with_str_and_init(&format!("/api/files/{id}/media/progress"), &init)
-    else {
+    let Ok(request) = BrowserRequest::new_with_str_and_init(path, &init) else {
         return;
     };
     let _ = window.fetch_with_request(&request);
@@ -512,8 +524,20 @@ pub async fn fetch_stacks() -> Result<Vec<revaro_core::stacks::Stack>, RequestEr
 }
 
 pub async fn fetch_stack_suggestions()
--> Result<Vec<revaro_core::stacks::StackSuggestion>, RequestError> {
-    get_json("/api/library/stack-suggestions").await
+-> Result<(Vec<revaro_core::stacks::StackSuggestion>, bool), RequestError> {
+    let response = api_request(Request::get("/api/library/stack-suggestions"))
+        .send()
+        .await
+        .map_err(|error| request_transport(error.to_string()))?;
+    if !response.ok() {
+        return Err(decode_request_error(response).await);
+    }
+    let pending = response.headers().get("x-revaro-index-pending").as_deref() == Some("1");
+    let list = response
+        .json()
+        .await
+        .map_err(|error| request_transport(error.to_string()))?;
+    Ok((list, pending))
 }
 
 pub async fn create_stack(

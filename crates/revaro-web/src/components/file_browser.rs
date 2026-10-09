@@ -178,10 +178,11 @@ pub fn FileBrowser(
             };
             let feedback_for_timer = feedback;
             let timer_for_callback = feedback_timer;
-            let callback = Closure::once_into_js(move || {
+            let callback = Closure::once(move || {
                 feedback_for_timer.set(None);
                 timer_for_callback.set(None);
-            });
+            })
+            .into_js_value();
             if let Ok(timer) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 callback.unchecked_ref(),
                 3_600,
@@ -217,6 +218,32 @@ pub fn FileBrowser(
     let editor_error = RwSignal::new(String::new());
     let editor_dirty = RwSignal::new(false);
     let editor_sequence = RwSignal::new(0_u64);
+    // This application has one administrator. File IDs stay stable when its
+    // username changes; a display name must not strand an unsaved draft.
+    let editor_draft_key = Signal::derive(move || {
+        format!(
+            "revaro-editor-draft:{}",
+            if editor_is_new.get() {
+                format!("new:{}", current_id.get())
+            } else {
+                editor_file_id.get()
+            }
+        )
+    });
+    let mut unload_guard = browser::on_window_capture("beforeunload", move |event| {
+        if editor_open.get_untracked()
+            && editor_dirty.get_untracked()
+            && !editor_readonly.get_untracked()
+        {
+            event.prevent_default();
+            let _ = js_sys::Reflect::set(
+                event.as_ref(),
+                &JsValue::from_str("returnValue"),
+                &JsValue::from_str(""),
+            );
+        }
+    });
+    on_cleanup(move || unload_guard.release());
     {
         Effect::new(move |_| {
             let dirty = editor_name.get() != editor_original_name.get()
@@ -319,7 +346,7 @@ pub fn FileBrowser(
             // reporting the short loading placeholder when a refresh completes.
             if let Some(window) = web_sys::window() {
                 let load_more = auto_load_more.clone();
-                let callback = Closure::once_into_js(move || {
+                let callback = Closure::once(move || {
                     if request_sequence.try_get_untracked().is_none()
                         || !loading_more_error.get_untracked().is_empty()
                     {
@@ -333,7 +360,8 @@ pub fn FileBrowser(
                     {
                         load_more.run(());
                     }
-                });
+                })
+                .into_js_value();
                 let _ = window.request_animation_frame(callback.unchecked_ref());
             }
         }
@@ -670,6 +698,7 @@ pub fn FileBrowser(
         load_folder_request,
         on_logout,
         editor_open,
+        editor_draft_key,
         share_file,
         share_sequence,
         share_active,
@@ -985,6 +1014,7 @@ pub fn FileBrowser(
                 return;
             }
             editor_busy.set(true);
+            let submitted_draft_key = editor_draft_key.get_untracked();
             let sequence = editor_sequence.get_untracked();
             let is_new = editor_is_new.get_untracked();
             let file_id = editor_file_id.get_untracked();
@@ -1021,6 +1051,9 @@ pub fn FileBrowser(
                 }
                 match result {
                     Ok(saved) => {
+                        if is_new {
+                            super::editor_draft::remove(&submitted_draft_key);
+                        }
                         editor_is_new.set(false);
                         editor_file_id.set(saved.id);
                         editor_name.set(saved.name.clone());
@@ -1034,7 +1067,6 @@ pub fn FileBrowser(
                         refresh.run(parent_id);
                     }
                     Err(error) if error.is_unauthorized() => {
-                        editor_open.set(false);
                         logout.run(());
                     }
                     Err(error) => editor_error.set(error.message),
@@ -1648,6 +1680,7 @@ pub fn FileBrowser(
                 >
                     <DocumentEditor
                         file_id=editor_file_id
+                        draft_key=editor_draft_key
                         etag=editor_etag
                         on_restored=Callback::new({let load=load_folder.clone();move |_|{editor_original.set(editor_content.get_untracked());editor_dirty.set(false);load.run(current_id.get_untracked());}})
                         is_new=editor_is_new

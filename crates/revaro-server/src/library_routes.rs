@@ -140,11 +140,12 @@ async fn list(
 }
 
 /// Cache series metadata in the existing classification row, including negative results.
-async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
+pub(crate) async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
     let files = state.db.call_api(|c| {
-        let mut query = c.prepare(&format!("SELECT {FILE_COLUMNS} FROM files WHERE status='ready' AND deleted_at IS NULL AND id IN (SELECT file_id FROM library_items WHERE kind='book' AND (metadata_etag IS NULL OR metadata_etag<>COALESCE(files.etag,'')))")).map_err(db)?;
-        query.query_map([], scan_file).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)
+        let mut query = c.prepare(&format!("SELECT f.* FROM (SELECT {FILE_COLUMNS} FROM files) f JOIN library_items l ON l.file_id=f.id WHERE l.kind='book' AND f.status='ready' AND f.deleted_at IS NULL AND (l.metadata_etag IS NULL OR l.metadata_etag<>COALESCE(f.etag,'')) AND NOT EXISTS(SELECT 1 FROM book_metadata_retries r WHERE r.file_id=f.id AND r.source_etag=COALESCE(f.etag,'') AND r.retry_at>?1) ORDER BY f.id LIMIT 16")).map_err(db)?;
+        query.query_map([Timestamp::now().to_rfc3339()], scan_file).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)
     }).await?;
+    let full_batch = files.len() == 16;
     for file in files {
         let _guard = state.reader.book_lock(&file.object_key).await;
         let id = file.id.clone();
@@ -169,10 +170,8 @@ async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
         let metadata = if revaro_core::classify::is_epub_name(&file.name)
             && file.size <= revaro_reader::MAX_EPUB
         {
-            let _permit = state
-                .reader
-                .work_slots
-                .acquire()
+            let permit = Arc::clone(&state.reader.work_slots)
+                .acquire_owned()
                 .await
                 .map_err(|_| ApiError::unavailable("reader is shutting down"))?;
             match state
@@ -181,6 +180,7 @@ async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
                 .await
             {
                 Ok(bytes) => tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
                     revaro_reader::read_series(std::io::Cursor::new(bytes))
                 })
                 .await
@@ -189,6 +189,15 @@ async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
                 .flatten(),
                 Err(error) => {
                     tracing::warn!(%error, file_id=%file.id, "could not read series metadata");
+                    let retry_id = file.id.clone();
+                    let retry_etag = file.etag.clone();
+                    let retry_at =
+                        Timestamp::from_unix_millis(Timestamp::now().unix_millis() + 60_000)
+                            .to_rfc3339();
+                    state.db.call_api(move |c| {
+                        c.execute("INSERT INTO book_metadata_retries(file_id,source_etag,retry_at) VALUES(?1,?2,?3) ON CONFLICT(file_id) DO UPDATE SET source_etag=excluded.source_etag,retry_at=excluded.retry_at", rusqlite::params![retry_id,retry_etag,retry_at]).map_err(db)?;
+                        Ok(())
+                    }).await?;
                     continue;
                 }
             }
@@ -199,9 +208,13 @@ async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
             .map(|(name, index)| (Some(name), index))
             .unwrap_or_default();
         state.db.call_api(move |c| {
+            c.execute("DELETE FROM book_metadata_retries WHERE file_id=?1", [&file.id]).map_err(db)?;
             c.execute("UPDATE library_items SET series=?2,series_index=?3,metadata_etag=?4 WHERE file_id=?1 AND kind='book' AND EXISTS(SELECT 1 FROM files WHERE id=?1 AND COALESCE(etag,'')=?4 AND name=?5 AND object_key=?6)", rusqlite::params![file.id,series,index,file.etag,file.name,file.object_key]).map_err(db)?;
             Ok(())
         }).await?;
+    }
+    if full_batch {
+        state.maintenance.wake("book-series");
     }
     Ok(())
 }
@@ -386,6 +399,67 @@ mod tests {
             Ok(())
         }).await.unwrap();
         state
+    }
+
+    #[tokio::test]
+    async fn series_indexing_is_bounded_and_unreadable_books_do_not_block_the_queue() {
+        let state = state().await;
+        seed(&state, "000-bad", "unreadable.epub").await;
+        for index in 0..18 {
+            seed(
+                &state,
+                &format!("txt-{index:02}"),
+                &format!("book-{index}.txt"),
+            )
+            .await;
+        }
+        let (status, _) = request(&state, "GET", "/api/library/stack-suggestions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let indexed = |c: &mut rusqlite::Connection| {
+            c.query_row(
+                "SELECT COUNT(*) FROM library_items WHERE metadata_etag IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(crate::db::DbError::Query)
+        };
+        assert_eq!(state.db.call(indexed).await.unwrap(), 0);
+        index_book_series(&state).await.unwrap();
+        assert_eq!(state.db.call(indexed).await.unwrap(), 15);
+        index_book_series(&state).await.unwrap();
+        assert_eq!(state.db.call(indexed).await.unwrap(), 18);
+        assert_eq!(
+            state
+                .db
+                .call(|c| c
+                    .query_row("SELECT COUNT(*) FROM book_metadata_retries", [], |r| r
+                        .get::<_, i64>(0))
+                    .map_err(crate::db::DbError::Query))
+                .await
+                .unwrap(),
+            1
+        );
+        std::fs::remove_dir_all(state.store.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_series_indexing_does_not_rescan_every_book_for_each_file() {
+        let state = state().await;
+        state.db.call(|c| {
+            let tx = c.transaction()?;
+            for index in 0..5000 {
+                let id = format!("indexed-{index:05}");
+                tx.execute("INSERT INTO files(id,parent_id,name,kind,object_key,size,etag,status,created_at,updated_at) VALUES(?1,?2,?3,'file',?4,12,?1,'ready','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",rusqlite::params![id,revaro_core::ids::ROOT_ID,format!("{id}.txt"),format!("blobs/{id}")])?;
+            }
+            tx.execute("UPDATE library_items SET metadata_etag=file_id",[])?;
+            tx.commit()?;
+            Ok(())
+        }).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), index_book_series(&state))
+            .await
+            .expect("an idle indexing pass must finish without a quadratic scan")
+            .unwrap();
+        std::fs::remove_dir_all(state.store.root()).unwrap();
     }
 
     async fn seed(state: &Arc<AppState>, id: &str, name: &str) {
@@ -1333,5 +1407,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn indexed_pages_match_enriched_pages_with_equal_dates_and_open_history() {
+        let state = state().await;
+        for index in 0..73 {
+            seed(
+                &state,
+                &format!("page-{index:03}"),
+                &format!("page-{index:03}.png"),
+            )
+            .await;
+        }
+        state
+            .db
+            .call(|c| {
+                for index in 0..30 {
+                    let time = if index % 2 == 0 {
+                        "2026-01-01 00:00:00"
+                    } else {
+                        "2026-01-01T00:00:00.1Z"
+                    };
+                    c.execute(
+                        "INSERT INTO library_state(file_id,last_opened) VALUES(?1,?2)",
+                        rusqlite::params![format!("page-{index:03}"), time],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for history in ["", "&recent=true&opened_only=true"] {
+            for offset in [0, 13, 60, 80] {
+                let path =
+                    format!("/api/library/items?kind=image&limit=13&offset={offset}{history}");
+                let indexed = request(&state, "GET", &path, None).await;
+                let enriched = request(&state, "GET", &format!("{path}&q=page"), None).await;
+                assert_eq!(indexed.0, StatusCode::OK);
+                assert_eq!(indexed, enriched, "offset={offset} history={history}");
+            }
+        }
+        std::fs::remove_dir_all(state.store.root()).unwrap();
     }
 }

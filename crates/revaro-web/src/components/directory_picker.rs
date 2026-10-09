@@ -438,7 +438,7 @@ fn clear_timeout(timer: RwSignal<Option<i32>>) {
 
 fn schedule_timeout(callback: impl FnOnce() + 'static, delay: i32) -> Option<i32> {
     let window = web_sys::window()?;
-    let callback = wasm_bindgen::closure::Closure::once_into_js(callback);
+    let callback = wasm_bindgen::closure::Closure::once(callback).into_js_value();
     window
         .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), delay)
         .ok()

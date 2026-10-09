@@ -277,9 +277,12 @@ async fn reorder(
 async fn suggestions(
     State(state): State<Arc<AppState>>,
     _user: AuthUser,
-) -> Result<Json<Vec<StackSuggestion>>, ApiError> {
-    index_book_series(&state).await?;
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    state.maintenance.wake("book-series");
     state.db.call_api(|c| {
+        let now = revaro_core::Timestamp::now().to_string();
+        let pending: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM library_items l JOIN files f ON f.id=l.file_id WHERE l.kind='book' AND f.status='ready' AND f.deleted_at IS NULL AND (l.metadata_etag IS NULL OR l.metadata_etag<>COALESCE(f.etag,'')) AND NOT EXISTS(SELECT 1 FROM book_metadata_retries r WHERE r.file_id=f.id AND r.source_etag=COALESCE(f.etag,'') AND r.retry_at>?1))", [now], |row|row.get(0)).map_err(db)?;
         let mut q = c.prepare("SELECT l.series,f.id FROM library_items l JOIN files f ON f.id=l.file_id WHERE l.kind='book' AND l.metadata_etag=COALESCE(f.etag,'') AND l.series IS NOT NULL AND f.status='ready' AND f.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM book_stack_items WHERE file_id=f.id) ORDER BY l.series,l.series_index ASC NULLS LAST,f.name,f.id").map_err(db)?;
         let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?))).map_err(db)?;
         let mut suggestions = Vec::<StackSuggestion>::new();
@@ -289,6 +292,9 @@ async fn suggestions(
             else { suggestions.push(StackSuggestion { name, file_ids: vec![id] }); }
         }
         suggestions.retain(|s| s.file_ids.len()>=2 && s.file_ids.len()<=5000);
-        Ok(suggestions)
-    }).await.map(Json)
+        Ok((pending,suggestions))
+    }).await.map(|(pending,suggestions)| (
+        [("x-revaro-index-pending",if pending {"1"} else {"0"})],
+        Json(suggestions),
+    ).into_response())
 }

@@ -54,9 +54,52 @@ pub(super) fn load_listing(
     } else {
         ("created_at", "MAX", "DESC")
     };
+    // Select common library/home pages before enriching them. Joining progress,
+    // covers and stacks for every file made a first page cost the entire library.
+    let fast_page = !grouped
+        && options.stack.is_none()
+        && options.collection.is_none()
+        && options.q.is_empty()
+        && !options.favorite
+        && (!options.recent || options.opened_only);
+    let kind_filter = if options.kind.is_some() {
+        "l.kind=?1"
+    } else {
+        "?1 IS NULL"
+    };
+    let simple_tables = if options.opened_only {
+        "library_state opened INDEXED BY library_opened CROSS JOIN files f ON f.id=opened.file_id CROSS JOIN library_items l ON l.file_id=f.id"
+    } else {
+        "files f INDEXED BY files_content_order CROSS JOIN library_items l ON l.file_id=f.id"
+    };
+    let opened_filter = if options.opened_only {
+        "AND opened.last_opened IS NOT NULL"
+    } else {
+        ""
+    };
+    let page_order = if options.opened_only {
+        "revaro_timestamp(opened.last_opened) DESC,f.id"
+    } else {
+        "f.created_at DESC,f.id"
+    };
+    let simple_source = format!(
+        "FROM {simple_tables} WHERE f.kind='file' AND f.status='ready' AND f.deleted_at IS NULL AND {kind_filter} {opened_filter}"
+    );
+    let page_prefix = if fast_page {
+        format!(
+            "page_ids AS (SELECT f.id {simple_source} ORDER BY {page_order} LIMIT ?9 OFFSET ?10),"
+        )
+    } else {
+        String::new()
+    };
+    let page_join = if fast_page {
+        "JOIN page_ids ON page_ids.id=f.id"
+    } else {
+        ""
+    };
     // The derived file projection fixes scan_file's column order before named library fields.
     let candidates = format!(
-        "WITH classified AS (
+        "WITH {page_prefix} classified AS (
             SELECT f.*,
                 l.kind AS library_kind,
                 COALESCE(s.favorite,0) AS favorite,
@@ -77,6 +120,7 @@ pub(super) fn load_listing(
                 p.value AS progress,
                 cm.position AS collection_position
             FROM (SELECT {FILE_COLUMNS} FROM files) f
+            {page_join}
             JOIN library_items l ON l.file_id=f.id
             LEFT JOIN library_state s ON s.file_id=f.id
             LEFT JOIN settings p ON p.key='book_progress/'||f.id
@@ -118,13 +162,23 @@ pub(super) fn load_listing(
     } else {
         "COUNT(*)"
     };
-    let total = connection
-        .query_row(
-            &format!("{candidates} SELECT {count} FROM candidates"),
-            filters,
-            |row| row.get(0),
-        )
-        .map_err(db)?;
+    let total = if fast_page {
+        connection
+            .query_row(
+                &format!("SELECT COUNT(*) {simple_source}"),
+                params![options.kind],
+                |row| row.get(0),
+            )
+            .map_err(db)?
+    } else {
+        connection
+            .query_row(
+                &format!("{candidates} SELECT {count} FROM candidates"),
+                filters,
+                |row| row.get(0),
+            )
+            .map_err(db)?
+    };
     let sql = if grouped {
         format!(
             "{candidates}, groups AS (
@@ -137,10 +191,11 @@ pub(super) fn load_listing(
                 candidates.stack_position ASC NULLS LAST,candidates.name,candidates.id"
         )
     } else {
+        let final_offset = if fast_page { "0" } else { "?10" };
         format!(
             "{candidates} SELECT * FROM candidates
             ORDER BY sort_key {direction},CASE WHEN ?6 IS NOT NULL THEN name END,id
-            LIMIT ?9 OFFSET ?10"
+            LIMIT ?9 OFFSET {final_offset}"
         )
     };
     let mut query = connection.prepare(&sql).map_err(db)?;

@@ -63,7 +63,10 @@ async fn list(
         // "My files" searches the whole drive. Other directories search only
         // their immediate children; no independent client-side scope exists.
         let parent = if id == ROOT_ID && !o.q.is_empty() { None } else { Some(id) };
-        let predicate="deleted_at IS NULL AND parent_id IS NOT NULL AND (?1 IS NULL OR parent_id=?1) AND instr(lower(name),lower(?2))>0";
+        // A concrete parent predicate lets SQLite use the directory index.
+        // An optional-parent OR forced every normal folder through a drive scan.
+        let parent_predicate=if parent.is_some(){"parent_id=?1"}else{"?1 IS NULL AND parent_id IS NOT NULL"};
+        let predicate=format!("deleted_at IS NULL AND {parent_predicate} AND (?2='' OR instr(lower(name),lower(?2))>0)");
         let total=c.query_row(&format!("SELECT count(*) FROM files WHERE {predicate}"),rusqlite::params![parent,o.q],|r|r.get(0)).map_err(db)?;
         let mut s=c.prepare(&format!("SELECT {FILE_COLUMNS},EXISTS(SELECT 1 FROM media_metadata m WHERE m.file_id=files.id AND m.source_etag=files.etag AND m.video_codec<>'') FROM files WHERE {predicate} ORDER BY kind ASC,{order} {direction},id LIMIT ?3 OFFSET ?4")).map_err(db)?;
         let items=s.query_map(rusqlite::params![parent,o.q,limit,o.offset],|row|{let mut file=scan_file(row)?;file.has_cover=revaro_core::classify::is_audio(&file) && row.get::<_,bool>(15)?;Ok(file)}).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?;

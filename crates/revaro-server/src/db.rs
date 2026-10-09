@@ -32,6 +32,8 @@ const POOL_SIZE: usize = 4;
 
 /// How long SQLite waits for a competing writer before returning `SQLITE_BUSY`.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_DATABASE_OPERATIONS: usize = 128;
 
 /// A migration embedded into the binary.
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +111,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "012_audio_categories.sql",
         sql: include_str!("../migrations/012_audio_categories.sql"),
     },
+    Migration {
+        version: 13,
+        name: "013_resilience.sql",
+        sql: include_str!("../migrations/013_resilience.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -180,8 +187,6 @@ struct PoolState {
     idle: Vec<Connection>,
     /// Connections checked out right now, plus the idle ones.
     total: usize,
-    /// Set when the pool can no longer produce connections.
-    poisoned: Option<String>,
 }
 
 /// A bounded pool of SQLite connections.
@@ -191,6 +196,8 @@ struct Pool {
     max_size: usize,
     state: Mutex<PoolState>,
     available: Condvar,
+    workers: Arc<tokio::sync::Semaphore>,
+    admitted: Arc<tokio::sync::Semaphore>,
 }
 
 impl Pool {
@@ -204,6 +211,8 @@ impl Pool {
             max_size,
             state: Mutex::new(PoolState::default()),
             available: Condvar::new(),
+            workers: Arc::new(tokio::sync::Semaphore::new(max_size)),
+            admitted: Arc::new(tokio::sync::Semaphore::new(MAX_DATABASE_OPERATIONS)),
         }
     }
 
@@ -219,9 +228,6 @@ impl Pool {
                     pool: Arc::clone(self),
                     connection: Some(connection),
                 });
-            }
-            if let Some(reason) = &state.poisoned {
-                return Err(DbError::Unavailable(reason.clone()));
             }
             if state.total < self.max_size {
                 state.total += 1;
@@ -241,7 +247,6 @@ impl Pool {
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                         state.total -= 1;
-                        state.poisoned = Some(error.to_string());
                         self.available.notify_one();
                         return Err(error);
                     }
@@ -303,7 +308,7 @@ fn configure(connection: &Connection) -> Result<(), DbError> {
         .map_err(DbError::Open)?;
     connection
         .execute_batch(
-            "PRAGMA foreign_keys=ON;\nPRAGMA journal_mode=WAL;\nPRAGMA synchronous=NORMAL;",
+            "PRAGMA foreign_keys=ON;\nPRAGMA journal_mode=WAL;\nPRAGMA synchronous=FULL;",
         )
         .map_err(DbError::Open)?;
     Ok(())
@@ -415,7 +420,16 @@ impl Database {
         T: Send + 'static,
     {
         let pool = Arc::clone(&self.pool);
+        let admitted = Arc::clone(&pool.admitted)
+            .try_acquire_owned()
+            .map_err(|_| DbError::Unavailable("database request queue is full".to_owned()))?;
+        let worker =
+            tokio::time::timeout(ADMISSION_TIMEOUT, Arc::clone(&pool.workers).acquire_owned())
+                .await
+                .map_err(|_| DbError::Unavailable("database request queue timed out".to_owned()))?
+                .map_err(|_| DbError::Unavailable("database is shutting down".to_owned()))?;
         tokio::task::spawn_blocking(move || {
+            let (_admitted, _worker) = (admitted, worker);
             let mut connection = pool.acquire()?;
             operation(&mut connection)
         })
@@ -441,7 +455,16 @@ impl Database {
         T: Send + 'static,
     {
         let pool = Arc::clone(&self.pool);
+        let admitted = Arc::clone(&pool.admitted)
+            .try_acquire_owned()
+            .map_err(|_| ApiError::unavailable("database is busy; retry shortly"))?;
+        let worker =
+            tokio::time::timeout(ADMISSION_TIMEOUT, Arc::clone(&pool.workers).acquire_owned())
+                .await
+                .map_err(|_| ApiError::unavailable("database is busy; retry shortly"))?
+                .map_err(|_| ApiError::unavailable("database is shutting down"))?;
         tokio::task::spawn_blocking(move || {
+            let (_admitted, _worker) = (admitted, worker);
             let mut connection = pool.acquire().map_err(|error| {
                 tracing::error!(%error, "could not acquire a database connection");
                 ApiError::internal("database error")
@@ -551,6 +574,27 @@ fn secure_file(path: &Path) -> Result<(), DbError> {
 mod tests {
     use super::*;
     use revaro_core::ids::ROOT_ID;
+
+    #[test]
+    fn connection_open_failure_recovers_when_storage_returns() {
+        let directory =
+            std::env::temp_dir().join(format!("revaro-pool-recovery-{}", crate::ids::new_id()));
+        let pool = Arc::new(Pool::new(Source::File(directory.join("revaro.db"))));
+        assert!(pool.acquire().is_err());
+        std::fs::create_dir_all(&directory).unwrap();
+        let connection = pool
+            .acquire()
+            .expect("a temporary open failure must not poison the pool");
+        assert_eq!(
+            connection
+                .query_row("SELECT 1", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        drop(pool);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn audio_groups_migrate_to_categories_without_changing_books_or_files() {
@@ -1146,5 +1190,106 @@ mod tests {
             })
             .unwrap_err();
         assert!(DbError::Query(error).is_not_found());
+    }
+
+    #[tokio::test]
+    async fn database_queue_is_bounded_and_cancelled_waiters_release_capacity() {
+        let db = Database::open_in_memory().unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let busy = db.clone();
+        let active = tokio::spawn(async move {
+            busy.call(move |_| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        let mut waiters = Vec::new();
+        for _ in 1..MAX_DATABASE_OPERATIONS {
+            let db = db.clone();
+            waiters.push(tokio::spawn(async move { db.call(|_| Ok(())).await }));
+        }
+        while db.pool.admitted.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+        assert!(matches!(
+            db.call(|_| Ok(())).await,
+            Err(DbError::Unavailable(_))
+        ));
+        for waiter in waiters {
+            waiter.abort();
+            let _ = waiter.await;
+        }
+        assert_eq!(
+            db.pool.admitted.available_permits(),
+            MAX_DATABASE_OPERATIONS - 1
+        );
+        release_tx.send(()).unwrap();
+        active.await.unwrap().unwrap();
+        assert_eq!(
+            db.pool.admitted.available_permits(),
+            MAX_DATABASE_OPERATIONS
+        );
+        db.call(|_| Ok(())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn overloaded_authentication_is_retryable_and_preserves_the_session() {
+        use tower::ServiceExt;
+        let root =
+            std::env::temp_dir().join(format!("revaro-auth-pressure-{}", crate::ids::new_id()));
+        let config = crate::config::Config::from_lookup(&|key| match key {
+            "APP_CACHES_DIR" => Some(root.join("caches").display().to_string()),
+            _ => None,
+        })
+        .unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let hash = crate::auth::token_hash("pressure-session");
+        db.call(move |c| {
+            c.execute("INSERT INTO settings(key,value,updated_at) VALUES('admin_username','admin','2026-01-01T00:00:00Z')",[])?;
+            c.execute("INSERT INTO sessions(id,token_hash,created_at,expires_at) VALUES('pressure',?1,'2026-01-01T00:00:00Z','2999-01-01T00:00:00Z')",[hash])?;
+            Ok(())
+        }).await.unwrap();
+        let auth = crate::auth::AuthService::new(db.clone());
+        let store = crate::storage::LocalStore::open(root.join("objects"))
+            .await
+            .unwrap();
+        let state = crate::state::AppState::new(Arc::new(config), db.clone(), store, auth);
+        let app = crate::router::build(state);
+        let request = || {
+            http::Request::builder()
+                .uri("/api/auth/me")
+                .header("cookie", "revaro_session=pressure-session")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let full = Arc::clone(&db.pool.admitted)
+            .acquire_many_owned(MAX_DATABASE_OPERATIONS as u32)
+            .await
+            .unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["retry-after"], "2");
+        drop(full);
+        assert_eq!(
+            app.oneshot(request()).await.unwrap().status(),
+            http::StatusCode::OK
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn committed_database_writes_request_full_durability() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(
+            db.acquire()
+                .unwrap()
+                .query_row("PRAGMA synchronous", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 }

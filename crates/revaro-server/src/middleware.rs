@@ -70,7 +70,7 @@ pub async fn security_headers(
         headers.insert(http::header::ACCESS_CONTROL_ALLOW_HEADERS,
             "Content-Type, Range, If-Range, If-Match, If-None-Match, Priority, X-Content-SHA256, X-Revaro-Managed".parse().unwrap());
         headers.insert(http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            "ETag, Content-Range, Content-Length, Accept-Ranges, Content-Disposition, X-Content-SHA256, Retry-After".parse().unwrap());
+            "ETag, Content-Range, Content-Length, Accept-Ranges, Content-Disposition, X-Content-SHA256, Retry-After, X-Revaro-Index-Pending".parse().unwrap());
         headers.append(http::header::VARY, "Origin".parse().unwrap());
     }
     if let Some(origin) = &state.config.http2_origin {
@@ -121,6 +121,14 @@ pub async fn security_headers(
         response.headers_mut().insert(
             http::header::CACHE_CONTROL,
             "no-store".parse().expect("valid header value"),
+        );
+    }
+    if response.status() == StatusCode::SERVICE_UNAVAILABLE
+        && !response.headers().contains_key("retry-after")
+    {
+        response.headers_mut().insert(
+            http::header::RETRY_AFTER,
+            "2".parse().expect("valid retry delay"),
         );
     }
     response

@@ -5,6 +5,7 @@ use quinn::{
     Runtime,
     congestion::{ControllerFactory, CubicConfig},
 };
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use std::{
     io,
     net::SocketAddr,
@@ -68,10 +69,10 @@ impl NativeTransport {
             TlsIdentity::Pem { cert, key } => {
                 let cert_bytes = tokio::fs::read(cert).await?;
                 let key_bytes = tokio::fs::read(key).await?;
-                let certs = rustls_pemfile::certs(&mut io::Cursor::new(cert_bytes))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let key = rustls_pemfile::private_key(&mut io::Cursor::new(key_bytes))?
-                    .ok_or_else(|| io::Error::other("TLS PEM contains no private key"))?;
+                let certs = CertificateDer::pem_slice_iter(&cert_bytes)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(io::Error::other)?;
+                let key = PrivateKeyDer::from_pem_slice(&key_bytes).map_err(io::Error::other)?;
                 builder
                     .with_single_cert(certs, key)
                     .map_err(io::Error::other)?

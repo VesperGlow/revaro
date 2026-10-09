@@ -34,6 +34,11 @@ pub(super) async fn open_reader(
         on_unauthorized.run(());
         return;
     }
+    if progress_result.is_err() {
+        stage.set(ReaderStage::Error);
+        error_text.set("无法读取阅读进度，请重新打开重试；原有进度已保留。".to_owned());
+        return;
+    }
     if let Ok(book) = book_result {
         let display = if !book.name.is_empty() {
             book.name

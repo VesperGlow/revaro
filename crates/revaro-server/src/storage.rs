@@ -742,7 +742,11 @@ impl LocalStore {
             if protected.contains(session.file_name().to_string_lossy().as_ref()) {
                 continue;
             }
-            let metadata = session.metadata().await?;
+            let metadata = match session.metadata().await {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(StorageError::Io(error)),
+            };
             if !metadata.is_dir() || !is_older_than(&metadata, age) {
                 continue;
             }
@@ -768,7 +772,11 @@ impl LocalStore {
                 // Sessions expire on their own clock, handled above.
                 continue;
             }
-            let file_type = entry.file_type().await?;
+            let file_type = match entry.file_type().await {
+                Ok(file_type) => file_type,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(StorageError::Io(error)),
+            };
             if file_type.is_dir() {
                 subdirectories.push(entry.path());
                 continue;
@@ -776,7 +784,11 @@ impl LocalStore {
             if !name.starts_with(TEMP_PREFIX) {
                 continue;
             }
-            let metadata = entry.metadata().await?;
+            let metadata = match entry.metadata().await {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(StorageError::Io(error)),
+            };
             if is_older_than(&metadata, age)
                 && let Err(error) = tokio::fs::remove_file(entry.path()).await
             {
@@ -1324,6 +1336,27 @@ mod tests {
                 .join(keys::multipart_dir(&abandoned_id, "blobs/abandoned"))
                 .exists()
         );
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_tolerates_upload_commits_running_concurrently() {
+        let (_root, store) = store().await;
+        let writes = async {
+            for index in 0..100 {
+                let key = format!("blobs/cleanup-race-{index}");
+                store.put(&key, b"durable content").await.unwrap();
+                assert_eq!(store.read(&key, 64).await.unwrap(), b"durable content");
+            }
+        };
+        let cleanups = async {
+            for _ in 0..100 {
+                store
+                    .cleanup_temporary(Duration::from_secs(3600))
+                    .await
+                    .unwrap();
+            }
+        };
+        tokio::join!(writes, cleanups);
     }
 
     #[tokio::test]

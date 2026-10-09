@@ -15,6 +15,7 @@ pub(super) struct PlaybackProgress {
     pub loaded_file: RwSignal<Option<String>>,
     pending: RwSignal<Option<PlaybackPosition>>,
     pub ready: RwSignal<bool>,
+    failed: RwSignal<bool>,
 }
 
 impl PlaybackProgress {
@@ -24,12 +25,14 @@ impl PlaybackProgress {
             loaded_file: RwSignal::new(None),
             pending: RwSignal::new(None),
             ready: RwSignal::new(false),
+            failed: RwSignal::new(false),
         }
     }
 
     /// Close the write gate before a source change can emit old media events.
     pub fn reset(self, pending: Option<f64>) {
         self.ready.set(false);
+        self.failed.set(false);
         self.loaded_file.set(None);
         self.pending.set(pending.map(PlaybackPosition::Seek));
     }
@@ -44,9 +47,11 @@ impl PlaybackProgress {
     pub fn accept_seek(self) {
         self.pending.set(None);
         self.ready.set(true);
+        self.failed.set(false);
     }
 
     pub fn load(self, id: String, on_loaded: Callback<()>) {
+        self.failed.set(false);
         self.loaded_file.set(Some(id.clone()));
         if self.pending.get_untracked().is_some() {
             on_loaded.run(());
@@ -61,9 +66,16 @@ impl PlaybackProgress {
             {
                 return;
             }
-            self.pending.set(Some(PlaybackPosition::Resume(
-                progress.map_or(0.0, |p| media_element_time(p.position)),
-            )));
+            let Ok(progress) = progress else {
+                // A failed read is not an empty history. Keep writes closed
+                // until a successful retry or an intentional user seek.
+                self.failed.set(true);
+                return;
+            };
+            self.pending
+                .set(Some(PlaybackPosition::Resume(media_element_time(
+                    progress.position,
+                ))));
             on_loaded.run(());
         });
     }
@@ -82,6 +94,26 @@ impl PlaybackProgress {
         self.pending.set(None);
         self.ready.set(true);
         Some(pending.resolve(duration, local))
+    }
+}
+
+#[component]
+pub(super) fn ProgressRetry(
+    playback: PlaybackProgress,
+    file_id: Signal<String>,
+    on_loaded: Callback<()>,
+) -> impl IntoView {
+    let owner = Owner::current().expect("progress retry belongs to a player");
+    let retry = Callback::new(move |()| {
+        owner.with(|| playback.load(file_id.get_untracked(), on_loaded.clone()))
+    });
+    view! {
+        <Show when=move || playback.failed.get() fallback=|| ()>
+            <p class="audio-player-error" role="alert">
+                "未能读取播放进度，原有进度已保留。"
+                <button type="button" on:click=move |_| retry.run(())>"重试读取进度"</button>
+            </p>
+        </Show>
     }
 }
 
@@ -157,10 +189,11 @@ where
     F: Fn() + 'static,
 {
     if let Some(window) = web_sys::window() {
-        let callback = Closure::once_into_js(move || {
+        let callback = Closure::once(move || {
             signal.set(None);
             callback();
-        });
+        })
+        .into_js_value();
         if let Ok(id) = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), delay)
         {

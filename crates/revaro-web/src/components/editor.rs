@@ -17,6 +17,7 @@ pub enum EditorMode {
 #[component]
 pub fn DocumentEditor(
     file_id: RwSignal<String>,
+    draft_key: Signal<String>,
     etag: RwSignal<String>,
     on_restored: Callback<()>,
     is_new: RwSignal<bool>,
@@ -31,6 +32,8 @@ pub fn DocumentEditor(
     on_close: Callback<()>,
 ) -> impl IntoView {
     let history_open = RwSignal::new(false);
+    let draft_pending = RwSignal::new(false);
+    let history_restoring = RwSignal::new(false);
     let markdown = Signal::derive_local(move || {
         revaro_core::classify::is_editable_name(&name.get())
             && matches!(
@@ -56,7 +59,7 @@ pub fn DocumentEditor(
                                 aria-label="文档文件名"
                                 maxlength="1024"
                                 prop:value=move || name.get()
-                                prop:disabled=move || busy.get()
+                                prop:disabled=move || busy.get() || history_restoring.get() || draft_pending.get()
                                 on:input=move |event| name.set(event_target_value(&event))
                             />
                         </Show>
@@ -81,17 +84,18 @@ pub fn DocumentEditor(
                         <span class="editor-header-message error">{move || error.get()}</span>
                     </Show>
                     <Show when=move || !readonly.get() && !is_new.get() fallback=|| ()>
-                        <button type="button" aria-controls="version-history" aria-expanded=move ||history_open.get() prop:disabled=move ||busy.get() on:click=move |_|history_open.set(true)>"版本历史"</button>
+                        <button type="button" aria-controls="version-history" aria-expanded=move ||history_open.get() prop:disabled=move ||busy.get() || draft_pending.get() on:click=move |_|history_open.set(true)>"版本历史"</button>
                     </Show>
                     <Show when=move || !readonly.get() fallback=|| ()>
                         <Show when=move || is_new.get() || dirty.get() fallback=|| ()><span class="unsaved-dot">"未保存"</span></Show>
-                        <button class="primary" type="button" prop:disabled=move || busy.get() || (!is_new.get() && !dirty.get()) on:click=move |_| save.run(())>{move || if busy.get() { "保存中…" } else { "保存" }}</button>
+                        <button class="primary" type="button" prop:disabled=move || busy.get() || history_restoring.get() || draft_pending.get() || (!is_new.get() && !dirty.get()) on:click=move |_| save.run(())>{move || if busy.get() { "保存中…" } else { "保存" }}</button>
                     </Show>
                     <button class="editor-close" type="button" aria-label="关闭编辑器" on:click=move |_| close.run(())>"×"</button>
                 </div>
             </header>
+            <super::editor_draft::DraftRecovery draft_key=draft_key name=name content=content dirty=dirty busy=busy readonly=readonly draft_pending=draft_pending />
             <Show when=move || history_open.get() fallback=|| ()>
-                <super::version_history::VersionHistory file_id=file_id.get_untracked() etag=etag content=content dirty=dirty on_restored=on_restored on_close=Callback::new(move |_|history_open.set(false))/>
+                <super::version_history::VersionHistory file_id=file_id.get_untracked() etag=etag content=content dirty=dirty editor_busy=history_restoring on_restored=on_restored on_close=Callback::new(move |_|history_open.set(false))/>
             </Show>
             <Show
                 when=move || !(busy.get() && content.get().is_empty())
@@ -100,7 +104,7 @@ pub fn DocumentEditor(
                 <div class=move || format!("editor-workspace mode-{}{}", mode_class(mode.get()), if markdown.get() { " markdown" } else { "" })>
                     <Show when=move || mode.get() != EditorMode::Preview fallback=|| ()>
                         <textarea
-                            readonly=move || readonly.get()
+                            readonly=move || readonly.get() || history_restoring.get() || draft_pending.get()
                             autofocus
                             spellcheck="false"
                             aria-label="文档内容"
@@ -112,7 +116,7 @@ pub fn DocumentEditor(
                             on:keydown=move |event: KeyboardEvent| {
                                 if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
                                     event.prevent_default();
-                                    save.run(());
+                                    if !busy.get_untracked() && !history_restoring.get_untracked() && !draft_pending.get_untracked() {save.run(());}
                                 }
                             }
                         ></textarea>

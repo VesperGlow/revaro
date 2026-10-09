@@ -10,9 +10,13 @@ pub fn VersionHistory(
     etag: RwSignal<String>,
     content: RwSignal<String>,
     dirty: RwSignal<bool>,
+    editor_busy: RwSignal<bool>,
     on_restored: Callback<()>,
     on_close: Callback<()>,
 ) -> impl IntoView {
+    on_cleanup(move || {
+        let _ = editor_busy.try_set(false);
+    });
     let panel = NodeRef::<leptos::html::Section>::new();
     let mut outside = browser::on_click(move |event| {
         let Some(target) = event
@@ -24,6 +28,7 @@ pub fn VersionHistory(
         if panel
             .get_untracked()
             .is_some_and(|panel| !panel.contains(Some(&target)))
+            && !editor_busy.get_untracked()
             && target
                 .closest("[aria-controls='version-history']")
                 .ok()
@@ -55,7 +60,7 @@ pub fn VersionHistory(
     });
     view! {
         <section node_ref=panel id="version-history" class="version-history" role="dialog" aria-label="版本历史">
-            <header><strong>"版本历史（最近 20 次保存）"</strong><button type="button" aria-label="关闭版本历史" on:click=move |_|on_close.run(())>"关闭"</button></header>
+            <header><strong>"版本历史（最近 20 次保存）"</strong><button type="button" aria-label="关闭版本历史" disabled=move ||editor_busy.get() on:click=move |_|on_close.run(())>"关闭"</button></header>
             <p>"每次保存前保留原内容；恢复前也会保存当前版本。"</p>
             <Show when=move || !error.get().is_empty() fallback=|| ()><p class="form-error">{move ||error.get()}</p></Show>
             <Show when=move || versions.get().is_empty() fallback=|| ()><p>{move ||if busy.get(){"正在加载…"}else{"暂无历史版本"}}</p></Show>
@@ -67,12 +72,17 @@ pub fn VersionHistory(
                         leptos::task::spawn_local(async move {match api::fetch_version_content(&id,&version).await{Ok(text)=>{let _=preview.try_set(Some(text));},Err(e)=>{let _=error.try_set(e.message);}}let _=busy.try_set(false);});
                     }>"查看"</button>
                     <button type="button" prop:disabled=move ||busy.get() || dirty.get() on:click=move |_| {
-                        let alive=alive_restore.clone();let id=id_restore.clone();let version=version_restore.clone();let current=etag.get_untracked();busy.set(true);error.set(String::new());
+                        let alive=alive_restore.clone();let id=id_restore.clone();let version=version_restore.clone();let current=etag.get_untracked();let submitted_content=content.get_untracked();busy.set(true);editor_busy.set(true);error.set(String::new());
                         leptos::task::spawn_local(async move {
                             let result=async {let file=api::restore_version(&id,&version,&current).await?;let doc=api::fetch_document(&id).await?;Ok::<_,api::RequestError>((file,doc))}.await;
                             if !alive.load(std::sync::atomic::Ordering::Relaxed){return;}
-                            match result {Ok((_file,doc))=>{if content.try_set(doc.content).is_none(){etag.set(doc.etag);dirty.set(false);on_restored.run(());on_close.run(());}},Err(e)=>{let _=error.try_set(e.message);}}
+                            match result {Ok((_file,doc))=>{
+                                if content.get_untracked()!=submitted_content {
+                                    etag.set(doc.etag);dirty.set(true);error.set("版本已恢复；等待期间的新修改已保留，请检查后保存。".to_owned());
+                                } else if content.try_set(doc.content).is_none(){etag.set(doc.etag);dirty.set(false);on_restored.run(());on_close.run(());}
+                            },Err(e)=>{let _=error.try_set(e.message);}}
                             let _=busy.try_set(false);
+                            let _=editor_busy.try_set(false);
                         });
                     }>"恢复此版本"</button>
                 </div>}

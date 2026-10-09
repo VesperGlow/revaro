@@ -12,6 +12,7 @@ use crate::state::AppState;
 pub struct DeliveryRuntime {
     slots: Arc<Semaphore>,
     background: Arc<Semaphore>,
+    admitted: Arc<Semaphore>,
 }
 
 impl Default for DeliveryRuntime {
@@ -19,6 +20,7 @@ impl Default for DeliveryRuntime {
         Self {
             slots: Arc::new(Semaphore::new(12)),
             background: Arc::new(Semaphore::new(4)),
+            admitted: Arc::new(Semaphore::new(128)),
         }
     }
 }
@@ -34,6 +36,12 @@ pub async fn schedule(
     {
         return next.run(request).await;
     }
+    use axum::response::IntoResponse as _;
+    let Ok(admitted) = Arc::clone(&state.delivery.admitted).try_acquire_owned() else {
+        return revaro_core::ApiError::unavailable("file delivery is busy; retry shortly")
+            .into_response();
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let hinted = request
         .headers()
         .get("priority")
@@ -54,24 +62,37 @@ pub async fn schedule(
     // Acquire the smaller budget first so queued bulk reads cannot occupy
     // capacity reserved for the active player or reader.
     let background_permit = if background {
-        Some(
-            Arc::clone(&state.delivery.background)
-                .acquire_owned()
-                .await
-                .expect("delivery budget stays open"),
+        match tokio::time::timeout_at(
+            deadline,
+            Arc::clone(&state.delivery.background).acquire_owned(),
         )
+        .await
+        {
+            Ok(Ok(permit)) => Some(permit),
+            _ => {
+                return revaro_core::ApiError::unavailable("file delivery is busy; retry shortly")
+                    .into_response();
+            }
+        }
     } else {
         None
     };
-    let permit = Arc::clone(&state.delivery.slots)
-        .acquire_owned()
-        .await
-        .expect("delivery budget stays open");
+    let permit =
+        match tokio::time::timeout_at(deadline, Arc::clone(&state.delivery.slots).acquire_owned())
+            .await
+        {
+            Ok(Ok(permit)) => permit,
+            _ => {
+                return revaro_core::ApiError::unavailable("file delivery is busy; retry shortly")
+                    .into_response();
+            }
+        };
     let response = next.run(request).await;
     let (parts, mut body) = response.into_parts();
     if let Some(background_permit) = background_permit {
         body = crate::transfer::hold_permit(body, background_permit);
     }
+    body = crate::transfer::hold_permit(body, admitted);
     Response::from_parts(parts, crate::transfer::hold_permit(body, permit))
 }
 
@@ -141,6 +162,19 @@ mod tests {
                 .await
                 .is_err()
         );
+        let full = Arc::clone(&state.delivery.admitted)
+            .try_acquire_many_owned(123)
+            .unwrap();
+        let rejected = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            app.clone().oneshot(request("/api/files/current/preview")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(rejected.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        drop(rejected);
+        drop(full);
         let foreground = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             app.oneshot(request("/api/files/current/preview")),
@@ -161,5 +195,6 @@ mod tests {
         drop(responses);
         assert_eq!(state.delivery.slots.available_permits(), 12);
         assert_eq!(state.delivery.background.available_permits(), 4);
+        assert_eq!(state.delivery.admitted.available_permits(), 128);
     }
 }

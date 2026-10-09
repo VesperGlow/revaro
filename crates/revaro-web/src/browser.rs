@@ -162,6 +162,22 @@ pub fn dismiss_popover(
         if open.get_untracked() && event.key() == "Escape" && !event.default_prevented() {
             event.prevent_default();
             event.stop_propagation();
+            // Close the active nested section first and keep its parent visible,
+            // so keyboard focus can return to the section's summary.
+            if let Some(section) = owner().and_then(|node| {
+                node.query_selector("details.embedded-menu[open]")
+                    .ok()
+                    .flatten()
+            }) {
+                let _ = section.remove_attribute("open");
+                if let Some(trigger) = section
+                    .first_element_child()
+                    .and_then(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+                {
+                    let _ = trigger.focus();
+                }
+                return;
+            }
             close.run(true);
         }
     });
@@ -196,6 +212,40 @@ pub fn dismiss_popover(
         escape.release();
         exclusive.release();
     });
+}
+
+/// A cancellable delay. Dropping the future clears the browser timer and releases
+/// its Rust captures immediately, including when a scoped task is unmounted.
+pub async fn delay(milliseconds: i32) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let (send, receive) = futures_channel::oneshot::channel();
+    let callback = Closure::once(move || {
+        let _ = send.send(());
+    });
+    let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        milliseconds,
+    ) else {
+        return;
+    };
+    struct Timer {
+        window: web_sys::Window,
+        id: i32,
+        _callback: Closure<dyn FnMut()>,
+    }
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            self.window.clear_timeout_with_handle(self.id);
+        }
+    }
+    let _timer = Timer {
+        window,
+        id,
+        _callback: callback,
+    };
+    let _ = receive.await;
 }
 
 /// Listen for viewport changes while a transient browser view is mounted.

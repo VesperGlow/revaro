@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login, navigate } from './helpers'
+import { login, navigate, failApplicationRequest } from './helpers'
 import { zip } from './fixtures/epub'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -308,14 +308,13 @@ test('desktop book drags create a stack and append to its existing ordered membe
   await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${prefix}-3.txt`)
   await stackMenu(page, '管理书籍')
   // A rejected save restores the server order and keeps the inline management controls usable.
-  const orderUrl = `**/api/library/stacks/${stackId}/order`
-  await page.route(orderUrl, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { status: 503, message: '暂时无法保存顺序' } }) }))
+  const fault = await failApplicationRequest(page, `/api/library/stacks/${stackId}/order`, '暂时无法保存顺序')
   await page.getByRole('button', { name: `打开 ${prefix}-3.txt`, exact: true }).press('Alt+ArrowRight')
   await expect(page.locator('.library-error')).toBeVisible()
   await expect(page.locator('.library-error')).toContainText('暂时无法保存顺序')
   await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${prefix}-3.txt`)
   await expect(page.getByRole('toolbar', { name: '管理堆叠书籍' })).toBeVisible()
-  await page.unroute(orderUrl)
+  await fault.clear()
   await page.getByRole('button', { name: `打开 ${prefix}-3.txt`, exact: true }).press('Alt+ArrowRight')
   await expect(page.locator('.library-error')).toHaveCount(0)
   await expect(page.locator('.library-card-open').first()).toHaveAttribute('aria-label', `打开 ${prefix}-1.txt`)

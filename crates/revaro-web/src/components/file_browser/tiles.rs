@@ -260,7 +260,8 @@ pub(super) fn VideoThumbnail(file: File) -> impl IntoView {
             if let Some(old) = timer.get_untracked() {
                 window.clear_timeout_with_handle(old);
             }
-            let callback = Closure::once_into_js(move || attempt.update(|value| *value += 1));
+            let callback =
+                Closure::once(move || attempt.update(|value| *value += 1)).into_js_value();
             if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 callback.unchecked_ref(),
                 RETRY_DELAYS[current],

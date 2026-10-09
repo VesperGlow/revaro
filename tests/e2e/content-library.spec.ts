@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu } from './helpers'
+import { openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu, failApplicationRequest } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://localhost:18083').replace(/\/$/, '')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -131,21 +131,13 @@ test('gallery viewer prefetches beyond the first page and mobile layout stays wi
   }
   await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '图片', exact: true }).click()
   await expect(page.locator('.library-card')).toHaveCount(60)
-  let failedBatches = 0
-  await page.route('**/api/library/items?**', async route => {
-    if (new URL(route.request().url()).searchParams.get('offset') === '60') {
-      failedBatches++
-      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'temporary outage' }) })
-    } else {
-      await route.continue()
-    }
-  })
+  const fault = await failApplicationRequest(page, '/api/library/items', 'temporary outage', { offset: '60' })
   await page.locator('.library-card-open').nth(59).click()
-  await expect.poll(() => failedBatches).toBe(1)
+  await expect.poll(fault.hits).toBe(1)
   await page.waitForTimeout(500)
-  expect(failedBatches).toBe(1)
+  expect(await fault.hits()).toBe(1)
   await page.locator('.preview-close').click()
-  await page.unroute('**/api/library/items?**')
+  await fault.clear()
   await page.getByRole('alert').getByRole('button', { name: '重试', exact: true }).click()
   await expect(page.locator('.library-card')).toHaveCount(60)
   await page.locator('.library-card-open').nth(59).click()

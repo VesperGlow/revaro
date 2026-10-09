@@ -1,6 +1,31 @@
 import { expect, type Page } from '@playwright/test'
 import { createHash } from 'node:crypto'
 
+// Inject a failure where the application receives it. Page routes cannot see
+// worker-owned API reads, and a worker route would exercise transport retries
+// before the UI sees the error. Transport recovery has its own proxy tests.
+export async function failApplicationRequest(page: Page, pathname: string, message: string, query: Record<string, string> = {}) {
+  await page.evaluate(({ pathname, message, query }) => {
+    const original = window.fetch.bind(window)
+    ;(window as any).__applicationFault = { original, hits: 0 }
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href)
+      if (url.pathname === pathname && Object.entries(query).every(([key, value]) => url.searchParams.get(key) === value)) {
+        ;(window as any).__applicationFault.hits++
+        return Promise.resolve(new Response(JSON.stringify({ error: { status: 503, message } }), { status: 503, headers: { 'Content-Type': 'application/json' } }))
+      }
+      return original(input, init)
+    }
+  }, { pathname, message, query })
+  return {
+    hits: () => page.evaluate(() => (window as any).__applicationFault.hits as number),
+    clear: () => page.evaluate(() => {
+      window.fetch = (window as any).__applicationFault.original
+      delete (window as any).__applicationFault
+    }),
+  }
+}
+
 // Fixture setup follows the server's upload geometry for every MIME type.
 // Recovery itself is exercised through the browser UI in upload-progress.spec.ts.
 export async function uploadFixture(page: Page, parent_id: string, name: string, mime_type: string, data: Buffer) {

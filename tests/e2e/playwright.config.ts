@@ -4,6 +4,9 @@ import { defineConfig, devices } from '@playwright/test'
 process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = '1'
 
 const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH
+const browser = process.env.E2E_BROWSER || 'chromium'
+const desktop = { chromium: 'Desktop Chrome', firefox: 'Desktop Firefox', webkit: 'Desktop Safari' }[browser]
+if (!desktop) throw new Error(`Unsupported E2E_BROWSER: ${browser}`)
 
 export default defineConfig({
   testDir: '.',
@@ -23,5 +26,5 @@ export default defineConfig({
     video: executablePath ? 'off' : 'retain-on-failure',
     ...(executablePath ? { launchOptions: { executablePath } } : {}),
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [{ name: browser, use: { ...devices[desktop] } }],
 })

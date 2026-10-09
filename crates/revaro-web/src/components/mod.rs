@@ -13,6 +13,7 @@ mod content_shell;
 mod dialogs;
 mod directory_picker;
 mod editor;
+pub(crate) mod editor_draft;
 mod file_browser;
 mod file_browser_header;
 mod file_card;

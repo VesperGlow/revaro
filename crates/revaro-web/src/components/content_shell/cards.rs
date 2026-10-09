@@ -53,12 +53,13 @@ pub(super) fn LibraryCover(item: LibraryItem) -> impl IntoView {
             && let Some(window) = web_sys::window()
         {
             use wasm_bindgen::{JsCast, closure::Closure};
-            let callback = Closure::once_into_js(move || {
+            let callback = Closure::once(move || {
                 if let Some(attempt) = retry.try_get_untracked() {
                     retry.set(attempt + 1);
                     failed.set(false);
                 }
-            });
+            })
+            .into_js_value();
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 callback.unchecked_ref(),
                 1500,

@@ -378,13 +378,14 @@ pub fn ReaderView(
 
     if let Some(window) = web_sys::window() {
         let focus_root = root;
-        let callback = Closure::once_into_js(move || {
+        let callback = Closure::once(move || {
             if let Some(root) = focus_root.get() {
                 let options = web_sys::FocusOptions::new();
                 options.set_prevent_scroll(true);
                 let _ = root.focus_with_options(&options);
             }
-        });
+        })
+        .into_js_value();
         let _ = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
     }
@@ -976,7 +977,7 @@ fn focus_element_after_render(id: &str) {
         return;
     };
     let id = id.to_owned();
-    let callback = Closure::once_into_js(move || {
+    let callback = Closure::once(move || {
         let Some(document) = web_sys::window().and_then(|window| window.document()) else {
             return;
         };
@@ -989,7 +990,8 @@ fn focus_element_after_render(id: &str) {
         let options = web_sys::FocusOptions::new();
         options.set_prevent_scroll(true);
         let _ = element.focus_with_options(&options);
-    });
+    })
+    .into_js_value();
     let _ =
         window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
 }
@@ -1053,7 +1055,11 @@ fn install_progress_listeners(
         let state = runtime.clone();
         let id = file_id.clone();
         if let Some(listener) = install_dom_listener(&window_target, name, move |_| {
-            flush_progress(state.clone(), id.clone())
+            if name == "blur" {
+                flush_progress(state.clone(), id.clone());
+            } else {
+                persistence::flush_progress_keepalive(&state, &id);
+            }
         }) {
             listeners.push(listener);
         }

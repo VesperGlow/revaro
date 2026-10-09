@@ -74,6 +74,14 @@ jobs:
           cargo audit --file Cargo.lock
       - name: Build release artifacts
         run: cargo xtask build
+      - name: Check personal-library load and interrupted-upload recovery
+        run: python3 tests/load/resilience.py --binary target/release/revaro --files 100000 --requests 600 --workers 8 --max-p95-ms 2000 --output target/resilience-load.json
+      - name: Upload resilience measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: resilience-load
+          path: target/resilience-load.json
 
   container:
     name: Build Rust image and Chromium E2E
@@ -93,7 +101,8 @@ jobs:
         # production application dependency.
         run: |
           npm ci --ignore-scripts
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Validate Compose origin defaults
         run: |
           compose_default_base_url="$(APP_PORT=18081 APP_BASE_URL= docker compose -f compose.local.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
@@ -168,7 +177,18 @@ jobs:
           exit 1
       - name: Run Rust browser E2E
         working-directory: tests/e2e
-        run: npx playwright test startup.spec.ts rust-media-ui.spec.ts rust-reader-ui.spec.ts file-transport.spec.ts features.spec.ts library-selection.spec.ts content-regressions.spec.ts file-card-layout.spec.ts audio-playback.spec.ts music-cards-and-player.spec.ts mini-player-collapse.spec.ts player-controls.spec.ts player-regressions.spec.ts dialog-dismissal.spec.ts account-settings.spec.ts upload-progress.spec.ts --config=playwright.config.ts
+        run: npx playwright test --config=playwright.config.ts
+      - name: Check Firefox startup, editor recovery and menus
+        working-directory: tests/e2e
+        run: E2E_BROWSER=firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts --config=playwright.config.ts
+      - name: Check repeated editor and menu resource usage
+        run: SOAK_OUTPUT=browser-soak.json node tests/load/browser-soak.cjs
+      - name: Upload browser resource measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-soak
+          path: browser-soak.json
       - name: Export the tested image
         if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: docker save --output /tmp/revaro-e2e.tar revaro-e2e:local

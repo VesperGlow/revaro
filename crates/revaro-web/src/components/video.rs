@@ -82,13 +82,14 @@ pub fn VideoPlayer(
     // preliminary click on the video surface.
     if let Some(window) = web_sys::window() {
         let shell_for_focus = shell;
-        let callback = Closure::once_into_js(move || {
+        let callback = Closure::once(move || {
             if let Some(element) = shell_for_focus.get() {
                 let options = web_sys::FocusOptions::new();
                 options.set_prevent_scroll(true);
                 let _ = element.focus_with_options(&options);
             }
-        });
+        })
+        .into_js_value();
         let _ = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
     }
@@ -381,7 +382,7 @@ pub fn VideoPlayer(
         // Restore its focus on the next layout turn so Escape still reaches
         // the open menu, matching the native Vue select behavior.
         if let Some(window) = web_sys::window() {
-            let callback = Closure::once_into_js(move || {
+            let callback = Closure::once(move || {
                 let Some(select) = shell_for_rate_focus
                     .get()
                     .and_then(|shell| shell.query_selector("details[open] select").ok().flatten())
@@ -390,7 +391,8 @@ pub fn VideoPlayer(
                     return;
                 };
                 let _ = select.focus();
-            });
+            })
+            .into_js_value();
             let _ = window
                 .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
         }
@@ -425,7 +427,7 @@ pub fn VideoPlayer(
         volume_feedback.set(true);
         clear_timer(volume_timer);
         if let Some(window) = web_sys::window() {
-            let callback = Closure::once_into_js(move || volume_feedback.set(false));
+            let callback = Closure::once(move || volume_feedback.set(false)).into_js_value();
             if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 callback.unchecked_ref(),
                 900,
@@ -523,7 +525,7 @@ pub fn VideoPlayer(
             }
             clear_timer(click_timer);
             if let Some(window) = web_sys::window() {
-                let callback = Closure::once_into_js(move || toggle_playback());
+                let callback = Closure::once(move || toggle_playback()).into_js_value();
                 if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                     callback.unchecked_ref(),
                     200,
@@ -747,6 +749,7 @@ pub fn VideoPlayer(
             <Show when=move || !error.get().is_empty() fallback=|| ()>
                 <div class="video-error" role="alert"><p>{move || error.get()}</p><button type="button" on:click=retry_playback>"重新尝试"</button></div>
             </Show>
+            <super::playback::ProgressRetry playback=playback file_id=Signal::derive({let id=item_id.clone();move ||id.clone()}) on_loaded=Callback::new(move |()|restore_position()) />
             <div
                 class="video-controls"
                 class:visible=move || controls_visible.get() || !playing.get()
@@ -863,7 +866,7 @@ fn show_video_controls(
     clear_timer(timer);
     if !persist && playing.get_untracked() {
         if let Some(window) = web_sys::window() {
-            let callback = Closure::once_into_js(move || {
+            let callback = Closure::once(move || {
                 if !playing.get_untracked()
                     || starting.get_untracked()
                     || buffering.get_untracked()
@@ -891,7 +894,7 @@ fn show_video_controls(
                     return;
                 }
                 visible.set(false);
-            });
+            }).into_js_value();
             if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 callback.unchecked_ref(),
                 2_800,

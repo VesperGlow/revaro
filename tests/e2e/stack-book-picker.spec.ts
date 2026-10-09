@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { login } from './helpers'
+import { login, failApplicationRequest } from './helpers'
 import { zip } from './fixtures/epub'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -106,12 +106,11 @@ for (const touch of [false, true]) {
         await expect.poll(async () => { const box = (await footer.boundingBox())!; return Math.abs(box.y + box.height - 844) }).toBeLessThan(2)
       }
       expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden')
-      const itemsUrl = `**/api/library/stacks/${current.id}/items`
-      await page.route(itemsUrl, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { status: 503, message: '添加暂时失败，请重试' } }) }))
+      const fault = await failApplicationRequest(page, `/api/library/stacks/${current.id}/items`, '添加暂时失败，请重试')
       await add.click()
       await expect(picker.getByRole('alert')).toContainText('添加暂时失败，请重试')
       await expect(footer).toContainText('已选 2 本')
-      await page.unroute(itemsUrl)
+      await fault.clear()
       await add.click()
       await expect(picker).toHaveCount(0)
       await expect(page.locator('.library-card')).toHaveCount(4)

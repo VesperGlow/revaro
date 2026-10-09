@@ -251,16 +251,20 @@ where
         .await
         .map_err(|error| MediaError::Input(error.to_string()))?;
     let reader = object.file.into_std().await;
-    let _permit = slots
+    let permit = slots
         .acquire_owned()
         .await
         .map_err(|_| MediaError::Cancelled)?;
     let cancel = CancellationToken::new();
     let guard = CancelOnDrop(cancel.clone());
     let engine = state.media.engine;
-    let result = tokio::task::spawn_blocking(move || operation(engine, reader, cancel))
-        .await
-        .map_err(|error| MediaError::Input(error.to_string()))?;
+    let result = tokio::task::spawn_blocking(move || {
+        // Cancellation interrupts native work but does not stop the worker immediately.
+        let _permit = permit;
+        operation(engine, reader, cancel)
+    })
+    .await
+    .map_err(|error| MediaError::Input(error.to_string()))?;
     drop(guard);
     result
 }
@@ -445,7 +449,7 @@ async fn read_thumbnail(state: &Arc<AppState>, key: &str) -> Option<Vec<u8>> {
 }
 
 async fn generate_still_thumbnail(state: &Arc<AppState>, file: &File) -> Option<Vec<u8>> {
-    let _permit = state.media.image_slots.clone().acquire_owned().await.ok()?;
+    let permit = state.media.image_slots.clone().acquire_owned().await.ok()?;
     let source = if classify::is_epub_name(&file.name) {
         crate::reader_routes::load_book(state.clone(), file)
             .await
@@ -465,6 +469,7 @@ async fn generate_still_thumbnail(state: &Arc<AppState>, file: &File) -> Option<
         return None;
     }
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         revaro_media::resize_image_to_jpeg(&source, THUMB_MAX_DIMENSION)
     })
     .await
@@ -722,6 +727,50 @@ mod tests {
         bytes.extend_from_slice(&data_size.to_le_bytes());
         bytes.extend_from_slice(&pcm);
         bytes
+    }
+
+    #[tokio::test]
+    async fn cancelling_native_work_keeps_its_slot_until_the_worker_exits() {
+        let state = state().await;
+        insert_ready_file(
+            &state,
+            "cancel-worker",
+            "tone.wav",
+            "audio/wav",
+            &wav_fixture(),
+        )
+        .await;
+        let file = state
+            .db
+            .call(|connection| file_routes::lookup_file(connection, "cancel-worker"))
+            .await
+            .unwrap();
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let request_slots = Arc::clone(&slots);
+        let request = tokio::spawn(async move {
+            run_engine(&state, &file, request_slots, move |_, _, cancel| {
+                let _ = started_tx.send(cancel);
+                // A native decoder can take time to observe its interrupt callback.
+                let _ = release_rx.recv();
+                Ok(())
+            })
+            .await
+        });
+        let cancel = started_rx.await.unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert!(cancel.is_cancelled(), "the native interrupt fires promptly");
+        assert_eq!(slots.available_permits(), 0);
+        assert!(slots.try_acquire().is_err(), "replacement work must wait");
+        release_tx.send(()).unwrap();
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), slots.acquire())
+            .await
+            .expect("the worker releases its slot on exit")
+            .unwrap();
+        drop(recovered);
+        assert_eq!(slots.available_permits(), 1);
     }
 
     #[tokio::test]

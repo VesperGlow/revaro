@@ -1,0 +1,59 @@
+{
+  "files": 100000,
+  "workers": 8,
+  "requests": 600,
+  "max_p95_ms": 2000.0,
+  "binary_sha256": "a84b35ea4a32b01314a4fd8167b6fde0edbe45504f7559513fb59d20dd14ea91",
+  "failures": [],
+  "latencies": {
+    "/api/files?parent_id=d08b08ad-d45b-4848-941e-88a524cd55c4&limit=100": {
+      "p50_ms": 306.05,
+      "p95_ms": 712.56,
+      "max_ms": 756.12
+    },
+    "/api/library/items?kind=image&limit=60": {
+      "p50_ms": 1233.95,
+      "p95_ms": 1719.3,
+      "max_ms": 1848.36
+    },
+    "/api/library/items?recent=true&opened_only=true": {
+      "p50_ms": 777.33,
+      "p95_ms": 1307.64,
+      "max_ms": 1519.37
+    },
+    "/api/files?q=image-00000&limit=100": {
+      "p50_ms": 417.5,
+      "p95_ms": 742.75,
+      "max_ms": 1021.45
+    },
+    "/api/shares": {
+      "p50_ms": 420.76,
+      "p95_ms": 733.57,
+      "max_ms": 1054.09
+    },
+    "/readyz": {
+      "p50_ms": 51.74,
+      "p95_ms": 376.12,
+      "max_ms": 550.35
+    }
+  },
+  "overload_statuses": {
+    "200": 44,
+    "503": 148
+  },
+  "resumed_parts": [
+    {
+      "part_number": 1,
+      "size": 1048576,
+      "etag": "100000-18dcd1592394f818",
+      "content_hash": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83"
+    }
+  ],
+  "storage_pressure_status": 507,
+  "concurrent_downloads_valid": true,
+  "completed_upload_survives_restart": true,
+  "integrity_check": "ok",
+  "foreign_key_violations": [],
+  "peak_server_rss_kib": 354092,
+  "logical_cpus": 4
+}

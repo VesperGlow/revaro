@@ -424,13 +424,14 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
     // Wait for presentation attributes (including inert) before restoring focus.
     let focus_control = |control: NodeRef<leptos::html::Button>| {
         if let Some(window) = web_sys::window() {
-            let callback = Closure::once_into_js(move || {
+            let callback = Closure::once(move || {
                 if let Some(control) = control.get() {
                     let options = web_sys::FocusOptions::new();
                     options.set_prevent_scroll(true);
                     let _ = control.focus_with_options(&options);
                 }
-            });
+            })
+            .into_js_value();
             let _ = window
                 .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
         }
@@ -699,6 +700,7 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
                         on:click=move |event|set_panel_open(false,event)>{icons::chevron_down()}</button>
                 </header>
                 <div class="dock-body">
+                    <super::playback::ProgressRetry playback=controller.progress file_id=Signal::derive(move ||controller.current().map(|file|file.id).unwrap_or_default()) on_loaded=Callback::new(move |()|controller.restore_position()) />
                     <div class="dock-track">
                         <button type="button" class="dock-cover" aria-label="打开音频播放器" on:click=move |_|controller.full_open.set(true)>
                             <Show when=move || !cover_failed.get() fallback=|| icons::music_2().into_any()>

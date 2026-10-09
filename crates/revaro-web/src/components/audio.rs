@@ -514,7 +514,7 @@ pub fn AudioPlayer(
         // its close button. A synchronous query races Leptos DOM insertion
         // and leaves keyboard users on the trigger.
         if let Some(window) = web_sys::window() {
-            let callback = Closure::once_into_js(move || {
+            let callback = Closure::once(move || {
                 if let Some(element) = player.get() {
                     let _ = element
                         .unchecked_into::<web_sys::Element>()
@@ -524,7 +524,8 @@ pub fn AudioPlayer(
                         .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
                         .map(|element| element.focus());
                 }
-            });
+            })
+            .into_js_value();
             let _ = window
                 .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
         }
@@ -564,7 +565,7 @@ pub fn AudioPlayer(
             let Some(window) = web_sys::window() else {
                 return;
             };
-            let callback = Closure::once_into_js(move || {
+            let callback = Closure::once(move || {
                 let Some(player) = player.get() else {
                     return;
                 };
@@ -578,7 +579,8 @@ pub fn AudioPlayer(
                 let options = web_sys::ScrollIntoViewOptions::new();
                 options.set_block(web_sys::ScrollLogicalPosition::Nearest);
                 element.scroll_into_view_with_scroll_into_view_options(&options);
-            });
+            })
+            .into_js_value();
             let _ = window
                 .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
         });
@@ -663,6 +665,10 @@ pub fn AudioPlayer(
     // first; `restore_position` only acts after both media duration and the
     // server response are available. These reads belong to the player: unlike
     // durable progress writes, they must stop when its reactive owner is gone.
+    let retry_progress = Callback::new({
+        let restore_position = restore_position.clone();
+        move |()| restore_position()
+    });
     if controller.is_none() {
         let restore_position = restore_position.clone();
         playback.load(item.id.clone(), Callback::new(move |()| restore_position()));
@@ -827,6 +833,7 @@ pub fn AudioPlayer(
                     <Show when=move || !error.get().is_empty() fallback=|| ()>
                         <p class="audio-player-error" role="alert">{move || error.get()}</p>
                     </Show>
+                    {controller.is_none().then(|| view! { <super::playback::ProgressRetry playback=playback file_id=Signal::derive({let id=item_id.clone();move ||id.clone()}) on_loaded=retry_progress /> })}
                     {controller.is_none().then(|| view! { <audio node_ref=audio src=source.clone() autoplay preload="metadata" on:loadedmetadata=on_loaded_metadata.clone() on:durationchange=on_loaded_metadata on:timeupdate=on_time_update on:seeked=on_seeked on:progress=move |_| update_buffer(audio, duration, buffered) on:play=on_play on:pause=on_pause on:ended=on_ended on:waiting=on_waiting on:canplay=on_can_play on:error=on_error></audio> })}
                 </section>
             </main>

@@ -103,7 +103,7 @@ pub fn AppTopbar(
             // Wait for the 240 ms reveal transition so the input is visible
             // and focusable, then resolve the current node rather than a stale one.
             if let Some(window) = web_sys::window() {
-                let callback = Closure::once_into_js(move || {
+                let callback = Closure::once(move || {
                     if search_open.try_get_untracked() == Some(true)
                         && let Some(input) = search_input.get_untracked()
                     {
@@ -111,7 +111,8 @@ pub fn AppTopbar(
                         options.set_prevent_scroll(true);
                         let _ = input.focus_with_options(&options);
                     }
-                });
+                })
+                .into_js_value();
                 let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                     callback.unchecked_ref(),
                     250,
@@ -247,7 +248,7 @@ pub fn AppTopbar(
                                     } else if page.get_untracked() == LibraryPage::Home {
                                         on_navigate.run(LibraryPage::Files);
                                         if let Some(window) = web_sys::window() {
-                                            let callback = Closure::once_into_js(move || { let _ = search_open.try_set(true); });
+                                            let callback = Closure::once(move || { let _ = search_open.try_set(true); }).into_js_value();
                                             let _ = window.request_animation_frame(callback.unchecked_ref());
                                         }
                                     } else { search_open.set(true); }
