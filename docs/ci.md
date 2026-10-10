@@ -31,6 +31,10 @@ Docker 使用固定版本 cargo-chef 0.1.78：planner 从 Cargo 清单、锁文�
 
 新流程的总耗时和缓存命中后的加速幅度必须以新 CI 的时间戳为准，未完成测量前不承诺固定分钟数。当前沙箱禁止创建本地 TCP/UDP socket，真实容器、浏览器与 QUIC 换地址回归由 CI 运行；本地静态检查和逻辑单测不替代这些结果。
 
+2026-10-10 的 [CI #331](https://github.com/VesperGlow/revaro/actions/runs/38062770859) 已验证新的流程：Rust job 5 分 1 秒、镜像 job 11 分 54 秒（包括首次 cargo-chef 依赖层预热），全部 Chromium 分片和 Firefox 通过。镜像构建相较 #330 的 18 分 34 秒缩短；BuildKit 缓存导出从 5 分 28 秒降至约 1 分 21 秒。浏览器各自运行，未再把所有浏览器耗时串在镜像 job 后。
+
+该轮仍失败于 WebKit 的 1 MiB 断流视频场景：两次尝试均停在约 0.14 秒，正常高码率场景等 31 项通过，另有 1 项跳过；publish 因验收失败被阻止。因此这不是一次完整成功发布，也不代表公网性能验收通过。针对原生恢复逻辑的修正保留 `waiting/stalled` 后最后一次 `progress` 的后续检查，用播放时钟和 `HAVE_FUTURE_DATA` 区分可播放缓冲与停滞，覆盖零秒启动；仍保留每个源最多两次恢复、暂停/跳转取消及当前位置恢复。新增 4 项逻辑测试，其中 3 项在旧实现上复现缺陷，修正后全部 42 项传输测试通过。WebKit 真实断流复测待下一轮 CI；故障时同时把媒体状态、事件和 Range 传输记录写入 job 日志，便于直接定位。
+
 生产 Compose 的 `APP_BASE_URL` 默认值会从 `APP_PORT` 推导；留空时例如
 `APP_PORT=18081` 会得到 `http://localhost:18081`，显式设置公网地址则保持原值。
 `COOKIE_SECURE` 默认保持为空，由 Rust 按 `APP_BASE_URL` 自动决定 HTTPS Cookie

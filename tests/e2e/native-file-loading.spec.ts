@@ -31,16 +31,17 @@ test(`${disconnectAtBytes ? 'interrupted' : 'high-bitrate'} native video plays a
   await page.addInitScript(() => {
     const events: unknown[] = []
     Object.assign(window, { nativeMediaEvents: events })
-    for (const type of ['loadstart', 'progress', 'stalled', 'waiting', 'error', 'emptied', 'ended'])
+    for (const type of ['loadstart', 'loadedmetadata', 'progress', 'stalled', 'waiting', 'playing', 'pause', 'canplay', 'seeking', 'seeked', 'error', 'emptied', 'ended'])
       document.addEventListener(type, event => {
         const media = event.target
         if (!(media instanceof HTMLMediaElement)) return
-        events.push({ type, at: Date.now(), currentTime: media.currentTime, readyState: media.readyState,
+        events.push({ type, at: Date.now(), currentTime: media.currentTime, paused: media.paused, readyState: media.readyState,
           networkState: media.networkState, error: media.error?.code,
           buffered: Array.from({ length: media.buffered.length }, (_, i) => [media.buffered.start(i), media.buffered.end(i)]) })
       }, true)
   })
   let directory: { id: string } | undefined
+  let completed = false
   const headers = { origin: proxy.origin }, name = `native-video-${Date.now()}`
   try {
     await login(page)
@@ -94,9 +95,19 @@ test(`${disconnectAtBytes ? 'interrupted' : 'high-bitrate'} native video plays a
       networkRequests: proxy.samples.length, transferredBytes: proxy.samples.reduce((sum, sample) => sum + sample.bytes, 0), samples: proxy.samples }
     await testInfo.attach('native-video-transfer.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' })
     console.info('native-video-transfer', JSON.stringify({ ...report, samples: undefined }))
+    completed = true
   } finally {
-    await testInfo.attach('native-transfer-diagnostics.json', { body: JSON.stringify({ samples: proxy.samples,
-      events: await page.evaluate(() => (window as unknown as { nativeMediaEvents: unknown[] }).nativeMediaEvents).catch(() => []) }, null, 2), contentType: 'application/json' })
+    const events = await page.evaluate(() => (window as unknown as { nativeMediaEvents: unknown[] }).nativeMediaEvents).catch(() => [])
+    const media = await page.evaluate(() => {
+      const video = Array.from(document.querySelectorAll('video')).at(-1)
+      if (!video) return null
+      return { currentTime: video.currentTime, paused: video.paused, seeking: video.seeking, ended: video.ended,
+        readyState: video.readyState, networkState: video.networkState, error: video.error?.code,
+        buffered: Array.from({ length: video.buffered.length }, (_, i) => [video.buffered.start(i), video.buffered.end(i)]) }
+    }).catch(() => null)
+    const diagnostics = { faults: proxy.faults, samples: proxy.samples, events, media }
+    await testInfo.attach('native-transfer-diagnostics.json', { body: JSON.stringify(diagnostics, null, 2), contentType: 'application/json' })
+    if (!completed) console.info('native-video-failure', JSON.stringify(diagnostics))
     if (directory) {
       await page.goto('/files')
       await page.request.delete(`/api/files/${directory.id}`, { headers })

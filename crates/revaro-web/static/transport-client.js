@@ -27,8 +27,8 @@ function installAPITransport() {
 }
 let watching = false;
 // Some native media loaders leave a disconnected response in NETWORK_LOADING
-// without an error or reconnect. Reload only after playback has exhausted its
-// buffer and stopped advancing, with a bounded budget for the same source.
+// without an error or reconnect. Reload only after playback has stopped
+// advancing without playable future data, with a bounded budget per source.
 // All bytes and Range decisions still belong to the browser.
 export function watchNativeRecovery(root = document, delayMs = 3000) {
   const states = new WeakMap(), pending = new Set();
@@ -54,26 +54,41 @@ export function watchNativeRecovery(root = document, delayMs = 3000) {
     let state = states.get(element);
     if (!state || state.source !== source) {
       if (state) { cancel(state); cancelRestore(element, state); }
-      state = { source, attempts: 0, restoredAt: 0 }; states.set(element, state);
+      state = { source, attempts: 0, restoredAt: 0, waiting: false }; states.set(element, state);
     }
     if (event.type === 'timeupdate') {
       if (element.currentTime > state.restoredAt + 1 && bufferSeconds(element) > 1) state.attempts = 0;
-      return;
+      // A progress event can arrive after waiting/stalled. Keep checking until
+      // the clock actually resumes, rather than relying on another stall event.
+      if (element.currentTime > state.position + 0.1) {
+        state.waiting = element.readyState < 3; cancel(state);
+      }
+      if (!state.waiting) return;
     }
-    if (['pause', 'seeking', 'ended', 'emptied', 'progress'].includes(event.type)) {
+    if (['pause', 'seeking', 'ended', 'emptied', 'playing', 'seeked'].includes(event.type)) {
+      state.waiting = false;
       cancel(state);
       if (['pause', 'seeking', 'ended'].includes(event.type)) cancelRestore(element, state);
       return;
     }
+    if (event.type === 'progress') {
+      cancel(state);
+      if (!state.waiting) return;
+    }
+    if (['waiting', 'stalled', 'error'].includes(event.type)) state.waiting = true;
     if (state.timer || state.attempts >= 2 || element.paused || element.ended || element.seeking
-        || element.currentTime <= 0 || (element.error && element.error.code !== 2)) return;
+        || (element.error && element.error.code !== 2)) return;
     const position = element.currentTime;
+    state.position = position;
     pending.add(state);
     state.timer = setTimeout(() => {
       cancel(state);
       if (!element.isConnected || sourceOf(element) !== source || element.paused || element.ended || element.seeking
-          || element.currentTime > position + 0.1 || bufferSeconds(element) > 0.15
+          || element.currentTime > position + 0.1 || (bufferSeconds(element) > 0.15 && element.readyState >= 3)
           || (element.error && element.error.code !== 2)) return;
+      // buffered may include demuxed bytes that cannot supply the next frame.
+      // HAVE_FUTURE_DATA is required before treating that range as playable.
+      state.waiting = false;
       state.attempts++; state.restoredAt = element.currentTime;
       const restore = () => {
         state.restore = undefined;
@@ -86,7 +101,7 @@ export function watchNativeRecovery(root = document, delayMs = 3000) {
       element.load();
     }, delayMs);
   };
-  for (const event of ['waiting', 'stalled', 'error', 'pause', 'seeking', 'ended', 'emptied', 'progress', 'timeupdate'])
+  for (const event of ['waiting', 'stalled', 'error', 'pause', 'seeking', 'ended', 'emptied', 'playing', 'seeked', 'progress', 'timeupdate'])
     root.addEventListener(event, observe, true);
   globalThis.addEventListener?.('pagehide', () => { for (const state of pending) cancel(state); });
 }
