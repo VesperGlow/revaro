@@ -23,8 +23,8 @@ try {
     sheet.rel = 'stylesheet'
   })
   const [runtime] = await Promise.all([runtimeReady, transportReady, stylesReady])
-  // No native file consumer or API request is mounted until the existing
-  // transport worker controls the page and has received its configuration.
+  // Install API recovery before mounting. Native file consumers use the
+  // worker when available; unavailable workers have a bounded startup fallback.
   runtime.start()
 } catch (error) {
   controller.abort()

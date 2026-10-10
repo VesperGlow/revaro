@@ -1,5 +1,32 @@
-import { putBlob, blobHash, configureTransport, setPlaybackState } from './transport-core.js';
+import { putBlob, blobHash, configureTransport, setPlaybackState, bufferedRequest, fileResponse, clearTransportCache } from './transport-core.js';
 export { putBlob, blobHash };
+const nativeFetch = globalThis.fetch.bind(globalThis);
+let directFiles = false, apiInstalled = false;
+const fileBody = path => /^\/api\/files\/[^/]+\/(download|preview|thumbnail|content|versions\/[^/]+\/content|book\/(cover|assets\/[^/]+|flow(\/chunks\/[^/]+)?))$/.test(path)
+  || /^\/api\/files\/batch-download\/[^/]+$/.test(path) || path.startsWith('/s/');
+function installAPITransport() {
+  if (apiInstalled) return;
+  apiInstalled = true;
+  // Mutable control requests use the same recovery engine in their document.
+  // They remain responsive if a worker is stopped, replaced or unavailable.
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init), url = new URL(request.url);
+    if (url.origin !== location.origin || request.headers.has('x-revaro-managed')
+        || (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/s/'))
+        || (!directFiles && fileBody(url.pathname) && ['GET', 'HEAD'].includes(request.method))) return nativeFetch(request);
+    request.headers.set('x-revaro-managed', '1');
+    if (url.pathname === '/api/auth/logout') {
+      await clearTransportCache();
+      navigator.serviceWorker?.controller?.postMessage({ type: 'clear-transport' });
+    }
+    if (request.method === 'GET' && fileBody(url.pathname)) return fileResponse(request);
+    let safe = ['GET', 'HEAD'].includes(request.method) || /\/uploads\/[^/]+\/complete$/.test(url.pathname);
+    if (request.method === 'POST' && url.pathname === '/api/uploads') {
+      try { safe = Boolean((await request.clone().json()).idempotency_key); } catch {}
+    }
+    return bufferedRequest(request, safe);
+  };
+}
 let watching = false;
 function watchPlayback() {
   if (watching) return; watching = true;
@@ -9,7 +36,7 @@ function watchPlayback() {
     const present = new Set(document.querySelectorAll('audio:not([aria-hidden="true"]), video'));
     for (const [element, key] of live) if (!present.has(element)) {
       const state = { key, ended: true }; setPlaybackState(state);
-      navigator.serviceWorker.controller?.postMessage({ type: 'playback-state', state }); live.delete(element);
+      navigator.serviceWorker?.controller?.postMessage({ type: 'playback-state', state }); live.delete(element);
     }
     for (const element of present) {
       if (!element.currentSrc && !element.src) continue;
@@ -25,7 +52,7 @@ function watchPlayback() {
       const state = { key: live.get(element), url: element.currentSrc || element.src, playing, bufferSeconds,
         nextUrl: element.tagName === 'AUDIO' ? document.querySelector('audio[data-revaro-next]')?.src : '' };
       setPlaybackState(state);
-      navigator.serviceWorker.controller?.postMessage({ type: 'playback-state', state });
+      navigator.serviceWorker?.controller?.postMessage({ type: 'playback-state', state });
     }
   };
   for (const event of ['play', 'pause', 'waiting', 'seeking', 'seeked', 'ended']) document.addEventListener(event, report, true);
@@ -34,29 +61,37 @@ function watchPlayback() {
   addEventListener('pagehide', () => {
     for (const key of live.values()) {
       const state = { key, ended: true }; setPlaybackState(state);
-      navigator.serviceWorker.controller?.postMessage({ type: 'playback-state', state });
+      navigator.serviceWorker?.controller?.postMessage({ type: 'playback-state', state });
     }
     live.clear();
   });
 }
 export async function initializeTransport() {
-  if (!globalThis.isSecureContext || !navigator.serviceWorker)
-    throw new Error('文件传输需要 HTTPS 或 localhost，以启用统一传输层。');
+  installAPITransport();
+  if (!globalThis.isSecureContext || !navigator.serviceWorker) {
+    directFiles = true; watchPlayback(); return;
+  }
   const ready = new Promise(resolve => {
     if (navigator.serviceWorker.controller) return resolve();
     navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true });
   });
   // xtask emits a classic worker from the same shared core. Firefox versions
   // without module service workers must use the identical recovery policy.
-  await navigator.serviceWorker.register('/transport-worker.js', { scope: '/', updateViaCache: 'none' });
-  const registration = await navigator.serviceWorker.ready;
-  if (!navigator.serviceWorker.controller) registration.active?.postMessage({ type: 'claim-clients' });
-  await ready;
+  let timer;
+  try {
+    await Promise.race([(async () => {
+      await navigator.serviceWorker.register('/transport-worker.js', { scope: '/', updateViaCache: 'none' });
+      const registration = await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) registration.active?.postMessage({ type: 'claim-clients' });
+      await ready;
+    })(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('worker unavailable')), 8000); })]);
+  } catch { directFiles = true; }
+  finally { clearTimeout(timer); }
   watchPlayback();
   // Uploads and the worker share policy and receive the same endpoint setting.
   try {
     const config = await (await fetch('/api/transport/config')).json();
     configureTransport(config);
-    navigator.serviceWorker.controller.postMessage({ type: 'transport-config', config });
+    navigator.serviceWorker.controller?.postMessage({ type: 'transport-config', config });
   } catch {}
 }

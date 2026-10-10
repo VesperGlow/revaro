@@ -171,12 +171,12 @@ jobs:
       - name: Run Rust browser E2E
         working-directory: tests/e2e
         run: PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/chromium npx playwright test --config=playwright.config.ts --output=test-results/chromium
-      - name: Check Firefox startup, editor and account recovery
+      - name: Check Firefox startup, editor, accounts and multi-device playback
         working-directory: tests/e2e
-        run: E2E_BROWSER=firefox PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --grep-invert 'mobile account settings' --config=playwright.config.ts --output=test-results/firefox
-      - name: Check WebKit startup, editor, touch layout and accounts
+        run: E2E_BROWSER=firefox PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts progress-sync.spec.ts --grep-invert 'mobile account settings' --config=playwright.config.ts --output=test-results/firefox
+      - name: Check WebKit startup, editor, touch layout, accounts and multi-device playback
         working-directory: tests/e2e
-        run: E2E_BROWSER=webkit PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/webkit npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts --config=playwright.config.ts --output=test-results/webkit
+        run: E2E_BROWSER=webkit PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/webkit npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts progress-sync.spec.ts --config=playwright.config.ts --output=test-results/webkit
       - name: Check repeated editor and menu resource usage
         run: SOAK_OUTPUT=browser-soak.json node tests/load/browser-soak.cjs
       - name: Upload browser resource measurements

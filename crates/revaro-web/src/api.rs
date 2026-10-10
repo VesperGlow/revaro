@@ -1,4 +1,4 @@
-//! Typed API operations. The shared Service Worker transport owns request
+//! Typed API operations. The shared document/worker transport owns request
 //! progress deadlines, safe retries and recovery for every file consumer.
 //! Mutations without an idempotency contract are never blindly replayed.
 
@@ -198,15 +198,9 @@ pub async fn fetch_media_progress(id: &str) -> Result<MediaProgress, RequestErro
     get_json(&format!("/api/files/{id}/media/progress")).await
 }
 
-/// Save a playback position and the duration known by the browser.
-pub async fn save_media_progress(
-    id: &str,
-    progress: &MediaProgress,
-) -> Result<MediaProgress, RequestError> {
-    let request = api_request(Request::put(&format!("/api/files/{id}/media/progress")))
-        .json(progress)
-        .map_err(|error| request_transport(error.to_string()))?;
-    send_json(request).await
+pub async fn fetch_listening_session()
+-> Result<revaro_core::progress::ListeningSession, RequestError> {
+    get_json("/api/listening/session").await
 }
 
 /// Save the final playback position while a media preview is being removed.
@@ -216,8 +210,62 @@ pub async fn save_media_progress(
 /// small request while the preview and its ordinary request timers disappear.
 /// `web-sys` does not expose that dictionary member in the pinned version, so
 /// set it through the DOM dictionary object before constructing the request.
-pub fn save_media_progress_keepalive(id: &str, progress: &MediaProgress) {
-    save_json_keepalive(&format!("/api/files/{id}/media/progress"), progress);
+pub async fn save_media_progress_keepalive(
+    id: &str,
+    progress: &revaro_core::progress::SaveMediaProgress,
+) -> Result<MediaProgress, RequestError> {
+    put_progress_keepalive(&format!("/api/files/{id}/media/progress"), progress).await
+}
+
+pub async fn save_listening_session_keepalive(
+    write: &revaro_core::progress::ListeningWrite,
+) -> Result<revaro_core::progress::ListeningSession, RequestError> {
+    put_progress_keepalive("/api/listening/session", write).await
+}
+
+async fn put_progress_keepalive<T: serde::de::DeserializeOwned>(
+    path: &str,
+    progress: &impl serde::Serialize,
+) -> Result<T, RequestError> {
+    let window = web_sys::window().ok_or_else(|| request_transport("window unavailable".into()))?;
+    let body = serde_json::to_string(progress).map_err(|e| request_transport(e.to_string()))?;
+    let init = RequestInit::new();
+    init.set_method("PUT");
+    init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_body(&JsValue::from_str(&body));
+    let _ = Reflect::set(
+        init.as_ref(),
+        &JsValue::from_str("keepalive"),
+        &JsValue::TRUE,
+    );
+    let request = BrowserRequest::new_with_str_and_init(path, &init)
+        .map_err(|e| request_transport(format!("{e:?}")))?;
+    request
+        .headers()
+        .set("Content-Type", "application/json")
+        .map_err(|e| request_transport(format!("{e:?}")))?;
+    use wasm_bindgen::JsCast as _;
+    let response: web_sys::Response =
+        wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|e| request_transport(format!("{e:?}")))?
+            .unchecked_into();
+    if !response.ok() {
+        return Err(RequestError {
+            status: response.status(),
+            code: None,
+            message: "播放进度同步失败".into(),
+        });
+    }
+    let text = wasm_bindgen_futures::JsFuture::from(
+        response
+            .text()
+            .map_err(|e| request_transport(format!("{e:?}")))?,
+    )
+    .await
+    .map_err(|e| request_transport(format!("{e:?}")))?;
+    serde_json::from_str(&text.as_string().unwrap_or_default())
+        .map_err(|e| request_transport(e.to_string()))
 }
 
 pub fn save_book_progress_keepalive(id: &str, progress: &SaveProgressRequest) {

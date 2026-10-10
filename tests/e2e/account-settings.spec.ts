@@ -13,7 +13,7 @@ async function mockAccountRequests(page: Page) {
     window.fetch = async (input, init) => {
       const path = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href).pathname
       const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
-      const body = async () => JSON.parse(typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.clone().text() : '{}')
+      const body = async () => JSON.parse(await new Request(input instanceof Request ? input : new URL(input.toString(), location.href), init).text())
       if (path === '/api/auth/totp' && method === 'GET')
         return new Response(JSON.stringify({ enabled: true, recovery_codes: 5 }), { headers: { 'Content-Type': 'application/json' } })
       if (path === '/api/profile/username' && method === 'PATCH') {

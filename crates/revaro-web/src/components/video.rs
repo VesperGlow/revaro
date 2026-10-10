@@ -14,7 +14,7 @@ use web_sys::{
 use super::resource_url::thumbnail_url;
 use crate::browser;
 use crate::logic::format::format_media_time;
-use crate::logic::media::{media_element_time, should_hide_video_cursor, should_sync_media_clock};
+use crate::logic::media::{media_element_time, should_hide_video_cursor, stable_media_clock};
 
 use super::icons;
 use super::menu::{ActionMenu, MenuIcon};
@@ -67,6 +67,7 @@ pub fn VideoPlayer(
     let save_timer = RwSignal::new(None::<i32>);
     let remote_save_timer = RwSignal::new(None::<i32>);
     let pending_seek = RwSignal::new(None::<f64>);
+    let native_seek = RwSignal::new(None::<f64>);
     let fullscreen = RwSignal::new(false);
     let autoplay_pending = RwSignal::new(true);
     let playback = PlaybackProgress::new();
@@ -120,9 +121,9 @@ pub fn VideoPlayer(
             if duration.get_untracked() > 0.0
                 && let Some(target) =
                     playback.restore(duration.get_untracked(), Some(&position_key.get_value()))
-                && target > 0.0
                 && let Some(video) = video_media_element(video)
             {
+                native_seek.set(Some(target));
                 video.set_current_time(target);
                 current_time.set(target);
             }
@@ -137,6 +138,7 @@ pub fn VideoPlayer(
             let position = current_time.get_untracked().max(0.0);
             if position > 0.0 || user_seeked.get_untracked() {
                 persist_progress(
+                    playback,
                     &item_id,
                     position,
                     duration.get_untracked(),
@@ -168,8 +170,22 @@ pub fn VideoPlayer(
         let save_progress = save_progress.clone();
         move |_| {
             if let Some(video) = video_media_element(video) {
-                if should_sync_media_clock(starting.get_untracked(), video.paused()) {
-                    current_time.set(media_element_time(video.current_time()));
+                if playback.ready.get_untracked()
+                    && pending_seek.get_untracked().is_none()
+                    && let Some(position) = stable_media_clock(
+                        video.current_time(),
+                        video.ready_state() >= 1,
+                        current_time.get_untracked(),
+                        native_seek.get_untracked(),
+                    )
+                {
+                    current_time.set(position);
+                    if !video.seeking() {
+                        native_seek.set(None);
+                    }
+                    if !video.paused() && video.ready_state() >= 2 {
+                        playback.clock_changed();
+                    }
                 }
             }
             debounce(save_timer, 600, {
@@ -197,8 +213,15 @@ pub fn VideoPlayer(
         move |_| {
             playing.set(false);
             if !starting.get_untracked() {
-                if let Some(video) = video_media_element(video) {
-                    current_time.set(media_element_time(video.current_time()));
+                if let Some(video) = video_media_element(video)
+                    && let Some(position) = stable_media_clock(
+                        video.current_time(),
+                        playback.ready.get_untracked() && video.ready_state() >= 1,
+                        current_time.get_untracked(),
+                        native_seek.get_untracked(),
+                    )
+                {
+                    current_time.set(position);
                 }
                 clear_timer(remote_save_timer);
                 save_progress(true);
@@ -277,6 +300,7 @@ pub fn VideoPlayer(
             return;
         }
         if video.paused() {
+            playback.intent();
             play_video_ignoring_rejection(&video);
         } else {
             let _ = video.pause();
@@ -293,9 +317,10 @@ pub fn VideoPlayer(
                 .max(0.0)
                 .min(if limit > 0.0 { limit } else { target.max(0.0) });
             if let Some(video) = video_media_element(video) {
+                native_seek.set(Some(target));
                 video.set_current_time(target);
                 playback.accept_seek();
-                current_time.set(media_element_time(video.current_time()));
+                current_time.set(target);
             } else {
                 current_time.set(target);
             }
@@ -650,6 +675,28 @@ pub fn VideoPlayer(
     // these component-owned reads on close so late responses cannot restore a
     // disposed player or start a detached video element.
     playback.load(item.id.clone(), Callback::new(move |()| restore_position()));
+    super::playback::watch_progress(
+        playback,
+        Signal::derive({
+            let id = item_id.clone();
+            move || id.clone()
+        }),
+        Callback::new(move |()| restore_position()),
+        Callback::new(move |()| {
+            if let Some(video) = video_media_element(video) {
+                let _ = video.pause();
+            }
+            restore_position();
+            if let Some(remote) = playback.server.get_untracked()
+                && remote.position == 0.0
+            {
+                if let Some(video) = video_media_element(video) {
+                    video.set_current_time(0.0);
+                }
+                current_time.set(0.0);
+            }
+        }),
+    );
     {
         let video_for_start = video;
         leptos::task::spawn_local_scoped_with_cancellation(async move {
@@ -676,6 +723,7 @@ pub fn VideoPlayer(
         let position = current_time.get_untracked().max(0.0);
         if playback.ready.get_untracked() && (position > 0.0 || user_seeked.get_untracked()) {
             persist_progress(
+                playback,
                 &cleanup_item_id,
                 position,
                 duration.get_untracked(),
@@ -722,7 +770,7 @@ pub fn VideoPlayer(
                 on:playing=on_can_play
                 on:play=on_play
                 on:pause=on_pause.clone()
-                on:ended=on_pause
+                on:ended=move |event| {playback.ended();on_pause(event);}
                 on:error=on_error
             >
                 "你的浏览器不支持这个视频格式。"

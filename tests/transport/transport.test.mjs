@@ -28,6 +28,24 @@ function bytesResponse(data, start, end, etag = '"version-1"', mime = 'applicati
 function bounds(init) { return new Headers(init.headers).get('range').slice(6).split('-').map(Number); }
 const request = (path = 'file.bin', init = {}) => new Request(new URL(`/api/files/${path}/download`, location), init);
 
+test('deadlines recover when native fetch or stream cancellation ignores abort', { timeout: 2000 }, async () => {
+  for (const stall of ['headers', 'body']) {
+    let calls = 0;
+    const core = await engine(async () => {
+      if (++calls > 1) return new Response('{"ok":true}');
+      if (stall === 'headers') return new Promise(() => {});
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
+        cancel() { return new Promise(() => {}); },
+      }));
+    });
+    const response = await core.bufferedRequest(new Request(new URL('/api/listening/session', location)));
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(calls, 2);
+    assert.equal(core.transportState().activeRequests, 0, 'a stuck native request does not retain admission');
+  }
+});
+
 test('arbitrary MIME types use 2–4 parallel lanes and resume only a stalled block', async () => {
   for (const mime of ['application/pdf', 'application/zip', 'text/plain', 'application/octet-stream', 'image/png', 'video/mp4', 'audio/flac']) {
     let stalled = false, active = 0, maximum = 0;

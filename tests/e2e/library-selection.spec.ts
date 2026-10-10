@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Locator } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { openMusicPlayer, login, navigate, enterSelectionMode, openTopbarMenu } from './helpers'
+import { isTransportRequest, resetListeningSession, openMusicPlayer, login, navigate, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -101,6 +101,7 @@ test('global selection mode shares subtle motion, selected surfaces, batch actio
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await login(page)
+  await resetListeningSession(page)
   const prefix = `selection-${Date.now()}`
   await upload(page, prefix, ['txt', 'wav', 'png', 'webm'])
   const uploaded = await (await page.request.get(`/api/library/items?q=${prefix}`)).json()
@@ -450,7 +451,7 @@ test('mixed file selections share typed batch management, retry failures and kee
   await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 9 项')
   const failed = (await listing()).find((item: any) => item.file.name === `${prefix}-1.png`).file.id
   await page.context().route(`**/api/library/items/${failed}`, route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'try again' }) })
   })
   await more.click()

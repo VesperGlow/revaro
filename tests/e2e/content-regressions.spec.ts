@@ -1,6 +1,6 @@
 import { expect, test as base, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { openMusicPlayer, selectMusicMode, pauseMusic, login, navigate, uploadFixture as upload } from './helpers'
+import { isTransportRequest, openMusicPlayer, selectMusicMode, pauseMusic, login, navigate, uploadFixture as upload } from './helpers'
 
 const test = base.extend<{ contentRoot: { id: string, prefix: string } }>({
   contentRoot: async ({ page }, use) => {
@@ -60,7 +60,7 @@ test('music restores saved progress after delayed metadata and reload without er
     }
   })
   await page.context().route(`**/api/files/${song.id}/preview`, async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     await metadata.promise
     await route.continue()
   })
@@ -108,7 +108,7 @@ test('late progress responses cannot seek another song or restart an ended sessi
   let gate = deferred()
   let intercepted = deferred()
   await page.context().route(`**/api/files/${first.id}/media/progress`, async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     if (route.request().method() !== 'GET') return route.continue()
     const release = gate.promise
     const response = await route.fetch()
@@ -218,7 +218,7 @@ test('trash audio preview keeps saved and local resume positions, defaults and c
   // Regular file clicks use the music dock; trash audio opens the full preview.
   // Supply progress explicitly because the live progress API excludes trash.
   await page.context().route(`**/api/files/${song.id}/media/progress`, route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     if (route.request().method() === 'GET') return route.fulfill({ json: saved })
     return route.continue()
   })
@@ -234,7 +234,7 @@ test('trash audio preview keeps saved and local resume positions, defaults and c
     await page.locator('.preview-close').click()
     await expect(audio).toHaveCount(0)
 
-    // A successful zero server position still uses this player's local fallback.
+    // An empty legacy history uses this player's local migration fallback.
     saved = { position: 0, duration: 90 }
     await page.evaluate(id => localStorage.setItem(`revaro-audio-position:${id}`, '30'), song.id)
     await card.click()
@@ -244,6 +244,15 @@ test('trash audio preview keeps saved and local resume positions, defaults and c
     await expect(audio).toHaveCount(0)
 
     await page.evaluate(id => localStorage.setItem(`revaro-audio-position:${id}`, '89'), song.id)
+    await card.click()
+    await expect.poll(() => audio.evaluate(element => element.readyState)).toBeGreaterThanOrEqual(1)
+    await expect.poll(() => audio.evaluate(element => element.paused)).toBe(false)
+    expect(await audio.evaluate(element => element.currentTime)).toBeGreaterThanOrEqual(89)
+    await page.locator('.preview-close').click()
+    await expect(audio).toHaveCount(0)
+
+    // A real completion marker restarts; being near the end does not.
+    saved = { position: 90, duration: 90, revision: 2, completed: true }
     await card.click()
     await expect.poll(() => audio.evaluate(element => element.readyState)).toBeGreaterThanOrEqual(1)
     await expect.poll(() => audio.evaluate(element => element.paused)).toBe(false)
@@ -365,7 +374,7 @@ test('video playback pauses background music from home, video library and files'
   // Opening a video must also cancel music that is still waiting for metadata.
   const metadata = deferred(), intercepted = deferred()
   await page.context().route(`**/api/files/${song.id}/preview`, async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     intercepted.resolve()
     await metadata.promise
     await route.continue()
@@ -410,7 +419,7 @@ for (const entry of ['deep link', 'history forward']) {
       }
       const gate = deferred(), intercepted = deferred(), fulfilled = deferred()
       await page.context().route(endpoint, async route => {
-        if (!route.request().serviceWorker()) return route.continue()
+        if (!isTransportRequest(route.request())) return route.continue()
         const response = status === 200 ? await route.fetch() : null
         intercepted.resolve()
         await gate.promise
@@ -446,7 +455,7 @@ test('home loads one mixed history, shows failures and retries without an unopen
   const gate = deferred(), intercepted = deferred()
   let requests = 0, fail = true
   await page.context().route('**/api/library/items?*', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     const query = new URL(route.request().url()).searchParams
     if (query.get('opened_only') !== 'true') return route.continue()
     requests++
@@ -481,7 +490,7 @@ test('empty home guides users to files and never falls back to unopened content'
   await upload(page, contentRoot.id, `${contentRoot.prefix}.png`, 'image/png', png)
   const requests: string[] = []
   await page.context().route('**/api/library/items?*', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     const query = new URL(route.request().url()).searchParams
     requests.push(query.get('opened_only') || '')
     await route.fulfill({ json: { items: [], total: 0, offset: 0, limit: 60 } })
@@ -501,7 +510,7 @@ test('late library responses cannot replace home history with unopened content',
   await markOpened(page, book.id)
   const gate = deferred(), intercepted = deferred(), fulfilled = deferred()
   await page.context().route('**/api/library/items?*', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     if (new URL(route.request().url()).searchParams.get('kind') !== 'audio') return route.continue()
     const response = await route.fetch()
     intercepted.resolve()

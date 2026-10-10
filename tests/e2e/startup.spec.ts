@@ -50,3 +50,17 @@ test('startup failure keeps an actionable loading screen', async ({ page }) => {
   await expect(page.locator('#boot-spinner')).toBeHidden()
   await expect(page.locator('.login-page')).toHaveCount(0)
 })
+
+test('an unavailable worker cannot block startup or mutable API requests', async ({ page }) => {
+  await page.addInitScript(() => {
+    navigator.serviceWorker.register = () => new Promise(() => {})
+  })
+  await page.goto('/', { waitUntil: 'commit' })
+  await expect(page.getByLabel('用户名')).toBeVisible({ timeout: 20_000 })
+  expect(await page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(false)
+  const result = await page.evaluate(async () => {
+    const response = await fetch('/api/auth/me')
+    return response.status
+  })
+  expect(result).toBe(401)
+})

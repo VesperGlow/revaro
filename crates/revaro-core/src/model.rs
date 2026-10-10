@@ -335,7 +335,7 @@ pub struct FolderRef {
 }
 
 /// Playback position for one audio or video file.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MediaProgress {
     /// Resume position in seconds.
     #[serde(default, deserialize_with = "null_default")]
@@ -346,6 +346,19 @@ pub struct MediaProgress {
     /// When the position was last written, omitted when never saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<Timestamp>,
+    /// Server-assigned version. Client clocks never determine write ordering.
+    #[serde(default)]
+    pub revision: u64,
+    /// Fences writes from players superseded by another listening session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer: Option<String>,
+    #[serde(default)]
+    pub sequence: u64,
+    /// Only an actual ended event marks a track complete.
+    #[serde(default)]
+    pub completed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listening_revision: Option<u64>,
 }
 
 /// Reading position for one book.

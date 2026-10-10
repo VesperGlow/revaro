@@ -79,7 +79,7 @@ test('full audio player accepts seeks while saved progress is still loading', as
       await page.getByRole('button', { name: '暂停', exact: true }).click()
       const position = await audio.evaluate((element: HTMLAudioElement) => element.currentTime)
       const restored = page.waitForResponse(response => response.url().endsWith(`/api/files/${first.id}/media/progress`)
-        && response.request().method() === 'GET' && response.fromServiceWorker())
+        && response.request().method() === 'GET')
       release()
       await restored
       await expect.poll(() => input.inputValue().then(Number)).toBeCloseTo(position, 1)
@@ -277,7 +277,7 @@ test('standalone audio keeps a manual seek when its delayed history arrives', as
       const input = page.getByLabel('播放进度', { exact: true })
       await seek(input, 27)
       const restored = page.waitForResponse(response => response.url().endsWith(`/api/files/${file.id}/media/progress`)
-        && response.request().method() === 'GET' && response.fromServiceWorker())
+        && response.request().method() === 'GET')
       release()
       await restored
       await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeCloseTo(27, 1)
@@ -340,7 +340,7 @@ test('late video resume cannot override a manual seek and zero is saved on close
       const target = await video.evaluate((element: HTMLVideoElement) => element.duration * 0.75)
       await seek(input, target)
       const restored = page.waitForResponse(response => response.url().endsWith(`/api/files/${file.id}/media/progress`)
-        && response.request().method() === 'GET' && response.fromServiceWorker())
+        && response.request().method() === 'GET')
       release()
       await restored
       await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeCloseTo(target, 1)

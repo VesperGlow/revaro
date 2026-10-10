@@ -1,5 +1,5 @@
 import { expect, test, request, type Page } from '@playwright/test'
-import { login, enterSelectionMode, openTopbarMenu } from './helpers'
+import { isTransportRequest, login, enterSelectionMode, openTopbarMenu } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '')
 const root = '00000000-0000-0000-0000-000000000000'
@@ -164,7 +164,7 @@ test('scroll loading reconnects automatically and ignores a late batch after sea
   const batch = '**/api/files?**offset=100&**'
   let failedRequests = 0
   await page.context().route(batch, async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     if (failedRequests++ === 0) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'temporary listing error' }) })
     return route.continue()
   })
@@ -183,7 +183,7 @@ test('scroll loading reconnects automatically and ignores a late batch after sea
   let delivered!: () => void
   const delivery = new Promise<void>(resolve => { delivered = resolve })
   await page.context().route(batch, async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     const response = await route.fetch()
     fetched()
     await gate

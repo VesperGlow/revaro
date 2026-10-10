@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { login, navigate, openMusicPlayer, uploadFixture } from './helpers'
+import { login, navigate, openMusicPlayer, uploadFixture, failApplicationRequest, holdApplicationResponse } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 async function folder(page: Page) {
@@ -22,27 +22,18 @@ function wav() {
 }
 
 test('failed resume reads preserve saved progress and can be retried', async ({ page }) => {
-  await page.addInitScript(() => {
-    const fetch = window.fetch.bind(window)
-    window.fetch = (input, init) => {
-      const path = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href).pathname
-      if ((window as any).failProgress === path && (init?.method || (input instanceof Request ? input.method : 'GET')) === 'GET')
-        return Promise.resolve(new Response('{}', { status: 503 }))
-      return fetch(input, init)
-    }
-  })
   await login(page)
   const { id, headers } = await folder(page)
   try {
     const song = await uploadFixture(page, id, `resume-${Date.now()}.wav`, 'audio/wav', wav())
     expect((await page.request.put(`/api/files/${song.id}/media/progress`, { headers, data: { position: 60, duration: 90 } })).ok()).toBeTruthy()
-    await page.evaluate(path => { (window as any).failProgress = path }, `/api/files/${song.id}/media/progress`)
+    const failure = await failApplicationRequest(page, `/api/files/${song.id}/media/progress`, '模拟历史读取失败')
     await navigate(page, '音乐')
     await page.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
     await openMusicPlayer(page)
     await expect(page.getByRole('button', { name: '重试读取进度', exact: true })).toBeVisible()
     expect((await (await page.request.get(`/api/files/${song.id}/media/progress`)).json()).position).toBe(60)
-    await page.evaluate(() => { (window as any).failProgress = '' })
+    await failure.clear()
     await page.getByRole('button', { name: '重试读取进度', exact: true }).click()
     await expect.poll(() => page.locator('audio').first().evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThanOrEqual(60)
   } finally { await page.goto('/files'); await cleanup(page, id, headers) }
@@ -81,28 +72,24 @@ test('refresh warns about edits and offers local draft recovery', async ({ page 
 test('version restoration prevents edits until the result has been applied', async ({ page }) => {
   await login(page)
   const { id, headers } = await folder(page)
-  let release!: () => void
+  let held: Awaited<ReturnType<typeof holdApplicationResponse>> | undefined
   try {
     const response = await page.request.post('/api/documents', { headers, data: { parent_id: id, name: 'restore.md', content: 'first' } })
     const doc = await response.json()
     expect((await page.request.put(`/api/files/${doc.id}/content`, { headers, data: { etag: doc.etag, content: 'second' } })).ok()).toBeTruthy()
-    const held = new Promise<void>(resolve => { release = resolve })
-    await page.context().route('**/versions/*/restore', async route => {
-      const response = await route.fetch()
-      await held
-      await route.fulfill({ response })
-    })
     await page.goto(`/f/${id}`)
     await page.locator('.file-card').filter({ hasText: 'restore.md' }).click()
     const text = page.getByLabel('文档内容', { exact: true })
     await expect(text).toHaveValue('second')
     await page.getByRole('button', { name: '版本历史', exact: true }).click()
+    held = await holdApplicationResponse(page, `^/api/files/${doc.id}/versions/[^/]+/restore$`, 'POST')
     await page.getByRole('button', { name: '恢复此版本', exact: true }).click()
+    await expect.poll(() => held!.captured()).toBe(true)
     await expect(text).not.toBeEditable()
-    release()
+    await held.release()
     await expect(text).toHaveValue('first')
     await expect(text).toBeEditable()
-  } finally { release?.(); await page.context().unrouteAll({ behavior: 'wait' }); await page.goto('/files'); await cleanup(page, id, headers) }
+  } finally { await held?.release().catch(() => {}); await page.goto('/files'); await cleanup(page, id, headers) }
 })
 
 test('typing while a save is stalled survives an immediate refresh', async ({ page }) => {
@@ -146,6 +133,9 @@ test('typing while a save is stalled survives an immediate refresh', async ({ pa
 test('a temporary startup session error keeps the existing login and can reconnect', async ({ page }) => {
   await login(page)
   await page.addInitScript(() => {
+    // Exercise the application's failed-session UI without waiting for the
+    // transport's independently tested recovery and exponential backoff.
+    void import('/transport-core.js').then(({ policy }) => { policy.attempts = 1 })
     ;(window as any).failSession = true
     const original = window.fetch.bind(window)
     window.fetch = (input, init) => {
@@ -245,7 +235,10 @@ test('draft recovery follows the document when the administrator name changes', 
         if (path !== '/api/auth/me' || response.status !== 200) return response
         const profile = await response.json()
         profile.username = 'renamed-administrator'
-        return new Response(JSON.stringify(profile), { status: 200, headers: response.headers })
+        const headers = new Headers(response.headers)
+        headers.delete('content-length')
+        headers.delete('content-encoding')
+        return new Response(JSON.stringify(profile), { status: 200, headers })
       }
     })
     const warning = page.waitForEvent('dialog')

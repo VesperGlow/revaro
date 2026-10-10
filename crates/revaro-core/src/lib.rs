@@ -34,6 +34,7 @@ pub mod library;
 pub mod limits;
 pub mod media;
 pub mod model;
+pub mod progress;
 pub mod reader;
 mod serde_helpers;
 pub mod stacks;

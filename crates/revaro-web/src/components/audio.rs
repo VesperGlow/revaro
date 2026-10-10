@@ -19,7 +19,8 @@ use crate::api;
 use crate::browser;
 use crate::logic::format::format_media_time;
 use crate::logic::media::{
-    active_chapter_index, audio_duration, clamp_percent, media_element_time, timeline_chapters,
+    active_chapter_index, audio_duration, clamp_percent, media_element_time, stable_media_clock,
+    timeline_chapters,
 };
 
 use super::audio_timeline::AudioSeekInput;
@@ -261,7 +262,6 @@ pub fn AudioPlayer(
                 && let Some(element) = audio_element(audio)
                 && element.ready_state() >= 1
                 && let Some(saved) = playback.restore(duration(), Some(&position_key))
-                && saved > 0.0
             {
                 seek_audio(audio, current_time, pending_seek, duration(), saved, false);
             }
@@ -276,13 +276,11 @@ pub fn AudioPlayer(
                 return;
             }
             if playback.ready.get_untracked() {
-                let position = pending_seek.get_untracked().unwrap_or_else(|| {
-                    audio_element(audio).map_or_else(
-                        || current_time.get_untracked().max(0.0),
-                        |element| media_element_time(element.current_time()),
-                    )
-                });
+                let position = pending_seek
+                    .get_untracked()
+                    .unwrap_or(current_time.get_untracked());
                 persist_progress(
+                    playback,
                     &item_id,
                     position,
                     duration(),
@@ -337,7 +335,17 @@ pub fn AudioPlayer(
             if pending_seek.get_untracked().is_none()
                 && let Some(element) = audio_element(audio)
             {
-                current_time.set(media_element_time(element.current_time()));
+                if let Some(time) = stable_media_clock(
+                    element.current_time(),
+                    element.ready_state() >= 1,
+                    current_time.get_untracked(),
+                    None,
+                ) {
+                    current_time.set(time);
+                    if !element.paused() {
+                        playback.clock_changed();
+                    }
+                }
             }
             update_buffer(audio, duration, buffered);
             schedule_local_save();
@@ -357,6 +365,13 @@ pub fn AudioPlayer(
         move |_| {
             if let Some(element) = audio_element(audio)
                 && !element.seeking()
+                && stable_media_clock(
+                    element.current_time(),
+                    element.ready_state() >= 1,
+                    current_time.get_untracked(),
+                    pending_seek.get_untracked(),
+                )
+                .is_some()
             {
                 pending_seek.set(None);
                 current_time.set(media_element_time(element.current_time()));
@@ -373,7 +388,10 @@ pub fn AudioPlayer(
     };
     let on_ended = {
         let on_pause = on_pause.clone();
-        move |event: Event| on_pause(event)
+        move |event: Event| {
+            playback.ended();
+            on_pause(event);
+        }
     };
     let on_error = move |_| {
         loading.set(false);
@@ -390,6 +408,7 @@ pub fn AudioPlayer(
             return;
         };
         if element.paused() {
+            playback.intent();
             match element.play() {
                 Ok(promise) => {
                     leptos::task::spawn_local(async move {
@@ -405,6 +424,7 @@ pub fn AudioPlayer(
         }
     };
     let seek = {
+        let save_progress = save_progress.clone();
         move |target: f64, play: bool| {
             if let Some(controller) = controller {
                 controller.seek(target);
@@ -419,6 +439,7 @@ pub fn AudioPlayer(
             {
                 seek_audio(audio, current_time, pending_seek, duration(), target, play);
                 playback.accept_seek();
+                save_progress(true);
             }
         }
     };
@@ -674,6 +695,29 @@ pub fn AudioPlayer(
         playback.load(item.id.clone(), Callback::new(move |()| restore_position()));
     }
     if controller.is_none() {
+        let restore = restore_position.clone();
+        let remote_restore = restore_position.clone();
+        super::playback::watch_progress(
+            playback,
+            Signal::derive({
+                let id = item_id.clone();
+                move || id.clone()
+            }),
+            Callback::new(move |()| restore()),
+            Callback::new(move |()| {
+                if let Some(element) = audio_element(audio) {
+                    let _ = element.pause();
+                }
+                remote_restore();
+                if let Some(remote) = playback.server.get_untracked()
+                    && remote.position == 0.0
+                {
+                    seek_audio(audio, current_time, pending_seek, duration(), 0.0, false);
+                }
+            }),
+        );
+    }
+    if controller.is_none() {
         let id = item.id.clone();
         leptos::task::spawn_local_scoped_with_cancellation(async move {
             if let Ok(value) = api::fetch_audio_media(&id).await {
@@ -735,14 +779,12 @@ pub fn AudioPlayer(
             return;
         }
         cleanup_save(false);
-        let position = pending_seek.get_untracked().unwrap_or_else(|| {
-            audio_element(audio).map_or_else(
-                || current_time.get_untracked().max(0.0),
-                |element| media_element_time(element.current_time()),
-            )
-        });
+        let position = pending_seek
+            .get_untracked()
+            .unwrap_or(current_time.get_untracked());
         if playback.ready.get_untracked() {
             persist_progress(
+                playback,
                 &cleanup_item_id,
                 position,
                 audio_duration(
@@ -1007,8 +1049,12 @@ fn seek_audio(
         target.max(0.0)
     });
     if let Some(element) = audio_element(audio) {
-        pending_seek.set(Some(target));
-        element.set_current_time(target);
+        if (element.current_time() - target).abs() > 0.001 {
+            pending_seek.set(Some(target));
+            element.set_current_time(target);
+        } else {
+            pending_seek.set(None);
+        }
         current_time.set(target);
         if play {
             play_ignoring_rejection(&element);

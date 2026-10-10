@@ -116,6 +116,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "013_resilience.sql",
         sql: include_str!("../migrations/013_resilience.sql"),
     },
+    Migration {
+        version: 14,
+        name: "014_media_progress_sync.sql",
+        sql: include_str!("../migrations/014_media_progress_sync.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

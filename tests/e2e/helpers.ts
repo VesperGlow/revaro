@@ -1,5 +1,26 @@
-import { expect, type Page } from '@playwright/test'
+import { expect, type Page, type Request } from '@playwright/test'
 import { createHash } from 'node:crypto'
+
+// Faults target the shared recovery engine: immutable bytes run in the worker,
+// mutable API requests run in their document with this recursion guard.
+export function isTransportRequest(request: Request) {
+  return Boolean(request.serviceWorker()) || request.headers()['x-revaro-managed'] === '1'
+}
+
+// Fixtures that assert no player must clear the account-wide session too.
+export async function resetListeningSession(page: Page) {
+  const response = await page.request.get('/api/listening/session')
+  expect(response.ok()).toBeTruthy()
+  const session = await response.json()
+  if (!session.queue.track) return
+  const saved = await page.request.put('/api/listening/session', {
+    headers: { origin: new URL(page.url()).origin }, data: {
+      queue: { collection: null, tracks: [], track: null, mode: 'sequential' },
+      sync: { writer: `fixture-${Date.now()}-${Math.random().toString(36).slice(2)}`, sequence: 1, base_revision: session.revision },
+    },
+  })
+  expect(saved.ok()).toBeTruthy()
+}
 
 // Inject a failure where the application receives it. Page routes cannot see
 // worker-owned API reads, and a worker route would exercise transport retries
@@ -22,6 +43,36 @@ export async function failApplicationRequest(page: Page, pathname: string, messa
     clear: () => page.evaluate(() => {
       window.fetch = (window as any).__applicationFault.original
       delete (window as any).__applicationFault
+    }),
+  }
+}
+
+// Hold the real response after transport recovery so every browser exercises
+// the same application state, including pages controlled by a service worker.
+export async function holdApplicationResponse(page: Page, pattern: string, method: string) {
+  await page.evaluate(({ pattern, method }) => {
+    const original = window.fetch.bind(window)
+    const state = (window as any).__heldApplicationResponse = { original, captured: false, enabled: true, releases: [] as (() => void)[] }
+    window.fetch = async (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href)
+      const verb = init?.method || (input instanceof Request ? input.method : 'GET')
+      const response = await original(input, init)
+      if (state.enabled && verb === method && new RegExp(pattern).test(url.pathname)) {
+        state.captured = true
+        await new Promise<void>(resolve => state.releases.push(resolve))
+      }
+      return response
+    }
+  }, { pattern, method })
+  return {
+    captured: () => page.evaluate(() => Boolean((window as any).__heldApplicationResponse?.captured)),
+    release: () => page.evaluate(() => {
+      const state = (window as any).__heldApplicationResponse
+      if (!state) return
+      state.enabled = false
+      for (const resolve of state.releases.splice(0)) resolve()
+      window.fetch = state.original
+      delete (window as any).__heldApplicationResponse
     }),
   }
 }

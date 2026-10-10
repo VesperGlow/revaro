@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { createHash } from 'node:crypto'
-import { login, navigate } from './helpers'
+import { isTransportRequest, login, navigate } from './helpers'
 
 const overlay = (page: Page) => page.getByRole('region', { name: '上传进度', exact: true })
 const row = (page: Page, name: string) => page.locator('.upload-progress-item').filter({ has: page.locator('strong', { hasText: name }) })
@@ -14,7 +14,7 @@ test('lost creation and completion responses reuse one session and do not retran
   let dataRequests = 0
   let completionRequests = 0
   await page.context().route('**/api/uploads', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     keys.push(route.request().postDataJSON().idempotency_key)
     const response = await route.fetch()
     ids.push((await response.json()).upload_id)
@@ -26,7 +26,7 @@ test('lost creation and completion responses reuse one session and do not retran
     await route.continue()
   })
   await page.context().route('**/api/uploads/*/complete', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     completionRequests++
     const response = await route.fetch()
     expect(response.status()).toBe(200)
@@ -61,7 +61,7 @@ test('multipart retry uses server acknowledgements and only sends the missing pa
     if (/\/api\/uploads\/[^/]+\/parts(?:\/|$)/.test(new URL(request.url()).pathname)) legacyRequests.push(request.url())
   })
   await page.context().route('**/api/uploads', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     const response = await route.fetch()
     ids.push((await response.json()).upload_id)
     await route.fulfill({ response })
@@ -111,7 +111,7 @@ test('uploads appear automatically in a bounded scrolling overlay and disappear 
   const waiting = new Map<string, () => void>()
   let releaseAll = false
   await page.context().route('**/api/uploads', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     const response = await route.fetch()
     ids.set(route.request().postDataJSON().name, (await response.json()).upload_id)
     await route.fulfill({ response })
@@ -182,7 +182,7 @@ test('failed uploads remain with retry, processing progress and cancellation reu
   let release!: () => void
   const ids: string[] = []
   await page.context().route('**/api/uploads', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     const response = await route.fetch()
     ids.push((await response.json()).upload_id)
     await route.fulfill({ response })
@@ -192,7 +192,7 @@ test('failed uploads remain with retry, processing progress and cancellation reu
     else await route.continue()
   })
   await page.context().route('**/api/uploads/*/complete', async route => {
-    if (!route.request().serviceWorker()) return route.continue()
+    if (!isTransportRequest(route.request())) return route.continue()
     if (hold) await new Promise<void>(resolve => { release = resolve })
     await route.continue().catch(() => {})
   })

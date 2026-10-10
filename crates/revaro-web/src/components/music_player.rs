@@ -2,6 +2,7 @@
 use leptos::prelude::*;
 use revaro_core::media::AudioMedia;
 use revaro_core::model::File;
+use revaro_core::progress::ListeningQueue;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -18,7 +19,7 @@ use crate::{
         library::{PlaybackMode, next_index},
         media::{
             active_chapter_index, audio_duration, clamp_percent, media_element_time,
-            timeline_chapters,
+            stable_media_clock, timeline_chapters,
         },
     },
 };
@@ -55,10 +56,13 @@ pub struct MusicController {
     autoplay_requested: RwSignal<bool>,
     progress: PlaybackProgress,
     pending_seek: RwSignal<Option<f64>>,
+    listening: super::listening_sync::ListeningSync,
+    owner: StoredValue<Owner>,
 }
 
 impl MusicController {
     pub fn new(username: &str) -> Self {
+        super::progress_outbox::initialize(username);
         Self {
             queue: RwSignal::new(Vec::new()),
             index: RwSignal::new(0),
@@ -82,10 +86,57 @@ impl MusicController {
             autoplay_requested: RwSignal::new(false),
             progress: PlaybackProgress::new(),
             pending_seek: RwSignal::new(None),
+            listening: super::listening_sync::ListeningSync::new(),
+            owner: StoredValue::new(
+                Owner::current().expect("music controller belongs to the authenticated app"),
+            ),
         }
     }
     pub fn current(self) -> Option<File> {
         self.queue.get().get(self.index.get()).cloned()
+    }
+    fn listening_queue(self) -> ListeningQueue {
+        let track = untrack(|| self.current()).map(|file| file.id);
+        if self.listening.stopping.get_untracked() || track.is_none() {
+            ListeningQueue {
+                mode: self.mode.get_untracked().value().to_owned(),
+                ..Default::default()
+            }
+        } else {
+            ListeningQueue {
+                collection: self.collection.get_untracked(),
+                tracks: self
+                    .queue
+                    .get_untracked()
+                    .into_iter()
+                    .map(|file| file.id)
+                    .collect(),
+                track,
+                mode: self.mode.get_untracked().value().to_owned(),
+            }
+        }
+    }
+    fn save_queue(self) {
+        if let Some(write) = self.listening.write(self.listening_queue()) {
+            let completion = self.listening.completion(&write);
+            let listening = self.listening;
+            super::progress_outbox::enqueue_listening(
+                write,
+                Some(std::sync::Arc::new(move |result| match result {
+                    Ok(saved) => completion(saved),
+                    Err(error) if error.status == 409 => {
+                        let _ = listening.fenced.try_set(true);
+                    }
+                    Err(_) => {}
+                })),
+            );
+        }
+    }
+    pub fn set_mode(self, mode: PlaybackMode) {
+        self.listening.intent();
+        self.mode
+            .set(mode.for_queue(self.queue.with_untracked(Vec::len)));
+        self.save_queue();
     }
     fn element(self) -> Option<web_sys::HtmlAudioElement> {
         self.audio.get().map(|e| e.unchecked_into())
@@ -97,20 +148,47 @@ impl MusicController {
         if let Some(file) = self.current()
             && self.progress.loaded_file.get_untracked().as_deref() == Some(&file.id)
         {
-            let position = self.pending_seek.get_untracked().unwrap_or_else(|| {
-                self.element()
-                    .map_or(self.position.get_untracked(), |audio| {
-                        media_element_time(audio.current_time())
-                    })
-            });
+            self.sync_position();
+            let position = self
+                .pending_seek
+                .get_untracked()
+                .unwrap_or(self.position.get_untracked());
             let duration = self.duration.get_untracked();
-            persist_progress(
-                &file.id,
-                position,
-                duration,
-                Some(&format!("revaro-audio-position:{}", file.id)),
-                ProgressDestination::Keepalive,
-            );
+            let queue = if self.listening.stopping.get_untracked() {
+                ListeningQueue {
+                    mode: self.mode.get_untracked().value().to_owned(),
+                    ..Default::default()
+                }
+            } else {
+                ListeningQueue {
+                    collection: self.collection.get_untracked(),
+                    tracks: self
+                        .queue
+                        .get_untracked()
+                        .iter()
+                        .map(|file| file.id.clone())
+                        .collect(),
+                    track: Some(file.id.clone()),
+                    mode: self.mode.get_untracked().value().to_owned(),
+                }
+            };
+            let listening_write = self.listening.write(queue);
+            if let Some(write) = &listening_write {
+                self.progress
+                    .on_saved
+                    .set(Some(self.listening.completion(write)));
+            }
+            self.progress.listening.set(listening_write.clone());
+            if listening_write.is_some() {
+                persist_progress(
+                    self.progress,
+                    &file.id,
+                    position,
+                    duration,
+                    Some(&format!("revaro-audio-position:{}", file.id)),
+                    ProgressDestination::Keepalive,
+                );
+            }
             let session = ListeningSession {
                 collection: self.collection.get_untracked(),
                 tracks: self
@@ -137,8 +215,11 @@ impl MusicController {
         } else if self.progress.ready.get_untracked()
             && self.progress.loaded_file.get_untracked().as_deref() == Some(id)
         {
-            self.element()
-                .map(|audio| media_element_time(audio.current_time()))
+            Some(
+                self.pending_seek
+                    .get_untracked()
+                    .unwrap_or(self.position.get_untracked()),
+            )
         } else {
             None
         };
@@ -164,6 +245,7 @@ impl MusicController {
             self.panel_open.set(false);
         }
         self.prepare(&file.id, false);
+        self.listening.intent();
         let mut queue = queue;
         if !queue.iter().any(|f| f.id == file.id) {
             queue.insert(0, file.clone());
@@ -174,14 +256,17 @@ impl MusicController {
         self.index.set(index);
         self.collection.set(collection);
         self.progress.revision.update(|r| *r += 1);
+        self.save_queue();
     }
     pub fn select(self, index: usize, restart: bool) {
         let Some(file) = self.queue.get_untracked().get(index).cloned() else {
             return;
         };
         self.prepare(&file.id, restart);
+        self.listening.intent();
         self.index.set(index);
         self.progress.revision.update(|r| *r += 1);
+        self.save_queue();
     }
     pub fn advance(self, direction: i32, ended: bool) {
         let len = self.queue.get_untracked().len();
@@ -197,11 +282,18 @@ impl MusicController {
         if let Some(next) = next {
             self.select(next, ended);
         } else if ended {
-            self.stop();
+            self.stop_current();
         }
     }
     /// End this session without erasing the track's saved listening progress.
     pub fn stop(self) {
+        self.listening.intent();
+        self.stop_current();
+    }
+    fn stop_current(self) {
+        self.listening.stopping.set(true);
+        self.save_queue();
+        self.progress.clock_changed();
         self.save();
         self.progress.reset(None);
         self.progress.revision.update(|revision| *revision += 1);
@@ -251,8 +343,12 @@ impl MusicController {
         let Some(position) = self.progress.restore(duration, key.as_deref()) else {
             return;
         };
-        self.pending_seek.set(Some(position));
-        audio.set_current_time(position);
+        if (audio.current_time() - position).abs() > 0.001 {
+            self.pending_seek.set(Some(position));
+            audio.set_current_time(position);
+        } else {
+            self.pending_seek.set(None);
+        }
         self.position.set(position);
         self.update_buffer();
         if self.autoplay_requested.get_untracked() {
@@ -277,7 +373,23 @@ impl MusicController {
             return;
         }
         if let Some(audio) = self.element() {
-            self.position.set(media_element_time(audio.current_time()));
+            if let Some(position) = stable_media_clock(
+                audio.current_time(),
+                audio.ready_state() >= 1,
+                self.position.get_untracked(),
+                None,
+            ) {
+                self.position.set(position);
+            } else if audio.ready_state() >= 1
+                && audio.current_time() == 0.0
+                && self.position.get_untracked() > 0.5
+            {
+                // Reapply a position lost by a decoder/source reset. Keep the
+                // timeline and persistence on the last confirmed clock.
+                let position = self.position.get_untracked();
+                self.pending_seek.set(Some(position));
+                audio.set_current_time(position);
+            }
         }
     }
     pub fn can_seek(self) -> bool {
@@ -310,10 +422,15 @@ impl MusicController {
         if let Some(audio) = self.element()
             && audio.ready_state() >= 1
         {
+            self.listening.intent();
             let was_ready = self.progress.ready.get_untracked();
             let position = media_element_time(position).min(self.duration.get_untracked());
-            self.pending_seek.set(Some(position));
-            audio.set_current_time(position);
+            if (audio.current_time() - position).abs() > 0.001 {
+                self.pending_seek.set(Some(position));
+                audio.set_current_time(position);
+            } else {
+                self.pending_seek.set(None);
+            }
             self.progress.accept_seek();
             self.position.set(position);
             self.save();
@@ -339,6 +456,8 @@ impl MusicController {
     }
     pub fn start(self) {
         self.autoplay_requested.set(true);
+        self.listening.intent();
+        self.progress.intent();
         if !self.progress.ready.get_untracked() {
             return;
         }
@@ -357,6 +476,81 @@ impl MusicController {
             });
         }
     }
+
+    fn restore_queue(self, saved: ListeningQueue, initial: bool) {
+        let revision = self.progress.revision.get_untracked();
+        let activity = self.listening.activity.get_untracked();
+        if !initial {
+            self.progress.fenced.set(true);
+            self.pause();
+        }
+        self.owner.get_value().with(|| {
+            leptos::task::spawn_local_scoped_with_cancellation(async move {
+                let collection = if let Some((id, _)) = &saved.collection {
+                    api::fetch_collections().await.ok().and_then(|collections| {
+                        collections
+                            .into_iter()
+                            .find(|collection| collection.id == *id && collection.kind == "audio")
+                            .map(|collection| (collection.id, collection.name))
+                    })
+                } else {
+                    None
+                };
+                let mut queue = Vec::new();
+                for batch in saved.tracks.chunks(8) {
+                    if self.progress.revision.try_get_untracked() != Some(revision)
+                        || self.listening.activity.try_get_untracked() != Some(activity)
+                    {
+                        return;
+                    }
+                    for result in
+                        futures_util::future::join_all(batch.iter().map(|id| api::fetch_file(id)))
+                            .await
+                    {
+                        if let Ok(detail) = result
+                            && revaro_core::classify::is_audio(&detail.file)
+                        {
+                            queue.push(detail.file);
+                        }
+                    }
+                }
+                if self.progress.revision.try_get_untracked() != Some(revision)
+                    || self.listening.activity.try_get_untracked() != Some(activity)
+                {
+                    return;
+                }
+                if queue.is_empty() {
+                    if !initial {
+                        // A remote stop is observation, so it cannot write back.
+                        self.progress.reset(None);
+                        self.stop_current();
+                    }
+                    return;
+                }
+                let index = queue
+                    .iter()
+                    .position(|file| Some(&file.id) == saved.track.as_ref())
+                    .unwrap_or(0);
+                let same =
+                    untrack(|| self.current()).is_some_and(|file| file.id == queue[index].id);
+                if !same {
+                    self.progress.reset(None);
+                    self.pending_seek.set(None);
+                    self.media_ready.set(false);
+                    self.autoplay_requested.set(false);
+                    self.playing.set(false);
+                }
+                self.collection.set(collection);
+                self.mode
+                    .set(PlaybackMode::from_value(&saved.mode).for_queue(queue.len()));
+                self.queue.set(queue);
+                self.index.set(index);
+                if !same {
+                    self.progress.revision.update(|value| *value += 1);
+                }
+            })
+        });
+    }
 }
 
 /// The full-screen player uses a native keyboard picker for the shared mode.
@@ -368,7 +562,7 @@ pub(super) fn PlaybackModeControl(controller: MusicController) -> impl IntoView 
             <span class="media-sr-only">"播放模式"</span>
             <select aria-label="播放模式" title="播放模式" prop:value=move || controller.mode.get().value()
                 on:change=move |event| {
-                    controller.mode.set(PlaybackMode::from_value(&event_target_value(&event)).for_queue(controller.queue.with(|queue| queue.len())));
+                    controller.set_mode(PlaybackMode::from_value(&event_target_value(&event)));
                 }>
                 <option value="sequential">{move || if multiple() { "顺序播放" } else { "播放一次" }}</option>
                 <Show when=multiple fallback=|| ()>
@@ -399,7 +593,7 @@ fn PlaybackModeMenu(controller: MusicController) -> impl IntoView {
                     .filter(|mode|controller.queue.with(|queue|queue.len()>1) ||!matches!(mode,PlaybackMode::Shuffle|PlaybackMode::RepeatAll)).collect::<Vec<_>>()}
                     key=|mode|mode.value() children=move |mode|view! {
                         <button type="button" data-close-menu aria-pressed=move ||(controller.mode.get()==mode).to_string()
-                            class:active=move ||controller.mode.get()==mode on:click=move |_|controller.mode.set(mode)>{move ||label(mode)}</button>
+                            class:active=move ||controller.mode.get()==mode on:click=move |_|controller.set_mode(mode)>{move ||label(mode)}</button>
                     } />
             </ActionMenu>
         </div>
@@ -594,48 +788,103 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
             audio.load();
         }
     });
-    // Refresh saved identities so removed files cannot return in the queue.
-    if let Some(saved) = browser::local_storage_get(&controller.session_key.get_value())
-        .and_then(|s| serde_json::from_str::<ListeningSession>(&s).ok())
-    {
-        leptos::task::spawn_local_scoped_with_cancellation(async move {
-            let collection = if let Some((id, _)) = &saved.collection {
-                api::fetch_collections().await.ok().and_then(|collections| {
-                    collections
-                        .into_iter()
-                        .find(|c| c.id == *id && c.kind == "audio")
-                        .map(|c| (c.id, c.name))
-                })
-            } else {
-                None
-            };
-            let mut queue = Vec::new();
-            for id in &saved.tracks {
-                if let Ok(detail) = api::fetch_file(id).await
-                    && revaro_core::classify::is_audio(&detail.file)
-                {
-                    queue.push(detail.file);
+    let listening_busy = RwSignal::new(false);
+    let refresh_listening = Callback::new(move |()| {
+        if listening_busy.get_untracked() {
+            return;
+        }
+        listening_busy.set(true);
+        leptos::task::spawn_local(async move {
+            if let Ok(session) = api::fetch_listening_session().await
+                && controller.listening.server.try_get_untracked().is_some()
+            {
+                let initial = controller.listening.server.get_untracked().is_none();
+                if initial {
+                    controller.listening.server.set(Some(session.clone()));
+                    if controller.listening.stopping.get_untracked() {
+                        controller.save_queue();
+                    }
+                    if controller.progress.revision.get_untracked() == 0 {
+                        let saved = super::progress_outbox::pending_listening(&session)
+                            .or_else(|| (session.revision > 0).then_some(session.queue.clone()))
+                            .or_else(|| {
+                                browser::local_storage_get(&controller.session_key.get_value())
+                                    .and_then(|raw| {
+                                        serde_json::from_str::<ListeningSession>(&raw).ok()
+                                    })
+                                    .map(|saved| ListeningQueue {
+                                        collection: saved.collection,
+                                        tracks: saved.tracks,
+                                        track: Some(saved.track),
+                                        mode: "sequential".into(),
+                                    })
+                            });
+                        if let Some(saved) = saved {
+                            controller.restore_queue(saved, true);
+                        }
+                    } else {
+                        controller.save_queue();
+                        controller.save();
+                    }
+                } else if controller.listening.receive(session.clone()) {
+                    controller.restore_queue(session.queue, false);
                 }
             }
-            if controller.progress.revision.get_untracked() != 0 || queue.is_empty() {
-                return;
-            }
-            let index = queue.iter().position(|f| f.id == saved.track).unwrap_or(0);
-            let position = if queue[index].id == saved.track {
-                media_element_time(saved.position)
-            } else {
-                0.0
-            };
-            controller.progress.reset_saved(position);
-            controller.collection.set(collection);
-            controller.queue.set(queue);
-            controller.index.set(index);
-            controller.progress.revision.update(|r| *r += 1);
+            let _ = listening_busy.try_set(false);
         });
-    }
+    });
+    refresh_listening.run(());
+    let listening_interval = Closure::<dyn FnMut()>::new(move || refresh_listening.run(()));
+    let listening_timer = web_sys::window().and_then(|window| {
+        window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                listening_interval.as_ref().unchecked_ref(),
+                3000,
+            )
+            .ok()
+    });
+    let listening_interval =
+        leptos::__reexports::send_wrapper::SendWrapper::new(listening_interval);
+    let mut listening_online =
+        browser::on_window_capture("online", move |_| refresh_listening.run(()));
+    let mut listening_focus =
+        browser::on_window_capture("focus", move |_| refresh_listening.run(()));
+    on_cleanup(move || {
+        listening_online.release();
+        listening_focus.release();
+        if let Some(timer) = listening_timer
+            && let Some(window) = web_sys::window()
+        {
+            window.clear_interval_with_handle(timer);
+        }
+        drop(listening_interval);
+    });
+    Effect::new(move |_| {
+        let _ = controller.mode.get();
+        if controller.progress.ready.get_untracked() && !controller.listening.fenced.get_untracked()
+        {
+            controller.progress.clock_changed();
+            controller.save();
+        }
+    });
     let mut pagehide = browser::on_pagehide(move |_| controller.save());
+    let mut visibility = browser::on_window_capture("visibilitychange", move |_| controller.save());
+    super::playback::watch_progress(
+        controller.progress,
+        Signal::derive(move || {
+            controller
+                .current()
+                .map_or_else(String::new, |file| file.id)
+        }),
+        Callback::new(move |()| controller.restore_position()),
+        Callback::new(move |()| {
+            controller.pause();
+            controller.restore_position();
+        }),
+    );
     on_cleanup(move || {
         pagehide.release();
+        visibility.release();
         controller.save();
         controller.progress.reset(None);
         controller.pause();
@@ -651,6 +900,8 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
             on:timeupdate=move |_| {
                 if !controller.progress.ready.get_untracked() {return;}
                 controller.sync_position();
+                if controller.element().is_some_and(|audio| !audio.paused() && audio.ready_state() >= 2)
+                    && controller.pending_seek.get_untracked().is_none() { controller.progress.clock_changed(); }
                 let now=js_sys::Date::now();
                 if now-last_save.get_untracked()>5000.0 {last_save.set(now);controller.save();}
             }
@@ -658,12 +909,14 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
             on:pause=move |_| {controller.playing.set(false);controller.save();}
             on:progress=move |_|controller.update_buffer()
             on:seeked=move |_| {
-                if controller.element().is_some_and(|audio|audio.seeking()) {return;}
+                let Some(audio) = controller.element() else { return; };
+                if audio.seeking() || stable_media_clock(audio.current_time(),audio.ready_state() >= 1,
+                    controller.position.get_untracked(),controller.pending_seek.get_untracked()).is_none() { return; }
                 controller.pending_seek.set(None);controller.sync_position();controller.update_buffer();controller.save();
             }
             on:waiting=move |_|controller.waiting.set(true)
             on:canplay=move |_| {controller.sync_duration();controller.waiting.set(false);}
-            on:ended=move |_| controller.advance(1,true)
+            on:ended=move |_| {controller.progress.ended();controller.save();controller.advance(1,true);}
             on:error=move |_| {if controller.current().is_some() {controller.progress.ready.set(false);controller.playing.set(false);controller.error.set("此音频无法播放，可在文件管理中下载原文件".to_owned());}}
         ></audio>
         <audio node_ref=next_audio preload="none" aria-hidden="true" data-revaro-next="true"></audio>

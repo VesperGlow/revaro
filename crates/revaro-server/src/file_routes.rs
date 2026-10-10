@@ -76,11 +76,18 @@ struct UpdateDocumentInput {
 struct MediaProgressInput {
     position: Option<f64>,
     duration: Option<f64>,
+    completed: Option<bool>,
+    sync: Option<revaro_core::progress::ProgressWrite>,
+    listening: Option<revaro_core::progress::ListeningWrite>,
 }
 
 /// Route table for the read-only file surface.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route(
+            "/listening/session",
+            get(listening_session).put(save_listening_session),
+        )
         .route("/files/{id}", get(get_file))
         .route("/files/{id}/children", get(children))
         .route("/directories", axum::routing::post(create_directory))
@@ -904,7 +911,130 @@ fn progress_response(
         position: position_ms as f64 / 1000.0,
         duration: duration_ms as f64 / 1000.0,
         updated_at,
+        ..Default::default()
     }
+}
+
+fn read_media_progress(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<revaro_core::model::MediaProgress, ApiError> {
+    use rusqlite::OptionalExtension as _;
+    connection
+        .query_row(
+            "SELECT position_ms,duration_ms,updated_at,revision,writer,sequence,completed \
+         FROM media_progress WHERE file_id=?1",
+            [id],
+            |row| {
+                let mut value = progress_response(
+                    row.get(0)?,
+                    row.get(1)?,
+                    Timestamp::parse(&row.get::<_, String>(2)?).ok(),
+                );
+                value.revision = row.get::<_, i64>(3)? as u64;
+                value.writer = row.get(4)?;
+                value.sequence = row.get::<_, i64>(5)? as u64;
+                value.completed = row.get(6)?;
+                Ok(value)
+            },
+        )
+        .optional()
+        .map(|value| value.unwrap_or_default())
+        .map_err(|error| database_error(DbError::Query(error)))
+}
+
+fn read_listening_session(
+    connection: &Connection,
+) -> Result<revaro_core::progress::ListeningSession, ApiError> {
+    use rusqlite::OptionalExtension as _;
+    let raw = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key='listening_session_v1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| database_error(DbError::Query(error)))?;
+    raw.map(|raw| {
+        serde_json::from_str(&raw)
+            .map_err(|_| ApiError::internal("could not read listening session"))
+    })
+    .transpose()
+    .map(|session| session.unwrap_or_default())
+}
+
+async fn listening_session(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+) -> Result<Json<revaro_core::progress::ListeningSession>, ApiError> {
+    state
+        .db
+        .call_api(move |connection| read_listening_session(connection))
+        .await
+        .map(Json)
+}
+
+fn write_listening_session(
+    connection: &Connection,
+    write: &revaro_core::progress::ListeningWrite,
+) -> Result<revaro_core::progress::ListeningSession, ApiError> {
+    use revaro_core::progress::{ListeningSession, WriteDecision, decide_write};
+    let current = read_listening_session(connection)?;
+    match decide_write(&current.ordering(), &write.sync) {
+        WriteDecision::Conflict => {
+            return Err(ApiError::conflict("listening session was superseded"));
+        }
+        WriteDecision::Duplicate => return Ok(current),
+        WriteDecision::Accept => {}
+    }
+    let revision = current
+        .revision
+        .checked_add(1)
+        .filter(|value| *value <= i64::MAX as u64)
+        .ok_or_else(|| ApiError::conflict("listening revision exhausted"))?;
+    let saved = ListeningSession {
+        queue: write.queue.clone(),
+        revision,
+        writer: Some(write.sync.writer.clone()),
+        sequence: write.sync.sequence,
+    };
+    let raw = serde_json::to_string(&saved)
+        .map_err(|_| ApiError::internal("could not save listening session"))?;
+    connection
+        .execute(
+            "INSERT INTO settings(key,value,updated_at) VALUES('listening_session_v1',?1,?2) \
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+            rusqlite::params![raw, Timestamp::now().to_rfc3339()],
+        )
+        .map_err(|error| database_error(DbError::Query(error)))?;
+    Ok(saved)
+}
+
+async fn save_listening_session(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    JsonBody(write): JsonBody<revaro_core::progress::ListeningWrite>,
+) -> Result<Json<revaro_core::progress::ListeningSession>, ApiError> {
+    revaro_core::progress::validate_listening(
+        &write,
+        write.queue.track.as_deref().unwrap_or_default(),
+    )?;
+    state
+        .db
+        .call_api(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            if let Some(track) = &write.queue.track {
+                require_media_file(&tx, track)?;
+            }
+            let saved = write_listening_session(&tx, &write)?;
+            tx.commit()
+                .map_err(|error| database_error(DbError::Query(error)))?;
+            Ok(saved)
+        })
+        .await
+        .map(Json)
 }
 
 /// `GET /api/files/{id}/media/progress`
@@ -917,31 +1047,7 @@ async fn media_progress(
         .db
         .call_api(move |connection| {
             require_media_file(connection, &id)?;
-            // A file that has never been played reports zeroes rather than 404,
-            // so the player can call this unconditionally on open.
-            let row = connection
-                .query_row(
-                    "SELECT position_ms, duration_ms, updated_at FROM media_progress WHERE file_id = ?1",
-                    [&id],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    },
-                )
-                .map(Some)
-                .or_else(|error| match error {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                    other => Err(database_error(DbError::Query(other))),
-                })?;
-            Ok(match row {
-                None => progress_response(0, 0, None),
-                Some((position, duration, updated_at)) => {
-                    progress_response(position, duration, Timestamp::parse(&updated_at).ok())
-                }
-            })
+            read_media_progress(connection, &id)
         })
         .await
         .map(Json)
@@ -954,9 +1060,6 @@ async fn save_media_progress(
     PathParam(id): PathParam<String>,
     request: Request,
 ) -> Result<Json<revaro_core::api::progress::Media>, ApiError> {
-    // Go checks that the target is a ready media file before decoding the
-    // body. Keep that order so a malformed request for a missing file still
-    // returns the historical 404 rather than the JSON decoder's 400.
     state
         .db
         .call_api({
@@ -964,55 +1067,76 @@ async fn save_media_progress(
             move |connection| require_media_file(connection, &id)
         })
         .await?;
-
     let JsonBody(input) =
         JsonBody::<Option<MediaProgressInput>>::from_request(request, &state).await?;
     let input = input.unwrap_or_default();
-    let request = revaro_core::api::progress::Media {
-        position: input.position.unwrap_or_default(),
-        duration: input.duration.unwrap_or_default(),
-        ..Default::default()
-    };
+    let position = input.position.unwrap_or_default();
+    let duration = input.duration.unwrap_or_default();
+    revaro_core::validate::validate_media_progress(position, duration)?;
+    if let Some(sync) = &input.sync {
+        revaro_core::progress::validate_write(sync)?;
+    }
+    if let Some(listening) = &input.listening {
+        if input.sync.is_none() {
+            return Err(ApiError::bad_request("progress sync is required"));
+        }
+        revaro_core::progress::validate_listening(listening, &id)?;
+    }
+    let position_ms = (position * 1000.0).round() as i64;
+    let duration_ms = (duration * 1000.0).round() as i64;
+    state.db.call_api(move |connection| {
+        // The comparison and write share a SQLite write transaction. Two
+        // devices cannot both acquire the same observed version.
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| database_error(DbError::Query(error)))?;
+        require_media_file(&tx, &id)?;
+        let current = read_media_progress(&tx, &id)?;
+        let mut listening_revision = None;
+        if let Some(listening) = &input.listening {
+            listening_revision = Some(write_listening_session(&tx, listening)?.revision);
+        }
 
-    // Rejects NaN, infinities, negatives, anything beyond a week, and a position
-    // more than five seconds past a known duration. These values become integer
-    // milliseconds under a CHECK constraint, so an out-of-range value would
-    // otherwise surface as a 500 rather than a 400.
-    revaro_core::validate::validate_media_progress(request.position, request.duration)?;
-    let position_ms = (request.position * 1000.0).round() as i64;
-    let duration_ms = (request.duration * 1000.0).round() as i64;
-
-    state
-        .db
-        .call_api(move |connection| {
-            require_media_file(connection, &id)?;
-            let now = Timestamp::now().to_rfc3339();
-            // A zero duration means "not known yet" and must not erase a
-            // duration established by an earlier save.
-            connection
-                .execute(
-                    "INSERT INTO media_progress(file_id,position_ms,duration_ms,updated_at) \
-VALUES(?1,?2,?3,?4) ON CONFLICT(file_id) DO UPDATE SET \
-position_ms = excluded.position_ms, \
-duration_ms = CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms \
-ELSE media_progress.duration_ms END, \
-updated_at = excluded.updated_at",
-                    rusqlite::params![id, position_ms, duration_ms, now],
-                )
-                .map_err(|error| database_error(DbError::Query(error)))?;
-
-            // The historical handler echoed the decoded request values in
-            // this PUT response, even when the database retained a known
-            // duration because the submitted value was zero. Keep that wire
-            // behavior; GET remains the source of the stored value.
-            Ok(progress_response(
-                position_ms,
-                duration_ms,
-                Timestamp::parse(&now).ok(),
-            ))
-        })
-        .await
-        .map(Json)
+        if let Some(sync) = &input.sync {
+            use revaro_core::progress::{WriteDecision, decide_write};
+            match decide_write(&current, sync) {
+                WriteDecision::Duplicate => {
+                    let mut current = current;
+                    current.listening_revision = listening_revision;
+                    tx.commit().map_err(|error| database_error(DbError::Query(error)))?;
+                    return Ok(current);
+                }
+                WriteDecision::Conflict => return Err(ApiError::conflict("playback session was superseded")),
+                WriteDecision::Accept => {}
+            }
+        } else if current.writer.is_some() {
+            // Legacy packets have no causal information. Once the new client
+            // has adopted a file they cannot erase its versioned progress.
+            return Err(ApiError::conflict("versioned playback progress is required"));
+        }
+        let revision = current.revision.checked_add(1)
+            .filter(|value| *value <= i64::MAX as u64)
+            .ok_or_else(|| ApiError::conflict("progress revision exhausted"))?;
+        let writer = input.sync.as_ref().map(|sync| sync.writer.as_str());
+        let sequence = input.sync.as_ref().map_or(0, |sync| sync.sequence);
+        let now = Timestamp::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO media_progress(file_id,position_ms,duration_ms,updated_at,revision,writer,sequence,completed) \
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(file_id) DO UPDATE SET \
+             position_ms=excluded.position_ms, \
+             duration_ms=CASE WHEN excluded.duration_ms>0 THEN excluded.duration_ms ELSE media_progress.duration_ms END, \
+             updated_at=excluded.updated_at,revision=excluded.revision,writer=excluded.writer, \
+             sequence=excluded.sequence,completed=excluded.completed",
+            rusqlite::params![id,position_ms,duration_ms,now,revision as i64,writer,sequence as i64,input.completed.unwrap_or(false)],
+        ).map_err(|error| database_error(DbError::Query(error)))?;
+        let mut saved = read_media_progress(&tx, &id)?;
+        saved.listening_revision = listening_revision;
+        tx.commit().map_err(|error| database_error(DbError::Query(error)))?;
+        if input.sync.is_none() {
+            // Preserve the historical legacy PUT duration echo.
+            saved.duration = duration;
+        }
+        Ok(saved)
+    }).await.map(Json)
 }
 
 /// Percent-encode a filename for the RFC 5987 `filename*` parameter.
@@ -1848,6 +1972,190 @@ VALUES('f1','00000000-0000-0000-0000-000000000000','a.bin','file','blobs/f1',3,'
         assert_eq!(body, serde_json::json!({"active": false}));
         let (status, _) = write(&state, "DELETE", "/api/files/f1/share", None).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn media_progress_queue_only_stop_preserves_position_and_fences_old_devices() {
+        let state = state().await;
+        seed(&state, "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+             VALUES('a1','00000000-0000-0000-0000-000000000000','track.flac','file','blobs/a1',10,'audio/flac','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');").await;
+        let (_, progress) = write(&state, "PUT", "/api/files/a1/media/progress", Some(serde_json::json!({
+            "position":42,"duration":100,"sync":{"writer":"file-a","sequence":1,"base_revision":0}
+        }))).await;
+        let queue =
+            serde_json::json!({"collection":null,"track":"a1","tracks":["a1"],"mode":"sequential"});
+        let payload = |writer: &str, sequence: u64, base: u64, queue: serde_json::Value| {
+            Some(
+                serde_json::json!({"queue":queue,"sync":{"writer":writer,"sequence":sequence,"base_revision":base}}),
+            )
+        };
+        let (status, _) = write(
+            &state,
+            "PUT",
+            "/api/listening/session",
+            payload("a", 1, 0, queue.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let stopped =
+            serde_json::to_value(revaro_core::progress::ListeningQueue::default()).unwrap();
+        let (status, session) = write(
+            &state,
+            "PUT",
+            "/api/listening/session",
+            payload("b", 1, 1, stopped.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(session["revision"], 2);
+        let (_, duplicate) = write(
+            &state,
+            "PUT",
+            "/api/listening/session",
+            payload("b", 1, 1, stopped),
+        )
+        .await;
+        assert_eq!(duplicate, session);
+        let (status, _) = write(
+            &state,
+            "PUT",
+            "/api/listening/session",
+            payload("a", 2, 1, queue),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(call(&state, "/api/listening/session").await.1, session);
+        assert_eq!(
+            call(&state, "/api/files/a1/media/progress").await.1,
+            progress
+        );
+    }
+
+    #[tokio::test]
+    async fn media_progress_and_listening_queue_commit_atomically_across_tracks() {
+        let state = state().await;
+        seed(&state, "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+             VALUES('a1','00000000-0000-0000-0000-000000000000','first.flac','file','blobs/a1',10,'audio/flac','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'), \
+             ('a2','00000000-0000-0000-0000-000000000000','second.flac','file','blobs/a2',10,'audio/flac','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');").await;
+        let payload = |writer: &str, file: &str, sequence: u64, global_base: u64| {
+            Some(serde_json::json!({
+                "position":12.0,"duration":100.0,"completed":false,
+                "sync":{"writer":writer,"sequence":sequence,"base_revision":0},
+                "listening":{"sync":{"writer":writer,"sequence":sequence,"base_revision":global_base},
+                    "queue":{"collection":null,"tracks":["a1","a2"],"track":file,"mode":"repeat-all"}}
+            }))
+        };
+        let (status, first) = write(
+            &state,
+            "PUT",
+            "/api/files/a1/media/progress",
+            payload("a", "a1", 1, 0),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["listening_revision"], 1);
+        let (status, second) = write(
+            &state,
+            "PUT",
+            "/api/files/a2/media/progress",
+            payload("b", "a2", 1, 1),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second["listening_revision"], 2);
+        // An old device still has a matching per-file writer but no longer
+        // owns the account-wide player, so neither position nor queue changes.
+        let (status, _) = write(
+            &state,
+            "PUT",
+            "/api/files/a1/media/progress",
+            payload("a", "a1", 2, 1),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (_, stored) = call(&state, "/api/files/a1/media/progress").await;
+        assert_eq!(stored["sequence"], 1);
+        let (_, session) = call(&state, "/api/listening/session").await;
+        assert_eq!(session["queue"]["track"], "a2");
+        assert_eq!(session["revision"], 2);
+        // A valid queue acquisition paired with a stale file version must
+        // roll back the queue acquisition, too.
+        let (status, _) = write(
+            &state,
+            "PUT",
+            "/api/files/a1/media/progress",
+            payload("c", "a1", 1, 2),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (_, unchanged) = call(&state, "/api/listening/session").await;
+        assert_eq!(unchanged, session);
+    }
+
+    #[tokio::test]
+    async fn media_progress_fences_devices_and_handles_reordered_retransmissions() {
+        let state = state().await;
+        seed(&state, "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+             VALUES('a1','00000000-0000-0000-0000-000000000000','track.flac','file','blobs/a1',10,'audio/flac','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');").await;
+        let path = "/api/files/a1/media/progress";
+        let payload = |writer: &str, sequence: u64, base: u64, position: f64| {
+            serde_json::json!({
+                "position":position,"duration":100.0,"completed":false,
+                "sync":{"writer":writer,"sequence":sequence,"base_revision":base}
+            })
+        };
+        let (status, first) = write(&state, "PUT", path, Some(payload("a", 1, 0, 12.0))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["revision"], 1);
+        let (_, latest) = write(&state, "PUT", path, Some(payload("a", 3, 0, 20.0))).await;
+        assert_eq!(latest["revision"], 2);
+        // Same-session sequence 2 arrives after 3: no rewind or new revision.
+        let (status, replayed) = write(&state, "PUT", path, Some(payload("a", 2, 0, 0.0))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(replayed, latest);
+        let (_, handoff) = write(&state, "PUT", path, Some(payload("b", 1, 2, 35.0))).await;
+        assert_eq!(handoff["revision"], 3);
+        for sequence in [1, 4, 100] {
+            let (status, _) =
+                write(&state, "PUT", path, Some(payload("a", sequence, 2, 0.0))).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+        }
+        let (status, _) = write(
+            &state,
+            "PUT",
+            path,
+            Some(serde_json::json!({"position":0.0,"duration":0.0})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (_, stored) = call(&state, path).await;
+        assert_eq!(stored, handoff);
+        // An intentional zero is valid and must replace the old nonzero value.
+        let (_, zero) = write(&state, "PUT", path, Some(payload("b", 2, 3, 0.0))).await;
+        assert_eq!(zero["position"], 0.0);
+        assert_eq!(zero["revision"], 4);
+        assert_eq!(zero["completed"], false);
+    }
+
+    #[tokio::test]
+    async fn media_progress_has_one_winner_for_concurrent_device_acquisition() {
+        let state = state().await;
+        seed(&state, "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) \
+             VALUES('a1','00000000-0000-0000-0000-000000000000','track.flac','file','blobs/a1',10,'audio/flac','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');").await;
+        let payload = |writer: &str| {
+            Some(serde_json::json!({"position":12.0,"duration":100.0,
+            "sync":{"writer":writer,"sequence":1,"base_revision":0}}))
+        };
+        let (a, b) = tokio::join!(
+            write(&state, "PUT", "/api/files/a1/media/progress", payload("a")),
+            write(&state, "PUT", "/api/files/a1/media/progress", payload("b"))
+        );
+        assert!(
+            (a.0 == StatusCode::OK && b.0 == StatusCode::CONFLICT)
+                || (b.0 == StatusCode::OK && a.0 == StatusCode::CONFLICT)
+        );
+        let (_, saved) = call(&state, "/api/files/a1/media/progress").await;
+        assert_eq!(saved["revision"], 1);
     }
 
     #[tokio::test]

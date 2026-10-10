@@ -119,6 +119,22 @@ function noteSuccess(url, length = 0, elapsed = 0) {
 }
 const abortError = () => new DOMException('Transfer cancelled', 'AbortError');
 function checkAbort(signal) { if (signal?.aborted) throw signal.reason || abortError(); }
+// Browser cancellation is advisory for some native/keepalive requests. The
+// recovery deadline must settle even when fetch, read or cancel never does.
+function abortable(operation, signal, onLate) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) { if (callback === resolve) onLate?.(value); return; }
+      settled = true; signal.removeEventListener('abort', abort); callback(value);
+    };
+    const abort = () => finish(reject, signal.reason || abortError());
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    Promise.resolve(operation).then(value => finish(resolve, value), error => finish(reject, error));
+  });
+}
+function cancelBody(body) { try { body?.cancel().catch(() => {}); } catch {} }
 function linkedController(signal) {
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason || abortError());
@@ -208,9 +224,10 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
     const headers = new Headers(init.headers);
     headers.delete('x-revaro-priority');
     headers.set('priority', `u=${Math.min(7, priority + 1)}, i`);
-    const response = await networkFetch(target, { ...init, headers, signal: controller.signal, credentials: 'include', cache: 'no-store' });
+    const response = await abortable(networkFetch(target, { ...init, headers, signal: controller.signal, credentials: 'include', cache: 'no-store' }),
+      controller.signal, late => cancelBody(late.body));
     if ([408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
-      await response.body?.cancel();
+      cancelBody(response.body);
       throw new TransferError(`HTTP ${response.status}`, response.status, retryAfter(response));
     }
     validate?.(response);
@@ -220,7 +237,7 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
     while (true) {
       const idle = priority === 0 && http2Origin ? Math.min(policy.idleMs, policy.mediaIdleMs) : policy.idleMs;
       arm(protocol.startsWith('h3') ? idle * 0.65 : idle);
-      const { value, done } = await reader.read();
+      const { value, done } = await abortable(reader.read(), controller.signal);
       if (done) break;
       length += value.byteLength;
       windowBytes += value.byteLength;
@@ -246,7 +263,10 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
     throw error;
   } finally {
     clearTimeout(timer); controller.abort(); dispose(); release();
-    if (reader) { try { await reader.cancel(); } catch {} reader.releaseLock(); }
+    if (reader) {
+      try { reader.cancel().catch(() => {}); } catch {}
+      try { reader.releaseLock(); } catch {}
+    }
   }
 }
 function responseHeaders(headers) {
@@ -263,7 +283,7 @@ function restoredResponse({ response, bytes }) {
 }
 export async function bufferedRequest(request, safe = true) {
   const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.clone().arrayBuffer();
-  const init = { method: request.method, headers: request.headers, body, redirect: 'follow' };
+  const init = { method: request.method, headers: request.headers, body, redirect: 'follow', keepalive: request.keepalive };
   const complete = /\/uploads\/[^/]+\/complete$/.test(new URL(request.url).pathname);
   const result = await retry(() => attempt(request.url, init, {
     signal: request.signal, headersMs: complete ? 120000 : policy.headersMs,

@@ -124,7 +124,7 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
           const collection = page.getByLabel('选择集合', { exact: true })
           await collection.click()
           await expect(page.locator('.collection-menu .action-menu-panel').getByRole('button', { name: /这是一个用于检查菜单边缘/ }).first()).toBeVisible()
-          const menu = (await page.locator('.collection-menu .action-menu-panel').boundingBox())!
+      const menu = (await page.locator('.collection-menu .action-menu-panel:visible').boundingBox())!
           const trigger = (await collection.boundingBox())!
           expect(Math.abs(menu.x - Math.max(8, Math.min(trigger.x + (trigger.width - menu.width) / 2, width - 8 - menu.width)))).toBeLessThanOrEqual(1)
           expect(menu.y).toBe(trigger.y + trigger.height + 8)

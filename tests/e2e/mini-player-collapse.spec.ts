@@ -1,6 +1,6 @@
 import { expect, test, type Locator } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
-import { login, navigate, pauseMusic, uploadFixture } from './helpers'
+import { login, navigate, pauseMusic, uploadFixture, openMusicPlayer } from './helpers'
 
 function wav() {
   const data = Buffer.alloc(44 + 16000 * 90)
@@ -24,6 +24,13 @@ for (const width of [1600, 1024, 900, 850, 390, 320]) {
       const errors: string[] = []
       page.on('pageerror', error => errors.push(error.stack || error.message))
       await login(page)
+      // An account-wide session can be restored in a fresh browser context.
+      // End it explicitly so this UI fixture starts with an empty player.
+      if (await page.locator('.music-orb').count()) {
+        await openMusicPlayer(page)
+        await page.getByLabel('播放器更多操作', { exact: true }).click()
+        await page.getByRole('button', { name: '结束播放', exact: true }).click()
+      }
       await expect(page.locator('.music-orb, .music-dock')).toHaveCount(0)
       const headers = { origin: new URL(page.url()).origin }
       const prefix = `floating-player-${Date.now()}`

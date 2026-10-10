@@ -112,14 +112,36 @@ impl PlaybackPosition {
     }
 }
 
-/// Completed media starts again; a saved position in the last five seconds is complete.
+/// Only reaching the duration counts as complete for legacy saved positions.
 #[must_use]
 pub fn resume_time(saved: f64, duration: f64) -> f64 {
-    if saved > 0.0 && saved < duration - 5.0 {
+    if saved.is_finite() && saved > 0.0 && saved < duration {
         saved
     } else {
         0.0
     }
+}
+
+/// Ignore uninitialized decoder clocks and seeked events for an older target.
+/// A spontaneous zero is a source/decoder reset, not a user seek to the start.
+#[must_use]
+pub fn stable_media_clock(
+    value: f64,
+    ready: bool,
+    previous: f64,
+    pending: Option<f64>,
+) -> Option<f64> {
+    if !ready || !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    if let Some(target) = pending {
+        if (target - value).abs() > 0.5 {
+            return None;
+        }
+    } else if value == 0.0 && previous > 0.5 {
+        return None;
+    }
+    Some(value)
 }
 
 /// Native media elements are the clock; invalid values only occur during load.
@@ -186,6 +208,16 @@ pub fn should_continue_media_clock(element_present: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decoder_resets_and_old_seek_events_do_not_rewind_progress() {
+        use super::stable_media_clock;
+        assert_eq!(stable_media_clock(0.0, false, 50.0, None), None);
+        assert_eq!(stable_media_clock(f64::NAN, true, 50.0, None), None);
+        assert_eq!(stable_media_clock(0.0, true, 50.0, None), None);
+        assert_eq!(stable_media_clock(0.0, true, 50.0, Some(50.0)), None);
+        assert_eq!(stable_media_clock(0.0, true, 50.0, Some(0.0)), Some(0.0));
+        assert_eq!(stable_media_clock(50.1, true, 50.0, Some(50.0)), Some(50.1));
+    }
     use super::*;
 
     fn chapter(start: f64, end: f64) -> AudioChapter {
@@ -302,13 +334,13 @@ mod tests {
             PlaybackPosition::Resume(0.0).resolve(90.0, Some(60.0)),
             60.0
         );
-        assert_eq!(PlaybackPosition::Resume(88.0).resolve(90.0, None), 0.0);
+        assert_eq!(PlaybackPosition::Resume(88.0).resolve(90.0, None), 88.0);
     }
 
     #[test]
     fn resume_positions_restart_completed_media_and_keep_explicit_zero_seeks() {
         assert_eq!(resume_time(84.9, 90.0), 84.9);
-        assert_eq!(resume_time(85.0, 90.0), 0.0);
+        assert_eq!(resume_time(85.0, 90.0), 85.0);
         assert_eq!(resume_time(90.0, 90.0), 0.0);
         assert_eq!(resume_time(f64::NAN, 90.0), 0.0);
         assert_eq!(resume_time(60.0, 0.0), 0.0);
