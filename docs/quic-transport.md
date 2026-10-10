@@ -2,9 +2,17 @@
 
 `crates/revaro-server/src/quic/` 使用 Quinn 0.11 的 `Controller` / `ControllerFactory`，通过 upstream h3/h3-quinn 接收普通 HTTP/3 请求，再交给现有 Axum Router。没有 Hysteria 握手、代理封装、自定义 QUIC 帧、FEC 帧或浏览器插件。Chrome/Edge/Firefox 使用自己的标准 HTTP/3 栈。
 
-拥塞控制与 pacing 位于 HTTP 流之下，覆盖所有请求和文件类型，也包括控制包、重传与静态资源。文件读取、预览、下载和上传仍使用[共享传输层](file-transport.md)的 Range、ETag、并行块、校验、retry、stalled recovery。没有按 MIME 或扩展名分叉的恢复实现。
+拥塞控制与 pacing 位于 HTTP 流之下，覆盖所有请求和文件类型，也包括控制包、重传与静态资源。文件资源仍遵循[共享传输层](file-transport.md)的 Range / ETag 契约；音视频和图片使用浏览器原生加载，显式读取、下载与上传保留共享的有界恢复、校验和续传。
 
 这是服务端**发送方向**的控制器，主要改善下载。标准浏览器的上传发送拥塞控制由浏览器决定，服务端不能把它改成 Brutal；上传继续通过统一的 SHA-256 分块与续传抵抗断流。
+
+## 连接迁移与发送等待
+
+服务端允许 Quinn 进行连接迁移，保留其路径验证和反放大机制。同一客户端 NAT 换源端口或切换地址后，可以继续使用原 HTTP/3 连接；它不需要靠重新握手恢复。应用每 250 ms 检查当前远端地址并同步 pacing 的目的地址登记，保留发送状态和已有预算，移除不再被其他连接使用的旧地址；若旧地址还有连接，不复制它们的突发 credits。每个新请求的 ConnectInfo 也取当前地址。[Quinn migration 接口](https://docs.rs/quinn/0.11.12/quinn/struct.ServerConfig.html#method.migration)
+
+已清理连接的驱动仍可能发送关闭包，迁移中的新目的地址也可能暂未登记。这些路径同样会遇到全局或未知 peer 的限速。每次因 pacing 返回 WouldBlock 都记录当前驱动的唤醒时间，后续 poll_writable 等待 timer；不再要求目的地址仍在 peers 中，避免可写内核 socket 触发 Quinn 的立即重试循环。[Quinn AsyncUdpSocket 契约](https://docs.rs/quinn/0.11.12/quinn/trait.AsyncUdpSocket.html#tymethod.try_send)
+
+回归覆盖未知/已清理 peer 的 Pending 与定时唤醒、迁移预算与登记清理，以及同一个 H3 客户端在换源 IP/端口后继续读取 Range 和验证器。socket 回归属于协议正确性测试，不证明公网切网延迟或弱网吞吐改善；公网性能结论仍见[公网验收](public-quic-acceptance.md)。
 
 ## 模式与安全边界
 

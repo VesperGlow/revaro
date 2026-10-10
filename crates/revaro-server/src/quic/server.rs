@@ -98,7 +98,9 @@ impl NativeTransport {
             let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tcp_crypto)
                 .map_err(io::Error::other)?;
             let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-            server_config.migration(false);
+            // Keep Quinn's path validation and anti-amplification protections,
+            // while allowing NAT rebinding or a network change.
+            server_config.migration(true);
             server_config
                 .transport_config(Arc::new(transport_config(Arc::new(CubicConfig::default()))));
             let socket = std::net::UdpSocket::bind(quic.addr).map_err(|error| {
@@ -261,7 +263,7 @@ async fn accept_connections(
             incoming=endpoint.accept() => {
                 let Some(incoming)=incoming else { break; };
                 let Ok(permit)=permits.clone().try_acquire_owned() else { incoming.refuse(); continue; };
-                let peer=registry.register(incoming.remote_address());
+                let mut peer=registry.register(incoming.remote_address());
                 let mut settings=base.clone();
                 let controller:Arc<dyn ControllerFactory+Send+Sync>=if config.mode==CongestionMode::Aggressive {
                     Arc::new(AggressiveFactory { config:config.clone(), sender:peer.sender.clone() })
@@ -273,8 +275,23 @@ async fn accept_connections(
                     match incoming.accept_with(Arc::new(settings)) {
                         Ok(connecting) => match tokio::time::timeout(Duration::from_secs(10),connecting).await {
                             Ok(Ok(connection)) => {
+                                let serving=serve_connection(connection.clone(),app);
+                                tokio::pin!(serving);
+                                // The socket budgets are keyed by destination. Follow Quinn's
+                                // authenticated remote address without querying the connection
+                                // from inside try_send, where Quinn holds its connection lock.
+                                let mut paths=tokio::time::interval(Duration::from_millis(250));
+                                paths.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                loop {
+                                    tokio::select! {
+                                        result=&mut serving => {
+                                            if let Err(error)=result { tracing::debug!(%error,"HTTP/3 connection ended"); }
+                                            break;
+                                        }
+                                        _=paths.tick() => peer.migrate(connection.remote_address()),
+                                    }
+                                }
                                 let remote=connection.remote_address();
-                                if let Err(error)=serve_connection(connection.clone(),app).await { tracing::debug!(%error,"HTTP/3 connection ended"); }
                                 let stats=connection.stats();
                                 tracing::info!(%remote, sent_bytes=peer.sender.sent_bytes.load(Ordering::Relaxed),
                                     acked_bytes=peer.sender.acked_bytes.load(Ordering::Relaxed), lost_bytes=peer.sender.lost_bytes.load(Ordering::Relaxed),
@@ -302,13 +319,13 @@ async fn serve_connection(
     connection: quinn::Connection,
     app: Router,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let remote = connection.remote_address();
-    let mut h3 = h3::server::Connection::new(h3_quinn::Connection::new(connection)).await?;
+    let mut h3 = h3::server::Connection::new(h3_quinn::Connection::new(connection.clone())).await?;
     let mut requests = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             request=h3.accept() => {
                 let Some(resolver)=request? else { break; };
+                let remote=connection.remote_address();
                 let app=app.clone();
                 requests.spawn(async move {
                     if let Err(error)=serve_request(resolver,app,remote).await { tracing::debug!(%error,"HTTP/3 stream ended"); }

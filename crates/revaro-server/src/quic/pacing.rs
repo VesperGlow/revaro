@@ -27,7 +27,7 @@ fn capacity(rate: u64) -> f64 {
     (rate as f64 * 0.004).clamp(MIN_BURST_BYTES, MAX_BURST_BYTES)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Bucket {
     tokens: f64,
     updated: Instant,
@@ -117,6 +117,46 @@ pub(super) struct PeerGuard {
     address: SocketAddr,
     pub sender: Arc<SenderState>,
 }
+impl PeerGuard {
+    pub fn migrate(&mut self, address: SocketAddr) {
+        if address == self.address {
+            return;
+        }
+        let mut budgets = self
+            .registry
+            .budgets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut bucket = budgets
+            .peers
+            .get(&self.address)
+            .expect("registered peer")
+            .bucket
+            .clone();
+        let peer = budgets
+            .peers
+            .get_mut(&self.address)
+            .expect("registered peer");
+        peer.references -= 1;
+        if peer.references == 0 {
+            budgets.peers.remove(&self.address);
+        } else {
+            // Other connections still use the old address; do not duplicate
+            // their accumulated burst credits on the new path.
+            bucket.tokens = 0.0;
+        }
+        budgets
+            .peers
+            .entry(address)
+            .or_insert_with(|| Peer {
+                bucket,
+                sender: self.sender.clone(),
+                references: 0,
+            })
+            .references += 1;
+        self.address = address;
+    }
+}
 impl Drop for PeerGuard {
     fn drop(&mut self) {
         let mut budgets = self
@@ -180,11 +220,11 @@ impl AsyncUdpSocket for PacedSocket {
         if !wait.is_zero() {
             // Quinn creates an independent poller for each connection driver.
             // A slow peer must not overwrite another driver's wakeup timer.
-            // Stateless endpoint responses have no poller and are retried by
-            // QUIC itself; do not allocate arbitrary address-based waiters.
-            if budgets.peers.contains_key(&transmit.destination)
-                && let Some(task_id) = tokio::task::try_id()
-            {
+            // Drivers can still send close/path packets after their PeerGuard
+            // is gone. Unknown destinations need the same wakeup contract;
+            // otherwise Quinn immediately retries against a writable socket.
+            // Use the driver task, never an arbitrary destination, as the key.
+            if let Some(task_id) = tokio::task::try_id() {
                 budgets.waiters.insert(task_id, now + wait);
             }
             return Err(io::ErrorKind::WouldBlock.into());
@@ -329,6 +369,114 @@ mod tests {
         fn local_addr(&self) -> io::Result<SocketAddr> {
             Ok("127.0.0.1:4433".parse().unwrap())
         }
+    }
+
+    #[tokio::test]
+    async fn unknown_and_cleaned_up_peers_wait_for_credits_instead_of_spinning() {
+        tokio::spawn(async {
+            for registered in [false, true] {
+                let config = QuicConfig {
+                    addr: "127.0.0.1:4433".parse().unwrap(),
+                    mode: CongestionMode::Standard,
+                    target_mbps: Some(2),
+                    max_mbps: 2,
+                    global_max_mbps: 2,
+                    max_compensation_percent: 125,
+                    max_window_mib: 8,
+                    max_connections: 8,
+                };
+                let registry = PacingRegistry::new(config);
+                let address = "127.0.0.1:5000".parse().unwrap();
+                if registered {
+                    drop(registry.register(address));
+                }
+                let inner = Arc::new(TestSocket::default());
+                let socket = Arc::new(PacedSocket::new(inner.clone(), registry.clone()));
+                let mut poller = socket.clone().create_io_poller();
+                let data = [0_u8; 1400];
+                let transmit = Transmit {
+                    destination: address,
+                    ecn: None,
+                    contents: &data,
+                    segment_size: None,
+                    src_ip: None,
+                };
+                {
+                    let mut budgets = registry.budgets.lock().unwrap();
+                    budgets.unknown.tokens = 0.0;
+                    budgets.unknown.updated = Instant::now();
+                }
+                // try_send may precede the first readiness poll.
+                assert_eq!(
+                    socket.try_send(&transmit).unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+                {
+                    let waker = futures_util::task::noop_waker();
+                    let mut cx = Context::from_waker(&waker);
+                    assert!(poller.as_mut().poll_writable(&mut cx).is_pending());
+                }
+                assert_eq!(inner.0.load(Ordering::Relaxed), 0);
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    std::future::poll_fn(|cx| poller.as_mut().poll_writable(cx)),
+                )
+                .await
+                .expect("rate limiter must schedule a wakeup")
+                .unwrap();
+                socket.try_send(&transmit).unwrap();
+                assert_eq!(inner.0.load(Ordering::Relaxed), 1448);
+                drop(poller);
+                assert!(registry.budgets.lock().unwrap().waiters.is_empty());
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn migration_preserves_sender_and_credits_and_cleans_up_both_addresses() {
+        let config = QuicConfig {
+            addr: "127.0.0.1:4433".parse().unwrap(),
+            mode: CongestionMode::Standard,
+            target_mbps: Some(2),
+            max_mbps: 2,
+            global_max_mbps: 2,
+            max_compensation_percent: 125,
+            max_window_mib: 8,
+            max_connections: 8,
+        };
+        let registry = PacingRegistry::new(config);
+        let old = "127.0.0.1:5000".parse().unwrap();
+        let new = "127.0.0.2:6000".parse().unwrap();
+        let mut guard = registry.register(old);
+        registry
+            .budgets
+            .lock()
+            .unwrap()
+            .peers
+            .get_mut(&old)
+            .unwrap()
+            .bucket
+            .tokens = 123.0;
+        guard.migrate(new);
+        {
+            let budgets = registry.budgets.lock().unwrap();
+            assert!(!budgets.peers.contains_key(&old));
+            let peer = &budgets.peers[&new];
+            assert!(Arc::ptr_eq(&peer.sender, &guard.sender));
+            assert_eq!(peer.bucket.tokens, 123.0);
+        }
+        let other = registry.register(new);
+        guard.migrate(old);
+        {
+            let budgets = registry.budgets.lock().unwrap();
+            assert_eq!(budgets.peers[&new].references, 1);
+            assert_eq!(budgets.peers[&old].bucket.tokens, 0.0);
+        }
+        drop(guard);
+        drop(other);
+        assert!(registry.budgets.lock().unwrap().peers.is_empty());
     }
 
     #[tokio::test]

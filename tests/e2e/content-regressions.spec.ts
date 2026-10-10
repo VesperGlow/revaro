@@ -51,6 +51,7 @@ test('music restores saved progress after delayed metadata and reload without er
   const song = await upload(page, contentRoot.id, `${contentRoot.prefix}.wav`, 'audio/wav', wav())
   await savePosition(page, song.id, 60)
   const metadata = deferred()
+  const metadataRead = deferred()
   const progressRead = deferred()
   const progressWrites: number[] = []
   page.on('request', request => {
@@ -60,7 +61,7 @@ test('music restores saved progress after delayed metadata and reload without er
     }
   })
   await page.context().route(`**/api/files/${song.id}/preview`, async route => {
-    if (!isTransportRequest(route.request())) return route.continue()
+    metadataRead.resolve()
     await metadata.promise
     await route.continue()
   })
@@ -68,6 +69,7 @@ test('music restores saved progress after delayed metadata and reload without er
     await navigate(page, '音乐')
     await page.getByRole('button', { name: `打开 ${song.name}`, exact: true }).click()
     await progressRead.promise
+    await metadataRead.promise
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeDisabled()
     expect(progressWrites).toEqual([])
     expect((await (await page.request.get(`/api/files/${song.id}/media/progress`)).json()).position).toBe(60)
@@ -88,9 +90,10 @@ test('music restores saved progress after delayed metadata and reload without er
     expect(progressWrites.every(position => position >= 60)).toBeTruthy()
     // Single-track repeat must restart instead of restoring its end position.
     await selectMusicMode(page, 'repeat-one')
-    const restarted = page.waitForEvent('request', { predicate: request => request.url().endsWith(`/api/files/${song.id}/preview`) })
-    await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => { audio.currentTime = audio.duration - 0.1 })
-    await restarted
+    await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => new Promise<void>(resolve => {
+      audio.addEventListener('ended', () => resolve(), { once: true })
+      audio.currentTime = audio.duration - 0.1
+    }))
     await expect(page.getByLabel('音乐播放进度', { exact: true })).toBeEnabled()
     await expect.poll(() => page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.paused)).toBe(false)
     expect(await page.locator('audio:not([aria-hidden="true"])').evaluate(audio => audio.currentTime)).toBeLessThan(5)
@@ -374,7 +377,6 @@ test('video playback pauses background music from home, video library and files'
   // Opening a video must also cancel music that is still waiting for metadata.
   const metadata = deferred(), intercepted = deferred()
   await page.context().route(`**/api/files/${song.id}/preview`, async route => {
-    if (!isTransportRequest(route.request())) return route.continue()
     intercepted.resolve()
     await metadata.promise
     await route.continue()

@@ -136,9 +136,15 @@ async fn lifecycle() {
         .unwrap();
     let state = AppState::new(Arc::new(config.clone()), db, store, auth);
     drop(reservation);
-    let server = NativeTransport::start(&config, router::build(state.clone()))
-        .await
-        .unwrap();
+    let app = router::build(state.clone()).route(
+        "/__quic_test/peer",
+        axum::routing::get(
+            |axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>| async move {
+                peer.to_string()
+            },
+        ),
+    );
+    let server = NativeTransport::start(&config, app).await.unwrap();
     let mut roots = rustls::RootCertStore::empty();
     roots.add(certificate.cert.der().clone()).unwrap();
     let mut crypto = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -154,6 +160,7 @@ async fn lifecycle() {
         QuicClientConfig::try_from(crypto).unwrap(),
     )));
     let connection = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+    let connection_id = connection.stable_id();
     let (mut driver, requests) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
         .await
         .unwrap();
@@ -314,6 +321,34 @@ async fn lifecycle() {
             )
             .await;
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+        // Move the same HTTP/3 connection to a new source IP and UDP port.
+        // No connect() call or new H3 driver is allowed to hide a failed migration.
+        let socket = std::net::UdpSocket::bind("127.0.0.2:0").unwrap();
+        let rebound = socket.local_addr().unwrap();
+        endpoint.rebind(socket).unwrap();
+        let (response, remote) = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.request("GET", "/__quic_test/peer", &[], Bytes::new()),
+        )
+        .await
+        .expect("existing connection must survive NAT rebinding");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(remote.as_ref(), rebound.to_string().as_bytes());
+        let (response, bytes) = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.request(
+                "GET",
+                &path,
+                &[("range", "bytes=1234-"), ("if-match", &validator)],
+                Bytes::new(),
+            ),
+        )
+        .await
+        .expect("Range must continue on the migrated connection");
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(bytes.as_ref(), &payload[1234..]);
+        assert_eq!(connection.stable_id(), connection_id);
+        assert!(connection.close_reason().is_none());
     }
     connection.close(0_u32.into(), b"test complete");
     drop(client);

@@ -65,19 +65,41 @@ RUN curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL \
 WORKDIR /src
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY .cargo ./.cargo
+
+# Stable dependency layers survive changes to application sources. Install the
+# pinned build-only tool once; it never enters the runtime image.
+RUN cargo install cargo-chef --locked --version 0.1.78
+
+FROM rust-base AS rust-planner
 COPY crates ./crates
 COPY xtask ./xtask
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Keep the image build itself a release gate. The same workspace check is also
-# run by the Rust CI job, while this layer guarantees that a publishable image
-# cannot be assembled from a source tree that fails its own checks.
-FROM rust-base AS rust-checked
-# Keep the checked dependencies for the release build. CI does not need debug
-# symbols or incremental files, which would inflate exported BuildKit layers.
-RUN cargo xtask check
+FROM rust-base AS rust-dependencies
+COPY --from=rust-planner /src/recipe.json ./recipe.json
+RUN cargo chef cook --locked --release --package revaro-server --recipe-path recipe.json \
+    && cargo chef cook --locked --release --package revaro-web --target wasm32-unknown-unknown --recipe-path recipe.json \
+    && cargo chef cook --locked --package xtask --recipe-path recipe.json
 
-FROM rust-checked AS rust-build
-RUN cargo xtask build
+FROM rust-dependencies AS rust-build
+COPY crates ./crates
+COPY xtask ./xtask
+# Standalone builds retain their check gate. CI performs the same complete
+# checks in its Rust job and gates publication on that job, avoiding a second
+# compilation and test run inside Docker.
+ARG REVARO_RUN_CHECKS=1
+RUN case "$REVARO_RUN_CHECKS" in \
+      1) cargo xtask check ;; \
+      0) ;; \
+      *) echo 'REVARO_RUN_CHECKS must be 0 or 1' >&2; exit 1 ;; \
+    esac \
+    && cargo xtask build \
+    && mkdir -p /artifacts \
+    && cp target/release/revaro /artifacts/revaro \
+    && cp -a dist/web /artifacts/web \
+    && rm -rf target
+# Do not export another multi-GB layer of per-commit compiler intermediates.
+# The unchanged rust-dependencies layer retains the reusable compiled crates.
 
 # ---- Runtime ----
 FROM debian:bookworm-slim
@@ -92,8 +114,8 @@ RUN apt-get -o Acquire::Retries=5 update \
     && mkdir -p /opt/revaro/web /data /objects /caches/.cache \
     && chown -R revaro:revaro /data /objects /caches
 
-COPY --from=rust-build /src/target/release/revaro /usr/local/bin/revaro
-COPY --from=rust-build /src/dist/web /opt/revaro/web
+COPY --from=rust-build /artifacts/revaro /usr/local/bin/revaro
+COPY --from=rust-build /artifacts/web /opt/revaro/web
 # Shared media libraries only; no conversion binaries or sidecar process.
 COPY --from=ffmpeg /opt/revaro/ffmpeg/lib/libav*.so* /usr/local/lib/
 COPY --from=ffmpeg /opt/revaro/ffmpeg/lib/libsw*.so* /usr/local/lib/

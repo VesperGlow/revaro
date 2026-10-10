@@ -1,28 +1,35 @@
 # CI 与镜像构建
 
-当前发布目标为 `linux/amd64`。`rust` job 运行 workspace 的格式检查、
-`clippy -D warnings`、完整测试、wasm32 类型检查、Rust 依赖审计和 release
-构建，以及 10 万文件、8 并发、600 次请求的独立负载检查（各接口 p95 不超过
-2 秒），并验证突发过载、分片续传、存储空间不足和强制终止后的恢复。
-所有 Rust 原生依赖由 runner 安装。该 job 只编译负载测试所需的 release 服务端，
-前端 release 包和与 workspace 锁定版本相同的 wasm-bindgen CLI 由 Docker 构建负责。
+当前只构建 `linux/amd64`。Rust release 的 LTO、codegen-units 和 strip 配置保持不变。
 
-`container` job 与 Rust job 并行构建同一个 Rust Dockerfile，并启动真实
-容器执行全部 Chromium E2E、Firefox 和 WebKit 启动/草稿恢复/菜单/账户回归，以及 160 轮
-编辑器和菜单资源检查。生成长音频测试夹具的 FFmpeg 命令只安装在测试 runner。
-浏览器测试位于独立的 `tests/e2e/` npm
-包，只包含 Playwright；`.dockerignore` 和 Dockerfile 都保证它不进入生产镜像。
+## 构建与验收门槛
 
-Rust job 使用固定提交版本的 [rust-cache](https://github.com/Swatinem/rust-cache)
-缓存依赖的编译产物与 registry，缓存键包含工具链、Cargo 配置和依赖清单。
-只有 main 写入缓存，PR 可以读取 main 的缓存。CI 原生检查关闭调试符号和增量文件，
-控制磁盘与缓存体积；release 优化配置保持不变。Docker 检查后保留编译结果，
-不再执行 `cargo clean`，后续构建可复用 xtask 和已有依赖。
-前端 release 包只构建一次。两个 job 都成功才允许发布，发布继续复用通过验收的镜像。
-Firefox 不使用其不支持的移动设备模拟；WebKit 额外覆盖触屏账户界面。
-头像重复读取的垃圾回收测量使用 Chromium CDP，其余浏览器不执行该测量。
-三种浏览器各用独立的 HTML 报告和结果子目录，后续测试不会清除此前的
-截图、视频及 trace；诊断 artifact 包含这三个目录。
+- `rust` job 运行格式检查、`clippy -D warnings`、完整 Rust 测试、wasm32 类型检查、依赖审计、低端口权限验证，以及 10 万文件、8 并发、600 次请求的 release 负载与断流恢复检查。Rust 原生依赖由 runner 安装，继续使用固定版本的 rust-cache。
+- `container` job 构建一次 amd64 镜像，检查 Compose 配置与运行层边界，再上传 `revaro-built-image`。Docker 默认仍执行 `cargo xtask check`；只有 CI 传入 `REVARO_RUN_CHECKS=0`，避免与 Rust job 重复编译、执行整套检查。
+- `e2e` job 从同一个 artifact 加载镜像。全部 Chromium 测试分成 4 片，Firefox 和 WebKit 的原有回归集合各 1 片，共 6 个并行 runner；每片独立启动容器和数据库，Playwright 的单 worker 设置保留，避免账户、播放队列和进度相互干扰。每片只安装它实际使用的浏览器，并启动虚拟音频输出。编辑器/菜单的 160 轮资源检查只在 Chromium 第 1 片运行一次。
+- `publish` 必须等待 Rust、镜像构建和全部浏览器分片成功，才下载同一个镜像、重新打标签并推送 GHCR。上传待测 artifact 不等于发布；PR 可以运行相同分片但不会发布。没有在 publish 中重建镜像。
+
+每片失败诊断使用独立 artifact 名称，保留 HTML 报告、截图、视频、trace 和容器日志。一个分片失败不会取消其他分片，便于一次收齐回归结果。Firefox 继续排除不支持的移动账户模拟；三引擎均包含 native-file-loading。
+
+## 依赖缓存与耗时
+
+Docker 使用固定版本 cargo-chef 0.1.78：planner 从 Cargo 清单、锁文件和 target 信息生成 recipe，独立层预编译服务端 release、wasm32 release 和 xtask 依赖；应用源文件在这些层之后复制。源代码改变时仍重新编译应用，但不使整个依赖构建层失效。[cargo-chef 官方说明](https://github.com/LukeMathWalker/cargo-chef)
+
+应用检查与构建在同一个 RUN 中完成，把二进制和 Web 包复制到 `/artifacts`，随后移除该次构建的 target。因此不会再为每个提交导出一层巨大的应用编译中间文件；之前的依赖层仍保留。BuildKit 使用 `revaro-image-amd64-v4` 的 GHA `mode=max` 缓存，同时读取 v3 作为回退，复用未变动的 FFmpeg、系统依赖与工具链层。只有 main 的镜像 job 写入 v4；PR 和标签读取缓存。切换缓存结构后的第一次构建需要预热新的依赖层，不能用它代表后续命中依赖层的耗时。主分支构建继续不中途取消；PR 可以取消过时运行。
+
+2026-10-10 的 [CI #330](https://github.com/VesperGlow/revaro/actions/runs/38056876338) 实测：
+
+| 阶段 | 耗时 | 结果 |
+| --- | ---: | --- |
+| Rust job（含 release 负载检查） | 4 分 55 秒 | 通过 |
+| Docker 内重复 workspace check | 4 分 15 秒 | 通过；新流程由 Rust job 独立把关 |
+| Docker release 构建 | 8 分 16 秒 | 通过；新增稳定依赖层缓存 |
+| BuildKit 缓存导出 | 5 分 28 秒 | 通过；限制每提交中间文件层 |
+| 单 runner Chromium | 18 分 37 秒 | 131 通过、6 失败、2 重试后通过、1 跳过；新流程分 4 片 |
+
+此次失败来自媒体/图片已采用原生加载，而部分旧测试只对 Worker 请求注入延迟或 404，注入实际未发生。修正故障入口，并保留暂停、恢复、封面回退与布局断言。单曲循环用结束事件和实际播放状态验证，不要求浏览器额外发送新请求。
+
+新流程的总耗时和缓存命中后的加速幅度必须以新 CI 的时间戳为准，未完成测量前不承诺固定分钟数。当前沙箱禁止创建本地 TCP/UDP socket，真实容器、浏览器与 QUIC 换地址回归由 CI 运行；本地静态检查和逻辑单测不替代这些结果。
 
 生产 Compose 的 `APP_BASE_URL` 默认值会从 `APP_PORT` 推导；留空时例如
 `APP_PORT=18081` 会得到 `http://localhost:18081`，显式设置公网地址则保持原值。
@@ -34,16 +41,6 @@ Firefox 不使用其不支持的移动设备模拟；WebKit 额外覆盖触屏�
 同一配置检查还固定生产 Compose 的部署边界：80/443 公网端口、`/data`、`/objects` 和 `/caches` 三个独立卷、只读根
 文件系统、`/tmp` tmpfs、`no-new-privileges`、丢弃全部 capabilities、非缓存健康
 检查和 `/data`、`/objects`、`/caches`、`/opt/revaro/web` 路径。配置回归会在镜像构建前失败。
-
-容器 job 是 `revaro-image-amd64-v3` BuildKit 缓存的唯一写入者。主分支和版本标签
-在 E2E 通过后还会把已加载的 amd64 镜像导出为保留 1 天的 artifact；发布 job 下载
-并加载这个 artifact，只重新打标签后推送 GHCR，因此发布的镜像就是刚刚通过容器
-验收的那一个。PR 不上传镜像 artifact，也不会进入发布 job。主分支不会在缓存
-导出期间取消，PR 仍会取消过时运行。正式发布仍由 CI Docker runner 完成。
-2026-10-09 的加固验证在独立本地 Rust 进程上执行；当前开发环境没有可用的
-Docker daemon，因此本轮改动的真实容器构建、容器运行和宿主机低端口检查
-仍需由 CI 验证，不能用本地测试结果代替。具体记录见
-[个人使用耐用性验收](resilience-2026-10-09.md)。
 
 容器 job 在启动 E2E 前还会检查最终运行层的边界：镜像默认使用 UID/GID 10001
 的 `revaro` 用户，并在镜像内确认不存在 Go、Node 或 npm 可执行文件。这样旧实现

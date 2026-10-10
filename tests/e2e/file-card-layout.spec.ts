@@ -119,8 +119,8 @@ for (const device of [
         expect(Math.max(...homeHeights) - Math.min(...homeHeights)).toBeLessThan(1)
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(device.width)
 
-        await page.context().route(`**/api/files/${photo.id}/thumbnail*`, route => route.request().serviceWorker() ? route.fulfill({ status: 404 }) : route.continue())
-        await page.context().route(`**/api/files/${photo.id}/preview`, route => route.request().serviceWorker() ? route.fulfill({ status: 404 }) : route.continue())
+        await page.context().route(`**/api/files/${photo.id}/thumbnail*`, route => route.fulfill({ status: 404 }))
+        await page.context().route(`**/api/files/${photo.id}/preview`, route => route.fulfill({ status: 404 }))
         await page.goto(`/f/${id}`)
         const broken = page.locator('.file-card').filter({ hasText: photo.name })
         await expect(broken.locator('.file-type-icon')).toBeVisible()

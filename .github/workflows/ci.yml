@@ -78,31 +78,11 @@ jobs:
           path: target/resilience-load.json
 
   container:
-    name: Build Rust image and browser E2E
+    name: Build amd64 image
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: tests/e2e/package-lock.json
-      - name: Install browser test dependencies
-        working-directory: tests/e2e
-        # Browser E2E is a separate test package. It has no Vue, Vite or
-        # production application dependency.
-        run: |
-          npm ci --ignore-scripts
-          npx playwright install --with-deps chromium firefox webkit
-          sudo apt-get install -y --no-install-recommends ffmpeg pulseaudio pulseaudio-utils
-      - name: Start virtual audio output for native playback tests
-        # Firefox needs an audio sink even when the test WAV contains silence.
-        run: |
-          pulseaudio --start --exit-idle-time=-1
-          pactl load-module module-null-sink sink_name=revaro_e2e
-          pactl set-default-sink revaro_e2e
-          pactl list short sinks
       - name: Validate Compose origin defaults
         run: |
           compose_default_base_url="$(APP_PORT=18081 APP_BASE_URL= docker compose -f compose.local.yml config --format json | jq -r '.services.revaro.environment.APP_BASE_URL')"
@@ -145,16 +125,19 @@ jobs:
             org.opencontainers.image.description=Private local file manager with native media playback
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
       - uses: docker/setup-buildx-action@v4.1.0
-      - name: Build checked amd64 image once
+      - name: Build amd64 image once
         uses: docker/build-push-action@v7.3.0
         with:
           context: .
           platforms: linux/amd64
+          build-args: REVARO_RUN_CHECKS=0
           load: true
           tags: revaro-e2e:local
           labels: ${{ steps.tested-meta.outputs.labels }}
-          cache-from: type=gha,scope=revaro-image-amd64-v3
-          cache-to: type=gha,scope=revaro-image-amd64-v3,mode=max,ignore-error=true,timeout=10m
+          cache-from: |
+            type=gha,scope=revaro-image-amd64-v4
+            type=gha,scope=revaro-image-amd64-v3
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=revaro-image-amd64-v4,mode=max,ignore-error=true,timeout=10m' || '' }}
       - name: Assert Rust-only runtime boundary
         run: |
           test "$(docker image inspect revaro-e2e:local --format '{{.Config.User}}')" = "revaro"
@@ -165,6 +148,60 @@ jobs:
             echo "legacy Go/Node/npm runtime toolchain found in the production image"
             exit 1
           fi
+      - name: Export the image for isolated test runners
+        run: docker save --output /tmp/revaro-e2e.tar revaro-e2e:local
+      - name: Upload the built image
+        uses: actions/upload-artifact@v7
+        with:
+          name: revaro-built-image
+          path: /tmp/revaro-e2e.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  e2e:
+    name: Browser ${{ matrix.browser }} / shard ${{ matrix.shard }}
+    needs: container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { browser: chromium, shard: 1 }
+          - { browser: chromium, shard: 2 }
+          - { browser: chromium, shard: 3 }
+          - { browser: chromium, shard: 4 }
+          - { browser: firefox, shard: 1 }
+          - { browser: webkit, shard: 1 }
+    env:
+      E2E_BROWSER: ${{ matrix.browser }}
+      PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report/${{ matrix.browser }}-${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
+      - name: Install the selected browser and fixture dependencies
+        working-directory: tests/e2e
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps "${{ matrix.browser }}"
+          sudo apt-get install -y --no-install-recommends ffmpeg pulseaudio pulseaudio-utils
+      - name: Start virtual audio output for native playback tests
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=revaro_e2e
+          pactl set-default-sink revaro_e2e
+      - name: Download the same built image
+        uses: actions/download-artifact@v6
+        with:
+          name: revaro-built-image
+          path: /tmp/revaro-built-image
+      - name: Load the built image
+        run: docker load --input /tmp/revaro-built-image/revaro-e2e.tar
       - name: Build and start the real Revaro stack
         run: docker compose -f compose.e2e.yml up -d --no-build
       - name: Wait for readiness
@@ -175,43 +212,33 @@ jobs:
           done
           docker compose -f compose.e2e.yml logs
           exit 1
-      - name: Run Rust browser E2E
+      - name: Run browser regressions on an isolated stack
         working-directory: tests/e2e
-        run: PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/chromium npx playwright test --config=playwright.config.ts --output=test-results/chromium
-      - name: Check Firefox startup, editor, accounts and multi-device playback
-        working-directory: tests/e2e
-        run: E2E_BROWSER=firefox PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/firefox npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts progress-sync.spec.ts native-file-loading.spec.ts --grep-invert 'mobile account settings' --config=playwright.config.ts --output=test-results/firefox
-      - name: Check WebKit startup, editor, touch layout, accounts and multi-device playback
-        working-directory: tests/e2e
-        run: E2E_BROWSER=webkit PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/webkit npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts progress-sync.spec.ts native-file-loading.spec.ts --config=playwright.config.ts --output=test-results/webkit
+        run: |
+          if [ "$E2E_BROWSER" = chromium ]; then
+            npx playwright test --shard=${{ matrix.shard }}/4 --config=playwright.config.ts --output=test-results/${{ matrix.browser }}-${{ matrix.shard }}
+          elif [ "$E2E_BROWSER" = firefox ]; then
+            npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts progress-sync.spec.ts native-file-loading.spec.ts --grep-invert 'mobile account settings' --config=playwright.config.ts --output=test-results/${{ matrix.browser }}-${{ matrix.shard }}
+          else
+            npx playwright test resilience.spec.ts anchor-position.spec.ts startup.spec.ts account-settings.spec.ts progress-sync.spec.ts native-file-loading.spec.ts --config=playwright.config.ts --output=test-results/${{ matrix.browser }}-${{ matrix.shard }}
+          fi
       - name: Check repeated editor and menu resource usage
+        if: matrix.browser == 'chromium' && matrix.shard == 1
         run: SOAK_OUTPUT=browser-soak.json node tests/load/browser-soak.cjs
       - name: Upload browser resource measurements
-        if: always()
+        if: always() && matrix.browser == 'chromium' && matrix.shard == 1
         uses: actions/upload-artifact@v7
         with:
           name: browser-soak
           path: browser-soak.json
-      - name: Export the tested image
-        if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-        run: docker save --output /tmp/revaro-e2e.tar revaro-e2e:local
-      - name: Upload the tested image
-        if: success() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-        uses: actions/upload-artifact@v6
-        with:
-          name: revaro-tested-image
-          path: /tmp/revaro-e2e.tar
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
       - name: Collect container logs
         if: failure()
         run: docker compose -f compose.e2e.yml logs --no-color > e2e-container.log
       - name: Upload E2E diagnostics
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
-          name: playwright-e2e-diagnostics
+          name: playwright-${{ matrix.browser }}-${{ matrix.shard }}
           if-no-files-found: ignore
           path: |
             tests/e2e/playwright-report/
@@ -223,7 +250,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [rust, container]
+    needs: [rust, container, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -234,10 +261,10 @@ jobs:
       - name: Download the tested image
         uses: actions/download-artifact@v6
         with:
-          name: revaro-tested-image
-          path: /tmp/revaro-tested-image
+          name: revaro-built-image
+          path: /tmp/revaro-built-image
       - name: Load the tested image
-        run: docker load --input /tmp/revaro-tested-image/revaro-e2e.tar
+        run: docker load --input /tmp/revaro-built-image/revaro-e2e.tar
       - name: Log in to GHCR
         uses: docker/login-action@v4.5.1
         with:
