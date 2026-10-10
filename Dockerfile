@@ -27,7 +27,7 @@ RUN ./configure \
     && rm -rf /src
 
 # ---- Rust workspace build and verification ----
-FROM rust:1.98-bookworm AS rust-base
+FROM rust:1.99-bookworm AS rust-base
 RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     ca-certificates curl clang cmake pkg-config \
