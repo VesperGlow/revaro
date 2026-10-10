@@ -202,6 +202,9 @@ pub struct AppState {
     pub db: Database,
     /// The local object store holding original bytes and derived artifacts.
     pub store: LocalStore,
+    /// Replaceable source for original-file HTTP reads, independent of writes
+    /// and native parsing engines that currently require the local store.
+    pub files: Arc<dyn crate::file_access::FileAccess>,
     /// Administrator credentials, sessions and second factor.
     pub auth: AuthService,
     /// Process-wide L1/L2 cache policy and statistics.
@@ -230,6 +233,20 @@ impl AppState {
         store: LocalStore,
         auth: AuthService,
     ) -> Arc<Self> {
+        let files = Arc::new(store.clone());
+        Self::with_file_access(config, db, store, auth, files)
+    }
+
+    /// Select an original-file read provider while retaining existing local
+    /// upload, archive generation and parser lifecycles during migration.
+    #[must_use]
+    pub fn with_file_access(
+        config: Arc<Config>,
+        db: Database,
+        store: LocalStore,
+        auth: AuthService,
+        files: Arc<dyn crate::file_access::FileAccess>,
+    ) -> Arc<Self> {
         let reader = ReaderRuntime::new();
         let cache = CacheManager::for_app(
             &config.caches_dir,
@@ -242,6 +259,7 @@ impl AppState {
             delivery: crate::delivery::DeliveryRuntime::default(),
             config,
             db,
+            files,
             store,
             auth,
             cache,

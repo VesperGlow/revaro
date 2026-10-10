@@ -33,6 +33,7 @@ pub fn build(state: Arc<AppState>) -> Router {
         .fallback(web::serve)
         .with_state(state.clone())
         .layer(axum::middleware::from_fn(crate::transfer::file_resources))
+        .layer(axum::middleware::from_fn(crate::transfer::monitor))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::delivery::schedule,

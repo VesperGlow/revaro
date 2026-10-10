@@ -1,0 +1,453 @@
+{
+  "target": "https://revaro-2.0721.ing",
+  "dnsAddresses": [
+    "62.84.164.14"
+  ],
+  "clientLocation": "unverified",
+  "peakWindow": "Asia/Shanghai 18:00-24:00",
+  "capturedAt": "2026-10-10T12:58:04.787692+00:00",
+  "transportConfig": {
+    "http2_origin": null
+  },
+  "gatewayReadAccess": "SSH o721 via user-provided ciallo key; sudo read access verified",
+  "samples": {
+    "h2": {
+      "http_version": "2",
+      "http_code": 200,
+      "remote_ip": "62.84.164.14",
+      "remote_port": 443,
+      "time_namelookup": 0.120121,
+      "time_connect": 0.261777,
+      "time_appconnect": 0.413325,
+      "time_starttransfer": 0.557932,
+      "time_total": 0.558256,
+      "size_download": 2865,
+      "exitcode": 0,
+      "ssl_verify_result": 0,
+      "recordFileTimestampUtc": "2026-10-10T12:40:56.756063+00:00"
+    },
+    "h3Strict": {
+      "http_version": "0",
+      "http_code": 0,
+      "remote_ip": "",
+      "remote_port": -1,
+      "time_namelookup": 0.120649,
+      "time_connect": 0.0,
+      "time_appconnect": 0.0,
+      "time_starttransfer": 0.0,
+      "time_total": 10.001962,
+      "size_download": 0,
+      "exitcode": 28,
+      "ssl_verify_result": 1,
+      "recordFileTimestampUtc": "2026-10-10T12:41:06.196072+00:00"
+    },
+    "h3StrictPinnedIpv4": {
+      "http_version": "0",
+      "http_code": 0,
+      "remote_ip": "",
+      "remote_port": -1,
+      "time_namelookup": 1.9e-05,
+      "time_connect": 0.0,
+      "time_appconnect": 0.0,
+      "time_starttransfer": 0.0,
+      "time_total": 8.002158,
+      "size_download": 0,
+      "exitcode": 28,
+      "ssl_verify_result": 1,
+      "recordFileTimestampUtc": "2026-10-10T12:42:28.624158+00:00"
+    },
+    "automaticFallback": {
+      "http_version": "2",
+      "http_code": 200,
+      "remote_ip": "62.84.164.14",
+      "remote_port": 443,
+      "time_namelookup": 0.004049,
+      "time_connect": 0.1977,
+      "time_appconnect": 0.344889,
+      "time_starttransfer": 0.49084,
+      "time_total": 0.49112,
+      "size_download": 2865,
+      "exitcode": 0,
+      "ssl_verify_result": 0,
+      "recordFileTimestampUtc": "2026-10-10T12:42:21.096150+00:00"
+    },
+    "h3PositiveControl": {
+      "http_version": "3",
+      "http_code": 200,
+      "remote_ip": "104.18.27.14",
+      "remote_port": 443,
+      "time_namelookup": 0.008665,
+      "time_connect": 0.019909,
+      "time_appconnect": 0.022174,
+      "time_starttransfer": 0.034226,
+      "time_total": 0.077352,
+      "size_download": 125959,
+      "exitcode": 0,
+      "ssl_verify_result": 0,
+      "recordFileTimestampUtc": "2026-10-10T12:41:58.748127+00:00",
+      "target": "https://cloudflare-quic.com/"
+    },
+    "originH3": {
+      "http_version": "3",
+      "http_code": 200,
+      "remote_ip": "88.214.26.196",
+      "remote_port": 443,
+      "time_appconnect": 0.156252,
+      "time_starttransfer": 0.308755,
+      "time_total": 0.309322,
+      "exitcode": 0,
+      "ssl_verify_result": 0
+    },
+    "afterFirewallFixH3": {
+      "http_version": "3",
+      "http_code": 200,
+      "remote_ip": "62.84.164.14",
+      "remote_port": 443,
+      "time_appconnect": 0.158402,
+      "time_starttransfer": 0.30699,
+      "time_total": 0.307775,
+      "exitcode": 0,
+      "ssl_verify_result": 0
+    }
+  },
+  "deployedScripts": {
+    "core": {
+      "bytes": 32306,
+      "sha256": "9331dbe70baebd3462824b26f5a25ceadf430f57b2aa35eb28344d05b9779560",
+      "hasNativeBypass": false
+    },
+    "worker": {
+      "bytes": 37081,
+      "sha256": "90ab3b18375223edd6d5dc9000b3882813bcc80009039822b1eb904ac3474169",
+      "hasNativeBypass": false
+    },
+    "client": {
+      "bytes": 5362,
+      "sha256": "02a9004d9d77ac24e7a55bba738231a46867ca737829f7f781dd214e637e4c9e",
+      "hasNativeBypass": false
+    }
+  },
+  "workspaceCoreSha256": "998ba3ee4147ea056188f72c5c5473b0c70114ba66e90ad617289ff6582254a9",
+  "clientPublicEgressIpv4": "157.254.234.140",
+  "clientEgressSource": "https://api.ipify.org",
+  "gateway": {
+    "nginxVersion": "1.26.3",
+    "configuration": "/etc/nginx/stream.d/revaro.conf",
+    "transport": "Layer 4 stream TCP and UDP forwarding, no HTTP/TLS termination",
+    "upstream": "88.214.26.196:443",
+    "tcpListen": "0.0.0.0:443",
+    "udpListen": "0.0.0.0:443 udp reuseport",
+    "tcpProxyTimeout": "1h",
+    "udpProxyTimeout": "10m",
+    "rateLimit": "not configured; stream defaults unlimited",
+    "proxyBufferSize": "default 16k stream read buffer; no HTTP response buffering",
+    "streamAccessLog": "not configured",
+    "firewallBefore": "inet filter input policy drop; TCP 22/80/443 accepted; UDP 443 absent",
+    "firewallAfter": "UDP 443 accepted; existing rules preserved",
+    "udpForwardingSocketObserved": true,
+    "nginxErrorLog": "No new transfer errors observed; older 2026-10-09 TCP connection timeouts are unrelated to this run",
+    "udpKernelCountersAtRead": {
+      "InErrors": 0,
+      "RcvbufErrors": 0,
+      "SndbufErrors": 0
+    }
+  },
+  "optimization": {
+    "utc": "2026-10-10T12:59:46.260182+00:00",
+    "changedFile": "/etc/nftables.conf",
+    "backup": "/etc/nftables.conf.revaro-quic-20261010T125946Z.bak",
+    "beforeSha256": "a360925b4f550dda49bd637a87dd8617da7d0958a0fc6978dee61a843cc8cfe2",
+    "afterSha256": "b44c9da56286cd2b611ae82ed379d75bd4441b751dcf8ade3d8a2ae96cebda10",
+    "runtimeRule": "inet filter input udp dport 443 accept",
+    "persistentSyntaxCheck": "passed",
+    "reloadFullRuleset": false,
+    "nginxOrRevaroChanged": false
+  },
+  "videoFixture": {
+    "duration_ms": 29443,
+    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "width": 1280,
+    "height": 720,
+    "bitrate": 14313692,
+    "frame_rate": "79470000/2647127",
+    "bytes": 52679755
+  },
+  "configurationUnmeasured": [
+    "Client ISP and geographic location",
+    "Real mobile handover and externally observed packet loss per hop",
+    "Other congestion-control modes under identical conditions",
+    "MTU cap and per-flow fragmentation A/B"
+  ],
+  "backend": {
+    "address": "88.214.26.196:443",
+    "socketOwner": "Revaro PID 29172 owns TCP/UDP 443 and TCP 80",
+    "executable": "/usr/local/bin/revaro",
+    "binarySha256": "73a64921936c943e15dd40549312c8aa1c8898c0232aff2a6e336dbccb4a9cc6",
+    "container": {
+      "name": "revaro",
+      "image": "ghcr.io/vesperglow/revaro:latest",
+      "imageId": "b9b7255d42c52c6dbc8642bec607fbfdf7df2e3cca10bc0522892281f4c6b409",
+      "created": "2026-10-10T09:44:32.044986411Z",
+      "startedAt": "2026-10-10T09:44:32.157937218Z"
+    },
+    "quicEnvironment": {},
+    "startup": "2026-10-10T09:44:32.203217Z  INFO native HTTP/3 listening addr=0.0.0.0:443 mode=Aggressive target_mbps=None max_mbps=250 global_max_mbps=1000",
+    "webFiles": {
+      "transport-core.js": {
+        "sha256": "9331dbe70baebd3462824b26f5a25ceadf430f57b2aa35eb28344d05b9779560",
+        "bytes": 32306,
+        "hasNativeBypass": false
+      },
+      "transport-worker.js": {
+        "sha256": "90ab3b18375223edd6d5dc9000b3882813bcc80009039822b1eb904ac3474169",
+        "bytes": 37081,
+        "hasNativeBypass": false
+      },
+      "transport-client.js": {
+        "sha256": "02a9004d9d77ac24e7a55bba738231a46867ca737829f7f781dd214e637e4c9e",
+        "bytes": 5362,
+        "hasNativeBypass": false
+      },
+      "index.html": {
+        "sha256": "9dc21ef039e4a8e16eae1a333aa4f2db7de80957301a00798ea3e139ca1134dc",
+        "bytes": 2865,
+        "hasNativeBypass": false
+      }
+    },
+    "configurationNotChanged": true,
+    "udpKernelCountersAtRead": {
+      "InErrors": 0,
+      "RcvbufErrors": 0,
+      "SndbufErrors": 0
+    },
+    "pid": 29172
+  },
+  "backendControllerStatistics": [
+    {
+      "utc": "2026-10-10T13:00:51.051303Z",
+      "remote": "62.84.164.14:42593",
+      "sent_bytes": 284107,
+      "acked_bytes": 272632,
+      "lost_bytes": 0,
+      "loss_ppm": 0,
+      "pacing_bps": 4000000,
+      "target_bps": 4000000,
+      "rtt_ms": 144,
+      "sent_packets": 238,
+      "lost_packets": 0,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:00:53.420739Z",
+      "remote": "62.84.164.14:42988",
+      "sent_bytes": 284108,
+      "acked_bytes": 272482,
+      "lost_bytes": 0,
+      "loss_ppm": 0,
+      "pacing_bps": 4000000,
+      "target_bps": 4000000,
+      "rtt_ms": 143,
+      "sent_packets": 238,
+      "lost_packets": 0,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:00:55.366520Z",
+      "remote": "62.84.164.14:34261",
+      "sent_bytes": 284108,
+      "acked_bytes": 272634,
+      "lost_bytes": 0,
+      "loss_ppm": 0,
+      "pacing_bps": 4000000,
+      "target_bps": 4000000,
+      "rtt_ms": 144,
+      "sent_packets": 238,
+      "lost_packets": 0,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:01:11.423606Z",
+      "remote": "62.84.164.14:54262",
+      "sent_bytes": 20847144,
+      "acked_bytes": 18661292,
+      "lost_bytes": 6000,
+      "loss_ppm": 362,
+      "pacing_bps": 27421440,
+      "target_bps": 27411512,
+      "rtt_ms": 418,
+      "sent_packets": 16713,
+      "lost_packets": 5,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:01:46.923317Z",
+      "remote": "62.84.164.14:47232",
+      "sent_bytes": 14263,
+      "acked_bytes": 11370,
+      "lost_bytes": 0,
+      "loss_ppm": 0,
+      "pacing_bps": 4000000,
+      "target_bps": 4000000,
+      "rtt_ms": 145,
+      "sent_packets": 27,
+      "lost_packets": 0,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:01:50.028021Z",
+      "remote": "62.84.164.14:41762",
+      "sent_bytes": 12803,
+      "acked_bytes": 11370,
+      "lost_bytes": 0,
+      "loss_ppm": 0,
+      "pacing_bps": 4000000,
+      "target_bps": 4000000,
+      "rtt_ms": 148,
+      "sent_packets": 25,
+      "lost_packets": 0,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:03:15.222062Z",
+      "remote": "62.84.164.14:57231",
+      "sent_bytes": 26280103,
+      "acked_bytes": 25316153,
+      "lost_bytes": 19993,
+      "loss_ppm": 0,
+      "pacing_bps": 4969144,
+      "target_bps": 4969144,
+      "rtt_ms": 145,
+      "sent_packets": 17951,
+      "lost_packets": 28,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:03:48.359482Z",
+      "remote": "62.84.164.14:55436",
+      "sent_bytes": 14469077,
+      "acked_bytes": 13925780,
+      "lost_bytes": 10320,
+      "loss_ppm": 679,
+      "pacing_bps": 13425680,
+      "target_bps": 13416568,
+      "rtt_ms": 141,
+      "sent_packets": 9878,
+      "lost_packets": 18,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:05:01.853138Z",
+      "remote": "62.84.164.14:33885",
+      "sent_bytes": 93092804,
+      "acked_bytes": 78516407,
+      "lost_bytes": 8042724,
+      "loss_ppm": 0,
+      "pacing_bps": 25229928,
+      "target_bps": 25229928,
+      "rtt_ms": 1007,
+      "sent_packets": 72303,
+      "lost_packets": 5541,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:05:33.764886Z",
+      "remote": "62.84.164.14:37987",
+      "sent_bytes": 75472744,
+      "acked_bytes": 62046444,
+      "lost_bytes": 6656160,
+      "loss_ppm": 0,
+      "pacing_bps": 26900872,
+      "target_bps": 26900872,
+      "rtt_ms": 1216,
+      "sent_packets": 58559,
+      "lost_packets": 4585,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:06:12.337663Z",
+      "remote": "62.84.164.14:39124",
+      "sent_bytes": 93900731,
+      "acked_bytes": 75391388,
+      "lost_bytes": 10715760,
+      "loss_ppm": 0,
+      "pacing_bps": 27322192,
+      "target_bps": 27322192,
+      "rtt_ms": 1315,
+      "sent_packets": 73231,
+      "lost_packets": 7380,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:06:44.688445Z",
+      "remote": "62.84.164.14:42308",
+      "sent_bytes": 68535548,
+      "acked_bytes": 65546333,
+      "lost_bytes": 7380,
+      "loss_ppm": 212,
+      "pacing_bps": 27913824,
+      "target_bps": 27907904,
+      "rtt_ms": 435,
+      "sent_packets": 53749,
+      "lost_packets": 6,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:08:16.852059Z",
+      "remote": "62.84.164.14:35768",
+      "sent_bytes": 37950016,
+      "acked_bytes": 36455371,
+      "lost_bytes": 0,
+      "loss_ppm": 0,
+      "pacing_bps": 2541792,
+      "target_bps": 2541792,
+      "rtt_ms": 146,
+      "sent_packets": 30218,
+      "lost_packets": 0,
+      "cubic_fallback": false
+    },
+    {
+      "utc": "2026-10-10T13:08:50.123672Z",
+      "remote": "62.84.164.14:48822",
+      "sent_bytes": 27313117,
+      "acked_bytes": 26323198,
+      "lost_bytes": 99521,
+      "loss_ppm": 5194,
+      "pacing_bps": 11440128,
+      "target_bps": 11380704,
+      "rtt_ms": 143,
+      "sent_packets": 18519,
+      "lost_packets": 80,
+      "cubic_fallback": false
+    }
+  ],
+  "backendControllerEvents": [
+    "2026-10-10T13:04:33.781375Z  INFO QUIC aggressive controller switched to Cubic reason=\"high measured loss\"",
+    "2026-10-10T13:04:39.118299Z  INFO QUIC healthy path restarting bounded bandwidth probe episodes=1",
+    "2026-10-10T13:05:12.260036Z  INFO QUIC aggressive controller switched to Cubic reason=\"high measured loss\"",
+    "2026-10-10T13:05:17.389976Z  INFO QUIC healthy path restarting bounded bandwidth probe episodes=1",
+    "2026-10-10T13:05:43.744218Z  INFO QUIC aggressive controller switched to Cubic reason=\"high measured loss\"",
+    "2026-10-10T13:05:49.588748Z  INFO QUIC healthy path restarting bounded bandwidth probe episodes=1"
+  ],
+  "finalVerification": {
+    "checkedUtc": "2026-10-10T13:26:36.239557+00:00",
+    "nginxConfigurationUnchanged": true,
+    "nginxSyntaxCheck": "passed",
+    "persistentFirewallSyntaxCheck": "passed",
+    "backendPidUnchanged": true,
+    "backendImageUnchanged": true,
+    "backendStartTimeUnchanged": true
+  },
+  "mtuDiagnostic": {
+    "gatewayInterfaceMtu": 1500,
+    "gatewayRouteMtuToClient": 1280,
+    "client": "157.254.234.140",
+    "gatewayIpFragOKsAtEarlierRead": 61760,
+    "gatewayIpFragOKsAtFinalRead": 106986,
+    "observedFragOKsIncrease": 45226,
+    "observedFragCreatesIncrease": 90452,
+    "limit": "Systemwide counters; no per-flow packet capture or controlled MTU A/B; causality unverified",
+    "backendRouteMtuToClient": "no explicit cached MTU in ip route get"
+  }
+}

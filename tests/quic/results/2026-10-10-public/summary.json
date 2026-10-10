@@ -1,0 +1,861 @@
+{
+  "network": {
+    "h2": {
+      "completedRangeSamples": 3,
+      "medianMbps": 36.280951137295204,
+      "medianTtfbSeconds": 0.442875,
+      "randomRangeMedianTtfbMs": 434.312,
+      "randomRangeMedianTotalMs": 1039.0325
+    },
+    "h3": {
+      "completedRangeSamples": 3,
+      "medianMbps": 14.16864521569786,
+      "medianTtfbSeconds": 0.313572,
+      "randomRangeMedianTtfbMs": 303.8705,
+      "randomRangeMedianTotalMs": 856.0715
+    }
+  },
+  "media": {
+    "deployed": {
+      "h2": {
+        "playSamples": 2,
+        "successfulPlayAndSeekSamples": 2,
+        "firstFrameMedianMs": 1852.9000000059605,
+        "requestCounts": [
+          155,
+          158
+        ],
+        "receivedBodyBytes": [
+          53986400,
+          53101670
+        ],
+        "overlappingPayloadBytes": [
+          1306645,
+          421915
+        ],
+        "waitingEventCounts": [
+          0,
+          0
+        ],
+        "stallDurationsMs": [
+          0,
+          0
+        ],
+        "completedSeeks": 8,
+        "plannedSeeks": 8,
+        "completedSeekMedianMs": 167.25,
+        "completedSeekMaxMs": 823.5,
+        "timedOutSeekSamples": 0,
+        "weakSamples": 2,
+        "verifiedNetworkInterruptionSamples": 2,
+        "sustainedRecoverySuccesses": 2,
+        "stableRecoveryStartMs": [
+          9000.400000035763,
+          9800.399999976158
+        ],
+        "weakWaitingEvents": [
+          3,
+          3
+        ],
+        "weakStallMs": [
+          6567.799999952316,
+          7401.800000011921
+        ],
+        "observedProtocols": [
+          "h2"
+        ]
+      },
+      "h3-auto": {
+        "playSamples": 2,
+        "successfulPlayAndSeekSamples": 1,
+        "firstFrameMedianMs": 2539.5,
+        "requestCounts": [
+          317,
+          334
+        ],
+        "receivedBodyBytes": [
+          20939767,
+          33269149
+        ],
+        "overlappingPayloadBytes": [
+          923170,
+          499336
+        ],
+        "waitingEventCounts": [
+          null,
+          7
+        ],
+        "stallDurationsMs": [
+          null,
+          6724.099999904633
+        ],
+        "completedSeeks": 5,
+        "plannedSeeks": 8,
+        "completedSeekMedianMs": 9195.399999976158,
+        "completedSeekMaxMs": 12045.599999964237,
+        "timedOutSeekSamples": 1,
+        "weakSamples": 2,
+        "verifiedNetworkInterruptionSamples": 2,
+        "sustainedRecoverySuccesses": 0,
+        "stableRecoveryStartMs": [
+          null,
+          null
+        ],
+        "weakWaitingEvents": [
+          4,
+          4
+        ],
+        "weakStallMs": [
+          21499.699999928474,
+          21503.099999964237
+        ],
+        "observedProtocols": [
+          "h3"
+        ]
+      }
+    },
+    "native-control": {
+      "h2": {
+        "playSamples": 2,
+        "successfulPlayAndSeekSamples": 2,
+        "firstFrameMedianMs": 1499.8499999940395,
+        "requestCounts": [
+          30,
+          55
+        ],
+        "receivedBodyBytes": [
+          90262753,
+          96967905
+        ],
+        "overlappingPayloadBytes": [
+          37582998,
+          44288150
+        ],
+        "waitingEventCounts": [
+          0,
+          0
+        ],
+        "stallDurationsMs": [
+          0,
+          0
+        ],
+        "completedSeeks": 8,
+        "plannedSeeks": 8,
+        "completedSeekMedianMs": 174.4000000357628,
+        "completedSeekMaxMs": 4381.199999988079,
+        "timedOutSeekSamples": 0,
+        "weakSamples": 2,
+        "verifiedNetworkInterruptionSamples": 2,
+        "sustainedRecoverySuccesses": 2,
+        "stableRecoveryStartMs": [
+          200.5999999642372,
+          200.5
+        ],
+        "weakWaitingEvents": [
+          0,
+          0
+        ],
+        "weakStallMs": [
+          0,
+          0
+        ],
+        "observedProtocols": [
+          "h2"
+        ]
+      },
+      "h3-auto": {
+        "playSamples": 2,
+        "successfulPlayAndSeekSamples": 0,
+        "firstFrameMedianMs": 1356.5499999821186,
+        "requestCounts": [
+          23,
+          21
+        ],
+        "receivedBodyBytes": [
+          19400130,
+          12416057
+        ],
+        "overlappingPayloadBytes": [
+          54162,
+          29503
+        ],
+        "waitingEventCounts": [
+          null,
+          null
+        ],
+        "stallDurationsMs": [
+          null,
+          null
+        ],
+        "completedSeeks": 2,
+        "plannedSeeks": 8,
+        "completedSeekMedianMs": 4320.25,
+        "completedSeekMaxMs": 4651.600000023842,
+        "timedOutSeekSamples": 2,
+        "weakSamples": 2,
+        "verifiedNetworkInterruptionSamples": 0,
+        "sustainedRecoverySuccesses": null,
+        "stableRecoveryStartMs": [
+          null,
+          null
+        ],
+        "weakWaitingEvents": [
+          3,
+          4
+        ],
+        "weakStallMs": [
+          19674.80000001192,
+          15037.199999988079
+        ],
+        "observedProtocols": [
+          "h3"
+        ]
+      }
+    }
+  },
+  "diagnostics": {
+    "browser-h2-baseline.json": [
+      {
+        "mode": "deployed",
+        "protocol": "h2",
+        "scenario": "play-seek",
+        "result": "measured",
+        "firstFrameMs": 1865.6000000238419,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 156,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 53183588,
+          "repeatedIdenticalRangeRequests": 24,
+          "requestsAtMost64KiB": 39,
+          "requestsAtMost256KiB": 48,
+          "boundedRangeSizes": [
+            1,
+            54347,
+            65536,
+            131072,
+            196608,
+            262144,
+            327680,
+            393216,
+            458752,
+            524288
+          ],
+          "failedRequests": 12,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 0,
+          "playbackStallMs": 0,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 503833,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "deployed",
+        "protocol": "h2",
+        "scenario": "offline-recovery",
+        "result": "measured",
+        "firstFrameMs": 1781.5,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 219,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 54682740,
+          "repeatedIdenticalRangeRequests": 56,
+          "requestsAtMost64KiB": 59,
+          "requestsAtMost256KiB": 81,
+          "boundedRangeSizes": [
+            1,
+            54347,
+            65536,
+            131072,
+            196608,
+            262144,
+            327680,
+            393216,
+            458752,
+            524288
+          ],
+          "failedRequests": 50,
+          "nonCancelledFailures": 12,
+          "playbackWaitingEvents": 3,
+          "playbackStallMs": 6884.800000011921,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 2002985,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "native-control",
+        "protocol": "h2",
+        "scenario": "play-seek",
+        "result": "measured",
+        "firstFrameMs": 1599.1000000238419,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 50,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 87366431,
+          "repeatedIdenticalRangeRequests": 7,
+          "requestsAtMost64KiB": 0,
+          "requestsAtMost256KiB": 0,
+          "boundedRangeSizes": [],
+          "failedRequests": 47,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 0,
+          "playbackStallMs": 0,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 34686676,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "native-control",
+        "protocol": "h2",
+        "scenario": "offline-recovery",
+        "result": "measured",
+        "firstFrameMs": 1419.9000000357628,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 29,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 70809750,
+          "repeatedIdenticalRangeRequests": 5,
+          "requestsAtMost64KiB": 0,
+          "requestsAtMost256KiB": 0,
+          "boundedRangeSizes": [],
+          "failedRequests": 27,
+          "nonCancelledFailures": 4,
+          "playbackWaitingEvents": 0,
+          "playbackStallMs": 0,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 18129995,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "native-control",
+        "protocol": "h2",
+        "scenario": "play-seek",
+        "result": "measured",
+        "firstFrameMs": 1528,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 59,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 97897697,
+          "repeatedIdenticalRangeRequests": 3,
+          "requestsAtMost64KiB": 0,
+          "requestsAtMost256KiB": 0,
+          "boundedRangeSizes": [],
+          "failedRequests": 56,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 1,
+          "playbackStallMs": 1119.300000011921,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 45217942,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "native-control",
+        "protocol": "h2",
+        "scenario": "offline-recovery",
+        "result": "measured",
+        "firstFrameMs": 1559.199999988079,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 31,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 70486076,
+          "repeatedIdenticalRangeRequests": 5,
+          "requestsAtMost64KiB": 0,
+          "requestsAtMost256KiB": 0,
+          "boundedRangeSizes": [],
+          "failedRequests": 29,
+          "nonCancelledFailures": 4,
+          "playbackWaitingEvents": 0,
+          "playbackStallMs": 0,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 17806321,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "deployed",
+        "protocol": "h2",
+        "scenario": "play-seek",
+        "result": "measured",
+        "firstFrameMs": 1855.199999988079,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 146,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 52679774,
+          "repeatedIdenticalRangeRequests": 21,
+          "requestsAtMost64KiB": 35,
+          "requestsAtMost256KiB": 46,
+          "boundedRangeSizes": [
+            1,
+            54347,
+            65536,
+            131072,
+            196608,
+            262144,
+            327680,
+            393216,
+            458752,
+            524288
+          ],
+          "failedRequests": 7,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 0,
+          "playbackStallMs": 0,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 19,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "deployed",
+        "protocol": "h2",
+        "scenario": "offline-recovery",
+        "result": "measured",
+        "firstFrameMs": 1797,
+        "initialPlayback": null,
+        "network": {
+          "requestCount": 237,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 51618934,
+          "repeatedIdenticalRangeRequests": 64,
+          "requestsAtMost64KiB": 68,
+          "requestsAtMost256KiB": 84,
+          "boundedRangeSizes": [
+            1,
+            54347,
+            65536,
+            131072,
+            196608,
+            262144,
+            327680,
+            393216,
+            458752,
+            524288
+          ],
+          "failedRequests": 68,
+          "nonCancelledFailures": 12,
+          "playbackWaitingEvents": 3,
+          "playbackStallMs": 7441.200000047684,
+          "uniqueObservedPayloadBytes": 49796171,
+          "overlappingObservedPayloadBytes": 1822763,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      }
+    ],
+    "browser-h3-diagnostic.json": [
+      {
+        "mode": "deployed",
+        "protocol": "h3-auto",
+        "scenario": "play-seek",
+        "result": "failed",
+        "firstFrameMs": 2604.600000023842,
+        "initialPlayback": {
+          "time": 2.660329,
+          "readyState": 3,
+          "events": [
+            {
+              "name": "waiting",
+              "milliseconds": 3.100000023841858,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 0,
+              "errorCode": null
+            },
+            {
+              "name": "loadedmetadata",
+              "milliseconds": 2054.600000023842,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 1,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 3501.600000023842,
+              "phase": "play",
+              "time": 0.000769,
+              "readyState": 3,
+              "errorCode": null
+            },
+            {
+              "name": "waiting",
+              "milliseconds": 3701.900000035763,
+              "phase": "play",
+              "time": 0.160155,
+              "readyState": 2,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 4977.800000011921,
+              "phase": "play",
+              "time": 0.20961,
+              "readyState": 3,
+              "errorCode": null
+            },
+            {
+              "name": "waiting",
+              "milliseconds": 5779.100000023842,
+              "phase": "play",
+              "time": 0.969374,
+              "readyState": 2,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 7507.5,
+              "phase": "play",
+              "time": 1.024138,
+              "readyState": 3,
+              "errorCode": null
+            },
+            {
+              "name": "waiting",
+              "milliseconds": 8846.200000047684,
+              "phase": "play",
+              "time": 2.321893,
+              "readyState": 2,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 11177.700000047684,
+              "phase": "play",
+              "time": 2.368826,
+              "readyState": 3,
+              "errorCode": null
+            }
+          ],
+          "elapsedMs": 11509.600000023842,
+          "decodedFrames": 88,
+          "networkRequestCount": 113,
+          "bodyBytes": 6826441,
+          "waitingEvents": 3,
+          "stallMs": 5335.799999952316
+        },
+        "network": {
+          "requestCount": 314,
+          "protocols": [
+            "h3"
+          ],
+          "receivedBodyBytes": 14715240,
+          "repeatedIdenticalRangeRequests": 64,
+          "requestsAtMost64KiB": 308,
+          "requestsAtMost256KiB": 314,
+          "boundedRangeSizes": [
+            1,
+            54347,
+            65536,
+            131072
+          ],
+          "failedRequests": 65,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 4,
+          "playbackStallMs": 5822.399999976158,
+          "uniqueObservedPayloadBytes": 14543128,
+          "overlappingObservedPayloadBytes": 172112,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": "page.evaluate: Error: Seek timed out in 20s\n    at eval (eval at evaluate (:291:30), <anonymous>:5:51)",
+        "seekInProgress": 0.22
+      },
+      {
+        "mode": "native-control",
+        "protocol": "h3-auto",
+        "scenario": "play-seek",
+        "result": "measured",
+        "firstFrameMs": 1517,
+        "initialPlayback": {
+          "time": 5.523407,
+          "readyState": 4,
+          "events": [
+            {
+              "name": "waiting",
+              "milliseconds": 18,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 0,
+              "errorCode": null
+            },
+            {
+              "name": "loadedmetadata",
+              "milliseconds": 1270.300000011921,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 1,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 2143.100000023842,
+              "phase": "play",
+              "time": 0.002659,
+              "readyState": 3,
+              "errorCode": null
+            },
+            {
+              "name": "waiting",
+              "milliseconds": 6805,
+              "phase": "play",
+              "time": 4.620731,
+              "readyState": 2,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 9254.700000047684,
+              "phase": "play",
+              "time": 4.668451,
+              "readyState": 3,
+              "errorCode": null
+            }
+          ],
+          "elapsedMs": 10149.800000011921,
+          "decodedFrames": 170,
+          "networkRequestCount": 7,
+          "bodyBytes": 20040420,
+          "waitingEvents": 1,
+          "stallMs": 2449.7000000476837
+        },
+        "network": {
+          "requestCount": 32,
+          "protocols": [
+            "h3"
+          ],
+          "receivedBodyBytes": 41388216,
+          "repeatedIdenticalRangeRequests": 0,
+          "requestsAtMost64KiB": 0,
+          "requestsAtMost256KiB": 0,
+          "boundedRangeSizes": [],
+          "failedRequests": 31,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 3,
+          "playbackStallMs": 4478.300000071526,
+          "uniqueObservedPayloadBytes": 41257692,
+          "overlappingObservedPayloadBytes": 130524,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      }
+    ],
+    "browser-h2-diagnostic.json": [
+      {
+        "mode": "deployed",
+        "protocol": "h2",
+        "scenario": "play-seek",
+        "result": "measured",
+        "firstFrameMs": 1897.300000011921,
+        "initialPlayback": {
+          "time": 7.984956,
+          "readyState": 4,
+          "events": [
+            {
+              "name": "waiting",
+              "milliseconds": 26.900000035762787,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 0,
+              "errorCode": null
+            },
+            {
+              "name": "loadedmetadata",
+              "milliseconds": 1668.300000011921,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 1,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 2385.900000035763,
+              "phase": "play",
+              "time": 0.011449,
+              "readyState": 3,
+              "errorCode": null
+            }
+          ],
+          "elapsedMs": 10399.900000035763,
+          "decodedFrames": 245,
+          "networkRequestCount": 144,
+          "bodyBytes": 47436889,
+          "waitingEvents": 0,
+          "stallMs": 0
+        },
+        "network": {
+          "requestCount": 167,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 52679778,
+          "repeatedIdenticalRangeRequests": 34,
+          "requestsAtMost64KiB": 38,
+          "requestsAtMost256KiB": 47,
+          "boundedRangeSizes": [
+            1,
+            54347,
+            65536,
+            131072,
+            196608,
+            262144,
+            327680,
+            393216,
+            458752,
+            524288
+          ],
+          "failedRequests": 27,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 0,
+          "playbackStallMs": 0,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 23,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      },
+      {
+        "mode": "native-control",
+        "protocol": "h2",
+        "scenario": "play-seek",
+        "result": "measured",
+        "firstFrameMs": 1505.800000011921,
+        "initialPlayback": {
+          "time": 7.966065,
+          "readyState": 4,
+          "events": [
+            {
+              "name": "waiting",
+              "milliseconds": 17.69999998807907,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 0,
+              "errorCode": null
+            },
+            {
+              "name": "loadedmetadata",
+              "milliseconds": 1407.199999988079,
+              "phase": "startup",
+              "time": 0,
+              "readyState": 1,
+              "errorCode": null
+            },
+            {
+              "name": "playing",
+              "milliseconds": 1529.800000011921,
+              "phase": "play",
+              "time": 0.000934,
+              "readyState": 4,
+              "errorCode": null
+            }
+          ],
+          "elapsedMs": 9535.199999988079,
+          "decodedFrames": 244,
+          "networkRequestCount": 23,
+          "bodyBytes": 65573873,
+          "waitingEvents": 0,
+          "stallMs": 0
+        },
+        "network": {
+          "requestCount": 32,
+          "protocols": [
+            "h2"
+          ],
+          "receivedBodyBytes": 85887036,
+          "repeatedIdenticalRangeRequests": 4,
+          "requestsAtMost64KiB": 0,
+          "requestsAtMost256KiB": 0,
+          "boundedRangeSizes": [],
+          "failedRequests": 30,
+          "nonCancelledFailures": 0,
+          "playbackWaitingEvents": 1,
+          "playbackStallMs": 293.5,
+          "uniqueObservedPayloadBytes": 52679755,
+          "overlappingObservedPayloadBytes": 33207281,
+          "payloadOverlapMethod": "Union of received response prefixes at Content-Range offsets; excludes QUIC/TCP retransmissions."
+        },
+        "error": null,
+        "seekInProgress": null
+      }
+    ]
+  },
+  "unmeasured": [
+    "Chinese residential/mobile ISP coverage",
+    "Multiple evenings and off-peak comparison",
+    "Real packet loss per hop, mobile network handover",
+    "4K or bitrate above the 14.31 Mbps available fixture",
+    "Complete Revaro player UI, hardware-specific visual quality, and other browser platforms",
+    "Alternate QUIC congestion-control modes under identical conditions"
+  ],
+  "rangeValidation": {
+    "boundedSamples": 6,
+    "randomSamples": 16,
+    "allContractsVerified": true,
+    "boundedCrossProtocolHashesMatch": true,
+    "randomCrossProtocolHashesMatch": true
+  },
+  "continuous30Seconds": [
+    {
+      "requestedProtocol": "h2",
+      "http_version": "2",
+      "http_code": 206,
+      "bodyBytes": 512561152,
+      "observedMbps": 136.61453247668757,
+      "steadySeconds5Through24MedianMbps": 148.832256,
+      "largestBodyGapSeconds": 0.2833852839539759,
+      "intentionalTimedCancellation": true
+    },
+    {
+      "requestedProtocol": "h3",
+      "http_version": "3",
+      "http_code": 206,
+      "bodyBytes": 87232740,
+      "observedMbps": 23.249260187580376,
+      "steadySeconds5Through24MedianMbps": 25.411583999999998,
+      "largestBodyGapSeconds": 1.5131840179674327,
+      "intentionalTimedCancellation": true
+    }
+  ]
+}

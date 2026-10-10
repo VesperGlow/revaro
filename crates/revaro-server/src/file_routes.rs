@@ -1182,8 +1182,8 @@ pub(crate) async fn serve_file(
     // rendered inline even when the caller asked for a preview.
     let inline = inline && mime != "application/octet-stream";
     let object = state
-        .store
-        .open_object(&file.object_key)
+        .files
+        .open(&file.object_key)
         .await
         .map_err(|error| match error {
             StorageError::NotFound => ApiError::not_found("ready file not found"),
@@ -1197,20 +1197,15 @@ pub(crate) async fn serve_file(
         "{disposition}; filename*=UTF-8''{}",
         encode_filename(&file.name)
     );
-    let mut response = crate::transfer::serve_reader(
-        Box::new(object.file),
-        object.size.max(0) as u64,
+    crate::transfer::serve_reader(
+        object.reader,
+        object.size,
         &object.etag,
         &mime,
         &disposition,
         request_headers,
     )
-    .await?;
-    response.headers_mut().insert(
-        http::header::CACHE_CONTROL,
-        "private, no-cache".parse().expect("valid cache control"),
-    );
-    Ok(response)
+    .await
 }
 
 /// `GET /api/files/{id}/download`
@@ -1269,6 +1264,7 @@ pub fn public_routes() -> Router<Arc<AppState>> {
 async fn public_share(
     State(state): State<Arc<AppState>>,
     PathParam(token): PathParam<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
     headers: http::HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
     // The token space is fixed at 43 characters; anything outside the accepted
@@ -1297,7 +1293,12 @@ async fn public_share(
     // A recipient may never have visited the app. Install/claim the shared
     // transport before the first browser navigation delivers a public file.
     // API clients and resumed Range requests still receive bytes directly.
-    if !headers.contains_key(http::header::RANGE)
+    let direct = query.as_deref().is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .any(|(key, value)| key == "revaro_direct" && value == "1")
+    });
+    if !direct
+        && !headers.contains_key(http::header::RANGE)
         && headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) == Some("document")
     {
         let mut response = crate::web::download_shell(&state, &headers).await;
@@ -2730,14 +2731,12 @@ VALUES('doc1','00000000-0000-0000-0000-000000000000','a b&c.bin','file','blobs/d
         assert!(body.contains("\r\n\r\n01\r\n"));
         assert!(body.contains("\r\n\r\n45\r\n"));
 
-        // A zero suffix is an observable ServeContent edge case: an empty 206
-        // is different from a syntactically valid range past the end.
+        // A zero suffix is unsatisfiable; never emit a reversed Content-Range.
         let (status, headers, body) =
             raw(&state, "/api/files/doc1/download", &[("range", "bytes=-0")]).await;
-        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
-        assert_eq!(headers.get("content-range").unwrap(), "bytes 10-9/10");
-        assert_eq!(headers.get("content-length").unwrap(), "0");
-        assert!(body.is_empty());
+        assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(headers.get("content-range").unwrap(), "bytes */10");
+        assert_eq!(body, b"invalid range: failed to overlap\n");
 
         // Malformed and reversed ranges are a different 416 error from a
         // well-formed range set that simply has no overlap.
@@ -2745,7 +2744,7 @@ VALUES('doc1','00000000-0000-0000-0000-000000000000','a b&c.bin','file','blobs/d
             let (status, headers, body) =
                 raw(&state, "/api/files/doc1/download", &[("range", range)]).await;
             assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
-            assert!(headers.get("content-range").is_none());
+            assert_eq!(headers.get("content-range").unwrap(), "bytes */10");
             assert_eq!(headers.get("content-length").unwrap(), "14");
             assert_eq!(body, b"invalid range\n");
         }

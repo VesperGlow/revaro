@@ -387,3 +387,91 @@ test('cache clearing also prevents a late disk read from restoring private memor
   await entered; await core.clearTransportCache(); release(); await rejected;
   assert.equal(core.transportState().memoryBytes, 0);
 });
+
+test('Range-ignoring backends stream large 200 bodies with bounded reads and cancellation', async () => {
+  let calls = 0, pulled = 0, cancelled = 0;
+  const size = 8 * 1024 ** 3;
+  const core = await engine(async (url, init) => {
+    calls++;
+    assert.equal(new Headers(init.headers).get('if-match'), '"same"');
+    return new Response(new ReadableStream({
+      pull(controller) { pulled++; controller.enqueue(new Uint8Array(65536)); },
+      cancel() { cancelled++; },
+    }, { highWaterMark: 0 }), { headers: { 'content-length': String(size), etag: '"same"' } });
+  });
+  const response = await core.fileResponse(new Request(new URL('/api/files/no-range/preview', location), { headers: { range: 'bytes=1048576-', 'if-match': '"same"' } }));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-length'), String(size));
+  assert.ok(pulled <= 1, 'at most one chunk is queued before downstream reads');
+  const reader = response.body.getReader();
+  assert.equal((await reader.read()).value.length, 65536);
+  await reader.cancel(); await response.transportComplete;
+  assert.equal(calls, 1, 'probe body becomes the output stream without fetching the file again');
+  assert.equal(cancelled, 1);
+  assert.ok(pulled <= 2);
+  assert.equal(core.transportState().activeRequests, 0);
+});
+
+test('malformed Range responses are rejected once instead of hedged or retried', async () => {
+  for (const headers of [
+    { 'content-range': 'bytes 0-65535/65535' },
+    { 'content-range': `bytes 0-65535/${payload.length}`, 'content-length': '3' },
+    { 'content-range': 'bytes 0-65535/9007199254740992' },
+  ]) {
+    let calls = 0;
+    const core = await engine(async () => {
+      calls++; return new Response(new Uint8Array(65536), { status: 206, headers: { etag: '"same"', ...headers } });
+    });
+    await assert.rejects(core.fileResponse(request('invalid')), /Invalid initial Range/);
+    assert.equal(calls, 1);
+    assert.equal(core.transportState().metrics.retries, 0);
+    assert.equal(core.transportState().activeRequests, 0);
+  }
+});
+
+test('multipart and conditional explicit reads preserve the original HTTP contract', async () => {
+  for (const headers of [ { range: 'bytes=0-1,4-5' }, { 'if-none-match': '"cached"' }, { 'if-range': 'Wed, 21 Oct 2015 07:28:00 GMT', range: 'bytes=4-' } ]) {
+    let calls = 0;
+    const original = request('condition', { headers });
+    const expected = new Response(null, { status: 304, headers: { etag: '"cached"' } });
+    const core = await engine(async request => { calls++; assert.equal(request, original); return expected; });
+    assert.equal(await core.fileResponse(original), expected);
+    assert.equal(calls, 1);
+  }
+});
+
+test('empty files remain downloadable when the authentication Range probe is unsatisfiable', async () => {
+  let calls = 0;
+  const original = request('empty');
+  const core = await engine(async (input, init) => {
+    calls++;
+    if (input instanceof Request) { assert.equal(input, original); return new Response(null, { headers: { 'content-length': '0', etag: '"empty"' } }); }
+    assert.equal(new Headers(init.headers).get('range'), 'bytes=0-65535');
+    return new Response('unsatisfiable', { status: 416, headers: { 'content-range': 'bytes */0', etag: '"empty"' } });
+  });
+  const response = await core.fileResponse(original);
+  assert.equal(response.status, 200);
+  assert.equal((await response.arrayBuffer()).byteLength, 0);
+  assert.equal(calls, 2);
+});
+
+test('streamed 200 fallback does not reuse the encoded wire length for decoded bytes', async () => {
+  const core = await engine(async () => new Response('decoded content', { headers: { 'content-encoding': 'gzip', 'content-length': '32' } }));
+  const response = await core.fileResponse(request('compressed'));
+  assert.equal(response.headers.has('content-encoding'), false);
+  assert.equal(response.headers.has('content-length'), false);
+  assert.equal(await response.text(), 'decoded content');
+  await response.transportComplete;
+  assert.equal(core.transportState().activeRequests, 0);
+});
+
+test('tiny Range probes preserve real authorization and range error responses', async () => {
+  for (const status of [403, 404, 416]) {
+    let calls = 0;
+    const core = await engine(async () => { calls++; return new Response('{"error":"original server error"}', { status }); });
+    const response = await core.fileResponse(request('tiny', { headers: { range: 'bytes=0-0' } }));
+    assert.equal(response.status, status);
+    assert.deepEqual(await response.json(), { error: 'original server error' });
+    assert.equal(calls, 1);
+  }
+});

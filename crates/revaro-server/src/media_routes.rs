@@ -11,7 +11,6 @@ use axum::extract::{Path as PathParam, State};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
-use http::header::{CACHE_CONTROL, HeaderValue};
 use revaro_core::classify;
 use revaro_core::media::MediaProbe;
 use revaro_core::model::{File, FileKind, FileStatus};
@@ -552,13 +551,7 @@ async fn thumbnail_response(
     data: Vec<u8>,
     headers: http::HeaderMap,
 ) -> Result<Response, revaro_core::ApiError> {
-    let mut response =
-        crate::transfer::serve_bytes(data.into(), "image/jpeg", "inline", headers).await?;
-    response.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=31536000, immutable"),
-    );
-    Ok(response)
+    crate::transfer::serve_bytes(data.into(), "image/jpeg", "inline", headers).await
 }
 
 fn schedule_video_thumbnail(state: Arc<AppState>, file: File, key: String) {
@@ -597,6 +590,7 @@ fn schedule_video_thumbnail(state: Arc<AppState>, file: File, key: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::header::CACHE_CONTROL;
     use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
     use std::io::Cursor;
 
@@ -870,10 +864,7 @@ mod tests {
         let (status, headers, first) = request(&state, "GET", "/api/files/image-1/thumbnail").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "image/jpeg");
-        assert_eq!(
-            headers.get(CACHE_CONTROL).unwrap(),
-            "private, max-age=31536000, immutable"
-        );
+        assert_eq!(headers.get(CACHE_CONTROL).unwrap(), "private, no-cache");
         assert_eq!(
             headers.get(CONTENT_LENGTH).unwrap().to_str().unwrap(),
             first.len().to_string()

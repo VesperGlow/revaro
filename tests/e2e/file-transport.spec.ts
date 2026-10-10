@@ -103,6 +103,16 @@ test('all file types, native downloads and uploads recover through the shared wo
           expect(createHash('sha256').update(await readFile((await shared.path())!)).digest('hex')).toBe(expected)
           expect(await publicPage.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
         } finally { await recipient.close() }
+        const nativeRecipient = await page.context().browser()!.newContext({ serviceWorkers: 'block' })
+        try {
+          const publicPage = await nativeRecipient.newPage()
+          const publicDownload = publicPage.waitForEvent('download', { timeout: 20_000 })
+          await publicPage.goto(origin + path, { waitUntil: 'commit' })
+          const shared = await publicDownload
+          expect(await shared.failure()).toBeNull()
+          expect(createHash('sha256').update(await readFile((await shared.path())!)).digest('hex')).toBe(expected)
+          expect(await publicPage.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(false)
+        } finally { await nativeRecipient.close() }
       }
     }
     expect(faulted).toBe(true); expect(faults).toBeGreaterThan(1)

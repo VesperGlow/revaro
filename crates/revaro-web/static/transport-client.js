@@ -1,9 +1,7 @@
-import { putBlob, blobHash, configureTransport, setPlaybackState, bufferedRequest, fileResponse, clearTransportCache } from './transport-core.js';
+import { putBlob, blobHash, configureTransport, setPlaybackState, bufferedRequest, fileResponse, clearTransportCache, isFileResource } from './transport-core.js';
 export { putBlob, blobHash };
 const nativeFetch = globalThis.fetch.bind(globalThis);
 let directFiles = false, apiInstalled = false;
-const fileBody = path => /^\/api\/files\/[^/]+\/(download|preview|thumbnail|content|versions\/[^/]+\/content|book\/(cover|assets\/[^/]+|flow(\/chunks\/[^/]+)?))$/.test(path)
-  || /^\/api\/files\/batch-download\/[^/]+$/.test(path) || path.startsWith('/s/');
 function installAPITransport() {
   if (apiInstalled) return;
   apiInstalled = true;
@@ -13,13 +11,13 @@ function installAPITransport() {
     const request = new Request(input, init), url = new URL(request.url);
     if (url.origin !== location.origin || request.headers.has('x-revaro-managed')
         || (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/s/'))
-        || (!directFiles && fileBody(url.pathname) && ['GET', 'HEAD'].includes(request.method))) return nativeFetch(request);
+        || (!directFiles && isFileResource(url.pathname) && ['GET', 'HEAD'].includes(request.method))) return nativeFetch(request);
     request.headers.set('x-revaro-managed', 'document');
     if (url.pathname === '/api/auth/logout') {
       await clearTransportCache();
       navigator.serviceWorker?.controller?.postMessage({ type: 'clear-transport' });
     }
-    if (request.method === 'GET' && fileBody(url.pathname)) return fileResponse(request);
+    if (request.method === 'GET' && isFileResource(url.pathname)) return fileResponse(request);
     let safe = ['GET', 'HEAD'].includes(request.method) || /\/uploads\/[^/]+\/complete$/.test(url.pathname);
     if (request.method === 'POST' && url.pathname === '/api/uploads') {
       try { safe = Boolean((await request.clone().json()).idempotency_key); } catch {}
@@ -28,8 +26,73 @@ function installAPITransport() {
   };
 }
 let watching = false;
+// Some native media loaders leave a disconnected response in NETWORK_LOADING
+// without an error or reconnect. Reload only after playback has exhausted its
+// buffer and stopped advancing, with a bounded budget for the same source.
+// All bytes and Range decisions still belong to the browser.
+export function watchNativeRecovery(root = document, delayMs = 3000) {
+  const states = new WeakMap(), pending = new Set();
+  const cancel = state => { clearTimeout(state.timer); state.timer = undefined; pending.delete(state); };
+  const cancelRestore = (element, state) => {
+    if (state.restore) element.removeEventListener('loadedmetadata', state.restore);
+    state.restore = undefined;
+  };
+  const sourceOf = element => element.currentSrc || element.src;
+  const bufferSeconds = element => {
+    for (let i = 0; i < element.buffered.length; i++)
+      if (element.buffered.start(i) <= element.currentTime && element.buffered.end(i) >= element.currentTime)
+        return element.buffered.end(i) - element.currentTime;
+    return 0;
+  };
+  const observe = event => {
+    const element = event.target;
+    if (!(element instanceof HTMLMediaElement)) return;
+    const source = sourceOf(element);
+    let url;
+    try { url = new URL(source, location.href); } catch { return; }
+    if (url.origin !== location.origin || !isFileResource(url.pathname)) return;
+    let state = states.get(element);
+    if (!state || state.source !== source) {
+      if (state) { cancel(state); cancelRestore(element, state); }
+      state = { source, attempts: 0, restoredAt: 0 }; states.set(element, state);
+    }
+    if (event.type === 'timeupdate') {
+      if (element.currentTime > state.restoredAt + 1 && bufferSeconds(element) > 1) state.attempts = 0;
+      return;
+    }
+    if (['pause', 'seeking', 'ended', 'emptied', 'progress'].includes(event.type)) {
+      cancel(state);
+      if (['pause', 'seeking', 'ended'].includes(event.type)) cancelRestore(element, state);
+      return;
+    }
+    if (state.timer || state.attempts >= 2 || element.paused || element.ended || element.seeking
+        || element.currentTime <= 0 || (element.error && element.error.code !== 2)) return;
+    const position = element.currentTime;
+    pending.add(state);
+    state.timer = setTimeout(() => {
+      cancel(state);
+      if (!element.isConnected || sourceOf(element) !== source || element.paused || element.ended || element.seeking
+          || element.currentTime > position + 0.1 || bufferSeconds(element) > 0.15
+          || (element.error && element.error.code !== 2)) return;
+      state.attempts++; state.restoredAt = element.currentTime;
+      const restore = () => {
+        state.restore = undefined;
+        if (!element.isConnected || sourceOf(element) !== source) return;
+        element.currentTime = state.restoredAt;
+        element.play().catch(() => {});
+      };
+      state.restore = restore;
+      element.addEventListener('loadedmetadata', restore, { once: true });
+      element.load();
+    }, delayMs);
+  };
+  for (const event of ['waiting', 'stalled', 'error', 'pause', 'seeking', 'ended', 'emptied', 'progress', 'timeupdate'])
+    root.addEventListener(event, observe, true);
+  globalThis.addEventListener?.('pagehide', () => { for (const state of pending) cancel(state); });
+}
 function watchPlayback() {
   if (watching) return; watching = true;
+  watchNativeRecovery();
   const live = new Map(); let nextKey = 0, reportedAt = 0;
   const report = () => {
     reportedAt = Date.now();
@@ -48,9 +111,8 @@ function watchPlayback() {
       }
       if (element.seeking) bufferSeconds = 0;
       const playing = !element.paused && !element.ended;
-      if (playing) element.preload = 'auto';
-      const state = { key: live.get(element), url: element.currentSrc || element.src, playing, bufferSeconds,
-        nextUrl: element.tagName === 'AUDIO' ? document.querySelector('audio[data-revaro-next]')?.src : '' };
+      if (playing && element.preload !== 'auto') element.preload = 'auto';
+      const state = { key: live.get(element), url: element.currentSrc || element.src, playing, bufferSeconds };
       setPlaybackState(state);
       navigator.serviceWorker?.controller?.postMessage({ type: 'playback-state', state });
     }

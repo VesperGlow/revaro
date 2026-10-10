@@ -16,7 +16,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use http::StatusCode;
-use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, HeaderValue};
+use http::header::{CONTENT_DISPOSITION, HeaderValue};
 use revaro_core::ApiError;
 use revaro_core::api::book::{Info as BookInfo, Progress as BookProgress, SaveProgressRequest};
 use revaro_core::model::{File, FileKind, FileStatus};
@@ -218,7 +218,6 @@ async fn book_asset(
     bytes_response(
         &revaro_core::classify::safe_delivery_mime(&asset.content_type),
         asset.data.clone(),
-        "private, max-age=31536000, immutable",
         headers,
     )
     .await
@@ -238,13 +237,7 @@ async fn book_cover(
     let content_type = revaro_core::classify::safe_delivery_mime(
         revaro_reader::asset_content_type(&book.cover_ext),
     );
-    let mut response = bytes_response(
-        &content_type,
-        book.cover.clone(),
-        "private, max-age=3600",
-        headers,
-    )
-    .await?;
+    let mut response = bytes_response(&content_type, book.cover.clone(), headers).await?;
     if content_type == "application/octet-stream" {
         response
             .headers_mut()
@@ -256,16 +249,9 @@ async fn book_cover(
 async fn bytes_response(
     content_type: &str,
     data: Vec<u8>,
-    cache_control: &str,
     headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    let mut response =
-        crate::transfer::serve_bytes(data.into(), content_type, "inline", headers).await?;
-    response.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_str(cache_control).expect("cache policy"),
-    );
-    Ok(response)
+    crate::transfer::serve_bytes(data.into(), content_type, "inline", headers).await
 }
 
 fn progress_key(file_id: &str) -> String {
@@ -377,13 +363,7 @@ async fn book_flow(
         tracing::error!(%error, "flow manifest is invalid");
         ApiError::internal("could not read flow manifest")
     })?;
-    bytes_response(
-        "application/json; charset=utf-8",
-        data,
-        "private, no-cache",
-        headers,
-    )
-    .await
+    bytes_response("application/json; charset=utf-8", data, headers).await
 }
 
 async fn book_flow_chunk(
@@ -441,7 +421,6 @@ async fn book_flow_chunk(
     bytes_response(
         "text/html; charset=utf-8",
         bind_asset_urls(data, &file.id)?,
-        "private, max-age=31536000, immutable",
         headers,
     )
     .await
@@ -657,6 +636,7 @@ fn flow_cache_api_error(error: CacheError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::header::CACHE_CONTROL;
     use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
     use std::io::{Cursor, Write};
 
@@ -891,7 +871,7 @@ mod tests {
             request(&state, "GET", "/api/files/reader-epub/book/cover", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[CONTENT_TYPE], "image/png");
-        assert_eq!(headers[CACHE_CONTROL], "private, max-age=3600");
+        assert_eq!(headers[CACHE_CONTROL], "private, no-cache");
         assert_eq!(body, fake_png(300, 400));
 
         let (status, headers, body) =
@@ -961,12 +941,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[CONTENT_TYPE], "text/html; charset=utf-8");
-        assert!(
-            headers[CACHE_CONTROL]
-                .to_str()
-                .unwrap()
-                .contains("immutable")
-        );
+        assert_eq!(headers[CACHE_CONTROL], "private, no-cache");
         let html = String::from_utf8(body).unwrap();
         assert!(html.contains("data-block=\"0\""));
         assert!(html.contains("第一章"));

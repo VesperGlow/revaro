@@ -21,6 +21,7 @@ pub mod config;
 pub mod db;
 pub mod delivery;
 pub mod error;
+pub mod file_access;
 pub mod file_routes;
 pub mod ids;
 pub mod ingress;

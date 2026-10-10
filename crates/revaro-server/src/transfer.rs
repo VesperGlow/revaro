@@ -4,17 +4,134 @@ use bytes::Bytes;
 use futures_util::StreamExt as _;
 use revaro_core::ApiError;
 use std::convert::Infallible;
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncSeek, AsyncSeekExt as _};
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use tokio::sync::OwnedSemaphorePermit;
 
-pub trait ReadSeek: AsyncRead + AsyncSeek + Unpin + Send {}
-impl<T: AsyncRead + AsyncSeek + Unpin + Send> ReadSeek for T {}
+use crate::file_access::ReadSeek;
 
 pub fn hold_permit(body: Body, permit: OwnedSemaphorePermit) -> Body {
     Body::from_stream(futures_util::stream::unfold(
         (body.into_data_stream(), permit),
         |(mut stream, permit)| async move { stream.next().await.map(|chunk| (chunk, (stream, permit))) },
     ))
+}
+
+struct TransferObservation {
+    started: std::time::Instant,
+    method: http::Method,
+    range: Option<http::HeaderValue>,
+    headers_ms: u64,
+    status: u16,
+    expected: u64,
+    bytes: u64,
+    outcome: &'static str,
+}
+
+impl Drop for TransferObservation {
+    fn drop(&mut self) {
+        tracing::debug!(
+            event = "file_transfer",
+            method = %self.method,
+            range = ?self.range,
+            status = self.status,
+            headers_ms = self.headers_ms,
+            bytes = self.bytes,
+            expected_bytes = self.expected,
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            outcome = self.outcome,
+            "file response body finished"
+        );
+    }
+}
+
+fn observed_response(
+    mut response: axum::response::Response,
+    method: http::Method,
+    range: Option<http::HeaderValue>,
+    started: std::time::Instant,
+) -> axum::response::Response {
+    let expected = if method == http::Method::HEAD {
+        0
+    } else {
+        response
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()?.parse().ok())
+            .unwrap_or(0)
+    };
+    let observation = TransferObservation {
+        headers_ms: started.elapsed().as_millis() as u64,
+        started,
+        method,
+        range,
+        status: response.status().as_u16(),
+        expected,
+        bytes: 0,
+        outcome: if expected == 0 {
+            "completed"
+        } else {
+            "cancelled"
+        },
+    };
+    let body = std::mem::replace(response.body_mut(), Body::empty());
+    *response.body_mut() = Body::from_stream(futures_util::stream::unfold(
+        (body.into_data_stream(), observation),
+        |(mut stream, mut observation)| async move {
+            match stream.next().await {
+                Some(chunk) => {
+                    if let Ok(bytes) = &chunk {
+                        observation.bytes += bytes.len() as u64;
+                        // HTTP can stop polling once Content-Length is met,
+                        // without polling the underlying stream's final None.
+                        if observation.bytes == observation.expected
+                            && observation.outcome != "failed"
+                        {
+                            observation.outcome = "completed";
+                        }
+                    } else {
+                        observation.outcome = "failed";
+                    }
+                    Some((chunk, (stream, observation)))
+                }
+                None => {
+                    observation.outcome = if observation.bytes == observation.expected
+                        && observation.outcome != "failed"
+                    {
+                        "completed"
+                    } else {
+                        "failed"
+                    };
+                    drop(observation);
+                    None
+                }
+            }
+        },
+    ));
+    response
+}
+
+/// Observe native and managed delivery at the same boundary, after Axum has
+/// removed HEAD bodies. Does not pre-read or buffer any response bytes.
+pub async fn monitor(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let range = request.headers().get(http::header::RANGE).cloned();
+    let path = request.uri().path();
+    let applies = matches!(method, http::Method::GET | http::Method::HEAD)
+        && (path.starts_with("/api/files/") || path.starts_with("/s/"));
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    if applies
+        && (response.headers().contains_key(http::header::ACCEPT_RANGES)
+            || response.headers().contains_key(http::header::CONTENT_RANGE)
+            || response.status() == http::StatusCode::NOT_MODIFIED)
+    {
+        observed_response(response, method, range, started)
+    } else {
+        response
+    }
 }
 
 /// One range as parsed by Go's `http.ServeContent`.
@@ -32,13 +149,8 @@ enum RangeError {
     NoOverlap,
 }
 
-/// Parse a `Range: bytes=…` header with the reference implementation's rules.
-///
-/// This intentionally follows the standard library parser rather than a more
-/// permissive single-range interpretation: valid multi-range requests become a
-/// multipart response, malformed ranges return `416 invalid range`, and a
-/// zero-length suffix remains the odd but observable `206 bytes N-(N-1)/N`
-/// response emitted by `http.ServeContent`.
+/// Parse byte ranges using RFC 9110. Multi-range responses use multipart;
+/// unsupported units are ignored and zero-length suffixes are unsatisfiable.
 fn parse_range(header: Option<&str>, size: u64) -> Result<Vec<ByteRange>, RangeError> {
     let Some(value) = header else {
         return Ok(Vec::new());
@@ -46,9 +158,12 @@ fn parse_range(header: Option<&str>, size: u64) -> Result<Vec<ByteRange>, RangeE
     if value.is_empty() {
         return Ok(Vec::new());
     }
-    let Some(spec) = value.strip_prefix("bytes=") else {
+    let Some((unit, spec)) = value.split_once('=') else {
         return Err(RangeError::Invalid);
     };
+    if !unit.eq_ignore_ascii_case("bytes") {
+        return Ok(Vec::new());
+    }
 
     let size = i64::try_from(size).unwrap_or(i64::MAX);
     let mut ranges = Vec::new();
@@ -64,8 +179,6 @@ fn parse_range(header: Option<&str>, size: u64) -> Result<Vec<ByteRange>, RangeE
         let start = start.trim();
         let end = end.trim();
         let range = if start.is_empty() {
-            // A suffix range. Go accepts zero, which produces a zero-length
-            // range whose end is one byte before its start in Content-Range.
             if end.is_empty() || end.starts_with('-') {
                 return Err(RangeError::Invalid);
             }
@@ -74,6 +187,10 @@ fn parse_range(header: Option<&str>, size: u64) -> Result<Vec<ByteRange>, RangeE
                 return Err(RangeError::Invalid);
             }
             let length = length.min(size);
+            if length == 0 {
+                no_overlap = true;
+                continue;
+            }
             ByteRange {
                 start: (size - length) as u64,
                 length: length as u64,
@@ -270,6 +387,10 @@ fn range_error_response(
     *response.status_mut() = http::StatusCode::RANGE_NOT_SATISFIABLE;
     let headers = response.headers_mut();
     headers.insert(
+        http::header::CACHE_CONTROL,
+        "private, no-cache".parse().unwrap(),
+    );
+    headers.insert(
         http::header::CONTENT_TYPE,
         "text/plain; charset=utf-8"
             .parse()
@@ -317,6 +438,10 @@ fn not_modified_response(disposition: &str, etag: &str) -> axum::response::Respo
     let mut response = axum::response::Response::new(body);
     *response.status_mut() = http::StatusCode::NOT_MODIFIED;
     let headers = response.headers_mut();
+    headers.insert(
+        http::header::CACHE_CONTROL,
+        "private, no-cache".parse().unwrap(),
+    );
     headers.insert(
         http::header::CONTENT_DISPOSITION,
         disposition.parse().expect("valid content disposition"),
@@ -377,16 +502,27 @@ pub async fn serve_reader(
     };
     let ranges = match parse_range(range_header, size) {
         Ok(ranges) => ranges,
-        Err(RangeError::NoOverlap) if size == 0 => Vec::new(),
         Err(RangeError::NoOverlap) => {
-            return Ok(range_error_response(
+            let mut response = range_error_response(
                 disposition,
                 "invalid range: failed to overlap",
                 Some(format!("bytes */{size}")),
-            ));
+            );
+            response
+                .headers_mut()
+                .insert(http::header::ETAG, etag.parse().expect("valid ETag"));
+            return Ok(response);
         }
         Err(RangeError::Invalid) => {
-            return Ok(range_error_response(disposition, "invalid range", None));
+            let mut response = range_error_response(
+                disposition,
+                "invalid range",
+                Some(format!("bytes */{size}")),
+            );
+            response
+                .headers_mut()
+                .insert(http::header::ETAG, etag.parse().expect("valid ETag"));
+            return Ok(response);
         }
     };
     // Go deliberately ignores a range-set whose encoded bytes would be larger
@@ -404,7 +540,7 @@ pub async fn serve_reader(
     // below; a `206` must advertise the range's length, not the object's.
     let mut response = match ranges.as_slice() {
         [] => {
-            let stream = tokio_util::io::ReaderStream::new(reader);
+            let stream = tokio_util::io::ReaderStream::with_capacity(reader.take(size), 64 * 1024);
             axum::response::Response::new(axum::body::Body::from_stream(stream))
         }
         [range] => {
@@ -416,7 +552,10 @@ pub async fn serve_reader(
                     tracing::error!(%error, "object seek failed");
                     ApiError::new(502, "object storage read failed")
                 })?;
-            let stream = tokio_util::io::ReaderStream::new(file_handle.take(range.length));
+            let stream = tokio_util::io::ReaderStream::with_capacity(
+                file_handle.take(range.length),
+                64 * 1024,
+            );
             let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
             *response.status_mut() = http::StatusCode::PARTIAL_CONTENT;
             response.headers_mut().insert(
@@ -458,6 +597,13 @@ pub async fn serve_reader(
     };
 
     let headers = response.headers_mut();
+    // Browser HTTP caching and application block caching both retain bytes
+    // while requiring authorization/version validation before every reuse.
+    // Public-share delivery overrides this with its stricter no-store policy.
+    headers.insert(
+        http::header::CACHE_CONTROL,
+        "private, no-cache".parse().unwrap(),
+    );
     if ranges.len() <= 1 {
         headers.insert(
             http::header::CONTENT_TYPE,
@@ -519,8 +665,20 @@ pub async fn file_resources(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    let applies =
-        request.method() == http::Method::GET && request.uri().path().starts_with("/api/files/");
+    // Only the two bounded JSON content adapters need conversion. Lists,
+    // metadata and progress are mutable control APIs; buffering and hashing
+    // those here invents file semantics and delays their response headers.
+    let segments: Vec<_> = request
+        .uri()
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .collect();
+    let content = matches!(
+        segments.as_slice(),
+        ["api", "files", _, "content"] | ["api", "files", _, "versions", _, "content"]
+    );
+    let applies = request.method() == http::Method::GET && content;
     let headers = request.headers().clone();
     let response = next.run(request).await;
     if !applies
@@ -580,6 +738,68 @@ mod tests {
         },
         task::{Context, Poll},
     };
+    use tokio::io::{AsyncRead, AsyncSeek};
+
+    #[tokio::test]
+    async fn range_edges_follow_http_semantics_and_control_apis_remain_streamed() {
+        for (bytes, range, status, content_range) in [
+            (b"".as_slice(), "bytes=0-", 416, Some("bytes */0")),
+            (b"".as_slice(), "bytes=-1", 416, Some("bytes */0")),
+            (b"0123".as_slice(), "bytes=-0", 416, Some("bytes */4")),
+            (b"0123".as_slice(), "items=0-1", 200, None),
+            (b"0123".as_slice(), "Bytes=0-1", 206, Some("bytes 0-1/4")),
+        ] {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(http::header::RANGE, range.parse().unwrap());
+            let response = serve_bytes(
+                Bytes::copy_from_slice(bytes),
+                "text/plain",
+                "inline",
+                headers,
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(http::header::CONTENT_RANGE)
+                    .map(|v| v.to_str().unwrap()),
+                content_range
+            );
+            assert_eq!(
+                response.headers()[http::header::CACHE_CONTROL],
+                "private, no-cache"
+            );
+            assert!(response.headers().contains_key(http::header::ETAG));
+        }
+        use axum::{Router, routing::get};
+        use tower::ServiceExt as _;
+        let app = Router::new()
+            .route(
+                "/api/files/test/media/progress",
+                get(|| async {
+                    Body::from_stream(
+                        futures_util::stream::pending::<Result<Bytes, std::io::Error>>(),
+                    )
+                }),
+            )
+            .layer(axum::middleware::from_fn(file_resources));
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            app.oneshot(
+                http::Request::builder()
+                    .uri("/api/files/test/media/progress")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert!(!response.headers().contains_key(http::header::ACCEPT_RANGES));
+    }
 
     /// A seekable 8 GiB object that records actual reads without allocating it.
     struct CountedAudio {
@@ -670,7 +890,7 @@ mod tests {
                 );
                 let mut body = response.into_body();
                 let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
-                assert!(frame.len() <= 4096);
+                assert!(frame.len() <= 64 * 1024);
                 for (index, byte) in frame.iter().enumerate() {
                     assert_eq!(*byte, ((start + index as u64) % 251) as u8);
                 }
@@ -680,7 +900,7 @@ mod tests {
                 }
                 drop(body);
                 assert!(
-                    read.load(Ordering::SeqCst) <= 4096,
+                    read.load(Ordering::SeqCst) <= 64 * 1024,
                     "cancellation stops streaming"
                 );
             }

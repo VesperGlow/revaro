@@ -1,0 +1,30 @@
+{
+  "checkedUtc": "2026-10-10T13:30:10.807256+00:00",
+  "validResultFiles": 10,
+  "browserRecordsChecked": 36,
+  "noAuthenticationValuesInResults": true,
+  "allPerformanceSamplesInBeijingPeakWindow": true,
+  "observedMediaProtocolsVerified": true,
+  "networkRequestAndBodyCountersConsistent": true,
+  "noMutatingBrowserRequests": true,
+  "rangeContractsAndCrossProtocolHashesVerified": true,
+  "gatewayAndBackendConfigurationVerification": {
+    "checkedUtc": "2026-10-10T13:26:36.239557+00:00",
+    "nginxConfigurationUnchanged": true,
+    "nginxSyntaxCheck": "passed",
+    "persistentFirewallSyntaxCheck": "passed",
+    "backendPidUnchanged": true,
+    "backendImageUnchanged": true,
+    "backendStartTimeUnchanged": true
+  },
+  "normalization": "Totals reconciled to recorded request events; overlapping stall intervals merged; absent media events and unverified offline faults marked unmeasured.",
+  "syntaxChecks": [
+    "Python syntax passed",
+    "Node syntax passed"
+  ],
+  "currentHarnessSha256": {
+    "public-network.py": "40d3a0ec66f71496a34fe48efeaa2ad6aba45da993a92acead01442d2043eec1",
+    "public-browser.mjs": "c5264895270a96d3ceea3f253fcd39dd18b6a05b1b46922fd6fccb7a44e81dd3",
+    "summarize-public.py": "05d64991f87161a13df03d74a0633522fe1816259521ec36747fa480c7f5d640"
+  }
+}

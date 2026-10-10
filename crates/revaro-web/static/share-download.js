@@ -5,7 +5,11 @@ initializeTransport().then(() => {
   document.getElementById('status').textContent = '文件将自动打开或下载。';
   const open = () => {
     const link = document.createElement('a');
-    link.href = location.href;
+    const url = new URL(location.href);
+    // An unsupported/blocked worker must not navigate back into the bootstrap
+    // indefinitely. The same authenticated token route can stream directly.
+    if (!navigator.serviceWorker?.controller) url.searchParams.set('revaro_direct', '1');
+    link.href = url.href;
     document.body.appendChild(link); link.click(); link.remove();
   };
   if (document.readyState === 'complete') open();

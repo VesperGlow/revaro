@@ -1,5 +1,13 @@
-// All recovery policy lives here. The worker and browser upload adapter use
-// the same implementation; neither MIME types nor file extensions select it.
+// Shared file access and recovery policy. Native consumers retain the browser's
+// HTTP streaming/cache; explicit reads use bounded, resumable Range windows.
+export function isFileResource(path) {
+  return /^\/api\/files\/[^/]+\/(download|preview|thumbnail|content|versions\/[^/]+\/content|book\/(cover|assets\/[^/]+|flow(\/chunks\/[^/]+)?))$/.test(path)
+    || /^\/api\/files\/batch-download\/[^/]+$/.test(path) || /^\/s\/[^/]+$/.test(path);
+}
+export function usesNativeFileLoading(request) {
+  return ['GET', 'HEAD'].includes(request.method) && ['audio', 'video', 'image'].includes(request.destination)
+    && isFileResource(new URL(request.url).pathname);
+}
 export const policy = {
   chunkBytes: 512 * 1024, smallBytes: 256 * 1024, lanes: 3,
   firstBytes: 64 * 1024, blockBytes: 64 * 1024, windowMs: 500,
@@ -19,6 +27,7 @@ const resourceControllers = new Set();
 let diskKeys;
 let activeRequests = 0, backgroundRequests = 0, activeHedges = 0;
 const requestQueue = [];
+const metrics = { networkRequests: 0, retries: 0, cacheHits: 0, cacheBytes: 0, nativeRequests: 0, nativeFailures: 0 };
 function mediaPressure() {
   const now = Date.now();
   for (const [key, state] of playback) if (now - state.updated > 15000) playback.delete(key);
@@ -87,7 +96,7 @@ export function transportState() {
   return { protocol, fallback: fallbackUntil > Date.now(), http2Origin, throughput,
     activeRequests, backgroundRequests, queuedRequests: requestQueue.length,
     mediaPressure: mediaPressure(), memoryBytes, queuedCacheBytes,
-    paths: Object.fromEntries(paths) };
+    metrics: { ...metrics }, paths: Object.fromEntries(paths) };
 }
 function endpoint(url, origin) {
   const target = new URL(url, globalThis.location?.href);
@@ -147,7 +156,10 @@ export class TransferError extends Error {
   }
 }
 function retryable(error) {
-  return error.name !== 'AbortError' && (!error.status || [408, 425, 429, 500, 502, 503, 504].includes(error.status));
+  return error.recoverable !== false && error.name !== 'AbortError' && (!error.status || [408, 425, 429, 500, 502, 503, 504].includes(error.status));
+}
+function protocolError(message) {
+  const error = new TransferError(message, 502); error.recoverable = false; return error;
 }
 export function delay(ms, signal) {
   checkAbort(signal);
@@ -164,6 +176,7 @@ export async function retry(operation, { signal, attempts = policy.attempts } = 
     catch (error) {
       checkAbort(signal);
       if (!retryable(error) || attempt + 1 >= attempts) throw error;
+      metrics.retries++;
       noteFailure(error);
       const ceiling = Math.min(policy.maxBackoffMs, policy.backoffMs * 2 ** Math.min(attempt, 6));
       await delay(Math.max(error.retryAfter || 0, ceiling * (0.5 + Math.random() * 0.5)), signal);
@@ -176,20 +189,28 @@ export async function hedge(operation, signal, enabled = true) {
   if (!enabled || activeHedges >= 2 || mediaPressure() || requestQueue.length) return operation(signal);
   activeHedges++;
   const first = linkedController(signal), second = linkedController(signal);
-  let timer, startSecond, started = false;
+  let timer, startSecond, rejectSecond, started = false, streamingWinner;
   const secondary = new Promise((resolve, reject) => {
+    rejectSecond = reject;
     startSecond = () => {
       if (started) return; started = true;
       const alternate = http2Origin && fallbackUntil <= Date.now() ? http2Origin : undefined;
-      operation(second.controller.signal, alternate).then(resolve, reject);
+      operation(second.controller.signal, alternate).then(value => resolve({ value, link: second }), reject);
     };
     timer = setTimeout(startSecond, protocol.startsWith('h3') ? policy.hedgeMs * 0.6 : policy.hedgeMs);
   });
-  const primary = operation(first.controller.signal).catch(error => {
-    clearTimeout(timer); startSecond(); throw error;
+  const primary = operation(first.controller.signal).then(value => ({ value, link: first })).catch(error => {
+    clearTimeout(timer);
+    if (!retryable(error) && !started) rejectSecond(error);
+    else startSecond();
+    throw error;
   });
   try {
-    const result = await Promise.any([primary, secondary]);
+    const { value: result, link } = await Promise.any([primary, secondary]);
+    if (result?.streaming) {
+      streamingWinner = link;
+      result.response.transportComplete.finally(() => { link.controller.abort(); link.dispose(); });
+    }
     if (result?.origin === http2Origin && http2Origin) fallbackUntil = Date.now() + policy.fallbackMs;
     return result;
   }
@@ -199,8 +220,9 @@ export async function hedge(operation, signal, enabled = true) {
     throw selected;
   }
   finally {
-    clearTimeout(timer); first.controller.abort(); second.controller.abort();
-    first.dispose(); second.dispose(); activeHedges--;
+    clearTimeout(timer);
+    for (const link of [first, second]) if (link !== streamingWinner) { link.controller.abort(); link.dispose(); }
+    activeHedges--;
   }
 }
 function retryAfter(response) {
@@ -210,10 +232,10 @@ function retryAfter(response) {
   return Math.min(60000, Math.max(0, Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now()));
 }
 async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1024 * 1024,
-  headersMs = policy.headersMs, priority = 1, origin } = {}) {
+  headersMs = policy.headersMs, priority = 1, origin, streamOn200 = false } = {}) {
   const release = await admission(signal, priority);
   const { controller, dispose } = linkedController(signal);
-  let timer, reader, stalled = false;
+  let timer, reader, stalled = false, handedOff = false;
   const arm = ms => {
     clearTimeout(timer);
     timer = setTimeout(() => { stalled = true; controller.abort(); }, ms);
@@ -224,6 +246,7 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
     const headers = new Headers(init.headers);
     headers.delete('x-revaro-priority');
     headers.set('priority', `u=${Math.min(7, priority + 1)}, i`);
+    metrics.networkRequests++;
     const response = await abortable(networkFetch(target, { ...init, headers, signal: controller.signal, credentials: 'include', cache: 'no-store' }),
       controller.signal, late => cancelBody(late.body));
     if ([408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
@@ -231,6 +254,47 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
       throw new TransferError(`HTTP ${response.status}`, response.status, retryAfter(response));
     }
     validate?.(response);
+    // A provider may ignore Range. Deliver its 200 as a stream instead of
+    // buffering an unbounded file, or issuing the original request again.
+    if (streamOn200 && response.status === 200 && response.body) {
+      clearTimeout(timer); reader = response.body.getReader();
+      let ended = false, length = 0, finished, output;
+      const transportComplete = new Promise(resolve => { finished = resolve; });
+      const finish = () => {
+        if (ended) return; ended = true;
+        clearTimeout(timer); controller.signal.removeEventListener('abort', aborted);
+        controller.abort(); dispose(); release(); resourceControllers.delete(controller);
+        try { reader.cancel().catch(() => {}); } catch {}
+        finished();
+      };
+      const aborted = () => { output.error(controller.signal.reason || abortError()); finish(); };
+      const body = new ReadableStream({
+        start(destination) { output = destination; controller.signal.addEventListener('abort', aborted, { once: true }); },
+        async pull(destination) {
+          try {
+            checkAbort(controller.signal); arm(policy.idleMs);
+            const { value, done } = await abortable(reader.read(), controller.signal);
+            clearTimeout(timer);
+            if (done) {
+              const advertised = response.headers.get('content-length');
+              if (advertised && !response.headers.has('content-encoding') && length !== Number(advertised))
+                throw new TransferError('Truncated response');
+              noteSuccess(target, length, Date.now() - startedAt);
+              destination.close(); finish();
+            } else { length += value.length; destination.enqueue(value); }
+          } catch (error) { if (!ended) { destination.error(error); finish(); } }
+        },
+        cancel() { finish(); },
+      }, { highWaterMark: 1 });
+      const forwardedHeaders = responseHeaders(response.headers);
+      // Fetch has already decoded this body. Its wire length/encoding cannot
+      // describe a synthetic response of the decoded stream.
+      if (response.headers.has('content-encoding')) forwardedHeaders.delete('content-length');
+      const forwarded = new Response(body, { status: response.status, statusText: response.statusText, headers: forwardedHeaders });
+      forwarded.transportComplete = transportComplete;
+      handedOff = true; resourceControllers.add(controller);
+      return { response: forwarded, streaming: true, origin: new URL(target).origin };
+    }
     if (!response.body) return { response, bytes: new Uint8Array() };
     reader = response.body.getReader();
     const chunks = []; let length = 0, windowBytes = 0, windowStart = Date.now();
@@ -245,7 +309,10 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
         if (windowBytes < policy.minWindowBytes) throw new TransferError('Range making too little progress; reconnecting', 408);
         windowStart = Date.now(); windowBytes = 0;
       }
-      if (length > maxBytes) throw new TransferError('Response exceeded the bounded transfer size', 413);
+      // A one-byte auth probe may receive a normal JSON error. Its body limit
+      // must not replace the actual 403/404/416 with an artificial 413.
+      if (length > (response.ok ? maxBytes : Math.max(maxBytes, 64 * 1024)))
+        throw new TransferError('Response exceeded the bounded transfer size', 413);
       if (onBytes) onBytes(value); else chunks.push(value);
     }
     if (!onBytes) {
@@ -262,8 +329,8 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
     error.origin = new URL(target).origin;
     throw error;
   } finally {
-    clearTimeout(timer); controller.abort(); dispose(); release();
-    if (reader) {
+    if (!handedOff) { clearTimeout(timer); controller.abort(); dispose(); release(); }
+    if (reader && !handedOff) {
       try { reader.cancel().catch(() => {}); } catch {}
       try { reader.releaseLock(); } catch {}
     }
@@ -295,7 +362,9 @@ export async function bufferedRequest(request, safe = true) {
 const strongETag = etag => /^"[^"\r\n]*"$/.test(etag || '');
 function contentRange(value) {
   const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value || '');
-  return m ? { start: Number(m[1]), end: Number(m[2]), size: Number(m[3]) } : null;
+  if (!m) return null;
+  const [start, end, size] = m.slice(1).map(Number);
+  return [start, end, size].every(Number.isSafeInteger) && start <= end && end < size ? { start, end, size } : null;
 }
 function requestedRange(value, size) {
   if (!value) return { start: 0, end: size - 1, partial: false };
@@ -303,6 +372,7 @@ function requestedRange(value, size) {
   if (!m || (!m[1] && !m[2])) return null;
   const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
   const end = m[1] && m[2] ? Math.min(size - 1, Number(m[2])) : size - 1;
+  if (![start, end, Number(m[1] || 0), Number(m[2] || 0)].every(Number.isSafeInteger)) return null;
   return { start, end, partial: true };
 }
 function cacheKey(url, etag, start, end) {
@@ -328,12 +398,16 @@ function remember(key, bytes) {
 async function cachedChunk(key, length) {
   const generation = cacheGeneration;
   const hot = memory.get(key);
-  if (hot?.length === length) { memory.delete(key); memory.set(key, hot); return hot; }
+  if (hot?.length === length) {
+    memory.delete(key); memory.set(key, hot); metrics.cacheHits++; metrics.cacheBytes += length; return hot;
+  }
   try {
     const cache = await globalThis.caches?.open(cacheName), hit = await cache?.match(key);
     if (hit && Number(hit.headers.get('content-length')) === length) {
       const bytes = new Uint8Array(await hit.arrayBuffer());
-      if (bytes.length === length && generation === cacheGeneration) { remember(key, bytes); return bytes; }
+      if (bytes.length === length && generation === cacheGeneration) {
+        remember(key, bytes); metrics.cacheHits++; metrics.cacheBytes += length; return bytes;
+      }
     }
   } catch { /* Cache availability never determines network success. */ }
   return null;
@@ -420,7 +494,12 @@ function startFlight(request, meta, blocks, priority) {
             throw new TransferError('File changed during transfer', 412);
           if (!response.ok) throw new TransferError(`HTTP ${response.status}`, response.status);
           if (response.status !== 206 || !range || range.start !== offset || range.end !== end || range.size !== meta.size)
-            throw new TransferError('Invalid Range response', 502);
+            throw protocolError('Invalid Range response');
+          if (response.headers.has('content-encoding') && response.headers.get('content-encoding') !== 'identity')
+            throw protocolError('Encoded Range cannot be resumed using decoded offsets');
+          const length = response.headers.get('content-length');
+          if (length !== null && Number(length) !== end - offset + 1)
+            throw protocolError('Invalid Range Content-Length');
         },
         onBytes: chunk => { bytes.set(chunk, received); received += chunk.length; },
       });
@@ -479,7 +558,19 @@ function windowBytes() {
   const estimated = throughput ? throughput * policy.windowMs / 1000 : maximum;
   return Math.min(maximum, Math.max(policy.blockBytes, Math.floor(estimated / policy.blockBytes) * policy.blockBytes));
 }
+async function nativeFileResponse(request) {
+  metrics.nativeRequests++;
+  try { return await networkFetch(request); }
+  catch (error) { metrics.nativeFailures++; throw error; }
+}
 export async function fileResponse(request, restarted = false) {
+  // Do not clone/consume/rebuild these responses. In particular an open-ended
+  // media Range must remain a single native stream, however large its length.
+  // The browser owns retries, byte caching, seeking and cancellation here.
+  const requested = request.headers.get('range'), validator = request.headers.get('if-range');
+  if (usesNativeFileLoading(request) || request.headers.has('if-none-match')
+      || (validator && !strongETag(validator))
+      || (requested && !/^bytes=(\d*)-(\d*)$/.test(requested))) return nativeFileResponse(request);
   const generation = cacheGeneration;
   const priority = priorityOf(request), previous = await knownMeta(request.url);
   if (generation !== cacheGeneration) throw abortError();
@@ -490,25 +581,40 @@ export async function fileResponse(request, restarted = false) {
   const initialEnd = Math.min(policy.firstBytes, policy.blockBytes, policy.chunkBytes, requestedEnd === undefined ? Infinity : Number(requestedEnd) + 1) - 1;
   const probeHeaders = new Headers(request.headers);
   probeHeaders.set('range', combined ? `bytes=0-${initialEnd}` : 'bytes=0-0');
-  probeHeaders.delete('if-range'); probeHeaders.delete('if-match'); probeHeaders.delete('if-none-match');
+  probeHeaders.delete('if-range'); probeHeaders.delete('if-none-match');
   const probe = await retry(() => hedge((signal, origin) => attempt(request.url, { method: 'GET', headers: probeHeaders }, {
-    signal, origin, priority, maxBytes: 64 * 1024 * 1024,
+    signal, origin, priority, maxBytes: initialEnd + 1, streamOn200: true,
+    validate: response => {
+      if (response.status !== 206) return;
+      const range = contentRange(response.headers.get('content-range'));
+      const end = combined ? initialEnd : 0;
+      if (!range || range.start !== 0 || range.end !== Math.min(end, range.size - 1))
+        throw protocolError('Invalid initial Range response');
+      if (response.headers.has('content-encoding') && response.headers.get('content-encoding') !== 'identity')
+        throw protocolError('Encoded Range cannot be resumed using decoded offsets');
+      const length = response.headers.get('content-length');
+      if (length !== null && Number(length) !== range.end + 1)
+        throw protocolError('Invalid initial Range Content-Length');
+    },
   }), request.signal, priority < 3), { signal: request.signal });
   if (generation !== cacheGeneration) throw abortError();
+  if (probe.response.status === 416 && probe.response.headers.get('content-range') === 'bytes */0'
+      && (!requested || validator)) return nativeFileResponse(request);
   if (!probe.response.ok) return restoredResponse(probe);
+  if (probe.streaming) return probe.response;
   const range = contentRange(probe.response.headers.get('content-range')), etag = probe.response.headers.get('etag');
-  if (!range || !strongETag(etag)) return probe.response.status === 206 ? bufferedRequest(request) : restoredResponse(probe);
+  if (!range || !strongETag(etag)) return probe.response.status === 206 ? nativeFileResponse(request) : restoredResponse(probe);
   if (range.start !== 0 || range.end >= range.size || probe.bytes.length !== range.end + 1)
-    throw new TransferError('Invalid initial Range response', 502);
+    throw protocolError('Invalid initial Range response');
   const meta = { size: range.size, etag, headers: probe.response.headers };
   const ifMatch = request.headers.get('if-match');
   if (ifMatch && ifMatch !== '*' && !ifMatch.split(',').some(value => value.trim() === etag))
     return new Response(null, { status: 412, headers: { etag } });
   const ifRange = request.headers.get('if-range');
   const wanted = requestedRange(ifRange && ifRange !== etag ? null : rangeHeader, meta.size);
-  if (!wanted) return bufferedRequest(request);
+  if (!wanted) return nativeFileResponse(request);
   if (wanted.start > wanted.end || wanted.start >= meta.size)
-    return new Response(null, { status: 416, headers: { 'content-range': `bytes */${meta.size}`, etag } });
+    return new Response(null, { status: 416, headers: { 'content-range': `bytes */${meta.size}`, 'content-length': '0', etag } });
   saveMeta(request.url, meta);
   if (combined && !/no-store/i.test(meta.headers.get('cache-control') || '')
       && probe.bytes.length === Math.min(policy.blockBytes, meta.size))

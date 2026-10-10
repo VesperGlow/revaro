@@ -228,8 +228,11 @@ impl LocalStore {
     /// key.
     pub async fn open_object(&self, key: &str) -> Result<StoredObject, StorageError> {
         let path = self.path_for(key)?;
-        let metadata = self.regular_file_metadata(&path).await?;
+        self.regular_file_metadata(&path).await?;
         let file = tokio::fs::File::open(&path).await.map_err(map_not_found)?;
+        // An atomic replacement between validation and open is allowed. Size
+        // and ETag must belong to the opened handle, not the earlier path stat.
+        let metadata = file.metadata().await?;
         let size = metadata.len() as i64;
         Ok(StoredObject {
             file,

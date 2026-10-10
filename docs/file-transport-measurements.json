@@ -1,0 +1,192 @@
+{
+  "date": "2026-10-10",
+  "scope": "Current sources, isolated localhost server, real native browser decoding; not an Internet or QUIC throughput benchmark.",
+  "checks": {
+    "rustTestsPassed": 500,
+    "nodeTestsPassed": 38,
+    "formatClippyWasmCheck": "passed",
+    "releaseWebBuild": "passed"
+  },
+  "concurrentRandomReads": {
+    "objectBytes": 8589934592,
+    "logicalReads": 80,
+    "networkRequests": 97,
+    "networkBytes": 1048656,
+    "maxConcurrent": 2,
+    "cacheHits": 16,
+    "elapsedMs": 309,
+    "responseLatencyMs": 4,
+    "canonicalBlockBytes": 65536,
+    "warmAuthenticationBytes": 16,
+    "healthyBytesRetransmitted": 0
+  },
+  "nativeVideo": {
+    "codec": "VP9/WebM",
+    "durationSeconds": 16,
+    "proxyBytesPerSecondPerStream": 4194304,
+    "proxyFirstChunkLatencyMs": 60,
+    "browsers": {
+      "chromium": {
+        "healthy": {
+          "bitrate": 12156782.5,
+          "fileBytes": 24313565,
+          "faults": 0,
+          "startupToThreeSecondsMs": 3634,
+          "networkRequests": 7,
+          "transferredBytes": 24313565,
+          "headersMsMax": 16,
+          "firstByteMsMin": 73,
+          "applicationOneByteProbes": 0,
+          "cancelledResponses": 3
+        },
+        "interrupted": {
+          "bitrate": 12156782.5,
+          "fileBytes": 24313565,
+          "faults": 1,
+          "startupToThreeSecondsMs": 3608,
+          "networkRequests": 8,
+          "transferredBytes": 22771786,
+          "headersMsMax": 21,
+          "firstByteMsMin": 74,
+          "applicationOneByteProbes": 0,
+          "cancelledResponses": 4
+        }
+      },
+      "firefox": {
+        "healthy": {
+          "bitrate": 12156782.5,
+          "fileBytes": 24313565,
+          "faults": 0,
+          "startupToThreeSecondsMs": 4097,
+          "networkRequests": 6,
+          "transferredBytes": 24515528,
+          "headersMsMax": 12,
+          "firstByteMsMin": 75,
+          "applicationOneByteProbes": 0,
+          "cancelledResponses": 4
+        },
+        "interrupted": {
+          "bitrate": 12156782.5,
+          "fileBytes": 24313565,
+          "faults": 1,
+          "startupToThreeSecondsMs": 4081,
+          "networkRequests": 7,
+          "transferredBytes": 24669264,
+          "headersMsMax": 15,
+          "firstByteMsMin": 79,
+          "applicationOneByteProbes": 0,
+          "cancelledResponses": 5
+        }
+      },
+      "webkit": {
+        "healthy": {
+          "bitrate": 12156782.5,
+          "fileBytes": 24313565,
+          "faults": 0,
+          "startupToThreeSecondsMs": 3833,
+          "networkRequests": 7,
+          "transferredBytes": 24135801,
+          "headersMsMax": 10,
+          "firstByteMsMin": 69,
+          "applicationOneByteProbes": 0,
+          "cancelledResponses": 6
+        },
+        "interrupted": {
+          "bitrate": 12156782.5,
+          "fileBytes": 24313565,
+          "faults": 1,
+          "startupToThreeSecondsMs": 10171,
+          "networkRequests": 13,
+          "transferredBytes": 26284446,
+          "headersMsMax": 17,
+          "firstByteMsMin": 68,
+          "applicationOneByteProbes": 0,
+          "cancelledResponses": 10
+        }
+      }
+    }
+  },
+  "nativeAudio": {
+    "wav": {
+      "fileBytes": 57680044,
+      "fetched": 1155534,
+      "headersMsMax": 12,
+      "firstByteMsMin": 68,
+      "applicationOneByteProbes": 0,
+      "cancelledResponses": 4
+    },
+    "flac": {
+      "fileBytes": 58236880,
+      "fetched": 1528428,
+      "headersMsMax": 26,
+      "firstByteMsMin": 41,
+      "applicationOneByteProbes": 0,
+      "cancelledResponses": 5
+    }
+  },
+  "thumbnailCache": {
+    "chromium": {
+      "body200Responses": 1,
+      "native304Responses": 1,
+      "explicitValidatorCheck304": 1,
+      "deniedResponsesAfterCookieRemoval": 1
+    },
+    "firefox": {
+      "body200Responses": 1,
+      "native304Responses": 1,
+      "explicitValidatorCheck304": 1,
+      "deniedResponsesAfterCookieRemoval": 1
+    },
+    "webkit": {
+      "body200Responses": 2,
+      "native304Responses": 0,
+      "explicitValidatorCheck304": 1,
+      "deniedResponsesAfterCookieRemoval": 1
+    }
+  },
+  "browserChecks": {
+    "chromium-final": {
+      "engine": "system Chromium 154.0.8037.57",
+      "total": 14,
+      "expected": 14,
+      "unexpected": 0,
+      "flaky": 0,
+      "skipped": 0,
+      "ok": true
+    },
+    "chromium-reader-final": {
+      "engine": "system Chromium 154.0.8037.57",
+      "total": 4,
+      "expected": 4,
+      "unexpected": 0,
+      "flaky": 0,
+      "skipped": 0,
+      "ok": true
+    },
+    "firefox-final": {
+      "engine": "Playwright Firefox 141.0 (1490)",
+      "total": 11,
+      "expected": 11,
+      "unexpected": 0,
+      "flaky": 0,
+      "skipped": 0,
+      "ok": true
+    },
+    "webkit-final": {
+      "engine": "Playwright WPE WebKit 26.0 (2203)",
+      "total": 11,
+      "expected": 11,
+      "unexpected": 0,
+      "flaky": 0,
+      "skipped": 0,
+      "ok": true
+    }
+  },
+  "limitations": [
+    "Proxy samples measure HTTP body bytes forwarded, not TCP acknowledgments or TLS/QUIC wire overhead.",
+    "Startup-to-three-seconds includes three seconds of actual playback; it is not first-frame latency.",
+    "Native seek/index requests and overlapping ranges remain controlled by the browser. No application-added one-byte probes or media range windows.",
+    "WPE WebKit 26.0 is a Linux test engine, not a macOS/iOS Safari measurement; its private-image cache may re-fetch with 200.",
+    "The new FileAccess provider covers original-file reads. Uploads, parsers and derived artifact generation retain the local store for staged migration."
+  ]
+}

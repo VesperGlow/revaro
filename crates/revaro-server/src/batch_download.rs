@@ -320,24 +320,18 @@ async fn download(
             ApiError::new(502, "archive preparation failed")
         })?;
     }
-    let object = store
-        .open_object(&key)
+    let object = crate::file_access::FileAccess::open(&store, &key)
         .await
         .map_err(|_| ApiError::new(502, "archive read failed"))?;
-    let mut response = crate::transfer::serve_reader(
-        Box::new(object.file),
-        object.size as u64,
+    crate::transfer::serve_reader(
+        object.reader,
+        object.size,
         &object.etag,
         "application/zip",
         "attachment; filename=\"revaro-download.zip\"",
         headers,
     )
-    .await?;
-    response.headers_mut().insert(
-        http::header::CACHE_CONTROL,
-        "private, no-cache".parse().unwrap(),
-    );
-    Ok(response)
+    .await
 }
 
 /// Remove abandoned archive artifacts, while retaining all live tickets.
