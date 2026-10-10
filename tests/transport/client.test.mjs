@@ -33,11 +33,11 @@ test('document API recovery works without a worker and preserves keepalive and i
   assert.equal(attempts.get('/api/listening/session'), 2);
   await fetch(request('/api/files/track/media/progress', { method: 'PUT', body: '{}', keepalive: true }));
   assert.equal(calls.at(-1).keepalive, true);
-  assert.equal(calls.at(-1).headers.get('x-revaro-managed'), '1');
+  assert.equal(calls.at(-1).headers.get('x-revaro-managed'), 'document');
   await fetch(request('/native', { method: 'POST', body: 'untouched body' }));
   assert.equal(calls.at(-1).bodyText, 'untouched body', 'native delegation uses the inspected request, whose body remains readable');
   await fetch(request('/api/files/batch-download/prepare', { method: 'POST', body: '{"ids":["folder"]}' }));
-  assert.equal(calls.at(-1).headers.get('x-revaro-managed'), '1', 'file-path mutations use document API recovery');
+  assert.equal(calls.at(-1).headers.get('x-revaro-managed'), 'document', 'file-path mutations use document API recovery');
   assert.equal(calls.at(-1).bodyText, '{"ids":["folder"]}');
   await fetch(request('/api/uploads', { method: 'POST', body: JSON.stringify({ idempotency_key: 'upload-1' }) }));
   assert.equal(attempts.get('/api/uploads'), 2);

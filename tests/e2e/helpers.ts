@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 // Faults target the shared recovery engine: immutable bytes run in the worker,
 // mutable API requests run in their document with this recursion guard.
 export function isTransportRequest(request: Request) {
-  return Boolean(request.serviceWorker()) || request.headers()['x-revaro-managed'] === '1'
+  return Boolean(request.serviceWorker()) || Boolean(request.headers()['x-revaro-managed'])
 }
 
 // Fixtures that assert no player must clear the account-wide session too.

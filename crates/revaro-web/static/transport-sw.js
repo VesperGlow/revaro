@@ -50,13 +50,14 @@ self.addEventListener('message', event => {
 });
 self.addEventListener('fetch', event => {
   const request = event.request, url = new URL(request.url);
-  if (url.origin !== self.location.origin) return;
   // Explicit native forwarding also settles WebKit's fetch event while
   // another worker response streams media. The document owns API recovery.
-  if (request.headers.has('x-revaro-managed')) {
+  if (request.headers.get('x-revaro-managed') === 'document') {
     event.respondWith(fetch(request));
     return;
   }
+  // XHR uploads retain their native path, including real upload progress.
+  if (url.origin !== self.location.origin || request.headers.has('x-revaro-managed')) return;
   if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/s/')) return;
   const response = (async () => {
     await config();

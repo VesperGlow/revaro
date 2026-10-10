@@ -14,6 +14,8 @@
 
 应用挂载前先安装文档内 API 恢复层，同时激活 Service Worker，让原生 `<img>`、音视频、文件读取和下载链接经过共享核心。可变 API 在文档中运行同一缓冲恢复策略，文档管理超时、重试和确认；受 Worker 控制时，Worker 显式转发原生 Fetch，避免 WebKit 同时读取原生媒体时悬挂未处理的 fetch 事件。Worker 注册失败或 8 秒仍未接管时，应用继续启动，显式文件 Fetch 使用文档内 Range 核心，原生媒体使用服务器原生 Range。下载链接使用普通导航并由 Content-Disposition 启动保存，避免 Chromium 的 download 属性绕过 Worker。公开链接首次访问也先加载无需登录的轻量引导页，激活共享层后再交付原文件；公开字节响应保留强 ETag，同时维持 no-store。完整 Worker 功能需现代浏览器、HTTPS 或 localhost；Worker 不可用时保留上述降级路径。支持标准 Service Worker、Fetch、ReadableStream、AbortController、WebCrypto，不依赖私有浏览器扩展。
 
+文档缓冲请求使用 `X-Revaro-Managed: document`，由 Worker 显式原生转发；XHR 上传仍使用 `X-Revaro-Managed: 1`，直接走浏览器网络路径，避免上传进度只度量向 Worker 进程传递请求体。
+
 下载流预留一个块的队列容量，确保浏览器原生附件导航开始消费响应；Worker 的 fetch 事件保持到流结束或取消，避免只发送响应头便结束任务。
 
 ## 下载与读取

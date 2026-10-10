@@ -14,7 +14,7 @@ function installAPITransport() {
     if (url.origin !== location.origin || request.headers.has('x-revaro-managed')
         || (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/s/'))
         || (!directFiles && fileBody(url.pathname) && ['GET', 'HEAD'].includes(request.method))) return nativeFetch(request);
-    request.headers.set('x-revaro-managed', '1');
+    request.headers.set('x-revaro-managed', 'document');
     if (url.pathname === '/api/auth/logout') {
       await clearTransportCache();
       navigator.serviceWorker?.controller?.postMessage({ type: 'clear-transport' });
