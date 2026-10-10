@@ -41,7 +41,7 @@ jobs:
             libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev \
             libavutil-dev libswresample-dev libswscale-dev \
             zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev libssl-dev
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Test shared transport recovery
@@ -56,7 +56,7 @@ jobs:
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
           REVARO_INGRESS_TEST_PUBLIC_PORTS=1 cargo test -p revaro-server --test public_ingress
       - name: Audit Rust dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cargo-audit
           key: cargo-audit-0.22.2
@@ -124,9 +124,9 @@ jobs:
             org.opencontainers.image.title=revaro
             org.opencontainers.image.description=Private local file manager with native media playback
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-      - uses: docker/setup-buildx-action@v4.1.0
+      - uses: docker/setup-buildx-action@v4.4.1
       - name: Build amd64 image once
-        uses: docker/build-push-action@v7.3.0
+        uses: docker/build-push-action@v7.4.0
         with:
           context: .
           platforms: linux/amd64
@@ -179,7 +179,7 @@ jobs:
       PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report/${{ matrix.browser }}-${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -196,7 +196,7 @@ jobs:
           pactl load-module module-null-sink sink_name=revaro_e2e
           pactl set-default-sink revaro_e2e
       - name: Download the same built image
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: revaro-built-image
           path: /tmp/revaro-built-image
@@ -259,14 +259,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Download the tested image
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: revaro-built-image
           path: /tmp/revaro-built-image
       - name: Load the tested image
         run: docker load --input /tmp/revaro-built-image/revaro-e2e.tar
       - name: Log in to GHCR
-        uses: docker/login-action@v4.5.1
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
