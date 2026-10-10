@@ -99,3 +99,5 @@ node tests/transport/peak-benchmark.mjs /tmp/revaro-transport-before.mjs
 待提交写入先按账号记入浏览器 localStorage，网络失败按原始版本重试，刷新后恢复；409 冲突终止旧会话的重试，不把陈旧记录重新包装成新版本。成功确认仅删除已确认序号及更旧的记录。账号切换清除内存重试任务，保留各账号自己的磁盘记录。后台页面暂停执行或设备离线期间无法即时接收其他设备状态，恢复在线、前台和定期轮询后同步；清除浏览器存储会删除该设备尚未提交的记录。
 
 `progress-sync.spec.ts` 使用独立浏览器上下文验证接管、原生时钟瞬时归零、显式零进度、末尾未完成恢复、失败写入刷新恢复、确认丢失幂等重试、延迟历史期间结束播放，以及完整队列与播放模式跨设备恢复。CI 在 Chromium、Firefox、WebKit 上执行这些场景。
+
+CI 为原生播放测试启动 PulseAudio 虚拟输出，避免无音频设备的 Linux runner 导致 Firefox `NS_ERROR_DOM_MEDIA_MEDIASINK_ERR`；仍通过真实媒体解码与播放时钟验证进度。[PulseAudio null sink 文档](https://wiki.freedesktop.org/www/Software/PulseAudio/Documentation/User/Modules/#module-null-sink)说明该输出使用系统时钟。
