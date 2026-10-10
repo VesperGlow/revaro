@@ -133,16 +133,21 @@ test('typing while a save is stalled survives an immediate refresh', async ({ pa
 test('a temporary startup session error keeps the existing login and can reconnect', async ({ page }) => {
   await login(page)
   await page.addInitScript(() => {
-    // Exercise the application's failed-session UI without waiting for the
-    // transport's independently tested recovery and exponential backoff.
-    void import('/transport-core.js').then(({ policy }) => { policy.attempts = 1 })
+    // Install this fault above the document transport when it replaces fetch,
+    // so session UI recovery is independent of network retry backoff.
     ;(window as any).failSession = true
-    const original = window.fetch.bind(window)
-    window.fetch = (input, init) => {
-      const path = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href).pathname
-      if ((window as any).failSession && path === '/api/auth/me') return Promise.resolve(new Response('{}', { status: 503 }))
-      return original(input, init)
-    }
+    let current = window.fetch.bind(window)
+    Object.defineProperty(window, 'fetch', {
+      configurable: true,
+      get: () => current,
+      set: (next: typeof fetch) => {
+        current = (input, init) => {
+          const path = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href).pathname
+          if ((window as any).failSession && path === '/api/auth/me') return Promise.resolve(new Response('{}', { status: 503 }))
+          return next(input, init)
+        }
+      },
+    })
   })
   await page.reload()
   const reconnect = page.getByRole('button', { name: '重新连接', exact: true })

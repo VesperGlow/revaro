@@ -6,13 +6,13 @@
 | --- | --- |
 | 任意原文件下载、可预览文件、公开链接 `/s/{token}` | Service Worker → `transport-core.js`；服务端 `transfer::serve_reader` |
 | 缩略图、书籍封面/附件、阅读流/章节 | 同一 Worker；服务端 `transfer::serve_bytes` |
-| 编辑器内容、历史版本 | 同一 Worker；不可变内容使用 Range/ETag |
-| 文件信息、目录列表、播放会话与进度等可变 API | 文档内 `transport-core.js` 缓冲请求；不依赖 Worker 存活 |
+| 编辑器内容、历史版本读取 | 同一 Worker；不可变内容使用 Range/ETag |
+| 文件信息、目录列表、编辑保存、播放会话与进度等可变 API | 文档内 `transport-core.js` 缓冲请求；受 Worker 控制时仅转发原生 Fetch |
 | 批量 ZIP | 用户绑定票据；一次生成磁盘缓存文件，复用共享 Range 响应 |
 | 所有非空文件上传 | UI 仅选择/切片/展示；`transport::put_blob` → 同一个 JS 核心 |
 | 上传创建、状态和提交 | 文档内共享核心统一恢复；创建必须有幂等键，提交可安全重复 |
 
-应用挂载前先安装文档内 API 恢复层，同时激活 Service Worker，让原生 `<img>`、音视频、文件读取和下载链接经过共享核心。可变 API 直接在文档中运行同一缓冲恢复策略，避免 Worker 休眠、更换或浏览器多上下文故障阻塞目录和进度同步。Worker 注册失败或 8 秒仍未接管时，应用继续启动，显式文件 Fetch 使用文档内 Range 核心，原生媒体使用服务器原生 Range。下载链接使用普通导航并由 Content-Disposition 启动保存，避免 Chromium 的 download 属性绕过 Worker。公开链接首次访问也先加载无需登录的轻量引导页，激活共享层后再交付原文件；公开字节响应保留强 ETag，同时维持 no-store。完整 Worker 功能需现代浏览器、HTTPS 或 localhost；Worker 不可用时保留上述降级路径。支持标准 Service Worker、Fetch、ReadableStream、AbortController、WebCrypto，不依赖私有浏览器扩展。
+应用挂载前先安装文档内 API 恢复层，同时激活 Service Worker，让原生 `<img>`、音视频、文件读取和下载链接经过共享核心。可变 API 在文档中运行同一缓冲恢复策略，文档管理超时、重试和确认；受 Worker 控制时，Worker 显式转发原生 Fetch，避免 WebKit 同时读取原生媒体时悬挂未处理的 fetch 事件。Worker 注册失败或 8 秒仍未接管时，应用继续启动，显式文件 Fetch 使用文档内 Range 核心，原生媒体使用服务器原生 Range。下载链接使用普通导航并由 Content-Disposition 启动保存，避免 Chromium 的 download 属性绕过 Worker。公开链接首次访问也先加载无需登录的轻量引导页，激活共享层后再交付原文件；公开字节响应保留强 ETag，同时维持 no-store。完整 Worker 功能需现代浏览器、HTTPS 或 localhost；Worker 不可用时保留上述降级路径。支持标准 Service Worker、Fetch、ReadableStream、AbortController、WebCrypto，不依赖私有浏览器扩展。
 
 下载流预留一个块的队列容量，确保浏览器原生附件导航开始消费响应；Worker 的 fetch 事件保持到流结束或取消，避免只发送响应头便结束任务。
 
