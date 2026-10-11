@@ -427,8 +427,16 @@ pub(super) fn prefetch_chunks(
     let Some(center) = manifest.chunk_for_block(block) else {
         return;
     };
-    for distance in 1..=2 {
+    let forward = if browser::device_memory_gib().unwrap_or(0.0) >= 4.0 {
+        4
+    } else {
+        2
+    };
+    for distance in 1..=forward {
         for index in [center + distance, center - distance] {
+            if index < center - 2 {
+                continue;
+            }
             if index < 0 || index >= manifest.chunks.len() as i32 {
                 continue;
             }

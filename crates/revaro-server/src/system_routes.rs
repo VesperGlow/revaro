@@ -22,7 +22,7 @@ async fn status(
     .map_err(|_| ApiError::internal("disk probe failed"))?
     .map_err(|_| ApiError::internal("disk probe failed"))?;
     Ok(Json(
-        serde_json::json!({"disk_total_bytes":total,"disk_used_bytes":total.saturating_sub(free),"disk_available_bytes":space,"cache":s.cache.stats(),"maintenance":s.maintenance.stats(),
+        serde_json::json!({"disk_total_bytes":total,"disk_used_bytes":total.saturating_sub(free),"disk_available_bytes":space,"cache":s.cache.stats(),"memory_budget":s.memory,"maintenance":s.maintenance.stats(),
         "reader_available_slots":s.reader.work_slots.available_permits(),"zip_available_slots":s.zip_slots.available_permits(),"share_available_slots":s.share_slots.available_permits()}),
     ))
 }

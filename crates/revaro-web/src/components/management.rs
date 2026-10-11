@@ -154,7 +154,7 @@ pub fn SystemStatus(context: Signal<String>) -> impl IntoView {
                     let summary = status.get();
                     let values = summary.as_ref().map(|s| [
                         format!("{} / {}", format_size(s.disk_used_bytes), format_size(s.disk_total_bytes)),
-                        format_size(s.disk_available_bytes), format_size(s.cache.memory_bytes), format_size(s.cache.disk_bytes),
+                        format_size(s.disk_available_bytes), if s.cache.memory_limit > 0 { format!("{} / {}", format_size(s.cache.memory_bytes), format_size(s.cache.memory_limit)) } else { format_size(s.cache.memory_bytes) }, format_size(s.cache.disk_bytes),
                     ]);
                     ["已用 / 总存储空间", "可用空间", "内存缓存", "磁盘缓存"].into_iter().enumerate().map(|(index, label)| view! {
                         <div class="system-metric"><span>{label}</span><strong class:metric-skeleton=values.is_none()>{values.as_ref().map(|v| v[index].clone()).unwrap_or_else(|| "—".to_owned())}</strong></div>

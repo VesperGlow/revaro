@@ -646,16 +646,51 @@ pub async fn serve_bytes(
     headers: http::HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
     let etag = revaro_core::keys::sha256_hex(&data);
+    serve_bytes_with_etag(data, &etag, mime, disposition, headers).await
+}
+
+pub async fn serve_bytes_with_etag(
+    data: Bytes,
+    etag: &str,
+    mime: &str,
+    disposition: &str,
+    headers: http::HeaderMap,
+) -> Result<axum::response::Response, ApiError> {
     let size = data.len() as u64;
     serve_reader(
         Box::new(std::io::Cursor::new(data)),
         size,
-        &etag,
+        etag,
         mime,
         disposition,
         headers,
     )
     .await
+}
+
+#[derive(Debug)]
+pub struct CachedResource {
+    pub data: Bytes,
+    etag: String,
+}
+
+impl CachedResource {
+    pub fn new(data: Bytes) -> Self {
+        let etag = revaro_core::keys::sha256_hex(&data);
+        Self { data, etag }
+    }
+
+    pub fn byte_size(&self) -> i64 {
+        (self.data.len() + self.etag.capacity() + std::mem::size_of::<Self>()) as i64
+    }
+
+    pub async fn serve(
+        &self,
+        mime: &str,
+        headers: http::HeaderMap,
+    ) -> Result<axum::response::Response, ApiError> {
+        serve_bytes_with_etag(self.data.clone(), &self.etag, mime, "inline", headers).await
+    }
 }
 
 /// Give bounded, generated file resources the same protocol as original files.

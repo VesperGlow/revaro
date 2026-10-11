@@ -90,6 +90,7 @@ pub struct Config {
     pub admin_password: String,
     /// Capacity of the on-disk media cache in bytes.
     pub media_cache_capacity: i64,
+    pub memory_budget: i64,
     /// How long an unfinished upload may stay pending.
     pub upload_expires: Duration,
     /// Maximum gap between upload body frames.
@@ -267,6 +268,13 @@ impl Config {
             ));
         }
 
+        let memory_budget = parse_int("APP_MEMORY_BUDGET", lookup, 8 << 30)?;
+        if !(64 << 20..=MAX_CACHE_CAPACITY).contains(&memory_budget) {
+            return Err(ConfigError::new(
+                "APP_MEMORY_BUDGET must be between 64 MiB and 1 TiB",
+            ));
+        }
+
         let flow_cache_capacity = parse_int("FLOW_CACHE_CAPACITY", lookup, 1 << 30)?;
         if !(0..=MAX_CACHE_CAPACITY).contains(&flow_cache_capacity) {
             return Err(ConfigError::new(
@@ -342,6 +350,7 @@ impl Config {
             admin_username: lookup("ADMIN_USERNAME").unwrap_or_default(),
             admin_password: lookup("ADMIN_PASSWORD").unwrap_or_default(),
             media_cache_capacity,
+            memory_budget,
             upload_expires,
             upload_idle_timeout,
             upload_request_timeout,
@@ -570,12 +579,26 @@ mod tests {
         assert!(config.tls.is_none());
         assert!(config.quic.is_none());
         assert_eq!(config.media_cache_capacity, 2 * 1024 * 1024 * 1024);
+        assert_eq!(config.memory_budget, 8 << 30);
         assert_eq!(config.upload_expires, Duration::from_secs(24 * 3600));
         assert_eq!(config.trash_retention, Duration::from_secs(30 * 24 * 3600));
         assert_eq!(config.gc_interval, Duration::from_secs(3600));
         assert_eq!(config.flow_cache_ttl, Duration::from_secs(720 * 3600));
         assert_eq!(config.flow_cache_capacity, 1 << 30);
         assert!(config.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn memory_budget_accepts_bytes_and_rejects_invalid_capacities() {
+        assert_eq!(
+            config_from(&[("APP_MEMORY_BUDGET", "8589934592")])
+                .unwrap()
+                .memory_budget,
+            8 << 30
+        );
+        for value in ["0", "-1", "67108863", "1099511627777", "8g"] {
+            assert!(config_from(&[("APP_MEMORY_BUDGET", value)]).is_err());
+        }
     }
 
     #[test]

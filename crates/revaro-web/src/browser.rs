@@ -11,6 +11,14 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
+pub fn device_memory_gib() -> Option<f64> {
+    let navigator = js_sys::Reflect::get(&js_sys::global(), &"navigator".into()).ok()?;
+    js_sys::Reflect::get(&navigator, &"deviceMemory".into())
+        .ok()?
+        .as_f64()
+        .filter(|memory| memory.is_finite() && *memory > 0.0)
+}
+
 /// Release both the event callback and native file buffer on completion or
 /// cancellation. A forgotten load handler can keep its FileReader alive forever.
 pub async fn read_file_data_url(file: &web_sys::File) -> Result<String, wasm_bindgen::JsValue> {

@@ -21,7 +21,7 @@ use paging::*;
 use persistence::*;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use futures_channel::oneshot;
@@ -40,16 +40,17 @@ use web_sys::{DomRect, Element, EventTarget, HtmlElement, HtmlInputElement, Node
 use crate::api;
 use crate::browser;
 use crate::logic::reader::{
-    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_MAX, FONT_MIN, LINE_HEIGHTS, chunk_prefix,
-    clamp_font_size, compute_margins, same_layout, spine_for_block, stable_window_range,
-    toc_active_index, total_blocks, valid_line_height, validate_manifest,
+    ChunkCache, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_MAX, FONT_MIN, LINE_HEIGHTS,
+    chunk_prefix, clamp_font_size, compute_margins, same_layout, spine_for_block,
+    stable_window_range, toc_active_index, total_blocks, valid_line_height, validate_manifest,
 };
 
 use super::icons;
 use super::reader_cache;
 
 const AHEAD_MARGIN: i32 = 3;
-const L1_CAPACITY: usize = 24;
+const L1_CAPACITY: usize = 128;
+const L1_BYTES: usize = 32 << 20;
 const ANIMATION_MS: i32 = 260;
 const PROGRESS_DELAY_MS: i32 = 1_200;
 const WINDOW_SYNC_DELAY_MS: i32 = 200;
@@ -99,40 +100,6 @@ struct ChunkLoadKey {
     index: i32,
 }
 
-#[derive(Debug, Default)]
-struct ChunkCache {
-    values: HashMap<i32, String>,
-    order: VecDeque<i32>,
-}
-
-impl ChunkCache {
-    fn get(&mut self, index: i32) -> Option<String> {
-        let value = self.values.get(&index).cloned()?;
-        self.touch(index);
-        Some(value)
-    }
-
-    fn insert(&mut self, index: i32, value: String) {
-        self.values.insert(index, value);
-        self.touch(index);
-        while self.order.len() > L1_CAPACITY {
-            if let Some(oldest) = self.order.pop_front() {
-                self.values.remove(&oldest);
-            }
-        }
-    }
-
-    fn touch(&mut self, index: i32) {
-        self.order.retain(|value| *value != index);
-        self.order.push_back(index);
-    }
-
-    fn clear(&mut self) {
-        self.values.clear();
-        self.order.clear();
-    }
-}
-
 // DOM/window state is kept outside Leptos signals because pagination mutates
 // styles and child nodes in place. The signals contain reader chrome state.
 struct ReaderRuntime {
@@ -164,7 +131,11 @@ impl Default for ReaderRuntime {
     fn default() -> Self {
         Self {
             manifest: None,
-            cache: ChunkCache::default(),
+            cache: if browser::device_memory_gib().unwrap_or(0.0) >= 4.0 {
+                ChunkCache::new(L1_CAPACITY, L1_BYTES)
+            } else {
+                ChunkCache::new(24, 8 << 20)
+            },
             generation: 0,
             in_flight: HashSet::new(),
             waiters: HashMap::new(),

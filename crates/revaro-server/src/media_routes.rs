@@ -129,7 +129,22 @@ pub(crate) async fn ensure_media_metadata(
     state: Arc<AppState>,
     file: File,
 ) -> Result<MediaProbe, revaro_core::ApiError> {
+    let cache_key = format!("{}/{}/{}", file.id, file.etag, MEDIA_PROBE_VERSION);
+    if let Some(probe) = state
+        .cache
+        .get_object::<MediaProbe>(crate::cache::MEDIA_METADATA, &cache_key)
+        .map_err(|_| revaro_core::ApiError::internal("could not read media metadata"))?
+    {
+        return Ok((*probe).clone());
+    }
     let _lock = state.media.metadata_lock(&file.id).await;
+    if let Some(probe) = state
+        .cache
+        .get_object::<MediaProbe>(crate::cache::MEDIA_METADATA, &cache_key)
+        .map_err(|_| revaro_core::ApiError::internal("could not read media metadata"))?
+    {
+        return Ok((*probe).clone());
+    }
     let file_id = file.id.clone();
     let stored = state
         .db
@@ -143,12 +158,29 @@ pub(crate) async fn ensure_media_metadata(
         .as_ref()
         .filter(|metadata| metadata_is_fresh(metadata, &file))
     {
+        cache_media_metadata(&state, &cache_key, &metadata.probe);
         return Ok(metadata.probe.clone());
     }
 
     let probe = probe_file(&state, &file).await?;
     persist_metadata(&state, &file, &probe).await?;
+    cache_media_metadata(&state, &cache_key, &probe);
     Ok(probe)
+}
+
+fn cache_media_metadata(state: &AppState, key: &str, probe: &MediaProbe) {
+    if let Ok(serialized) = serde_json::to_vec(probe) {
+        let size = (serialized.len() as i64)
+            .saturating_mul(3)
+            .saturating_add(std::mem::size_of::<MediaProbe>() as i64);
+        let _ = state.cache.put_object(
+            crate::cache::MEDIA_METADATA,
+            key,
+            Arc::new(probe.clone()),
+            size,
+            std::time::Duration::ZERO,
+        );
+    }
 }
 
 async fn persist_metadata(
@@ -431,15 +463,22 @@ async fn thumbnail(
     let file = ready_media_file(state.clone(), id, MediaKind::Any, "ready file not found").await?;
     let typed_key = thumbnail_key(&file);
     if let Some(data) = read_thumbnail(&state, &typed_key).await {
-        return thumbnail_response(data, headers).await;
+        return data.serve("image/jpeg", headers).await;
     }
     if !classify::is_video(&file) {
         let legacy_key = keys::thumbnail_v2_key(&file.object_key);
         if let Some(data) = read_thumbnail(&state, &legacy_key).await {
-            if let Err(error) = state.store.put_immutable(&typed_key, &data).await {
+            if let Err(error) = state.store.put_immutable(&typed_key, &data.data).await {
                 tracing::warn!(%error, "could not migrate legacy thumbnail key");
             }
-            return thumbnail_response(data, headers).await;
+            let _ = state.cache.put_object(
+                crate::cache::MEDIA_THUMBNAIL,
+                &typed_key,
+                data.clone(),
+                data.byte_size(),
+                std::time::Duration::ZERO,
+            );
+            return data.serve("image/jpeg", headers).await;
         }
     }
     if classify::is_audio(&file) {
@@ -449,7 +488,7 @@ async fn thumbnail(
                 tracing::warn!(file = %file.id, %error, "audio thumbnail failed");
                 revaro_core::ApiError::not_found("audio cover is unavailable")
             })?;
-        return thumbnail_response(data, headers).await;
+        return thumbnail_response(&state, &typed_key, data, headers).await;
     }
     if classify::is_video(&file) {
         schedule_video_thumbnail(state, file, typed_key);
@@ -466,12 +505,33 @@ async fn thumbnail(
     if let Err(error) = state.store.put_immutable(&typed_key, &data).await {
         tracing::warn!(%error, "could not persist generated thumbnail");
     }
-    thumbnail_response(data, headers).await
+    thumbnail_response(&state, &typed_key, data, headers).await
 }
 
-async fn read_thumbnail(state: &Arc<AppState>, key: &str) -> Option<Vec<u8>> {
+async fn read_thumbnail(
+    state: &Arc<AppState>,
+    key: &str,
+) -> Option<Arc<crate::transfer::CachedResource>> {
+    if let Some(resource) = state
+        .cache
+        .get_object(crate::cache::MEDIA_THUMBNAIL, key)
+        .ok()
+        .flatten()
+    {
+        return Some(resource);
+    }
     match state.store.read(key, MAX_THUMB_BYTES).await {
-        Ok(data) if is_jpeg(&data) => Some(data),
+        Ok(data) if is_jpeg(&data) => {
+            let resource = Arc::new(crate::transfer::CachedResource::new(data.into()));
+            let _ = state.cache.put_object(
+                crate::cache::MEDIA_THUMBNAIL,
+                key,
+                resource.clone(),
+                resource.byte_size(),
+                std::time::Duration::ZERO,
+            );
+            Some(resource)
+        }
         _ => None,
     }
 }
@@ -511,11 +571,11 @@ async fn generate_audio_thumbnail(
     key: &str,
 ) -> Result<Vec<u8>, MediaError> {
     if let Some(data) = read_thumbnail(state, key).await {
-        return Ok(data);
+        return Ok(data.data.to_vec());
     }
     let _lock = state.media.thumbnail_lock(key).await;
     if let Some(data) = read_thumbnail(state, key).await {
-        return Ok(data);
+        return Ok(data.data.to_vec());
     }
     let probe = ensure_media_metadata(state.clone(), file.clone())
         .await
@@ -548,10 +608,20 @@ fn is_jpeg(data: &[u8]) -> bool {
 }
 
 async fn thumbnail_response(
+    state: &AppState,
+    key: &str,
     data: Vec<u8>,
     headers: http::HeaderMap,
 ) -> Result<Response, revaro_core::ApiError> {
-    crate::transfer::serve_bytes(data.into(), "image/jpeg", "inline", headers).await
+    let resource = Arc::new(crate::transfer::CachedResource::new(data.into()));
+    let _ = state.cache.put_object(
+        crate::cache::MEDIA_THUMBNAIL,
+        key,
+        resource.clone(),
+        resource.byte_size(),
+        std::time::Duration::ZERO,
+    );
+    resource.serve("image/jpeg", headers).await
 }
 
 fn schedule_video_thumbnail(state: Arc<AppState>, file: File, key: String) {
@@ -883,7 +953,41 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             second, first,
-            "the immutable thumbnail is served from storage"
+            "the immutable thumbnail is served from cache or storage"
+        );
+        let stats = state.cache.stats();
+        assert_eq!(
+            stats.classes[crate::cache::MEDIA_THUMBNAIL].memory_entries,
+            1
+        );
+        assert!(stats.classes[crate::cache::MEDIA_THUMBNAIL].hits >= 1);
+        let cached = read_thumbnail(&state, &key).await.unwrap();
+        let mut conditional = HeaderMap::new();
+        conditional.insert(
+            http::header::IF_NONE_MATCH,
+            headers[http::header::ETAG].clone(),
+        );
+        assert_eq!(
+            cached
+                .serve("image/jpeg", conditional)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_MODIFIED
+        );
+        let mut range = HeaderMap::new();
+        range.insert(http::header::RANGE, "bytes=0-9".parse().unwrap());
+        let response = cached.serve("image/jpeg", range).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .as_ref(),
+            &first[..10]
         );
     }
 

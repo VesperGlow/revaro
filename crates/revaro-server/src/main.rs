@@ -165,7 +165,10 @@ async fn main() -> ExitCode {
 
 /// Open and migrate the SQLite database.
 fn open_database(config: &Config) -> Result<Database, revaro_server::db::DbError> {
-    Database::open(config.database_path())
+    Database::open_with_memory(
+        config.database_path(),
+        revaro_server::memory::MemoryBudget::detect(config.memory_budget),
+    )
 }
 
 /// Create the cache directory and prove it is writable.

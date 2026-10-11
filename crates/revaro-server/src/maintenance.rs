@@ -191,6 +191,23 @@ impl MaintenanceRuntime {
         let minute = Duration::from_secs(60);
 
         self.register(
+            "memory",
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            false,
+            state_job(state.clone(), |state| async move {
+                let cached = state.cache.stats().memory_bytes;
+                let budget = state.memory;
+                let limit = tokio::task::spawn_blocking(move || budget.current_cache_limit(cached))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                state.cache.set_memory_limit(limit);
+                Ok(())
+            }),
+        )
+        .expect("production maintenance job names are unique");
+
+        self.register(
             "book-series",
             minute,
             minute,
@@ -906,6 +923,21 @@ async fn remove_cleanup_row(database: &Database, row: &CleanupRow) -> Result<(),
 }
 
 async fn invalidate_flow_cache(cache: &CacheManager, book_key: &str) -> Result<(), String> {
+    for (class, prefix) in [
+        (
+            crate::cache::READER_MANIFEST_OBJECT,
+            format!("manifest/{book_key}/f{FLOW_VERSION}"),
+        ),
+        (
+            crate::cache::READER_RENDERED_CHUNK,
+            format!("chunk/{book_key}/f{FLOW_VERSION}/"),
+        ),
+    ] {
+        cache
+            .invalidate(&format!("{class}\0{prefix}"))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     cache
         .invalidate(&format!(
             "{READER_FLOW_MANIFEST}\0manifest/{book_key}/f{FLOW_VERSION}"

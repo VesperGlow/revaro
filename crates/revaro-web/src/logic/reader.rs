@@ -6,6 +6,7 @@
 //! they can be tested without a browser.
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, VecDeque};
 
 use revaro_core::reader::{Anchor, FlowManifest};
 
@@ -21,6 +22,62 @@ pub const LINE_HEIGHTS: [f64; 3] = [1.4, 1.7, 2.0];
 pub const DEFAULT_FONT_SIZE: i32 = 19;
 /// Default reader line height.
 pub const DEFAULT_LINE_HEIGHT: f64 = 1.7;
+
+#[derive(Debug)]
+pub struct ChunkCache {
+    values: HashMap<i32, String>,
+    order: VecDeque<i32>,
+    bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+impl ChunkCache {
+    pub fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            values: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+            max_entries,
+            max_bytes,
+        }
+    }
+
+    pub fn get(&mut self, index: i32) -> Option<String> {
+        let value = self.values.get(&index).cloned()?;
+        self.touch(index);
+        Some(value)
+    }
+
+    pub fn insert(&mut self, index: i32, value: String) {
+        if value.len() > self.max_bytes {
+            return;
+        }
+        self.bytes += value.len();
+        if let Some(previous) = self.values.insert(index, value) {
+            self.bytes -= previous.len();
+        }
+        self.touch(index);
+        while self.order.len() > self.max_entries || self.bytes > self.max_bytes {
+            if let Some(oldest) = self.order.pop_front()
+                && let Some(previous) = self.values.remove(&oldest)
+            {
+                self.bytes -= previous.len();
+            }
+        }
+    }
+
+    fn touch(&mut self, index: i32) {
+        self.order.retain(|value| *value != index);
+        self.order.push_back(index);
+    }
+
+    pub fn clear(&mut self) {
+        self.values.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
+}
 
 /// Margins used by the CSS-columns layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,6 +331,29 @@ pub fn validate_manifest(manifest: &FlowManifest) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chunk_cache_bounds_bytes_and_entries_and_preserves_lru() {
+        let mut cache = super::ChunkCache::new(2, 6);
+        cache.insert(0, "abc".into());
+        cache.insert(1, "def".into());
+        cache.get(0);
+        cache.insert(2, "ghi".into());
+        assert_eq!(cache.get(1), None);
+        assert_eq!(cache.get(0).as_deref(), Some("abc"));
+        cache.insert(0, "long".into());
+        assert_eq!(cache.bytes, 4);
+        assert_eq!(cache.get(2), None);
+        cache.insert(3, "oversized".into());
+        assert_eq!(cache.bytes, 4);
+        cache.clear();
+        assert_eq!(cache.bytes, 0);
+        assert_eq!(cache.get(0), None);
+        cache.insert(4, "a".into());
+        cache.insert(5, "b".into());
+        cache.insert(6, "c".into());
+        assert_eq!(cache.get(4), None);
+        assert_eq!(cache.bytes, 2);
+    }
     use super::*;
     use revaro_core::reader::{ChunkMeta, SpineMeta, TocTarget};
 

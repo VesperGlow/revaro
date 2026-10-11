@@ -30,6 +30,7 @@ pub mod listing_routes;
 pub mod maintenance;
 pub mod media_routes;
 pub mod media_runtime;
+pub mod memory;
 pub mod middleware;
 pub mod proxy;
 pub mod quic;

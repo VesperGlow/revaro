@@ -203,10 +203,15 @@ struct Pool {
     available: Condvar,
     workers: Arc<tokio::sync::Semaphore>,
     admitted: Arc<tokio::sync::Semaphore>,
+    memory: crate::memory::MemoryBudget,
 }
 
 impl Pool {
     fn new(source: Source) -> Self {
+        Self::with_memory(source, crate::memory::MemoryBudget::new(64 << 20))
+    }
+
+    fn with_memory(source: Source, memory: crate::memory::MemoryBudget) -> Self {
         let max_size = match source {
             Source::Memory => 1,
             Source::File(_) => POOL_SIZE,
@@ -218,6 +223,7 @@ impl Pool {
             available: Condvar::new(),
             workers: Arc::new(tokio::sync::Semaphore::new(max_size)),
             admitted: Arc::new(tokio::sync::Semaphore::new(MAX_DATABASE_OPERATIONS)),
+            memory,
         }
     }
 
@@ -279,14 +285,27 @@ impl Pool {
             Source::Memory => {
                 let connection = Connection::open_in_memory().map_err(DbError::Open)?;
                 configure(&connection)?;
+                self.configure_memory(&connection)?;
                 Ok(connection)
             }
             Source::File(path) => {
                 let connection = Connection::open(path).map_err(DbError::Open)?;
                 configure(&connection)?;
+                self.configure_memory(&connection)?;
                 Ok(connection)
             }
         }
+    }
+
+    fn configure_memory(&self, connection: &Connection) -> Result<(), DbError> {
+        let cache_kib = (self.memory.database_bytes / self.max_size as i64 / 1024).max(1);
+        connection
+            .pragma_update(None, "cache_size", -cache_kib)
+            .map_err(DbError::Open)?;
+        connection
+            .pragma_update(None, "mmap_size", self.memory.mmap_bytes)
+            .map_err(DbError::Open)?;
+        Ok(())
     }
 }
 
@@ -368,12 +387,19 @@ impl Database {
     /// Returns a [`DbError`] when the directory cannot be secured, the database
     /// cannot be opened, or a migration fails.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DbError> {
+        Self::open_with_memory(path, crate::memory::MemoryBudget::detect(8 << 30))
+    }
+
+    pub fn open_with_memory(
+        path: impl AsRef<Path>,
+        memory: crate::memory::MemoryBudget,
+    ) -> Result<Self, DbError> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             prepare_directory(parent)?;
         }
         let database = Self {
-            pool: Arc::new(Pool::new(Source::File(path.clone()))),
+            pool: Arc::new(Pool::with_memory(Source::File(path.clone()), memory)),
             path: path.clone(),
         };
         {
@@ -1296,5 +1322,40 @@ mod tests {
                 .unwrap(),
             2
         );
+    }
+
+    #[test]
+    fn database_memory_budget_is_divided_across_every_pooled_connection() {
+        let directory =
+            std::env::temp_dir().join(format!("revaro-db-memory-{}", uuid::Uuid::new_v4()));
+        let db = Database::open_with_memory(
+            directory.join("revaro.db"),
+            crate::memory::MemoryBudget::new(8 << 30),
+        )
+        .unwrap();
+        let connections: Vec<_> = (0..POOL_SIZE).map(|_| db.acquire().unwrap()).collect();
+        for connection in &connections {
+            assert_eq!(
+                connection
+                    .query_row("PRAGMA cache_size", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                -(64 << 10)
+            );
+            assert_eq!(
+                connection
+                    .query_row("PRAGMA mmap_size", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                512 << 20
+            );
+            assert_eq!(
+                connection
+                    .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                2
+            );
+        }
+        drop(connections);
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

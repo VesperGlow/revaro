@@ -459,6 +459,8 @@ pub struct SystemStatusSummary {
 #[derive(Clone, serde::Deserialize)]
 pub struct CacheSummary {
     pub memory_bytes: u64,
+    #[serde(default)]
+    pub memory_limit: u64,
     pub disk_bytes: u64,
 }
 

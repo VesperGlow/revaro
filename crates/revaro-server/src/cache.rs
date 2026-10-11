@@ -1,7 +1,7 @@
 //! The process-wide cache manager.
 //!
 //! Revaro has several kinds of derived data with different lifetimes: parsed
-//! books are objects owned by the reader crate, flow bytes are immutable
+//! books and media metadata are shared objects, flow bytes are immutable
 //! memory entries, and source books are useful across restarts. Keeping the
 //! policy here makes those choices visible in one place and lets every managed
 //! class share the same memory and disk budgets.
@@ -12,30 +12,35 @@
 //! never become path components, so user supplied names cannot escape the
 //! cache directory.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::any::Any;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::{self, Display, Formatter};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use revaro_core::hash::Sha256;
-use revaro_reader::BookCache;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::sync::CancellationToken;
 
-/// Global managed memory budget, matching the production cache policy.
-pub const MEMORY_LIMIT: i64 = 96 << 20;
 /// Flow manifest cache class.
 pub const READER_FLOW_MANIFEST: &str = "reader/flow-manifest";
 /// Flow chunk cache class.
 pub const READER_FLOW_CHUNK: &str = "reader/flow-chunk";
 /// Original book source cache class.
 pub const READER_SOURCE: &str = "reader/source";
-/// External parsed-book cache class.
+/// Parsed-book cache class.
 pub const READER_BOOKS: &str = "reader/books";
+pub const READER_ASSET: &str = "reader/asset";
+pub const READER_MANIFEST_OBJECT: &str = "reader/manifest-object";
+pub const READER_RENDERED_CHUNK: &str = "reader/rendered-chunk";
+pub const MEDIA_THUMBNAIL: &str = "media/thumbnail";
+pub const MEDIA_METADATA: &str = "media/metadata";
+pub const FILE_BLOCK: &str = "files/block";
 
 /// The tier and eviction policy for one cache namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,13 +194,15 @@ pub struct CacheClassStats {
 /// A consistent snapshot of cache counters and tier usage.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CacheStats {
+    pub memory_capacity: i64,
+    pub memory_limit: i64,
     /// Per-class snapshots, in deterministic name order.
     pub classes: BTreeMap<String, CacheClassStats>,
-    /// Managed and external memory bytes.
+    /// Managed memory bytes, including shared objects.
     pub memory_bytes: i64,
     /// Managed and external disk bytes.
     pub disk_bytes: i64,
-    /// Managed and external memory entries.
+    /// Managed memory entries, including shared objects.
     pub memory_entries: i64,
     /// Managed and external disk entries.
     pub disk_entries: i64,
@@ -218,13 +225,30 @@ struct ClassState {
     memory_entries: i64,
     disk_bytes: i64,
     disk_entries: i64,
+    memory_order: BTreeMap<u64, String>,
+}
+
+#[derive(Clone)]
+enum MemoryValue {
+    Bytes(Bytes),
+    Object(Arc<dyn Any + Send + Sync>),
+}
+
+impl fmt::Debug for MemoryValue {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bytes(bytes) => formatter.debug_tuple("Bytes").field(&bytes.len()).finish(),
+            Self::Object(_) => formatter.write_str("Object"),
+        }
+    }
 }
 
 #[derive(Debug)]
 struct MemoryEntry {
     class: String,
     key: String,
-    data: Vec<u8>,
+    value: MemoryValue,
+    size: i64,
     expires: Option<SystemTime>,
     accessed: u64,
 }
@@ -240,7 +264,7 @@ struct DiskEntry {
     accessed: u64,
 }
 
-type LoadResult = Result<Vec<u8>, CacheLoadError>;
+type LoadResult = Result<Bytes, CacheLoadError>;
 
 #[derive(Debug)]
 struct Flight {
@@ -258,6 +282,7 @@ struct State {
     disk_bytes: i64,
     disk_entries: i64,
     access_clock: u64,
+    memory_expiry: BTreeSet<(SystemTime, String)>,
     closed: bool,
 }
 
@@ -266,9 +291,9 @@ struct CacheInner {
     state: Mutex<State>,
     disk_io: AsyncMutex<()>,
     cache_dir: PathBuf,
-    memory_limit: i64,
+    memory_capacity: i64,
+    memory_limit: AtomicI64,
     disk_limit: i64,
-    external_books: Option<Arc<BookCache>>,
     healthy: AtomicBool,
     shutdown: CancellationToken,
 }
@@ -283,29 +308,34 @@ impl CacheManager {
     /// Create an empty manager for unit tests or an embedded caller.
     #[must_use]
     pub fn new(cache_dir: impl AsRef<Path>, memory_limit: i64, disk_limit: i64) -> Self {
-        Self::new_with_external(
-            cache_dir.as_ref().to_path_buf(),
-            memory_limit,
-            disk_limit,
-            None,
-        )
+        let healthy = prepare_cache_dir(cache_dir.as_ref()).is_ok();
+        Self {
+            inner: Arc::new(CacheInner {
+                state: Mutex::new(State::default()),
+                disk_io: AsyncMutex::new(()),
+                cache_dir: cache_dir.as_ref().to_path_buf(),
+                memory_capacity: memory_limit,
+                memory_limit: AtomicI64::new(if memory_limit > 0 { memory_limit } else { -1 }),
+                disk_limit,
+                healthy: AtomicBool::new(healthy),
+                shutdown: CancellationToken::new(),
+            }),
+        }
     }
 
-    /// Create the production class registry and register the parsed-book LRU
-    /// as an external memory provider.
+    /// Create the production class registry sharing one memory budget.
     #[must_use]
-    pub fn for_app(caches_dir: impl AsRef<Path>, disk_limit: i64, books: Arc<BookCache>) -> Self {
-        let manager = Self::new_with_external(
-            caches_dir.as_ref().join("cache"),
-            MEMORY_LIMIT,
-            disk_limit,
-            Some(books),
-        );
+    pub fn for_app(caches_dir: impl AsRef<Path>, memory_limit: i64, disk_limit: i64) -> Self {
+        let manager = Self::new(caches_dir.as_ref().join("cache"), memory_limit, disk_limit);
+        manager
+            .inner
+            .memory_limit
+            .store(memory_limit.max(0), Ordering::Relaxed);
         let classes = [
             CacheClass {
                 name: READER_FLOW_MANIFEST.to_owned(),
                 priority: 90,
-                soft_quota: 8 << 20,
+                soft_quota: memory_limit / 32,
                 memory: true,
                 disk: false,
                 max_entry: Some(8 << 20),
@@ -313,7 +343,7 @@ impl CacheManager {
             CacheClass {
                 name: READER_FLOW_CHUNK.to_owned(),
                 priority: 70,
-                soft_quota: 64 << 20,
+                soft_quota: memory_limit / 8,
                 memory: true,
                 disk: false,
                 max_entry: Some(8 << 20),
@@ -322,14 +352,14 @@ impl CacheManager {
                 name: READER_SOURCE.to_owned(),
                 priority: 40,
                 soft_quota: 512 << 20,
-                memory: false,
+                memory: true,
                 disk: true,
                 max_entry: Some(64 << 20),
             },
             CacheClass {
                 name: READER_BOOKS.to_owned(),
                 priority: 60,
-                soft_quota: 128 << 20,
+                soft_quota: memory_limit / 4,
                 memory: true,
                 disk: false,
                 max_entry: None,
@@ -341,29 +371,25 @@ impl CacheManager {
             // reported through `healthy` and remains a runtime concern.
             let _ = manager.register_class(class);
         }
+        for (name, priority, fraction, max_entry) in [
+            (READER_ASSET, 80, 8, 16 << 20),
+            (READER_MANIFEST_OBJECT, 90, 32, 32 << 20),
+            (READER_RENDERED_CHUNK, 75, 8, 8 << 20),
+            (MEDIA_THUMBNAIL, 80, 8, 8 << 20),
+            (MEDIA_METADATA, 90, 32, 8 << 20),
+            (FILE_BLOCK, 30, 8, 64 << 10),
+        ] {
+            let _ = manager.register_class(CacheClass {
+                name: name.to_owned(),
+                priority,
+                soft_quota: memory_limit / fraction,
+                memory: true,
+                disk: false,
+                max_entry: Some(max_entry),
+            });
+        }
         manager.reconcile_disk_startup();
         manager
-    }
-
-    fn new_with_external(
-        cache_dir: PathBuf,
-        memory_limit: i64,
-        disk_limit: i64,
-        external_books: Option<Arc<BookCache>>,
-    ) -> Self {
-        let healthy = prepare_cache_dir(&cache_dir).is_ok();
-        Self {
-            inner: Arc::new(CacheInner {
-                state: Mutex::new(State::default()),
-                disk_io: AsyncMutex::new(()),
-                cache_dir,
-                memory_limit,
-                disk_limit,
-                external_books,
-                healthy: AtomicBool::new(healthy),
-                shutdown: CancellationToken::new(),
-            }),
-        }
     }
 
     /// Register a class before it is used.
@@ -382,13 +408,64 @@ impl CacheManager {
                 memory_entries: 0,
                 disk_bytes: 0,
                 disk_entries: 0,
+                memory_order: BTreeMap::new(),
             },
         );
         Ok(())
     }
 
     /// Read the memory tier and count this as one cache lookup.
-    pub fn get(&self, class: &str, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
+    pub fn get(&self, class: &str, key: &str) -> Result<Option<Bytes>, CacheError> {
+        Ok(self.get_value(class, key)?.and_then(|value| match value {
+            MemoryValue::Bytes(bytes) => Some(bytes),
+            MemoryValue::Object(_) => None,
+        }))
+    }
+
+    pub fn get_object<T: Any + Send + Sync>(
+        &self,
+        class: &str,
+        key: &str,
+    ) -> Result<Option<Arc<T>>, CacheError> {
+        Ok(self.get_value(class, key)?.and_then(|value| match value {
+            MemoryValue::Object(object) => object.downcast().ok(),
+            MemoryValue::Bytes(_) => None,
+        }))
+    }
+
+    pub fn put_object<T: Any + Send + Sync>(
+        &self,
+        class: &str,
+        key: &str,
+        value: Arc<T>,
+        size: i64,
+        ttl: Duration,
+    ) -> Result<(), CacheError> {
+        let config = self.class_config(class, key)?;
+        if !config.memory || !self.admits(&config, size) {
+            return Ok(());
+        }
+        let expires = (ttl > Duration::ZERO).then(|| SystemTime::now() + ttl);
+        let mut state = self.lock_state();
+        state.put_value(class, key, MemoryValue::Object(value), size, expires);
+        state.enforce_memory(self.inner.memory_limit.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    pub fn set_memory_limit(&self, limit: i64) {
+        let limit = limit.max(0).min(self.inner.memory_capacity.max(0));
+        let mut state = self.lock_state();
+        self.inner.memory_limit.store(limit, Ordering::Relaxed);
+        state.enforce_memory(limit);
+    }
+
+    fn admits(&self, class: &CacheClass, size: i64) -> bool {
+        size >= 0
+            && class.max_entry.is_none_or(|limit| size <= limit)
+            && (self.inner.memory_capacity <= 0 || size <= self.inner.memory_capacity)
+    }
+
+    fn get_value(&self, class: &str, key: &str) -> Result<Option<MemoryValue>, CacheError> {
         let mut state = self.lock_state();
         let class_config = state
             .classes
@@ -400,24 +477,12 @@ impl CacheManager {
             state.class_miss(class);
             return Ok(None);
         }
-        let Some(entry) = state.memory.get(&qualified) else {
+        let Some(value) = state.get_memory_value(&qualified) else {
             state.class_miss(class);
             return Ok(None);
         };
-        if expired(entry.expires) {
-            let entry = state.memory.remove(&qualified).expect("entry was present");
-            state.remove_memory_accounting(&entry);
-            state.class_evict(class);
-            state.class_miss(class);
-            return Ok(None);
-        }
-        let data = entry.data.clone();
-        let next = state.next_access();
-        if let Some(entry) = state.memory.get_mut(&qualified) {
-            entry.accessed = next;
-        }
         state.class_hit(class);
-        Ok(Some(data))
+        Ok(Some(value))
     }
 
     /// Report whether a non-expired entry exists in either configured tier.
@@ -467,7 +532,7 @@ impl CacheManager {
         key: &str,
         ttl: Duration,
         loader: F,
-    ) -> Result<Vec<u8>, CacheError>
+    ) -> Result<Bytes, CacheError>
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<Vec<u8>, CacheLoadError>> + Send + 'static,
@@ -483,11 +548,12 @@ impl CacheManager {
         if class_config.disk
             && let Some((data, expires)) = self.get_disk(class, key).await
         {
+            let data = Bytes::from(data);
             let mut state = self.lock_state();
             state.class_hit(class);
             if class_config.memory {
                 state.put_memory(class, key, data.clone(), expires);
-                state.enforce_memory(self.inner.memory_limit);
+                state.enforce_memory(self.inner.memory_limit.load(Ordering::Relaxed));
             }
             return Ok(data);
         }
@@ -518,7 +584,7 @@ impl CacheManager {
                 let mut loader_task = tokio::spawn(async move { loader().await });
                 let result = tokio::select! {
                     result = &mut loader_task => match result {
-                        Ok(result) => result,
+                        Ok(result) => result.map(Bytes::from),
                         Err(error) => Err(CacheLoadError::other(format!(
                             "cache loader task failed: {error}"
                         ))),
@@ -547,6 +613,17 @@ impl CacheManager {
         data: &[u8],
         ttl: Duration,
     ) -> Result<(), CacheError> {
+        self.put_bytes(class, key, Bytes::copy_from_slice(data), ttl)
+            .await
+    }
+
+    pub async fn put_bytes(
+        &self,
+        class: &str,
+        key: &str,
+        data: Bytes,
+        ttl: Duration,
+    ) -> Result<(), CacheError> {
         let class_config = self.class_config(class, key)?;
         if class_config
             .max_entry
@@ -557,13 +634,13 @@ impl CacheManager {
         let expires = (ttl > Duration::ZERO).then(|| SystemTime::now() + ttl);
         {
             let mut state = self.lock_state();
-            if class_config.memory {
-                state.put_memory(class, key, data.to_vec(), expires);
-                state.enforce_memory(self.inner.memory_limit);
+            if class_config.memory && self.admits(&class_config, data.len() as i64) {
+                state.put_memory(class, key, data.clone(), expires);
+                state.enforce_memory(self.inner.memory_limit.load(Ordering::Relaxed));
             }
         }
         if class_config.disk {
-            self.put_disk(class, key, data, expires).await?;
+            self.put_disk(class, key, &data, expires).await?;
         }
         Ok(())
     }
@@ -626,30 +703,11 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Reconcile the disk index, enforce class and global budgets, and trim
-    /// the external parsed-book cache to the remaining global memory budget.
+    /// Reconcile the disk index and enforce the shared memory budget.
     pub async fn prune(&self) -> Result<(), CacheError> {
         let disk_result = self.prune_disk().await;
-        let external_bytes = if let Some(books) = &self.inner.external_books {
-            let managed = self.lock_state().memory_bytes;
-            let target = if self.inner.memory_limit > 0 {
-                (self.inner.memory_limit - managed).max(0)
-            } else {
-                -1
-            };
-            books.trim_to(target);
-            books.stats().0
-        } else {
-            0
-        };
-        if self.inner.memory_limit > 0 {
-            let target = (self.inner.memory_limit - external_bytes).max(0);
-            let mut state = self.lock_state();
-            state.remove_expired_memory();
-            state.evict_memory_to(target);
-        } else {
-            self.lock_state().remove_expired_memory();
-        }
+        self.lock_state()
+            .enforce_memory(self.inner.memory_limit.load(Ordering::Relaxed));
         disk_result
     }
 
@@ -679,7 +737,11 @@ impl CacheManager {
     #[must_use]
     pub fn stats(&self) -> CacheStats {
         let state = self.lock_state();
-        let mut output = CacheStats::default();
+        let mut output = CacheStats {
+            memory_capacity: self.inner.memory_capacity.max(0),
+            memory_limit: self.inner.memory_limit.load(Ordering::Relaxed).max(0),
+            ..CacheStats::default()
+        };
         for (name, class) in &state.classes {
             output.classes.insert(
                 name.clone(),
@@ -700,18 +762,6 @@ impl CacheManager {
         output.memory_entries = state.memory_entries;
         output.disk_bytes = state.disk_bytes;
         output.disk_entries = state.disk_entries;
-        drop(state);
-
-        if let Some(books) = &self.inner.external_books {
-            let (bytes, entries) = books.stats();
-            let class = output.classes.entry(READER_BOOKS.to_owned()).or_default();
-            class.memory_bytes = bytes.max(0);
-            class.memory_entries = i64::try_from(entries).unwrap_or(i64::MAX);
-            output.memory_bytes = output.memory_bytes.saturating_add(bytes.max(0));
-            output.memory_entries = output
-                .memory_entries
-                .saturating_add(i64::try_from(entries).unwrap_or(i64::MAX));
-        }
         output
     }
 
@@ -1122,26 +1172,51 @@ impl State {
         }
     }
 
-    fn get_memory(&mut self, class: &str, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
+    fn get_memory(&mut self, class: &str, key: &str) -> Result<Option<Bytes>, CacheError> {
         let qualified = qualified_key(class, key)?;
-        let Some(entry) = self.memory.get(&qualified) else {
-            return Ok(None);
-        };
-        if expired(entry.expires) {
-            let entry = self.memory.remove(&qualified).expect("entry was present");
-            self.remove_memory_accounting(&entry);
-            self.class_evict(class);
-            return Ok(None);
-        }
-        let data = entry.data.clone();
-        let next = self.next_access();
-        if let Some(entry) = self.memory.get_mut(&qualified) {
-            entry.accessed = next;
-        }
-        Ok(Some(data))
+        Ok(self
+            .get_memory_value(&qualified)
+            .and_then(|value| match value {
+                MemoryValue::Bytes(bytes) => Some(bytes),
+                MemoryValue::Object(_) => None,
+            }))
     }
 
-    fn put_memory(&mut self, class: &str, key: &str, data: Vec<u8>, expires: Option<SystemTime>) {
+    fn get_memory_value(&mut self, qualified: &str) -> Option<MemoryValue> {
+        let entry = self.memory.get(qualified)?;
+        if expired(entry.expires) {
+            let entry = self.memory.remove(qualified).expect("entry was present");
+            self.remove_memory_accounting(&entry);
+            self.class_evict(&entry.class);
+            return None;
+        }
+        let value = entry.value.clone();
+        let previous = entry.accessed;
+        let class = entry.class.clone();
+        let next = self.next_access();
+        if let Some(entry) = self.memory.get_mut(qualified) {
+            entry.accessed = next;
+        }
+        if let Some(class) = self.classes.get_mut(&class) {
+            class.memory_order.remove(&previous);
+            class.memory_order.insert(next, qualified.to_owned());
+        }
+        Some(value)
+    }
+
+    fn put_memory(&mut self, class: &str, key: &str, data: Bytes, expires: Option<SystemTime>) {
+        let size = i64::try_from(data.len()).unwrap_or(i64::MAX);
+        self.put_value(class, key, MemoryValue::Bytes(data), size, expires);
+    }
+
+    fn put_value(
+        &mut self,
+        class: &str,
+        key: &str,
+        value: MemoryValue,
+        size: i64,
+        expires: Option<SystemTime>,
+    ) {
         let qualified = qualified_key_unchecked(class, key);
         if let Some(previous) = self.memory.remove(&qualified) {
             self.remove_memory_accounting(&previous);
@@ -1149,7 +1224,8 @@ impl State {
         let entry = MemoryEntry {
             class: class.to_owned(),
             key: key.to_owned(),
-            data,
+            value,
+            size,
             expires,
             accessed: self.next_access(),
         };
@@ -1158,13 +1234,13 @@ impl State {
     }
 
     fn remove_expired_memory(&mut self) {
-        let expired: Vec<_> = self
-            .memory
-            .iter()
-            .filter(|(_, entry)| expired(entry.expires))
-            .map(|(key, _)| key.clone())
-            .collect();
-        for qualified in expired {
+        let now = SystemTime::now();
+        while self
+            .memory_expiry
+            .first()
+            .is_some_and(|(expires, _)| *expires <= now)
+        {
+            let (_, qualified) = self.memory_expiry.pop_first().expect("expiry was present");
             if let Some(entry) = self.memory.remove(&qualified) {
                 self.remove_memory_accounting(&entry);
                 self.class_evict(&entry.class);
@@ -1174,88 +1250,67 @@ impl State {
 
     fn enforce_memory(&mut self, limit: i64) {
         self.remove_expired_memory();
-        let quotas: Vec<_> = self
-            .classes
-            .values()
-            .filter(|class| class.config.memory && class.config.soft_quota > 0)
-            .map(|class| (class.config.name.clone(), class.config.soft_quota))
-            .collect();
-        for (class, quota) in quotas {
-            while self
-                .classes
-                .get(&class)
-                .is_some_and(|class| class.memory_bytes > quota)
-            {
-                let Some(victim) = self.pick_memory_victim(|entry| entry.class == class) else {
-                    break;
-                };
-                self.remove_memory_entry(&victim);
-                self.class_evict(&class);
-            }
-        }
-        if limit > 0 {
+        if limit >= 0 {
             self.evict_memory_to(limit);
         }
     }
 
     fn evict_memory_to(&mut self, limit: i64) {
         while self.memory_bytes > limit {
-            let Some(victim) = self.pick_memory_victim(|_| true) else {
+            let victim = self
+                .classes
+                .values()
+                .filter_map(|class| {
+                    let (&accessed, qualified) = class.memory_order.first_key_value()?;
+                    let protected = class.config.soft_quota <= 0
+                        || class.memory_bytes <= class.config.soft_quota;
+                    Some((
+                        (protected, class.config.priority, accessed),
+                        qualified.clone(),
+                    ))
+                })
+                .min_by_key(|(rank, _)| *rank)
+                .map(|(_, qualified)| qualified);
+            let Some(qualified) = victim else {
                 break;
             };
-            let class = victim.class.clone();
-            self.remove_memory_entry(&victim);
-            self.class_evict(&class);
-        }
-    }
-
-    fn pick_memory_victim<F>(&self, accept: F) -> Option<MemoryEntry>
-    where
-        F: Fn(&MemoryEntry) -> bool,
-    {
-        self.memory
-            .values()
-            .filter(|entry| accept(entry))
-            .min_by_key(|entry| {
-                let priority = self
-                    .classes
-                    .get(&entry.class)
-                    .map_or(i32::MIN, |class| class.config.priority);
-                (priority, entry.accessed)
-            })
-            .map(|entry| MemoryEntry {
-                class: entry.class.clone(),
-                key: entry.key.clone(),
-                data: Vec::new(),
-                expires: entry.expires,
-                accessed: entry.accessed,
-            })
-    }
-
-    fn remove_memory_entry(&mut self, entry: &MemoryEntry) {
-        let qualified = qualified_key_unchecked(&entry.class, &entry.key);
-        if let Some(current) = self.memory.remove(&qualified) {
-            self.remove_memory_accounting(&current);
+            if let Some(entry) = self.memory.remove(&qualified) {
+                self.remove_memory_accounting(&entry);
+                self.class_evict(&entry.class);
+            }
         }
     }
 
     fn remove_memory_accounting(&mut self, entry: &MemoryEntry) {
-        let size = i64::try_from(entry.data.len()).unwrap_or(i64::MAX);
+        let size = entry.size;
         self.memory_bytes = self.memory_bytes.saturating_sub(size);
         self.memory_entries = self.memory_entries.saturating_sub(1);
         if let Some(class) = self.classes.get_mut(&entry.class) {
             class.memory_bytes = class.memory_bytes.saturating_sub(size);
             class.memory_entries = class.memory_entries.saturating_sub(1);
+            class.memory_order.remove(&entry.accessed);
+        }
+        if let Some(expires) = entry.expires {
+            self.memory_expiry
+                .remove(&(expires, qualified_key_unchecked(&entry.class, &entry.key)));
         }
     }
 
     fn add_memory_accounting(&mut self, entry: &MemoryEntry) {
-        let size = i64::try_from(entry.data.len()).unwrap_or(i64::MAX);
+        let size = entry.size;
         self.memory_bytes = self.memory_bytes.saturating_add(size);
         self.memory_entries = self.memory_entries.saturating_add(1);
         if let Some(class) = self.classes.get_mut(&entry.class) {
             class.memory_bytes = class.memory_bytes.saturating_add(size);
             class.memory_entries = class.memory_entries.saturating_add(1);
+            class.memory_order.insert(
+                entry.accessed,
+                qualified_key_unchecked(&entry.class, &entry.key),
+            );
+        }
+        if let Some(expires) = entry.expires {
+            self.memory_expiry
+                .insert((expires, qualified_key_unchecked(&entry.class, &entry.key)));
         }
     }
 
@@ -1288,7 +1343,7 @@ impl State {
 
 async fn wait_for_flight(
     mut receiver: watch::Receiver<Option<Arc<LoadResult>>>,
-) -> Result<Vec<u8>, CacheError> {
+) -> Result<Bytes, CacheError> {
     loop {
         if let Some(result) = receiver.borrow().clone() {
             return result
@@ -1311,7 +1366,7 @@ impl CacheManager {
     ) {
         let result = match result {
             Ok(data) => {
-                if let Err(error) = self.put(&class, &key, &data, ttl).await {
+                if let Err(error) = self.put_bytes(&class, &key, data.clone(), ttl).await {
                     tracing::warn!(%error, class, key, "cache result could not be stored");
                 }
                 Ok(data)
@@ -1557,9 +1612,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(value, b"payload");
+        assert_eq!(value.as_ref(), b"payload");
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert_eq!(manager.get("tiered", "book").unwrap().unwrap(), b"payload");
+        assert_eq!(
+            manager.get("tiered", "book").unwrap().unwrap().as_ref(),
+            b"payload"
+        );
 
         manager.delete("tiered", "book").await.unwrap();
         manager
@@ -1571,7 +1629,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(value, b"payload");
+        assert_eq!(value.as_ref(), b"payload");
         assert_eq!(manager.stats().classes["tiered"].hits, 2);
     }
 
@@ -1650,7 +1708,7 @@ mod tests {
         });
         tokio::task::yield_now().await;
         let _ = ready.send(());
-        assert_eq!(second.await.unwrap(), b"shared");
+        assert_eq!(second.await.unwrap().as_ref(), b"shared");
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
@@ -1689,7 +1747,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(value, b"value");
+        assert_eq!(value.as_ref(), b"value");
         assert_eq!(second.stats().classes["disk"].hits, 1);
     }
 
@@ -1739,14 +1797,157 @@ mod tests {
     fn production_registry_reports_healthy_classes_for_a_writable_caches_dir() {
         let caches_dir =
             std::env::temp_dir().join(format!("revaro-cache-{}", crate::ids::new_id()));
-        let manager =
-            CacheManager::for_app(&caches_dir, 1 << 20, Arc::new(BookCache::new(4, 128 << 20)));
+        let manager = CacheManager::for_app(&caches_dir, 128 << 20, 1 << 20);
         assert!(manager.is_healthy());
         let classes = manager.stats().classes;
         assert!(classes.contains_key(READER_FLOW_MANIFEST));
         assert!(classes.contains_key(READER_FLOW_CHUNK));
         assert!(classes.contains_key(READER_SOURCE));
         assert!(classes.contains_key(READER_BOOKS));
+        assert!(classes.contains_key(MEDIA_THUMBNAIL));
+        assert!(classes.contains_key(FILE_BLOCK));
+    }
+
+    #[tokio::test]
+    async fn idle_quotas_are_borrowed_and_reclaimed_before_protected_classes() {
+        let manager = CacheManager::new(std::env::temp_dir().join(crate::ids::new_id()), 12, 0);
+        manager
+            .register_class(class("books", 90, 4, true, false))
+            .unwrap();
+        manager
+            .register_class(class("images", 80, 6, true, false))
+            .unwrap();
+        let book = Arc::new("parsed book".to_owned());
+        manager
+            .put_object("books", "one", book.clone(), 8, Duration::ZERO)
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &manager
+                .get_object::<String>("books", "one")
+                .unwrap()
+                .unwrap(),
+            &book
+        ));
+        assert_eq!(manager.stats().memory_bytes, 8);
+        manager
+            .put("images", "one", b"1234", Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(manager.has("books", "one").unwrap());
+        manager
+            .put("images", "two", b"56", Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(!manager.has("books", "one").unwrap());
+        assert!(manager.has("images", "one").unwrap());
+        assert_eq!(manager.stats().memory_bytes, 6);
+    }
+
+    #[tokio::test]
+    async fn bytes_and_objects_share_one_budget_and_zero_pressure_clears_both() {
+        let manager = CacheManager::new(std::env::temp_dir().join(crate::ids::new_id()), 8, 0);
+        manager
+            .register_class(class("shared", 50, 0, true, false))
+            .unwrap();
+        let bytes = Bytes::from(vec![1, 2, 3, 4]);
+        manager
+            .put_bytes("shared", "bytes", bytes.clone(), Duration::ZERO)
+            .await
+            .unwrap();
+        let first = manager.get("shared", "bytes").unwrap().unwrap();
+        assert_eq!(first.as_ptr(), bytes.as_ptr());
+        manager
+            .put_object("shared", "object", Arc::new(42_u64), 4, Duration::ZERO)
+            .unwrap();
+        assert_eq!(manager.stats().memory_bytes, 8);
+        manager.set_memory_limit(4);
+        assert!(!manager.has("shared", "bytes").unwrap());
+        assert_eq!(
+            *manager
+                .get_object::<u64>("shared", "object")
+                .unwrap()
+                .unwrap(),
+            42
+        );
+        manager.set_memory_limit(0);
+        assert_eq!(manager.stats().memory_bytes, 0);
+        manager
+            .put("shared", "pressure", b"123", Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(!manager.has("shared", "pressure").unwrap());
+        manager.set_memory_limit(100);
+        assert_eq!(manager.stats().memory_limit, 8);
+        manager
+            .put("shared", "recovered", b"123", Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(manager.has("shared", "recovered").unwrap());
+    }
+
+    #[tokio::test]
+    async fn replacement_expiration_and_lru_keep_indexes_and_accounting_consistent() {
+        let manager = CacheManager::new(std::env::temp_dir().join(crate::ids::new_id()), 6, 0);
+        manager
+            .register_class(class("shared", 50, 0, true, false))
+            .unwrap();
+        manager
+            .put("shared", "first", b"abc", Duration::from_millis(20))
+            .await
+            .unwrap();
+        manager
+            .put("shared", "first", b"abc", Duration::ZERO)
+            .await
+            .unwrap();
+        manager
+            .put_object("shared", "second", Arc::new(1_u64), 3, Duration::ZERO)
+            .unwrap();
+        manager.get("shared", "first").unwrap();
+        manager
+            .put("shared", "third", b"def", Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(!manager.has("shared", "second").unwrap());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        manager.set_memory_limit(6);
+        assert!(manager.has("shared", "first").unwrap());
+        assert_eq!(manager.stats().memory_bytes, 6);
+        manager.delete("shared", "first").await.unwrap();
+        let state = manager.lock_state();
+        assert_eq!(state.memory_expiry.len(), 0);
+        assert_eq!(state.classes["shared"].memory_order.len(), 1);
+        assert_eq!(state.memory_entries, 1);
+    }
+
+    #[tokio::test]
+    async fn zero_production_budget_disables_memory_instead_of_becoming_unlimited() {
+        let manager = CacheManager::for_app(std::env::temp_dir().join(crate::ids::new_id()), 0, 0);
+        manager
+            .put_bytes(
+                FILE_BLOCK,
+                "one",
+                Bytes::from_static(b"block"),
+                Duration::ZERO,
+            )
+            .await
+            .unwrap();
+        manager
+            .put_object(READER_BOOKS, "one", Arc::new(42_u64), 8, Duration::ZERO)
+            .unwrap();
+        assert_eq!(manager.stats().memory_bytes, 0);
+        assert_eq!(manager.stats().memory_limit, 0);
+    }
+
+    #[test]
+    fn oversized_objects_are_returned_to_callers_but_not_retained() {
+        let manager = CacheManager::new(std::env::temp_dir().join(crate::ids::new_id()), 4, 0);
+        manager
+            .register_class(class("shared", 50, 0, true, false))
+            .unwrap();
+        manager
+            .put_object("shared", "oversized", Arc::new(42_u64), 8, Duration::ZERO)
+            .unwrap();
+        assert_eq!(manager.stats().memory_bytes, 0);
     }
 
     impl CacheManager {

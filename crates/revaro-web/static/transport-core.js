@@ -14,7 +14,7 @@ export const policy = {
   headersMs: 15000, idleMs: 8000, hedgeMs: 1200,
   failoverHeadersMs: 3000, mediaIdleMs: 2500,
   attempts: 10, backoffMs: 400, maxBackoffMs: 8000,
-  cacheEntries: 2048, memoryBytes: 8 * 1024 * 1024, cacheWriteBytes: 8 * 1024 * 1024,
+  cacheEntries: 2048, memoryBytes: (globalThis.navigator?.deviceMemory >= 4 ? 32 : 8) * 1024 * 1024, cacheWriteBytes: 8 * 1024 * 1024,
   fallbackMs: 60000, progressWindowMs: 20000, minWindowBytes: 8192,
 };
 let http2Origin = '', fallbackUntil = 0, protocol = '', throughput = 0;

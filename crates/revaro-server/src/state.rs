@@ -13,18 +13,15 @@ use crate::cache::CacheManager;
 use crate::config::Config;
 use crate::db::Database;
 use crate::storage::LocalStore;
-use revaro_reader::BookCache;
 
 /// Process-wide reader caches and per-book build locks.
 ///
-/// The parsed-book cache bounds memory, while the keyed locks prevent two
+/// The shared cache bounds memory, while the keyed locks prevent two
 /// simultaneous first opens from parsing and writing the same derived flow
 /// twice. The lock maps intentionally contain only object-store keys, never
 /// request-controlled filesystem paths.
 #[derive(Debug)]
 pub struct ReaderRuntime {
-    /// LRU of parsed EPUB/TXT books.
-    pub books: Arc<BookCache>,
     /// Bound peak memory and CPU of different books being parsed or built.
     pub work_slots: Arc<tokio::sync::Semaphore>,
     book_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -148,7 +145,6 @@ impl ReaderRuntime {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            books: Arc::new(BookCache::new(4, 128 << 20)),
             work_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             book_locks: Mutex::new(HashMap::new()),
             flow_locks: Mutex::new(HashMap::new()),
@@ -198,6 +194,7 @@ pub struct AppState {
     pub delivery: crate::delivery::DeliveryRuntime,
     /// Process configuration.
     pub config: Arc<Config>,
+    pub memory: crate::memory::MemoryBudget,
     /// The migrated SQLite database.
     pub db: Database,
     /// The local object store holding original bytes and derived artifacts.
@@ -248,16 +245,29 @@ impl AppState {
         files: Arc<dyn crate::file_access::FileAccess>,
     ) -> Arc<Self> {
         let reader = ReaderRuntime::new();
+        let memory = crate::memory::MemoryBudget::detect(config.memory_budget);
+        tracing::info!(
+            requested_bytes = config.memory_budget,
+            total_bytes = memory.total_bytes,
+            cache_bytes = memory.cache_bytes,
+            database_bytes = memory.database_bytes,
+            "memory budget ready"
+        );
         let cache = CacheManager::for_app(
             &config.caches_dir,
+            memory.cache_bytes,
             config.media_cache_capacity,
-            Arc::clone(&reader.books),
         );
+        let files = Arc::new(crate::file_access::CachedFileAccess::new(
+            files,
+            cache.clone(),
+        ));
         let maintenance = crate::maintenance::MaintenanceRuntime::new();
         let uploads = UploadRuntime::with_concurrency(config.upload_concurrency);
         let state = Arc::new(Self {
             delivery: crate::delivery::DeliveryRuntime::default(),
             config,
+            memory,
             db,
             files,
             store,

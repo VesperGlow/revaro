@@ -15,6 +15,7 @@ use axum::extract::{FromRequest, Path as PathParam, Request, State};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
+use bytes::Bytes;
 use http::StatusCode;
 use http::header::{CONTENT_DISPOSITION, HeaderValue};
 use revaro_core::ApiError;
@@ -26,8 +27,8 @@ use rusqlite::OptionalExtension;
 use crate::auth::extract::AuthUser;
 use crate::auth_routes::JsonBody;
 use crate::cache::{
-    CacheError, CacheLoadError, CacheLoadKind, READER_FLOW_CHUNK, READER_FLOW_MANIFEST,
-    READER_SOURCE,
+    CacheError, CacheLoadError, CacheLoadKind, READER_ASSET, READER_BOOKS, READER_FLOW_CHUNK,
+    READER_FLOW_MANIFEST, READER_MANIFEST_OBJECT, READER_RENDERED_CHUNK, READER_SOURCE,
 };
 use crate::file_routes;
 use crate::state::AppState;
@@ -84,12 +85,21 @@ pub(crate) async fn load_book(
     state: Arc<AppState>,
     file: &File,
 ) -> Result<Arc<revaro_reader::Book>, ApiError> {
-    if let Some(book) = state.reader.books.get(&file.object_key) {
+    let book_key = book_cache_key(file);
+    if let Some(book) = state
+        .cache
+        .get_object(READER_BOOKS, &book_key)
+        .map_err(flow_cache_api_error)?
+    {
         return Ok(book);
     }
 
     let _guard = state.reader.book_lock(&file.object_key).await;
-    if let Some(book) = state.reader.books.get(&file.object_key) {
+    if let Some(book) = state
+        .cache
+        .get_object(READER_BOOKS, &book_key)
+        .map_err(flow_cache_api_error)?
+    {
         return Ok(book);
     }
     let permit = state
@@ -146,8 +156,34 @@ pub(crate) async fn load_book(
     .map_err(|error| reader_parse_error(error.to_string()))?
     .map_err(|error| reader_parse_error(error.to_string()))?;
     let book = Arc::new(parsed);
-    state.reader.books.put(&file.object_key, Arc::clone(&book));
+    let size = book
+        .byte_size()
+        .saturating_add(book.byte_size() / 8)
+        .saturating_add(std::mem::size_of::<revaro_reader::Book>() as i64);
+    state
+        .cache
+        .put_object(
+            READER_BOOKS,
+            &book_key,
+            Arc::clone(&book),
+            size,
+            Duration::ZERO,
+        )
+        .map_err(flow_cache_api_error)?;
     Ok(book)
+}
+
+fn book_cache_key(file: &File) -> String {
+    format!(
+        "{}/{}/{}",
+        file.object_key,
+        if revaro_core::classify::is_epub_name(&file.name) {
+            "epub"
+        } else {
+            "txt"
+        },
+        file.etag
+    )
 }
 
 fn reader_cache_load_error(error: StorageError) -> CacheLoadError {
@@ -208,19 +244,37 @@ async fn book_asset(
     headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let file = reader_file(Arc::clone(&state), id).await?;
-    let book = load_book(state, &file).await?;
     let Ok(index) = index.parse::<usize>() else {
         return Err(ApiError::not_found("asset not found"));
     };
+    let cache_key = format!("{}/asset/{index}", book_cache_key(&file));
+    if let Some(resource) = state
+        .cache
+        .get_object::<BookResource>(READER_ASSET, &cache_key)
+        .map_err(flow_cache_api_error)?
+    {
+        return resource.serve(headers).await;
+    }
+    let book = load_book(state.clone(), &file).await?;
     let Some(asset) = book.assets.get(index) else {
         return Err(ApiError::not_found("asset not found"));
     };
-    bytes_response(
-        &revaro_core::classify::safe_delivery_mime(&asset.content_type),
-        asset.data.clone(),
-        headers,
-    )
-    .await
+    let resource = Arc::new(BookResource {
+        content_type: revaro_core::classify::safe_delivery_mime(&asset.content_type),
+        resource: crate::transfer::CachedResource::new(Bytes::copy_from_slice(&asset.data)),
+        attachment: false,
+    });
+    state
+        .cache
+        .put_object(
+            READER_ASSET,
+            &cache_key,
+            resource.clone(),
+            resource.byte_size(),
+            Duration::ZERO,
+        )
+        .map_err(flow_cache_api_error)?;
+    resource.serve(headers).await
 }
 
 async fn book_cover(
@@ -230,28 +284,69 @@ async fn book_cover(
     headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let file = reader_file(Arc::clone(&state), id).await?;
-    let book = load_book(state, &file).await?;
+    let cache_key = format!("{}/cover", book_cache_key(&file));
+    if let Some(resource) = state
+        .cache
+        .get_object::<BookResource>(READER_ASSET, &cache_key)
+        .map_err(flow_cache_api_error)?
+    {
+        return resource.serve(headers).await;
+    }
+    let book = load_book(state.clone(), &file).await?;
     if book.cover.is_empty() {
         return Err(ApiError::not_found("这本书没有内嵌封面"));
     }
     let content_type = revaro_core::classify::safe_delivery_mime(
         revaro_reader::asset_content_type(&book.cover_ext),
     );
-    let mut response = bytes_response(&content_type, book.cover.clone(), headers).await?;
-    if content_type == "application/octet-stream" {
-        response
-            .headers_mut()
-            .insert(CONTENT_DISPOSITION, HeaderValue::from_static("attachment"));
-    }
-    Ok(response)
+    let resource = Arc::new(BookResource {
+        attachment: content_type == "application/octet-stream",
+        content_type,
+        resource: crate::transfer::CachedResource::new(Bytes::copy_from_slice(&book.cover)),
+    });
+    state
+        .cache
+        .put_object(
+            READER_ASSET,
+            &cache_key,
+            resource.clone(),
+            resource.byte_size(),
+            Duration::ZERO,
+        )
+        .map_err(flow_cache_api_error)?;
+    resource.serve(headers).await
 }
 
 async fn bytes_response(
     content_type: &str,
-    data: Vec<u8>,
+    data: Bytes,
     headers: http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    crate::transfer::serve_bytes(data.into(), content_type, "inline", headers).await
+    crate::transfer::serve_bytes(data, content_type, "inline", headers).await
+}
+
+struct BookResource {
+    resource: crate::transfer::CachedResource,
+    content_type: String,
+    attachment: bool,
+}
+
+impl BookResource {
+    fn byte_size(&self) -> i64 {
+        self.resource.byte_size()
+            + self.content_type.capacity() as i64
+            + std::mem::size_of::<Self>() as i64
+    }
+
+    async fn serve(&self, headers: http::HeaderMap) -> Result<Response, ApiError> {
+        let mut response = self.resource.serve(&self.content_type, headers).await?;
+        if self.attachment {
+            response
+                .headers_mut()
+                .insert(CONTENT_DISPOSITION, HeaderValue::from_static("attachment"));
+        }
+        Ok(response)
+    }
 }
 
 fn progress_key(file_id: &str) -> String {
@@ -359,10 +454,7 @@ async fn book_flow(
     let data = read_flow_object(&state, READER_FLOW_MANIFEST, &manifest_key)
         .await
         .map_err(flow_cache_api_error)?;
-    serde_json::from_slice::<reader_model::FlowManifest>(&data).map_err(|error| {
-        tracing::error!(%error, "flow manifest is invalid");
-        ApiError::internal("could not read flow manifest")
-    })?;
+    read_manifest(&state, &file).await?;
     bytes_response("application/json; charset=utf-8", data, headers).await
 }
 
@@ -405,6 +497,18 @@ async fn book_flow_chunk(
             return Err(ApiError::internal("could not read flow chunk"));
         }
     }
+    let rendered_key = format!(
+        "{}{index}/{}",
+        flow_chunk_cache_key_prefix(&file.object_key),
+        file.id
+    );
+    if let Some(resource) = state
+        .cache
+        .get_object::<crate::transfer::CachedResource>(READER_RENDERED_CHUNK, &rendered_key)
+        .map_err(flow_cache_api_error)?
+    {
+        return resource.serve("text/html; charset=utf-8", headers).await;
+    }
     let data = match read_flow_object(&state, READER_FLOW_CHUNK, &key).await {
         Ok(data) => data,
         Err(error) if error.is_loader_not_found() => {
@@ -418,37 +522,70 @@ async fn book_flow_chunk(
             return Err(ApiError::internal("could not read flow chunk"));
         }
     };
-    bytes_response(
-        "text/html; charset=utf-8",
-        bind_asset_urls(data, &file.id)?,
-        headers,
-    )
-    .await
+    let resource = Arc::new(crate::transfer::CachedResource::new(bind_asset_urls(
+        data, &file.id,
+    )?));
+    state
+        .cache
+        .put_object(
+            READER_RENDERED_CHUNK,
+            &rendered_key,
+            resource.clone(),
+            resource.byte_size(),
+            state.config.flow_cache_ttl,
+        )
+        .map_err(flow_cache_api_error)?;
+    resource.serve("text/html; charset=utf-8", headers).await
 }
 
-fn bind_asset_urls(data: Vec<u8>, file_id: &str) -> Result<Vec<u8>, ApiError> {
-    let html = String::from_utf8(data)
+fn bind_asset_urls(data: Bytes, file_id: &str) -> Result<Bytes, ApiError> {
+    let html = std::str::from_utf8(&data)
         .map_err(|_| ApiError::internal("reading flow is not valid UTF-8"))?;
     Ok(html
         .replace(
             &format!("src=\"{ASSET_PLACEHOLDER}/"),
             &format!("src=\"/api/files/{file_id}/book/assets/"),
         )
-        .into_bytes())
+        .into_bytes()
+        .into())
 }
 
 async fn read_manifest(
     state: &AppState,
     file: &File,
-) -> Result<reader_model::FlowManifest, ApiError> {
+) -> Result<Arc<reader_model::FlowManifest>, ApiError> {
+    let cache_key = flow_manifest_cache_key(&file.object_key);
+    if let Some(manifest) = state
+        .cache
+        .get_object(READER_MANIFEST_OBJECT, &cache_key)
+        .map_err(flow_cache_api_error)?
+    {
+        return Ok(manifest);
+    }
     let key = keys::flow_manifest_key(&file.object_key, FLOW_VERSION);
     let data = read_flow_object(state, READER_FLOW_MANIFEST, &key)
         .await
         .map_err(flow_cache_api_error)?;
-    serde_json::from_slice(&data).map_err(|error| {
-        tracing::error!(%error, "flow manifest is invalid");
-        ApiError::internal("could not read flow manifest")
-    })
+    let manifest = Arc::new(
+        serde_json::from_slice::<reader_model::FlowManifest>(&data).map_err(|error| {
+            tracing::error!(%error, "flow manifest is invalid");
+            ApiError::internal("could not read flow manifest")
+        })?,
+    );
+    let size = (data.len() as i64)
+        .saturating_mul(3)
+        .saturating_add(std::mem::size_of::<reader_model::FlowManifest>() as i64);
+    state
+        .cache
+        .put_object(
+            READER_MANIFEST_OBJECT,
+            &cache_key,
+            manifest.clone(),
+            size,
+            state.config.flow_cache_ttl,
+        )
+        .map_err(flow_cache_api_error)?;
+    Ok(manifest)
 }
 
 pub(crate) async fn legacy_progress_percent(
@@ -463,7 +600,7 @@ pub(crate) async fn legacy_progress_percent(
     let bytes = read_flow_object(&state, READER_FLOW_CHUNK, &key)
         .await
         .ok()?;
-    let html = String::from_utf8(bytes).ok()?;
+    let html = String::from_utf8(bytes.to_vec()).ok()?;
     let permit = state.reader.work_slots.clone().acquire_owned().await.ok()?;
     let anchor = anchor.clone();
     tokio::task::spawn_blocking(move || {
@@ -489,6 +626,18 @@ async fn ensure_flow(state: Arc<AppState>, file: &File) -> Result<(), ApiError> 
 
 async fn rebuild_flow(state: Arc<AppState>, file: &File) -> Result<(), ApiError> {
     let _guard = state.reader.flow_lock(&file.object_key).await;
+    for (class, prefix) in [
+        (
+            READER_MANIFEST_OBJECT,
+            flow_manifest_cache_key(&file.object_key),
+        ),
+        (
+            READER_RENDERED_CHUNK,
+            flow_chunk_cache_key_prefix(&file.object_key),
+        ),
+    ] {
+        let _ = state.cache.invalidate(&format!("{class}\0{prefix}")).await;
+    }
     let _ = state
         .cache
         .invalidate(&format!(
@@ -510,7 +659,7 @@ async fn read_flow_object(
     state: &AppState,
     class: &'static str,
     object_key: &str,
-) -> Result<Vec<u8>, CacheError> {
+) -> Result<Bytes, CacheError> {
     let cache_key = if class == READER_FLOW_MANIFEST {
         flow_manifest_cache_key_from_object_key(object_key)
     } else {
@@ -900,6 +1049,53 @@ mod tests {
         assert_eq!(stats.classes[READER_SOURCE].loads, 1);
         assert_eq!(stats.classes[READER_FLOW_MANIFEST].loads, 1);
         assert_eq!(stats.classes[READER_FLOW_CHUNK].loads, 1);
+        let (status, _, second) = request(
+            &state,
+            "GET",
+            "/api/files/reader-epub/book/flow/chunks/0",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second, html.as_bytes());
+        let stats = state.cache.stats();
+        assert_eq!(stats.classes[READER_FLOW_CHUNK].loads, 1);
+        assert_eq!(stats.classes[READER_RENDERED_CHUNK].memory_entries, 1);
+        assert!(stats.classes[READER_RENDERED_CHUNK].hits >= 1);
+        assert!(stats.classes[READER_MANIFEST_OBJECT].hits >= 1);
+        let file = state
+            .db
+            .call(|connection| file_routes::lookup_file_any(connection, "reader-epub"))
+            .await
+            .unwrap();
+        let book_key = book_cache_key(&file);
+        let book = state
+            .cache
+            .get_object::<revaro_reader::Book>(READER_BOOKS, &book_key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Arc::strong_count(&book),
+            2,
+            "cached assets must not pin the entire parsed book"
+        );
+        drop(book);
+        state.cache.delete(READER_BOOKS, &book_key).await.unwrap();
+        state
+            .cache
+            .delete(READER_SOURCE, &file.object_key)
+            .await
+            .unwrap();
+        state.store.delete(&file.object_key).await.unwrap();
+        for (path, expected) in [
+            ("/api/files/reader-epub/book/assets/0", fake_png(10, 20)),
+            ("/api/files/reader-epub/book/cover", fake_png(300, 400)),
+        ] {
+            let (status, _, body) = request(&state, "GET", path, None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, expected);
+        }
+        assert_eq!(state.cache.stats().classes[READER_ASSET].memory_entries, 2);
     }
 
     #[tokio::test]
