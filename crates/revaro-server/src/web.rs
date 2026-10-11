@@ -152,13 +152,14 @@ async fn file_response(
     request_headers: &HeaderMap,
     head_only: bool,
 ) -> Response {
-    let is_wasm = path
-        .extension()
-        .is_some_and(|extension| extension == "wasm");
+    let compressible = matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("wasm" | "js" | "css")
+    );
     let mut representation = path.to_owned();
     let mut metadata = metadata.clone();
     let mut content_encoding = None;
-    if is_wasm {
+    if compressible {
         let identity_quality = encoding_quality(request_headers, "identity");
         let mut codings = [
             (
@@ -182,7 +183,10 @@ async fn file_response(
             if coding == "identity" {
                 break;
             }
-            let candidate = path.with_extension(format!("wasm.{extension}"));
+            let candidate = path.with_file_name(format!(
+                "{}.{extension}",
+                path.file_name().expect("asset filename").to_string_lossy()
+            ));
             if let Ok(candidate_metadata) = tokio::fs::metadata(&candidate).await
                 && candidate_metadata.is_file()
             {
@@ -194,7 +198,7 @@ async fn file_response(
         }
         if content_encoding.is_none() && identity_quality == Some(0) {
             let mut response =
-                (StatusCode::NOT_ACCEPTABLE, "no acceptable WASM encoding").into_response();
+                (StatusCode::NOT_ACCEPTABLE, "no acceptable asset encoding").into_response();
             response
                 .headers_mut()
                 .insert(header::VARY, "Accept-Encoding".parse().expect("valid Vary"));
@@ -239,7 +243,7 @@ async fn file_response(
     );
     headers.insert(header::CACHE_CONTROL, cache_header);
     headers.insert(header::ETAG, etag_header);
-    if is_wasm {
+    if compressible {
         headers.insert(header::VARY, "Accept-Encoding".parse().expect("valid Vary"));
     }
     if let Some(coding) = content_encoding {
@@ -346,6 +350,10 @@ fn is_hashed_asset(path: &Path) -> bool {
         .or_else(|| {
             name.strip_prefix("revaro_web.")
                 .and_then(|name| name.strip_suffix(".js"))
+        })
+        .or_else(|| {
+            name.strip_prefix("styles.")
+                .and_then(|name| name.strip_suffix(".css"))
         });
     hash.is_some_and(|hash| {
         hash.len() == 64
@@ -442,125 +450,131 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("revaro-web-encoding-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("core.{}.wasm", "a".repeat(64)));
-        for (suffix, bytes) in [
-            ("", b"wasm".as_slice()),
-            (".br", b"brotli"),
-            (".gz", b"gzip"),
+        for (prefix, extension, mime) in [
+            ("core", "wasm", "application/wasm"),
+            ("revaro_web", "js", "text/javascript"),
+            ("styles", "css", "text/css"),
         ] {
-            std::fs::write(format!("{}{suffix}", path.display()), bytes).unwrap();
-        }
-        let metadata = std::fs::metadata(&path).unwrap();
-        let mut headers = HeaderMap::new();
-        let mut etags = Vec::new();
-        for (accept, expected_encoding, expected_body) in [
-            ("gzip, br", Some("br"), b"brotli".as_slice()),
-            ("br;q=0.4, gzip;q=0.8", Some("gzip"), b"gzip"),
-            ("br;q=0, gzip", Some("gzip"), b"gzip"),
-            ("*;q=1, br;q=0", Some("gzip"), b"gzip"),
-            ("BR", Some("br"), b"brotli"),
-            ("br;q=0.4, identity;q=1", None, b"wasm"),
-            ("br;q=0, gzip;q=0", None, b"wasm"),
-            ("", None, b"wasm"),
-        ] {
-            headers.insert(header::ACCEPT_ENCODING, accept.parse().unwrap());
-            headers.remove(header::IF_NONE_MATCH);
-            let response = file_response(&path, &metadata, &headers, false).await;
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/wasm");
-            assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+            let path = dir.join(format!("{prefix}.{}.{extension}", "a".repeat(64)));
+            for (suffix, bytes) in [
+                ("", b"wasm".as_slice()),
+                (".br", b"brotli"),
+                (".gz", b"gzip"),
+            ] {
+                std::fs::write(format!("{}{suffix}", path.display()), bytes).unwrap();
+            }
+            let metadata = std::fs::metadata(&path).unwrap();
+            let mut headers = HeaderMap::new();
+            let mut etags = Vec::new();
+            for (accept, expected_encoding, expected_body) in [
+                ("gzip, br", Some("br"), b"brotli".as_slice()),
+                ("br;q=0.4, gzip;q=0.8", Some("gzip"), b"gzip"),
+                ("br;q=0, gzip", Some("gzip"), b"gzip"),
+                ("*;q=1, br;q=0", Some("gzip"), b"gzip"),
+                ("BR", Some("br"), b"brotli"),
+                ("br;q=0.4, identity;q=1", None, b"wasm"),
+                ("br;q=0, gzip;q=0", None, b"wasm"),
+                ("", None, b"wasm"),
+            ] {
+                headers.insert(header::ACCEPT_ENCODING, accept.parse().unwrap());
+                headers.remove(header::IF_NONE_MATCH);
+                let response = file_response(&path, &metadata, &headers, false).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
+                assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+                assert_eq!(
+                    response.headers()[header::CACHE_CONTROL],
+                    "public, max-age=31536000, immutable"
+                );
+                assert_eq!(
+                    response.headers()[header::CONTENT_LENGTH],
+                    expected_body.len().to_string()
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::CONTENT_ENCODING)
+                        .map(|v| v.to_str().unwrap()),
+                    expected_encoding
+                );
+                let etag = response.headers()[header::ETAG].clone();
+                etags.push(etag.clone());
+                assert_eq!(
+                    response.into_body().collect().await.unwrap().to_bytes(),
+                    expected_body
+                );
+
+                headers.insert(header::IF_NONE_MATCH, etag);
+                let cached = file_response(&path, &metadata, &headers, false).await;
+                assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+                assert_eq!(cached.headers()[header::VARY], "Accept-Encoding");
+                assert_eq!(
+                    cached
+                        .headers()
+                        .get(header::CONTENT_ENCODING)
+                        .map(|v| v.to_str().unwrap()),
+                    expected_encoding
+                );
+                assert!(
+                    cached
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .is_empty()
+                );
+            }
+            assert_ne!(etags[0], etags[1]);
+            assert_ne!(etags[0], etags[5]);
+            headers.insert(header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+            headers.insert(header::IF_NONE_MATCH, etags[0].clone());
             assert_eq!(
-                response.headers()[header::CACHE_CONTROL],
-                "public, max-age=31536000, immutable"
-            );
-            assert_eq!(
-                response.headers()[header::CONTENT_LENGTH],
-                expected_body.len().to_string()
-            );
-            assert_eq!(
-                response
-                    .headers()
-                    .get(header::CONTENT_ENCODING)
-                    .map(|v| v.to_str().unwrap()),
-                expected_encoding
-            );
-            let etag = response.headers()[header::ETAG].clone();
-            etags.push(etag.clone());
-            assert_eq!(
-                response.into_body().collect().await.unwrap().to_bytes(),
-                expected_body
+                file_response(&path, &metadata, &headers, false)
+                    .await
+                    .status(),
+                StatusCode::OK
             );
 
-            headers.insert(header::IF_NONE_MATCH, etag);
-            let cached = file_response(&path, &metadata, &headers, false).await;
-            assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
-            assert_eq!(cached.headers()[header::VARY], "Accept-Encoding");
-            assert_eq!(
-                cached
-                    .headers()
-                    .get(header::CONTENT_ENCODING)
-                    .map(|v| v.to_str().unwrap()),
-                expected_encoding
-            );
+            headers.remove(header::IF_NONE_MATCH);
+            let head = file_response(&path, &metadata, &headers, true).await;
+            assert_eq!(head.headers()[header::CONTENT_ENCODING], "gzip");
+            assert_eq!(head.headers()[header::CONTENT_LENGTH], "4");
             assert!(
-                cached
-                    .into_body()
+                head.into_body()
                     .collect()
                     .await
                     .unwrap()
                     .to_bytes()
                     .is_empty()
             );
+
+            std::fs::remove_file(path.with_extension(format!("{extension}.br"))).unwrap();
+            headers.insert(header::ACCEPT_ENCODING, "br, gzip".parse().unwrap());
+            assert_eq!(
+                file_response(&path, &metadata, &headers, false)
+                    .await
+                    .headers()[header::CONTENT_ENCODING],
+                "gzip"
+            );
+            std::fs::remove_file(path.with_extension(format!("{extension}.gz"))).unwrap();
+            assert!(
+                !file_response(&path, &metadata, &headers, false)
+                    .await
+                    .headers()
+                    .contains_key(header::CONTENT_ENCODING)
+            );
+            headers.insert(
+                header::ACCEPT_ENCODING,
+                "identity;q=0, *;q=0".parse().unwrap(),
+            );
+            assert_eq!(
+                file_response(&path, &metadata, &headers, false)
+                    .await
+                    .status(),
+                StatusCode::NOT_ACCEPTABLE
+            );
         }
-        assert_ne!(etags[0], etags[1]);
-        assert_ne!(etags[0], etags[5]);
-        headers.insert(header::ACCEPT_ENCODING, "gzip".parse().unwrap());
-        headers.insert(header::IF_NONE_MATCH, etags[0].clone());
-        assert_eq!(
-            file_response(&path, &metadata, &headers, false)
-                .await
-                .status(),
-            StatusCode::OK
-        );
-
-        headers.remove(header::IF_NONE_MATCH);
-        let head = file_response(&path, &metadata, &headers, true).await;
-        assert_eq!(head.headers()[header::CONTENT_ENCODING], "gzip");
-        assert_eq!(head.headers()[header::CONTENT_LENGTH], "4");
-        assert!(
-            head.into_body()
-                .collect()
-                .await
-                .unwrap()
-                .to_bytes()
-                .is_empty()
-        );
-
-        std::fs::remove_file(path.with_extension("wasm.br")).unwrap();
-        headers.insert(header::ACCEPT_ENCODING, "br, gzip".parse().unwrap());
-        assert_eq!(
-            file_response(&path, &metadata, &headers, false)
-                .await
-                .headers()[header::CONTENT_ENCODING],
-            "gzip"
-        );
-        std::fs::remove_file(path.with_extension("wasm.gz")).unwrap();
-        assert!(
-            !file_response(&path, &metadata, &headers, false)
-                .await
-                .headers()
-                .contains_key(header::CONTENT_ENCODING)
-        );
-        headers.insert(
-            header::ACCEPT_ENCODING,
-            "identity;q=0, *;q=0".parse().unwrap(),
-        );
-        assert_eq!(
-            file_response(&path, &metadata, &headers, false)
-                .await
-                .status(),
-            StatusCode::NOT_ACCEPTABLE
-        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

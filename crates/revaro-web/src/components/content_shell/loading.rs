@@ -46,23 +46,42 @@ impl ListingController {
             collections,
             logout,
         } = self;
+        let active = StoredValue::new_local(None::<web_sys::AbortController>);
+        on_cleanup(move || {
+            active.with_value(|controller| {
+                if let Some(controller) = controller {
+                    controller.abort();
+                }
+            });
+        });
         let last_scope = StoredValue::new(None::<LibraryScope>);
+        let request_in_flight = StoredValue::new(false);
+        let started_revision = StoredValue::new(0_u64);
+        let pending_refresh = StoredValue::new(false);
+        let reload = StoredValue::new(None::<Callback<bool>>);
         let load = Callback::new(move |more: bool| {
             let current_page = page.get_untracked();
             if matches!(
                 current_page,
                 LibraryPage::Home | LibraryPage::Files | LibraryPage::Trash
             ) {
+                active.with_value(|controller| {
+                    if let Some(controller) = controller {
+                        controller.abort();
+                    }
+                });
                 // Home owns the shared items signal while it is mounted.
                 // Invalidate requests from the library page we just left.
                 generation.update(|g| *g += 1);
                 last_scope.set_value(None);
+                request_in_flight.set_value(false);
+                pending_refresh.set_value(false);
                 loading.set(false);
                 more_loading.set(false);
                 error.set(String::new());
                 return;
             }
-            if more && more_loading.get_untracked() {
+            if more && request_in_flight.get_value() {
                 return;
             }
             let request = LibraryQuery {
@@ -88,11 +107,26 @@ impl ListingController {
                     collection: request.collection.clone(),
                     stack: request.stack.clone(),
                 };
+                let same_scope =
+                    last_scope.with_value(|previous| previous.as_ref() == Some(&scope));
+                // A same-list mutation can arrive while dragging or uploading.
+                // Finish that read, then coalesce newer revisions into one
+                // follow-up; only a changed scope cancels the previous read.
+                if same_scope && request_in_flight.get_value() {
+                    if refresh.get_untracked() != started_revision.get_value() {
+                        pending_refresh.set_value(true);
+                    }
+                    return;
+                }
+                active.with_value(|controller| {
+                    if let Some(controller) = controller {
+                        controller.abort();
+                    }
+                });
+                pending_refresh.set_value(false);
                 // Upload callbacks can refresh while a card is being dragged.
                 // Keep those keyed nodes until the same listing is replaced.
-                let keep_items = last_scope
-                    .with_value(|previous| previous.as_ref() == Some(&scope))
-                    && items.with_untracked(|list| !list.is_empty());
+                let keep_items = same_scope && items.with_untracked(|list| !list.is_empty());
                 last_scope.set_value(Some(scope));
                 generation.update(|g| *g += 1);
                 if !keep_items {
@@ -104,12 +138,24 @@ impl ListingController {
                 more_loading.set(true);
             }
             error.set(String::new());
+            let controller = web_sys::AbortController::new().ok();
+            active.set_value(controller.clone());
+            request_in_flight.set_value(true);
+            started_revision.set_value(refresh.get_untracked());
             let gen_id = generation.get_untracked();
             leptos::task::spawn_local(async move {
-                let result = api::fetch_library(&request).await;
+                let result = api::fetch_library_with_signal(
+                    &request,
+                    controller
+                        .as_ref()
+                        .map(web_sys::AbortController::signal)
+                        .as_ref(),
+                )
+                .await;
                 if generation.try_get_untracked() != Some(gen_id) {
                     return;
                 }
+                request_in_flight.set_value(false);
                 loading.set(false);
                 more_loading.set(false);
                 match result {
@@ -121,11 +167,23 @@ impl ListingController {
                             items.set(result.items);
                         }
                     }
-                    Err(e) if e.is_unauthorized() => logout.run(()),
+                    Err(e) if e.is_unauthorized() => {
+                        logout.run(());
+                        return;
+                    }
                     Err(e) => error.set(e.message),
+                }
+                if pending_refresh.get_value() {
+                    pending_refresh.set_value(false);
+                    reload.with_value(|callback| {
+                        if let Some(callback) = callback {
+                            callback.run(false);
+                        }
+                    });
                 }
             });
         });
+        reload.set_value(Some(load));
         Effect::new(move |_| {
             let _ = (
                 page.get(),
@@ -137,20 +195,42 @@ impl ListingController {
             );
             more_loading.set(false);
             load.run(false);
+        });
+        // Filters and pagination do not invalidate collections. Navigation
+        // revalidates changes made in another tab or through the API; the
+        // shared mutation revision covers this document's writes.
+        let pending_revision = StoredValue::new(0_u64);
+        let collections_loading = RwSignal::new(false);
+        Effect::new(move |_| {
+            let _ = (refresh.get(), page.get());
+            // Returning to the same page while a response is held still
+            // invalidates it. Comparing only the final page would lose that
+            // navigation and changes made outside this document.
+            pending_revision.update_value(|revision| *revision += 1);
+            if collections_loading.get_untracked() {
+                return;
+            }
+            collections_loading.set(true);
             leptos::task::spawn_local(async move {
-                match api::fetch_collections().await {
-                    Ok(list) => {
-                        if collections.try_get_untracked().is_some() {
-                            collections.set(list);
-                        }
+                loop {
+                    let revision = pending_revision.get_value();
+                    let result = api::fetch_collections().await;
+                    if collections.try_get_untracked().is_none() {
+                        return;
                     }
-                    Err(e) if e.is_unauthorized() => logout.run(()),
-                    Err(e) => {
-                        if error.try_get_untracked().is_some() {
-                            error.set(e.message);
+                    match result {
+                        Ok(list) => collections.set(list),
+                        Err(e) if e.is_unauthorized() => {
+                            logout.run(());
+                            return;
                         }
+                        Err(e) => error.set(e.message),
+                    }
+                    if revision == pending_revision.get_value() {
+                        break;
                     }
                 }
+                collections_loading.set(false);
             });
         });
         load

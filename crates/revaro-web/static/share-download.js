@@ -1,5 +1,5 @@
 import { initializeTransport } from './transport-client.js';
-initializeTransport().then(() => {
+initializeTransport({ waitForWorker: true }).then(() => {
   // Ordinary navigation passes through the newly claimed worker, preserving
   // the server's attachment/inline disposition and safe filename.
   document.getElementById('status').textContent = '文件将自动打开或下载。';

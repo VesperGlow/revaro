@@ -37,6 +37,12 @@
   overflow: hidden;
   border-radius: inherit;
 }
+
+/* Fixed square image/video covers can skip off-screen painting. Keep every
+   keyed card mounted, and render all covers during selection interactions. */
+.library-grid.photo-grid:not(.selection-mode) .file-card-content {
+    content-visibility: auto;
+}
 .card-preview {
   position: absolute;
   inset: 0;

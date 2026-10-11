@@ -1,5 +1,5 @@
 import { expect, test, request, type Page } from '@playwright/test'
-import { isTransportRequest, login, enterSelectionMode, openTopbarMenu } from './helpers'
+import { isTransportRequest, login, enterSelectionMode, openTopbarMenu, holdApplicationResponse } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '')
 const root = '00000000-0000-0000-0000-000000000000'
@@ -176,29 +176,12 @@ test('scroll loading reconnects automatically and ignores a late batch after sea
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.getByRole('button', { name: '切换排序方向', exact: true }).click()
   await expect(page.locator('.file-card')).toHaveCount(100)
-  let release!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
-  let fetched!: () => void
-  const pending = new Promise<void>(resolve => { fetched = resolve })
-  let delivered!: () => void
-  const delivery = new Promise<void>(resolve => { delivered = resolve })
-  await page.context().route(batch, async route => {
-    if (!isTransportRequest(route.request())) return route.continue()
-    const response = await route.fetch()
-    fetched()
-    await gate
-    await route.fulfill({ response })
-    delivered()
-  })
+  const held = await holdApplicationResponse(page, '^/api/files$', 'GET', { offset: '100' })
   await page.locator('.listing-end').scrollIntoViewIfNeeded()
-  await pending
+  await expect.poll(held.captured).toBe(true)
   await search(page, `${prefix}-102`)
-  const lateResponse = page.waitForResponse(response => response.url().includes('offset=100&'))
-  release()
-  await delivery
-  await (await lateResponse).finished()
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
-  await page.context().unroute(batch)
+  await held.release()
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
   await expect(page.locator('.file-card')).toHaveCount(1)
   await expect(page.locator('.file-card strong')).toHaveText(`${prefix}-102.md`)
 })

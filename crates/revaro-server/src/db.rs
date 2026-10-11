@@ -121,6 +121,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "014_media_progress_sync.sql",
         sql: include_str!("../migrations/014_media_progress_sync.sql"),
     },
+    Migration {
+        version: 15,
+        name: "015_library_opened_time.sql",
+        sql: include_str!("../migrations/015_library_opened_time.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -405,6 +410,11 @@ impl Database {
         {
             let mut connection = database.acquire()?;
             database.migrate(&mut connection)?;
+            // Bounded analysis on long-lived connections, including tables not
+            // queried yet. A statistics failure must not prevent startup.
+            if let Err(error) = connection.execute_batch("PRAGMA optimize=0x10002") {
+                tracing::warn!(%error, "initial SQLite statistics maintenance failed");
+            }
         }
         secure_file(&path)?;
         Ok(database)
@@ -847,6 +857,63 @@ mod tests {
             ))
             .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn opened_index_preserves_legacy_writes_and_standard_sqlite_tools() {
+        let c = Connection::open_in_memory().unwrap();
+        configure(&c).unwrap();
+        for migration in &MIGRATIONS[..14] {
+            c.execute_batch(migration.sql).unwrap();
+        }
+        c.execute("INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES('history',?1,'history.png','file','history',1,'ready','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", [ROOT_ID]).unwrap();
+        c.execute("INSERT INTO library_state(file_id,favorite,last_opened) VALUES('history',1,'2026-01-02 00:00:00')", []).unwrap();
+        c.execute_batch(MIGRATIONS[14].sql).unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT last_opened_sort FROM library_state WHERE file_id='history'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "2026-01-02T00:00:00.000000000Z"
+        );
+        c.remove_function("revaro_timestamp", 1).unwrap();
+        assert_eq!(
+            c.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        c.execute(
+            "UPDATE library_state SET last_opened='2026-01-03T00:00:00Z' WHERE file_id='history'",
+            [],
+        )
+        .unwrap();
+        let (favorite, sort): (bool, Option<String>) = c
+            .query_row(
+                "SELECT favorite,last_opened_sort FROM library_state WHERE file_id='history'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(favorite);
+        assert!(sort.is_none());
+        configure(&c).unwrap();
+        c.execute("UPDATE library_state SET last_opened_sort=revaro_timestamp(last_opened) WHERE file_id='history'", []).unwrap();
+        c.execute(
+            "UPDATE library_state SET favorite=0 WHERE file_id='history'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            c.query_row(
+                "SELECT last_opened_sort FROM library_state WHERE file_id='history'",
+                [],
+                |row| row.get::<_, Option<String>>(0)
+            )
+            .unwrap()
+            .is_some()
         );
     }
 

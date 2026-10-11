@@ -67,8 +67,35 @@ pub(super) fn load_listing(
     } else {
         "?1 IS NULL"
     };
-    let simple_tables = if options.opened_only {
+    // Probe at most 1025 covering-index entries. Sparse kinds avoid a full
+    // files scan; dense kinds keep the sequential file-order access path.
+    // Do not infer selectivity from a media type or stale planner statistics.
+    let sparse_kind = fast_page
+        && !options.opened_only
+        && options.kind.is_some()
+        && connection
+            .query_row(
+                "SELECT COUNT(*) FROM (SELECT file_id FROM library_items WHERE kind=?1 LIMIT 1025)",
+                params![options.kind],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(db)?
+            <= 1024;
+    let normalized_opened = fast_page
+        && options.opened_only
+        && !connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM library_state INDEXED BY library_opened_pending WHERE last_opened IS NOT NULL AND last_opened_sort IS NULL LIMIT 1)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(db)?;
+    let simple_tables = if normalized_opened {
+        "library_state opened INDEXED BY library_opened_time CROSS JOIN files f ON f.id=opened.file_id CROSS JOIN library_items l ON l.file_id=f.id"
+    } else if options.opened_only {
         "library_state opened INDEXED BY library_opened CROSS JOIN files f ON f.id=opened.file_id CROSS JOIN library_items l ON l.file_id=f.id"
+    } else if sparse_kind {
+        "library_items l CROSS JOIN files f ON f.id=l.file_id"
     } else {
         "files f INDEXED BY files_content_order CROSS JOIN library_items l ON l.file_id=f.id"
     };
@@ -77,8 +104,10 @@ pub(super) fn load_listing(
     } else {
         ""
     };
-    let page_order = if options.opened_only {
-        "revaro_timestamp(opened.last_opened) DESC,f.id"
+    let page_order = if normalized_opened {
+        "opened.last_opened_sort DESC,opened.file_id"
+    } else if options.opened_only {
+        "revaro_timestamp(opened.last_opened) DESC,opened.file_id"
     } else {
         "f.created_at DESC,f.id"
     };
@@ -87,15 +116,15 @@ pub(super) fn load_listing(
     );
     let page_prefix = if fast_page {
         format!(
-            "page_ids AS (SELECT f.id {simple_source} ORDER BY {page_order} LIMIT ?9 OFFSET ?10),"
+            "page_ids AS MATERIALIZED (SELECT f.id {simple_source} ORDER BY {page_order} LIMIT ?9 OFFSET ?10),"
         )
     } else {
         String::new()
     };
-    let page_join = if fast_page {
-        "JOIN page_ids ON page_ids.id=f.id"
+    let file_source = if fast_page {
+        format!("page_ids CROSS JOIN (SELECT {FILE_COLUMNS} FROM files) f ON f.id=page_ids.id")
     } else {
-        ""
+        format!("(SELECT {FILE_COLUMNS} FROM files) f")
     };
     // The derived file projection fixes scan_file's column order before named library fields.
     let candidates = format!(
@@ -119,8 +148,7 @@ pub(super) fn load_listing(
                 si.position AS stack_position,
                 p.value AS progress,
                 cm.position AS collection_position
-            FROM (SELECT {FILE_COLUMNS} FROM files) f
-            {page_join}
+            FROM {file_source}
             JOIN library_items l ON l.file_id=f.id
             LEFT JOIN library_state s ON s.file_id=f.id
             LEFT JOIN settings p ON p.key='book_progress/'||f.id
@@ -162,7 +190,7 @@ pub(super) fn load_listing(
     } else {
         "COUNT(*)"
     };
-    let total = if fast_page {
+    let total: i64 = if fast_page {
         connection
             .query_row(
                 &format!("SELECT COUNT(*) {simple_source}"),
@@ -179,6 +207,9 @@ pub(super) fn load_listing(
             )
             .map_err(db)?
     };
+    if total == 0 {
+        return Ok((0, Vec::new()));
+    }
     let sql = if grouped {
         format!(
             "{candidates}, groups AS (

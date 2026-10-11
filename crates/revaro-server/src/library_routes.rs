@@ -96,7 +96,13 @@ async fn list(
     let offset = o.offset;
     let (total, rows) = state
         .db
-        .call_api(move |connection| query::load_listing(connection, o, limit, grouped))
+        .call_api(move |connection| {
+            // Selectivity, exact count and the page share one read snapshot.
+            let transaction = connection.transaction().map_err(db)?;
+            let result = query::load_listing(&transaction, o, limit, grouped)?;
+            transaction.commit().map_err(db)?;
+            Ok(result)
+        })
         .await?;
     let mut items = Vec::<LibraryItem>::new();
     let mut previous_bucket = String::new();
@@ -265,7 +271,8 @@ async fn update(
 ) -> Result<http::StatusCode, ApiError> {
     state.db.call_api(move |c| {
         crate::file_routes::lookup_file(c,&id).map_err(|_| ApiError::not_found("file not found"))?;
-        c.execute("INSERT INTO library_state(file_id,favorite,last_opened) VALUES(?1,COALESCE(?2,0),?3) ON CONFLICT(file_id) DO UPDATE SET favorite=COALESCE(?2,library_state.favorite),last_opened=COALESCE(?3,library_state.last_opened)",rusqlite::params![id,o.favorite,o.opened.then(|| Timestamp::now().to_rfc3339())]).map_err(db)?;
+        let opened = o.opened.then(Timestamp::now);
+        c.execute("INSERT INTO library_state(file_id,favorite,last_opened,last_opened_sort) VALUES(?1,COALESCE(?2,0),?3,revaro_timestamp(?3)) ON CONFLICT(file_id) DO UPDATE SET favorite=COALESCE(?2,library_state.favorite),last_opened=COALESCE(?3,library_state.last_opened),last_opened_sort=CASE WHEN ?3 IS NULL THEN library_state.last_opened_sort ELSE revaro_timestamp(?3) END",rusqlite::params![id,o.favorite,opened.map(|timestamp| timestamp.to_rfc3339())]).map_err(db)?;
         Ok(http::StatusCode::NO_CONTENT)
     }).await
 }
@@ -622,6 +629,21 @@ mod tests {
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (_, listing) = request(&state, "GET", path, None).await;
         assert_eq!(ids(&listing), ["audio", "book", "video", "image"]);
+        // Repair legacy inserts, then exercise the indexed page and a legacy
+        // write that must invalidate its derived sort key atomically.
+        state.db.call(|c| {
+            c.execute("UPDATE library_state SET last_opened_sort=COALESCE(revaro_timestamp(last_opened),'') WHERE last_opened IS NOT NULL", [])?;
+            Ok(())
+        }).await.unwrap();
+        let (_, normalized) = request(&state, "GET", path, None).await;
+        assert_eq!(ids(&normalized), ids(&listing));
+        state.db.call(|c| {
+            c.execute("UPDATE library_state SET last_opened='2027-01-01T00:00:00Z' WHERE file_id='book'", [])?;
+            assert!(c.query_row("SELECT last_opened_sort FROM library_state WHERE file_id='book'", [], |row| row.get::<_, Option<String>>(0))?.is_none());
+            Ok(())
+        }).await.unwrap();
+        let (_, legacy) = request(&state, "GET", path, None).await;
+        assert_eq!(ids(&legacy), ["book", "audio", "video", "image"]);
     }
 
     fn file_ids(items: &serde_json::Value) -> Vec<&str> {

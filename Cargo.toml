@@ -67,3 +67,16 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# xtask runs in dev profile; compression should still use optimized codecs.
+[profile.dev.package.brotli]
+opt-level = 3
+
+[profile.dev.package.brotli-decompressor]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3

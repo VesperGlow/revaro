@@ -15,6 +15,7 @@ export const policy = {
   failoverHeadersMs: 3000, mediaIdleMs: 2500,
   attempts: 10, backoffMs: 400, maxBackoffMs: 8000,
   cacheEntries: 2048, memoryBytes: (globalThis.navigator?.deviceMemory >= 4 ? 32 : 8) * 1024 * 1024, cacheWriteBytes: 8 * 1024 * 1024,
+  hashBytes: 128 * 1024 * 1024,
   fallbackMs: 60000, progressWindowMs: 20000, minWindowBytes: 8192,
 };
 let http2Origin = '', fallbackUntil = 0, protocol = '', throughput = 0;
@@ -672,14 +673,55 @@ export async function fileResponse(request, restarted = false) {
   return response;
 }
 
-export async function blobHash(blob) {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+// Bound arrayBuffer/WebCrypto allocations before reading a Blob. Keep normal
+// part concurrency, and admit an oversized part alone without changing geometry.
+let hashingBytes = 0;
+const hashQueue = [];
+function drainHashes() {
+  while (hashQueue.length) {
+    const entry = hashQueue[0];
+    if (hashingBytes > 0 && hashingBytes + entry.bytes > policy.hashBytes) return;
+    hashQueue.shift();
+    entry.signal?.removeEventListener('abort', entry.abort);
+    hashingBytes += entry.bytes;
+    let released = false;
+    entry.resolve(() => {
+      if (released) return; released = true;
+      hashingBytes -= entry.bytes;
+      drainHashes();
+    });
+  }
+}
+function hashAdmission(bytes, signal) {
+  checkAbort(signal);
+  return new Promise((resolve, reject) => {
+    const entry = { bytes: Math.max(1, bytes), signal, resolve };
+    entry.abort = () => {
+      const index = hashQueue.indexOf(entry);
+      if (index >= 0) hashQueue.splice(index, 1);
+      reject(signal.reason || abortError());
+      drainHashes();
+    };
+    hashQueue.push(entry);
+    signal?.addEventListener('abort', entry.abort, { once: true });
+    drainHashes();
+  });
+}
+export async function blobHash(blob, signal) {
+  const release = await hashAdmission(blob.size, signal);
+  try {
+    checkAbort(signal);
+    const bytes = await blob.arrayBuffer();
+    checkAbort(signal);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    checkAbort(signal);
+    return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+  } finally { release(); }
 }
 // XHR is only an upload progress adapter. Stall detection, retry budgets,
 // jitter, cancellation and endpoint failover are shared with file reads.
 export async function putBlob(url, body, contentType, signal, onProgress) {
-  const hash = await blobHash(body);
+  const hash = await blobHash(body, signal);
   return retry(async () => {
     const release = await admission(signal, 4);
     try { return await new Promise((resolve, reject) => {

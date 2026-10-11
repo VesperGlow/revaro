@@ -34,15 +34,20 @@ pub fn resize_image_to_jpeg(data: &[u8], max_dimension: u32) -> Result<Vec<u8>, 
     }
 
     let source = image::load_from_memory(data)
-        .map_err(|error| MediaError::InvalidData(error.to_string()))?
-        .to_rgba8();
+        .map_err(|error| MediaError::InvalidData(error.to_string()))?;
     let (target_width, target_height) = fit(width, height, max_dimension);
-    let pixels = if (target_width, target_height) == (width, height) {
-        source
+    let rgb = if (target_width, target_height) == (width, height) {
+        // No resize is needed: consume the decoded buffer directly. In
+        // particular, RGB JPEGs need no full-resolution format conversion.
+        source.into_rgb8()
     } else {
-        image::imageops::resize(&source, target_width, target_height, FilterType::CatmullRom)
+        // The existing RGBA resize is faster than RGB on measured large JPEGs.
+        // Retain its alpha/filter semantics and optimized four-channel path.
+        let source = source.to_rgba8();
+        let pixels =
+            image::imageops::resize(&source, target_width, target_height, FilterType::CatmullRom);
+        DynamicImage::ImageRgba8(pixels).to_rgb8()
     };
-    let rgb = DynamicImage::ImageRgba8(pixels).to_rgb8();
 
     let mut jpeg =
         Vec::with_capacity((target_width as usize * target_height as usize / 2).max(1024));
@@ -111,5 +116,31 @@ mod tests {
         // length and type.  The CRC is irrelevant to `into_dimensions`.
         header[16..20].copy_from_slice(&(MAX_IMAGE_SIDE + 1).to_be_bytes());
         assert!(resize_image_to_jpeg(&header, 640).is_err());
+    }
+
+    #[test]
+    fn rgb_and_opaque_rgba_resize_to_identical_jpeg_bytes() {
+        let rgb = image::RgbImage::from_fn(121, 83, |x, y| {
+            image::Rgb([
+                (x * 37 + y * 13) as u8,
+                (x * 19 + y * 43) as u8,
+                (x * 7 + y * 29) as u8,
+            ])
+        });
+        let rgba = DynamicImage::ImageRgb8(rgb.clone()).to_rgba8();
+        let mut inputs = Vec::new();
+        for source in [DynamicImage::ImageRgb8(rgb), DynamicImage::ImageRgba8(rgba)] {
+            let mut bytes = Vec::new();
+            source
+                .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+                .unwrap();
+            inputs.push(bytes);
+        }
+        for dimension in [1, 47, 200] {
+            assert_eq!(
+                resize_image_to_jpeg(&inputs[0], dimension).unwrap(),
+                resize_image_to_jpeg(&inputs[1], dimension).unwrap()
+            );
+        }
     }
 }

@@ -23,8 +23,8 @@ try {
     sheet.rel = 'stylesheet'
   })
   const [runtime] = await Promise.all([runtimeReady, transportReady, stylesReady])
-  // Install API recovery before mounting. Native file consumers use the
-  // worker when available; unavailable workers have a bounded startup fallback.
+  // API recovery is installed synchronously; optional worker/config discovery
+  // continues in the background. Native media retains browser Range handling.
   runtime.start()
 } catch (error) {
   controller.abort()

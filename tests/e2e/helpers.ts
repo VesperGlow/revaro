@@ -49,21 +49,21 @@ export async function failApplicationRequest(page: Page, pathname: string, messa
 
 // Hold the real response after transport recovery so every browser exercises
 // the same application state, including pages controlled by a service worker.
-export async function holdApplicationResponse(page: Page, pattern: string, method: string) {
-  await page.evaluate(({ pattern, method }) => {
+export async function holdApplicationResponse(page: Page, pattern: string, method: string, query: Record<string, string> = {}) {
+  await page.evaluate(({ pattern, method, query }) => {
     const original = window.fetch.bind(window)
     const state = (window as any).__heldApplicationResponse = { original, captured: false, enabled: true, releases: [] as (() => void)[] }
     window.fetch = async (input, init) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString(), location.href)
       const verb = init?.method || (input instanceof Request ? input.method : 'GET')
       const response = await original(input, init)
-      if (state.enabled && verb === method && new RegExp(pattern).test(url.pathname)) {
+      if (state.enabled && verb === method && new RegExp(pattern).test(url.pathname) && Object.entries(query).every(([key, value]) => url.searchParams.get(key) === value)) {
         state.captured = true
         await new Promise<void>(resolve => state.releases.push(resolve))
       }
       return response
     }
-  }, { pattern, method })
+  }, { pattern, method, query })
   return {
     captured: () => page.evaluate(() => Boolean((window as any).__heldApplicationResponse?.captured)),
     release: () => page.evaluate(() => {

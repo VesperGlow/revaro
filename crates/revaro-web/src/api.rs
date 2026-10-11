@@ -484,6 +484,13 @@ pub struct LibraryQuery {
 pub async fn fetch_library(
     query: &LibraryQuery,
 ) -> Result<revaro_core::library::LibraryListing, RequestError> {
+    fetch_library_with_signal(query, None).await
+}
+
+pub async fn fetch_library_with_signal(
+    query: &LibraryQuery,
+    signal: Option<&AbortSignal>,
+) -> Result<revaro_core::library::LibraryListing, RequestError> {
     let mut path = format!(
         "/api/library/items?limit=60&offset={}&favorite={}&recent={}&opened_only={}&group_stacks={}&q={}",
         query.offset,
@@ -511,7 +518,10 @@ pub async fn fetch_library(
             js_sys::encode_uri_component(&query.collection)
         ));
     }
-    get_json(&path).await
+    let request = api_request_with_timeout(Request::get(&path), API_TIMEOUT_MS, signal)
+        .build()
+        .map_err(|error| request_transport(error.to_string()))?;
+    send_json(request).await
 }
 
 pub async fn update_library_item(

@@ -29,12 +29,13 @@ test('cold startup paints the loader and streams WASM while transport initialize
     await expect(page.getByRole('status')).toHaveText('正在加载 Revaro…')
     await expect.poll(() => page.evaluate(() => (window as any).startupProbe.workerRequested)).toBe(true)
     await expect.poll(() => page.evaluate(() => (window as any).startupProbe.streamingFinished)).toBe(true)
-    await expect(page.locator('.boot-splash')).toBeVisible()
-    await expect(page.locator('.login-page')).toHaveCount(0)
+    await expect(page.getByLabel('用户名')).toBeVisible()
+    await expect(page.locator('.boot-splash')).toHaveCount(0)
     expect(await page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(false)
     await page.evaluate(() => (window as any).startupProbe.releaseWorker())
     await expect(page.getByLabel('用户名')).toBeVisible()
-    expect(await page.evaluate(() => (window as any).startupProbe.controlledAtMount)).toBe(true)
+    expect(await page.evaluate(() => (window as any).startupProbe.controlledAtMount)).toBe(false)
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
     await expect(page.locator('.boot-splash')).toHaveCount(0)
     expect(await page.evaluate(() => performance.getEntriesByType('resource').filter(e => new URL(e.name).pathname.endsWith('.wasm')).length)).toBe(1)
   } finally {
@@ -63,4 +64,12 @@ test('an unavailable worker cannot block startup or mutable API requests', async
     return response.status
   })
   expect(result).toBe(401)
+})
+
+// Configuration discovery has its own deadline and cannot hold the app mount.
+test('hung transport configuration does not delay the login screen', async ({ page }) => {
+  await page.route('**/api/transport/config', () => {})
+  await page.goto('/', { waitUntil: 'commit' })
+  await expect(page.getByLabel('用户名')).toBeVisible({ timeout: 5000 })
+  await expect(page.locator('.boot-splash')).toHaveCount(0)
 })

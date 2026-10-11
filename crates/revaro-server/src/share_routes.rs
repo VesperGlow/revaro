@@ -50,7 +50,7 @@ async fn status(
 ) -> Result<Json<ShareStatus>, ApiError> {
     let base = state.config.base_url.clone();
     state.db.call_api(move |c| {
-        let row = c.query_row("SELECT s.token,s.created_at,s.expires_at FROM shares s JOIN files f ON f.id=s.file_id WHERE s.file_id=?1 AND f.deleted_at IS NULL AND f.status='ready'", [&id],
+        let row = c.query_row("SELECT s.token,s.created_at,s.expires_at FROM shares s CROSS JOIN files f ON f.id=s.file_id WHERE s.file_id=?1 AND f.deleted_at IS NULL AND f.status='ready'", [&id],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db)?;
         row.map_or_else(|| Ok(ShareStatus::default()), |(t,c,e)| decode(&base,t,c,e))
     }).await.map(Json)
@@ -128,7 +128,7 @@ async fn list(
     }
     let base = state.config.base_url.clone();
     state.db.call_api(move |c| {
-        let mut q=c.prepare("SELECT f.id,f.name,s.token,s.created_at,s.expires_at FROM shares s JOIN files f ON f.id=s.file_id WHERE f.deleted_at IS NULL AND f.status='ready' ORDER BY s.created_at DESC,s.file_id LIMIT 200 OFFSET ?1").map_err(db)?;
+        let mut q=c.prepare("SELECT f.id,f.name,s.token,s.created_at,s.expires_at FROM shares s CROSS JOIN files f ON f.id=s.file_id WHERE f.deleted_at IS NULL AND f.status='ready' ORDER BY s.created_at DESC,s.file_id LIMIT 200 OFFSET ?1").map_err(db)?;
         let rows=q.query_map([page.offset],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(db)?;
         rows.map(|r| {let(id,name,t,c,e)=r.map_err(db)?; Ok(ShareEntry {file_id:id,name,status:decode(&base,t,c,e)?})}).collect::<Result<Vec<_>,ApiError>>()
     }).await.map(Json)

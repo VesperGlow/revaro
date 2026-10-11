@@ -806,13 +806,14 @@ async fn update_document(
     let mut source: &[u8] = &bytes;
     let stored = state
         .store
-        .write_stream(&object_key, &mut source, size)
+        .write_stream_hashed(&object_key, &mut source, size, None)
         .await
         .map_err(|error| {
             tracing::error!(%error, "document write failed");
             ApiError::new(502, "object storage write failed")
         })?;
-    let content_hash = revaro_core::keys::sha256_hex(&bytes);
+    let content_hash = stored.content_hash;
+    let stored = stored.info;
     let mime = revaro_core::classify::document_mime(&file.name).to_owned();
 
     // A restore can reuse an older object key while issuing a fresh ETag.
@@ -1405,13 +1406,14 @@ async fn create_document(
     let mut source: &[u8] = &bytes;
     let stored = state
         .store
-        .write_stream(&object_key, &mut source, size)
+        .write_stream_hashed(&object_key, &mut source, size, None)
         .await
         .map_err(|error| {
             tracing::error!(%error, "document write failed");
             ApiError::new(502, "object storage write failed")
         })?;
-    let content_hash = keys::sha256_hex(&bytes);
+    let content_hash = stored.content_hash;
+    let stored = stored.info;
 
     let insert = {
         let (parent_id, name) = (request.parent_id.clone(), request.name.clone());

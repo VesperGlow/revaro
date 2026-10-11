@@ -190,7 +190,11 @@ pub fn ContentShell(
                 _ => (),
             }
         }
-        refresh.update(|r| *r += 1);
+        // A changed page already invalidates its listing. Keep the shared
+        // mutation revision for explicit refreshes and data changes only.
+        if same_route {
+            refresh.update(|r| *r += 1);
+        }
         if let Some(w) = web_sys::window() {
             w.scroll_to_with_x_and_y(0.0, 0.0);
         }
@@ -368,6 +372,7 @@ pub fn ContentShell(
     let mut popstate = browser::on_popstate(move |_| {
         let path = pathname();
         let next = LibraryPage::from_path(&path);
+        let same_page = page.get_untracked() == next;
         if page.get_untracked() != next {
             query.set(String::new());
             query_text.set(String::new());
@@ -378,7 +383,9 @@ pub fn ContentShell(
         selected_stack.set(stack_id(&path));
         query_text.set(query.get_untracked());
         restore_reader.run((path, true));
-        refresh.update(|r| *r += 1);
+        if same_page {
+            refresh.update(|r| *r += 1);
+        }
     });
     on_cleanup(move || popstate.release());
     let collections::CollectionController {

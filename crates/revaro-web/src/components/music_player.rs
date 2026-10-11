@@ -760,7 +760,8 @@ pub fn PersistentMusicPlayer(controller: MusicController) -> impl IntoView {
         });
     });
     // Expose a deterministic next URL without starting a native background
-    // download. The worker warms it only when the current buffer allows it.
+    // download. Native media bypasses the worker, so the next source stays
+    // unloaded until the playback handoff.
     Effect::new(move |_| {
         let queue = controller.queue.get();
         let mode = controller.mode.get().for_queue(queue.len());

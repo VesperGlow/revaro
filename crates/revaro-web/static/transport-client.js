@@ -143,32 +143,59 @@ function watchPlayback() {
     live.clear();
   });
 }
-export async function initializeTransport() {
+let initialized = false;
+let workerReady = Promise.resolve();
+export async function initializeTransport({ waitForWorker = false } = {}) {
   installAPITransport();
-  if (!globalThis.isSecureContext || !navigator.serviceWorker) {
-    directFiles = true; watchPlayback(); return;
+  if (initialized) {
+    if (waitForWorker) await workerReady;
+    return;
   }
-  const ready = new Promise(resolve => {
-    if (navigator.serviceWorker.controller) return resolve();
-    navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true });
-  });
-  // xtask emits a classic worker from the same shared core. Firefox versions
-  // without module service workers must use the identical recovery policy.
-  let timer;
-  try {
-    await Promise.race([(async () => {
-      await navigator.serviceWorker.register('/transport-worker.js', { scope: '/', updateViaCache: 'none' });
-      const registration = await navigator.serviceWorker.ready;
-      if (!navigator.serviceWorker.controller) registration.active?.postMessage({ type: 'claim-clients' });
-      await ready;
-    })(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('worker unavailable')), 8000); })]);
-  } catch { directFiles = true; }
-  finally { clearTimeout(timer); }
+  initialized = true;
+  // Document transport works immediately. Optional endpoint discovery and
+  // worker activation must never hold up the WASM application mount.
+  directFiles = true;
   watchPlayback();
-  // Uploads and the worker share policy and receive the same endpoint setting.
-  try {
-    const config = await (await fetch('/api/transport/config')).json();
-    configureTransport(config);
-    navigator.serviceWorker.controller?.postMessage({ type: 'transport-config', config });
-  } catch {}
+  let config;
+  const publish = () => {
+    if (config) navigator.serviceWorker?.controller?.postMessage({ type: 'transport-config', config });
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2500);
+  void (async () => {
+    try {
+      const response = await nativeFetch(new URL('/api/transport/config', location.href), { signal: controller.signal });
+      if (!response.ok) return;
+      config = await response.json();
+      configureTransport(config);
+      publish();
+    } catch {} finally { clearTimeout(timeout); }
+  })();
+  if (!globalThis.isSecureContext || !navigator.serviceWorker) return;
+  let resolveClaim;
+  const claimed = new Promise(resolve => { resolveClaim = resolve; });
+  const applyController = () => {
+    directFiles = !navigator.serviceWorker.controller;
+    if (!directFiles) resolveClaim();
+    publish();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', applyController);
+  applyController();
+  // The classic worker keeps Firefox on the same policy as Chromium. A late
+  // claim still receives configuration after the startup deadline expires.
+  workerReady = (async () => {
+    let timer;
+    try {
+      await Promise.race([(async () => {
+        await navigator.serviceWorker.register('/transport-worker.js', { scope: '/', updateViaCache: 'none' });
+        const registration = await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) registration.active?.postMessage({ type: 'claim-clients' });
+        await claimed;
+        applyController();
+      })(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('worker unavailable')), 8000); })]);
+    } catch {} finally { clearTimeout(timer); }
+  })();
+  // Public attachment navigation needs the worker's resumable stream before
+  // it starts. Only that caller waits, with the same bounded native fallback.
+  if (waitForWorker) await workerReady;
 }

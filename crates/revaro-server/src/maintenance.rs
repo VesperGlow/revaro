@@ -191,6 +191,41 @@ impl MaintenanceRuntime {
         let minute = Duration::from_secs(60);
 
         self.register(
+            "database-statistics",
+            Duration::from_secs(24 * 60 * 60),
+            minute,
+            false,
+            state_job(state.clone(), |state| async move {
+                state
+                    .db
+                    .call(|connection| {
+                        connection.execute_batch("PRAGMA optimize")?;
+                        Ok(())
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+            }),
+        )
+        .expect("production maintenance job names are unique");
+
+        self.register(
+            "library-history",
+            minute,
+            minute,
+            true,
+            state_job(state.clone(), |state| async move {
+                state.db.call(|connection| {
+                    connection.execute(
+                        "UPDATE library_state SET last_opened_sort=COALESCE(revaro_timestamp(last_opened),'') WHERE file_id IN (SELECT file_id FROM library_state INDEXED BY library_opened_pending WHERE last_opened IS NOT NULL AND last_opened_sort IS NULL LIMIT 1000)",
+                        [],
+                    )?;
+                    Ok(())
+                }).await.map_err(|error| error.to_string())
+            }),
+        )
+        .expect("production maintenance job names are unique");
+
+        self.register(
             "memory",
             Duration::from_secs(5),
             Duration::from_secs(5),

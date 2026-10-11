@@ -17,7 +17,7 @@
 //! Usage failures exit with code 2 so CI can distinguish "you asked for
 //! something impossible" from "the build failed".
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -166,7 +166,7 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
     }
 
     copy_static_assets(root, &dist)?;
-    fingerprint_bundle(&dist)?;
+    fingerprint_bundle(&dist, &published_dist)?;
     // Old HTML or an in-flight module import can still reference the previous
     // hashes during a rebuild. Keep those immutable URLs available.
     preserve_hashed_assets(&published_dist, &dist)?;
@@ -191,30 +191,14 @@ fn web_build(root: &Path, args: &[String]) -> Result<(), String> {
 }
 
 /// Name the paired WASM/JS by their contents and precompress the WASM once.
-fn fingerprint_bundle(dist: &Path) -> Result<(), String> {
+fn fingerprint_bundle(dist: &Path, previous: &Path) -> Result<(), String> {
     let wasm_path = dist.join("revaro_web_bg.wasm");
     let wasm = std::fs::read(&wasm_path).map_err(|error| format!("read WASM: {error}"))?;
     let wasm_name = format!("core.{:x}.wasm", Sha256::digest(&wasm));
     std::fs::rename(&wasm_path, dist.join(&wasm_name))
         .map_err(|error| format!("fingerprint WASM: {error}"))?;
 
-    let mut compressed = Vec::new();
-    {
-        let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 11, 22);
-        writer
-            .write_all(&wasm)
-            .map_err(|error| format!("compress WASM with Brotli: {error}"))?;
-    }
-    std::fs::write(dist.join(format!("{wasm_name}.br")), &compressed)
-        .map_err(|error| format!("write Brotli WASM: {error}"))?;
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-    gzip.write_all(&wasm)
-        .map_err(|error| format!("compress WASM with gzip: {error}"))?;
-    let gzip = gzip
-        .finish()
-        .map_err(|error| format!("finish gzip WASM: {error}"))?;
-    std::fs::write(dist.join(format!("{wasm_name}.gz")), &gzip)
-        .map_err(|error| format!("write gzip WASM: {error}"))?;
+    let (brotli_size, gzip_size) = precompress(dist, previous, &wasm_name, &wasm)?;
 
     let glue_path = dist.join("revaro_web.js");
     let glue =
@@ -224,10 +208,30 @@ fn fingerprint_bundle(dist: &Path) -> Result<(), String> {
     }
     let glue = glue.replace("revaro_web_bg.wasm", &wasm_name);
     let glue_name = format!("revaro_web.{:x}.js", Sha256::digest(glue.as_bytes()));
-    std::fs::write(dist.join(&glue_name), glue)
+    std::fs::write(dist.join(&glue_name), &glue)
         .map_err(|error| format!("write fingerprinted WASM glue: {error}"))?;
     std::fs::remove_file(&glue_path)
         .map_err(|error| format!("remove unfingerprinted WASM glue: {error}"))?;
+
+    let css = bundle_styles(dist)?;
+    let css_name = format!("styles.{:x}.css", Sha256::digest(css.as_bytes()));
+    std::fs::write(dist.join(&css_name), css)
+        .map_err(|error| format!("write bundled CSS: {error}"))?;
+    for entry in std::fs::read_dir(dist).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("js" | "css")
+        ) {
+            let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+            precompress(
+                dist,
+                previous,
+                path.file_name().unwrap().to_str().unwrap(),
+                &bytes,
+            )?;
+        }
+    }
 
     let index_path = dist.join("index.html");
     let index = std::fs::read_to_string(&index_path)
@@ -239,16 +243,118 @@ fn fingerprint_bundle(dist: &Path) -> Result<(), String> {
         index_path,
         index
             .replace("__REVARO_WASM__", &wasm_name)
-            .replace("__REVARO_MODULE__", &glue_name),
+            .replace("__REVARO_MODULE__", &glue_name)
+            .replace("/styles.css", &format!("/{css_name}")),
     )
     .map_err(|error| format!("write HTML bundle URLs: {error}"))?;
     println!(
         "WASM: {} bytes, Brotli: {} bytes, gzip: {} bytes ({wasm_name})",
         wasm.len(),
-        compressed.len(),
-        gzip.len()
+        brotli_size,
+        gzip_size
     );
     Ok(())
+}
+
+fn precompress(
+    dist: &Path,
+    previous: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(usize, usize), String> {
+    // Reuse only verified representations of identical source bytes. A
+    // truncated/corrupt old sidecar is regenerated in the new staging area.
+    if std::fs::read(previous.join(name)).ok().as_deref() == Some(bytes) {
+        let br = previous.join(format!("{name}.br"));
+        let gz = previous.join(format!("{name}.gz"));
+        if compressed_matches(&br, "br", bytes) && compressed_matches(&gz, "gz", bytes) {
+            copy_immutable(&br, &dist.join(format!("{name}.br")))?;
+            copy_immutable(&gz, &dist.join(format!("{name}.gz")))?;
+            return Ok((
+                std::fs::metadata(br).map_err(|e| e.to_string())?.len() as usize,
+                std::fs::metadata(gz).map_err(|e| e.to_string())?.len() as usize,
+            ));
+        }
+    }
+    let mut compressed = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 11, 22);
+        writer
+            .write_all(bytes)
+            .map_err(|error| format!("compress asset with Brotli: {error}"))?;
+    }
+    std::fs::write(dist.join(format!("{name}.br")), &compressed)
+        .map_err(|error| format!("write Brotli asset: {error}"))?;
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    gzip.write_all(bytes)
+        .map_err(|error| format!("compress asset with gzip: {error}"))?;
+    let gzip = gzip
+        .finish()
+        .map_err(|error| format!("finish gzip asset: {error}"))?;
+    std::fs::write(dist.join(format!("{name}.gz")), &gzip)
+        .map_err(|error| format!("write gzip asset: {error}"))?;
+
+    Ok((compressed.len(), gzip.len()))
+}
+
+fn compressed_matches(path: &Path, encoding: &str, bytes: &[u8]) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let reader: Box<dyn std::io::Read> = if encoding == "br" {
+        Box::new(brotli::Decompressor::new(file, 4096))
+    } else {
+        Box::new(flate2::read::MultiGzDecoder::new(file))
+    };
+    let mut decoded = Vec::new();
+    reader
+        .take(bytes.len() as u64 + 1)
+        .read_to_end(&mut decoded)
+        .is_ok()
+        && decoded == bytes
+}
+
+fn copy_immutable(from: &Path, to: &Path) -> Result<(), String> {
+    let regular = std::fs::symlink_metadata(from).is_ok_and(|metadata| metadata.is_file());
+    if regular && std::fs::hard_link(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)
+        .map(|_| ())
+        .map_err(|error| format!("preserve immutable asset: {error}"))
+}
+
+// The manifest is deliberately a flat, ordered list. Keep the source manifest
+// for the cascade tests and old pages; only the new shell uses the bundle.
+fn bundle_styles(dist: &Path) -> Result<String, String> {
+    let manifest =
+        std::fs::read_to_string(dist.join("styles.css")).map_err(|error| error.to_string())?;
+    let mut bundle = String::new();
+    for line in manifest.lines() {
+        if let Some(import) = line.trim().strip_prefix("@import \"") {
+            let path = import
+                .strip_suffix("\";")
+                .ok_or("unsupported stylesheet import")?;
+            if !Path::new(path)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err("stylesheet import must stay inside the bundle".into());
+            }
+            let sheet =
+                std::fs::read_to_string(dist.join(path)).map_err(|error| error.to_string())?;
+            // Current sheets have no resource URLs. Fail a future relative URL
+            // addition rather than silently changing its meaning when bundled.
+            if sheet.contains("url(") || sheet.contains("@import ") {
+                return Err(format!("{path}: normalize resource URLs before bundling"));
+            }
+            bundle.push_str(&sheet);
+        } else {
+            bundle.push_str(line);
+        }
+        bundle.push('\n');
+    }
+    Ok(bundle)
 }
 
 fn preserve_hashed_assets(previous: &Path, dist: &Path) -> Result<(), String> {
@@ -262,12 +368,12 @@ fn preserve_hashed_assets(previous: &Path, dist: &Path) -> Result<(), String> {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if (name.starts_with("core.")
+            || (name.starts_with("styles.") && name != "styles.css")
             || (name.starts_with("revaro_web.") && name != "revaro_web.js"))
             && entry.path().is_file()
             && !dist.join(name.as_ref()).exists()
         {
-            std::fs::copy(entry.path(), dist.join(name.as_ref()))
-                .map_err(|error| format!("preserve previous hashed asset: {error}"))?;
+            copy_immutable(&entry.path(), &dist.join(name.as_ref()))?;
         }
     }
     Ok(())
@@ -468,10 +574,15 @@ fn cargo() -> Command {
 /// Run a child process, turning a non-zero exit into a readable message.
 fn run(command: &mut Command, description: &str) -> Result<(), String> {
     let printable = format!("{command:?}");
+    let started = std::time::Instant::now();
     let status = command
         .status()
         .map_err(|error| format!("could not {description} ({printable}): {error}"))?;
     if status.success() {
+        println!(
+            "{description}: {:.2}s (including any build lock wait)",
+            started.elapsed().as_secs_f64()
+        );
         Ok(())
     } else {
         Err(format!(
@@ -483,6 +594,41 @@ fn run(command: &mut Command, description: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compression_reuses_verified_sidecars_and_repairs_corrupt_previous() {
+        let root =
+            std::env::temp_dir().join(format!("revaro-compression-test-{}", std::process::id()));
+        let old = root.join("old");
+        let next = root.join("next");
+        let repaired = root.join("repaired");
+        for directory in [&old, &next, &repaired] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let bytes = b"unchanged asset unchanged asset";
+        std::fs::write(old.join("asset.js"), bytes).unwrap();
+        precompress(&old, &root.join("absent"), "asset.js", bytes).unwrap();
+        let before = std::fs::read(old.join("asset.js.br")).unwrap();
+        precompress(&next, &old, "asset.js", bytes).unwrap();
+        assert_eq!(std::fs::read(next.join("asset.js.br")).unwrap(), before);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(
+                std::fs::metadata(old.join("asset.js.br")).unwrap().ino(),
+                std::fs::metadata(next.join("asset.js.br")).unwrap().ino()
+            );
+        }
+        std::fs::write(old.join("asset.js.gz"), b"broken").unwrap();
+        precompress(&repaired, &old, "asset.js", bytes).unwrap();
+        assert!(compressed_matches(
+            &repaired.join("asset.js.gz"),
+            "gzip",
+            bytes
+        ));
+        assert_eq!(std::fs::read(old.join("asset.js.gz")).unwrap(), b"broken");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn bundle_hashes_match_contents_and_compression_round_trips() {
@@ -502,7 +648,10 @@ mod tests {
             "<link href='/__REVARO_WASM__'><script src='/__REVARO_MODULE__'></script>",
         )
         .unwrap();
-        fingerprint_bundle(&dist).unwrap();
+        std::fs::write(dist.join("styles.css"), "@import \"test.css\";\n").unwrap();
+        std::fs::write(dist.join("test.css"), "body { color: green; }").unwrap();
+        assert_eq!(bundle_styles(&dist).unwrap(), "body { color: green; }\n");
+        fingerprint_bundle(&dist, &dist.join("absent")).unwrap();
         let wasm_name = format!("core.{:x}.wasm", Sha256::digest(wasm));
         let index = std::fs::read_to_string(dist.join("index.html")).unwrap();
         assert!(index.contains(&wasm_name));

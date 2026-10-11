@@ -1778,6 +1778,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_panicking_loader_releases_waiters_and_allows_retry() {
+        let manager = manager();
+        let result = manager
+            .load("tiered", "panic", Duration::ZERO, || async {
+                panic!("source failed while polling");
+                #[allow(unreachable_code)]
+                Ok(Vec::new())
+            })
+            .await;
+        assert!(matches!(result, Err(CacheError::Loader(_))));
+        let value = manager
+            .load("tiered", "panic", Duration::ZERO, || async {
+                Ok(b"retried".to_vec())
+            })
+            .await
+            .unwrap();
+        assert_eq!(value.as_ref(), b"retried");
+    }
+
+    #[tokio::test]
     async fn invalidate_removes_a_class_prefix_from_memory_and_disk() {
         let manager = manager();
         for key in ["prefix/one", "prefix/two", "other"] {
