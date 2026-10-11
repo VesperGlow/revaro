@@ -199,7 +199,7 @@ impl MaintenanceRuntime {
                 state
                     .db
                     .call(|connection| {
-                        connection.execute_batch("PRAGMA optimize")?;
+                        crate::db::optimize_statistics(connection, false)?;
                         Ok(())
                     })
                     .await

@@ -412,7 +412,7 @@ impl Database {
             database.migrate(&mut connection)?;
             // Bounded analysis on long-lived connections, including tables not
             // queried yet. A statistics failure must not prevent startup.
-            if let Err(error) = connection.execute_batch("PRAGMA optimize=0x10002") {
+            if let Err(error) = optimize_statistics(&mut connection, true) {
                 tracing::warn!(%error, "initial SQLite statistics maintenance failed");
             }
         }
@@ -586,6 +586,32 @@ impl Database {
         connection.query_row("SELECT 1", [], |_| Ok(()))?;
         Ok(())
     }
+}
+
+/// Root-only statistics make ancestor lookups scan files after a new library
+/// grows. Delay analysis until the content tables have a useful sample; the
+/// bounded probe also avoids spending analysis work on small libraries.
+pub(crate) fn optimize_statistics(
+    connection: &mut Connection,
+    scan_all_tables: bool,
+) -> rusqlite::Result<()> {
+    // Keep the eligibility probe and analysis on one snapshot. A concurrent
+    // deletion must not turn an eligible sample into root-only statistics.
+    let transaction = connection.transaction()?;
+    let enough_items = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM library_items LIMIT 1 OFFSET 1023)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !enough_items {
+        return transaction.commit();
+    }
+    transaction.execute_batch(if scan_all_tables {
+        "PRAGMA optimize=0x10002"
+    } else {
+        "PRAGMA optimize"
+    })?;
+    transaction.commit()
 }
 
 /// Create the data directory and restrict it to the owner.
@@ -1212,6 +1238,76 @@ mod tests {
             .unwrap();
         assert_eq!(count, MIGRATIONS.len() as i64);
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn fresh_library_growth_retains_indexed_ancestor_lookups() {
+        let directory =
+            std::env::temp_dir().join(format!("revaro-db-growth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let database = Database::open(directory.join("revaro.db")).unwrap();
+        let mut connection = database.acquire().unwrap();
+        let ancestor_plan = |connection: &Connection| {
+            connection
+                .prepare("EXPLAIN QUERY PLAN WITH RECURSIVE a(id) AS (SELECT ?1 UNION ALL SELECT f.parent_id FROM files f JOIN a ON f.id=a.id WHERE a.id IS NOT NULL) SELECT id FROM a WHERE id IS NOT NULL")
+                .unwrap()
+                .query_map([ROOT_ID], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let assert_indexed = |plan: Vec<String>| {
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("SEARCH f USING INDEX sqlite_autoindex_files_1")),
+                "ancestor lookup must use the primary key: {plan:?}"
+            );
+            assert!(
+                !plan.iter().any(|step| step.starts_with("SCAN f")),
+                "stale tiny statistics must not cause file scans: {plan:?}"
+            );
+        };
+        // Startup and daily maintenance must both avoid root-only estimates.
+        optimize_statistics(&mut connection, false).unwrap();
+        assert_indexed(ancestor_plan(&connection));
+        {
+            let transaction = connection.transaction().unwrap();
+            for index in 0..1024 {
+                transaction.execute(
+                    "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,etag,status,created_at,updated_at) VALUES(?1,?2,?1||'.png','file',?1,1,'image/png',?1,'ready','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                    rusqlite::params![format!("growth-{index}"), ROOT_ID],
+                ).unwrap();
+            }
+            transaction.commit().unwrap();
+        }
+        assert_indexed(ancestor_plan(&connection));
+        let count: i64 = connection
+            .query_row(
+                "SELECT file_count FROM directory_stats WHERE directory_id=?1",
+                [ROOT_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1024,
+            "real insertion triggers preserve ancestor counts"
+        );
+        // Analysis remains enabled once the library has a useful sample.
+        optimize_statistics(&mut connection, true).unwrap();
+        optimize_statistics(&mut connection, false).unwrap();
+        assert_indexed(ancestor_plan(&connection));
+        assert!(
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_stat1 WHERE tbl='files')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        );
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
