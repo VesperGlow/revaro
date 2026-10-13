@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu, failApplicationRequest } from './helpers'
+import { navigate, openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu, failApplicationRequest } from './helpers'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 
@@ -30,13 +30,13 @@ test('content libraries share real uploads, keep music alive during reading and 
     await expect.poll(async () => (await (await page.request.get(`/api/library/items?q=${name}`)).json()).total).toBe(1)
   }
   const nav = page.getByRole('navigation', { name: '主导航', exact: true })
-  await nav.getByRole('link', { name: '音乐', exact: true }).click()
+  await navigate(page, '音乐')
   await page.getByRole('button', { name: `打开 ${song}`, exact: true }).click()
   await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '收起播放器', exact: true }).click()
   await page.evaluate(() => { (window as any).__audio = document.querySelector('audio') })
-  await nav.getByRole('link', { name: '书籍', exact: true }).click()
+  await navigate(page, '书籍')
   await page.getByRole('button', { name: `打开 ${book}`, exact: true }).click()
   await expect(page.locator('#reader-view')).toBeVisible()
   await expect(page.locator('#loading')).toBeHidden()
@@ -59,7 +59,7 @@ test('content libraries share real uploads, keep music alive during reading and 
   await openMusicPlayer(page)
   await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '收起播放器', exact: true }).click()
-  await nav.getByRole('link', { name: '图片', exact: true }).click()
+  await navigate(page, '图片')
   await page.getByRole('button', { name: `打开 ${photo}`, exact: true }).click()
   await expect(page.locator('.preview-image')).toBeVisible()
   await page.locator('.preview-close').click()
@@ -79,7 +79,7 @@ test('favorites and albums persist, and removing membership preserves the origin
   await login(page)
   await page.locator('input[type=file]').first().setInputFiles({ name: photo, mimeType: 'image/png', buffer: png })
   await page.locator('.file-card').filter({ hasText: photo }).waitFor()
-  await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '图片', exact: true }).click()
+  await navigate(page, '图片')
   const image = page.locator('.library-card').filter({ has: page.getByRole('button', { name: `打开 ${photo}`, exact: true }) })
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
   await enterSelectionMode(page)
@@ -129,7 +129,7 @@ test('gallery viewer prefetches beyond the first page and mobile layout stays wi
       expect((await page.request.post(`/api/uploads/${session.upload_id}/complete`, { headers: { Origin: origin }, data: {} })).ok()).toBeTruthy()
     }))
   }
-  await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '图片', exact: true }).click()
+  await navigate(page, '图片')
   await expect(page.locator('.library-card')).toHaveCount(60)
   const fault = await failApplicationRequest(page, '/api/library/items', 'temporary outage', { offset: '60' })
   await page.locator('.library-card-open').nth(59).click()
@@ -172,7 +172,7 @@ test('home import and gallery transfer use the existing file tools', async ({ pa
   await page.getByRole('button', { name: '上传文件', exact: true }).click()
   await (await chooserPromise).setFiles({ name: photo, mimeType: 'image/png', buffer: png })
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?q=${photo}`)).json()).total).toBe(1)
-  await nav.getByRole('link', { name: '图片', exact: true }).click()
+  await navigate(page, '图片')
   await page.getByRole('button', { name: `打开 ${photo}`, exact: true }).click()
   await page.locator('.preview-commandbar summary').click()
   const downloadPromise = page.waitForEvent('download')
@@ -187,7 +187,7 @@ test('home import and gallery transfer use the existing file tools', async ({ pa
   await page.locator('.directory-trigger').click()
   await page.getByRole('dialog').getByRole('button', { name: '移动', exact: true }).click()
   await expect(page.locator('.move-copy-dialog')).toHaveCount(0)
-  await expect(nav.locator('[aria-current=page]')).toHaveAttribute('aria-label', '图片')
+  await expect(nav.locator('[aria-current=page]')).toHaveAttribute('aria-label', '图库')
   const listing = await (await page.request.get(`/api/library/items?q=${photo}`)).json()
   expect(listing.total).toBe(1)
   const folder = await (await page.request.get(`/api/files?q=${target}`)).json()

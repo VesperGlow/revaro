@@ -80,7 +80,7 @@ for (const mobile of [false, true]) {
       else await fields.click({ position: { x: 8, y: 3 } })
       await expect(fields).toBeVisible()
       // No pointer or focus change: native disclosure opening must still close sorting.
-      const menu = page.locator('.topbar .topbar-menu')
+      const menu = page.locator('.topbar .top-actions > .topbar-menu')
       await menu.evaluate((details: HTMLDetailsElement) => { details.open = true })
       await expect(menu).toHaveAttribute('open', '')
       await expect(fields).toBeHidden()

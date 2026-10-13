@@ -153,7 +153,7 @@ export async function pauseMusic(page: Page) {
 }
 
 export async function openTopbarMenu(page: Page) {
-  const menu = page.locator('.topbar .topbar-menu')
+  const menu = page.locator('.topbar .top-actions > .topbar-menu')
   if (!await menu.evaluate(element => (element as HTMLDetailsElement).open)) {
     await page.getByLabel('更多操作', { exact: true }).click()
   }
@@ -172,10 +172,11 @@ export async function showRecentFiles(page: Page) {
 export async function navigate(page: Page, name: string) {
   const mobile = (page.viewportSize()?.width || 1280) <= 850
   const nav = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
-  if (mobile && ['书籍', '音乐', '图片', '视频'].includes(name)) {
-    await nav.getByLabel('内容库', { exact: true }).click()
+  if (['书籍', '音乐', '图片', '视频'].includes(name)) {
+    const trigger = nav.getByLabel('内容库', { exact: true })
+    if (await trigger.getAttribute('aria-expanded') === 'false') await trigger.click()
   }
-  const link = nav.getByRole('link', { name: mobile && name === '图片' ? '图库' : name, exact: true, includeHidden: true })
+  const link = nav.getByRole('link', { name: name === '图片' ? '图库' : name, exact: true, includeHidden: true })
   await link.click()
   return link
 }

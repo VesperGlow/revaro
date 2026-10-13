@@ -25,7 +25,7 @@ test('one header search keeps existing module queries and file scope separate', 
     ['音乐', '搜索歌曲', '搜索歌曲…', 'audio', 'wav'],
     ['图片', '搜索图片', '搜索图片…', 'image', 'png'],
   ]) {
-    await nav.getByRole('link', { name, exact: true }).click()
+    await navigate(page, name)
     await expect(page.locator('main input[type=search], .library-toolbar input, .library-toolbar select')).toHaveCount(0)
     const input = page.getByLabel(label, { exact: true })
     await expect(input).toHaveAttribute('placeholder', placeholder)
@@ -78,7 +78,7 @@ test('SVG navigation, inline search, favorites and anchored menus fit every brea
     const nav = page.getByRole('navigation', { name: width <= 850 ? '移动端导航' : '主导航', exact: true })
     for (const name of ['首页', '书籍', '音乐', '图片', '文件']) {
       const link = await navigate(page, name)
-      const inMenu = width <= 850 && ['书籍', '音乐', '图片'].includes(name)
+      const inMenu = ['书籍', '音乐', '图片'].includes(name)
       const label = inMenu && name === '图片' ? '图库' : name
       await expect(link).toHaveAttribute('title', label)
       await expect(link).toHaveText(inMenu ? label : '')

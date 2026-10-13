@@ -297,14 +297,15 @@ pub fn AppNavigation(
     on_navigate: Callback<LibraryPage>,
     mobile: bool,
 ) -> impl IntoView {
-    let links = if mobile {
-        view! {
+    view! {
+        <nav class="app-navigation" class:mobile-navigation=mobile
+            aria-label=if mobile { "移动端导航" } else { "主导航" }>
             <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Home />
             <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Files />
-            <div class="mobile-library-menu" class:active=move || matches!(page.get(), LibraryPage::Books | LibraryPage::Music | LibraryPage::Gallery | LibraryPage::Videos)>
+            <div class="library-navigation-menu" class:active=move || matches!(page.get(), LibraryPage::Books | LibraryPage::Music | LibraryPage::Gallery | LibraryPage::Videos)>
                 <ActionMenu label="内容库".to_owned() icon=MenuIcon::Menu sheet=true
                     context=Signal::derive(move || page.get().path().to_owned())
-                    panel_class="mobile-library-menu-panel">
+                    panel_class="library-navigation-menu-panel">
                     <header class="topbar-menu-heading"><h2>"内容库"</h2>
                         <button class="topbar-menu-close" type="button" aria-label="关闭内容库菜单" data-close-menu="true">{icons::x()}</button>
                     </header>
@@ -315,18 +316,6 @@ pub fn AppNavigation(
                 </ActionMenu>
             </div>
             <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Trash />
-        }.into_any()
-    } else {
-        view! {
-            <For each=|| LibraryPage::ALL key=|destination| destination.path() children=move |destination| view! {
-                <NavigationLink page=page on_navigate=on_navigate destination=destination />
-            } />
-        }.into_any()
-    };
-    view! {
-        <nav class="app-navigation" class:mobile-navigation=mobile
-            aria-label=if mobile { "移动端导航" } else { "主导航" }>
-            {links}
         </nav>
     }
 }

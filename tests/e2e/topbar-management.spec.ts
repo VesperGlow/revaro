@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { login, openTopbarMenu } from './helpers'
+import { navigate, login, openTopbarMenu } from './helpers'
 import { readFileSync } from 'node:fs'
 
 async function attached(page: Page, trigger: string, panel: string) {
@@ -123,10 +123,10 @@ test('video and image libraries use separate queries, shared cards and the exist
   await (await chooser).setFiles({ name, mimeType: 'video/webm', buffer: readFileSync('fixtures/preview.webm') })
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?kind=video&q=${name}`)).json()).total).toBeGreaterThan(0)
   const nav = page.getByRole('navigation', { name: '主导航', exact: true })
-  expect(await nav.getByRole('link').evaluateAll(nodes => nodes.map(n => n.getAttribute('aria-label')))).toEqual(['首页', '书籍', '音乐', '图片', '视频', '文件', '回收站'])
-  await nav.getByRole('link', { name: '图片', exact: true }).click()
+  expect(await nav.locator(':scope > a, :scope > .library-navigation-menu > details > summary').evaluateAll(nodes => nodes.map(n => n.getAttribute('aria-label')))).toEqual(['首页', '文件', '内容库', '回收站'])
+  await navigate(page, '图片')
   await expect(page.getByRole('button', { name: `打开 ${name}`, exact: true })).toHaveCount(0)
-  await nav.getByRole('link', { name: '视频', exact: true }).click()
+  await navigate(page, '视频')
   await page.getByLabel('打开搜索', { exact: true }).click()
   await page.getByLabel('搜索视频', { exact: true }).fill(name)
   await page.getByLabel('搜索视频', { exact: true }).press('Enter')
@@ -136,7 +136,7 @@ test('video and image libraries use separate queries, shared cards and the exist
   await expect(page.locator('.video-player-shell')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.locator('.video-player-shell')).toBeHidden()
-  await nav.getByRole('link', { name: '音乐', exact: true }).click()
+  await navigate(page, '音乐')
   const centers = await page.locator('.library-tabs > button, .library-tabs summary, .library-toolbar-actions > button').evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return r.y + r.height / 2 }))
   expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(1)
   await nav.getByRole('link', { name: '回收站', exact: true }).click()

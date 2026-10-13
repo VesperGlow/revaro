@@ -322,7 +322,7 @@ test('desktop book drags create a stack and append to its existing ordered membe
       return original(input, init)
     }
   }, sourceId)
-  await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '书籍', exact: true }).click()
+  await navigate(page, '书籍')
   await expect.poll(() => page.evaluate(() => (window as any).libraryRefreshProbe.seen)).toBe(true)
   await expect(book(2), 'background refresh keeps the drag source mounted').toBeVisible()
   await page.evaluate(() => (window as any).libraryRefreshProbe.release())

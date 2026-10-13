@@ -232,7 +232,7 @@ test('failed rows stay only in the current browser session and refresh does not 
   const name = `temporary-failure-${Date.now()}.txt`
   await page.getByLabel('选择文件上传', { exact: true }).setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('temporary') })
   await expect(row(page, name)).toContainText('上传失败')
-  await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '图片', exact: true }).click()
+  await navigate(page, '图片')
   await expect(row(page, name)).toContainText('上传失败')
   await page.reload()
   await expect(page.getByLabel('更多操作', { exact: true })).toBeVisible()
