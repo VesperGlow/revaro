@@ -64,6 +64,48 @@ async function faults(page: Page) {
   })
 }
 
+test('single-track repeat keeps playing when the previous completion write arrives after its history read', async ({ page }) => {
+  await fixture(page, async file => {
+    await open(page, file)
+    await seek(page, 20)
+    await expect.poll(async () => (await saved(page, file.id)).position).toBe(20)
+    await selectMusicMode(page, 'repeat-one')
+    await page.evaluate(path => {
+      const original = window.fetch.bind(window)
+      const state = (window as any).heldCompletion = { held: false, read: false, committed: false, release: () => {} }
+      window.fetch = async (input, init) => {
+        const request = new Request(input, init)
+        if (new URL(request.url).pathname !== path) return original(request)
+        if (request.method === 'PUT' && (await request.clone().json()).completed) {
+          state.held = true
+          await new Promise<void>(resolve => { state.release = resolve })
+          const response = await original(request)
+          state.committed = response.ok
+          return response
+        }
+        const response = await original(request)
+        if (request.method === 'GET' && state.held) state.read = true
+        return response
+      }
+    }, `/api/files/${file.id}/media/progress`)
+    try {
+      await page.getByRole('button', { name: '播放音乐', exact: true }).click()
+      await expect(page.locator('audio').first()).toHaveJSProperty('paused', false)
+      await page.locator('audio').first().evaluate((audio: HTMLAudioElement) => { audio.currentTime = audio.duration - 0.1 })
+      await expect.poll(() => page.evaluate(() => (window as any).heldCompletion.held)).toBe(true)
+      await expect.poll(() => position(page)).toBeLessThan(5)
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+      await expect.poll(() => page.evaluate(() => (window as any).heldCompletion.read)).toBe(true)
+      await page.evaluate(() => (window as any).heldCompletion.release())
+      await expect.poll(() => page.evaluate(() => (window as any).heldCompletion.committed)).toBe(true)
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+      await expect.poll(() => position(page)).toBeGreaterThan(1)
+      await expect(page.locator('audio').first()).toHaveJSProperty('paused', false)
+      await expect.poll(async () => (await saved(page, file.id)).completed).toBe(false)
+    } finally { await page.evaluate(() => (window as any).heldCompletion.release()) }
+  })
+})
+
 test('independent devices hand off progress, restore server history and preserve an intentional zero', async ({ page, browser }) => {
   await fixture(page, async file => {
     await open(page, file)

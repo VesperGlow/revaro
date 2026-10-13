@@ -18,9 +18,36 @@ const { watchNativeRecovery } = await import('../../crates/revaro-web/static/tra
 const wait = () => new Promise(resolve => setTimeout(resolve, 25));
 function observe() {
   const listeners = new Map();
-  watchNativeRecovery({ addEventListener: (type, listener) => listeners.set(type, listener) }, 5);
-  return (element, type) => listeners.get(type)?.({ target: element, type });
+  const check = watchNativeRecovery({ addEventListener: (type, listener) => listeners.set(type, listener) }, 5);
+  return Object.assign((element, type) => listeners.get(type)?.({ target: element, type }), { check });
 }
+
+test('a disconnected native loader recovers even when it reports no stall or error', async () => {
+  const emit = observe(), media = new Media();
+  media.networkState = 1; // WebKit may report NETWORK_IDLE and HAVE_ENOUGH_DATA.
+  emit(media, 'playing');
+  emit.check(media);
+  await wait();
+  assert.equal(media.loads, 1);
+  assert.equal(media.currentTime, 5);
+  assert.equal(media.plays, 1);
+});
+
+test('periodic native checks preserve healthy playback and deliberate pauses and seeks', async () => {
+  const emit = observe();
+  for (const change of [
+    media => { media.buffer = 2; },
+    media => { media.currentTime += 0.5; },
+    media => { media.paused = true; },
+    media => { media.seeking = true; },
+    media => { media.ended = true; },
+  ]) {
+    const media = new Media();
+    emit.check(media); change(media); await wait();
+    assert.equal(media.loads, 0);
+    assert.equal(media.plays, 0);
+  }
+});
 
 test('an exhausted native stall recovers its playback position with a bounded reload budget', async () => {
   const emit = observe(), media = new Media();

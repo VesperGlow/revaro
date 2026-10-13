@@ -63,7 +63,7 @@ test(`${disconnectAtBytes ? 'interrupted' : 'high-bitrate'} native video plays a
     const openedAt = Date.now()
     await page.getByRole('button', { name: `打开 ${file.name}`, exact: true }).click()
     const video = page.locator('video').last()
-    await video.evaluate((element: HTMLVideoElement) => element.play())
+    await video.evaluate((element: HTMLVideoElement) => { void element.play().catch(() => {}) })
     await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 20_000 }).toBeGreaterThan(3)
     const playingAt = Date.now()
     await expect(video).toHaveAttribute('preload', 'auto')
@@ -82,7 +82,7 @@ test(`${disconnectAtBytes ? 'interrupted' : 'high-bitrate'} native video plays a
       }, target)
       await expect.poll(() => video.evaluate((v: HTMLVideoElement, time) => !v.seeking && v.readyState >= 2 && Math.abs(v.currentTime - time) < 0.25, target), { timeout: 20_000 }).toBeTruthy()
     }
-    await video.evaluate((v: HTMLVideoElement) => v.play())
+    await video.evaluate((v: HTMLVideoElement) => { void v.play().catch(() => {}) })
     await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 10_000 }).toBeGreaterThan(11)
     await page.getByRole('button', { name: '退出播放', exact: true }).click()
     expect(rewritten).toEqual([])
@@ -109,7 +109,7 @@ test(`${disconnectAtBytes ? 'interrupted' : 'high-bitrate'} native video plays a
     await testInfo.attach('native-transfer-diagnostics.json', { body: JSON.stringify(diagnostics, null, 2), contentType: 'application/json' })
     if (!completed) console.info('native-video-failure', JSON.stringify(diagnostics))
     if (directory) {
-      await page.goto('/files')
+      await page.goto('/files', { timeout: 5000 }).catch(() => {})
       await page.request.delete(`/api/files/${directory.id}`, { headers })
       await page.request.delete(`/api/trash/${directory.id}`, { headers })
     }

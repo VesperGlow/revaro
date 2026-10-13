@@ -52,14 +52,28 @@ impl PlaybackProgress {
 
     /// Close the write gate before a source change can emit old media events.
     pub fn reset(self, pending: Option<f64>) {
+        self.reset_source(pending);
+        self.writer.set(new_writer());
+        self.sequence.set(0);
+    }
+
+    /// Replaying the same file retains its writer and causal ordering: a late
+    /// completion from the previous play is not another device taking over.
+    pub fn reload(self, pending: Option<f64>) {
+        self.reset_source(pending);
+        // Invalidate callbacks that could otherwise clear the new play's dirty
+        // flag before its first progress write.
+        self.sequence
+            .update(|value| *value = value.saturating_add(1));
+    }
+
+    fn reset_source(self, pending: Option<f64>) {
         self.ready.set(false);
         self.failed.set(false);
         self.loading.set(false);
         self.loaded_file.set(None);
         self.pending.set(pending.map(PlaybackPosition::Seek));
         self.server.set(None);
-        self.writer.set(new_writer());
-        self.sequence.set(0);
         self.changed.set(pending.is_some());
         self.fenced.set(false);
         self.completed.set(false);

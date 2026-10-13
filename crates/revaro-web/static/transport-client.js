@@ -26,8 +26,8 @@ function installAPITransport() {
   };
 }
 let watching = false;
-// Some native media loaders leave a disconnected response in NETWORK_LOADING
-// without an error or reconnect. Reload only after playback has stopped
+// Some native media loaders leave a disconnected response without reporting
+// an error or stall, even in NETWORK_IDLE. Reload only after playback has stopped
 // advancing without playable future data, with a bounded budget per source.
 // All bytes and Range decisions still belong to the browser.
 export function watchNativeRecovery(root = document, delayMs = 3000) {
@@ -75,7 +75,8 @@ export function watchNativeRecovery(root = document, delayMs = 3000) {
       cancel(state);
       if (!state.waiting) return;
     }
-    if (['waiting', 'stalled', 'error'].includes(event.type)) state.waiting = true;
+    if (event.type === 'check' && bufferSeconds(element) > 0.15 && element.readyState >= 3 && !element.error) return;
+    if (['waiting', 'stalled', 'error', 'check'].includes(event.type)) state.waiting = true;
     if (state.timer || state.attempts >= 2 || element.paused || element.ended || element.seeking
         || (element.error && element.error.code !== 2)) return;
     const position = element.currentTime;
@@ -104,10 +105,11 @@ export function watchNativeRecovery(root = document, delayMs = 3000) {
   for (const event of ['waiting', 'stalled', 'error', 'pause', 'seeking', 'ended', 'emptied', 'playing', 'seeked', 'progress', 'timeupdate'])
     root.addEventListener(event, observe, true);
   globalThis.addEventListener?.('pagehide', () => { for (const state of pending) cancel(state); });
+  return element => observe({ target: element, type: 'check' });
 }
 function watchPlayback() {
   if (watching) return; watching = true;
-  watchNativeRecovery();
+  const checkRecovery = watchNativeRecovery();
   const live = new Map(); let nextKey = 0, reportedAt = 0;
   const report = () => {
     reportedAt = Date.now();
@@ -118,6 +120,7 @@ function watchPlayback() {
     }
     for (const element of present) {
       if (!element.currentSrc && !element.src) continue;
+      checkRecovery(element);
       if (!live.has(element)) live.set(element, `media-${++nextKey}`);
       let bufferSeconds = 0;
       for (let i = 0; i < element.buffered.length; i++) {

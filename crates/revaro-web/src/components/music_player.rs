@@ -210,11 +210,10 @@ impl MusicController {
         }
     }
     fn prepare(self, id: &str, restart: bool) {
+        let same_file = self.progress.loaded_file.get_untracked().as_deref() == Some(id);
         let resume = if restart {
             Some(0.0)
-        } else if self.progress.ready.get_untracked()
-            && self.progress.loaded_file.get_untracked().as_deref() == Some(id)
-        {
+        } else if self.progress.ready.get_untracked() && same_file {
             Some(
                 self.pending_seek
                     .get_untracked()
@@ -226,7 +225,11 @@ impl MusicController {
         self.save();
         // Disable writes before changing the queue or audio source: load()
         // can dispatch pause/timeupdate events for the previous source.
-        self.progress.reset(resume);
+        if same_file {
+            self.progress.reload(resume);
+        } else {
+            self.progress.reset(resume);
+        }
         self.pending_seek.set(None);
         self.media_ready.set(false);
         self.autoplay_requested.set(true);
