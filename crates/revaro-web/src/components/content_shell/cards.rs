@@ -86,7 +86,7 @@ pub(super) fn LibraryCover(item: LibraryItem) -> impl IntoView {
                 <img loading="lazy" src={let url = thumbnail_url.clone(); move || format!("{}&retry={}", url, retry.get())} alt="" on:error=retry_thumbnail />
             </Show>
             <BookProgressBar percent=item.reading_progress />
-            {is_video.then(|| view! { <span class="video-cover-play">{icons::play()}</span><span class="video-duration">{move || duration.get().unwrap_or_else(|| "—:—".to_owned())}</span> })}
+            {is_video.then(|| view! { <span class="video-duration">{move || duration.get().unwrap_or_else(|| "—:—".to_owned())}</span> })}
         </div>
     }.into_any()
 }

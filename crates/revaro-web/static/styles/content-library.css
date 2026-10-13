@@ -204,8 +204,6 @@
 .content-library:has(#reader-view) .mobile-navigation { display:none; }
 .content-library:has(.toc-drawer.open) .music-orb-shell,.content-library:has(.toc-drawer.open) .music-dock { opacity:0; visibility:hidden; pointer-events:none; }
 
-.video-cover-play { position:absolute; inset:0; display:grid; place-items:center; color:#fff; background:#17212b12; }
-.video-cover-play svg { width:24px; height:24px; padding:5px; box-sizing:content-box; background:#17212b65; border-radius:50%; }
 .video-duration { position:absolute; bottom:8px; right:8px; padding:3px 6px; background:#17212bb3; border-radius:var(--radius-sm); color:#fff; font-size:11px; font-variant-numeric:tabular-nums; }
 
 /* Shared selection mode keeps the existing card surfaces and spacing. */

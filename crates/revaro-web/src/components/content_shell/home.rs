@@ -108,7 +108,7 @@ pub(super) fn HomeDashboard(
                                 <SelectionCheckbox id=file.id.clone() name=file.name.clone() selection=selection />
                                 <button class="home-item" aria-label=format!("打开 {}", file.name)
                                     on:click=move |_| on_open.run(open_file.clone())>
-                                    <FileCard name=file.name.clone() detail=Signal::derive(move || detail.clone())>
+                                    <FileCard name=file.name.clone() detail=Signal::derive(move || detail.clone()) is_video=classify::is_video(&file)>
                                         <LibraryCover item=item />
                                     </FileCard>
                                 </button>

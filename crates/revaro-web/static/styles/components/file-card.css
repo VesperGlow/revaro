@@ -127,7 +127,25 @@
   top: 8px;
   bottom: auto;
 }
-.video-cover-play { bottom: var(--file-card-caption-height); }
+/* The home video overlay is shared by every file card. */
+.video-cover-play {
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 var(--file-card-caption-height);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: #17212b12;
+  pointer-events: none;
+}
+.video-cover-play svg {
+  width: 24px;
+  height: 24px;
+  padding: 5px;
+  box-sizing: content-box;
+  background: #17212b65;
+  border-radius: 50%;
+}
 
 @media (prefers-reduced-motion: reduce) {
   :is(.file-card,.library-card,.home-card) { transition: none; }

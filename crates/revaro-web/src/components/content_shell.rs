@@ -16,6 +16,7 @@ use stacks::{StackDialogs, StackOperation};
 use leptos::prelude::*;
 use revaro_core::{
     api::auth::Session,
+    classify,
     library::{Collection, ItemUpdate, LibraryItem},
     model::{File, FileKind},
 };
@@ -606,7 +607,7 @@ pub fn ContentShell(
                                                     else if is_stack { open_stack.run(open_item.stack.as_ref().unwrap().id.clone()); }
                                                     else { open.run(open_item.file.clone()); }
                                                 }>
-                                                    <FileCard name=name detail=Signal::derive(move ||detail.clone())>
+                                                    <FileCard name=name detail=Signal::derive(move ||detail.clone()) is_video=classify::is_video(&cover_item.file)>
                                                         <cards::StackCover item=cover_item.clone() />
                                                         {cover_item.stack.as_ref().map(|s|view! { <span class="stack-count">{format!("{} 本",s.files.len())}</span> })}
                                                     </FileCard>

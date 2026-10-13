@@ -6,10 +6,13 @@ use revaro_core::{
     model::{File, FileKind},
 };
 
+use super::icons;
+
 #[component]
 pub(super) fn FileCard(
     name: String,
     detail: Signal<String>,
+    #[prop(optional)] is_video: bool,
     #[prop(optional)] preview_title: Option<Signal<String>>,
     #[prop(optional)] cannot_open: Option<Signal<bool>>,
     children: Children,
@@ -20,6 +23,9 @@ pub(super) fn FileCard(
                 class:cannot-open=move || cannot_open.is_some_and(|value| value.get())
                 title=move || preview_title.map(|value| value.get())>
                 {children()}
+                {is_video.then(|| view! {
+                    <span class="video-cover-play" aria-hidden="true">{icons::play()}</span>
+                })}
             </div>
             <CardInfo name=name detail=detail />
         </div>

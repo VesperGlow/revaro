@@ -61,6 +61,7 @@ pub(super) fn FileTile(
         >
             {select_control}
             <FileCard name=name detail=Signal::derive(move || display_meta(&item_for_meta, trash_mode.get()))
+                is_video=classify::is_video(&item_for_preview)
                 cannot_open=Signal::derive(move || {
                     trash_mode.get() && item_for_cannot_open.kind == FileKind::Directory
                 })
