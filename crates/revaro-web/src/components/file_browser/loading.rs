@@ -97,8 +97,10 @@ impl ListingController {
                     pending_editor_refresh.set(None);
                 }
                 let suppress_history = history_suppressed.get_untracked()
-                    || shell_context
-                        .is_some_and(|context| context.page.get_untracked() != LibraryPage::Files);
+                    || shell_context.is_some_and(|context| {
+                        context.page.get_untracked() != LibraryPage::Files
+                            || !context.active.get_untracked()
+                    });
                 let initial_request = initial_route_pending.get_untracked();
                 initial_route_pending.set(false);
                 let logout = on_logout.clone();
@@ -139,7 +141,10 @@ impl ListingController {
                     match result {
                         Ok((detail, children)) => {
                             let changed_folder = requested_id != current_id.get_untracked();
-                            if !suppress_history && changed_folder {
+                            if !suppress_history
+                                && changed_folder
+                                && shell_context.is_none_or(|c| c.active.get_untracked())
+                            {
                                 nav_actions.update(|actions| {
                                     actions.push(NavAction::Folder {
                                         id: current_id.get_untracked(),
@@ -162,9 +167,10 @@ impl ListingController {
                                 selection.clear();
                             }
                             trash_mode.set(false);
-                            if shell_context
-                                .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
-                            {
+                            if shell_context.is_none_or(|c| {
+                                c.page.get_untracked() == LibraryPage::Files
+                                    && c.active.get_untracked()
+                            }) {
                                 replace_folder_url(&requested_id);
                             }
                             loading.set(false);
@@ -196,9 +202,10 @@ impl ListingController {
                                 // the root and loads that folder without leaving a
                                 // transient error screen behind. Ordinary in-app
                                 // navigation still reports its error below.
-                                if shell_context
-                                    .is_none_or(|c| c.page.get_untracked() == LibraryPage::Files)
-                                {
+                                if shell_context.is_none_or(|c| {
+                                    c.page.get_untracked() == LibraryPage::Files
+                                        && c.active.get_untracked()
+                                }) {
                                     replace_folder_url(ROOT_ID);
                                 }
                                 fallback_to_root.set(true);

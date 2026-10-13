@@ -105,10 +105,10 @@ export async function uploadFixture(page: Page, parent_id: string, name: string,
 
 export async function enterSelectionMode(page: Page) {
   await openTopbarMenu(page)
-  const toggle = page.locator('.selection-toggle')
+  const toggle = page.locator('.os-app-window.focused .selection-toggle')
   await expect(toggle).toBeVisible()
   if (await toggle.getAttribute('aria-pressed') === 'false') await toggle.click()
-  else await page.getByLabel('关闭菜单', { exact: true }).click()
+  else await page.locator('.os-app-window.focused').getByLabel('关闭菜单', { exact: true }).click()
   await expect(toggle).toHaveAttribute('aria-pressed', 'true')
 }
 
@@ -117,11 +117,7 @@ export async function login(page: Page) {
   await page.getByLabel('用户名').fill(process.env.E2E_USERNAME || 'admin')
   await page.getByLabel('密码').fill(process.env.E2E_PASSWORD || 'revaro-e2e-password')
   await page.getByRole('button', { name: '进入我的内容库' }).click()
-  if ((page.viewportSize()?.width || 1280) <= 850) {
-    await page.getByRole('navigation', { name: '移动端导航', exact: true }).getByRole('link', { name: '文件', exact: true }).click()
-  } else {
-    await page.getByRole('navigation', { name: '主导航', exact: true }).getByRole('link', { name: '文件', exact: true }).click()
-  }
+  await launchApp(page, '文件')
   await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true })).toBeVisible()
 }
 
@@ -153,11 +149,11 @@ export async function pauseMusic(page: Page) {
 }
 
 export async function openTopbarMenu(page: Page) {
-  const menu = page.locator('.topbar .top-actions > .topbar-menu')
+  const menu = page.locator('.os-app-window.focused .topbar .top-actions > .topbar-menu')
   if (!await menu.evaluate(element => (element as HTMLDetailsElement).open)) {
-    await page.getByLabel('更多操作', { exact: true }).click()
+    await menu.getByLabel('更多操作', { exact: true }).click()
   }
-  await expect(page.locator('.topbar-menu-panel')).toBeVisible()
+  await expect(page.locator('.os-app-window.focused .topbar-menu-panel')).toBeVisible()
 }
 
 // Existing instances can contain more than one page of files. Newly uploaded
@@ -169,14 +165,23 @@ export async function showRecentFiles(page: Page) {
   if ((await direction.getAttribute('aria-description'))?.includes('当前升序')) await direction.click()
 }
 
-export async function navigate(page: Page, name: string) {
+export async function launchApp(page: Page, name: string) {
   const mobile = (page.viewportSize()?.width || 1280) <= 850
-  const nav = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
-  if (['书籍', '音乐', '图片', '视频'].includes(name)) {
-    const trigger = nav.getByLabel('内容库', { exact: true })
-    if (await trigger.getAttribute('aria-expanded') === 'false') await trigger.click()
+  if (mobile && await page.getByLabel('返回主屏幕', { exact: true }).isVisible()) {
+    await page.getByLabel('返回主屏幕', { exact: true }).click()
   }
-  const link = nav.getByRole('link', { name: name === '图片' ? '图库' : name, exact: true, includeHidden: true })
+  const container = mobile ? page.getByRole('group', { name: '手机应用', exact: true }) : page.getByRole('navigation', { name: '主导航', exact: true })
+  const link = container.getByRole('link', { name, exact: true })
   await link.click()
+  await expect(page.locator('.os-app-window.focused')).toBeVisible()
   return link
+}
+
+export async function navigate(page: Page, name: string) {
+  if (name === '首页') {
+    const button = page.getByLabel((page.viewportSize()?.width || 1280) <= 850 ? '返回主屏幕' : '显示桌面', { exact: true }).first()
+    await button.click()
+    return button
+  }
+  return launchApp(page, ({ '书籍': '阅读', '图片': '图库' } as Record<string, string>)[name] || name)
 }

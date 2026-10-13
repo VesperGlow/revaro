@@ -13,7 +13,7 @@ use home::*;
 use stack_management::{StackGesture, StackManagementBar};
 use stacks::{StackDialogs, StackOperation};
 
-use leptos::prelude::*;
+use leptos::{portal::Portal, prelude::*};
 use revaro_core::{
     api::auth::Session,
     classify,
@@ -24,16 +24,18 @@ use wasm_bindgen::{JsCast, JsValue};
 
 use super::{
     FileBrowser,
+    desktop::{AppWindow, DesktopShell, OsState, app_bounds, app_path, pathname},
     dialogs::DialogBackdrop,
     file_card::{FileCard, file_icon},
     icons,
     media::MediaPreview,
     menu::{ActionMenu, MenuIcon},
+    mobile_shell::MobileShell,
     music_player::{MusicController, PersistentMusicPlayer},
     reader::ReaderView,
     selection::{SelectionCheckbox, SelectionManagement, SelectionMode, install_long_press},
     selection_toolbar::{BatchActionBar, matches_collection},
-    topbar::{AppNavigation, AppTopbar, TopbarActions, TopbarSearch},
+    topbar::{AppTopbar, SharedProfile, TopbarActions, TopbarSearch},
     uploads::UploadProgress,
 };
 use crate::{
@@ -49,6 +51,7 @@ use crate::{
 
 #[derive(Clone, Copy)]
 pub struct ShellContext {
+    pub active: Signal<bool>,
     pub page: RwSignal<LibraryPage>,
     pub refresh: RwSignal<u64>,
     pub music: MusicController,
@@ -71,12 +74,6 @@ fn stack_id(path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn pathname() -> String {
-    web_sys::window()
-        .and_then(|w| w.location().pathname().ok())
-        .unwrap_or_default()
-}
-
 fn route(path: &str, push: bool) {
     if let Some(window) = web_sys::window()
         && let Ok(history) = window.history()
@@ -96,10 +93,48 @@ pub fn ContentShell(
     on_username_changed: Callback<String>,
     on_password_changed: Callback<String>,
 ) -> impl IntoView {
-    let page = RwSignal::new(LibraryPage::from_path(&pathname()));
-    let header_actions = RwSignal::new(None::<TopbarActions>);
-    let refresh = RwSignal::new(0_u64);
+    let state = OsState::new();
+    provide_context(state);
+    provide_context(SharedProfile {
+        username: RwSignal::new(session.username.clone()),
+        has_avatar: RwSignal::new(session.has_avatar),
+        avatar_version: RwSignal::new(0),
+    });
     let music = MusicController::new(&session.username);
+    Effect::new(move |_| {
+        let _ = state.active.get();
+        // System navigation dismisses the player's expanded UI while the
+        // shared audio element, queue and playback position stay mounted.
+        music.panel_open.set(false);
+        music.full_open.set(false);
+    });
+    let session = StoredValue::new(session);
+    view! {
+        <div class="revaro-os" class:mobile=move ||state.mobile.get() class:has-music=move ||music.current().is_some()>
+            <div class="os-wallpaper" aria-hidden="true"></div>
+            <Portal><Show when=move ||!state.mobile.get() fallback=move ||view!{<MobileShell state=state/>}><DesktopShell state=state/></Show></Portal>
+            <For each=move ||{state.tasks.get().into_iter().map(|task|task.app).collect::<Vec<_>>()} key=|app|app_path(*app) children=move |app|view! {
+                <AppWindow app=app state=state><AppWorkspace session=session.get_value() on_logout=on_logout on_username_changed=on_username_changed on_password_changed=on_password_changed destination=app music=music state=state/></AppWindow>
+            }/>
+            <Portal><div class="os-player"><PersistentMusicPlayer controller=music /></div></Portal>
+        </div>
+    }
+}
+
+#[component]
+fn AppWorkspace(
+    session: Session,
+    on_logout: Callback<()>,
+    on_username_changed: Callback<String>,
+    on_password_changed: Callback<String>,
+    destination: LibraryPage,
+    music: MusicController,
+    state: OsState,
+) -> impl IntoView {
+    let active = Signal::derive(move || state.active.get() == Some(destination));
+    let page = RwSignal::new(destination);
+    let header_actions = RwSignal::new(None::<TopbarActions>);
+    let refresh = state.refresh;
     let transfer = RwSignal::new(None::<(File, bool)>);
     let query_text = RwSignal::new(String::new());
     let query = RwSignal::new(String::new());
@@ -125,7 +160,7 @@ pub fn ContentShell(
     let collection_busy = RwSignal::new(false);
     let collection_target = RwSignal::new(None::<CollectionTarget>);
     let selection = SelectionMode::new();
-    install_long_press(selection);
+    install_long_press(selection, app_path(destination));
     let stack_controller = stacks::StackController::install(
         page,
         selected_stack,
@@ -169,35 +204,10 @@ pub fn ContentShell(
     });
 
     let navigate = Callback::new(move |next: LibraryPage| {
-        reader_revision.update(|revision| *revision += 1);
-        reader.set(None);
-        image.set(None);
-        selected_stack.set(String::new());
-        if page.get_untracked() != next {
-            query.set(String::new());
-            query_text.set(String::new());
-            favorites.set(false);
-            selected_collection.set(String::new());
-        }
-        let same_route = page.get_untracked() == next && pathname() == next.path();
-        page.set(next);
-        if !same_route {
-            route(next.path(), true);
-        }
-        if let Some(actions) = header_actions.get_untracked() {
-            match next {
-                LibraryPage::Files => actions.on_files.run(()),
-                LibraryPage::Trash => actions.on_trash.run(()),
-                _ => (),
-            }
-        }
-        // A changed page already invalidates its listing. Keep the shared
-        // mutation revision for explicit refreshes and data changes only.
-        if same_route {
-            refresh.update(|r| *r += 1);
-        }
-        if let Some(w) = web_sys::window() {
-            w.scroll_to_with_x_and_y(0.0, 0.0);
+        if next == LibraryPage::Home {
+            state.home(true);
+        } else {
+            state.open(next, true);
         }
     });
     let import = Callback::new(move |()| {
@@ -229,6 +239,11 @@ pub fn ContentShell(
             return;
         }
         if revaro_core::classify::is_book(&file) {
+            if destination != LibraryPage::Books {
+                state.open(LibraryPage::Books, true);
+                state.pending_book.set(Some(file));
+                return;
+            }
             reader_revision.update(|revision| *revision += 1);
             reader_return.set(pathname());
             reader_pushed.set(true);
@@ -284,7 +299,18 @@ pub fn ContentShell(
             }
         });
     });
+    if destination == LibraryPage::Books {
+        Effect::new(move |_| {
+            if let Some(file) = state.pending_book.get() {
+                state.pending_book.set(None);
+                selection.exit();
+                route("/library", true);
+                open.run(file);
+            }
+        });
+    }
     provide_context(ShellContext {
+        active,
         page,
         refresh,
         music,
@@ -324,6 +350,32 @@ pub fn ContentShell(
             page.set(LibraryPage::from_path(&reader_return.get_untracked()));
         }
         refresh.update(|r| *r += 1);
+    });
+    // Returning from the OS task switcher creates a new route entry; the
+    // reader's original history entry no longer sits immediately behind it.
+    Effect::new(move |_| {
+        if !active.get() {
+            reader_pushed.set(false);
+        }
+    });
+    Effect::new(move |_| {
+        if active.get() {
+            if let Some(actions) = header_actions.get() {
+                state.back.set(Some(Callback::new(move |()| {
+                    if reader.get_untracked().is_some() {
+                        close_reader.run(());
+                    } else if image.get_untracked().is_some() {
+                        image.set(None);
+                    } else if !selected_stack.get_untracked().is_empty() {
+                        selection.exit();
+                        selected_stack.set(String::new());
+                        route(page.get_untracked().path(), true);
+                    } else {
+                        actions.on_back.run(());
+                    }
+                })));
+            }
+        }
     });
     let restore_reader = Callback::new(move |(path, pushed): (String, bool)| {
         reader_revision.update(|revision| *revision += 1);
@@ -366,11 +418,14 @@ pub fn ContentShell(
             }
         });
     });
-    if reader_id(&pathname()).is_some() {
+    if active.get_untracked() && reader_id(&pathname()).is_some() {
         reader_return.set("/library".to_owned());
         restore_reader.run((pathname(), false));
     }
     let mut popstate = browser::on_popstate(move |_| {
+        if !active.get_untracked() {
+            return;
+        }
         let path = pathname();
         let next = LibraryPage::from_path(&path);
         let same_page = page.get_untracked() == next;
@@ -454,23 +509,18 @@ pub fn ContentShell(
     });
     let collection_context = Signal::from(Memo::new(move |_| page.get().path().to_owned()));
     view! {
-        <div class="content-library" class:has-music=move ||music.current().is_some()
-            on:click=move |event: web_sys::MouseEvent| {
-                // Short listings and wide screens leave background outside the main content.
-                let is_outer_blank = event.target()
-                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                    .is_some_and(|target| matches!(target.matches(".content-library,.app-shell"), Ok(true)));
-                if is_outer_blank {
-                    selection.exit_from_blank(event);
-                }
-            }>
+        <div class="content-library app-workspace" on:click=move |event: web_sys::MouseEvent| {
+            let is_outer_blank=event.target().and_then(|target|target.dyn_into::<web_sys::Element>().ok()).is_some_and(|target|matches!(target.matches(".content-library,.app-shell"),Ok(true)));
+            if is_outer_blank {selection.exit_from_blank(event);}
+        }>
             {move || header_actions.get().map(|actions| {
-                let upload_controller = actions.upload_controller.clone();
+                let upload_controller=actions.upload_controller.clone();
                 view! {
                     <AppTopbar actions=actions library_search=library_search page=page on_navigate=navigate selection=selection />
-                    <UploadProgress controller=upload_controller />
+                    <Portal><UploadProgress controller=upload_controller.clone() /></Portal>
                 }
             })}
+            <div class="app-workspace-scroll">
             <Show when=move ||!page.get().is_file_workspace() fallback=|| ()>
                 <main class="library-main" on:click=move |event| selection.exit_from_blank(event)>
                     <Show when=move ||selected_stack.get().is_empty() fallback=|| ()>
@@ -627,11 +677,11 @@ pub fn ContentShell(
                 </main>
             </Show>
             <FileBrowser session=session on_logout=on_logout on_username_changed=on_username_changed on_password_changed=on_password_changed on_header_ready=Callback::new(move |actions|header_actions.set(Some(actions))) />
+            </div>
+            <Portal><div class="app-overlays" style:display=move ||if active.get(){"contents"}else{"none"}>
             <StackDialogs controller=stack_controller />
-            <PersistentMusicPlayer controller=music />
-            <AppNavigation page=page on_navigate=navigate mobile=true />
-            <Show when=move ||reader.get().is_some() fallback=|| ()>{move ||reader.get().map(|file|view!{<ReaderView file=file on_close=close_reader on_unauthorized=on_logout />})}</Show>
-            <Show when=move ||image.get().is_some() fallback=|| ()><MediaPreview selected=image items=image_items on_close=Callback::new(move |()|{image.set(None);if page.get_untracked()==LibraryPage::Home {refresh.update(|r|*r+=1);}}) on_download=Callback::new(|file:File|super::file_browser::download_file(&file)) on_move=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,false)));}) on_copy=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,true)));}) /></Show>
+            <Show when=move ||reader.get().is_some() fallback=|| ()><div class="reader-host" class:reading-active=move ||active.get() style=move ||app_bounds(state, destination)>{move ||reader.get().map(|file|view!{<ReaderView file=file on_close=close_reader on_unauthorized=on_logout />})}</div></Show>
+            <Show when=move ||image.get().is_some() fallback=|| ()><div class="media-host" style=move ||app_bounds(state, destination)><MediaPreview selected=image items=image_items on_close=Callback::new(move |()|{image.set(None);if page.get_untracked()==LibraryPage::Home {refresh.update(|r|*r+=1);}}) on_download=Callback::new(|file:File|super::file_browser::download_file(&file)) on_move=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,false)));}) on_copy=Callback::new(move |file:File|{image.set(None);transfer.set(Some((file,true)));}) /></div></Show>
             <Show when=move ||new_collection.get() ||collection_target.get().is_some() fallback=|| ()>
                 <DialogBackdrop on_close=Callback::new(move |()| {new_collection.set(false);collection_target.set(None);})><section class="modal library-collection-dialog" role="dialog" aria-modal="true" aria-label="管理集合">
                     <header><h2>{move ||format!("{}{}",if new_collection.get(){"新建"}else{"加入"},collection_page.get().collection_label())}</h2><button aria-label="关闭集合对话框" disabled=move ||collection_busy.get() on:click=move |_|{new_collection.set(false);collection_target.set(None);}>"×"</button></header>
@@ -650,6 +700,7 @@ pub fn ContentShell(
                     <Show when=move ||!error.get().is_empty() fallback=|| ()><p class="form-error" role="alert">{move ||error.get()}</p></Show>
                 </section></DialogBackdrop>
             </Show>
+            </div></Portal>
         </div>
     }
 }

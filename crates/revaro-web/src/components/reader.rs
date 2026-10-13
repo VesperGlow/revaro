@@ -230,6 +230,12 @@ pub fn ReaderView(
         let file_id = file_id.clone();
         let close_view = on_close.clone();
         browser::on_keydown(move |event| {
+            if !root
+                .get_untracked()
+                .is_some_and(|node| node.get_client_rects().length() > 0)
+            {
+                return;
+            }
             if event.default_prevented() {
                 return;
             }
@@ -285,12 +291,46 @@ pub fn ReaderView(
     let mut resize_listener = {
         let runtime = runtime.clone();
         browser::on_resize(move |_| {
+            if !root
+                .get_untracked()
+                .is_some_and(|node| node.get_client_rects().length() > 0)
+            {
+                return;
+            }
             if manifest.get_untracked().is_none() || stage.get_untracked() != ReaderStage::Reading {
                 return;
             }
             schedule_relayout(runtime.clone(), viewport, flow, manifest, prefs, stage);
         })
     };
+
+    // A desktop app can resize without changing the browser viewport.
+    // Reuse the same pagination relayout for its own viewport dimensions.
+    let observe_runtime = runtime.clone();
+    Effect::new(move |_| {
+        if let Some(viewport_node) = viewport.get() {
+            let runtime = observe_runtime.clone();
+            let callback = Closure::<dyn FnMut()>::new(move || {
+                if root
+                    .get_untracked()
+                    .is_some_and(|node| node.get_client_rects().length() > 0)
+                    && manifest.get_untracked().is_some()
+                    && stage.get_untracked() == ReaderStage::Reading
+                {
+                    schedule_relayout(runtime.clone(), viewport, flow, manifest, prefs, stage);
+                }
+            });
+            if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+                observer.observe(viewport_node.unchecked_ref());
+                let handle =
+                    leptos::__reexports::send_wrapper::SendWrapper::new((observer, callback));
+                on_cleanup(move || {
+                    let (observer, _callback) = handle.take();
+                    observer.disconnect();
+                });
+            }
+        }
+    });
 
     browser::dismiss_popover(
         font_open.into(),

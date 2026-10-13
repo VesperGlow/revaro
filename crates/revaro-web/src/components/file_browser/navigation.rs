@@ -13,7 +13,16 @@ pub(super) fn push_browser_history() {
 pub(super) fn request_overlay_close(
     nav_actions: RwSignal<Vec<NavAction>>,
     history_suppressed: RwSignal<bool>,
+    overlay_history_valid: RwSignal<bool>,
 ) -> bool {
+    if !overlay_history_valid.get_untracked() {
+        nav_actions.update(|actions| {
+            if matches!(actions.last(), Some(NavAction::Overlay)) {
+                actions.pop();
+            }
+        });
+        return false;
+    }
     if history_suppressed.get_untracked()
         || !nav_actions
             .get_untracked()

@@ -13,6 +13,21 @@
 
 use leptos::prelude::*;
 
+pub fn layout_grid() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+        </svg>
+    }
+}
+
+pub fn minus() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"></path></svg>
+    }
+}
+
 /// Global selection toggle, matching the existing circular action icons.
 pub fn circle_check() -> impl IntoView {
     view! {

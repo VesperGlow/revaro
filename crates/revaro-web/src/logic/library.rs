@@ -65,6 +65,7 @@ impl LibraryPage {
     }
     pub fn from_path(path: &str) -> Self {
         match path.trim_end_matches('/') {
+            "/recent" => Self::Home,
             "/library" => Self::Books,
             "/music" => Self::Music,
             "/gallery" => Self::Gallery,
@@ -139,6 +140,7 @@ mod tests {
     fn restores_content_and_legacy_routes() {
         for (path, page) in [
             ("/", LibraryPage::Home),
+            ("/recent", LibraryPage::Home),
             ("/library/", LibraryPage::Books),
             ("/library/stacks/stack", LibraryPage::Books),
             ("/library/series/series", LibraryPage::Books),

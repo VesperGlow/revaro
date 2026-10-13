@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use futures_channel::oneshot;
-use leptos::prelude::*;
+use leptos::{portal::Portal, prelude::*};
 use revaro_core::api::auth::Session;
 use revaro_core::api::files::{
     CopyFileRequest, CreateDirectoryRequest, CreateDocumentRequest, FileDetail, PatchFileRequest,
@@ -262,6 +262,14 @@ pub fn FileBrowser(
     let account_open = RwSignal::new(false);
     let nav_actions = RwSignal::new(Vec::<NavAction>::new());
     let history_suppressed = RwSignal::new(false);
+    let overlay_history_valid = RwSignal::new(true);
+    if let Some(context) = shell_context {
+        Effect::new(move |_| {
+            if !context.active.get() {
+                overlay_history_valid.set(false);
+            }
+        });
+    }
     let initial_route_pending = RwSignal::new(false);
     let fallback_to_root = RwSignal::new(false);
     // A document save resolves only after the reference controller's folder
@@ -447,6 +455,7 @@ pub fn FileBrowser(
                 || share_file.get_untracked().is_some()
                 || account_open.get_untracked();
             if !already_open {
+                overlay_history_valid.set(true);
                 nav_actions.update(|actions| actions.push(NavAction::Overlay));
                 push_browser_history();
             }
@@ -591,7 +600,7 @@ pub fn FileBrowser(
     };
     let close_share = {
         Callback::new(move |(): ()| {
-            if request_overlay_close(nav_actions, history_suppressed) {
+            if request_overlay_close(nav_actions, history_suppressed, overlay_history_valid) {
                 return;
             }
             share_file.set(None);
@@ -711,6 +720,7 @@ pub fn FileBrowser(
         share_copied,
         nav_actions,
         history_suppressed,
+        overlay_history_valid,
         upload_destination,
     }
     .submit();
@@ -722,7 +732,9 @@ pub fn FileBrowser(
             // exception to the busy guard.
             let rename_can_close =
                 matches!(dialog.get_untracked(), Some(DialogState::Rename { .. }));
-            if rename_can_close && request_overlay_close(nav_actions, history_suppressed) {
+            if rename_can_close
+                && request_overlay_close(nav_actions, history_suppressed, overlay_history_valid)
+            {
                 return;
             }
             if !dialog_busy.get_untracked() || rename_can_close {
@@ -780,7 +792,7 @@ pub fn FileBrowser(
     };
     let close_transfer = {
         Callback::new(move |(): ()| {
-            if request_overlay_close(nav_actions, history_suppressed) {
+            if request_overlay_close(nav_actions, history_suppressed, overlay_history_valid) {
                 return;
             }
             transfer_open.set(false);
@@ -1081,7 +1093,8 @@ pub fn FileBrowser(
                 dialog_value.set(String::new());
                 dialog_error.set(String::new());
                 dialog.set(Some(DialogState::DiscardEditor));
-            } else if !request_overlay_close(nav_actions, history_suppressed) {
+            } else if !request_overlay_close(nav_actions, history_suppressed, overlay_history_valid)
+            {
                 editor_open.set(false);
             }
         })
@@ -1216,17 +1229,38 @@ pub fn FileBrowser(
         load_folder.run(initial_folder);
     }
     history_suppressed.set(false);
-    let username = RwSignal::new(session.username.clone());
-    let has_avatar = RwSignal::new(session.has_avatar);
-    let avatar_version = RwSignal::new(0_u64);
-    let return_home = {
-        let load_folder = load_folder.clone();
-        Callback::new(move |(): ()| {
-            trash_mode.set(false);
-            load_folder.run(ROOT_ID.to_owned());
-        })
-    };
-
+    if let Some(context) = shell_context {
+        let mounted = StoredValue::new(false);
+        let resume_folder = load_folder.clone();
+        let resume_trash = load_trash.clone();
+        Effect::new(move |_| {
+            let active = context.active.get();
+            if !mounted.get_value() {
+                mounted.set_value(true);
+                return;
+            }
+            if active && context.page.get_untracked().is_file_workspace() {
+                history_suppressed.set(true);
+                if context.page.get_untracked() == LibraryPage::Trash {
+                    resume_trash.run(());
+                } else {
+                    resume_folder.run(current_id.get_untracked());
+                }
+                history_suppressed.set(false);
+            }
+        });
+    }
+    let super::topbar::SharedProfile {
+        username,
+        has_avatar,
+        avatar_version,
+    } = use_context::<super::topbar::SharedProfile>().unwrap_or_else(|| {
+        super::topbar::SharedProfile {
+            username: RwSignal::new(session.username.clone()),
+            has_avatar: RwSignal::new(session.has_avatar),
+            avatar_version: RwSignal::new(0),
+        }
+    });
     let uploads_for_view = leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
     let shell_upload = uploads_for_view.clone();
     let shell_upload_leave = uploads_for_view.clone();
@@ -1238,7 +1272,7 @@ pub fn FileBrowser(
     let upload_folder = Callback::new(move |(): ()| folder_upload.choose_folder());
     let close_media = {
         Callback::new(move |(): ()| {
-            if !request_overlay_close(nav_actions, history_suppressed) {
+            if !request_overlay_close(nav_actions, history_suppressed, overlay_history_valid) {
                 media_file.set(None);
             }
         })
@@ -1246,14 +1280,24 @@ pub fn FileBrowser(
     let download_media = Callback::new(move |file: File| download_file(&file));
     let close_reader = {
         Callback::new(move |(): ()| {
-            if !request_overlay_close(nav_actions, history_suppressed) {
+            if !request_overlay_close(nav_actions, history_suppressed, overlay_history_valid) {
                 reader_file.set(None);
+                if let Some(context) = shell_context {
+                    if context.page.get_untracked() == LibraryPage::Trash {
+                        if let Ok(history) = window().history() {
+                            let _ =
+                                history.replace_state_with_url(&JsValue::NULL, "", Some("/trash"));
+                        }
+                    } else {
+                        replace_folder_url(&current_id.get_untracked());
+                    }
+                }
             }
         })
     };
     let close_account = {
         Callback::new(move |(): ()| {
-            if !request_overlay_close(nav_actions, history_suppressed) {
+            if !request_overlay_close(nav_actions, history_suppressed, overlay_history_valid) {
                 account_open.set(false);
             }
         })
@@ -1289,6 +1333,9 @@ pub fn FileBrowser(
         let popstate_processing = popstate_processing.clone();
         let load_trash = load_trash.clone();
         browser::on_popstate(move |_| {
+            if shell_context.is_some_and(|c| !c.active.get_untracked()) {
+                return;
+            }
             if let Some(context) = shell_context
                 && !nav_actions
                     .get_untracked()
@@ -1369,24 +1416,48 @@ pub fn FileBrowser(
     };
     on_cleanup(move || popstate.release());
 
-    let header_files = return_home;
-    let header_root = Callback::new(move |()| {
-        history_suppressed.set(true);
-        header_files.run(());
-        history_suppressed.set(false);
+    let os = use_context::<super::desktop::OsState>();
+    let back_folder = load_folder.clone();
+    let back_editor = close_editor.clone();
+    let back_transfer = close_transfer.clone();
+    let back_share = close_share.clone();
+    let back_dialog = close_dialog.clone();
+    let on_back = Callback::new(move |()| {
+        if dialog.get_untracked().is_some() {
+            back_dialog.run(());
+        } else if editor_open.get_untracked() {
+            back_editor.run(());
+        } else if transfer_open.get_untracked() {
+            back_transfer.run(());
+        } else if share_file.get_untracked().is_some() {
+            back_share.run(());
+        } else if account_open.get_untracked() {
+            close_account.run(());
+        } else if reader_file.get_untracked().is_some() {
+            close_reader.run(());
+        } else if media_file.get_untracked().is_some() {
+            close_media.run(());
+        } else if let Some(parent) = current
+            .get_untracked()
+            .filter(|file| file.id != ROOT_ID)
+            .and_then(|file| file.parent_id)
+        {
+            back_folder.run(parent);
+        } else if let Some(os) = os {
+            os.home(true);
+        }
     });
     on_header_ready.run(TopbarActions {
         username,
         has_avatar,
         avatar_version,
         upload_controller: leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone()),
-        on_files: header_root,
         on_upload_files: upload_files,
         on_upload_folder: upload_folder,
         on_new_document: new_document,
         on_create_folder: show_create_folder,
-        on_trash: load_trash,
         on_account: open_account,
+        on_back,
         search_text,
         on_search: submit_search,
     });
@@ -1399,7 +1470,8 @@ pub fn FileBrowser(
             shell_context.is_none_or(|c| c.page.get() == LibraryPage::Files)
         }),
         visible: Signal::derive(move || {
-            media_file.get().is_none()
+            shell_context.is_none_or(|c| c.active.get())
+                && media_file.get().is_none()
                 && reader_file.get().is_none()
                 && !editor_open.get()
                 && !transfer_open.get()
@@ -1578,6 +1650,7 @@ pub fn FileBrowser(
                     </Show>
                 </div>
             </section>
+            <Portal><div class="app-overlays" style:display=move ||if shell_context.is_none_or(|c|c.active.get()) {"contents"}else{"none"}>
             <Show when=move || feedback.get().is_some() fallback=|| ()>
                 <div
                     class="toast"
@@ -1628,6 +1701,7 @@ pub fn FileBrowser(
                 }
             }}
             <Show when=move || media_file.get().is_some() fallback=|| ()>
+                <div class="media-host" style=move ||os.map(|os| super::desktop::app_bounds(os,shell_context.map_or(LibraryPage::Files,|context|context.page.get()))).unwrap_or_default()>
                 <MediaPreview
                     selected=media_file
                     items=preview_items
@@ -1636,8 +1710,10 @@ pub fn FileBrowser(
                     on_move=move_media
                     on_copy=copy_media
                 />
+                </div>
             </Show>
             <Show when=move || reader_file.get().is_some() fallback=|| ()>
+                <div class="reader-host" class:reading-active=move ||shell_context.is_none_or(|context|context.active.get()) style=move ||os.map(|os|super::desktop::app_bounds(os,shell_context.map_or(LibraryPage::Files,|context|context.page.get()))).unwrap_or_default()>
                 {move || {
                     reader_file.get().map_or_else(
                         || ().into_any(),
@@ -1653,6 +1729,7 @@ pub fn FileBrowser(
                         },
                     )
                 }}
+                </div>
             </Show>
             {move || {
                 if transfer_open.get() {
@@ -1736,7 +1813,8 @@ pub fn FileBrowser(
                     )
                 }}
             </Show>
-            <UploadSurface controller=upload_surface />
+            <UploadSurface controller=upload_surface.clone() />
+            </div></Portal>
         </div>
     }
 }

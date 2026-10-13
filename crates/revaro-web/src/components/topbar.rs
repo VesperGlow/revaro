@@ -6,11 +6,20 @@ use wasm_bindgen::closure::Closure;
 
 use crate::{browser, logic::library::LibraryPage};
 
+use super::desktop::{app_icon, app_name};
 use super::icons;
 use super::management::{PublicLinks, SystemStatus};
 use super::menu::{ActionMenu, MenuIcon};
 use super::selection::SelectionMode;
 use super::uploads::UiUploadController;
+
+/// Account UI stays consistent across independently mounted applications.
+#[derive(Clone, Copy)]
+pub(super) struct SharedProfile {
+    pub username: RwSignal<String>,
+    pub has_avatar: RwSignal<bool>,
+    pub avatar_version: RwSignal<u64>,
+}
 
 /// Profile, upload and file actions injected by the persistent file workspace.
 #[derive(Clone)]
@@ -19,13 +28,12 @@ pub struct TopbarActions {
     pub has_avatar: RwSignal<bool>,
     pub avatar_version: RwSignal<u64>,
     pub upload_controller: UiUploadController,
-    pub on_files: Callback<()>,
     pub on_upload_files: Callback<()>,
     pub on_upload_folder: Callback<()>,
     pub on_new_document: Callback<()>,
     pub on_create_folder: Callback<()>,
-    pub on_trash: Callback<()>,
     pub on_account: Callback<()>,
+    pub on_back: Callback<()>,
     pub search_text: RwSignal<String>,
     pub on_search: Callback<()>,
 }
@@ -143,7 +151,11 @@ pub fn AppTopbar(
             let _ = button.focus_with_options(&options);
         }
     });
+    let os = expect_context::<super::desktop::OsState>();
     let mut escape = browser::on_keydown(move |event| {
+        if os.active.get_untracked() != Some(page.get_untracked()) {
+            return;
+        }
         if event.key() != "Escape" {
             return;
         }
@@ -200,17 +212,8 @@ pub fn AppTopbar(
     view! {
         <header class="topbar" class:searching=move || search_open.get()>
             <div class="topbar-left">
-                <button
-                    class="logo brand-button"
-                    type="button"
-                    title="回到首页"
-                    aria-label="回到首页"
-                    on:click=move |_| on_navigate.run(LibraryPage::Home)
-                >
-                    <img class="brand-logo" src="/revaro-logo.svg" alt="" aria-hidden="true" />
-                </button>
+                <span class="app-toolbar-title">{move ||app_icon(page.get())}<span>{move ||app_name(page.get())}</span></span>
             </div>
-            <AppNavigation page=page on_navigate=on_navigate mobile=false />
             <div class="top-actions">
                 <Show when=move || page.get() != LibraryPage::Trash fallback=|| view! { <button class="search-toggle" type="button" aria-label="打开搜索" title="回收站不支持搜索" disabled>{icons::search()}</button> }>
                     <div node_ref=search_container class="topbar-search"
@@ -225,7 +228,7 @@ pub fn AppTopbar(
                             }
                         }>
                             <span node_ref=search_measure class="search-measure" aria-hidden="true"></span>
-                            <div id="topbar-search-fields" class="search-fields" aria-hidden=move || (!search_open.get()).to_string()>
+                            <div id=move ||format!("search-fields-{}",page.get().path().replace('/', "")) class="search-fields" aria-hidden=move || (!search_open.get()).to_string()>
                                 <input node_ref=search_input type="search" aria-label=move || match page.get() {
                                     LibraryPage::Books => "搜索书籍", LibraryPage::Music => "搜索歌曲", LibraryPage::Gallery => "搜索图片", LibraryPage::Videos => "搜索视频", _ => "搜索文件名",
                                 } placeholder=move || match page.get() {
@@ -244,14 +247,16 @@ pub fn AppTopbar(
                             <button node_ref=search_toggle class="search-toggle" type="button"
                                 title=move || if search_open.get() { "聚焦搜索" } else { "打开搜索" }
                                 aria-label=move || if search_open.get() { "聚焦搜索" } else { "打开搜索" }
-                                aria-expanded=move || search_open.get().to_string() aria-controls="topbar-search-fields"
+                                aria-expanded=move || search_open.get().to_string() aria-controls=move ||format!("search-fields-{}",page.get().path().replace('/', ""))
                                 on:click=move |_| {
                                     if search_open.get_untracked() {
                                         if let Some(input) = search_input.get() { let _ = input.focus(); }
                                     } else if page.get_untracked() == LibraryPage::Home {
                                         on_navigate.run(LibraryPage::Files);
                                         if let Some(window) = web_sys::window() {
-                                            let callback = Closure::once(move || { let _ = search_open.try_set(true); }).into_js_value();
+                                            let callback = Closure::once(move || { if let Ok(Some(button))=document().query_selector(".os-app-window.focused .search-toggle") {
+                                                if let Ok(button)=button.dyn_into::<web_sys::HtmlElement>() {button.click();}
+                                            } }).into_js_value();
                                             let _ = window.request_animation_frame(callback.unchecked_ref());
                                         }
                                     } else { search_open.set(true); }
@@ -285,71 +290,8 @@ pub fn AppTopbar(
                 <button class="account-button" type="button"
                     title=move || format!("账户设置 · {}", username.get()) aria-label="打开账户设置"
                     on:click=move |_| on_account.run(())>{account_avatar()}</button>
+
             </div>
         </header>
-    }
-}
-
-/// Desktop and mobile navigation share routes, active state and click handling.
-#[component]
-pub fn AppNavigation(
-    page: RwSignal<LibraryPage>,
-    on_navigate: Callback<LibraryPage>,
-    mobile: bool,
-) -> impl IntoView {
-    view! {
-        <nav class="app-navigation" class:mobile-navigation=mobile
-            aria-label=if mobile { "移动端导航" } else { "主导航" }>
-            <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Home />
-            <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Files />
-            <div class="library-navigation-menu" class:active=move || matches!(page.get(), LibraryPage::Books | LibraryPage::Music | LibraryPage::Gallery | LibraryPage::Videos)>
-                <ActionMenu label="内容库".to_owned() icon=MenuIcon::Menu sheet=true
-                    context=Signal::derive(move || page.get().path().to_owned())
-                    panel_class="library-navigation-menu-panel">
-                    <header class="topbar-menu-heading"><h2>"内容库"</h2>
-                        <button class="topbar-menu-close" type="button" aria-label="关闭内容库菜单" data-close-menu="true">{icons::x()}</button>
-                    </header>
-                    <For each=|| [LibraryPage::Books, LibraryPage::Music, LibraryPage::Gallery, LibraryPage::Videos]
-                        key=|destination| destination.path() children=move |destination| view! {
-                            <NavigationLink page=page on_navigate=on_navigate destination=destination menu=true />
-                        } />
-                </ActionMenu>
-            </div>
-            <NavigationLink page=page on_navigate=on_navigate destination=LibraryPage::Trash />
-        </nav>
-    }
-}
-
-#[component]
-fn NavigationLink(
-    page: RwSignal<LibraryPage>,
-    on_navigate: Callback<LibraryPage>,
-    destination: LibraryPage,
-    #[prop(optional)] menu: bool,
-) -> impl IntoView {
-    let label = if menu && destination == LibraryPage::Gallery {
-        "图库"
-    } else {
-        destination.label()
-    };
-    view! {
-        <a href=destination.path() class:active=move || page.get() == destination
-            title=label aria-label=label data-close-menu=menu.then_some("true")
-            aria-current=move || if page.get() == destination { Some("page") } else { None }
-            on:click=move |event: leptos::ev::MouseEvent| {
-                if event.button() != 0 || event.ctrl_key() || event.meta_key() || event.shift_key() || event.alt_key() {
-                    return;
-                }
-                event.prevent_default();
-                on_navigate.run(destination);
-            }>{match destination {
-                LibraryPage::Home => icons::home().into_any(),
-                LibraryPage::Books => icons::book_open().into_any(),
-                LibraryPage::Music => icons::music_2().into_any(),
-                LibraryPage::Gallery => icons::image().into_any(),
-                LibraryPage::Videos => icons::video().into_any(),
-                LibraryPage::Files => icons::folder().into_any(),
-                LibraryPage::Trash => icons::trash().into_any(),
-            }}{menu.then(|| view! { <span>{label}</span> })}</a>
     }
 }

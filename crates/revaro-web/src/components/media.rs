@@ -190,6 +190,12 @@ pub fn MediaPreview(
     let on_key = {
         let on_change = Callback::new(move |file: File| selected.set(Some(file)));
         move |event: KeyboardEvent| {
+            if !root
+                .get_untracked()
+                .is_some_and(|node| node.get_client_rects().length() > 0)
+            {
+                return;
+            }
             if event.default_prevented() {
                 return;
             }

@@ -211,7 +211,7 @@ impl PressState {
 }
 
 /// One delegated gesture for every listing. Pointer events cover mouse, touch and pen.
-pub fn install_long_press(selection: SelectionMode) {
+pub fn install_long_press(selection: SelectionMode, app_path: &'static str) {
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -300,6 +300,14 @@ pub fn install_long_press(selection: SelectionMode) {
             let Ok(Some(card)) = target.closest("[data-selection-ids]") else {
                 return;
             };
+            if !card
+                .closest(".os-app-window")
+                .ok()
+                .flatten()
+                .is_some_and(|window| window.get_attribute("data-app").as_deref() == Some(app_path))
+            {
+                return;
+            }
             // Stack details own their press gesture so holding can continue into a reorder.
             if card.has_attribute("data-stack-book-id") {
                 return;

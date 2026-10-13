@@ -29,6 +29,7 @@ pub(super) struct FileActionContext {
     pub share_copied: RwSignal<bool>,
     pub nav_actions: RwSignal<Vec<NavAction>>,
     pub history_suppressed: RwSignal<bool>,
+    pub overlay_history_valid: RwSignal<bool>,
     pub upload_destination: Signal<String>,
 }
 
@@ -61,6 +62,7 @@ impl FileActionContext {
             share_copied,
             nav_actions,
             history_suppressed,
+            overlay_history_valid,
             upload_destination,
         } = self;
         let submit_dialog = {
@@ -284,7 +286,11 @@ impl FileActionContext {
                             dialog_value.set(String::new());
                             dialog_error.set(String::new());
                             if rename_action {
-                                let _ = request_overlay_close(nav_actions, history_suppressed);
+                                let _ = request_overlay_close(
+                                    nav_actions,
+                                    history_suppressed,
+                                    overlay_history_valid,
+                                );
                             }
                             if share_action {
                                 // The share dialog remains open; only its link state
@@ -294,7 +300,11 @@ impl FileActionContext {
                                     &editor_draft_key.get_untracked(),
                                 );
                                 selected_ids.set(HashSet::new());
-                                if !request_overlay_close(nav_actions, history_suppressed) {
+                                if !request_overlay_close(
+                                    nav_actions,
+                                    history_suppressed,
+                                    overlay_history_valid,
+                                ) {
                                     editor_open.set(false);
                                 }
                             } else if in_trash {
