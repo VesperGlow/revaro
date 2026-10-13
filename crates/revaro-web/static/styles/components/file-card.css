@@ -146,6 +146,10 @@
   background: #17212b65;
   border-radius: 50%;
 }
+/* Fallback previews already reserve the filename area. */
+.file-card-content:has(.cover-placeholder,.thumb-fallback:not(.hidden)) .video-cover-play {
+  bottom: 0;
+}
 
 @media (prefers-reduced-motion: reduce) {
   :is(.file-card,.library-card,.home-card) { transition: none; }

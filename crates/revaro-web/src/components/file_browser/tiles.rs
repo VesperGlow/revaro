@@ -281,11 +281,7 @@ pub(super) fn VideoThumbnail(file: File) -> impl IntoView {
 
     view! {
         <div class="video-thumb">
-            <span class="thumb-fallback" class:hidden=move || loaded.get() && !failed.get()>
-                <span class="large-video" aria-hidden="true">
-                    <svg viewBox="0 0 24 24"><path d="m9 7 8 5-8 5Z"></path></svg>
-                </span>
-            </span>
+            <span class="thumb-fallback" aria-hidden="true" class:hidden=move || loaded.get() && !failed.get()></span>
             <Show when=move || !failed.get() fallback=|| ()>
                 <img
                     class="ui-image"

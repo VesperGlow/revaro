@@ -53,12 +53,8 @@ pub(super) fn file_icon(file: &File) -> AnyView {
         }
         .into_any()
     } else if classify::is_video(file) {
-        view! {
-            <span class="large-video" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="m9 7 8 5-8 5Z"></path></svg>
-            </span>
-        }
-        .into_any()
+        // FileCard supplies the single play indicator, including cover failures.
+        ().into_any()
     } else if file.kind == FileKind::File && classify::is_epub_name(&file.name) {
         view! {
             <svg class="file-type-icon book-type-icon" viewBox="0 0 96 96" aria-hidden="true">

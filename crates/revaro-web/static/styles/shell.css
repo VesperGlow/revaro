@@ -512,17 +512,3 @@ button {
   height: 100%;
   object-fit: cover;
 }
-
-
-/* Unified media viewer */
-.large-video{
-  display: grid;
-  place-items: center;
-  width: 76px;
-  height: 76px;
-  border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 34px;
-  line-height: 1;
-}

@@ -1,7 +1,7 @@
 
 
 /* 视频/电子书缩略图 */
-/* 视频缩略图占位居中：wrapper 用 grid 居中占位符号，img 绝对定位铺满 */
+/* 视频缩略图容器：img 绝对定位铺满，播放图标由共享卡片提供 */
 .video-thumb {
   position: relative;
   display: grid;
@@ -17,7 +17,7 @@
   object-fit: cover;
 }
 
-/* 视频缩略图占位：glyph 在底层，缩略图加载完成前保持可见、加载后淡出 */
+/* 视频缩略图占位状态：加载完成后隐藏，供共享卡片调整预览区域 */
 .thumb-fallback {
   position: relative;
   z-index: 0;
@@ -184,25 +184,6 @@ button img,
 .generic-type-icon .icon-accent {
   fill: var(--muted);
 }
-.large-video {
-  display: grid;
-  place-items: center;
-  width: 72px;
-  height: 72px;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: #17203380;
-  color: #fff;
-  box-shadow: 0 5px 20px #0004;
-  backdrop-filter: blur(5px);
-}
-.large-video svg {
-  width: 34px;
-  height: 34px;
-  fill: currentColor;
-  stroke: none;
-}
-
 @media (max-width: 1024px) and (min-width: 641px) {
   .file-grid {
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -221,13 +202,5 @@ button img,
   .folder-type-icon {
     width: 88px;
     height: 88px;
-  }
-  .large-video {
-    width: 58px;
-    height: 58px;
-  }
-  .large-video svg {
-    width: 28px;
-    height: 28px;
   }
 }
