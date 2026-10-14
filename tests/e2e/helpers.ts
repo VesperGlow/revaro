@@ -1,4 +1,4 @@
-import { expect, type Page, type Request } from '@playwright/test'
+import { expect, type Locator, type Page, type Request } from '@playwright/test'
 import { createHash } from 'node:crypto'
 
 // Faults target the shared recovery engine: immutable bytes run in the worker,
@@ -186,14 +186,24 @@ export async function showRecentFiles(page: Page) {
   if ((await direction.getAttribute('aria-description'))?.includes('当前升序')) await direction.click()
 }
 
-export async function navigate(page: Page, name: string) {
+export async function navigate(page: Page, name: string, preserveScroll = false) {
+  const click = async (target: Locator) => {
+    if (!preserveScroll) return target.click()
+    // The navigation is already fixed/sticky and visible. Locator.click can
+    // scroll its ancestors in Chromium before the application saves the view.
+    // A pointer hit verifies the real navigation without altering that view.
+    await expect(target).toBeVisible()
+    await expect(target).toBeInViewport()
+    const bounds = (await target.boundingBox())!
+    await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+  }
   const mobile = (page.viewportSize()?.width || 1280) <= 850
   const nav = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
   if (['书籍', '音乐', '图片', '视频'].includes(name)) {
     const trigger = nav.getByLabel('内容库', { exact: true })
-    if (await trigger.getAttribute('aria-expanded') === 'false') await trigger.click()
+    if (await trigger.getAttribute('aria-expanded') === 'false') await click(trigger)
   }
   const link = nav.getByRole('link', { name: name === '图片' ? '图库' : name, exact: true, includeHidden: true })
-  await link.click()
+  await click(link)
   return link
 }

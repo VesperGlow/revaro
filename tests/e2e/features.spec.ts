@@ -101,8 +101,16 @@ test('continuous scrolling preserves files and selection, with aligned sorting a
     await expect(fieldToggle).toHaveText(label)
     await expect(directionToggle).toHaveText(descending ? '↓' : '↑')
     await expect(fields).toBeHidden()
-    await expect(page.locator('.file-card')).toHaveCount(100)
     await expect(first.locator('strong')).toHaveText(firstName)
+    // Revisiting a sort restores its loaded pages. Check every restored row,
+    // rather than requiring the grid to discard them and return to page one.
+    await expect.poll(async () => {
+      const names = await page.locator('.file-card strong').allTextContents()
+      if (names.length < 100 || names.length > 203 || new Set(names).size !== names.length) return false
+      const expected = [...names].sort()
+      if (descending) expected.reverse()
+      return names.every((name, index) => name === expected[index] && name.startsWith(`${prefix}-`))
+    }).toBe(true)
   }
   await assertSort('大小', 'size', false, `${prefix}-000.md`)
   await assertSort('大小', 'size', true, `${prefix}-202.md`)
@@ -138,7 +146,7 @@ test('continuous scrolling preserves files and selection, with aligned sorting a
   await page.goto(`/f/${root}`)
   await expect(page.getByRole('navigation', { name: '当前路径', exact: true }).getByRole('button', { name: '我的文件', exact: true })).toBeVisible()
   await page.getByLabel('打开搜索', { exact: true }).click()
-  await expect(input).toHaveValue('')
+  await expect(input).toHaveValue(`${prefix}-outside`)
   await input.fill(`${prefix}-outside`)
   await input.press('Enter')
   await expect(page.locator('.file-card')).toHaveCount(1)

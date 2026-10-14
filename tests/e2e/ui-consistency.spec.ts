@@ -37,7 +37,7 @@ for (const mobile of [false, true]) for (const colorScheme of ['light', 'dark'] 
         await page.getByLabel('打开搜索', { exact: true }).click()
         await page.getByLabel('搜索文件名').fill(name)
         await page.getByLabel('搜索文件名').press('Enter')
-        await page.locator('.file-card').click()
+        await page.locator('.file-card').filter({ hasText: name }).click()
         const editor = page.locator('.document-editor')
         const text = editor.getByLabel('文档内容')
         await expect(text).toHaveValue('已保存版本 19')
