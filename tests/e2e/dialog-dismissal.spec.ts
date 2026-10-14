@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { enterSelectionMode, login, navigate, openTopbarMenu } from './helpers'
+import { clickSelectionAction, enterSelectionMode, login, navigate, openTopbarMenu } from './helpers'
 
 const origin = (process.env.E2E_BASE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '')
 const root = '00000000-0000-0000-0000-000000000000'
@@ -167,7 +167,7 @@ for (const mobile of [false, true]) {
         ['分享', '.share-modal', '.modal-backdrop'],
         ['删除', '.app-dialog', '.dialog-backdrop'],
       ]) {
-        await toolbar.getByRole('button', { name: button, exact: true }).click()
+        await clickSelectionAction(page, button)
         await expect(page.locator(dialog)).toBeVisible()
         await page.locator(dialog).locator('h2').click()
         await expect(page.locator(dialog)).toBeVisible()
