@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { navigate, openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu, failApplicationRequest } from './helpers'
+import { navigate, openMusicPlayer, pauseMusic, login, enterSelectionMode, openTopbarMenu, failApplicationRequest, clickSelectionAction, selectionMore, selectionMenu } from './helpers'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 
@@ -84,7 +84,7 @@ test('favorites and albums persist, and removing membership preserves the origin
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
   await enterSelectionMode(page)
   await image.getByRole('checkbox').press('Space')
-  await toolbar.getByRole('button', { name: '收藏', exact: true }).click()
+  await clickSelectionAction(page, '收藏')
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?q=${photo}`)).json()).items[0].favorite).toBe(true)
   await openTopbarMenu(page)
   await page.getByRole('button', { name: '退出选择模式', exact: true }).click()
@@ -95,8 +95,8 @@ test('favorites and albums persist, and removing membership preserves the origin
   await page.getByRole('button', { name: /^全部/ }).click()
   await enterSelectionMode(page)
   await image.getByRole('checkbox').press('Space')
-  await toolbar.getByLabel('更多管理操作', { exact: true }).click()
-  await page.locator('.selection-management-panel').getByRole('button', { name: '加入相册', exact: true }).click()
+  await selectionMore(page).click()
+  await selectionMenu(page).getByRole('button', { name: '加入相册', exact: true }).click()
   await page.getByRole('dialog').getByRole('button', { name: new RegExp(name) }).click()
   await page.getByLabel('选择集合', { exact: true }).click()
   await page.locator('.collection-menu .action-menu-panel').getByRole('button', { name: `${name} · 1`, exact: true }).click()
@@ -108,8 +108,8 @@ test('favorites and albums persist, and removing membership preserves the origin
   await page.locator('.collection-menu .action-menu-panel').getByRole('button', { name: `${name} · 1`, exact: true }).click()
   await enterSelectionMode(page)
   await image.getByRole('checkbox').press('Space')
-  await toolbar.getByLabel('更多管理操作', { exact: true }).click()
-  await page.locator('.selection-management-panel').getByRole('button', { name: '移出当前集合', exact: true }).click()
+  await selectionMore(page).click()
+  await selectionMenu(page).getByRole('button', { name: '移出当前集合', exact: true }).click()
   await expect(page.locator('.library-card')).toHaveCount(0)
   const files = await (await page.request.get(`/api/library/items?q=${photo}`)).json()
   expect(files.total).toBe(1)

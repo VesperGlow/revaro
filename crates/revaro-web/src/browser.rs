@@ -335,6 +335,20 @@ where
     P: leptos::html::ElementType,
     P::Output: JsCast + Clone,
 {
+    anchor_popover_with_bounds(anchor, panel, false)
+}
+
+pub fn anchor_popover_with_bounds<A, P>(
+    anchor: NodeRef<A>,
+    panel: NodeRef<P>,
+    viewport_bound: bool,
+) -> Callback<()>
+where
+    A: leptos::html::ElementType,
+    A::Output: JsCast + Clone,
+    P: leptos::html::ElementType,
+    P::Output: JsCast + Clone,
+{
     let update = Callback::new(move |()| {
         let Some(anchor) = anchor
             .get_untracked()
@@ -381,6 +395,25 @@ where
             trigger.top() - gap - height
         } else {
             trigger.bottom() + gap
+        };
+        let (left, top, available) = if viewport_bound {
+            use crate::logic::selection::{MenuAnchor, mobile_menu_placement};
+            let placement = mobile_menu_placement(
+                [viewport_width, viewport_height],
+                MenuAnchor {
+                    left: trigger.left(),
+                    top: trigger.top(),
+                    width: trigger.width(),
+                    height: trigger.height(),
+                },
+                [
+                    bounds.width(),
+                    f64::from(panel.scroll_height() + panel.client_top() * 2).max(bounds.height()),
+                ],
+            );
+            (placement.left, placement.top, placement.available_height)
+        } else {
+            (left, top, available)
         };
         // Keep the existing DOM and stacking context, including media controls
         // inside transformed ancestors; convert viewport coordinates to the offset parent.

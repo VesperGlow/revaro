@@ -54,6 +54,22 @@ pub struct ItemUpdate {
     pub opened: bool,
 }
 
+/// Bound one read of selection metadata; larger selections use multiple batches.
+pub const MAX_SELECTION_STATES: usize = 200;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionStateRequest {
+    pub file_ids: Vec<String>,
+}
+
+/// Metadata absent from the file listing, including ordinary documents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectionItemState {
+    pub file_id: String,
+    pub favorite: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateCollection {

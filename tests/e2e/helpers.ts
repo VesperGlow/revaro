@@ -112,6 +112,23 @@ export async function enterSelectionMode(page: Page) {
   await expect(toggle).toHaveAttribute('aria-pressed', 'true')
 }
 
+export function selectionMore(page: Page) {
+  return page.getByRole('toolbar', { name: '所选项目操作', exact: true }).getByLabel(
+    (page.viewportSize()?.width || 1280) <= 850 ? '更多所选项目操作' : '更多管理操作', { exact: true },
+  )
+}
+
+export function selectionMenu(page: Page) {
+  return page.locator((page.viewportSize()?.width || 1280) <= 850 ? '.selection-mobile-panel' : '.selection-management-panel')
+}
+
+export async function clickSelectionAction(page: Page, name: string) {
+  const bar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
+  const button = bar.getByRole('button', { name, exact: true })
+  if (!await button.isVisible()) await selectionMore(page).click()
+  await bar.getByRole('button', { name, exact: true }).click()
+}
+
 export async function login(page: Page) {
   await page.goto('/')
   await page.getByLabel('用户名').fill(process.env.E2E_USERNAME || 'admin')

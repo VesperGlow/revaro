@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { login, navigate, failApplicationRequest } from './helpers'
+import { login, navigate, failApplicationRequest, clickSelectionAction } from './helpers'
 import { zip } from './fixtures/epub'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -141,7 +141,7 @@ for (const touch of [false, true]) {
       await press(page, firstCard, touch)
       await page.getByRole('button', { name: `打开 ${second}`, exact: true }).click({ force: true })
       await expect(page.locator('.selection-summary b')).toHaveText('已选择 2 项')
-      await page.locator('.selection-toolbar').getByRole('button', { name: '堆叠', exact: true }).click()
+      await clickSelectionAction(page, '堆叠')
       await stackDialog.getByLabel('堆叠名称', { exact: true }).fill(seriesName)
       await stackDialog.getByRole('button', { name: '新建堆叠', exact: true }).click()
       await expect(stackDialog).toHaveCount(0)
@@ -181,7 +181,7 @@ for (const touch of [false, true]) {
       await expect(page.locator('.selection-summary b')).toHaveText('已选择 2 项')
       await expect(page.locator('.stack-header')).toHaveCount(0)
       await expect(page.locator('#reader-view')).toHaveCount(0)
-      await page.locator('.selection-toolbar').getByRole('button', { name: '收藏', exact: true }).click()
+      await clickSelectionAction(page, '收藏')
       await expect.poll(async () => (await (await page.request.get(`/api/library/items?kind=book&q=${prefix}&favorite=true`)).json()).total).toBe(2)
       await page.locator('.selection-toolbar').getByRole('button', { name: '取消', exact: true }).click()
       await card.locator('.library-card-open').click()

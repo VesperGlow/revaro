@@ -48,6 +48,10 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(stacks::routes())
         .route("/library/items", get(list))
+        .route(
+            "/library/selection-state",
+            axum::routing::post(selection_state),
+        )
         .route("/library/items/{id}", axum::routing::patch(update))
         .route(
             "/library/collections",
@@ -70,6 +74,48 @@ fn db(error: rusqlite::Error) -> ApiError {
 
 fn valid_kind(kind: &str) -> bool {
     matches!(kind, "book" | "audio" | "image" | "video")
+}
+
+async fn selection_state(
+    State(state): State<Arc<AppState>>,
+    _user: AuthUser,
+    JsonBody(request): JsonBody<revaro_core::library::SelectionStateRequest>,
+) -> Result<Json<Vec<revaro_core::library::SelectionItemState>>, ApiError> {
+    use revaro_core::library::{MAX_SELECTION_STATES, SelectionItemState};
+    if request.file_ids.is_empty()
+        || request.file_ids.len() > MAX_SELECTION_STATES
+        || request
+            .file_ids
+            .iter()
+            .any(|id| id.is_empty() || id.len() > 128)
+    {
+        return Err(ApiError::bad_request("invalid selection"));
+    }
+    let ids = serde_json::to_string(&request.file_ids)
+        .map_err(|_| ApiError::bad_request("invalid selection"))?;
+    state
+        .db
+        .call_api(move |connection| {
+            let mut query = connection
+                .prepare(
+                    "SELECT DISTINCT f.id,COALESCE(s.favorite,0) FROM json_each(?1) selected \
+             JOIN files f ON f.id=selected.value LEFT JOIN library_state s ON s.file_id=f.id \
+             WHERE f.kind='file' AND f.deleted_at IS NULL ORDER BY f.id",
+                )
+                .map_err(db)?;
+            query
+                .query_map([ids], |row| {
+                    Ok(SelectionItemState {
+                        file_id: row.get(0)?,
+                        favorite: row.get(1)?,
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)
+        })
+        .await
+        .map(Json)
 }
 
 async fn list(
@@ -506,6 +552,83 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn selection_state_reads_exact_favorites_without_writing_metadata() {
+        let state = state().await;
+        for (id, name) in [
+            ("favorite", "book.epub"),
+            ("plain", "notes.md"),
+            ("other", "song.mp3"),
+            ("deleted", "gone.txt"),
+        ] {
+            seed(&state, id, name).await;
+        }
+        state.db.call(|c| {
+            c.execute("INSERT INTO library_state(file_id,favorite) VALUES('favorite',1)", [])?;
+            c.execute("UPDATE files SET deleted_at='2026-01-01T00:00:00Z' WHERE id='deleted'", [])?;
+            c.execute("INSERT INTO files(id,parent_id,name,kind,status,created_at,updated_at) VALUES('folder',?1,'folder','directory','ready','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", [revaro_core::ids::ROOT_ID])?;
+            Ok(())
+        }).await.unwrap();
+        let (status, result) = request(&state, "POST", "/api/library/selection-state", Some(serde_json::json!({"file_ids":["plain","favorite","favorite","folder","missing","deleted"]}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            result,
+            serde_json::json!([
+                {"file_id":"favorite","favorite":true},
+                {"file_id":"plain","favorite":false},
+            ])
+        );
+        let count = state
+            .db
+            .call(|c| {
+                c.query_row("SELECT COUNT(*) FROM library_state", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(crate::db::DbError::Query)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "reading default false must not insert library_state rows"
+        );
+        std::fs::remove_dir_all(state.store.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn selection_state_bounds_requests_and_requires_authentication() {
+        let state = state().await;
+        for ids in [
+            vec![],
+            vec![String::new()],
+            vec!["x".repeat(129)],
+            vec!["x".into(); revaro_core::library::MAX_SELECTION_STATES + 1],
+        ] {
+            let (status, _) = request(
+                &state,
+                "POST",
+                "/api/library/selection-state",
+                Some(serde_json::json!({"file_ids":ids})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        let response = crate::router::build(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/library/selection-state")
+                    .header("origin", "http://localhost:8080")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"file_ids":["file"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        std::fs::remove_dir_all(state.store.root()).unwrap();
     }
 
     #[tokio::test]

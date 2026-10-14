@@ -25,7 +25,7 @@ use crate::path::normalize_path;
 use crate::text::utf16_len;
 
 /// Version of the generated flow format.
-pub const FLOW_FORMAT_VERSION: i32 = 5;
+pub const FLOW_FORMAT_VERSION: i32 = 6;
 
 /// Approximate UTF-16 size of one flow chunk.
 pub const CHUNK_CHARS_TARGET: i64 = 7_000;
@@ -98,6 +98,9 @@ pub enum FlowError {
     /// The book declares more chapters than the bounded flow model permits.
     #[error("EPUB 章节数过多")]
     TooManySpines,
+    /// An EPUB flow needs at least one spine to address reading positions.
+    #[error("EPUB 中没有可阅读内容")]
+    NoReadableContent,
     /// The book produces more content blocks than the bounded flow model permits.
     #[error("内容块数量超限")]
     TooManyBlocks,
@@ -161,6 +164,9 @@ pub fn build(book: &Book) -> Result<Built, FlowError> {
 }
 
 fn build_epub(book: &Book) -> Result<Built, FlowError> {
+    if book.chapters.is_empty() {
+        return Err(FlowError::NoReadableContent);
+    }
     if book.chapters.len() > MAX_SPINES {
         return Err(FlowError::TooManySpines);
     }
@@ -171,7 +177,7 @@ fn build_epub(book: &Book) -> Result<Built, FlowError> {
 
     for chapter in &book.chapters {
         let start_global = global;
-        let (tree, blocks) = match parse_chapter(chapter) {
+        let (tree, mut blocks) = match parse_chapter(chapter) {
             Some(tree) => {
                 let blocks = tree
                     .nodes
@@ -206,6 +212,21 @@ fn build_epub(book: &Book) -> Result<Built, FlowError> {
                 )
             }
         };
+
+        // Preserve each spine's identity even when sanitization leaves it
+        // empty. Without an addressable block its TOC target aliases the next
+        // chapter, or points past the final block for a trailing empty spine.
+        // This also gives an entirely empty EPUB the same boundary as TXT.
+        if blocks.is_empty() {
+            blocks.push(BlockBuild {
+                node: None,
+                html: "<p></p>".to_owned(),
+                chars: 0,
+                ids: Vec::new(),
+                nav_anchors: Vec::new(),
+                spine_start: false,
+            });
+        }
 
         if global.saturating_add(blocks.len()) > MAX_BLOCKS {
             return Err(FlowError::TooManyBlocks);
@@ -944,16 +965,6 @@ fn build_chunks(blocks: &[BlockBuild]) -> (Vec<ChunkMeta>, i64) {
         &mut bytes,
         &mut total_chars,
     );
-    if chunks.is_empty() {
-        chunks.push(ChunkMeta {
-            index: 0,
-            block_start: 0,
-            block_count: 0,
-            chars: 0,
-            bytes: 0,
-            url: String::new(),
-        });
-    }
     (chunks, total_chars)
 }
 
@@ -1214,6 +1225,15 @@ mod tests {
         assert_eq!(built.manifest.total_blocks(), 1);
         assert_eq!(built.manifest.chunks[0].block_count, 1);
         assert!(built.chunks[0].html.contains("data-block=\"0\""));
+    }
+
+    #[test]
+    fn epub_without_a_spine_is_rejected_before_creating_chunks() {
+        let book = Book {
+            format: Format::Epub,
+            ..Book::default()
+        };
+        assert!(matches!(build(&book), Err(FlowError::NoReadableContent)));
     }
 
     #[test]

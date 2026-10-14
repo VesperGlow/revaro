@@ -559,4 +559,66 @@ mod tests {
         broken.total_chars += 1;
         assert!(!validate_manifest(&broken));
     }
+
+    #[test]
+    fn every_manifest_validation_guard_rejects_corrupt_fields() {
+        type CorruptManifest = fn(&mut FlowManifest);
+        let corruptions: &[(&str, CorruptManifest)] = &[
+            ("version", |m| m.version = 0),
+            ("format", |m| m.format = "pdf".into()),
+            ("negative total_chars", |m| m.total_chars = -1),
+            ("spine block_count", |m| m.spines[0].block_count = -1),
+            ("spine block_start", |m| m.spines[1].block_start += 1),
+            ("block total overflow", |m| {
+                m.spines = vec![
+                    SpineMeta {
+                        block_start: 0,
+                        block_count: i32::MAX,
+                    },
+                    SpineMeta {
+                        block_start: i32::MAX,
+                        block_count: 1,
+                    },
+                ];
+            }),
+            ("chunk index", |m| m.chunks[0].index = 1),
+            ("empty chunk", |m| m.chunks[0].block_count = 0),
+            ("negative chunk block_count", |m| {
+                m.chunks[0].block_count = -1
+            }),
+            ("chunk block_start", |m| m.chunks[1].block_start += 1),
+            ("chunk chars", |m| m.chunks[0].chars = -1),
+            ("chunk block total", |m| m.chunks[2].block_count -= 1),
+            ("chunk char total", |m| m.total_chars += 1),
+            ("TOC depth", |m| m.toc[0].depth = -1),
+            ("negative TOC block", |m| m.toc[0].block = -1),
+            ("TOC block at end", |m| m.toc[0].block = m.total_blocks()),
+            ("TOC path depth", |m| {
+                m.toc[0].text_path = vec![0; Anchor::MAX_PATH + 1]
+            }),
+            ("TOC path index", |m| m.toc[0].text_path = vec![-1]),
+            ("TOC chunk mismatch", |m| m.toc[0].chunk = 2),
+            ("TOC chunk out of range", |m| {
+                m.toc[0].chunk = m.chunks.len() as i32
+            }),
+        ];
+        for (field, corrupt) in corruptions {
+            let mut value = manifest();
+            corrupt(&mut value);
+            assert!(!validate_manifest(&value), "accepted corrupt {field}");
+        }
+    }
+
+    #[test]
+    fn zero_text_media_and_legacy_toc_chunks_remain_valid() {
+        let mut value = manifest();
+        value.total_chars = 0;
+        for chunk in &mut value.chunks {
+            chunk.chars = 0;
+        }
+        for entry in &mut value.toc {
+            entry.chunk = -1;
+        }
+        assert!(validate_manifest(&value));
+    }
 }

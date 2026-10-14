@@ -1417,6 +1417,21 @@ pub fn FileBrowser(
         on_restore: restore_selected,
         on_purge: show_purge,
         on_open: open_item,
+        on_read: Callback::new(move |item: File| {
+            if !classify::is_book(&item) {
+                return;
+            }
+            // Toolbar reading is an explicit open, rather than a card click
+            // that toggles selection. TXT books also use the reader here.
+            selection.exit();
+            if let Some(context) = shell_context {
+                context.open.run(item);
+            } else {
+                push_overlay.run(());
+                replace_reader_url(&item.id);
+                reader_file.set(Some(item));
+            }
+        }),
         on_share: show_share,
         on_download: Callback::new({
             let items = operation_items;

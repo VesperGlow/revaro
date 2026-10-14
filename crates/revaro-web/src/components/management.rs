@@ -1,7 +1,13 @@
 //! Compact topbar disclosures for public links and storage/runtime status.
-use super::menu::{ActionMenu, MenuIcon};
+use super::{
+    icons,
+    menu::{ActionMenu, MenuIcon},
+};
 use crate::api::{self, SHARE_PAGE_SIZE, SystemStatusSummary};
-use crate::logic::format::{format_date, format_size};
+use crate::logic::{
+    format::{format_date, format_size},
+    system::{server_metrics, storage_usage},
+};
 use leptos::prelude::*;
 use revaro_core::features::ShareEntry;
 
@@ -117,6 +123,7 @@ pub fn PublicLinks(context: Signal<String>) -> impl IntoView {
 
 #[component]
 pub fn SystemStatus(context: Signal<String>) -> impl IntoView {
+    let server = NodeRef::<leptos::html::Details>::new();
     let status = RwSignal::new(None::<SystemStatusSummary>);
     let loading = RwSignal::new(false);
     let error = RwSignal::new(String::new());
@@ -139,33 +146,55 @@ pub fn SystemStatus(context: Signal<String>) -> impl IntoView {
             let _ = loading.try_set(false);
         });
     });
-    let usage = Signal::derive(move || {
-        status.get().filter(|s| s.disk_total_bytes > 0).map(|s| {
-            (s.disk_used_bytes as f64 / s.disk_total_bytes as f64 * 100.0).clamp(0.0, 100.0)
-        })
-    });
+    let usage = Signal::derive(move || storage_usage(status.get().as_ref()));
     refresh.run(());
     view! {
         <ActionMenu label="系统状态".to_owned() icon=MenuIcon::SystemStatus usage=usage context=context panel_class="topbar-popover system-status-popover"
-            on_toggle=Callback::new(move |open| { if open { refresh.run(()); } })>
+            on_toggle=Callback::new(move |open| {
+                if open { refresh.run(()); }
+                else if let Some(server) = server.get_untracked() { server.set_open(false); }
+            })>
             <header class="popover-heading"><h2>"系统状态"</h2><button class="popover-text-action" type="button" disabled=move || loading.get() on:click=move |_| refresh.run(())>{move || if loading.get() { "刷新中…" } else { "刷新状态" }}</button></header>
-            <div class="system-metrics" role="status" aria-busy=move || loading.get().to_string()>
-                {move || {
-                    let summary = status.get();
-                    let values = summary.as_ref().map(|s| [
-                        format!("{} / {}", format_size(s.disk_used_bytes), format_size(s.disk_total_bytes)),
-                        format_size(s.disk_available_bytes), if s.cache.memory_limit > 0 { format!("{} / {}", format_size(s.cache.memory_bytes), format_size(s.cache.memory_limit)) } else { format_size(s.cache.memory_bytes) }, format_size(s.cache.disk_bytes),
-                    ]);
-                    ["已用 / 总存储空间", "可用空间", "内存缓存", "磁盘缓存"].into_iter().enumerate().map(|(index, label)| view! {
-                        <div class="system-metric"><span>{label}</span><strong class:metric-skeleton=values.is_none()>{values.as_ref().map(|v| v[index].clone()).unwrap_or_else(|| "—".to_owned())}</strong></div>
-                    }).collect_view()
-                }}
-            </div>
+            <section class="storage-status" aria-label="存储空间" aria-busy=move || loading.get().to_string()>
+                <div class="storage-status-heading"><h3>"存储空间"</h3><strong>{move || usage.get().map(|value| format!("{value:.0}%")).unwrap_or_else(|| "—".to_owned())}</strong></div>
+                <div class="storage-usage-track" role="progressbar" aria-label="存储空间使用率" aria-valuemin="0" aria-valuemax="100"
+                    aria-valuenow=move || usage.get().map(|value| format!("{value:.1}"))
+                    aria-valuetext=move || usage.get().map(|value| format!("已用 {value:.0}%")).unwrap_or_else(|| "暂无法读取存储空间".to_owned())>
+                    <div class="storage-usage-fill" style:width=move || format!("{}%", usage.get().unwrap_or(0.0))></div>
+                </div>
+                <dl class="storage-capacities">
+                    {move || {
+                        let summary = status.get();
+                        let pending = summary.is_none() && loading.get();
+                        let values = summary.as_ref().map(|s| [format_size(s.disk_used_bytes), format_size(s.disk_total_bytes), format_size(s.disk_available_bytes)]);
+                        ["已用", "总容量", "剩余"].into_iter().enumerate().map(|(index, label)| view! {
+                            <div><dt>{label}</dt><dd class:metric-skeleton=pending>{values.as_ref().map(|values| values[index].clone()).unwrap_or_else(|| "—".to_owned())}</dd></div>
+                        }).collect_view()
+                    }}
+                </dl>
+            </section>
             <Show when=move || !error.get().is_empty() fallback=|| ()><p class="form-error" role="alert">{move || error.get()}</p></Show>
-            <footer class="popover-row-actions">
-                <button class="secondary" type="button" on:click=move |_| { super::reader_cache::clear_all(); notice.set("已清理本机阅读缓存".to_owned()); }>"清理阅读缓存"</button>
-            </footer>
-            <Show when=move || !notice.get().is_empty() fallback=|| ()><p class="popover-notice" role="status">{move || notice.get()}</p></Show>
+            <details class="server-status" node_ref=server>
+                <summary><span>"服务器状态"</span>{icons::chevron_down()}</summary>
+                <div class="server-status-body">
+                    <div class="system-metrics" role="status" aria-busy=move || loading.get().to_string()>
+                        {move || {
+                            let summary = status.get();
+                            server_metrics(summary.as_ref()).into_iter().map(|metric| {
+                                let pending = metric.value.is_none() && loading.get();
+                                let value = metric.value.unwrap_or_else(|| "—".to_owned());
+                                view! {
+                                    <div class="system-metric" title=metric.title><span>{metric.label}</span><strong class:metric-skeleton=pending>{value}</strong></div>
+                                }
+                            }).collect_view()
+                        }}
+                    </div>
+                    <footer class="popover-row-actions">
+                        <button class="secondary" type="button" on:click=move |_| { super::reader_cache::clear_all(); notice.set("已清理本机阅读缓存".to_owned()); }>"清理阅读缓存"</button>
+                    </footer>
+                    <Show when=move || !notice.get().is_empty() fallback=|| ()><p class="popover-notice" role="status">{move || notice.get()}</p></Show>
+                </div>
+            </details>
         </ActionMenu>
     }
 }

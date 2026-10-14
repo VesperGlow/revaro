@@ -27,6 +27,7 @@ pub struct SelectionActions {
     pub on_restore: Callback<()>,
     pub on_purge: Callback<()>,
     pub on_open: Callback<File>,
+    pub on_read: Callback<File>,
     pub on_download: Callback<()>,
     pub on_share: Callback<File>,
     pub on_feedback: Callback<Feedback>,
@@ -35,6 +36,7 @@ pub struct SelectionActions {
 /// The same batch toolbar serves the folder, trash and content-library views.
 #[component]
 pub fn BatchActionBar(selection: SelectionMode, actions: SelectionActions) -> impl IntoView {
+    let mobile_actions = actions.clone();
     let selected_ids = selection.ids;
     let SelectionActions {
         items,
@@ -50,6 +52,7 @@ pub fn BatchActionBar(selection: SelectionMode, actions: SelectionActions) -> im
         on_restore,
         on_purge,
         on_open,
+        on_read: _,
         on_download,
         on_share,
         on_feedback: _,
@@ -171,7 +174,12 @@ pub fn BatchActionBar(selection: SelectionMode, actions: SelectionActions) -> im
                             )
                         }}
                     </Show>
-                    <Show when=move ||file_tools.get() fallback=|| ()><button type="button" on:click=move |_|on_copy.run(())>"复制到"</button></Show>
+                    <Show when=move ||file_tools.get() fallback=|| ()>
+                        <button type="button" on:click=move |_|on_copy.run(())>
+                            <span class="selection-mobile-icon" aria-hidden="true">{icons::copy()}</span>
+                            <span>"复制到"</span>
+                        </button>
+                    </Show>
                     <Show when=move || { selected_file_count() > 0 } fallback=|| ()>
                         <button type="button" on:click=move |_| download.run(())>
                             {download_icon()}
@@ -221,7 +229,10 @@ pub fn BatchActionBar(selection: SelectionMode, actions: SelectionActions) -> im
                                 <Show when=move ||selected_items().iter().any(classify::is_book) fallback=|| ()>
                                     <button type="button" disabled=move ||stacks.busy.get() on:click=move |_|stacks.on_stack.run(())>{icons::plus()}<span>"堆叠"</span></button>
                                     <Show when=move ||stacks.can_remove.get() fallback=|| ()>
-                                        <button type="button" disabled=move ||stacks.busy.get() on:click=move |_|stacks.on_remove.run(())>"移出堆叠"</button>
+                                        <button type="button" disabled=move ||stacks.busy.get() on:click=move |_|stacks.on_remove.run(())>
+                                            <span class="selection-mobile-icon" aria-hidden="true">{icons::arrow_left()}</span>
+                                            <span>"移出堆叠"</span>
+                                        </button>
                                     </Show>
                                 </Show>
                             })}
@@ -241,8 +252,175 @@ pub fn BatchActionBar(selection: SelectionMode, actions: SelectionActions) -> im
                 })}
             </Show>
             </div>
+            <MobileBatchActions selection=selection actions=mobile_actions.clone() />
         </div>
         </Show>
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum FavoriteMenuState {
+    #[default]
+    Loading,
+    Ready(crate::logic::selection::FavoriteActions),
+    Failed,
+}
+
+/// A fixed action row shares the existing callbacks with the desktop toolbar.
+#[component]
+fn MobileBatchActions(selection: SelectionMode, actions: SelectionActions) -> impl IntoView {
+    use crate::logic::selection::{favorite_actions_for_selection, mobile_actions};
+    let selected = Memo::new(move |_| {
+        let ids = selection.ids.get();
+        actions
+            .items
+            .get()
+            .into_iter()
+            .filter(|file| ids.contains(&file.id))
+            .collect::<Vec<_>>()
+    });
+    let available = Memo::new(move |_| {
+        mobile_actions(
+            &selected.get(),
+            actions.file_tools.get(),
+            actions.trash_mode.get(),
+        )
+    });
+    let single = move || selected.with(|files| (files.len() == 1).then(|| files[0].clone()));
+    let context = Signal::derive(move || {
+        let mut ids = selection.ids.get().into_iter().collect::<Vec<_>>();
+        ids.sort();
+        ids.join(",")
+    });
+    let favorites = RwSignal::new(FavoriteMenuState::Loading);
+    let request_revision = RwSignal::new(0_u64);
+    let load_favorites = Callback::new(move |()| {
+        let mut ids = selected
+            .get_untracked()
+            .into_iter()
+            .filter(|file| file.kind == FileKind::File)
+            .map(|file| file.id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() || selection.management.get_untracked().is_none() {
+            return;
+        }
+        request_revision.update(|value| *value += 1);
+        let revision = request_revision.get_untracked();
+        let scope = context.get_untracked();
+        favorites.set(FavoriteMenuState::Loading);
+        leptos::task::spawn_local_scoped_with_cancellation(async move {
+            let mut states = Vec::new();
+            for batch in ids.chunks(revaro_core::library::MAX_SELECTION_STATES) {
+                if request_revision.try_get_untracked() != Some(revision)
+                    || context.try_get_untracked().as_ref() != Some(&scope)
+                {
+                    return;
+                }
+                match crate::api::fetch_selection_state(batch).await {
+                    Ok(batch) => states.extend(batch),
+                    Err(_) => {
+                        if request_revision.try_get_untracked() == Some(revision)
+                            && context.try_get_untracked().as_ref() == Some(&scope)
+                        {
+                            favorites.set(FavoriteMenuState::Failed);
+                        }
+                        return;
+                    }
+                }
+            }
+            if request_revision.try_get_untracked() != Some(revision)
+                || context.try_get_untracked().as_ref() != Some(&scope)
+            {
+                return;
+            }
+            // Missing/deleted targets must not silently appear as unfavorited.
+            if let Some(actions) = favorite_actions_for_selection(&ids, &states) {
+                favorites.set(FavoriteMenuState::Ready(actions));
+            } else {
+                favorites.set(FavoriteMenuState::Failed);
+            }
+        });
+    });
+
+    view! {
+        <div class="selection-mobile-actions">
+            <button type="button" on:click=move |_| actions.on_select_all.run(())>
+                {check_icon()}
+                <span>{move || if selected.get().len() == actions.items.get().len() { "取消全选" } else { "全选" }}</span>
+            </button>
+            <Show when=move || !actions.trash_mode.get() fallback=move || view! {
+                <button type="button" on:click=move |_| actions.on_restore.run(())>{restore_icon()}<span>"恢复"</span></button>
+                <button class="danger" type="button" on:click=move |_| actions.on_purge.run(())>{trash_icon()}<span>"永久删除"</span></button>
+            }>
+                <button type="button" disabled=move || !available.get().read title=move || if available.get().read { "阅读" } else { "请选择一本书籍" }
+                    on:click=move |_| { if available.get_untracked().read && let Some(file) = single() { actions.on_read.run(file); } }>
+                    {icons::book_open()}<span>"阅读"</span>
+                </button>
+                <button type="button" on:click=move |_| actions.on_download.run(())>{download_icon()}<span>"下载"</span></button>
+                <button type="button" on:click=move |_| actions.on_move.run(())>{move_arrow_icon()}<span>"移动"</span></button>
+                <button class="danger" type="button" on:click=move |_| actions.on_delete.run(())>{trash_icon()}<span>"删除"</span></button>
+                <ActionMenu label="更多所选项目操作".to_owned() icon=MenuIcon::More text=Signal::derive(|| "更多".to_owned()) context=context
+                    close_when_hidden=true viewport_bound=true panel_class="selection-mobile-panel".to_owned()
+                    disabled=Signal::derive(move || selection.management.get().is_some_and(|management| management.busy.get())
+                        || selection.stacks.get().is_some_and(|stacks| stacks.busy.get()))
+                    on_toggle=Callback::new(move |open| { if open { load_favorites.run(()); } })>
+                    <Show when=move || available.get().open_other.is_some() fallback=|| ()>
+                        <button type="button" data-close-menu="true" on:click=move |_| { if let Some(file) = single() { selection.exit(); actions.on_open.run(file); } }>
+                            {move || single().map(|file| {
+                                if matches!(available.get().open_other, Some(crate::logic::selection::OpenAction::Editor)) {
+                                    edit_icon().into_any()
+                                } else {
+                                    open_icon(&file)
+                                }
+                            })}<span>{move || available.get().open_other.map(|open| open.label())}</span>
+                        </button>
+                    </Show>
+                    <Show when=move || available.get().copy fallback=|| ()>
+                        <button type="button" data-close-menu="true" on:click=move |_| actions.on_copy.run(())>{icons::copy()}<span>"复制到"</span></button>
+                    </Show>
+                    <Show when=move || available.get().share fallback=|| ()>
+                        <button type="button" data-close-menu="true" on:click=move |_| { if let Some(file) = single() { actions.on_share.run(file); } }>{share_icon()}<span>"分享"</span></button>
+                    </Show>
+                    <Show when=move || available.get().rename fallback=|| ()>
+                        <button type="button" data-close-menu="true" on:click=move |_| actions.on_rename.run(())>{rename_icon()}<span>"重命名"</span></button>
+                    </Show>
+                    <Show when=move || selected.get().iter().any(|file| file.kind == FileKind::File) fallback=|| ()>
+                        {move || selection.management.get().map(|management| view! {
+                            <Show when=move || matches!(favorites.get(), FavoriteMenuState::Loading) fallback=|| ()>
+                                <button type="button" disabled>{icons::heart()}<span>"正在读取收藏状态…"</span></button>
+                            </Show>
+                            <Show when=move || matches!(favorites.get(), FavoriteMenuState::Failed) fallback=|| ()>
+                                <button type="button" on:click=move |_| load_favorites.run(())>{icons::rotate_ccw()}<span>"重试读取收藏状态"</span></button>
+                            </Show>
+                            <Show when=move || matches!(favorites.get(), FavoriteMenuState::Ready(state) if state.favorite) fallback=|| ()>
+                                <button type="button" data-close-menu="true" disabled=move || management.busy.get() on:click=move |_| management.on_favorite.run(true)>{icons::heart()}<span>"收藏"</span></button>
+                            </Show>
+                            <Show when=move || matches!(favorites.get(), FavoriteMenuState::Ready(state) if state.unfavorite) fallback=|| ()>
+                                <button type="button" data-close-menu="true" disabled=move || management.busy.get() on:click=move |_| management.on_favorite.run(false)>{icons::heart()}<span>"取消收藏"</span></button>
+                            </Show>
+                            {[LibraryPage::Books, LibraryPage::Music, LibraryPage::Gallery, LibraryPage::Videos].into_iter().map(|page| view! {
+                                <Show when=move || selected.get().iter().any(|file| matches_collection(file, page)) fallback=|| ()>
+                                    <button type="button" data-close-menu="true" disabled=move || management.busy.get() on:click=move |_| management.on_collection.run(page)>{icons::plus()}<span>{format!("加入{}", page.collection_label())}</span></button>
+                                </Show>
+                            }).collect_view()}
+                            <Show when=move || management.can_remove.get() fallback=|| ()>
+                                <button type="button" data-close-menu="true" disabled=move || management.busy.get() on:click=move |_| management.on_remove.run(())>{icons::folder()}<span>"移出当前集合"</span></button>
+                            </Show>
+                            {move || selection.stacks.get().map(|stacks| view! {
+                                <Show when=move || selected.get().iter().any(classify::is_book) fallback=|| ()>
+                                    <button type="button" data-close-menu="true" disabled=move || stacks.busy.get() on:click=move |_| stacks.on_stack.run(())>{icons::plus()}<span>"堆叠"</span></button>
+                                    <Show when=move || stacks.can_remove.get() fallback=|| ()>
+                                        <button type="button" data-close-menu="true" disabled=move || stacks.busy.get() on:click=move |_| stacks.on_remove.run(())>{icons::arrow_left()}<span>"移出堆叠"</span></button>
+                                    </Show>
+                                </Show>
+                            })}
+                        })}
+                    </Show>
+                </ActionMenu>
+            </Show>
+        </div>
     }
 }
 

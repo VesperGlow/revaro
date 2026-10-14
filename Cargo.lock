@@ -3026,11 +3026,13 @@ dependencies = [
  "leptos",
  "pulldown-cmark",
  "revaro-core",
+ "revaro-reader",
  "serde",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "zip",
 ]
 
 [[package]]

@@ -1,9 +1,82 @@
 import { expect, test, type Page, type Locator } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { isTransportRequest, resetListeningSession, openMusicPlayer, login, navigate, enterSelectionMode, openTopbarMenu } from './helpers'
+import { isTransportRequest, resetListeningSession, openMusicPlayer, login, navigate, enterSelectionMode, openTopbarMenu, clickSelectionAction, selectionMore, selectionMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+
+test('mobile selection uses two rows, stateful favorites and single-book reading', async ({ page }) => {
+  test.setTimeout(90_000)
+  await page.setViewportSize({ width: 390, height: 900 })
+  await login(page)
+  const prefix = `compact-batch-${Date.now()}`
+  await upload(page, prefix, ['txt'])
+  const listing = async () => (await (await page.request.get(`/api/library/items?q=${prefix}`)).json()).items
+  const files = (await listing()).sort((a: any, b: any) => a.file.name.localeCompare(b.file.name))
+  const saved = await page.request.patch(`/api/library/items/${files[0].file.id}`, {
+    headers: { origin: new URL(page.url()).origin }, data: { favorite: true },
+  })
+  expect(saved.ok()).toBeTruthy()
+  await page.getByLabel('打开搜索', { exact: true }).click()
+  await page.getByLabel('搜索文件名', { exact: true }).fill(prefix)
+  await page.getByLabel('搜索文件名', { exact: true }).press('Enter')
+  const first = page.locator('.file-card').filter({ hasText: `${prefix}-1.txt` })
+  const second = page.locator('.file-card').filter({ hasText: `${prefix}-2.txt` })
+  await expect(first).toBeVisible()
+  await enterSelectionMode(page)
+  await first.getByRole('checkbox').press('Space')
+  const bar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
+  const primary = bar.locator('.selection-mobile-actions>button,.selection-mobile-actions>details>summary')
+  await expect(primary).toHaveCount(6)
+  await expect(bar.getByRole('button', { name: '阅读', exact: true })).toBeEnabled()
+  await selectionMore(page).click()
+  const menu = selectionMenu(page)
+  await expect(menu.getByRole('button', { name: '取消收藏', exact: true })).toBeVisible()
+  await expect(menu.getByRole('button', { name: '收藏', exact: true })).toHaveCount(0)
+  for (const name of ['编辑文本', '分享', '重命名', '复制到']) await expect(menu.getByRole('button', { name, exact: true })).toBeVisible()
+  await expect(menu.getByRole('button', { name: '阅读', exact: true })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await second.getByRole('checkbox').press('Space')
+  await expect(bar.getByRole('button', { name: '阅读', exact: true })).toBeDisabled()
+  await selectionMore(page).click()
+  for (const name of ['收藏', '取消收藏']) await expect(menu.getByRole('button', { name, exact: true })).toHaveCount(1)
+  for (const name of ['分享', '重命名', '阅读']) await expect(menu.getByRole('button', { name, exact: true })).toHaveCount(0)
+  await menu.getByRole('button', { name: '收藏', exact: true }).click()
+  await expect.poll(async () => (await listing()).filter((item: any) => item.favorite).length).toBe(2)
+  await selectionMore(page).click()
+  await expect(menu.getByRole('button', { name: '取消收藏', exact: true })).toBeVisible()
+  await expect(menu.getByRole('button', { name: '收藏', exact: true })).toHaveCount(0)
+  await menu.getByRole('button', { name: '取消收藏', exact: true }).click()
+  await expect.poll(async () => (await listing()).filter((item: any) => item.favorite).length).toBe(0)
+  await selectionMore(page).click()
+  await expect(menu.getByRole('button', { name: '收藏', exact: true })).toBeVisible()
+  await expect(menu.getByRole('button', { name: '取消收藏', exact: true })).toHaveCount(0)
+  for (const width of [320, 390, 850]) {
+    await page.setViewportSize({ width, height: 260 })
+    await expect.poll(() => menu.evaluate(element => {
+      const box = element.getBoundingClientRect()
+      return box.left >= 8 && box.right <= innerWidth - 8 && box.top >= 8 && box.bottom <= innerHeight - 8
+    })).toBe(true)
+    await expect.poll(() => menu.evaluate(element => {
+      const button = element.querySelector('button')!.getBoundingClientRect()
+      const hit = document.elementFromPoint(button.x + button.width / 2, button.y + button.height / 2)
+      return hit !== null && element.contains(hit)
+    })).toBe(true)
+    const bounds = (await bar.boundingBox())!
+    expect(bounds.height).toBeLessThanOrEqual(108)
+    const rows = await primary.evaluateAll(elements => new Set(elements.map(element => Math.round(element.getBoundingClientRect().top))).size)
+    expect(rows).toBe(1)
+  }
+  await page.setViewportSize({ width: 851, height: 900 })
+  await expect(menu).toBeHidden()
+  await expect(bar.locator('.selection-mobile-actions details')).not.toHaveAttribute('open')
+  await page.setViewportSize({ width: 390, height: 900 })
+  await second.getByRole('checkbox').press('Space')
+  await bar.getByRole('button', { name: '阅读', exact: true }).click()
+  await expect(page.locator('#reader-view')).toBeVisible()
+  await expect(page.locator('#flow')).toContainText('选择卡片不会打开阅读器。')
+  await expect(page.locator('.document-editor')).toHaveCount(0)
+})
 function wav() {
   const data = Buffer.alloc(44 + 8000 * 60 * 2)
   data.write('RIFF'); data.writeUInt32LE(data.length - 8, 4); data.write('WAVEfmt ', 8)
@@ -78,7 +151,7 @@ test('music cover playback stays functional and management uses only the batch t
   await enterSelectionMode(page)
   await row.getByRole('checkbox').press('Space')
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
-  await toolbar.getByRole('button', { name: '收藏', exact: true }).click()
+  await clickSelectionAction(page, '收藏')
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?q=${prefix}`)).json()).items.find((item: any) => item.file.name === `${prefix}-1.wav`).favorite).toBe(true)
   const response = await page.request.post('/api/library/collections', { headers: { Origin: new URL(page.url()).origin }, data: { kind: 'audio', name: prefix } })
   expect(response.ok()).toBeTruthy()
@@ -87,8 +160,8 @@ test('music cover playback stays functional and management uses only the batch t
   await row.getByRole('checkbox').press('Space')
   const second = page.locator('.library-card').filter({ has: page.getByRole('button', { name: `打开 ${prefix}-2.wav`, exact: true }) })
   await second.getByRole('checkbox').press('Space')
-  await toolbar.getByLabel('更多管理操作', { exact: true }).click()
-  await page.locator('.selection-management-panel').getByRole('button', { name: '加入歌单', exact: true }).click()
+  await selectionMore(page).click()
+  await selectionMenu(page).getByRole('button', { name: '加入歌单', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '管理集合' })).toContainText('2 项音乐')
   await page.getByRole('dialog', { name: '管理集合' }).getByRole('button', { name: new RegExp(prefix) }).click()
   await expect(page.getByRole('dialog', { name: '管理集合' })).toBeHidden()
@@ -336,7 +409,21 @@ test('batch bars follow listing widths and background dismissal never intercepts
       expect(Math.abs(box.width - listingBounds.width)).toBeLessThanOrEqual(0.1)
       expect(styles).toEqual(reference.styles)
       const centers = await toolbar.locator('.selection-actions>button').evaluateAll(buttons => buttons.map(button => { const rect = button.getBoundingClientRect(); return rect.y + rect.height / 2 }))
-      expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(0.1)
+      if (width > 850) {
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(0.1)
+      } else {
+        const bounds = await toolbar.locator('.selection-mobile-actions>button,.selection-mobile-actions>details>summary').evaluateAll(controls => controls.map(control => {
+          const rect = control.getBoundingClientRect()
+          return { left: rect.left, right: rect.right, width: rect.width, height: rect.height }
+        }))
+        for (const control of bounds) {
+          expect(control.left).toBeGreaterThanOrEqual(box.x)
+          expect(control.right).toBeLessThanOrEqual(box.x + box.width)
+          expect(control.width).toBeGreaterThanOrEqual(44)
+          expect(control.height).toBeGreaterThanOrEqual(44)
+        }
+        expect(await toolbar.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+      }
       await toolbar.locator('.selection-summary').click()
       await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 2 项')
       if (name !== '首页') {
@@ -411,12 +498,12 @@ test('mixed file selections share typed batch management, retry failures and kee
   for (const checkbox of await cards.getByRole('checkbox').all()) await checkbox.press('Space')
   const toolbar = page.getByRole('toolbar', { name: '所选项目操作', exact: true })
   await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 9 项')
-  await toolbar.getByRole('button', { name: '收藏', exact: true }).click()
+  await clickSelectionAction(page, '收藏')
   const listing = async () => (await (await page.request.get(`/api/library/items?q=${prefix}`)).json()).items
   await expect.poll(async () => (await listing()).filter((item: any) => item.favorite).length).toBe(8)
   await page.setViewportSize({ width: 320, height: 1000 })
-  const more = toolbar.getByLabel('更多管理操作', { exact: true })
-  const menu = page.locator('.selection-management-panel')
+  const more = selectionMore(page)
+  const menu = selectionMenu(page)
   for (const [kind, label] of [['book', '书架'], ['audio', '歌单'], ['image', '相册']]) {
     await more.click()
     await expect(menu).toBeVisible()

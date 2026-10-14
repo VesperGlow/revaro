@@ -20,6 +20,10 @@ serde_json.workspace = true
 pulldown-cmark.workspace = true
 ammonia.workspace = true
 
+[dev-dependencies]
+revaro-reader.workspace = true
+zip.workspace = true
+
 # Everything browser-specific is only pulled in for the wasm target, so a native
 # `cargo check --workspace` compiles this crate to an empty stub instead of
 # failing on wasm-only APIs.

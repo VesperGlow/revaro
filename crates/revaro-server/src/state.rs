@@ -258,6 +258,7 @@ impl AppState {
             memory.cache_bytes,
             config.media_cache_capacity,
         );
+        cache.set_memory_limit(memory.current_cache_limit(0));
         let files = Arc::new(crate::file_access::CachedFileAccess::new(
             files,
             cache.clone(),

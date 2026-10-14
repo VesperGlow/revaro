@@ -48,13 +48,21 @@ pub fn ActionMenu(
     scope: String,
     #[prop(optional)] embedded: bool,
     #[prop(optional)] sheet: bool,
+    #[prop(optional)] close_when_hidden: bool,
+    #[prop(optional)] viewport_bound: bool,
     children: Children,
 ) -> impl IntoView {
     let menu = NodeRef::<leptos::html::Details>::new();
     let trigger = NodeRef::<leptos::html::Summary>::new();
     let panel = NodeRef::<leptos::html::Div>::new();
     // Embedded sections and the responsive topbar sheet are laid out by CSS.
-    let position = (!embedded && !sheet).then(|| browser::anchor_popover(trigger, panel));
+    let position = (!embedded && !sheet).then(|| {
+        if viewport_bound {
+            browser::anchor_popover_with_bounds(trigger, panel, true)
+        } else {
+            browser::anchor_popover(trigger, panel)
+        }
+    });
     let open = RwSignal::new(false);
     let row_label = label.clone();
     let close = Callback::new(move |()| {
@@ -91,7 +99,7 @@ pub fn ActionMenu(
         );
     }
 
-    if sheet {
+    if sheet || close_when_hidden {
         let mut resize = browser::on_resize(move |_| {
             if let Some(details) = menu.get()
                 && details.get_client_rects().length() == 0

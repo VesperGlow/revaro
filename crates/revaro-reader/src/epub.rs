@@ -30,7 +30,7 @@ use markup5ever_rcdom::{Handle, NodeData};
 
 use crate::archive::{zip_bytes, zip_text};
 use crate::budget::{Budget, RenderBudget};
-use crate::dom::{attr, children, parse_html, tag_name, text_content};
+use crate::dom::{attr, children, parse_xhtml, tag_name, text_content};
 use crate::model::{Asset, Book, Chapter, Format};
 use crate::path::{ext_of, fragment_of, normalize_path, resolve_path};
 use crate::sanitize::ChapterRenderer;
@@ -545,7 +545,7 @@ fn extract_toc<R: Read + Seek>(
 
 /// Parse an EPUB3 nav document into TOC entries.
 fn parse_nav(data: &[u8], nav_path: &str) -> Vec<TocEntry> {
-    let Some(dom) = parse_html(data) else {
+    let Some(dom) = parse_xhtml(data) else {
         return Vec::new();
     };
     let Some(nav) = find_toc_nav(&dom.document) else {

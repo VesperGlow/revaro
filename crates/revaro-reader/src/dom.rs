@@ -6,9 +6,12 @@
 //! in particular that attributes are matched by *local* name, which is how Go's
 //! HTML parser normalised `xlink:href` to `href`.
 
+use std::borrow::Cow;
+
 use html5ever::tendril::TendrilSink;
 use html5ever::{ParseOpts, parse_document};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
+use quick_xml::{Reader, events::Event};
 
 use crate::MAX_HTML_TREE_DEPTH;
 
@@ -20,6 +23,53 @@ pub(crate) fn parse_html(source: &[u8]) -> Option<RcDom> {
         .read_from(&mut reader)
         .ok()?;
     html_tree_within_depth(&dom.document).then_some(dom)
+}
+
+/// Parse EPUB XHTML through the same HTML5 sanitizer tree.
+///
+/// XML allows empty `<script .../>` elements. HTML treats the slash as ignored
+/// and consumes everything up to `</script>` as raw text, losing the chapter
+/// body (and nav TOC). Add explicit closing tags for empty raw-text/RCDATA
+/// elements before HTML parsing. The XML tokenizer avoids rewriting lookalikes
+/// inside comments, CDATA or attributes; malformed XML keeps the HTML fallback.
+pub(crate) fn parse_xhtml(source: &[u8]) -> Option<RcDom> {
+    parse_html(&close_empty_raw_text_elements(source))
+}
+
+fn close_empty_raw_text_elements(source: &[u8]) -> Cow<'_, [u8]> {
+    let mut reader = Reader::from_reader(source);
+    let mut result = Vec::new();
+    let mut copied_until = 0;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Empty(element)) => {
+                let name = element.name();
+                if [
+                    "script", "style", "title", "textarea", "iframe", "noembed", "noframes",
+                    "noscript", "xmp",
+                ]
+                .iter()
+                .any(|tag| name.as_ref().eq_ignore_ascii_case(tag.as_bytes()))
+                {
+                    let end = reader.buffer_position() as usize;
+                    result.extend_from_slice(&source[copied_until..end]);
+                    result.extend_from_slice(b"</");
+                    result.extend_from_slice(name.as_ref());
+                    result.push(b'>');
+                    copied_until = end;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => return Cow::Borrowed(source),
+            _ => {}
+        }
+    }
+    if copied_until == 0 {
+        Cow::Borrowed(source)
+    } else {
+        result.extend_from_slice(&source[copied_until..]);
+        Cow::Owned(result)
+    }
 }
 
 /// Check the parsed tree with an explicit stack before any compatibility walk.
@@ -143,6 +193,45 @@ mod tests {
             parse_html(nested_document(MAX_HTML_TREE_DEPTH.saturating_sub(8)).as_bytes()).is_some()
         );
         assert!(parse_html(nested_document(MAX_HTML_TREE_DEPTH + 8).as_bytes()).is_none());
+    }
+
+    #[test]
+    fn empty_xhtml_raw_text_elements_do_not_consume_following_content() {
+        let source = br#"<html><head><script src="kobo.js"/><style/><title/><noscript/></head><body><textarea/><p>body</p></body></html>"#;
+        let dom = parse_xhtml(source).unwrap();
+        let body = find_element(&dom.document, "body").unwrap();
+        assert_eq!(text_content(&body), "body");
+        let script = find_element(&dom.document, "script").unwrap();
+        assert!(children(&script).is_empty());
+    }
+
+    #[test]
+    fn xhtml_normalization_preserves_comments_cdata_attributes_and_html_fallback() {
+        for source in [
+            br#"<html><body><!-- <script/> --><p title="<script/>">text</p></body></html>"#
+                .as_slice(),
+            br#"<html><body><![CDATA[<script/>]]><p>text</p></body></html>"#.as_slice(),
+            br#"<html><body><script>if (a < b) run()</script><p>text<br>end</p></body></html>"#
+                .as_slice(),
+        ] {
+            assert!(matches!(
+                close_empty_raw_text_elements(source),
+                Cow::Borrowed(_)
+            ));
+        }
+        let source = br#"<html><head><!-- <script/> --><script data-value="a > b" src="kobo.js" /></head><body><p>text</p></body></html>"#;
+        let normalized = close_empty_raw_text_elements(source);
+        assert!(matches!(normalized, Cow::Owned(_)));
+        assert_eq!(
+            normalized
+                .windows(b"</script>".len())
+                .filter(|part| *part == b"</script>")
+                .count(),
+            1
+        );
+        let dom = parse_xhtml(source).unwrap();
+        let body = find_element(&dom.document, "body").unwrap();
+        assert_eq!(text_content(&body), "text");
     }
 
     #[test]

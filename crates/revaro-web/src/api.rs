@@ -448,21 +448,7 @@ pub async fn fetch_listing(
     .await
 }
 /// Compact storage and runtime metrics for the topbar status popover.
-#[derive(Clone, serde::Deserialize)]
-pub struct SystemStatusSummary {
-    pub disk_total_bytes: u64,
-    pub disk_used_bytes: u64,
-    pub disk_available_bytes: u64,
-    pub cache: CacheSummary,
-}
-
-#[derive(Clone, serde::Deserialize)]
-pub struct CacheSummary {
-    pub memory_bytes: u64,
-    #[serde(default)]
-    pub memory_limit: u64,
-    pub disk_bytes: u64,
-}
+pub use revaro_core::system::SystemStatusSummary;
 
 pub async fn fetch_system_status() -> Result<SystemStatusSummary, RequestError> {
     get_json("/api/system/status").await
@@ -532,6 +518,17 @@ pub async fn update_library_item(
         .json(update)
         .map_err(|e| request_transport(e.to_string()))?;
     send_empty(request).await
+}
+
+pub async fn fetch_selection_state(
+    file_ids: &[String],
+) -> Result<Vec<revaro_core::library::SelectionItemState>, RequestError> {
+    let request = api_request(Request::post("/api/library/selection-state"))
+        .json(&revaro_core::library::SelectionStateRequest {
+            file_ids: file_ids.to_vec(),
+        })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_json(request).await
 }
 
 pub async fn fetch_collections() -> Result<Vec<revaro_core::library::Collection>, RequestError> {

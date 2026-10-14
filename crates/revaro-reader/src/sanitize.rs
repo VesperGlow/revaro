@@ -25,7 +25,7 @@ use crate::MAX_HTML_TREE_DEPTH;
 use crate::archive::zip_bytes;
 use crate::budget::{Budget, RenderBudget};
 use crate::dom::{
-    attr, children, collect_elements, find_element, parse_html, tag_name, text_content,
+    attr, children, collect_elements, find_element, parse_xhtml, tag_name, text_content,
 };
 use crate::image::image_dims;
 use crate::model::Asset;
@@ -99,7 +99,7 @@ impl<R: Read + Seek> ChapterRenderer<'_, R> {
     /// Parse failures yield an empty chapter rather than an error, matching the
     /// Go original: one broken spine item must not lose the whole book.
     pub(crate) fn render(&mut self, source: &[u8]) {
-        let Some(dom) = parse_html(source) else {
+        let Some(dom) = parse_xhtml(source) else {
             return;
         };
         let Some(body) = find_element(&dom.document, "body") else {
