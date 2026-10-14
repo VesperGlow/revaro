@@ -63,3 +63,5 @@ node --test tests/transport/*.test.mjs
 浏览器使用独立 18080 验证实例与 dist/performance-web。`cargo xtask check` 已通过，包括格式、工作区严格 Clippy、559 项 Rust 测试和 WASM 类型检查；另外 50 项传输测试通过。新增 global-state-memory.spec.ts 验证桌面 1280px、移动 390px 的集合、排序、目录、滚动恢复以及批量原子性、同目录刷新保留未变化 DOM 节点；现有测试覆盖取消陈旧请求、集合跨文档失效、书籍手势/排序、图库分页、媒体与阅读器、长 WAV Range 跳转、多断点菜单与工具栏。验证不会修改现有预览数据库。
 
 前端针对 WASM 的 `clippy -D warnings` 尚有既存的 clone_on_copy、too_many_arguments 等 330 条问题；WASM release 构建和浏览器验证通过，后端 clippy -D warnings 通过。
+
+最终本地复核：后端 275 项测试通过（包括并发缓存合并、源元数据写入失效、未知查询参数不会绕过校验、大文件内核缓存路径）；桌面/手机状态测试、同目录节点保留和批量失败原子重试通过。工作区格式、Clippy 和 WASM 类型检查通过。
