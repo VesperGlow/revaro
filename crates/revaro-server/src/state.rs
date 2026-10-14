@@ -206,6 +206,7 @@ pub struct AppState {
     pub auth: AuthService,
     /// Process-wide L1/L2 cache policy and statistics.
     pub cache: CacheManager,
+    pub queries: crate::query_cache::QueryRuntime,
     /// Native media probing and thumbnail coordination.
     pub media: crate::media_runtime::MediaRuntime,
     /// Short-lived tickets for streaming batch downloads.
@@ -273,6 +274,7 @@ impl AppState {
             files,
             store,
             auth,
+            queries: crate::query_cache::QueryRuntime::new(),
             cache,
             media: crate::media_runtime::MediaRuntime::new(),
             batch_download: crate::batch_download::BatchDownloadRuntime::new(),

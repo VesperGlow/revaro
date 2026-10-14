@@ -32,6 +32,10 @@ pub fn build(state: Arc<AppState>) -> Router {
         .nest("/api", api())
         .fallback(web::serve)
         .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::query_cache::catalog,
+        ))
         .layer(axum::middleware::from_fn(crate::transfer::file_resources))
         .layer(axum::middleware::from_fn(crate::transfer::monitor))
         .layer(axum::middleware::from_fn_with_state(
@@ -134,7 +138,7 @@ async fn api_not_found() -> ApiError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::Config;
     use crate::db::Database;

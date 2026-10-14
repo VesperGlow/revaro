@@ -6,6 +6,7 @@ use super::*;
 struct LibraryScope {
     page: LibraryPage,
     query: String,
+    sort: String,
     favorite: bool,
     collection: String,
     stack: String,
@@ -14,6 +15,7 @@ struct LibraryScope {
 pub(super) struct ListingController {
     pub page: RwSignal<LibraryPage>,
     pub query: RwSignal<String>,
+    pub sort: RwSignal<String>,
     pub favorites: RwSignal<bool>,
     pub selected_collection: RwSignal<String>,
     pub selected_stack: RwSignal<String>,
@@ -33,6 +35,7 @@ impl ListingController {
         let Self {
             page,
             query,
+            sort,
             favorites,
             selected_collection,
             selected_stack,
@@ -46,6 +49,9 @@ impl ListingController {
             collections,
             logout,
         } = self;
+        let snapshots = StoredValue::new(super::super::view_memory::Snapshots::<
+            revaro_core::library::LibraryListing,
+        >::new());
         let active = StoredValue::new_local(None::<web_sys::AbortController>);
         on_cleanup(move || {
             active.with_value(|controller| {
@@ -84,16 +90,26 @@ impl ListingController {
             if more && request_in_flight.get_value() {
                 return;
             }
-            let request = LibraryQuery {
+            let snapshot_key = serde_json::to_string(&(
+                current_page.path(),
+                query.get_untracked(),
+                sort.get_untracked(),
+                favorites.get_untracked(),
+                selected_collection.get_untracked(),
+                selected_stack.get_untracked(),
+            ))
+            .unwrap_or_default();
+            let mut request = LibraryQuery {
                 kind: current_page.kind().to_owned(),
                 query: query.get_untracked(),
+                sort: sort.get_untracked(),
                 favorite: favorites.get_untracked(),
                 collection: selected_collection.get_untracked(),
                 stack: selected_stack.get_untracked(),
                 group_stacks: current_page == LibraryPage::Books
                     && selected_stack.get_untracked().is_empty(),
                 offset: if more {
-                    items.get_untracked().len() as i64
+                    items.with_untracked(Vec::len) as i64
                 } else {
                     0
                 },
@@ -103,6 +119,7 @@ impl ListingController {
                 let scope = LibraryScope {
                     page: current_page,
                     query: request.query.clone(),
+                    sort: request.sort.clone(),
                     favorite: request.favorite,
                     collection: request.collection.clone(),
                     stack: request.stack.clone(),
@@ -126,7 +143,21 @@ impl ListingController {
                 pending_refresh.set_value(false);
                 // Upload callbacks can refresh while a card is being dragged.
                 // Keep those keyed nodes until the same listing is replaced.
-                let keep_items = same_scope && items.with_untracked(|list| !list.is_empty());
+                let mut cached = None;
+                if !same_scope {
+                    snapshots.update_value(|cache| cached = cache.get(&snapshot_key));
+                }
+                let has_cached = cached.is_some();
+                if let Some(cached) = cached {
+                    items.set(cached.items);
+                    total.set(cached.total);
+                }
+                let keep_items =
+                    items.with_untracked(|list| !list.is_empty()) && (same_scope || has_cached);
+                if keep_items {
+                    request.limit = Some(items.with_untracked(Vec::len).clamp(60, 200) as i64);
+                    loading.set(false);
+                }
                 last_scope.set_value(Some(scope));
                 generation.update(|g| *g += 1);
                 if !keep_items {
@@ -166,6 +197,17 @@ impl ListingController {
                         } else {
                             items.set(result.items);
                         }
+                        snapshots.update_value(|cache| {
+                            cache.put(
+                                snapshot_key,
+                                revaro_core::library::LibraryListing {
+                                    items: items.get_untracked(),
+                                    total: total.get_untracked(),
+                                    offset: 0,
+                                    limit: 60,
+                                },
+                            )
+                        });
                     }
                     Err(e) if e.is_unauthorized() => {
                         logout.run(());
@@ -188,6 +230,7 @@ impl ListingController {
             let _ = (
                 page.get(),
                 query.get(),
+                sort.get(),
                 favorites.get(),
                 selected_collection.get(),
                 selected_stack.get(),
@@ -219,7 +262,14 @@ impl ListingController {
                         return;
                     }
                     match result {
-                        Ok(list) => collections.set(list),
+                        Ok(list) if revision == pending_revision.get_value() => {
+                            let selected = selected_collection.get_untracked();
+                            if !selected.is_empty() && !list.iter().any(|c| c.id == selected) {
+                                selected_collection.set(String::new());
+                            }
+                            collections.set(list);
+                        }
+                        Ok(_) => {}
                         Err(e) if e.is_unauthorized() => {
                             logout.run(());
                             return;

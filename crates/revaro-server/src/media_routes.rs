@@ -50,24 +50,20 @@ async fn ready_media_file(
     kind: MediaKind,
     message: &'static str,
 ) -> Result<File, revaro_core::ApiError> {
-    state
-        .db
-        .call_api(move |connection| {
-            let file = file_routes::lookup_file_any(connection, &id)
-                .map_err(|error| not_found_or(error, message))?;
-            let valid = file.kind == FileKind::File
-                && file.status == FileStatus::Ready
-                && match kind {
-                    MediaKind::Any => true,
-                    MediaKind::Audio => classify::is_audio(&file),
-                    MediaKind::Video => classify::is_video(&file),
-                };
-            if !valid {
-                return Err(revaro_core::ApiError::not_found(message));
-            }
-            Ok(file)
-        })
+    let file = crate::query_cache::file(&state, id)
         .await
+        .map_err(|error| not_found_or(error, message))?;
+    let valid = file.kind == FileKind::File
+        && file.status == FileStatus::Ready
+        && match kind {
+            MediaKind::Any => true,
+            MediaKind::Audio => classify::is_audio(&file),
+            MediaKind::Video => classify::is_video(&file),
+        };
+    if !valid {
+        return Err(revaro_core::ApiError::not_found(message));
+    }
+    Ok(file)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -461,6 +457,20 @@ async fn thumbnail(
     headers: http::HeaderMap,
 ) -> Result<Response, revaro_core::ApiError> {
     let file = ready_media_file(state.clone(), id, MediaKind::Any, "ready file not found").await?;
+    // A successful probe also caches the absence of embedded artwork. Avoid
+    // repeated filesystem misses and thumbnail locks for that stable result.
+    if classify::is_audio(&file) {
+        let key = format!("{}/{}/{}", file.id, file.etag, MEDIA_PROBE_VERSION);
+        if let Ok(Some(probe)) = state
+            .cache
+            .get_object::<MediaProbe>(crate::cache::MEDIA_METADATA, &key)
+            && !probe.has_video_stream()
+        {
+            return Err(revaro_core::ApiError::not_found(
+                "audio cover is unavailable",
+            ));
+        }
+    }
     let typed_key = thumbnail_key(&file);
     if let Some(data) = read_thumbnail(&state, &typed_key).await {
         return data.serve("image/jpeg", headers).await;
@@ -485,7 +495,9 @@ async fn thumbnail(
         let data = generate_audio_thumbnail(&state, &file, &typed_key)
             .await
             .map_err(|error| {
-                tracing::warn!(file = %file.id, %error, "audio thumbnail failed");
+                if !matches!(error, MediaError::NoArtwork) {
+                    tracing::warn!(file = %file.id, %error, "audio thumbnail failed");
+                }
                 revaro_core::ApiError::not_found("audio cover is unavailable")
             })?;
         return thumbnail_response(&state, &typed_key, data, headers).await;

@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Locator } from '@playwright/test'
 import { readFileSync } from 'node:fs'
-import { isTransportRequest, resetListeningSession, openMusicPlayer, login, navigate, enterSelectionMode, openTopbarMenu, clickSelectionAction, selectionMore, selectionMenu } from './helpers'
+import { failApplicationRequest, resetListeningSession, openMusicPlayer, login, navigate, enterSelectionMode, openTopbarMenu, clickSelectionAction, selectionMore, selectionMenu } from './helpers'
 
 const root = '00000000-0000-0000-0000-000000000000'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
@@ -536,17 +536,13 @@ test('mixed file selections share typed batch management, retry failures and kee
   expect(created.kind).toBe('video')
   await expect.poll(async () => (await (await page.request.get(`/api/library/items?collection=${created.id}`)).json()).total).toBe(2)
   await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 9 项')
-  const failed = (await listing()).find((item: any) => item.file.name === `${prefix}-1.png`).file.id
-  await page.context().route(`**/api/library/items/${failed}`, route => {
-    if (!isTransportRequest(route.request())) return route.continue()
-    return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'try again' }) })
-  })
+  const fault = await failApplicationRequest(page, '/api/library/favorites', 'try again')
   await more.click()
   await menu.getByRole('button', { name: '取消收藏', exact: true }).click()
-  await expect(page.locator('.toast')).toContainText('已完成 7/8 项')
-  await expect.poll(async () => (await listing()).filter((item: any) => item.favorite).length).toBe(1)
+  await expect(page.locator('.toast')).toContainText('已完成 0/8 项')
+  await expect.poll(async () => (await listing()).filter((item: any) => item.favorite).length).toBe(8)
   await expect(toolbar.locator('.selection-summary b')).toHaveText('已选择 9 项')
-  await page.context().unroute(`**/api/library/items/${failed}`)
+  await fault.clear()
   await more.click()
   await menu.getByRole('button', { name: '取消收藏', exact: true }).click()
   await expect.poll(async () => (await listing()).filter((item: any) => item.favorite).length).toBe(0)

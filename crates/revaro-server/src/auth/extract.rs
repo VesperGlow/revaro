@@ -45,6 +45,9 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         parts: &mut Parts,
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(user) = parts.extensions.get::<Self>() {
+            return Ok(user.clone());
+        }
         // `CookieJar` extraction is infallible for any state type; the `&()`
         // state is what the trait's generic parameter resolves to.
         let jar = match CookieJar::from_request_parts(parts, &()).await {

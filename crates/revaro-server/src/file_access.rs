@@ -31,6 +31,10 @@ pub struct FileObject {
 }
 
 pub trait FileAccess: Debug + Send + Sync {
+    /// Local providers already have a shared, reclaimable kernel byte cache.
+    fn uses_kernel_cache(&self) -> bool {
+        false
+    }
     fn open<'a>(
         &'a self,
         key: &'a str,
@@ -38,6 +42,9 @@ pub trait FileAccess: Debug + Send + Sync {
 }
 
 impl FileAccess for LocalStore {
+    fn uses_kernel_cache(&self) -> bool {
+        true
+    }
     fn open<'a>(
         &'a self,
         key: &'a str,
@@ -72,6 +79,11 @@ impl FileAccess for CachedFileAccess {
     ) -> Pin<Box<dyn Future<Output = Result<FileObject, StorageError>> + Send + 'a>> {
         Box::pin(async move {
             let object = self.source.open(key).await?;
+            // Sequential video/audio/downloads should not copy a second version
+            // of the Linux page cache into thousands of application entries.
+            if self.source.uses_kernel_cache() && object.size > 8 << 20 {
+                return Ok(object);
+            }
             let identity = revaro_core::keys::sha256_hex(
                 format!("{}:{key}:{}:{}", key.len(), object.etag, object.size).as_bytes(),
             );
@@ -464,6 +476,23 @@ mod tests {
             response.headers()[http::header::CONTENT_RANGE],
             "bytes */10"
         );
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
+    async fn large_local_ranges_use_kernel_cache_without_l1_block_admission() {
+        let root =
+            std::env::temp_dir().join(format!("revaro-kernel-cache-{}", uuid::Uuid::new_v4()));
+        let store = LocalStore::open(root.join("objects")).await.unwrap();
+        let bytes = vec![7_u8; (8 << 20) + 128];
+        store.put("blobs/large", &bytes).await.unwrap();
+        let cache = CacheManager::for_app(root.join("caches"), 1 << 20, 0);
+        let files = CachedFileAccess::new(Arc::new(store), cache.clone());
+        let mut object = files.open("blobs/large").await.unwrap();
+        object.reader.seek(SeekFrom::End(-16)).await.unwrap();
+        let mut tail = [0_u8; 16];
+        object.reader.read_exact(&mut tail).await.unwrap();
+        assert_eq!(tail, [7_u8; 16]);
+        assert_eq!(cache.stats().classes[FILE_BLOCK].memory_entries, 0);
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

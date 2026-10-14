@@ -52,22 +52,19 @@ impl CollectionController {
             let name = collection_name.get_untracked();
             let target = collection_target.get_untracked();
             leptos::task::spawn_local_scoped_with_cancellation(async move {
-                match api::create_collection(&name, &kind).await {
+                match api::create_collection(
+                    &name,
+                    &kind,
+                    target
+                        .as_ref()
+                        .map(|t| t.files.iter().map(|f| f.id.clone()).collect())
+                        .unwrap_or_default(),
+                )
+                .await
+                {
                     Ok(c) => {
-                        if let Some(mut target) = target {
-                            target.files = apply_library_batch(
-                                target.files,
-                                LibraryBatchOperation::Membership {
-                                    collection: c.id,
-                                    add: true,
-                                },
-                                selection,
-                                refresh,
-                                error,
-                                logout,
-                            )
-                            .await;
-                            collection_target.set((!target.files.is_empty()).then_some(target));
+                        if target.is_some() {
+                            collection_target.set(None);
                         } else {
                             selected_collection.set(c.id);
                         }
@@ -227,33 +224,21 @@ async fn apply_library_batch(
     error: RwSignal<String>,
     logout: Callback<()>,
 ) -> Vec<File> {
-    let mut failed = Vec::new();
-    let mut first_error = None;
-    for file in &files {
-        let result = match &operation {
-            LibraryBatchOperation::Favorite(favorite) => {
-                api::update_library_item(
-                    &file.id,
-                    &ItemUpdate {
-                        favorite: Some(*favorite),
-                        opened: false,
-                    },
-                )
-                .await
-            }
-            LibraryBatchOperation::Membership { collection, add } => {
-                api::collection_member(collection, &file.id, *add).await
-            }
-        };
-        if let Err(e) = result {
-            if e.is_unauthorized() {
-                logout.run(());
-                return files;
-            }
-            first_error.get_or_insert_with(|| format!("{}：{}", file.name, e.message));
-            failed.push(file.clone());
+    let ids = files.iter().map(|file| file.id.clone()).collect();
+    let result = match &operation {
+        LibraryBatchOperation::Favorite(favorite) => api::favorite_batch(ids, *favorite).await,
+        LibraryBatchOperation::Membership { collection, add } => {
+            api::collection_members(collection, ids, *add).await
         }
-    }
+    };
+    let (failed, first_error) = match result {
+        Ok(()) => (Vec::new(), None),
+        Err(e) if e.is_unauthorized() => {
+            logout.run(());
+            return files;
+        }
+        Err(e) => (files.clone(), Some(e.message)),
+    };
     let completed = files.len() - failed.len();
     if completed > 0 {
         refresh.update(|r| *r += 1);

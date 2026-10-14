@@ -256,6 +256,17 @@ impl MaintenanceRuntime {
         .expect("production maintenance job names are unique");
 
         self.register(
+            "catalog-warm",
+            Duration::from_secs(120),
+            Duration::from_secs(10),
+            false,
+            state_job(state.clone(), |state| async move {
+                crate::query_cache::warm_catalog(state).await
+            }),
+        )
+        .expect("production maintenance job names are unique");
+
+        self.register(
             "cache",
             minute.saturating_mul(5),
             minute,

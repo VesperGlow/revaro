@@ -47,6 +47,24 @@ pub(super) fn load_listing(
 ) -> Result<(i64, Vec<Candidate>), ApiError> {
     let (sort, aggregate, direction) = if options.stack.is_some() {
         ("stack_position", "MIN", "ASC")
+    } else if !options.sort.is_empty()
+        && options.sort != "created"
+        && !options.recent
+        && !options.opened_only
+    {
+        let (field, direction) = match options.sort.as_str() {
+            "name" => ("name COLLATE NOCASE", "ASC"),
+            "name_desc" => ("name COLLATE NOCASE", "DESC"),
+            "size" => ("size", "ASC"),
+            "size_desc" => ("size", "DESC"),
+            "updated" => ("updated_at", "ASC"),
+            _ => ("updated_at", "DESC"),
+        };
+        (
+            field,
+            if direction == "ASC" { "MIN" } else { "MAX" },
+            direction,
+        )
     } else if options.collection.is_some() {
         ("collection_position", "MIN", "ASC")
     } else if options.recent || options.opened_only {
@@ -56,12 +74,21 @@ pub(super) fn load_listing(
     };
     // Select common library/home pages before enriching them. Joining progress,
     // covers and stacks for every file made a first page cost the entire library.
-    let fast_page = !grouped
+    let fast_page = (options.sort.is_empty() || options.sort == "created")
+        && !grouped
         && options.stack.is_none()
         && options.collection.is_none()
         && options.q.is_empty()
         && !options.favorite
         && (!options.recent || options.opened_only);
+    let fast_grouped = grouped
+        && options.stack.is_none()
+        && options.collection.is_none()
+        && options.q.is_empty()
+        && !options.favorite
+        && !options.recent
+        && !options.opened_only
+        && (options.sort.is_empty() || options.sort == "created");
     let kind_filter = if options.kind.is_some() {
         "l.kind=?1"
     } else {
@@ -114,14 +141,23 @@ pub(super) fn load_listing(
     let simple_source = format!(
         "FROM {simple_tables} WHERE f.kind='file' AND f.status='ready' AND f.deleted_at IS NULL AND {kind_filter} {opened_filter}"
     );
-    let page_prefix = if fast_page {
+    let grouped_source = format!(
+        "FROM files f JOIN library_items l ON l.file_id=f.id LEFT JOIN book_stack_items si ON si.file_id=f.id WHERE f.kind='file' AND f.status='ready' AND f.deleted_at IS NULL AND {kind_filter}"
+    );
+    let group_bucket =
+        "CASE WHEN si.stack_id IS NULL THEN 'file:'||f.id ELSE 'stack:'||si.stack_id END";
+    let page_prefix = if fast_grouped {
+        format!(
+            "page_buckets AS MATERIALIZED (SELECT {group_bucket} AS bucket,MAX(f.created_at) AS sort_key {grouped_source} GROUP BY bucket ORDER BY sort_key DESC,bucket LIMIT ?9 OFFSET ?10),page_ids AS MATERIALIZED (SELECT f.id {grouped_source} AND {group_bucket} IN (SELECT bucket FROM page_buckets)),"
+        )
+    } else if fast_page {
         format!(
             "page_ids AS MATERIALIZED (SELECT f.id {simple_source} ORDER BY {page_order} LIMIT ?9 OFFSET ?10),"
         )
     } else {
         String::new()
     };
-    let file_source = if fast_page {
+    let file_source = if fast_page || fast_grouped {
         format!("page_ids CROSS JOIN (SELECT {FILE_COLUMNS} FROM files) f ON f.id=page_ids.id")
     } else {
         format!("(SELECT {FILE_COLUMNS} FROM files) f")
@@ -190,7 +226,15 @@ pub(super) fn load_listing(
     } else {
         "COUNT(*)"
     };
-    let total: i64 = if fast_page {
+    let total: i64 = if fast_grouped {
+        connection
+            .query_row(
+                &format!("SELECT COUNT(DISTINCT {group_bucket}) {grouped_source}"),
+                params![options.kind],
+                |row| row.get(0),
+            )
+            .map_err(db)?
+    } else if fast_page {
         connection
             .query_row(
                 &format!("SELECT COUNT(*) {simple_source}"),
@@ -211,11 +255,12 @@ pub(super) fn load_listing(
         return Ok((0, Vec::new()));
     }
     let sql = if grouped {
+        let group_offset = if fast_grouped { "0" } else { "?10" };
         format!(
             "{candidates}, groups AS (
                 SELECT bucket,{aggregate}(sort_key) AS sort_key
                 FROM candidates GROUP BY bucket
-                ORDER BY sort_key {direction},bucket LIMIT ?9 OFFSET ?10
+                ORDER BY sort_key {direction},bucket LIMIT ?9 OFFSET {group_offset}
             )
             SELECT candidates.* FROM candidates JOIN groups USING(bucket)
             ORDER BY groups.sort_key {direction},groups.bucket,
@@ -229,7 +274,7 @@ pub(super) fn load_listing(
             LIMIT ?9 OFFSET {final_offset}"
         )
     };
-    let mut query = connection.prepare(&sql).map_err(db)?;
+    let mut query = connection.prepare_cached(&sql).map_err(db)?;
     let rows = query
         .query_map(
             params![

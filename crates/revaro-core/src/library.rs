@@ -75,4 +75,19 @@ pub struct SelectionItemState {
 pub struct CreateCollection {
     pub name: String,
     pub kind: String,
+    #[serde(default)]
+    pub file_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionMembers {
+    pub file_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FavoriteBatch {
+    pub file_ids: Vec<String>,
+    pub favorite: bool,
 }

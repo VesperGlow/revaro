@@ -62,7 +62,7 @@ fn load_stack(c: &Connection, id: &str) -> Result<Stack, ApiError> {
         .optional()
         .map_err(db)?
         .ok_or_else(|| ApiError::not_found("堆叠不存在"))?;
-    let mut q = c.prepare(&format!("SELECT {FILE_COLUMNS} FROM files WHERE status='ready' AND deleted_at IS NULL AND id IN (SELECT si.file_id FROM book_stack_items si JOIN library_items l ON l.file_id=si.file_id WHERE si.stack_id=?1 AND l.kind='book') ORDER BY (SELECT position FROM book_stack_items WHERE file_id=files.id),id")).map_err(db)?;
+    let mut q = c.prepare_cached(&format!("SELECT f.* FROM (SELECT {FILE_COLUMNS} FROM files) f JOIN book_stack_items si ON si.file_id=f.id CROSS JOIN library_items l ON l.file_id=f.id WHERE si.stack_id=?1 AND f.status='ready' AND f.deleted_at IS NULL AND l.kind='book' ORDER BY si.position,f.id")).map_err(db)?;
     let files = q
         .query_map([id], scan_file)
         .map_err(db)?
@@ -76,32 +76,25 @@ fn load_stack(c: &Connection, id: &str) -> Result<Stack, ApiError> {
 }
 
 fn add_books(tx: &Transaction<'_>, id: &str, file_ids: &[String]) -> Result<(), ApiError> {
-    // Validate the entire request before moving any membership. A failed batch rolls back.
-    for file_id in file_ids {
-        let valid = tx.query_row("SELECT EXISTS(SELECT 1 FROM files f JOIN library_items l ON l.file_id=f.id WHERE f.id=?1 AND f.status='ready' AND f.deleted_at IS NULL AND l.kind='book')", [file_id], |r| r.get::<_, bool>(0)).map_err(db)?;
-        if !valid {
-            return Err(ApiError::bad_request("堆叠只能包含可用的书籍"));
-        }
+    let selected = super::batch::ids(file_ids, true)?;
+    let valid: i64 = tx.query_row("SELECT COUNT(*) FROM json_each(?1) selected CROSS JOIN files f ON f.id=selected.value JOIN library_items l ON l.file_id=f.id WHERE f.status='ready' AND f.deleted_at IS NULL AND l.kind='book'", [&selected], |r| r.get(0)).map_err(db)?;
+    if valid != file_ids.len() as i64 {
+        return Err(ApiError::bad_request("堆叠只能包含可用的书籍"));
     }
-    for file_id in file_ids {
-        let previous: Option<String> = tx
-            .query_row(
-                "SELECT stack_id FROM book_stack_items WHERE file_id=?1",
-                [file_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db)?;
-        if previous.as_deref() == Some(id) {
-            continue;
-        }
-        tx.execute("DELETE FROM book_stack_items WHERE file_id=?1", [file_id])
-            .map_err(db)?;
-        tx.execute("INSERT INTO book_stack_items(stack_id,file_id,position) VALUES(?1,?2,COALESCE((SELECT MAX(position)+1 FROM book_stack_items WHERE stack_id=?1),0))", params![id,file_id]).map_err(db)?;
-        if let Some(previous) = previous {
-            tx.execute("DELETE FROM book_stacks WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM book_stack_items WHERE stack_id=?1)", [previous]).map_err(db)?;
-        }
-    }
+    let mut query = tx.prepare_cached("SELECT DISTINCT stack_id FROM book_stack_items WHERE file_id IN (SELECT value FROM json_each(?1)) AND stack_id<>?2").map_err(db)?;
+    let previous = query
+        .query_map(params![selected, id], |r| r.get::<_, String>(0))
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    drop(query);
+    // Keep destination slots, move other memberships in one statement, and
+    // calculate MAX only once rather than for every inserted book.
+    tx.execute("DELETE FROM book_stack_items WHERE stack_id<>?1 AND file_id IN (SELECT value FROM json_each(?2))",params![id,selected]).map_err(db)?;
+    tx.execute("WITH start AS MATERIALIZED (SELECT COALESCE(MAX(position)+1,0) AS position FROM book_stack_items WHERE stack_id=?1), added AS MATERIALIZED (SELECT selected.value AS file_id,ROW_NUMBER() OVER (ORDER BY CAST(selected.key AS INTEGER))-1 AS offset FROM json_each(?2) selected WHERE NOT EXISTS(SELECT 1 FROM book_stack_items i WHERE i.file_id=selected.value)) INSERT INTO book_stack_items(stack_id,file_id,position) SELECT ?1,added.file_id,start.position+added.offset FROM added CROSS JOIN start",params![id,selected]).map_err(db)?;
+    let previous = serde_json::to_string(&previous)
+        .map_err(|_| ApiError::internal("could not encode stacks"))?;
+    tx.execute("DELETE FROM book_stacks WHERE id IN (SELECT value FROM json_each(?1)) AND NOT EXISTS(SELECT 1 FROM book_stack_items WHERE stack_id=book_stacks.id)",[previous]).map_err(db)?;
     Ok(())
 }
 
@@ -112,17 +105,18 @@ async fn list(
     state
         .db
         .call_api(|c| {
-            let ids = c
-                .prepare("SELECT id FROM book_stacks ORDER BY created_at,id")
-                .map_err(db)?
-                .query_map([], |r| r.get::<_, String>(0))
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
-            ids.iter().map(|id| load_stack(c, id)).collect()
-        })
-        .await
-        .map(Json)
+            let tx=c.transaction().map_err(db)?;
+            let mut stacks = tx.prepare_cached("SELECT id,name FROM book_stacks ORDER BY created_at,id").map_err(db)?
+                .query_map([], |r| Ok(Stack{id:r.get(0)?,name:r.get(1)?,files:Vec::new()})).map_err(db)?
+                .collect::<Result<Vec<_>,_>>().map_err(db)?;
+            let positions = stacks.iter().enumerate().map(|(i,s)|(s.id.clone(),i)).collect::<std::collections::HashMap<_,_>>();
+            let mut query = tx.prepare_cached(&format!("SELECT f.*,si.stack_id FROM (SELECT {FILE_COLUMNS} FROM files) f JOIN book_stack_items si ON si.file_id=f.id CROSS JOIN library_items l ON l.file_id=f.id WHERE f.status='ready' AND f.deleted_at IS NULL AND l.kind='book' ORDER BY si.stack_id,si.position,f.id")).map_err(db)?;
+            let rows=query.query_map([],|r|Ok((r.get::<_,String>(15)?,scan_file(r)?))).map_err(db)?;
+            for row in rows { let (id,file)=row.map_err(db)?; if let Some(&index)=positions.get(&id) { stacks[index].files.push(file); } }
+            drop(query);
+            tx.commit().map_err(db)?;
+            Ok(stacks)
+        }).await.map(Json)
 }
 
 async fn create(
@@ -221,9 +215,8 @@ async fn remove(
     state.db.call_api(move |c| {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db)?;
         require_stack(&tx, &id)?;
-        for file_id in o.file_ids {
-            tx.execute("DELETE FROM book_stack_items WHERE stack_id=?1 AND file_id=?2", params![id,file_id]).map_err(db)?;
-        }
+        let selected = super::batch::ids(&o.file_ids,false)?;
+        tx.execute("DELETE FROM book_stack_items WHERE stack_id=?1 AND file_id IN (SELECT value FROM json_each(?2))", params![id,selected]).map_err(db)?;
         tx.execute("DELETE FROM book_stacks WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM book_stack_items WHERE stack_id=?1)", [id]).map_err(db)?;
         tx.commit().map_err(db)?;
         Ok(http::StatusCode::NO_CONTENT)
@@ -249,25 +242,8 @@ async fn reorder(
                 return Err(ApiError::bad_request("书籍已变化，请刷新后重新排序"));
             }
             // Reuse active members' slots, leaving temporarily unavailable books in place.
-            let positions = stack
-                .files
-                .iter()
-                .map(|file| {
-                    tx.query_row(
-                        "SELECT position FROM book_stack_items WHERE stack_id=?1 AND file_id=?2",
-                        params![id, file.id],
-                        |row| row.get::<_, i64>(0),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
-            for (position, file_id) in positions.iter().zip(&o.file_ids) {
-                tx.execute(
-                    "UPDATE book_stack_items SET position=?3 WHERE stack_id=?1 AND file_id=?2",
-                    params![id, file_id, position],
-                )
-                .map_err(db)?;
-            }
+            let selected = super::batch::ids(&o.file_ids,true)?;
+            tx.execute("WITH slots AS MATERIALIZED (SELECT position,ROW_NUMBER() OVER (ORDER BY position,file_id)-1 AS ordinal FROM book_stack_items WHERE stack_id=?1 AND file_id IN (SELECT value FROM json_each(?2))), ordering AS MATERIALIZED (SELECT selected.value AS file_id,slots.position FROM json_each(?2) selected JOIN slots ON slots.ordinal=CAST(selected.key AS INTEGER)) UPDATE book_stack_items SET position=(SELECT position FROM ordering WHERE ordering.file_id=book_stack_items.file_id) WHERE stack_id=?1 AND file_id IN (SELECT file_id FROM ordering)",params![id,selected]).map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(http::StatusCode::NO_CONTENT)
         })
@@ -283,7 +259,7 @@ async fn suggestions(
     state.db.call_api(|c| {
         let now = revaro_core::Timestamp::now().to_string();
         let pending: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM library_items l JOIN files f ON f.id=l.file_id WHERE l.kind='book' AND f.status='ready' AND f.deleted_at IS NULL AND (l.metadata_etag IS NULL OR l.metadata_etag<>COALESCE(f.etag,'')) AND NOT EXISTS(SELECT 1 FROM book_metadata_retries r WHERE r.file_id=f.id AND r.source_etag=COALESCE(f.etag,'') AND r.retry_at>?1))", [now], |row|row.get(0)).map_err(db)?;
-        let mut q = c.prepare("SELECT l.series,f.id FROM library_items l JOIN files f ON f.id=l.file_id WHERE l.kind='book' AND l.metadata_etag=COALESCE(f.etag,'') AND l.series IS NOT NULL AND f.status='ready' AND f.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM book_stack_items WHERE file_id=f.id) ORDER BY l.series,l.series_index ASC NULLS LAST,f.name,f.id").map_err(db)?;
+        let mut q = c.prepare_cached("SELECT l.series,f.id FROM library_items l JOIN files f ON f.id=l.file_id WHERE l.kind='book' AND l.metadata_etag=COALESCE(f.etag,'') AND l.series IS NOT NULL AND f.status='ready' AND f.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM book_stack_items WHERE file_id=f.id) ORDER BY l.series,l.series_index ASC NULLS LAST,f.name,f.id").map_err(db)?;
         let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?))).map_err(db)?;
         let mut suggestions = Vec::<StackSuggestion>::new();
         for row in rows {

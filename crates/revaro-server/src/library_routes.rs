@@ -1,4 +1,5 @@
 //! Content-library queries and virtual collections over the existing files.
+mod batch;
 mod query;
 mod stacks;
 
@@ -9,6 +10,7 @@ use axum::{
     extract::{Path, Query, State},
     routing::get,
 };
+use futures_util::StreamExt;
 use revaro_core::{
     ApiError, Timestamp,
     library::{Collection, CreateCollection, ItemUpdate, LibraryItem, LibraryListing},
@@ -29,6 +31,8 @@ struct Options {
     #[serde(default)]
     q: String,
     #[serde(default)]
+    sort: String,
+    #[serde(default)]
     favorite: bool,
     collection: Option<String>,
     stack: Option<String>,
@@ -47,6 +51,7 @@ struct Options {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(stacks::routes())
+        .merge(batch::routes())
         .route("/library/items", get(list))
         .route(
             "/library/selection-state",
@@ -97,7 +102,7 @@ async fn selection_state(
         .db
         .call_api(move |connection| {
             let mut query = connection
-                .prepare(
+                .prepare_cached(
                     "SELECT DISTINCT f.id,COALESCE(s.favorite,0) FROM json_each(?1) selected \
              JOIN files f ON f.id=selected.value LEFT JOIN library_state s ON s.file_id=f.id \
              WHERE f.kind='file' AND f.deleted_at IS NULL ORDER BY f.id",
@@ -127,6 +132,17 @@ async fn list(
     if !(1..=200).contains(&limit)
         || o.offset < 0
         || o.q.len() > 512
+        || ![
+            "",
+            "created",
+            "name",
+            "name_desc",
+            "size",
+            "size_desc",
+            "updated",
+            "updated_desc",
+        ]
+        .contains(&o.sort.as_str())
         || o.kind.as_deref().is_some_and(|k| !valid_kind(k))
     {
         return Err(ApiError::bad_request("invalid library query"));
@@ -153,16 +169,31 @@ async fn list(
     let mut items = Vec::<LibraryItem>::new();
     let mut previous_bucket = String::new();
     let mut progress_sum = 0.0;
+    let rows = futures_util::stream::iter(rows)
+        .map(|mut candidate| {
+            let state = &state;
+            async move {
+                if candidate.item.kind == "book" {
+                    candidate.item.reading_progress = book_reading_progress(
+                        state,
+                        &candidate.item.file,
+                        candidate.progress.take(),
+                    )
+                    .await;
+                }
+                candidate
+            }
+        })
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await;
     for query::Candidate {
         mut item,
-        progress,
+        progress: _,
         bucket,
         stack,
     } in rows
     {
-        if item.kind == "book" {
-            item.reading_progress = book_reading_progress(&state, &item.file, progress).await;
-        }
         if grouped && stack.is_some() && previous_bucket == bucket {
             let group = items.last_mut().expect("previous group exists");
             progress_sum += item.reading_progress.unwrap_or(0.0);
@@ -194,7 +225,7 @@ async fn list(
 /// Cache series metadata in the existing classification row, including negative results.
 pub(crate) async fn index_book_series(state: &Arc<AppState>) -> Result<(), ApiError> {
     let files = state.db.call_api(|c| {
-        let mut query = c.prepare(&format!("SELECT f.* FROM (SELECT {FILE_COLUMNS} FROM files) f JOIN library_items l ON l.file_id=f.id WHERE l.kind='book' AND f.status='ready' AND f.deleted_at IS NULL AND (l.metadata_etag IS NULL OR l.metadata_etag<>COALESCE(f.etag,'')) AND NOT EXISTS(SELECT 1 FROM book_metadata_retries r WHERE r.file_id=f.id AND r.source_etag=COALESCE(f.etag,'') AND r.retry_at>?1) ORDER BY f.id LIMIT 16")).map_err(db)?;
+        let mut query = c.prepare_cached(&format!("SELECT f.* FROM (SELECT {FILE_COLUMNS} FROM files) f JOIN library_items l ON l.file_id=f.id WHERE l.kind='book' AND f.status='ready' AND f.deleted_at IS NULL AND (l.metadata_etag IS NULL OR l.metadata_etag<>COALESCE(f.etag,'')) AND NOT EXISTS(SELECT 1 FROM book_metadata_retries r WHERE r.file_id=f.id AND r.source_etag=COALESCE(f.etag,'') AND r.retry_at>?1) ORDER BY f.id LIMIT 16")).map_err(db)?;
         query.query_map([Timestamp::now().to_rfc3339()], scan_file).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)
     }).await?;
     let full_batch = files.len() == 16;
@@ -328,7 +359,7 @@ async fn collections(
     _user: AuthUser,
 ) -> Result<Json<Vec<Collection>>, ApiError> {
     state.db.call_api(move |c| {
-        let mut s=c.prepare("SELECT id,name,kind,(SELECT COUNT(*) FROM library_collection_items i JOIN files f ON f.id=i.file_id JOIN library_items l ON l.file_id=f.id WHERE i.collection_id=library_collections.id AND f.status='ready' AND f.deleted_at IS NULL AND l.kind=library_collections.kind) FROM library_collections ORDER BY created_at,id").map_err(db)?;
+        let mut s=c.prepare_cached("SELECT c.id,c.name,c.kind,COUNT(CASE WHEN f.status='ready' AND f.deleted_at IS NULL AND l.kind=c.kind THEN f.id END) FROM library_collections c LEFT JOIN library_collection_items i ON i.collection_id=c.id LEFT JOIN files f ON f.id=i.file_id LEFT JOIN library_items l ON l.file_id=f.id GROUP BY c.id ORDER BY c.created_at,c.id").map_err(db)?;
         s.query_map([],|r|Ok(Collection{id:r.get(0)?,name:r.get(1)?,kind:r.get(2)?,item_count:r.get(3)?})).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)
     }).await.map(Json)
 }
@@ -345,17 +376,22 @@ async fn create_collection(
     state
         .db
         .call_api(move |c| {
+            let tx = c
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(db)?;
             let id = crate::ids::new_id();
-            c.execute(
+            tx.execute(
                 "INSERT INTO library_collections(id,name,kind,created_at) VALUES(?1,?2,?3,?4)",
                 rusqlite::params![id, name, o.kind, Timestamp::now().to_rfc3339()],
             )
             .map_err(db)?;
+            let item_count = batch::add_members(&tx, &id, &o.file_ids)?;
+            tx.commit().map_err(db)?;
             Ok(Collection {
                 id,
                 name,
                 kind: o.kind,
-                item_count: 0,
+                item_count,
             })
         })
         .await
@@ -1593,6 +1629,129 @@ mod tests {
                 assert_eq!(indexed, enriched, "offset={offset} history={history}");
             }
         }
+        std::fs::remove_dir_all(state.store.root()).unwrap();
+    }
+    #[tokio::test]
+    async fn batch_collections_preserve_request_order_and_roll_back_invalid_members() {
+        let state = state().await;
+        for (id, name) in [
+            ("b", "Beta.txt"),
+            ("a", "Alpha.txt"),
+            ("c", "Gamma.txt"),
+            ("image", "Image.png"),
+        ] {
+            seed(&state, id, name).await;
+        }
+        let (status, shelf) = request(
+            &state,
+            "POST",
+            "/api/library/collections",
+            Some(serde_json::json!({"name":"轻小说","kind":"book","file_ids":["b","a"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(shelf["item_count"], 2);
+        let path = format!(
+            "/api/library/collections/{}/items",
+            shelf["id"].as_str().unwrap()
+        );
+        assert_eq!(
+            request(
+                &state,
+                "PUT",
+                &path,
+                Some(serde_json::json!({"file_ids":["a","c"]}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let listing = format!(
+            "/api/library/items?kind=book&collection={}",
+            shelf["id"].as_str().unwrap()
+        );
+        let items = request(&state, "GET", &listing, None).await.1;
+        assert_eq!(
+            items["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["file"]["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["b", "a", "c"]
+        );
+        assert_eq!(
+            request(
+                &state,
+                "PUT",
+                &path,
+                Some(serde_json::json!({"file_ids":["b","image"]}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            request(
+                &state,
+                "POST",
+                "/api/library/collections",
+                Some(serde_json::json!({"name":"invalid","kind":"book","file_ids":["b","image"]}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let shelves = request(&state, "GET", "/api/library/collections", None)
+            .await
+            .1;
+        assert_eq!(shelves.as_array().unwrap().len(), 1);
+        assert_eq!(
+            request(
+                &state,
+                "PATCH",
+                "/api/library/favorites",
+                Some(serde_json::json!({"file_ids":["b","missing"],"favorite":true}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            request(&state, "GET", "/api/library/items?favorite=true", None)
+                .await
+                .1["total"],
+            0
+        );
+        assert_eq!(
+            request(
+                &state,
+                "PATCH",
+                "/api/library/favorites",
+                Some(serde_json::json!({"file_ids":["a","b"],"favorite":true}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            request(&state, "GET", "/api/library/items?favorite=true", None)
+                .await
+                .1["total"],
+            2
+        );
+        assert_eq!(
+            request(
+                &state,
+                "DELETE",
+                &path,
+                Some(serde_json::json!({"file_ids":["a","c"]}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(request(&state, "GET", &listing, None).await.1["total"], 1);
         std::fs::remove_dir_all(state.store.root()).unwrap();
     }
 }

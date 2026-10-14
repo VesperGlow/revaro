@@ -1226,17 +1226,13 @@ async fn ready_file(
     id: String,
     missing: &'static str,
 ) -> Result<File, ApiError> {
-    state
-        .db
-        .call_api(move |connection| {
-            let file =
-                lookup_file_any(connection, &id).map_err(|error| not_found_or(error, missing))?;
-            if file.kind != FileKind::File || file.status != FileStatus::Ready {
-                return Err(ApiError::not_found(missing));
-            }
-            Ok(file)
-        })
+    let file = crate::query_cache::file(&state, id)
         .await
+        .map_err(|error| not_found_or(error, missing))?;
+    if file.kind != FileKind::File || file.status != FileStatus::Ready {
+        return Err(ApiError::not_found(missing));
+    }
+    Ok(file)
 }
 
 /// `GET /api/files/{id}/preview`

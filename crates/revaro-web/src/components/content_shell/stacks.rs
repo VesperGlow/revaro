@@ -100,7 +100,10 @@ impl StackController {
         // Stack refreshes have their own generation, so late responses cannot undo an edit.
         Effect::new(move |_| {
             let _ = refresh.get();
-            let _ = page.get();
+            let active = page.get() == LibraryPage::Books || selection.enabled.get();
+            if !active {
+                return;
+            }
             revision.update(|r| *r += 1);
             let current = revision.get_untracked();
             leptos::task::spawn_local(async move {

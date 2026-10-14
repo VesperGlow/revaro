@@ -21,6 +21,7 @@
 //! the async runtime.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -126,6 +127,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "015_library_opened_time.sql",
         sql: include_str!("../migrations/015_library_opened_time.sql"),
     },
+    Migration {
+        version: 16,
+        name: "016_global_performance.sql",
+        sql: include_str!("../migrations/016_global_performance.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -209,6 +215,7 @@ struct Pool {
     workers: Arc<tokio::sync::Semaphore>,
     admitted: Arc<tokio::sync::Semaphore>,
     memory: crate::memory::MemoryBudget,
+    revision: AtomicU64,
 }
 
 impl Pool {
@@ -229,6 +236,7 @@ impl Pool {
             workers: Arc::new(tokio::sync::Semaphore::new(max_size)),
             admitted: Arc::new(tokio::sync::Semaphore::new(MAX_DATABASE_OPERATIONS)),
             memory,
+            revision: AtomicU64::new(0),
         }
     }
 
@@ -242,6 +250,7 @@ impl Pool {
             if let Some(connection) = state.idle.pop() {
                 return Ok(PooledConnection {
                     pool: Arc::clone(self),
+                    initial_changes: connection.total_changes(),
                     connection: Some(connection),
                 });
             }
@@ -252,6 +261,7 @@ impl Pool {
                     Ok(connection) => {
                         return Ok(PooledConnection {
                             pool: Arc::clone(self),
+                            initial_changes: connection.total_changes(),
                             connection: Some(connection),
                         });
                     }
@@ -316,6 +326,7 @@ impl Pool {
 
 /// Apply the pragmas every connection needs.
 fn configure(connection: &Connection) -> Result<(), DbError> {
+    connection.set_prepared_statement_cache_capacity(128);
     // Historical rows use RFC3339Nano or SQLite's UTC timestamp format.
     // Normalize before SQL compares times, preserving sub-millisecond order.
     connection
@@ -348,6 +359,7 @@ fn configure(connection: &Connection) -> Result<(), DbError> {
 pub struct PooledConnection {
     pool: Arc<Pool>,
     connection: Option<Connection>,
+    initial_changes: u64,
 }
 
 impl std::ops::Deref for PooledConnection {
@@ -371,6 +383,12 @@ impl std::ops::DerefMut for PooledConnection {
 impl Drop for PooledConnection {
     fn drop(&mut self) {
         if let Some(connection) = self.connection.take() {
+            // Publish before returning the worker result, including trigger writes
+            // and writes through synchronous startup/test connections. Rollbacks
+            // may invalidate unnecessarily, but can never retain stale responses.
+            if connection.total_changes() != self.initial_changes {
+                self.pool.revision.fetch_add(1, Ordering::AcqRel);
+            }
             self.pool.release(connection);
         }
     }
@@ -386,6 +404,9 @@ pub struct Database {
 }
 
 impl Database {
+    pub fn revision(&self) -> u64 {
+        self.pool.revision.load(Ordering::Acquire)
+    }
     /// Open (creating if necessary) the database at `path` and migrate it.
     ///
     /// # Errors

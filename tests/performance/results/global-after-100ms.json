@@ -1,0 +1,299 @@
+{
+  "files": 10000,
+  "shelf_members": 200,
+  "stack_members": 5000,
+  "batch": true,
+  "injected_request_latency_ms": 100.0,
+  "reads": {
+    "directory": {
+      "cold_ms": 107.043,
+      "warm_median_ms": 102.945,
+      "warm_p95_ms": 104.811
+    },
+    "books": {
+      "cold_ms": 147.923,
+      "warm_median_ms": 103.165,
+      "warm_p95_ms": 105.295
+    },
+    "search": {
+      "cold_ms": 114.841,
+      "warm_median_ms": 103.157,
+      "warm_p95_ms": 103.661
+    }
+  },
+  "shelf_write_ms": 105.775,
+  "shelf_read_ms": 138.853,
+  "create_shelf_with_200_ms": 244.658,
+  "create_stack_5000_ms": 268.862,
+  "list_stacks_ms": 221.413,
+  "system": {
+    "cache": {
+      "classes": {
+        "files/block": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "files/directory": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 20,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 57072,
+          "memory_entries": 2,
+          "misses": 2
+        },
+        "files/metadata": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "library/collections": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 1371130,
+          "memory_entries": 1,
+          "misses": 2
+        },
+        "library/listing": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 20,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 106142,
+          "memory_entries": 4,
+          "misses": 4
+        },
+        "media/metadata": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "media/thumbnail": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "reader/asset": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "reader/books": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 4
+        },
+        "reader/flow-chunk": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "reader/flow-manifest": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "reader/manifest-object": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "reader/rendered-chunk": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 0
+        },
+        "reader/source": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 0,
+          "load_errors": 2,
+          "loads": 2,
+          "memory_bytes": 0,
+          "memory_entries": 0,
+          "misses": 2
+        },
+        "search/results": {
+          "disk_bytes": 0,
+          "disk_entries": 0,
+          "evictions": 0,
+          "hits": 20,
+          "load_errors": 0,
+          "loads": 0,
+          "memory_bytes": 57097,
+          "memory_entries": 2,
+          "misses": 2
+        }
+      },
+      "disk_bytes": 0,
+      "disk_entries": 0,
+      "memory_bytes": 1591441,
+      "memory_capacity": 5164712960,
+      "memory_entries": 9,
+      "memory_limit": 5164712960
+    },
+    "disk_available_bytes": 2969182208,
+    "disk_total_bytes": 4131770368,
+    "disk_used_bytes": 1162588160,
+    "maintenance": [
+      {
+        "failures": 0,
+        "name": "auth",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "book-series",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "cache",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "catalog-warm",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "database-statistics",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "flow-cache",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "library-history",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "memory",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "object-cleanup",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "orphan-objects",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "temporary-uploads",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "trash",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "upload-commits",
+        "running": false
+      },
+      {
+        "failures": 0,
+        "name": "uploads",
+        "running": false
+      }
+    ],
+    "memory": {
+      "available_bytes": 6390796288,
+      "cgroup_available_bytes": null,
+      "cgroup_limit_bytes": null,
+      "host_available_bytes": 6390796288,
+      "host_total_bytes": 8263540736,
+      "host_used_bytes": 1872744448,
+      "process_rss_bytes": 87216128
+    },
+    "memory_budget": {
+      "cache_bytes": 5164712960,
+      "database_bytes": 258235648,
+      "mmap_bytes": 516471296,
+      "total_bytes": 8263540736
+    },
+    "reader_available_slots": 2,
+    "share_available_slots": 8,
+    "zip_available_slots": 2
+  }
+}

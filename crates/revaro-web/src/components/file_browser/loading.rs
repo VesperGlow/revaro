@@ -75,6 +75,10 @@ impl ListingController {
             notify,
             on_logout,
         } = context;
+        let snapshots = StoredValue::new(super::super::view_memory::Snapshots::<(
+            FileDetail,
+            revaro_core::features::Listing,
+        )>::new());
         let load_folder_request = {
             let notify = notify.clone();
             let on_logout = on_logout.clone();
@@ -86,7 +90,11 @@ impl ListingController {
                 let sequence = request_sequence.get_untracked().wrapping_add(1);
                 request_sequence.set(sequence);
                 loading_folder.set(Some(requested_id.clone()));
-                loading.set(true);
+                loading.set(
+                    requested_id != current_id.get_untracked()
+                        || current.get_untracked().is_none()
+                        || trash_mode.get_untracked(),
+                );
                 loading_more.set(false);
                 loading_more_error.set(String::new());
                 error.set(String::new());
@@ -110,6 +118,28 @@ impl ListingController {
                 let offset = 0;
                 let query = search_query.get_untracked();
                 let sort = sort_order.get_untracked();
+                let previous_id = current_id.get_untracked();
+                let snapshot_key =
+                    serde_json::to_string(&(&requested_id, &query, &sort)).unwrap_or_default();
+                let mut cached = None;
+                snapshots.update_value(|cache| cached = cache.get(&snapshot_key));
+                let limit = cached
+                    .as_ref()
+                    .map(|(_, listing)| listing.items.len().clamp(100, 200) as i64)
+                    .unwrap_or(100);
+                if let Some((detail, children)) = cached {
+                    current_id.set(requested_id.clone());
+                    current.set(Some(detail.file));
+                    breadcrumbs.set(detail.breadcrumbs);
+                    listing_total.set(children.total);
+                    listing_next_offset.set(children.items.len() as i64);
+                    preview_items.set(children.items.clone());
+                    items.set(children.items);
+                    total_bytes.set(children.total_bytes);
+                    file_count.set(children.file_count);
+                    trash_mode.set(false);
+                    loading.set(false);
+                }
                 let mut completion = completion;
                 leptos::task::spawn_local(async move {
                     let result = async {
@@ -120,7 +150,7 @@ impl ListingController {
                         // listing.
                         let (detail, children) = futures_util::join!(
                             api::fetch_file(&requested_id),
-                            api::fetch_listing(&requested_id, &query, &sort, offset),
+                            api::fetch_listing_limit(&requested_id, &query, &sort, offset, limit),
                         );
                         let detail = detail?;
                         let children = children?;
@@ -138,11 +168,14 @@ impl ListingController {
 
                     match result {
                         Ok((detail, children)) => {
-                            let changed_folder = requested_id != current_id.get_untracked();
+                            snapshots.update_value(|cache| {
+                                cache.put(snapshot_key, (detail.clone(), children.clone()))
+                            });
+                            let changed_folder = requested_id != previous_id;
                             if !suppress_history && changed_folder {
                                 nav_actions.update(|actions| {
                                     actions.push(NavAction::Folder {
-                                        id: current_id.get_untracked(),
+                                        id: previous_id.clone(),
                                     });
                                 });
                                 push_browser_history();
@@ -270,6 +303,29 @@ impl ListingController {
                                 );
                             });
                             preview_items.set(items.get_untracked());
+                            if let Some(file) = current.get_untracked() {
+                                let key = serde_json::to_string(&(&id, &query, &sort))
+                                    .unwrap_or_default();
+                                snapshots.update_value(|cache| {
+                                    cache.put(
+                                        key,
+                                        (
+                                            FileDetail {
+                                                file,
+                                                breadcrumbs: breadcrumbs.get_untracked(),
+                                            },
+                                            revaro_core::features::Listing {
+                                                items: items.get_untracked(),
+                                                total: listing_total.get_untracked(),
+                                                offset: 0,
+                                                limit: 100,
+                                                total_bytes: total_bytes.get_untracked(),
+                                                file_count: file_count.get_untracked(),
+                                            },
+                                        ),
+                                    )
+                                });
+                            }
                         }
                         Err(request_error) if request_error.is_unauthorized() => {
                             loading_more.set(false);

@@ -33,6 +33,7 @@ pub mod media_runtime;
 pub mod memory;
 pub mod middleware;
 pub mod proxy;
+pub mod query_cache;
 pub mod quic;
 pub mod reader_routes;
 pub mod router;

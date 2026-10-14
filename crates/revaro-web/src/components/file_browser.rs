@@ -120,6 +120,16 @@ pub fn FileBrowser(
     on_password_changed: Callback<String>,
     on_header_ready: Callback<TopbarActions>,
 ) -> impl IntoView {
+    let view_memory = super::view_memory::ViewMemory::new(&session.username);
+    let saved_view = view_memory.load("/files");
+    let initial_trash = web_sys::window()
+        .and_then(|w| w.location().pathname().ok())
+        .is_some_and(|p| p == "/trash");
+    let pending_scroll = RwSignal::new(Some(if initial_trash {
+        view_memory.load("/trash").scroll
+    } else {
+        saved_view.scroll
+    }));
     let shell_context = use_context::<ShellContext>();
     let current_id = RwSignal::new(ROOT_ID.to_owned());
     let current = RwSignal::new(None::<File>);
@@ -128,9 +138,24 @@ pub fn FileBrowser(
     let listing_empty = Memo::new(move |_| items.with(Vec::is_empty));
     let total_bytes = RwSignal::new(0_i64);
     let file_count = RwSignal::new(0_i64);
-    let search_text = RwSignal::new(String::new());
-    let search_query = RwSignal::new(String::new());
-    let sort_order = RwSignal::new("name".to_owned());
+    let search_text = RwSignal::new(saved_view.query.clone());
+    let search_query = RwSignal::new(saved_view.query.clone());
+    let sort_order = RwSignal::new(
+        if [
+            "name",
+            "name_desc",
+            "size",
+            "size_desc",
+            "updated",
+            "updated_desc",
+        ]
+        .contains(&saved_view.sort.as_str())
+        {
+            saved_view.sort.clone()
+        } else {
+            "name".into()
+        },
+    );
     let listing_next_offset = RwSignal::new(0_i64);
     let loading_more = RwSignal::new(false);
     let loading_more_error = RwSignal::new(String::new());
@@ -143,6 +168,9 @@ pub fn FileBrowser(
     // navigating away from the still-current folder (including into trash).
     let loading_folder = RwSignal::new(None::<String>);
     let error = RwSignal::new(String::new());
+    // Stable state transitions keep the grid owner alive during same-folder
+    // revalidation; writing false/empty again must not reconstruct its For.
+    let listing_state = Memo::new(move |_| (loading.get(), error.get(), listing_empty.get()));
     let trash_mode = RwSignal::new(false);
     let request_sequence = RwSignal::new(0_u64);
     let selection = shell_context.map_or_else(SelectionMode::new, |c| c.selection);
@@ -1182,8 +1210,14 @@ pub fn FileBrowser(
                 .filter(|id| !id.contains('/'))
         });
     history_suppressed.set(true);
-    let initial_folder = folder_id(&pathname, ROOT_ID);
-    initial_route_pending.set(initial_folder != ROOT_ID && pathname.starts_with("/f/"));
+    let initial_folder = if pathname.starts_with("/f/") {
+        folder_id(&pathname, ROOT_ID)
+    } else if revaro_core::ids::is_uuid(&saved_view.folder) {
+        saved_view.folder.clone()
+    } else {
+        ROOT_ID.to_owned()
+    };
+    initial_route_pending.set(initial_folder != ROOT_ID);
     if initial_folder == ROOT_ID && pathname != "/files" {
         if shell_context.is_none_or(|c| c.page.get_untracked() == LibraryPage::Files) {
             replace_folder_url(&initial_folder);
@@ -1216,17 +1250,78 @@ pub fn FileBrowser(
         load_folder.run(initial_folder);
     }
     history_suppressed.set(false);
+    let persist_view = Callback::new(move |()| {
+        let scroll = pending_scroll.get_untracked().unwrap_or_else(|| {
+            web_sys::window()
+                .and_then(|w| w.scroll_y().ok())
+                .unwrap_or_default()
+        });
+        view_memory.save(
+            if trash_mode.get_untracked() {
+                "/trash"
+            } else {
+                "/files"
+            },
+            &super::view_memory::SavedView {
+                folder: current_id.get_untracked(),
+                query: search_query.get_untracked(),
+                sort: sort_order.get_untracked(),
+                scroll,
+                ..Default::default()
+            },
+        );
+    });
+    if let Some(context) = shell_context {
+        context.remember_workspace.set(Some(persist_view));
+    }
+    Effect::new(move |_| {
+        let active = shell_context.is_none_or(|c| c.page.get().is_file_workspace());
+        let _ = (current_id.get(), search_query.get(), sort_order.get());
+        if active && !loading.get_untracked() {
+            persist_view.run(());
+        }
+    });
+    let last_scroll = StoredValue::new(0.0_f64);
+    let mut scroll_listener = browser::on_scroll(move |_| {
+        if shell_context.is_some_and(|c| {
+            !c.page.get_untracked().is_file_workspace() || c.selection_overlay.get_untracked()
+        }) || loading.get_untracked()
+            || pending_scroll.get_untracked().is_some()
+        {
+            return;
+        }
+        let now = js_sys::Date::now();
+        if now - last_scroll.get_value() > 200.0 {
+            last_scroll.set_value(now);
+            persist_view.run(());
+        }
+    });
+    let mut pagehide = browser::on_pagehide(move |_| {
+        if shell_context.is_none_or(|c| c.page.get_untracked().is_file_workspace()) {
+            persist_view.run(());
+        }
+    });
+    on_cleanup(move || {
+        scroll_listener.release();
+        pagehide.release();
+    });
+    super::view_memory::install_scroll_restore(
+        pending_scroll,
+        Signal::derive(move || {
+            shell_context
+                .is_none_or(|c| c.page.get().is_file_workspace() && !c.selection_overlay.get())
+                && !loading.get()
+                && !loading_more.get()
+        }),
+        Signal::derive(move || items.with(Vec::len)),
+        Signal::derive(move || {
+            !trash_mode.get() && listing_next_offset.get() < listing_total.get()
+        }),
+        load_more,
+    );
     let username = RwSignal::new(session.username.clone());
     let has_avatar = RwSignal::new(session.has_avatar);
     let avatar_version = RwSignal::new(0_u64);
-    let return_home = {
-        let load_folder = load_folder.clone();
-        Callback::new(move |(): ()| {
-            trash_mode.set(false);
-            load_folder.run(ROOT_ID.to_owned());
-        })
-    };
-
     let uploads_for_view = leptos::__reexports::send_wrapper::SendWrapper::new(uploads.clone());
     let shell_upload = uploads_for_view.clone();
     let shell_upload_leave = uploads_for_view.clone();
@@ -1369,10 +1464,10 @@ pub fn FileBrowser(
     };
     on_cleanup(move || popstate.release());
 
-    let header_files = return_home;
     let header_root = Callback::new(move |()| {
         history_suppressed.set(true);
-        header_files.run(());
+        pending_scroll.set(Some(view_memory.load("/files").scroll));
+        load_folder.run(current_id.get_untracked());
         history_suppressed.set(false);
     });
     on_header_ready.run(TopbarActions {
@@ -1385,7 +1480,10 @@ pub fn FileBrowser(
         on_upload_folder: upload_folder,
         on_new_document: new_document,
         on_create_folder: show_create_folder,
-        on_trash: load_trash,
+        on_trash: Callback::new(move |()| {
+            pending_scroll.set(Some(view_memory.load("/trash").scroll));
+            load_trash.run(());
+        }),
         on_account: open_account,
         search_text,
         on_search: submit_search,
@@ -1504,7 +1602,8 @@ pub fn FileBrowser(
                 </Show>
 
                 {move || {
-                    if loading.get() {
+                    let (is_loading,message,is_empty)=listing_state.get();
+                    if is_loading {
                         view! {
                             <div class="state" aria-live="polite">
                                 <div class="spinner"></div>
@@ -1512,8 +1611,7 @@ pub fn FileBrowser(
                             </div>
                         }
                         .into_any()
-                    } else if !error.get().is_empty() {
-                        let message = error.get();
+                    } else if !message.is_empty() {
                         let retry = if trash_mode.get() {
                             let load_trash = load_trash.clone();
                             Callback::new(move |(): ()| load_trash.run(()))
@@ -1533,7 +1631,7 @@ pub fn FileBrowser(
                             </div>
                         }
                         .into_any()
-                    } else if listing_empty.get() {
+                    } else if is_empty {
                         let heading = if trash_mode.get() {
                             "回收站是空的"
                         } else {
@@ -1559,7 +1657,7 @@ pub fn FileBrowser(
                         // the shared batch toolbar after an item is selected.
                         view! {
                             <div class="file-grid" class:selection-mode=move || selection.enabled.get()>
-                                <For each=move || items.get() key=|item| item.id.clone() let:item>
+                                <For each=move || items.get() key=|item| (item.id.clone(),item.name.clone(),item.etag.clone(),item.size,item.status,item.has_cover,item.updated_at.unix_millis(),item.mime_type.clone(),item.deleted_at.is_some()) let:item>
                                     <FileTile
                                         item=item
                                         trash_mode=trash_mode

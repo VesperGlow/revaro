@@ -36,6 +36,7 @@ mod transfer;
 mod uploads;
 mod version_history;
 mod video;
+mod view_memory;
 
 pub use content_shell::ContentShell;
 pub use file_browser::FileBrowser;

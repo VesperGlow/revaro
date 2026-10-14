@@ -439,11 +439,21 @@ pub async fn fetch_listing(
     sort: &str,
     offset: i64,
 ) -> Result<revaro_core::features::Listing, RequestError> {
+    fetch_listing_limit(parent, q, sort, offset, 100).await
+}
+
+pub async fn fetch_listing_limit(
+    parent: &str,
+    q: &str,
+    sort: &str,
+    offset: i64,
+    limit: i64,
+) -> Result<revaro_core::features::Listing, RequestError> {
     let descending = sort.ends_with("_desc");
     let sort = sort.strip_suffix("_desc").unwrap_or(sort);
     let encoded: String = js_sys::encode_uri_component(q).into();
     get_json(&format!(
-        "/api/files?q={encoded}&sort={sort}&descending={descending}&offset={offset}&limit=100&parent_id={parent}"
+        "/api/files?q={encoded}&sort={sort}&descending={descending}&offset={offset}&limit={limit}&parent_id={parent}"
     ))
     .await
 }
@@ -458,6 +468,7 @@ pub async fn fetch_system_status() -> Result<SystemStatusSummary, RequestError> 
 pub struct LibraryQuery {
     pub kind: String,
     pub query: String,
+    pub sort: String,
     pub favorite: bool,
     pub collection: String,
     pub recent: bool,
@@ -465,6 +476,7 @@ pub struct LibraryQuery {
     pub group_stacks: bool,
     pub stack: String,
     pub offset: i64,
+    pub limit: Option<i64>,
 }
 
 pub async fn fetch_library(
@@ -478,13 +490,15 @@ pub async fn fetch_library_with_signal(
     signal: Option<&AbortSignal>,
 ) -> Result<revaro_core::library::LibraryListing, RequestError> {
     let mut path = format!(
-        "/api/library/items?limit=60&offset={}&favorite={}&recent={}&opened_only={}&group_stacks={}&q={}",
+        "/api/library/items?limit={}&offset={}&favorite={}&recent={}&opened_only={}&group_stacks={}&q={}&sort={}",
+        query.limit.unwrap_or(60),
         query.offset,
         query.favorite,
         query.recent,
         query.opened_only,
         query.group_stacks,
-        js_sys::encode_uri_component(&query.query)
+        js_sys::encode_uri_component(&query.query),
+        js_sys::encode_uri_component(&query.sort)
     );
     if !query.kind.is_empty() {
         path.push_str(&format!(
@@ -538,33 +552,40 @@ pub async fn fetch_collections() -> Result<Vec<revaro_core::library::Collection>
 pub async fn create_collection(
     name: &str,
     kind: &str,
+    file_ids: Vec<String>,
 ) -> Result<revaro_core::library::Collection, RequestError> {
     let request = api_request(Request::post("/api/library/collections"))
         .json(&revaro_core::library::CreateCollection {
             name: name.to_owned(),
             kind: kind.to_owned(),
+            file_ids,
         })
         .map_err(|e| request_transport(e.to_string()))?;
     send_json(request).await
 }
 
-pub async fn collection_member(
+pub async fn collection_members(
     collection: &str,
-    file_id: &str,
+    file_ids: Vec<String>,
     add: bool,
 ) -> Result<(), RequestError> {
-    let path = format!("/api/library/collections/{collection}/items/{file_id}");
+    let path = format!("/api/library/collections/{collection}/items");
     let builder = if add {
         Request::put(&path)
     } else {
         Request::delete(&path)
     };
-    send_empty(
-        api_request(builder)
-            .build()
-            .map_err(|e| request_transport(e.to_string()))?,
-    )
-    .await
+    let request = api_request(builder)
+        .json(&revaro_core::library::CollectionMembers { file_ids })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_empty(request).await
+}
+
+pub async fn favorite_batch(file_ids: Vec<String>, favorite: bool) -> Result<(), RequestError> {
+    let request = api_request(Request::patch("/api/library/favorites"))
+        .json(&revaro_core::library::FavoriteBatch { file_ids, favorite })
+        .map_err(|e| request_transport(e.to_string()))?;
+    send_empty(request).await
 }
 
 pub async fn delete_collection(id: &str) -> Result<(), RequestError> {

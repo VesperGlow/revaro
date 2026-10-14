@@ -41,6 +41,11 @@ pub const READER_RENDERED_CHUNK: &str = "reader/rendered-chunk";
 pub const MEDIA_THUMBNAIL: &str = "media/thumbnail";
 pub const MEDIA_METADATA: &str = "media/metadata";
 pub const FILE_BLOCK: &str = "files/block";
+pub const FILE_METADATA: &str = "files/metadata";
+pub const DIRECTORY_LISTING: &str = "files/directory";
+pub const LIBRARY_LISTING: &str = "library/listing";
+pub const LIBRARY_COLLECTIONS: &str = "library/collections";
+pub const SEARCH_RESULTS: &str = "search/results";
 
 /// The tier and eviction policy for one cache namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,6 +383,11 @@ impl CacheManager {
             (MEDIA_THUMBNAIL, 80, 8, 8 << 20),
             (MEDIA_METADATA, 90, 32, 8 << 20),
             (FILE_BLOCK, 30, 8, 64 << 10),
+            (FILE_METADATA, 95, 16, 32 << 20),
+            (DIRECTORY_LISTING, 85, 8, 32 << 20),
+            (LIBRARY_LISTING, 85, 8, 32 << 20),
+            (LIBRARY_COLLECTIONS, 95, 32, 32 << 20),
+            (SEARCH_RESULTS, 65, 16, 32 << 20),
         ] {
             let _ = manager.register_class(CacheClass {
                 name: name.to_owned(),

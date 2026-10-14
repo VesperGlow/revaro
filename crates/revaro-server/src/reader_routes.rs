@@ -30,7 +30,6 @@ use crate::cache::{
     CacheError, CacheLoadError, CacheLoadKind, READER_ASSET, READER_BOOKS, READER_FLOW_CHUNK,
     READER_FLOW_MANIFEST, READER_MANIFEST_OBJECT, READER_RENDERED_CHUNK, READER_SOURCE,
 };
-use crate::file_routes;
 use crate::state::AppState;
 use crate::storage::StorageError;
 
@@ -54,31 +53,28 @@ pub fn routes() -> Router<Arc<AppState>> {
 }
 
 async fn reader_file(state: Arc<AppState>, id: String) -> Result<File, ApiError> {
-    state
-        .db
-        .call_api(move |connection| {
-            let file = file_routes::lookup_file_any(connection, &id).map_err(|error| {
-                if error.is_not_found() {
-                    ApiError::not_found("ready file not found")
-                } else {
-                    tracing::error!(%error, "reader file lookup failed");
-                    ApiError::internal("database error")
-                }
-            })?;
-            if file.kind != FileKind::File || file.status != FileStatus::Ready {
-                return Err(ApiError::not_found("ready file not found"));
-            }
-            if !revaro_core::classify::is_book_name(&file.name) {
-                return Err(ApiError::unsupported_media_type(
-                    "只支持阅读 EPUB 和 TXT 文件",
-                ));
-            }
-            if file.size > revaro_reader::MAX_EPUB {
-                return Err(ApiError::payload_too_large("文件太大，请下载后离线阅读"));
-            }
-            Ok(file)
-        })
+    let file = crate::query_cache::file(&state, id)
         .await
+        .map_err(|error| {
+            if error.is_not_found() {
+                ApiError::not_found("ready file not found")
+            } else {
+                tracing::error!(%error,"reader file lookup failed");
+                ApiError::internal("database error")
+            }
+        })?;
+    if file.kind != FileKind::File || file.status != FileStatus::Ready {
+        return Err(ApiError::not_found("ready file not found"));
+    }
+    if !revaro_core::classify::is_book_name(&file.name) {
+        return Err(ApiError::unsupported_media_type(
+            "只支持阅读 EPUB 和 TXT 文件",
+        ));
+    }
+    if file.size > revaro_reader::MAX_EPUB {
+        return Err(ApiError::payload_too_large("文件太大，请下载后离线阅读"));
+    }
+    Ok(file)
 }
 
 pub(crate) async fn load_book(
@@ -1065,7 +1061,7 @@ mod tests {
         assert!(stats.classes[READER_MANIFEST_OBJECT].hits >= 1);
         let file = state
             .db
-            .call(|connection| file_routes::lookup_file_any(connection, "reader-epub"))
+            .call(|connection| crate::file_routes::lookup_file_any(connection, "reader-epub"))
             .await
             .unwrap();
         let book_key = book_cache_key(&file);

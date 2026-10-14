@@ -7,6 +7,7 @@ mod loading;
 mod stack_management;
 mod stacks;
 
+use super::view_memory::{SavedView, ViewMemory, install_scroll_restore};
 pub(super) use cards::BookProgressBar;
 use cards::LibraryCover;
 use home::*;
@@ -50,6 +51,8 @@ use crate::{
 #[derive(Clone, Copy)]
 pub struct ShellContext {
     pub page: RwSignal<LibraryPage>,
+    pub scroll_restore: RwSignal<Option<f64>>,
+    pub remember_workspace: RwSignal<Option<Callback<()>>>,
     pub refresh: RwSignal<u64>,
     pub music: MusicController,
     pub open: Callback<File>,
@@ -96,16 +99,26 @@ pub fn ContentShell(
     on_username_changed: Callback<String>,
     on_password_changed: Callback<String>,
 ) -> impl IntoView {
-    let page = RwSignal::new(LibraryPage::from_path(&pathname()));
+    let initial_page = LibraryPage::from_path(&pathname());
+    let memory = ViewMemory::new(&session.username);
+    let saved = memory.load(initial_page.path());
+    let page = RwSignal::new(initial_page);
+    let pending_scroll = RwSignal::new(Some(saved.scroll));
     let header_actions = RwSignal::new(None::<TopbarActions>);
+    let remember_workspace = RwSignal::new(None::<Callback<()>>);
     let refresh = RwSignal::new(0_u64);
     let music = MusicController::new(&session.username);
     let transfer = RwSignal::new(None::<(File, bool)>);
-    let query_text = RwSignal::new(String::new());
-    let query = RwSignal::new(String::new());
-    let favorites = RwSignal::new(false);
-    let selected_collection = RwSignal::new(String::new());
-    let selected_stack = RwSignal::new(stack_id(&pathname()));
+    let query_text = RwSignal::new(saved.query.clone());
+    let query = RwSignal::new(saved.query);
+    let sort = RwSignal::new(saved.sort);
+    let favorites = RwSignal::new(saved.favorite);
+    let selected_collection = RwSignal::new(saved.collection);
+    let selected_stack = RwSignal::new(if pathname().starts_with("/library/stacks/") {
+        stack_id(&pathname())
+    } else {
+        saved.stack
+    });
     let collections = RwSignal::new(Vec::<Collection>::new());
     let items = RwSignal::new(Vec::<LibraryItem>::new());
     let total = RwSignal::new(0_i64);
@@ -158,31 +171,100 @@ pub fn ContentShell(
     });
     Effect::new(move |_| {
         if !loading.get() && !page.get().is_file_workspace() && page.get() != LibraryPage::Home {
-            selection.set_library_items(
-                items
-                    .get()
-                    .iter()
+            selection.set_library_items(items.with(|list| {
+                list.iter()
                     .flat_map(LibraryItem::selectable_files)
-                    .collect(),
-            );
+                    .collect()
+            }));
         }
     });
 
+    let persist = Callback::new(move |()| {
+        let current = page.get_untracked();
+        if current.is_file_workspace() {
+            return;
+        }
+        let scroll = pending_scroll.get_untracked().unwrap_or_else(|| {
+            web_sys::window()
+                .and_then(|w| w.scroll_y().ok())
+                .unwrap_or_default()
+        });
+        memory.save(
+            current.path(),
+            &SavedView {
+                query: query.get_untracked(),
+                favorite: favorites.get_untracked(),
+                collection: selected_collection.get_untracked(),
+                stack: selected_stack.get_untracked(),
+                sort: sort.get_untracked(),
+                scroll,
+                ..Default::default()
+            },
+        );
+    });
+    let restore = Callback::new(move |next: LibraryPage| {
+        let saved = memory.load(next.path());
+        query.set(saved.query.clone());
+        query_text.set(saved.query);
+        favorites.set(saved.favorite);
+        sort.set(saved.sort);
+        selected_collection.set(saved.collection);
+        selected_stack.set(saved.stack);
+        pending_scroll.set(Some(saved.scroll));
+    });
+    Effect::new(move |_| {
+        let _ = (
+            page.get(),
+            query.get(),
+            favorites.get(),
+            selected_collection.get(),
+            selected_stack.get(),
+            sort.get(),
+        );
+        persist.run(());
+    });
+    let last_scroll = StoredValue::new(0.0_f64);
+    let mut scroll_listener = browser::on_scroll(move |_| {
+        if reader.get_untracked().is_some()
+            || image.get_untracked().is_some()
+            || pending_scroll.get_untracked().is_some()
+        {
+            return;
+        }
+        let now = js_sys::Date::now();
+        if now - last_scroll.get_value() > 200.0 {
+            last_scroll.set_value(now);
+            persist.run(());
+        }
+    });
+    let mut pagehide = browser::on_pagehide(move |_| persist.run(()));
+    on_cleanup(move || {
+        scroll_listener.release();
+        pagehide.release();
+    });
     let navigate = Callback::new(move |next: LibraryPage| {
         reader_revision.update(|revision| *revision += 1);
         reader.set(None);
         image.set(None);
-        selected_stack.set(String::new());
-        if page.get_untracked() != next {
-            query.set(String::new());
-            query_text.set(String::new());
-            favorites.set(false);
-            selected_collection.set(String::new());
+        if page.get_untracked().is_file_workspace()
+            && let Some(remember) = remember_workspace.get_untracked()
+        {
+            remember.run(());
         }
-        let same_route = page.get_untracked() == next && pathname() == next.path();
+        persist.run(());
+        if page.get_untracked() != next {
+            restore.run(next);
+        }
+        let same_route = page.get_untracked() == next;
         page.set(next);
         if !same_route {
-            route(next.path(), true);
+            let stack = selected_stack.get_untracked();
+            let target = if next == LibraryPage::Books && !stack.is_empty() {
+                format!("/library/stacks/{}", js_sys::encode_uri_component(&stack))
+            } else {
+                next.path().to_owned()
+            };
+            route(&target, true);
         }
         if let Some(actions) = header_actions.get_untracked() {
             match next {
@@ -196,9 +278,6 @@ pub fn ContentShell(
         if same_route {
             refresh.update(|r| *r += 1);
         }
-        if let Some(w) = web_sys::window() {
-            w.scroll_to_with_x_and_y(0.0, 0.0);
-        }
     });
     let import = Callback::new(move |()| {
         if let Some(actions) = header_actions.get_untracked() {
@@ -209,6 +288,7 @@ pub fn ContentShell(
     let load = loading::ListingController {
         page,
         query,
+        sort,
         favorites,
         selected_collection,
         selected_stack,
@@ -223,6 +303,20 @@ pub fn ContentShell(
         logout,
     }
     .install();
+    install_scroll_restore(
+        pending_scroll,
+        Signal::derive(move || {
+            !page.get().is_file_workspace()
+                && page.get() != LibraryPage::Home
+                && reader.get().is_none()
+                && image.get().is_none()
+                && !loading.get()
+                && !more_loading.get()
+        }),
+        Signal::derive(move || items.with(Vec::len)),
+        Signal::derive(move || items.with(|list| list.len() as i64) < total.get()),
+        Callback::new(move |()| load.run(true)),
+    );
     let open = Callback::new(move |file: File| {
         if selection.enabled.get_untracked() {
             selection.toggle(&file.id);
@@ -286,6 +380,8 @@ pub fn ContentShell(
     });
     provide_context(ShellContext {
         page,
+        scroll_restore: pending_scroll,
+        remember_workspace,
         refresh,
         music,
         open,
@@ -374,14 +470,19 @@ pub fn ContentShell(
         let path = pathname();
         let next = LibraryPage::from_path(&path);
         let same_page = page.get_untracked() == next;
+        if page.get_untracked().is_file_workspace()
+            && let Some(remember) = remember_workspace.get_untracked()
+        {
+            remember.run(());
+        }
+        persist.run(());
         if page.get_untracked() != next {
-            query.set(String::new());
-            query_text.set(String::new());
-            favorites.set(false);
-            selected_collection.set(String::new());
+            restore.run(next);
         }
         page.set(next);
-        selected_stack.set(stack_id(&path));
+        if path.starts_with("/library/stacks/") {
+            selected_stack.set(stack_id(&path));
+        }
         query_text.set(query.get_untracked());
         restore_reader.run((path, true));
         if same_page {
@@ -521,6 +622,10 @@ pub fn ContentShell(
                                 </ActionMenu>
                             </div>
                             <div class="library-toolbar-actions">
+                                <ActionMenu label="内容排序".to_owned() icon=MenuIcon::More>
+                                    <For each=move ||vec![("","默认顺序"),("name","名称升序"),("name_desc","名称降序"),("updated_desc","最近更新"),("size_desc","大小降序")]
+                                        key=|(value,_)|*value children=move |(value,label)|view!{<button type="button" data-close-menu="true" aria-pressed=move ||(sort.get()==value).to_string() on:click=move |_|sort.set(value.to_owned())>{label}</button>}/>
+                                </ActionMenu>
                                 <Show when=move ||page.get()==LibraryPage::Books fallback=|| ()><button class="secondary stack-recommend" disabled=move ||stack_controller.busy.get() on:click=move |_|stack_controller.recommend.run(())>"推荐堆叠"</button></Show>
                                 <button class="secondary collection-create" type="button"
                                     title=move || format!("新建{}", page.get().collection_label())
@@ -534,7 +639,7 @@ pub fn ContentShell(
                             <Show when=move ||items.get().is_empty() && error.get().is_empty() fallback=|| ()><div class="library-empty"><span>"＋"</span><h2>"这里等着你的收藏"</h2><p>"已有文件会自动出现在对应内容库，也可以现在导入。"</p><button class="primary" on:click=move |_|import.run(())>"导入内容"</button></div></Show>
                             <div class="library-grid" class:selection-mode=move || selection.enabled.get() class:book-grid=move ||page.get()==LibraryPage::Books class:photo-grid=move ||matches!(page.get(),LibraryPage::Gallery | LibraryPage::Videos) class:video-grid=move ||page.get()==LibraryPage::Videos>
                                 <For each=move || { items.get() }
-                                    key=|i|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.reading_progress.map(f64::to_bits),i.stack.as_ref().map(|s|(s.id.clone(),s.name.clone(),s.files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())))
+                                    key=|i|(i.file.id.clone(),i.favorite,i.file.name.clone(),i.file.etag.clone(),i.duration_ms,i.file.has_cover,i.reading_progress.map(f64::to_bits),i.stack.as_ref().map(|s|(s.id.clone(),s.name.clone(),s.files.iter().map(|f|f.id.clone()).collect::<Vec<_>>())))
                                     children=move |item| {
                                         let file_id = item.file.id.clone();
                                         let group = item.selectable_files().into_iter().map(|f|f.id).collect::<Vec<_>>();

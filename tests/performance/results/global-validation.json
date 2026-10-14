@@ -1,0 +1,27 @@
+{
+  "rust_workspace_passed": 559,
+  "latest_server_unit_passed": 275,
+  "transport_node_passed": 50,
+  "server_clippy": "passed -D warnings",
+  "wasm_release_build": "passed",
+  "wasm_strict_clippy": "330 existing warnings/errors (clone_on_copy, too_many_arguments, etc.)",
+  "browser": {
+    "final_main_passed": 16,
+    "final_main_skipped": 1,
+    "skip_reason": "Long FLAC fixture requires unavailable ffmpeg CLI; native FLAC cover/probe tests passed",
+    "desktop_mobile_state_passed": 4,
+    "earlier_extended_passed": 19,
+    "earlier_failure": "320px toolbar overlap fixed and passed final unified-toolbar.spec.ts",
+    "unchanged_nodes_on_refresh": "passed",
+    "batch_failure_retry": "passed",
+    "latest_state_suite_passed": 4,
+    "latest_batch_retry_passed": 1
+  },
+  "artifacts": [
+    "global-before.json",
+    "global-after.json",
+    "global-before-100ms.json",
+    "global-after-100ms.json"
+  ],
+  "xtask_check": "passed (fmt, native workspace clippy -D warnings, workspace tests, wasm type-check)"
+}

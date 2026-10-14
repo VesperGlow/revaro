@@ -16,7 +16,8 @@ pub(super) fn HomeDashboard(
     let error = RwSignal::new(String::new());
     let retry = RwSignal::new(0_u64);
     let generation = RwSignal::new(0_u64);
-    let selection = expect_context::<ShellContext>().selection;
+    let shell = expect_context::<ShellContext>();
+    let selection = shell.selection;
     items.set(Vec::new());
     selection.set_library_items(Vec::new());
 
@@ -37,7 +38,7 @@ pub(super) fn HomeDashboard(
             recent: true,
             opened_only: true,
             offset: if more {
-                items.get_untracked().len() as i64
+                items.with_untracked(Vec::len) as i64
             } else {
                 0
             },
@@ -71,6 +72,13 @@ pub(super) fn HomeDashboard(
             }
         });
     });
+    super::super::view_memory::install_scroll_restore(
+        shell.scroll_restore,
+        Signal::derive(move || !loading.get() && !more_loading.get()),
+        Signal::derive(move || items.with(Vec::len)),
+        Signal::derive(move || items.with(|items| items.len() as i64) < total.get()),
+        Callback::new(move |()| load.run(true)),
+    );
     Effect::new(move |_| {
         let _ = (refresh.get(), retry.get());
         load.run(false);
