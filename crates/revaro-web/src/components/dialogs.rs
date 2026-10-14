@@ -20,12 +20,94 @@ pub fn DialogBackdrop(
     children: Children,
 ) -> impl IntoView {
     let started_inside = StoredValue::new(false);
+    let backdrop = NodeRef::<leptos::html::Div>::new();
+    let previous_focus = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.active_element())
+        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok());
+    let previous_focus = leptos::__reexports::send_wrapper::SendWrapper::new(previous_focus);
+    on_cleanup(move || {
+        if let Some(previous) = previous_focus
+            .take()
+            .filter(|element| element.is_connected())
+        {
+            let options = web_sys::FocusOptions::new();
+            options.set_prevent_scroll(true);
+            let _ = previous.focus_with_options(&options);
+        }
+    });
+    if let Some(window) = web_sys::window() {
+        let callback = Closure::once(move || {
+            let Some(backdrop) = backdrop.get_untracked() else {
+                return;
+            };
+            let active = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.active_element());
+            if backdrop.contains(active.as_ref().map(|element| element.as_ref()))
+                || backdrop
+                    .query_selector(".ui-dialog-backdrop")
+                    .ok()
+                    .flatten()
+                    .is_some()
+            {
+                return;
+            }
+            let control = backdrop
+                .query_selector("[autofocus]")
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    backdrop
+                        .query_selector("input:not([type='file']):not(:disabled)")
+                        .ok()
+                        .flatten()
+                })
+                .or_else(|| {
+                    backdrop
+                        .query_selector("button:not(:disabled)")
+                        .ok()
+                        .flatten()
+                });
+            if let Some(control) =
+                control.and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                let options = web_sys::FocusOptions::new();
+                options.set_prevent_scroll(true);
+                let _ = control.focus_with_options(&options);
+            }
+        })
+        .into_js_value();
+        let _ = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
+    }
     view! {
         <div
+            node_ref=backdrop
             class=move || class.get()
+            class:ui-dialog-backdrop=true
             role="presentation"
+            on:keydown=move |event: web_sys::KeyboardEvent| {
+                if event.default_prevented() { return; }
+                if event.key() == "Escape" {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    on_close.run(());
+                } else if event.key() == "Tab" && let Some(root) = backdrop.get_untracked() {
+                    trap_dialog_focus(&root, &event);
+                }
+            }
             on:pointerdown=move |event: PointerEvent| {
-                started_inside.set_value(event.target() != event.current_target());
+                let nearest = event.target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|target| target.closest(".ui-dialog-backdrop").ok().flatten());
+                let current = event.current_target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
+                // A nested backdrop owns its gesture; its stopped click must
+                // not leave the parent with a stale drag/selection flag.
+                if nearest == current {
+                    started_inside.set_value(event.target() != event.current_target());
+                }
             }
             on:click=move |event: MouseEvent| {
                 // Releasing a drag or text selection outside the dialog must
@@ -40,6 +122,35 @@ pub fn DialogBackdrop(
         >
             {children()}
         </div>
+    }
+}
+
+fn trap_dialog_focus(root: &web_sys::HtmlElement, event: &web_sys::KeyboardEvent) {
+    let Ok(nodes) = root.query_selector_all(
+        "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex='0']",
+    ) else { return; };
+    let controls = (0..nodes.length())
+        .filter_map(|index| nodes.item(index)?.dyn_into::<web_sys::HtmlElement>().ok())
+        .filter(|element| {
+            element.get_client_rects().length() > 0
+                && element.closest("[inert]").ok().flatten().is_none()
+        })
+        .collect::<Vec<_>>();
+    let active = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.active_element());
+    if let (Some(first), Some(last)) = (controls.first(), controls.last()) {
+        let target = if event.shift_key() && active.as_ref() == Some(first.as_ref()) {
+            Some(last)
+        } else if !event.shift_key() && active.as_ref() == Some(last.as_ref()) {
+            Some(first)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            event.prevent_default();
+            let _ = target.focus();
+        }
     }
 }
 
@@ -72,14 +183,9 @@ pub fn ActionDialog(
     let cancel_from_backdrop = on_cancel.clone();
     let cancel_from_escape = on_cancel.clone();
     let cancel_from_button = on_cancel;
-    let input_ref = NodeRef::<leptos::html::Input>::new();
-    if input {
-        focus_input_after_render(input_ref);
-    }
     let input_view = if input {
         view! {
             <input
-                node_ref=input_ref
                 type="text"
                 maxlength="1024"
                 autofocus
@@ -110,6 +216,8 @@ pub fn ActionDialog(
                 on:submit=submit
                 on:keydown=move |event: web_sys::KeyboardEvent| {
                     if event.key() == "Escape" && !busy.get_untracked() {
+                        event.prevent_default();
+                        event.stop_propagation();
                         cancel_from_escape.run(());
                     }
                 }
@@ -220,18 +328,4 @@ pub fn RenameDialog(
             </section>
         </DialogBackdrop>
     }
-}
-
-fn focus_input_after_render(input: NodeRef<leptos::html::Input>) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let callback = Closure::once(move || {
-        if let Some(input) = input.get() {
-            let _ = input.focus();
-        }
-    })
-    .into_js_value();
-    let _ =
-        window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0);
 }

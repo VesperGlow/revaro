@@ -99,8 +99,3 @@
   font-size: 13px;
 }
 .listing-end:empty { min-height: 1px; padding: 0; }
-.version-history pre { max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere; }
-.history-row { display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line); }
-.history-row > :first-child { flex:1;min-width:0;overflow-wrap:anywhere; }
-.version-history { padding:20px;border-bottom:1px solid var(--line);max-height:45vh;overflow:auto; }
-.version-history header { display:flex;justify-content:space-between;gap:12px; }

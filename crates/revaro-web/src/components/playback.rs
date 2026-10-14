@@ -231,7 +231,7 @@ pub(super) fn ProgressRetry(
         <Show when=move || playback.failed.get() fallback=|| ()>
             <p class="audio-player-error" role="alert">
                 "未能读取播放进度，原有进度已保留。"
-                <button type="button" on:click=move |_| retry.run(())>"重试读取进度"</button>
+                <button class="secondary" type="button" on:click=move |_| retry.run(())>"重试读取进度"</button>
             </p>
         </Show>
     }

@@ -5,7 +5,8 @@
     <!-- `viewport-fit=cover` is required by the ~62 `env(safe-area-inset-*)`
          uses in the ported stylesheets. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#f8f9f6" />
+    <meta name="theme-color" content="#f8f9f6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1b241e" media="(prefers-color-scheme: dark)" />
     <title>Revaro · 阅读、音乐与图库</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.png" sizes="64x64" type="image/png" />
@@ -20,6 +21,12 @@
       .boot-splash [hidden] { display: none; }
       .boot-splash p { margin: 0; }
       .boot-splash button { padding: 8px 20px; border: 1px solid #426b5e; border-radius: 8px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
+      @media (prefers-color-scheme: dark) {
+        body { background: var(--paper, #1b241e); }
+        .boot-splash { color: var(--accent, #94bea7); }
+        .boot-spinner { border-color: var(--line, #354239); border-top-color: currentColor; }
+        .boot-splash button { background: var(--surface, #242e27); border-color: currentColor; }
+      }
       @keyframes boot-spin { to { transform: rotate(360deg); } }
       @media (prefers-reduced-motion: reduce) { .boot-spinner { animation: none; } }
     </style>

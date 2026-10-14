@@ -3,6 +3,8 @@
    ever sets that class (the reader locks scrolling through `usePreviewDialog`'s
    inline `body.style.overflow` instead), so they were dead. */
 #reader-view.reader-shell {
+  color-scheme: light;
+  --accent: var(--reader-accent);
   --paper: #f7f4ee;
   --ink: #34322e;
   --muted: #858078;
@@ -20,6 +22,7 @@
   outline: none;
 }
 #reader-view.reader-shell.dark {
+  color-scheme: dark;
   --paper: #222524;
   --ink: #d8d9d3;
   --muted: #a0a49e;

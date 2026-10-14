@@ -55,7 +55,7 @@ test('Rust bundle opens editable TXT files in the document editor', async ({ pag
   const editor = page.locator('.document-editor')
   await expect(editor).toBeVisible()
   await expect(editor.locator('#editor-title')).toHaveText(name)
-  await expect(editor.locator('textarea')).toHaveValue(readerText())
+  await expect(editor.getByLabel('文档内容', { exact: true })).toHaveValue(readerText())
   await expect(editor.getByRole('button', { name: '保存' })).toBeDisabled()
   await editor.getByRole('button', { name: '关闭编辑器' }).click()
   await expect(editor).toHaveCount(0)
@@ -114,7 +114,7 @@ test('Markdown 预览保留 reference 的 GFM 元素并清理主动 HTML', async
 
   const editor = page.locator('.document-editor')
   await expect(editor).toBeVisible()
-  await editor.locator('textarea').fill(content)
+  await editor.getByLabel('文档内容', { exact: true }).fill(content)
   await editor.getByRole('button', { name: '预览' }).click()
   const preview = editor.locator('.markdown-preview')
   await expect(preview.locator('h1')).toHaveText('Title')

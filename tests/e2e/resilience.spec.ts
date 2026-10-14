@@ -84,6 +84,7 @@ test('version restoration prevents edits until the result has been applied', asy
     await page.getByRole('button', { name: '版本历史', exact: true }).click()
     held = await holdApplicationResponse(page, `^/api/files/${doc.id}/versions/[^/]+/restore$`, 'POST')
     await page.getByRole('button', { name: '恢复此版本', exact: true }).click()
+    await page.getByRole('button', { name: '确认恢复', exact: true }).click()
     await expect.poll(() => held!.captured()).toBe(true)
     await expect(text).not.toBeEditable()
     await held.release()

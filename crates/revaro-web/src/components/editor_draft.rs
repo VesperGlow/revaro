@@ -150,12 +150,12 @@ pub(super) fn DraftRecovery(
         <Show when=move ||pending.get().is_some() fallback=|| ()>
             <div class="editor-draft-recovery" role="status">
                 "发现未保存的本机草稿。"
-                <button type="button" disabled=move ||busy.get() on:click=move |_|{
+                <button class="secondary" type="button" disabled=move ||busy.get() on:click=move |_|{
                     if let Some(draft)=pending.get_untracked(){name.set(draft.name);content.set(draft.content);dirty.set(true);pending.set(None);}
                 }>"恢复草稿"</button>
-                <button type="button" disabled=move ||busy.get() on:click=move |_|{remove(&draft_key.get_untracked());pending.set(None);}>"丢弃草稿"</button>
+                <button class="secondary" type="button" disabled=move ||busy.get() on:click=move |_|{remove(&draft_key.get_untracked());pending.set(None);}>"丢弃草稿"</button>
             </div>
         </Show>
-        <Show when=move ||failed.get() fallback=|| ()><p role="alert">"本机草稿未能保存，请及时保存文档。"</p></Show>
+        <Show when=move ||failed.get() fallback=|| ()><p class="editor-notice-error" role="alert">"本机草稿未能保存，请及时保存文档。"</p></Show>
     }
 }
