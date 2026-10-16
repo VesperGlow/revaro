@@ -12,13 +12,12 @@ export const policy = {
   chunkBytes: 512 * 1024, smallBytes: 256 * 1024, lanes: 3,
   firstBytes: 64 * 1024, blockBytes: 64 * 1024, windowMs: 500,
   headersMs: 15000, idleMs: 8000, hedgeMs: 1200,
-  failoverHeadersMs: 3000, mediaIdleMs: 2500,
   attempts: 10, backoffMs: 400, maxBackoffMs: 8000,
   cacheEntries: 2048, memoryBytes: (globalThis.navigator?.deviceMemory >= 4 ? 32 : 8) * 1024 * 1024, cacheWriteBytes: 8 * 1024 * 1024,
   hashBytes: 128 * 1024 * 1024,
-  fallbackMs: 60000, progressWindowMs: 20000, minWindowBytes: 8192,
+  progressWindowMs: 20000, minWindowBytes: 8192,
 };
-let http2Origin = '', fallbackUntil = 0, protocol = '', throughput = 0;
+let protocol = '', throughput = 0;
 const paths = new Map(), playback = new Map();
 const cacheName = 'revaro.transport.v2';
 let cacheWrites = Promise.resolve();
@@ -51,7 +50,7 @@ function priorityOf(request) {
 }
 function canAdmit(priority) {
   const pressure = mediaPressure();
-  const limit = pressure ? 8 : (protocol.startsWith('h3') ? 16 : 12);
+  const limit = pressure ? 8 : 12;
   return activeRequests < limit && (priority < 3 || backgroundRequests < (pressure ? 2 : Math.max(2, limit - 4)));
 }
 function drainRequests() {
@@ -83,37 +82,20 @@ async function admission(signal, priority = 1) {
 }
 const networkFetch = globalThis.fetch.bind(globalThis);
 
-export function configureTransport(config = {}) {
-  if (Object.hasOwn(config, 'http2_origin') && !config.http2_origin) { http2Origin = ''; fallbackUntil = 0; }
-  if (config.http2_origin) {
-    const url = new URL(config.http2_origin);
-    const here = new URL(globalThis.location.href);
-    // Host-only session cookies work on another port, never another host.
-    if (url.protocol === 'https:' && url.hostname === here.hostname && url.origin !== here.origin)
-      http2Origin = url.origin;
-  }
-}
 export function transportState() {
-  return { protocol, fallback: fallbackUntil > Date.now(), http2Origin, throughput,
+  return { protocol, throughput,
     activeRequests, backgroundRequests, queuedRequests: requestQueue.length,
     mediaPressure: mediaPressure(), memoryBytes, queuedCacheBytes,
     metrics: { ...metrics }, paths: Object.fromEntries(paths) };
 }
-function endpoint(url, origin) {
-  const target = new URL(url, globalThis.location?.href);
-  if (origin) return origin + target.pathname + target.search;
-  if (http2Origin && fallbackUntil > Date.now())
-    return http2Origin + target.pathname + target.search;
-  return target.href;
+function endpoint(url) {
+  return new URL(url, globalThis.location?.href).href;
 }
 function noteFailure(error) {
   if (error.status && error.status !== 408) return;
   const origin = error.origin || new URL(endpoint(globalThis.location.href)).origin;
   const state = paths.get(origin) || { failures: 0 };
   state.failures += error.failedAttempts || 1; state.failedAt = Date.now(); paths.set(origin, state);
-  if (!http2Origin) return;
-  if (origin === http2Origin) fallbackUntil = 0;
-  else if (error.status === 408 || state.failures >= 2) fallbackUntil = Date.now() + policy.fallbackMs;
 }
 function noteSuccess(url, length = 0, elapsed = 0) {
   const origin = new URL(url).origin, state = paths.get(origin) || {};
@@ -125,7 +107,7 @@ function noteSuccess(url, length = 0, elapsed = 0) {
   const entries = globalThis.performance?.getEntriesByName?.(url);
   const hint = entries?.at(-1)?.nextHopProtocol;
   if (hint) state.protocol = hint;
-  protocol = state.protocol || (origin === http2Origin ? 'h2' : protocol);
+  protocol = state.protocol || protocol;
 }
 const abortError = () => new DOMException('Transfer cancelled', 'AbortError');
 function checkAbort(signal) { if (signal?.aborted) throw signal.reason || abortError(); }
@@ -195,10 +177,9 @@ export async function hedge(operation, signal, enabled = true) {
     rejectSecond = reject;
     startSecond = () => {
       if (started) return; started = true;
-      const alternate = http2Origin && fallbackUntil <= Date.now() ? http2Origin : undefined;
-      operation(second.controller.signal, alternate).then(value => resolve({ value, link: second }), reject);
+      operation(second.controller.signal).then(value => resolve({ value, link: second }), reject);
     };
-    timer = setTimeout(startSecond, protocol.startsWith('h3') ? policy.hedgeMs * 0.6 : policy.hedgeMs);
+    timer = setTimeout(startSecond, policy.hedgeMs);
   });
   const primary = operation(first.controller.signal).then(value => ({ value, link: first })).catch(error => {
     clearTimeout(timer);
@@ -212,7 +193,6 @@ export async function hedge(operation, signal, enabled = true) {
       streamingWinner = link;
       result.response.transportComplete.finally(() => { link.controller.abort(); link.dispose(); });
     }
-    if (result?.origin === http2Origin && http2Origin) fallbackUntil = Date.now() + policy.fallbackMs;
     return result;
   }
   catch (error) {
@@ -233,7 +213,7 @@ function retryAfter(response) {
   return Math.min(60000, Math.max(0, Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now()));
 }
 async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1024 * 1024,
-  headersMs = policy.headersMs, priority = 1, origin, streamOn200 = false } = {}) {
+  headersMs = policy.headersMs, priority = 1, streamOn200 = false } = {}) {
   const release = await admission(signal, priority);
   const { controller, dispose } = linkedController(signal);
   let timer, reader, stalled = false, handedOff = false;
@@ -241,9 +221,9 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
     clearTimeout(timer);
     timer = setTimeout(() => { stalled = true; controller.abort(); }, ms);
   };
-  const target = endpoint(url, origin), startedAt = Date.now();
+  const target = endpoint(url), startedAt = Date.now();
   try {
-    arm(headersMs === policy.headersMs && http2Origin && new URL(target).origin !== http2Origin ? Math.min(headersMs, policy.failoverHeadersMs) : headersMs);
+    arm(headersMs);
     const headers = new Headers(init.headers);
     headers.delete('x-revaro-priority');
     headers.set('priority', `u=${Math.min(7, priority + 1)}, i`);
@@ -300,8 +280,7 @@ async function attempt(url, init, { signal, validate, onBytes, maxBytes = 16 * 1
     reader = response.body.getReader();
     const chunks = []; let length = 0, windowBytes = 0, windowStart = Date.now();
     while (true) {
-      const idle = priority === 0 && http2Origin ? Math.min(policy.idleMs, policy.mediaIdleMs) : policy.idleMs;
-      arm(protocol.startsWith('h3') ? idle * 0.65 : idle);
+      arm(policy.idleMs);
       const { value, done } = await abortable(reader.read(), controller.signal);
       if (done) break;
       length += value.byteLength;
@@ -480,7 +459,7 @@ function startFlight(request, meta, blocks, priority) {
   const controller = new AbortController(), start = blocks[0].start, end = blocks.at(-1).end;
   const flight = { controller, users: 0, done: false };
   const generation = cacheGeneration;
-  const load = async (signal, origin) => {
+  const load = async signal => {
     const bytes = new Uint8Array(end - start + 1); let received = 0;
     await retry(async () => {
       const offset = start + received; if (offset > end) return;
@@ -488,7 +467,7 @@ function startFlight(request, meta, blocks, priority) {
       headers.delete('if-none-match'); headers.set('range', `bytes=${offset}-${end}`);
       headers.set('if-range', meta.etag); headers.set('if-match', meta.etag);
       await attempt(request.url, { method: 'GET', headers }, {
-        signal, origin, priority, maxBytes: end - offset + 1,
+        signal, priority, maxBytes: end - offset + 1,
         validate: response => {
           const range = contentRange(response.headers.get('content-range'));
           if (response.status === 412 || (response.ok && response.headers.get('etag') !== meta.etag))
@@ -506,7 +485,7 @@ function startFlight(request, meta, blocks, priority) {
       });
       if (received !== bytes.length) throw new TransferError('Truncated range');
     }, { signal });
-    return { bytes, origin };
+    return { bytes };
   };
   flight.promise = hedge(load, controller.signal, priority < 3 && end - start + 1 <= policy.smallBytes)
     .then(result => {
@@ -583,8 +562,8 @@ export async function fileResponse(request, restarted = false) {
   const probeHeaders = new Headers(request.headers);
   probeHeaders.set('range', combined ? `bytes=0-${initialEnd}` : 'bytes=0-0');
   probeHeaders.delete('if-range'); probeHeaders.delete('if-none-match');
-  const probe = await retry(() => hedge((signal, origin) => attempt(request.url, { method: 'GET', headers: probeHeaders }, {
-    signal, origin, priority, maxBytes: initialEnd + 1, streamOn200: true,
+  const probe = await retry(() => hedge(signal => attempt(request.url, { method: 'GET', headers: probeHeaders }, {
+    signal, priority, maxBytes: initialEnd + 1, streamOn200: true,
     validate: response => {
       if (response.status !== 206) return;
       const range = contentRange(response.headers.get('content-range'));
@@ -631,7 +610,7 @@ export async function fileResponse(request, restarted = false) {
     first = probe.bytes.subarray(0, Math.min(probe.bytes.length, wanted.end + 1)); next += first.length;
   }
   const pending = [];
-  const laneCount = () => priority >= 3 && mediaPressure() ? 1 : throughput && throughput < 128 * 1024 ? 2 : protocol.startsWith('h3') ? 4 : Math.max(2, Math.min(4, policy.lanes));
+  const laneCount = () => priority >= 3 && mediaPressure() ? 1 : throughput && throughput < 128 * 1024 ? 2 : Math.max(2, Math.min(4, policy.lanes));
   const schedule = () => {
     while (pending.length < laneCount() && next <= wanted.end) {
       const start = next, target = windowBytes();
@@ -719,7 +698,7 @@ export async function blobHash(blob, signal) {
   } finally { release(); }
 }
 // XHR is only an upload progress adapter. Stall detection, retry budgets,
-// jitter, cancellation and endpoint failover are shared with file reads.
+// jitter and cancellation are shared with file reads.
 export async function putBlob(url, body, contentType, signal, onProgress) {
   const hash = await blobHash(body, signal);
   return retry(async () => {

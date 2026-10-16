@@ -33,58 +33,18 @@ form-action 'self'; frame-src 'none'; frame-ancestors 'none'";
 /// Add the product's security headers to every response.
 pub async fn security_headers(
     State(state): State<Arc<AppState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|peer| peer.0);
+    let context = crate::proxy::RequestContext::resolve(request.headers(), &state.config, peer);
+    let is_https = context.is_https;
+    request.extensions_mut().insert(context);
     let is_api = request.uri().path().starts_with("/api/");
-    let cors = state.config.http2_origin.is_some()
-        && request
-            .headers()
-            .get(http::header::ORIGIN)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| same_origin(&state.config.base_url, v));
-    let preflight = cors && request.method() == Method::OPTIONS;
-    let origin = request.headers().get(http::header::ORIGIN).cloned();
-    let mut response = if preflight {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        next.run(request).await
-    };
-    if cors {
-        let headers = response.headers_mut();
-        headers.insert(
-            http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            origin.clone().expect("checked origin"),
-        );
-        headers.insert("timing-allow-origin", origin.expect("checked origin"));
-        headers.insert(
-            http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
-            "true".parse().unwrap(),
-        );
-        headers.insert(
-            http::header::ACCESS_CONTROL_ALLOW_METHODS,
-            "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
-                .parse()
-                .unwrap(),
-        );
-        headers.insert(http::header::ACCESS_CONTROL_ALLOW_HEADERS,
-            "Content-Type, Range, If-Range, If-Match, If-None-Match, Priority, X-Content-SHA256, X-Revaro-Managed".parse().unwrap());
-        headers.insert(http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            "ETag, Content-Range, Content-Length, Accept-Ranges, Content-Disposition, X-Content-SHA256, Retry-After, X-Revaro-Index-Pending".parse().unwrap());
-        headers.append(http::header::VARY, "Origin".parse().unwrap());
-    }
-    if let Some(origin) = &state.config.http2_origin {
-        let csp = CONTENT_SECURITY_POLICY.replace(
-            "connect-src 'self'",
-            &format!("connect-src 'self' {origin}"),
-        );
-        if !response.headers().contains_key("content-security-policy") {
-            response.headers_mut().insert(
-                http::header::CONTENT_SECURITY_POLICY,
-                csp.parse().expect("validated CSP origin"),
-            );
-        }
-    }
+    let mut response = next.run(request).await;
 
     // Insert only when the header is absent. Axum middleware wraps the handler,
     // so by this point the handler has already set its own headers; a plain
@@ -109,9 +69,7 @@ pub async fn security_headers(
             );
         }
     }
-    if state.config.base_url.starts_with("https://")
-        && !response.headers().contains_key("strict-transport-security")
-    {
+    if is_https && !response.headers().contains_key("strict-transport-security") {
         response.headers_mut().insert(
             http::header::HeaderName::from_static("strict-transport-security"),
             "max-age=31536000".parse().expect("valid header value"),

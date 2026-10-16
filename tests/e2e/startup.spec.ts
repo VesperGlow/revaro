@@ -65,11 +65,3 @@ test('an unavailable worker cannot block startup or mutable API requests', async
   })
   expect(result).toBe(401)
 })
-
-// Configuration discovery has its own deadline and cannot hold the app mount.
-test('hung transport configuration does not delay the login screen', async ({ page }) => {
-  await page.route('**/api/transport/config', () => {})
-  await page.goto('/', { waitUntil: 'commit' })
-  await expect(page.getByLabel('用户名')).toBeVisible({ timeout: 5000 })
-  await expect(page.locator('.boot-splash')).toHaveCount(0)
-})

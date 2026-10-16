@@ -4,7 +4,7 @@
 
 ## 构建与验收门槛
 
-- `rust` job 运行格式检查、`clippy -D warnings`、完整 Rust 测试、wasm32 类型检查、依赖审计、低端口权限验证，以及 10 万文件、8 并发、600 次请求的 release 负载与断流恢复检查。Rust 原生依赖由 runner 安装，继续使用固定版本的 rust-cache。
+- `rust` job 运行格式检查、`clippy -D warnings`、完整 Rust 测试、wasm32 类型检查、依赖审计，以及 10 万文件、8 并发、600 次请求的 release 负载与断流恢复检查。Rust 原生依赖由 runner 安装，继续使用固定版本的 rust-cache。
 - `container` job 构建一次 amd64 镜像，检查 Compose 配置与运行层边界，再上传 `revaro-built-image`。Docker 默认仍执行 `cargo xtask check`；只有 CI 传入 `REVARO_RUN_CHECKS=0`，避免与 Rust job 重复编译、执行整套检查。
 - `e2e` job 从同一个 artifact 加载镜像。全部 Chromium 测试分成 4 片，Firefox 和 WebKit 的原有回归集合各 1 片，共 6 个并行 runner；每片独立启动容器和数据库，Playwright 的单 worker 设置保留，避免账户、播放队列和进度相互干扰。每片只安装它实际使用的浏览器，并启动虚拟音频输出。编辑器/菜单的 160 轮资源检查只在 Chromium 第 1 片运行一次。
 - `publish` 必须等待 Rust、镜像构建和全部浏览器分片成功，才下载同一个镜像、重新打标签并推送 GHCR。上传待测 artifact 不等于发布；PR 可以运行相同分片但不会发布。没有在 publish 中重建镜像。
@@ -29,7 +29,7 @@ Docker 使用固定版本 cargo-chef 0.1.78：planner 从 Cargo 清单、锁文�
 
 此次失败来自媒体/图片已采用原生加载，而部分旧测试只对 Worker 请求注入延迟或 404，注入实际未发生。修正故障入口，并保留暂停、恢复、封面回退与布局断言。单曲循环用结束事件和实际播放状态验证，不要求浏览器额外发送新请求。
 
-新流程的总耗时和缓存命中后的加速幅度必须以新 CI 的时间戳为准，未完成测量前不承诺固定分钟数。当前沙箱禁止创建本地 TCP/UDP socket，真实容器、浏览器与 QUIC 换地址回归由 CI 运行；本地静态检查和逻辑单测不替代这些结果。
+新流程的总耗时和缓存命中后的加速幅度必须以新 CI 的时间戳为准，未完成测量前不承诺固定分钟数。真实容器与浏览器回归由 CI 运行；本地静态检查和逻辑单测不替代这些结果。
 
 2026-10-10 的 [CI #331](https://github.com/VesperGlow/revaro/actions/runs/38062770859) 已验证新的流程：Rust job 5 分 1 秒、镜像 job 11 分 54 秒（包括首次 cargo-chef 依赖层预热），全部 Chromium 分片和 Firefox 通过。镜像构建相较 #330 的 18 分 34 秒缩短；BuildKit 缓存导出从 5 分 28 秒降至约 1 分 21 秒。浏览器各自运行，未再把所有浏览器耗时串在镜像 job 后。
 
@@ -42,7 +42,7 @@ Docker 使用固定版本 cargo-chef 0.1.78：planner 从 Cargo 清单、锁文�
 基址和两种情况下的空 Cookie 覆盖值，防止宿主端口调整后 Origin 守卫拒绝登录，
 或示例配置意外关闭 HTTPS Cookie 安全属性。
 
-同一配置检查还固定生产 Compose 的部署边界：80/443 公网端口、`/data`、`/objects` 和 `/caches` 三个独立卷、只读根
+同一配置检查还固定生产 Compose 的部署边界：仅向宿主机 loopback 发布 HTTP 8080，不配置低端口 sysctl、`/data`、`/objects` 和 `/caches` 三个独立卷、只读根
 文件系统、`/tmp` tmpfs、`no-new-privileges`、丢弃全部 capabilities、非缓存健康
 检查和 `/data`、`/objects`、`/caches`、`/opt/revaro/web` 路径。配置回归会在镜像构建前失败。
 

@@ -42,8 +42,7 @@ def main():
             port = sock.getsockname()[1]
         origin = f"http://127.0.0.1:{port}"
         env = os.environ.copy()
-        for key in ("APP_DOMAIN", "APP_QUIC_ADDR", "APP_TLS_ADDR", "APP_HTTP2_ORIGIN",
-                    "ACME_DIRECTORY_URL", "UPLOAD_MIN_FREE_BYTES"):
+        for key in ("UPLOAD_MIN_FREE_BYTES",):
             env.pop(key, None)
         env.update(APP_ADDR=f"127.0.0.1:{port}", APP_BASE_URL=origin,
                    APP_DATA_DIR=str(directory/"data"), APP_OBJECTS_DIR=str(directory/"objects"),

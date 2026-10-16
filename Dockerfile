@@ -32,7 +32,6 @@ RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     ca-certificates curl clang cmake pkg-config \
     zlib1g-dev libbz2-dev liblzma-dev libzstd-dev liblz4-dev \
-    libssl-dev \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add wasm32-unknown-unknown \
     && rustup component add rustfmt clippy
@@ -106,8 +105,8 @@ FROM debian:bookworm-slim
 # FFmpeg itself is copied below as the only media-specific runtime.
 RUN apt-get -o Acquire::Retries=5 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-    ca-certificates tzdata wget libstdc++6 libgcc-s1 \
-    libssl3 zlib1g libbz2-1.0 liblzma5 libzstd1 liblz4-1 \
+    tzdata wget libstdc++6 libgcc-s1 \
+    zlib1g libbz2-1.0 liblzma5 libzstd1 liblz4-1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 revaro \
     && useradd --system --uid 10001 --gid revaro --no-create-home revaro \
@@ -130,5 +129,5 @@ ENV HOME=/data \
 WORKDIR /data
 USER revaro
 VOLUME ["/data", "/objects", "/caches"]
-EXPOSE 80/tcp 443/tcp 443/udp 8080/tcp
+EXPOSE 8080/tcp
 ENTRYPOINT ["/usr/local/bin/revaro"]

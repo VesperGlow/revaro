@@ -1,4 +1,4 @@
-import { putBlob, blobHash, configureTransport, setPlaybackState, bufferedRequest, fileResponse, clearTransportCache, isFileResource } from './transport-core.js';
+import { putBlob, blobHash, setPlaybackState, bufferedRequest, fileResponse, clearTransportCache, isFileResource } from './transport-core.js';
 export { putBlob, blobHash };
 const nativeFetch = globalThis.fetch.bind(globalThis);
 let directFiles = false, apiInstalled = false;
@@ -155,37 +155,20 @@ export async function initializeTransport({ waitForWorker = false } = {}) {
     return;
   }
   initialized = true;
-  // Document transport works immediately. Optional endpoint discovery and
-  // worker activation must never hold up the WASM application mount.
+  // Document transport works immediately; worker activation never holds up mounting.
   directFiles = true;
   watchPlayback();
-  let config;
-  const publish = () => {
-    if (config) navigator.serviceWorker?.controller?.postMessage({ type: 'transport-config', config });
-  };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2500);
-  void (async () => {
-    try {
-      const response = await nativeFetch(new URL('/api/transport/config', location.href), { signal: controller.signal });
-      if (!response.ok) return;
-      config = await response.json();
-      configureTransport(config);
-      publish();
-    } catch {} finally { clearTimeout(timeout); }
-  })();
   if (!globalThis.isSecureContext || !navigator.serviceWorker) return;
   let resolveClaim;
   const claimed = new Promise(resolve => { resolveClaim = resolve; });
   const applyController = () => {
     directFiles = !navigator.serviceWorker.controller;
     if (!directFiles) resolveClaim();
-    publish();
   };
   navigator.serviceWorker.addEventListener('controllerchange', applyController);
   applyController();
   // The classic worker keeps Firefox on the same policy as Chromium. A late
-  // claim still receives configuration after the startup deadline expires.
+  // claim still takes over file requests after the startup deadline expires.
   workerReady = (async () => {
     let timer;
     try {

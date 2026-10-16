@@ -25,76 +25,6 @@ use tower::ServiceExt as _;
 const ROOT_ID: &str = "00000000-0000-0000-0000-000000000000";
 const PASSWORD: &str = "correct-horse-battery";
 
-#[tokio::test]
-async fn fallback_authority_allows_credentialed_transfer_headers_only_from_primary() {
-    let harness = Harness::start_with_database_and_fallback(false, true).await;
-    for origin in [
-        "https://files.example.test",
-        "https://untrusted.example.test",
-    ] {
-        let response = harness
-            .router()
-            .oneshot(
-                Request::builder()
-                    .method("OPTIONS")
-                    .uri("/api/uploads")
-                    .header("origin", origin)
-                    .header("access-control-request-method", "PUT")
-                    .header(
-                        "access-control-request-headers",
-                        "range,if-match,priority,x-content-sha256,x-revaro-managed",
-                    )
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        if origin == "https://files.example.test" {
-            assert_eq!(response.status(), StatusCode::NO_CONTENT);
-            let headers = response.headers();
-            assert_eq!(headers["access-control-allow-origin"], origin);
-            assert_eq!(headers["access-control-allow-credentials"], "true");
-            let allowed = headers["access-control-allow-headers"]
-                .to_str()
-                .unwrap()
-                .to_lowercase();
-            for required in [
-                "range",
-                "if-match",
-                "priority",
-                "x-content-sha256",
-                "x-revaro-managed",
-            ] {
-                assert!(allowed.contains(required));
-            }
-            assert!(
-                headers["access-control-allow-methods"]
-                    .to_str()
-                    .unwrap()
-                    .contains("PATCH")
-            );
-            assert!(
-                headers["content-security-policy"]
-                    .to_str()
-                    .unwrap()
-                    .contains("https://files.example.test:8443")
-            );
-            assert!(
-                headers["access-control-expose-headers"]
-                    .to_str()
-                    .unwrap()
-                    .contains("ETag")
-            );
-        } else {
-            assert!(
-                !response
-                    .headers()
-                    .contains_key("access-control-allow-origin")
-            );
-        }
-    }
-}
-
 /// A running-in-process server with a scratch object store.
 struct Harness {
     state: Arc<AppState>,
@@ -117,10 +47,10 @@ impl Harness {
     }
 
     async fn start_with_database(persistent: bool) -> Self {
-        Self::start_with_database_and_fallback(persistent, false).await
+        Self::start_with_origin(persistent, "http://localhost:8080").await
     }
 
-    async fn start_with_database_and_fallback(persistent: bool, fallback: bool) -> Self {
+    async fn start_with_origin(persistent: bool, origin: &str) -> Self {
         let scratch = ScratchDir(std::env::temp_dir().join(format!(
             "revaro-lifecycle-{}-{:?}",
             std::process::id(),
@@ -129,12 +59,8 @@ impl Harness {
         let _ = std::fs::remove_dir_all(&scratch.0);
 
         let config = Config::from_lookup(&|name| match name {
-            "APP_BASE_URL" => Some(if fallback {
-                "https://files.example.test".to_owned()
-            } else {
-                "http://localhost:8080".to_owned()
-            }),
-            "APP_HTTP2_BASE_URL" if fallback => Some("https://files.example.test:8443".to_owned()),
+            "APP_BASE_URL" => Some(origin.to_owned()),
+            "TRUSTED_PROXIES" => Some("127.0.0.1/32,::1/128".to_owned()),
             "APP_WEB_DIR" => Some("/nonexistent".to_owned()),
             "APP_DATA_DIR" => Some(scratch.0.display().to_string()),
             "APP_OBJECTS_DIR" => Some(scratch.0.join("objects").display().to_string()),
@@ -229,7 +155,7 @@ impl Harness {
             .method(method)
             .uri(uri)
             .header("cookie", &self.cookie)
-            .header("origin", "http://localhost:8080");
+            .header("origin", &self.state.config.base_url);
         if let Some(content_type) = content_type {
             builder = builder.header("content-type", content_type);
         }
@@ -1865,4 +1791,136 @@ async fn broken_commit_recoveries_do_not_starve_later_uploads() {
     .await
     .expect("the next batch commits the later healthy upload");
     h.state.maintenance.close().await;
+}
+
+#[tokio::test]
+async fn public_https_origin_keeps_cookies_uploads_ranges_and_share_links_on_http_backend() {
+    let h = Harness::start_with_origin(false, "https://files.example.test").await;
+    let login = h
+        .response(
+            "POST",
+            "/api/auth/login",
+            Some(
+                serde_json::json!({"username":"admin", "password":PASSWORD})
+                    .to_string()
+                    .into_bytes(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login.headers()["set-cookie"].to_str().unwrap();
+    for flag in ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"] {
+        assert!(cookie.contains(flag), "{cookie}");
+    }
+    assert!(!cookie.contains("Domain="));
+    assert!(!login.headers().contains_key("location"));
+    let payload = include_bytes!("fixtures/preview-chapters.flac");
+    let upload = prepare_upload(&h, "proxy.flac", payload.len()).await;
+    send_parts(&h, &upload, payload).await;
+    // A lost acknowledgement can retry a part before publication.
+    send_parts(&h, &upload, payload).await;
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!(
+                "/api/uploads/{}/complete",
+                upload["upload_id"].as_str().unwrap()
+            ),
+            serde_json::json!({"parts":[]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let file = upload["file_id"].as_str().unwrap();
+    let preview = format!("/api/files/{file}/preview");
+    let response = h.response("HEAD", &preview, None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["accept-ranges"], "bytes");
+    let etag = response.headers()["etag"].clone();
+    for (range, start, end) in [
+        ("bytes=128-255", 128, 256),
+        ("bytes=-64", payload.len() - 64, payload.len()),
+        ("bytes=256-", 256, payload.len()),
+    ] {
+        let request = Request::builder()
+            .uri(&preview)
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .header("host", "internal:8080")
+            .header("x-forwarded-host", "evil.example.test")
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", "198.51.100.7")
+            .header("cookie", &h.cookie)
+            .header("range", range)
+            .header("if-range", &etag)
+            .body(Body::empty())
+            .unwrap();
+        let response = h.router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["etag"], etag);
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes {start}-{}/{}", end - 1, payload.len())
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], &payload[start..end]);
+    }
+    let (status, share) = h
+        .json(
+            "POST",
+            &format!("/api/files/{file}/share"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        share["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://files.example.test/s/")
+    );
+    let response = h.response("POST", "/api/auth/logout", None, None).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let clearing = response.headers()["set-cookie"].to_str().unwrap();
+    assert!(clearing.contains("Secure"));
+    assert!(clearing.contains("Max-Age=0") || clearing.contains("Max-Age=-1"));
+}
+
+#[tokio::test]
+async fn trusted_https_header_secures_both_login_and_clearing_cookies() {
+    let h = Harness::start().await;
+    for path in ["/api/auth/login", "/api/auth/logout"] {
+        let response = h
+            .router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .extension(axum::extract::ConnectInfo(
+                        "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                    ))
+                    .header("origin", &h.state.config.base_url)
+                    .header("cookie", &h.cookie)
+                    .header("x-forwarded-proto", "https")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"username":"admin", "password":PASSWORD}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        assert!(
+            response.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .contains("Secure")
+        );
+        assert_eq!(
+            response.headers()["strict-transport-security"],
+            "max-age=31536000"
+        );
+    }
 }

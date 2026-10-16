@@ -30,22 +30,21 @@ python3 scripts/seed-stack-preview.py
 
 ## 部署
 
-复制 `.env.example` 为 `.env`，设置 `APP_DOMAIN=files.example.com`，让域名的 A/AAAA 记录指向本机，并开放 TCP 80、TCP 443 和 UDP 443。无需外部反向代理：
+复制 `.env.example` 为 `.env`，用 `APP_BASE_URL=https://files.example.com` 设置外部访问地址，再按实际代理地址设置 `TRUSTED_PROXIES`：
 
 ```sh
 docker compose up -d
-# rootless Podman，宿主机网络（先按部署说明设置低端口 sysctl）：
+# 或使用 rootless Podman 宿主机网络：
 podman-compose -f compose.host.yml up -d
 ```
 
-访问 `https://files.example.com`。容器内也直接监听 80/443：80 完成 HTTP-01 验证，其余请求 308 跳转 HTTPS；TCP 443 提供 HTTP/1.1 + HTTP/2，UDP 443 提供标准 HTTP/3，默认 aggressive + auto。`rustls-acme` 自动申请、持久化并续期证书，TCP 与 QUIC 在新连接中自动使用新证书。首次签发完成前 HTTPS 尚不可用；已有缓存可直接恢复。部署前提、宿主机网络、续期与诊断见 [公网入口部署](docs/public-ingress.md)。
+Revaro 只提供普通 HTTP，程序默认监听 `127.0.0.1:8080`，可通过 `APP_ADDR` 配置地址和端口。Compose 在容器内监听 `0.0.0.0:8080`，仅向宿主机 loopback 发布 `${APP_PORT:-8080}`。外部 Caddy/Nginx 统一负责 HTTPS、HTTP/2、HTTP/3、证书和公网重定向，并通过 HTTP 连接 Revaro。可信代理头、Cookie、WebSocket、流媒体及 Quadlet 配置见 [反向代理部署](docs/public-ingress.md)。
 
 镜像为 `ghcr.io/vesperglow/revaro:latest`，以 UID/GID 10001 运行。首次启动时，若未设置 `ADMIN_PASSWORD`，系统生成随机管理员密码并写入容器 `/data/initial-admin-credentials`，文件权限为 0600。登录后请在账户设置中修改凭据，并删除该凭据文件。支持 TOTP 两步验证与恢复码。本地 HTTP 开发使用 `docker compose -f compose.local.yml up -d`，访问 `http://localhost:8080`。
 
 本地目录：
 
 - `/data/revaro.db`：SQLite 元数据。
-- `/data/acme/`：ACME 账户及证书/私钥，随数据卷持久化。
 - `/objects/blobs/<UUID>`：普通文件内容。
 - `/objects/profile/`、`thumbs/` 及阅读对象：持久化附属内容。
 - `/objects/.multipart/`：正在上传的分片。
@@ -78,16 +77,13 @@ docker compose up -d
 
 | 变量 | 默认值 | 用途 |
 |---|---|---|
-| `APP_DOMAIN` | 空（公网 Compose 必填） | ACME 域名，启用直接公网入口 |
-| `ACME_EMAIL` | 空 | ACME 账户联系邮箱 |
-| `ACME_STAGING` | `false` | 测试签发，证书不被普通浏览器信任 |
-| `ACME_CACHE_DIR` | `$APP_DATA_DIR/acme` | 私有账户/证书持久化目录 |
-| `APP_ADDR` | 公网 `0.0.0.0:80`；本地 `:8080` | HTTP-01 / 重定向或本地 HTTP |
-| `APP_TLS_ADDR` / `APP_QUIC_ADDR` | 公网 `0.0.0.0:443` | TCP TLS / UDP HTTP/3 |
+| `APP_ADDR` | `127.0.0.1:8080` | 程序的 HTTP 监听地址与端口；桥接 Compose 固定为 `0.0.0.0:8080` |
+| `APP_BIND_IP` / `APP_PORT` | `127.0.0.1` / `8080` | 桥接 Compose 的宿主机 HTTP 发布地址与端口 |
+| `TRUSTED_PROXIES` | 空 | 信任客户端 IP 和协议转发头的代理 CIDR，逗号分隔 |
 | `APP_DATA_DIR` | `/data` | 数据库和配置目录 |
 | `APP_OBJECTS_DIR` | `/objects` | 持久对象和上传分片根目录 |
 | `APP_CACHES_DIR` | `/caches` | 可重建的媒体和阅读缓存目录 |
-| `APP_BASE_URL` | 公网 `https://$APP_DOMAIN`；本地 `http://localhost:8080` | 公网访问地址、同源检查和分享链接 |
+| `APP_BASE_URL` | `http://localhost:8080`；Compose 根据 `APP_PORT` 推导 | 公网访问地址、同源检查和分享链接 |
 | `COOKIE_SECURE` | 随 HTTPS 地址启用 | Cookie Secure |
 | `UPLOAD_EXPIRES` | `24h` | 上传会话有效期 |
 | `UPLOAD_IDLE_TIMEOUT` | `60s` | 上传请求无字节进展超时 |
@@ -192,6 +188,4 @@ Rust 本地编译需要 FFmpeg 开发库、clang 和 cmake；Dockerfile 包含�
 
 ### 统一文件传输
 
-所有文件类型的读取、预览、原生下载、公开链接、阅读资源与分块上传共享传输层。首次最多读取 64 KiB 即可开始交付，后续窗口按吞吐调整；支持 Range/206、强 ETag、局部恢复、停滞检测、退避重试与受限补发。播放缓冲不足时限制后台下载与上传，下一首仅在缓冲充足时有界预取；对齐缓存块、共享在途读取和异步缓存写入减少重复流量与等待。所有非空文件以 1 MiB 起的分片上传并校验 SHA-256，批量 ZIP 支持断流后续传。客户端需要 HTTPS 或 localhost；可配置同主机不同 HTTPS 端口的 HTTP/2 专用入口快速回退。参数、部署与验证边界见 [文件传输说明](docs/file-transport.md)。
-
-可选的原生 Quinn HTTP/3 listener 提供 `standard` / `aggressive` 拥塞控制。默认 `aggressive + auto` 以真实 ACK 吞吐和持续排队反馈动态探测带宽，也支持显式固定 target；`standard` 保留 upstream Cubic，供兼容、诊断和手动回退。aggressive 使用有限损失补偿与双层 UDP pacing；持续拥塞和严重丢包转回 Cubic，确认路径恢复后只允许有限次数的带宽探测。保持标准 HTTP/3，复用现有全部路由与共享恢复层。配置、TLS/UDP 部署及真实 tc netem 测量见 [QUIC 传输说明](docs/quic-transport.md)。
+所有文件类型的读取、预览、原生下载、公开链接、阅读资源与分块上传共享传输层。首次最多读取 64 KiB 即可开始交付，后续窗口按吞吐调整；支持 Range/206、强 ETag、局部恢复、停滞检测、退避重试与受限补发。播放缓冲不足时限制后台下载与上传，下一首仅在缓冲充足时有界预取；对齐缓存块、共享在途读取和异步缓存写入减少重复流量与等待。所有非空文件以 1 MiB 起的分片上传并校验 SHA-256，批量 ZIP 支持断流后续传。客户端需要 HTTPS 或 localhost；公网连接的协议协商与回退由浏览器和外部反向代理处理。参数、部署与验证边界见 [文件传输说明](docs/file-transport.md)。

@@ -1,76 +1,127 @@
-# Revaro 直接公网入口
+# HTTP 服务与外部反向代理
 
-Revaro 自身处理 ACME 与 HTTPS，只提供自己的应用、文件及 API，不转发到其他服务。容器内与公网均使用 TCP 80、TCP 443、UDP 443；`compose.host.yml` 使用宿主机网络，不经过端口映射。
+Revaro 只提供普通 HTTP，默认监听 `127.0.0.1:8080`。用 `APP_ADDR=IP:端口` 修改监听地址，IPv6 使用 `[::1]:8080`。HTTPS、HTTP/2、HTTP/3、证书及 HTTP 到 HTTPS 的重定向全部由外部 Caddy/Nginx 管理。Revaro 不创建 UDP 或额外的公网监听器。
 
-## 配置与启动
+## 应用配置
 
-复制 `.env.example` 为 `.env`，至少填写：
+宿主机运行或使用 `compose.host.yml` 时：
 
 ```dotenv
-APP_DOMAIN=files.example.com
-ACME_EMAIL=admin@example.com
-ACME_STAGING=false
-QUIC_CC_MODE=aggressive
-QUIC_TARGET_MBPS=auto
+APP_ADDR=127.0.0.1:8080
+APP_BASE_URL=https://files.example.com
+TRUSTED_PROXIES=127.0.0.1/32,::1/128
 ```
 
-将域名 A/AAAA 指向服务器，开放防火墙和云安全组的 TCP 80/443、UDP 443。若配置 AAAA，IPv6 必须同样可达；当前默认 `0.0.0.0` 监听 IPv4，IPv6 部署可显式设置 `APP_ADDR=[::]:80`、`APP_TLS_ADDR=[::]:443`、`APP_QUIC_ADDR=[::]:443`。不要让不可达的 AAAA 影响 ACME 验证。HTTP-01 必须可从公网 TCP 80 访问，NAT 场景需把该端口转发到本机。[Let's Encrypt HTTP-01](https://letsencrypt.org/docs/challenge-types/)
+`APP_BASE_URL` 必须与浏览器访问的 origin（协议、域名、端口）一致；登录和上传等写请求的 `Origin` 校验、分享链接均使用这个固定地址，不使用请求的 Host 或转发 Host 构造链接。代理应原样转发 URI、查询参数、Host、Origin 和 Cookie。应用不会向客户端发布内部 HTTP 地址，也不会把健康检查重定向到公网地址。
 
-默认桥接部署：
+`COOKIE_SECURE` 留空时根据 `APP_BASE_URL` 自动设置。可信代理的单值 `X-Forwarded-Proto: https` 也会启用 Secure Cookie 和 HTTPS 安全响应头。会话 Cookie 保持 `HttpOnly; SameSite=Lax; Path=/`，不设置 Domain；退出登录和修改密码使用相同的安全属性清除 Cookie。公网部署必须使用 HTTPS，浏览器的 Service Worker 和 SHA-256 上传校验需要安全上下文；本地开发可用 localhost。
+
+`TRUSTED_PROXIES` 默认为空。只填写直接代理及代理链所用的具体 IP/CIDR：
+
+- 只有 socket 对端属于这些网段时，才读取 `X-Forwarded-For`、`X-Real-IP` 和 `X-Forwarded-Proto`。
+- `X-Forwarded-For` 从右向左找第一个不可信地址；遇到无效地址停止，不跨过无效节点接受更左侧的值。没有此头时才使用单个 `X-Real-IP`。
+- 边缘代理应覆盖外部传入的客户端 IP 及协议头，`X-Forwarded-Proto` 必须是单个 `http` 或 `https`。不要把所有客户端网段都列为可信代理。
+- 桥接容器内看到的对端可能是网桥网关或代理容器地址，应按实际对端配置，不能直接照抄宿主机的 loopback 网段。Rootless 网络可能重写源 IP，真实客户端 IP 需要由可信 HTTP 代理提供。
+
+## Compose 与 Quadlet
 
 ```sh
+cp .env.example .env
+# 在 .env 中设置 APP_BASE_URL 和 TRUSTED_PROXIES
 docker compose up -d
-# 或在完成下述 rootless 主机设置后：
-podman-compose up -d
-```
-
-域名模式自动推导 `APP_BASE_URL=https://$APP_DOMAIN`、HTTP 80、TCP TLS 443 和 UDP QUIC 443。Compose 中的监听也是这三个端口。`APP_BASE_URL` 若显式填写，必须是该域名的 HTTPS origin；手工 PEM 与 `APP_DOMAIN` 不能同时启用。直接运行二进制时自动读取工作目录 `.env`，进程环境变量优先，且不会修改进程环境。
-
-## rootless Podman 与宿主机网络
-
-rootless 进程绑定低端口受宿主机内核限制。管理员在宿主机执行一次：
-
-```sh
-sudo sh -c 'printf "%s\n" "net.ipv4.ip_unprivileged_port_start=80" > /etc/sysctl.d/90-revaro-low-ports.conf'
-sudo sysctl --system
-```
-
-随后以普通用户启动：
-
-```sh
+# 或使用宿主机网络，默认只监听宿主机 loopback
 podman-compose -f compose.host.yml up -d
-podman-compose -f compose.host.yml logs -f revaro
 ```
 
-`compose.host.yml` 是独立文件，不能叠加到默认 Compose；宿主机网络不配置端口映射，也不尝试修改宿主机 sysctl。容器仍使用 UID/GID 10001、只读根文件系统、`cap_drop: ALL` 和 `no-new-privileges`，无需 privileged 或 root 容器。默认桥接 Compose 额外将网络命名空间内的低端口起点设为 80，宿主机的设置负责允许 rootless 发布公网低端口。端口必须没有其他服务占用。[Podman rootless 限制](https://github.com/containers/podman/blob/main/rootless.md)
+默认 Compose 在容器内监听 `0.0.0.0:8080`，仅发布宿主机 `127.0.0.1:8080`。`APP_BIND_IP` 和 `APP_PORT` 控制宿主机发布地址与端口，容器内仍用 8080；`compose.local.yml` 提供相同的 HTTP 配置。宿主机网络使用 `APP_ADDR` 控制监听地址，修改端口时同时把 `APP_BASE_URL` 设置为实际访问地址。若代理运行在同一个容器网络，可直接代理 `http://revaro:8080`，仅允许代理访问该网络。
 
-这项 sysctl 允许宿主机其他普通用户绑定 80 及以上端口；保持原有用户权限管理。要在注销后持续运行 rootless 服务，可按宿主机的 systemd 用户服务策略启用 linger。命名卷由 Podman 管理 UID 映射；如使用宿主机 bind mount，须按用户命名空间映射设置目录所有权，不能直接假定宿主机 UID 10001。
+Rootless Podman Quadlet 示例，保存为 `~/.config/containers/systemd/revaro.container`：
 
-## 证书生命周期
+```ini
+[Unit]
+Description=Revaro HTTP service
+After=network-online.target
+Wants=network-online.target
 
-- HTTP 80 的 `/.well-known/acme-challenge/{token}` 返回当前 HTTP-01 key authorization；不存在的 token 返回 404。其他请求 308 跳转固定配置的 HTTPS origin，保留路径、查询和方法，不信任 Host 或转发头。
-- TCP 443 使用 rustls，ALPN 为 `h2`、`http/1.1`；UDP 443 使用原有 Quinn 与标准 `h3`。TCP 响应公布 `Alt-Svc: h3=":443"; ma=300`。若有 NAT，`APP_QUIC_PUBLIC_PORT` 可指定公网 UDP 端口。
-- `rustls-acme` 的持续状态流负责申请、退避重试和在证书生命周期约三分之二时续期。证书解析器由 TCP 与 QUIC 共享；续期后新连接使用新证书，已有连接继续传输，不重启 listener，也不改变 HTTP/3 协议。[rustls-acme](https://docs.rs/rustls-acme/0.15.4/rustls_acme/)
-- `/data/acme` 存储账户密钥和证书/私钥链，目录权限 0700、文件 0600。临时文件先同步到磁盘，再原子替换并同步目录。缓存按域名/联系人与 CA 地址隔离，测试和生产证书不会混用。应持久化整个 `/data` 卷；缓存不可写会导致启动失败。
-- 首次申请完成前 HTTPS 握手暂不可用；没有临时自签名生产证书。TLS 健康检查等待证书就绪，启动宽限 300 秒。已有缓存无需 CA 在线即可恢复服务，后台续期失败保留正在使用的证书并继续重试。
-- `ACME_STAGING=true` 用于部署试验，证书不受浏览器信任；正式启用时改为 false 并重启。私有 CA 可设置 HTTPS `ACME_DIRECTORY_URL` 与 `ACME_CA_FILE`，仅改变 ACME 客户端的信任根，不关闭 TLS 校验。挂载额外 CA 文件时需确保容器 UID 可读。
+[Container]
+Image=ghcr.io/vesperglow/revaro:latest
+ContainerName=revaro
+Network=host
+Environment=APP_ADDR=127.0.0.1:8080
+Environment=APP_BASE_URL=https://files.example.com
+Environment=TRUSTED_PROXIES=127.0.0.1/32,::1/128
+Volume=revaro-data.volume:/data
+Volume=revaro-objects.volume:/objects
+Volume=revaro-caches.volume:/caches
+ReadOnly=true
+Tmpfs=/tmp:rw,size=1g,mode=1777
+NoNewPrivileges=true
+DropCapability=all
 
-## QUIC、共享传输与回退
+[Service]
+Restart=always
 
-默认保留 `aggressive + auto`、pacing、有限丢包补偿、每连接及全局上限和严重拥塞时 Cubic 回退。`QUIC_CC_MODE=standard` 可手动切换为 upstream Cubic。配置和实测见 [QUIC 传输说明](quic-transport.md)。所有文件共用相同 Router、Range/ETag、分块上传和浏览器 resilient transport，没有新增按文件类型分类的恢复逻辑。
-
-UDP 不可达或 HTTP/3 握手失败时，浏览器通过相同 TCP 443 回退 HTTP/2。需要应用层固定选择备用 HTTP/2 authority 时，可以配置 `APP_HTTP2_ADDR` 和同域名的 `APP_HTTP2_BASE_URL`；该原生额外 listener 使用同一个 ACME 证书并不公布 Alt-Svc，桥接部署需自行增加对应 TCP 映射。见 [共享传输与回退](file-transport.md)。
-
-本地 HTTP 开发仍可使用 `compose.local.yml`。现有手工 PEM、独立 HTTP/2 端口和 `compose.quic.yml` 诊断配置保留：`docker compose -f compose.local.yml -f compose.quic.yml up -d`，不要同时设置 `APP_DOMAIN`。
-
-## 验证
-
-```sh
-cargo test -p revaro-server --test public_ingress
-cargo test -p revaro-server --test quic_transport
-cargo xtask check
-# 已设置宿主机低端口 sysctl 且 80/443 空闲时，以普通用户直接实测：
-REVARO_INGRESS_TEST_PUBLIC_PORTS=1 cargo test -p revaro-server --test public_ingress
+[Install]
+WantedBy=default.target
 ```
 
-`public_ingress` 使用本地受信任 CA 与真实 HTTPS ACME/JWS 请求，验证 HTTP-01 key authorization、临时签发错误自动恢复、续期时 HTTP/1.1/HTTP/2/HTTP/3 证书切换、旧 HTTP/3 连接继续读取、私有缓存和 CA 离线后重启。`quic_transport` 保持真实 HTTP/3 路由上的任意 MIME 上传、Range、ETag 和校验覆盖。真实公网 Let's Encrypt 签发仍取决于部署域名、DNS 与入站端口可达。
+同时创建三个对应的 `.volume` 文件（例如 `revaro-data.volume`，内容为 `[Volume]`）。执行 `systemctl --user daemon-reload` 和 `systemctl --user start revaro.service`。不需要低端口 sysctl、证书挂载或网络 capabilities；镜像只声明 HTTP 8080。
+
+## Caddy
+
+宿主机上的 Caddyfile：
+
+```caddyfile
+files.example.com {
+    reverse_proxy 127.0.0.1:8080 {
+        flush_interval -1
+    }
+}
+```
+
+Caddy 默认向上游提供 Host、客户端 IP 和原始协议头，并支持 WebSocket 升级。上游为普通 HTTP；公网协议协商和证书由 Caddy 配置负责。`flush_interval -1` 及时交付流式响应。参见 [Caddy reverse_proxy 官方文档](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)。
+
+## Nginx
+
+以下 `map` 放在 `http` 上下文，`location` 放在已经配置好公网 HTTPS 与证书的 `server` 内。HTTP 到 HTTPS 的重定向也在外部代理配置中完成。
+
+```nginx
+map $http_upgrade $revaro_connection {
+    default upgrade;
+    ''      '';
+}
+
+# 在外部 HTTPS server 块内：
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Origin $http_origin;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $revaro_connection;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_redirect off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    client_body_timeout 3600s;
+    client_max_body_size 0;
+}
+```
+
+该示例是直接接收客户端的单层代理，覆盖客户端提供的转发头。多层代理需在边缘清洗这些头，再配置各层可信网段。不要重写 Origin 到内部 HTTP 地址，不要改写 Cookie 的 Domain/Path 或删除 Secure 属性。
+
+默认转发 Range、If-Range、ETag 和条件请求头；关闭缓存及缓冲，保留 206、304、416、Content-Range、Accept-Ranges 和原始正文。代理不要压缩或转换文件 Range 响应，不要用额外切片层改变字节偏移。上传请求直接流向应用，保留 SHA-256 确认、分片重试和断点续传；应用自身的超时、大小与并发限制仍生效。WebSocket 使用 HTTP/1.1 Upgrade 转发，无须应用的额外监听端口。参见 [Nginx proxy 模块](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) 与 [WebSocket 代理说明](https://nginx.org/en/docs/http/websocket.html)。
+
+## 部署验证
+
+1. 访问内部 `http://127.0.0.1:8080/readyz`，应返回 200 JSON，没有重定向。
+2. 用公网 HTTPS 地址登录，确认会话 Cookie 的安全属性、分享链接的域名与协议正确，写请求没有 Origin 错误。
+3. 上传后暂停/继续、下载续传、音视频播放及跳转，检查 Range 的 206、Content-Range 与 ETag；验证 `If-Range` 失效后按标准返回完整正文。
+4. 查看代理访问日志和登录限流行为，确认转发客户端 IP 与实际客户端一致。直接访问后端时伪造转发头不能影响身份。
+
+应用数据目录、SQLite、对象文件和上传分片格式均保持不变。升级只需替换服务程序及前端并调整代理和环境配置，无须数据库或对象迁移；既有数据目录中的历史文件不会被应用主动删除或读取为网络配置。

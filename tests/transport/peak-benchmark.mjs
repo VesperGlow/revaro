@@ -1,4 +1,4 @@
-// Deterministic shared-link model, not a real ISP/QUIC measurement.
+// Deterministic shared-link model, not a real network measurement.
 // Optional comparison: node .../peak-benchmark.mjs /path/to/before.mjs
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';

@@ -1,14 +1,8 @@
-import { fileResponse, bufferedRequest, configureTransport, clearTransportCache, setPlaybackState, isFileResource, usesNativeFileLoading } from './transport-core.js';
+import { fileResponse, bufferedRequest, clearTransportCache, setPlaybackState, isFileResource, usesNativeFileLoading } from './transport-core.js';
 self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
-let configuration;
-function config() {
-  return configuration ||= bufferedRequest(new Request(new URL('/api/transport/config', self.location.origin)), false)
-    .then(r => r.json()).then(configureTransport).catch(() => { configuration = null; });
-}
 self.addEventListener('message', event => {
   if (event.data?.type === 'claim-clients') event.waitUntil(self.clients.claim());
-  if (event.data?.type === 'transport-config') configureTransport(event.data.config);
   if (event.data?.type === 'clear-transport') event.waitUntil(clearTransportCache());
   if (event.data?.type === 'playback-state') {
     const state = event.data.state;
@@ -33,7 +27,6 @@ self.addEventListener('fetch', event => {
   // above still explicitly settles its event for WebKit.
   if (usesNativeFileLoading(request)) return;
   const response = (async () => {
-    await config();
     if (url.pathname === '/api/auth/logout') {
       await clearTransportCache();
     }

@@ -1,6 +1,6 @@
 {
   "date": "2026-10-10",
-  "scope": "Current sources, isolated localhost server, real native browser decoding; not an Internet or QUIC throughput benchmark.",
+  "scope": "Current sources, isolated localhost server, real native browser decoding; not an Internet throughput benchmark.",
   "checks": {
     "rustTestsPassed": 500,
     "nodeTestsPassed": 38,
@@ -183,7 +183,7 @@
     }
   },
   "limitations": [
-    "Proxy samples measure HTTP body bytes forwarded, not TCP acknowledgments or TLS/QUIC wire overhead.",
+    "Proxy samples measure HTTP body bytes forwarded, not TCP acknowledgments or encrypted wire overhead.",
     "Startup-to-three-seconds includes three seconds of actual playback; it is not first-frame latency.",
     "Native seek/index requests and overlapping ranges remain controlled by the browser. No application-added one-byte probes or media range windows.",
     "WPE WebKit 26.0 is a Linux test engine, not a macOS/iOS Safari measurement; its private-image cache may re-fetch with 200.",

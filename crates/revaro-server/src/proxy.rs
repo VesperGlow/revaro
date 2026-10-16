@@ -1,4 +1,4 @@
-//! Trusted-proxy prefixes for `X-Forwarded-For` handling.
+//! Client identity and public scheme behind trusted HTTP reverse proxies.
 //!
 //! Ported from the Go configuration, which used `netip.ParsePrefix` plus
 //! `Prefix.Masked()`. Only the operations the product needs are implemented:
@@ -6,7 +6,101 @@
 
 use std::fmt;
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
+
+use axum::extract::{ConnectInfo, FromRequestParts};
+use http::{HeaderMap, request::Parts};
+
+use crate::{config::Config, state::AppState};
+
+/// Request metadata derived only from the socket peer and trusted proxy headers.
+#[derive(Debug, Clone)]
+pub struct RequestContext {
+    pub client_ip: String,
+    pub is_https: bool,
+    pub secure_cookie: bool,
+}
+
+impl RequestContext {
+    pub fn resolve(headers: &HeaderMap, config: &Config, peer: Option<SocketAddr>) -> Self {
+        let peer = peer.map(|peer| unmap(peer.ip()));
+        let trusted = |ip| {
+            config
+                .trusted_proxies
+                .iter()
+                .any(|prefix| prefix.contains(ip))
+        };
+        let proxy = peer.is_some_and(trusted);
+        let mut client = peer;
+        if proxy {
+            // Walk from the immediate proxy towards the client. Never skip a
+            // malformed hop to accept a possibly forged value farther left.
+            if headers.contains_key("x-forwarded-for") {
+                'chain: for header in headers.get_all("x-forwarded-for").iter().rev() {
+                    let Ok(header) = header.to_str() else { break };
+                    for candidate in header.split(',').rev() {
+                        let Ok(address) = candidate.trim().parse::<IpAddr>() else {
+                            break 'chain;
+                        };
+                        let address = unmap(address);
+                        client = Some(address);
+                        if !trusted(address) {
+                            break 'chain;
+                        }
+                    }
+                }
+            } else if let Some(address) = headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse::<IpAddr>().ok())
+            {
+                client = Some(unmap(address));
+            }
+        }
+        // Proxies must overwrite this header with one scheme, not append a
+        // client-supplied list. APP_BASE_URL remains the canonical public URL.
+        let forwarded_https = proxy
+            && headers.get_all("x-forwarded-proto").iter().count() == 1
+            && headers
+                .get("x-forwarded-proto")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.eq_ignore_ascii_case("https"));
+        Self {
+            client_ip: client.map_or_else(String::new, |ip| ip.to_string()),
+            is_https: forwarded_https || config.base_url.starts_with("https://"),
+            secure_cookie: config.cookie_secure || forwarded_https,
+        }
+    }
+}
+
+impl FromRequestParts<Arc<AppState>> for RequestContext {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        if let Some(context) = parts.extensions.get::<Self>() {
+            return Ok(context.clone());
+        }
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|peer| peer.0);
+        Ok(Self::resolve(&parts.headers, &state.config, peer))
+    }
+}
+
+fn unmap(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V6(address) => address
+            .to_ipv4_mapped()
+            .map_or(IpAddr::V6(address), IpAddr::V4),
+        address => address,
+    }
+}
 
 /// A CIDR network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +229,94 @@ pub fn parse_list(value: &str) -> Result<Vec<Prefix>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn context(peer: Option<&str>, forwarded: &[(&str, &str)]) -> RequestContext {
+        let config = Config::from_lookup(&|name| match name {
+            "TRUSTED_PROXIES" => Some("127.0.0.1/32,::1/128,10.0.0.0/8".into()),
+            _ => None,
+        })
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        for (name, value) in forwarded {
+            headers.append(
+                http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        RequestContext::resolve(&headers, &config, peer.map(|peer| peer.parse().unwrap()))
+    }
+
+    #[test]
+    fn untrusted_or_missing_peers_cannot_spoof_client_or_scheme() {
+        let headers = [
+            ("x-forwarded-for", "192.0.2.5"),
+            ("x-real-ip", "192.0.2.6"),
+            ("x-forwarded-proto", "https"),
+        ];
+        let direct = context(Some("198.51.100.1:12345"), &headers);
+        assert_eq!(direct.client_ip, "198.51.100.1");
+        assert!(!direct.is_https);
+        assert!(!direct.secure_cookie);
+        let missing = context(None, &headers);
+        assert!(missing.client_ip.is_empty());
+        assert!(!missing.is_https);
+    }
+
+    #[test]
+    fn trusted_proxy_walks_the_chain_and_recognizes_https() {
+        let forwarded = [
+            ("x-forwarded-for", "192.0.2.99, 198.51.100.7, 10.1.2.3"),
+            ("x-forwarded-proto", "https"),
+        ];
+        let result = context(Some("127.0.0.1:12345"), &forwarded);
+        assert_eq!(result.client_ip, "198.51.100.7");
+        assert!(result.is_https);
+        assert!(result.secure_cookie);
+        let mapped = context(Some("[::ffff:127.0.0.1]:12345"), &forwarded);
+        assert_eq!(mapped.client_ip, result.client_ip);
+        let v6 = context(Some("[::1]:12345"), &[("x-forwarded-for", "2001:db8::1")]);
+        assert_eq!(v6.client_ip, "2001:db8::1");
+    }
+
+    #[test]
+    fn malformed_hops_and_duplicate_headers_preserve_the_trust_boundary() {
+        let invalid = context(
+            Some("127.0.0.1:12345"),
+            &[("x-forwarded-for", "192.0.2.99, invalid, 10.1.2.3")],
+        );
+        assert_eq!(invalid.client_ip, "10.1.2.3");
+        let repeated = context(
+            Some("127.0.0.1:12345"),
+            &[
+                ("x-forwarded-for", "192.0.2.99"),
+                ("x-forwarded-for", "198.51.100.7, 10.1.2.3"),
+            ],
+        );
+        assert_eq!(repeated.client_ip, "198.51.100.7");
+        for headers in [
+            vec![("x-forwarded-proto", "https, http")],
+            vec![
+                ("x-forwarded-proto", "https"),
+                ("x-forwarded-proto", "http"),
+            ],
+        ] {
+            assert!(!context(Some("127.0.0.1:12345"), &headers).is_https);
+        }
+    }
+
+    #[test]
+    fn real_ip_is_a_fallback_only_when_the_forwarded_chain_is_absent() {
+        let real = context(Some("127.0.0.1:12345"), &[("x-real-ip", "198.51.100.9")]);
+        assert_eq!(real.client_ip, "198.51.100.9");
+        let invalid = context(
+            Some("127.0.0.1:12345"),
+            &[
+                ("x-forwarded-for", "invalid"),
+                ("x-real-ip", "198.51.100.9"),
+            ],
+        );
+        assert_eq!(invalid.client_ip, "127.0.0.1");
+    }
 
     fn ip(value: &str) -> IpAddr {
         value.parse().unwrap()

@@ -22,17 +22,17 @@
 
 ## 显式读取与流式下载
 
-冷启动从头读取先用最多 64 KiB 首段确认权限、长度与强 ETag，同时交付内容。再次打开、跳转或带 If-Range 时先用 0-0 核验。后续窗口按吞吐调整为 64～512 KiB，默认 3 路，低吞吐 2 路、HTTP/3 4 路。输出有序、有背压，预取有界。电子书继续按阅读器所需章节/流块取数。
+冷启动从头读取先用最多 64 KiB 首段确认权限、长度与强 ETag，同时交付内容。再次打开、跳转或带 If-Range 时先用 0-0 核验。后续窗口按吞吐调整为 64～512 KiB，默认 3 路，低吞吐 2 路。输出有序、有背压，预取有界。电子书继续按阅读器所需章节/流块取数。
 
 每个数据窗口携带 If-Range/If-Match，验证 206、总长、区间与 Content-Length。断流保留收到的前缀，仅重取余下区间；文件变更停止旧流。错误区间、错误长度和无法按解码后偏移续传的编码 Range 立即失败，避免重复无效请求。multipart、条件验证及非 ETag 的 If-Range 交给原始 HTTP 请求处理。后端忽略 Range 返回 200 时，将同一个响应流交付消费者，不整文件缓冲或重复下载。
 
 窗口拆成对齐 64 KiB 块，内存上限 8 MiB，磁盘约 128 MiB；同版本并发读取共享在途数据，只在最后一个消费者取消时中断。慢缓存写入和配额不足不阻塞正文。重新认证后才复用块；no-store 不保存内容。任意超大文件不能保证永久缓存。
 
-恢复策略保留请求头/正文停滞截止时间、有界指数退避、Retry-After、备用 HTTPS authority、SHA-256 上传确认与受限 hedge。400/403/404/409/412 等永久错误不循环重试。原生媒体由浏览器负责网络恢复，不套用分块请求规则。少数原生引擎断流后会一直停在 NETWORK_LOADING：共享播放观察器只在已开始播放、缓冲耗尽且时钟停滞后等待 3 秒，再用原生 load 恢复当前位置；同一来源连续失败最多恢复两次，数据继续到达、暂停、跳转、切换来源或解码错误都不会触发此恢复。
+恢复策略保留请求头/正文停滞截止时间、有界指数退避、Retry-After、SHA-256 上传确认与受限 hedge。400/403/404/409/412 等永久错误不循环重试。原生媒体由浏览器负责网络恢复，不套用分块请求规则。少数原生引擎断流后会一直停在 NETWORK_LOADING：共享播放观察器只在已开始播放、缓冲耗尽且时钟停滞后等待 3 秒，再用原生 load 恢复当前位置；同一来源连续失败最多恢复两次，数据继续到达、暂停、跳转、切换来源或解码错误都不会触发此恢复。
 
 ## 并发与监控
 
-显式请求与上传共享核心准入策略，播放缓冲不足时限制后台并发；文档与 Worker 接收同一播放压力。原生消费保留浏览器优先级调度。服务端 TCP/QUIC 共用响应许可：登录文件最多 12 路、后台最多 4 路，公开分享保留独立 8 路，许可直到正文结束或取消才释放。
+显式请求与上传共享核心准入策略，播放缓冲不足时限制后台并发；文档与 Worker 接收同一播放压力。原生消费保留浏览器优先级调度。服务端 HTTP 共用响应许可：登录文件最多 12 路、后台最多 4 路，公开分享保留独立 8 路，许可直到正文结束或取消才释放。
 
 `transportState().metrics` 提供网络请求、重试、应用缓存命中/字节、显式读取回退为原生 Fetch 的请求与网络失败计数。服务端 DEBUG `file_transfer` 日志记录 method、Range、status、等待响应头时间、实际交付正文的字节、耗时和 completed/cancelled/failed。原生 HTTP 缓存与协议通过 Resource Timing 和浏览器/代理测量，避免为监控读取或复制正文。服务端日志中的字节表示交给 HTTP 栈的字节，真实线路字节由代理或浏览器测量。
 
@@ -44,23 +44,11 @@
 
 重新选择文件时先读取持久会话状态，再对本地已确认块计算 SHA-256 与服务端确认比较，避免同名、同大小、同修改时间的不同文件导致错误续传。缺少哈希的旧确认会重新校验该块。成功提交幂等，丢失提交响应不会创建重复文件。浏览器重启后需要重新选择本地文件，以重新取得 File 访问权限。
 
-## HTTP/3 与 HTTP/2 回退
+## HTTP 与反向代理
 
-浏览器原生 QUIC 管理拥塞、ACK、重传和协议协商。标准 Fetch API 不允许应用设置 Hy2 Brutal 拥塞控制、UDP FEC 或选择具体 HTTP 版本。本实现提供应用层补偿：并行独立 Range、保留字节前缀、缩短停滞阈值、受限 hedge 与快速局部重连；这些策略也适用于 HTTP/1.1 和 HTTP/2。协议识别使用可用的 Resource Timing `nextHopProtocol`，不可用时使用保守默认值。
+服务端只监听普通 HTTP。浏览器到外部反向代理的 HTTPS、HTTP/2、HTTP/3 协商、拥塞控制及证书管理由代理与浏览器负责；客户端不选择备用协议入口，也不按具体 HTTP 版本改变恢复策略。显式文件读取保留同源并行 Range、已收到前缀、停滞截止时间、受限 hedge 和退避重试；原生媒体由浏览器管理网络恢复。
 
-默认公网部署由 Revaro 自身直接提供 TCP/UDP 443，浏览器在 UDP 或 HTTP/3 握手不可用时正常回退同一入口的 TCP HTTP/2；显式读取与下载的共享恢复策略适用于所有文件类型；原生媒体由浏览器管理协议与网络恢复。
-
-如需应用层明确选择 HTTP/2，可启用 Revaro 的独立 TCP TLS listener，无需任何反向代理：
-
-```env
-APP_DOMAIN=files.example.com
-APP_HTTP2_ADDR=0.0.0.0:8444
-APP_HTTP2_BASE_URL=https://files.example.com:8444
-```
-
-开放额外 TCP 8444。该 listener 复用同一 ACME 证书，仅配置 HTTP/2 与 HTTP/1.1，不发布 Alt-Svc。客户端分别记录主入口与备用入口的失败和成功；主入口停滞或累计两次连接失败时切换备用，保持 60 秒后重新尝试主入口，备用成功不会清掉主入口的失败记录。备用失败则允许返回主入口。配置要求相同 hostname 和不同 HTTPS authority，保留 host-only Cookie；服务端支持凭证 CORS、Priority、Range/校验头和 CSP。标准 Fetch 不能指定同一 authority 的 HTTP 版本；不配置额外端口时由浏览器完成协议回退。
-
-部署与 ACME 生命周期见 [公网入口部署](public-ingress.md)，标准 HTTP/3 拥塞控制见 [QUIC 传输说明](quic-transport.md)。协议依据：[HTTP Range 与 If-Range](https://www.rfc-editor.org/rfc/rfc9110.html#section-14)、[Fetch 标准](https://fetch.spec.whatwg.org/)、[Service Workers](https://www.w3.org/TR/service-workers/)。
+部署、可信转发头、上传与流媒体代理配置见 [反向代理部署](public-ingress.md)。协议依据：[HTTP Range 与 If-Range](https://www.rfc-editor.org/rfc/rfc9110.html#section-14)、[Fetch 标准](https://fetch.spec.whatwg.org/)、[Service Workers](https://www.w3.org/TR/service-workers/)。
 
 ## 批量 ZIP 与验证
 
@@ -73,7 +61,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask web-check
 ```
 
-故障注入覆盖任意 MIME 类型、响应体停滞/局部断流、约 15% 请求失败、成功块跨引擎复用、ETag 变化、hedge 取消、上传确认丢失、SHA-256 发布前验证、取消和备用 authority 切换。请求失败注入不能等价证明 5%～15% UDP/TCP **数据包** 丢失下的实测吞吐；真实 HTTP/3/HTTP/2 协商与丢包性能需要在启用 TLS/QUIC 的部署上进行隔离网络测试。
+故障注入覆盖任意 MIME 类型、响应体停滞/局部断流、约 15% 请求失败、成功块跨引擎复用、ETag 变化、hedge 取消、上传确认丢失、SHA-256 发布前验证、取消和同源重试。请求失败注入不能等价证明 5%～15% UDP/TCP **数据包** 丢失下的实测吞吐；公网协议协商与丢包性能需要在外部反向代理部署上进行隔离网络测试。
 
 此前分块恢复策略的 22 项 Node 回归，覆盖冷启动合并首段、按吞吐调整窗口、慢缓存写入、非对齐跳转复用、并发读取独立取消、退出登录期间的延迟探测和缓存读取、前台优先准入、备用入口抢先响应、下一首的缓冲门槛和低缓冲取消。CI 会执行所有传输测试文件，并验证无 Worker 的 API 恢复、keepalive 和上传幂等策略。
 
@@ -84,13 +72,12 @@ git show ca09c35:crates/revaro-web/static/transport-core.js > /tmp/revaro-transp
 node tests/transport/peak-benchmark.mjs /tmp/revaro-transport-before.mjs
 ```
 
-后续已增加可选原生 Quinn HTTP/3 与 `standard` / `aggressive` 拥塞控制，并用隔离 tc netem 实测 0/5/10/15% 包丢失、短暂断流和 UDP 故障回退；参数、完整异常样本与三种浏览器兼容性见 [QUIC 传输说明](quic-transport.md)。浏览器 Worker 由同一 transport core 生成 classic 脚本，支持 Firefox；上传适配器继续 import 原始 ESM core。
 
-2026-10-06 合并版本验证：`cargo xtask check` 覆盖格式、原生 Clippy、467 项 Rust 测试及 WASM 类型检查；9 项 Node 传输故障测试通过。CI 的 Chromium 场景分阶段验证，63 项通过，1 项需要额外大型 FLAC 实例样本而跳过；覆盖真实断流代理、首次公开下载、任意文件类型、批量 ZIP、上传确认丢失、失败块补传、编辑器、阅读器、音频章节、逐行台词和桌面/移动端界面。测试在 BrowserContext 上拦截 Worker 实际请求，所有类型的测试夹具共用分块上传与 SHA-256 校验。本地已有实例同步加载了界面修正，仍为 HTTP localhost，未启用 QUIC 或独立 TLS HTTP/2 入口。
+2026-10-06 合并版本验证：`cargo xtask check` 覆盖格式、原生 Clippy、467 项 Rust 测试及 WASM 类型检查；9 项 Node 传输故障测试通过。CI 的 Chromium 场景分阶段验证，63 项通过，1 项需要额外大型 FLAC 实例样本而跳过；覆盖真实断流代理、首次公开下载、任意文件类型、批量 ZIP、上传确认丢失、失败块补传、编辑器、阅读器、音频章节、逐行台词和桌面/移动端界面。测试在 BrowserContext 上拦截 Worker 实际请求，所有类型的测试夹具共用分块上传与 SHA-256 校验。本地已有实例同步加载了界面修正，仍为 HTTP localhost。
 
 2026-10-08 晚高峰相关改动验证：`cargo xtask check` 通过格式、Clippy、480 项 Rust 测试及 WASM 类型检查；22 项 Node 传输测试通过，发布模式 Web 构建通过。独立 localhost 实例执行 CI 浏览器场景并增加长 WAV/FLAC 跳转场景，共 90 项通过；需要额外导入大型 FLAC 与外部字幕的 1 项跳过。一个选择场景因测试从仓库根目录运行而无法写入截图，按 CI 的 `tests/e2e` 工作目录重跑后通过。此验证未测量真实公网晚高峰线路。
 
-2026-10-10 文件访问重构验证：500 项 Rust、38 项 Node、40 项相关浏览器测试全部通过，格式、Clippy、WASM 检查与发布 Web 构建通过。原生媒体和图片直接使用浏览器 HTTP；恢复式下载与按需阅读继续复用共享核心。分析、逐项验收、12.16 Mbps 视频实播与断流、长音频跳转、随机并发读取及缓存结果见 [重构记录](file-transport-refactor.md) 和 [JSON 测量](file-transport-measurements.json)。此次使用隔离 localhost 实例与 HTTP 代理，WebKit 为 Linux WPE 引擎；未把该测量外推为公网 QUIC 或实际 Safari 的性能结果。
+2026-10-10 文件访问重构验证：500 项 Rust、38 项 Node、40 项相关浏览器测试全部通过，格式、Clippy、WASM 检查与发布 Web 构建通过。原生媒体和图片直接使用浏览器 HTTP；恢复式下载与按需阅读继续复用共享核心。分析、逐项验收、12.16 Mbps 视频实播与断流、长音频跳转、随机并发读取及缓存结果见 [重构记录](file-transport-refactor.md) 和 [JSON 测量](file-transport-measurements.json)。此次使用隔离 localhost 实例与 HTTP 代理，WebKit 为 Linux WPE 引擎；未把该测量外推为公网或实际 Safari 的性能结果。
 
 ## 播放进度与多设备会话
 

@@ -12,10 +12,9 @@
 //! run; nothing here re-implements it. The session cookie is the
 //! `SameSite=Lax` half of the same defence.
 
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{FromRequest, FromRequestParts, Request, State};
+use axum::extract::{FromRequest, Request, State};
 use axum::response::{IntoResponse as _, Response};
 use axum::{Json, Router, routing};
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -23,7 +22,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http::StatusCode;
 use http::header::{self, HeaderValue};
-use http::request::Parts;
 use revaro_core::api::auth::{
     AvatarRequest, ChangePasswordRequest, ChangeUsernameRequest, LoginRequest, PasswordCodeRequest,
     PasswordRequest, TotpRecovery, TotpSetup,
@@ -34,8 +32,8 @@ use revaro_core::{ApiError, ErrorCode, Timestamp};
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::auth::{AuthError, AuthUser, SESSION_COOKIE, SESSION_LIFETIME_MILLIS};
-use crate::config::Config;
 use crate::error::{JsonStatus, invalid_json};
+use crate::proxy::RequestContext;
 use crate::state::AppState;
 
 /// Largest accepted avatar, matching Go's `maxAvatarBytes` (`2 << 20`).
@@ -127,83 +125,15 @@ where
     }
 }
 
-/// The client address used for login rate limiting.
-///
-/// Derived exactly like Go's `clientIP`: the peer address wins unless it sits
-/// inside `TRUSTED_PROXIES`, in which case `X-Forwarded-For` is walked
-/// right-to-left and the first untrusted address is the client. Spoofed values
-/// farther left are ignored because the chain is only believed from a trusted
-/// peer.
-pub struct ClientIp(pub String);
-
-impl FromRequestParts<Arc<AppState>> for ClientIp {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &Arc<AppState>,
-    ) -> Result<Self, Self::Rejection> {
-        let peer = axum::extract::ConnectInfo::<SocketAddr>::from_request_parts(parts, state)
-            .await
-            .ok()
-            .map(|connect| connect.0);
-        Ok(Self(client_ip(parts, &state.config, peer)))
-    }
-}
-
-/// Resolve the client address from the peer and any forwarded chain.
-fn client_ip(parts: &Parts, config: &Config, peer: Option<SocketAddr>) -> String {
-    let host = peer.map_or_else(String::new, |address| address.ip().to_string());
-    let Ok(peer_address) = host.parse::<IpAddr>() else {
-        return host;
-    };
-    let peer_address = unmap(peer_address);
-    if !trusted(config, peer_address) {
-        return host;
-    }
-    if let Some(header) = parts
-        .headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-    {
-        for candidate in header.split(',').rev() {
-            let Ok(address) = candidate.trim().parse::<IpAddr>() else {
-                continue;
-            };
-            let address = unmap(address);
-            if !trusted(config, address) {
-                return address.to_string();
-            }
-        }
-    }
-    peer_address.to_string()
-}
-
-fn trusted(config: &Config, address: IpAddr) -> bool {
-    config
-        .trusted_proxies
-        .iter()
-        .any(|prefix| prefix.contains(address))
-}
-
-fn unmap(address: IpAddr) -> IpAddr {
-    match address {
-        IpAddr::V6(value) => match value.to_ipv4_mapped() {
-            Some(mapped) => IpAddr::V4(mapped),
-            None => address,
-        },
-        IpAddr::V4(_) => address,
-    }
-}
-
 /// `POST /api/auth/login`
 async fn login(
     State(state): State<Arc<AppState>>,
-    ClientIp(ip): ClientIp,
+    context: RequestContext,
     request: Request,
 ) -> Result<Response, ApiError> {
+    let ip = &context.client_ip;
     let limiter = state.auth.limiter();
-    if !limiter.allow(&ip) {
+    if !limiter.allow(ip) {
         return Ok(problem_with_retry(
             StatusCode::TOO_MANY_REQUESTS,
             "too many login attempts; try again later",
@@ -218,7 +148,7 @@ async fn login(
         second_factor: input.second_factor.unwrap_or_default(),
     };
     if body.username.len() > 128 || body.password.len() > 1024 || body.second_factor.len() > 128 {
-        limiter.fail(&ip);
+        limiter.fail(ip);
         return Err(ApiError::unauthorized("invalid credentials"));
     }
     let Some(permit) = limiter.acquire() else {
@@ -235,7 +165,7 @@ async fn login(
     drop(permit);
     match outcome {
         Ok((token, expires)) => {
-            limiter.success(&ip);
+            limiter.success(ip);
             let profile = Profile {
                 username: body.username,
                 has_avatar: state.auth.has_avatar().await.unwrap_or(false),
@@ -244,7 +174,7 @@ async fn login(
             let response = Json(profile).into_response();
             Ok(with_cookie(
                 response,
-                session_cookie(&state.config, &token, expires),
+                session_cookie(context.secure_cookie, &token, expires),
             ))
         }
         Err(AuthError::TotpRequired) => Err(ApiError::unauthorized(
@@ -252,14 +182,14 @@ async fn login(
         )
         .with_code(ErrorCode::TOTP_REQUIRED)),
         Err(AuthError::InvalidSecondFactor) => {
-            limiter.fail(&ip);
+            limiter.fail(ip);
             Err(
                 ApiError::unauthorized("the authenticator or recovery code is incorrect")
                     .with_code(ErrorCode::INVALID_SECOND_FACTOR),
             )
         }
         Err(AuthError::InvalidCredentials) => {
-            limiter.fail(&ip);
+            limiter.fail(ip);
             Err(ApiError::unauthorized("invalid credentials"))
         }
         Err(error) => {
@@ -270,13 +200,17 @@ async fn login(
 }
 
 /// `POST /api/auth/logout`
-async fn logout(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<Response, ApiError> {
+async fn logout(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    context: RequestContext,
+) -> Result<Response, ApiError> {
     if let Err(error) = state.auth.logout(&user.token).await {
         tracing::error!(%error, "logout failed");
     }
     Ok(with_cookie(
         StatusCode::NO_CONTENT.into_response(),
-        clear_session_cookie(&state.config),
+        clear_session_cookie(context.secure_cookie),
     ))
 }
 
@@ -292,6 +226,7 @@ async fn me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<Json<P
 async fn change_password(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
+    context: RequestContext,
     request: Request,
 ) -> Result<Response, ApiError> {
     let JsonBody(input) = JsonBody::<Option<PasswordInput>>::from_request(request, &state).await?;
@@ -320,7 +255,7 @@ async fn change_password(
             tracing::info!(user = %user.username, "administrator password changed");
             Ok(with_cookie(
                 StatusCode::NO_CONTENT.into_response(),
-                clear_session_cookie(&state.config),
+                clear_session_cookie(context.secure_cookie),
             ))
         }
         Err(AuthError::InvalidCredentials) => {
@@ -638,12 +573,12 @@ fn valid_totp_confirmation(body: &PasswordCodeRequest) -> bool {
 }
 
 /// Build the session cookie: `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure`
-/// from configuration, `Expires` and `MaxAge`, and deliberately no `Domain`.
-fn session_cookie(config: &Config, token: &str, expires: Timestamp) -> Cookie<'static> {
+/// from configuration/trusted proxy scheme, `Expires` and `MaxAge`, and no `Domain`.
+fn session_cookie(secure: bool, token: &str, expires: Timestamp) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE, token.to_owned()))
         .path("/")
         .http_only(true)
-        .secure(config.cookie_secure)
+        .secure(secure)
         .same_site(SameSite::Lax)
         .expires(offset_datetime(expires))
         .max_age(TimeDuration::seconds(SESSION_LIFETIME_MILLIS / 1000))
@@ -651,13 +586,13 @@ fn session_cookie(config: &Config, token: &str, expires: Timestamp) -> Cookie<'s
 }
 
 /// Build the clearing cookie: empty value, `MaxAge=-1`, expiry in 1971.
-fn clear_session_cookie(config: &Config) -> Cookie<'static> {
+fn clear_session_cookie(secure: bool) -> Cookie<'static> {
     let epoch_plus_one =
         OffsetDateTime::from_unix_timestamp(1).unwrap_or(OffsetDateTime::UNIX_EPOCH);
     Cookie::build((SESSION_COOKIE, String::new()))
         .path("/")
         .http_only(true)
-        .secure(config.cookie_secure)
+        .secure(secure)
         .same_site(SameSite::Lax)
         .expires(epoch_plus_one)
         .max_age(TimeDuration::seconds(-1))

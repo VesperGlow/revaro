@@ -1,5 +1,5 @@
 //! Reserve response capacity for interactive reads while large downloads run.
-//! Both TCP and QUIC use this middleware, before bytes enter either protocol.
+//! Response permits stay held until the HTTP body completes or is cancelled.
 
 use std::sync::Arc;
 

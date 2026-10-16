@@ -132,16 +132,16 @@ test('native suffix ranges and If-Range follow HTTP semantics', async () => {
   assert.equal(changed.status, 200); assert.deepEqual(new Uint8Array(await changed.arrayBuffer()), payload);
 });
 
-test('HTTP/3 connection failure uses the configured HTTP/2-only authority', async () => {
+test('connection failures retry the same public origin', async () => {
   const urls = []; let failures = 0;
   const core = await engine(async (url, init) => {
     urls.push(url);
-    if (new URL(url).port !== '8443' && failures++ < 2) throw new TypeError('QUIC path failed');
+    if (failures++ < 2) throw new TypeError('Connection failed');
     const [start, end] = bounds(init); return bytesResponse(payload, start, end);
   }, undefined, 'https://files.example.test/');
-  core.configureTransport({ http2_origin: 'https://files.example.test:8443' });
   assert.deepEqual(new Uint8Array(await (await core.fileResponse(request())).arrayBuffer()), payload);
-  assert.ok(urls.some(url => new URL(url).port === '8443')); assert.equal(core.transportState().fallback, true);
+  assert.ok(urls.every(url => new URL(url).origin === 'https://files.example.test'));
+  assert.ok(failures > 2);
 });
 
 test('long FLAC/WAV streams seek in bounded windows and cancel without downloading the file', async () => {
@@ -324,21 +324,20 @@ test('buffer pressure bounds bulk requests and admits a foreground click ahead o
   assert.equal(core.transportState().activeRequests, 0);
 });
 
-test('a stalled primary races the backup before the ordinary header deadline', async () => {
+test('a stalled request races another request on the same origin before the header deadline', async () => {
   const calls = [];
   const core = await engine(async (url, init) => {
     calls.push(url);
-    if (new URL(url).port !== '8443') {
+    if (calls.length === 1) {
       return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
     }
     const [start, end] = bounds(init); return bytesResponse(payload.slice(0, 2048), start, end);
   }, undefined, 'https://files.example.test/');
-  core.configureTransport({ http2_origin: 'https://files.example.test:8443' });
   core.policy.headersMs = 500;
   const before = Date.now();
   assert.deepEqual(new Uint8Array(await (await core.fileResponse(new Request('https://files.example.test/api/files/failover/preview'))).arrayBuffer()), payload.slice(0, 2048));
   assert.ok(Date.now() - before < core.policy.headersMs);
-  assert.equal(core.transportState().fallback, true);
+  assert.ok(calls.every(url => new URL(url).origin === 'https://files.example.test'));
   assert.equal(calls.length, 2);
 });
 
