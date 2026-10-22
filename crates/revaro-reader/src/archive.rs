@@ -23,7 +23,8 @@ pub(crate) fn find_entry<R: Read + Seek>(archive: &ZipArchive<R>, name: &str) ->
     (0..archive.len()).find(|&index| {
         archive
             .name_for_index(index)
-            .is_some_and(|entry| normalize_path(entry) == wanted)
+            .and_then(Result::ok)
+            .is_some_and(|entry| normalize_path(&entry) == wanted)
     })
 }
 

@@ -788,7 +788,14 @@ mod tests {
         let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
         assert_eq!(archive.len(), 3);
         let mut names = (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().to_owned())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .unwrap()
+                    .name()
+                    .unwrap()
+                    .into_owned()
+            })
             .collect::<Vec<_>>();
         names.sort();
         assert_eq!(names, ["evil.txt", "file (2).txt", "file.txt"]);
