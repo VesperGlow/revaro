@@ -372,6 +372,9 @@ pub struct BookProgress {
 /// Public share state of a single file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareStatus {
+    /// Custom URL suffix after `/s/`, absent for random links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_slug: Option<String>,
     /// The expiration instant; absent for a permanent link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<Timestamp>,

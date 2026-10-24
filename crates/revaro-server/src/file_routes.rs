@@ -1264,9 +1264,8 @@ async fn public_share(
     axum::extract::RawQuery(query): axum::extract::RawQuery,
     headers: http::HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
-    // The token space is fixed at 43 characters; anything outside the accepted
-    // band is rejected before touching the database.
-    if token.len() < 32 || token.len() > 128 {
+    // Existing random tokens and custom suffixes use the same public route.
+    if !revaro_core::features::valid_share_slug(&token) && !(32..=128).contains(&token.len()) {
         return Err(ApiError::not_found("share not found"));
     }
 
@@ -1971,6 +1970,210 @@ VALUES('f1','00000000-0000-0000-0000-000000000000','a.bin','file','blobs/f1',3,'
         assert_eq!(body, serde_json::json!({"active": false}));
         let (status, _) = write(&state, "DELETE", "/api/files/f1/share", None).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn custom_share_suffix_lifecycle_preserves_public_file_delivery() {
+        let state = state().await;
+        state
+            .store
+            .put("blobs/custom", b"shared bytes")
+            .await
+            .unwrap();
+        seed(&state, "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) VALUES('custom','00000000-0000-0000-0000-000000000000','report.txt','file','blobs/custom',12,'text/plain','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');").await;
+        let endpoint = "/api/files/custom/share";
+        let (status, share) = write(
+            &state,
+            "POST",
+            endpoint,
+            Some(serde_json::json!({"custom_slug":"suzuka", "expires_in_seconds":3600})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(share["url"], "http://localhost:8080/s/suzuka");
+        assert_eq!(share["custom_slug"], "suzuka");
+        assert!(share["expires_at"].is_string());
+        assert_eq!(call(&state, endpoint).await.1, share);
+        let (_, listing) = call(&state, "/api/shares").await;
+        assert_eq!(listing[0]["url"], share["url"]);
+        assert_eq!(listing[0]["custom_slug"], "suzuka");
+
+        // Public reads, HEAD and seeking use exactly the same delivery path.
+        for (method, range, expected) in [
+            ("GET", None, StatusCode::OK),
+            ("HEAD", None, StatusCode::OK),
+            ("GET", Some("bytes=0-5"), StatusCode::PARTIAL_CONTENT),
+        ] {
+            let mut request = Request::builder().method(method).uri("/s/suzuka");
+            if let Some(range) = range {
+                request = request.header("range", range);
+            }
+            let response = crate::router::build(state.clone())
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            assert_eq!(response.headers()["accept-ranges"], "bytes");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                &body[..],
+                if method == "HEAD" {
+                    &b""[..]
+                } else if range.is_some() {
+                    &b"shared"[..]
+                } else {
+                    &b"shared bytes"[..]
+                }
+            );
+        }
+        // Saving the same suffix updates expiry without reporting a duplicate.
+        let (status, renewed) = write(
+            &state,
+            "POST",
+            endpoint,
+            Some(serde_json::json!({"custom_slug":"suzuka"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(renewed["url"], share["url"]);
+        assert!(renewed.get("expires_at").is_none());
+        let (status, _) = write(
+            &state,
+            "POST",
+            endpoint,
+            Some(serde_json::json!({"custom_slug":"suzuka-new"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(raw(&state, "/s/suzuka", &[]).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(raw(&state, "/s/suzuka-new", &[]).await.0, StatusCode::OK);
+        seed(
+            &state,
+            "UPDATE shares SET expires_at='2000-01-01T00:00:00Z' WHERE file_id='custom';",
+        )
+        .await;
+        assert_eq!(
+            raw(&state, "/s/suzuka-new", &[]).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(call(&state, endpoint).await.1["active"], false);
+
+        let (status, random) = write(
+            &state,
+            "POST",
+            endpoint,
+            Some(serde_json::json!({"custom_slug":""})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(random.get("custom_slug").is_none());
+        let random_path = random["url"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("http://localhost:8080")
+            .unwrap();
+        assert_eq!(random_path.strip_prefix("/s/").unwrap().len(), 43);
+        assert_eq!(raw(&state, random_path, &[]).await.0, StatusCode::OK);
+        assert_eq!(
+            write(&state, "DELETE", endpoint, None).await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(raw(&state, random_path, &[]).await.0, StatusCode::NOT_FOUND);
+        write(
+            &state,
+            "POST",
+            endpoint,
+            Some(serde_json::json!({"custom_slug":"suzuka"})),
+        )
+        .await;
+        write(&state, "DELETE", endpoint, None).await;
+        assert_eq!(raw(&state, "/s/suzuka", &[]).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn custom_share_suffix_validation_and_collisions_preserve_existing_links() {
+        let state = state().await;
+        seed(&state, "INSERT INTO files(id,parent_id,name,kind,object_key,size,mime_type,status,created_at,updated_at) VALUES('c1','00000000-0000-0000-0000-000000000000','one.txt','file','blobs/c1',1,'text/plain','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z'),('c2','00000000-0000-0000-0000-000000000000','two.txt','file','blobs/c2',1,'text/plain','ready','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');").await;
+        let (_, original) = write(&state, "POST", "/api/files/c1/share", None).await;
+        for suffix in [
+            "api",
+            "API",
+            "s",
+            "files",
+            "healthz",
+            "../x",
+            "a/b",
+            "a?b",
+            "a#b",
+            "a%2fb",
+            "with space",
+            " suzuka",
+            "suzuka ",
+            "铃鹿",
+            &"x".repeat(65),
+        ] {
+            let (status, _) = write(
+                &state,
+                "POST",
+                "/api/files/c1/share",
+                Some(serde_json::json!({"custom_slug":suffix})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{suffix}");
+        }
+        assert_eq!(call(&state, "/api/files/c1/share").await.1, original);
+        // Custom suffixes also cannot replace another file's legacy random token.
+        let legacy = original["url"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap();
+        assert_eq!(
+            write(
+                &state,
+                "POST",
+                "/api/files/c2/share",
+                Some(serde_json::json!({"custom_slug":legacy}))
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (a, b) = tokio::join!(
+            write(
+                &state,
+                "POST",
+                "/api/files/c1/share",
+                Some(serde_json::json!({"custom_slug":"suzuka"}))
+            ),
+            write(
+                &state,
+                "POST",
+                "/api/files/c2/share",
+                Some(serde_json::json!({"custom_slug":"suzuka"}))
+            )
+        );
+        assert!(
+            (a.0 == StatusCode::CREATED && b.0 == StatusCode::CONFLICT)
+                || (b.0 == StatusCode::CREATED && a.0 == StatusCode::CONFLICT)
+        );
+        // Legal suffixes remain case sensitive and accept the boundary lengths.
+        for suffix in ["x", "Suzuka", "a-Z_09", &"x".repeat(64)] {
+            assert_eq!(
+                write(
+                    &state,
+                    "POST",
+                    "/api/files/c1/share",
+                    Some(serde_json::json!({"custom_slug":suffix}))
+                )
+                .await
+                .0,
+                StatusCode::CREATED,
+                "{suffix}"
+            );
+        }
     }
 
     #[tokio::test]

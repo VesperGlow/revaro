@@ -132,6 +132,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "016_global_performance.sql",
         sql: include_str!("../migrations/016_global_performance.sql"),
     },
+    Migration {
+        version: 17,
+        name: "017_custom_share_links.sql",
+        sql: include_str!("../migrations/017_custom_share_links.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
@@ -662,6 +667,34 @@ fn secure_file(path: &Path) -> Result<(), DbError> {
 mod tests {
     use super::*;
     use revaro_core::ids::ROOT_ID;
+
+    #[test]
+    fn custom_share_migration_preserves_existing_tokens_and_expirations() {
+        let c = Connection::open_in_memory().unwrap();
+        configure(&c).unwrap();
+        for migration in &MIGRATIONS[..16] {
+            c.execute_batch(migration.sql).unwrap();
+        }
+        c.execute("INSERT INTO files(id,parent_id,name,kind,object_key,size,status,created_at,updated_at) VALUES('legacy',?1,'legacy.txt','file','legacy',1,'ready','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", [ROOT_ID]).unwrap();
+        c.execute_batch("INSERT INTO shares(file_id,token,created_at,expires_at) VALUES('legacy','existing-random-share-token-12345678901234567','2026-01-01T00:00:00Z','2027-01-01T00:00:00Z');").unwrap();
+        c.execute_batch(MIGRATIONS[16].sql).unwrap();
+        let row: (String, String, String, Option<String>) = c
+            .query_row(
+                "SELECT token,created_at,expires_at,custom_slug FROM shares WHERE file_id='legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "existing-random-share-token-12345678901234567".into(),
+                "2026-01-01T00:00:00Z".into(),
+                "2027-01-01T00:00:00Z".into(),
+                None
+            )
+        );
+    }
 
     #[test]
     fn connection_open_failure_recovers_when_storage_returns() {

@@ -19,6 +19,7 @@ pub fn ShareDialog(
     created_at: RwSignal<String>,
     expires_at: RwSignal<String>,
     expiry: RwSignal<String>,
+    custom_slug: RwSignal<String>,
     busy: RwSignal<bool>,
     error: RwSignal<String>,
     copied: RwSignal<bool>,
@@ -34,6 +35,9 @@ pub fn ShareDialog(
     let copy = on_copy;
     let revoke = on_revoke;
     let create = on_create;
+    let base_url = web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .unwrap_or_default();
 
     view! {
         <DialogBackdrop on_close=close_backdrop>
@@ -48,6 +52,24 @@ pub fn ShareDialog(
                     </div>
                     <button type="button" aria-label="关闭" on:click=move |_| close_header.run(())>"×"</button>
                 </header>
+                <label class="share-slug-label" for="share-custom-slug">"自定义链接后缀（可选）"</label>
+                <div class="share-slug-field">
+                    <span>{format!("{base_url}/s/")}</span>
+                    <input
+                        id="share-custom-slug"
+                        type="text"
+                        placeholder="例如 suzuka，留空生成随机链接"
+                        maxlength="64"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        aria-describedby="share-slug-help"
+                        prop:value=move || custom_slug.get()
+                        prop:disabled=move || busy.get()
+                        on:input=move |event| custom_slug.set(event_target_value(&event))
+                    />
+                </div>
+                <p id="share-slug-help" class="share-slug-help">"支持 1–64 位英文字母、数字、- 和 _，区分大小写。"</p>
                 <label class="share-description">"新链接有效期 "
                     <select aria-label="分享有效期" prop:value=move || expiry.get() prop:disabled=move || busy.get() on:change=move |e|expiry.set(event_target_value(&e))>
                         <option value="3600">"1 小时"</option><option value="86400">"1 天"</option><option value="604800">"7 天"</option><option value="2592000">"30 天"</option><option value="0">"永久"</option>
@@ -72,7 +94,7 @@ pub fn ShareDialog(
                             </Show>
                         }
                     >
-                        <p class="share-description">"任何拿到链接的人都能直接读取该文件。重新生成或停止分享后，旧链接立即失效。"</p>
+                        <p class="share-description">"任何拿到链接的人都能直接读取该文件。更换后缀、重新生成随机链接或停止分享后，旧链接立即失效。"</p>
                         <div class="share-link">
                             <input
                                 type="text"
@@ -98,7 +120,7 @@ pub fn ShareDialog(
                         </Show>
                         <footer class="share-footer">
                             <button class="danger-text" type="button" prop:disabled=move || busy.get() on:click=move |_| revoke.run(())>"停止分享"</button>
-                            <button class="secondary" type="button" prop:disabled=move || busy.get() on:click=move |_| create.run(true)>"重新生成链接"</button>
+                            <button class="secondary" type="button" prop:disabled=move || busy.get() on:click=move |_| create.run(true)>{move || if custom_slug.get().is_empty() { "重新生成链接" } else { "保存链接设置" }}</button>
                         </footer>
                     </Show>
                 </Show>

@@ -24,6 +24,7 @@ pub(super) struct FileActionContext {
     pub share_created_at: RwSignal<String>,
     pub share_expires_at: RwSignal<String>,
     pub share_expiry: RwSignal<String>,
+    pub share_custom_slug: RwSignal<String>,
     pub share_busy: RwSignal<bool>,
     pub share_error: RwSignal<String>,
     pub share_copied: RwSignal<bool>,
@@ -56,6 +57,7 @@ impl FileActionContext {
             share_created_at,
             share_expires_at,
             share_expiry,
+            share_custom_slug,
             share_busy,
             share_error,
             share_copied,
@@ -153,6 +155,7 @@ impl FileActionContext {
                                         .parse::<i64>()
                                         .ok()
                                         .filter(|v| *v > 0),
+                                    share_custom_slug.get_untracked(),
                                 )
                                 .await;
                                 if !share_is_current() {
@@ -166,6 +169,8 @@ impl FileActionContext {
                                                 .map(|v| v.to_rfc3339())
                                                 .unwrap_or_default(),
                                         );
+                                        share_custom_slug
+                                            .set(status.custom_slug.unwrap_or_default());
                                         share_active.set(status.active);
                                         share_url.set(status.url.unwrap_or_default());
                                         share_created_at.set(
@@ -176,7 +181,7 @@ impl FileActionContext {
                                         );
                                         share_copied.set(false);
                                         share_error.set(String::new());
-                                        Ok("分享链接已重新生成".to_owned())
+                                        Ok("分享链接已更新".to_owned())
                                     }
                                     Err(error) => Err(error),
                                 }
@@ -393,9 +398,9 @@ pub(super) fn dialog_config(
             None,
         ),
         DialogState::RegenerateShare => (
-            "重新生成分享链接？".to_owned(),
-            "旧分享链接会立即失效，拿到旧链接的人将无法继续访问。".to_owned(),
-            "重新生成".to_owned(),
+            "更新分享链接？".to_owned(),
+            "将应用当前后缀和有效期。更换后缀或重新生成随机链接后，旧链接立即失效；保留相同后缀则更新有效期。".to_owned(),
+            "确认更新".to_owned(),
             false,
             false,
             None,

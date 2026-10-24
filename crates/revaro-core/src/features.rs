@@ -10,6 +10,38 @@ use serde::{Deserialize, Serialize};
 pub struct ShareRequest {
     /// None creates a permanent link; otherwise seconds from issuance (1..=365 days).
     pub expires_in_seconds: Option<i64>,
+    /// Optional URL suffix after `/s/`; an empty value creates a random link.
+    pub custom_slug: Option<String>,
+}
+
+/// Validate a share suffix, excluding reserved application route names.
+pub fn valid_share_slug(slug: &str) -> bool {
+    (1..=64).contains(&slug.len())
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        && !matches!(
+            slug.to_ascii_lowercase().as_str(),
+            "api"
+                | "s"
+                | "f"
+                | "read"
+                | "files"
+                | "trash"
+                | "library"
+                | "music"
+                | "gallery"
+                | "videos"
+                | "healthz"
+                | "readyz"
+                | "login"
+                | "logout"
+                | "account"
+                | "settings"
+                | "assets"
+                | "static"
+                | "pkg"
+        )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

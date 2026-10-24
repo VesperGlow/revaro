@@ -424,10 +424,15 @@ pub async fn fetch_share(id: &str) -> Result<ShareStatus, RequestError> {
 }
 
 /// Create or replace a public-share link.
-pub async fn create_share(id: &str, expiry: Option<i64>) -> Result<ShareStatus, RequestError> {
+pub async fn create_share(
+    id: &str,
+    expiry: Option<i64>,
+    custom_slug: String,
+) -> Result<ShareStatus, RequestError> {
     let request = api_request(Request::post(&format!("/api/files/{id}/share")))
         .json(&revaro_core::features::ShareRequest {
             expires_in_seconds: expiry,
+            custom_slug: (!custom_slug.is_empty()).then_some(custom_slug),
         })
         .map_err(|e| request_transport(e.to_string()))?;
     send_json(request).await

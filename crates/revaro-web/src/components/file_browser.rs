@@ -228,6 +228,7 @@ pub fn FileBrowser(
     let share_created_at = RwSignal::new(String::new());
     let share_expires_at = RwSignal::new(String::new());
     let share_expiry = RwSignal::new("604800".to_owned());
+    let share_custom_slug = RwSignal::new(String::new());
     let share_busy = RwSignal::new(false);
     let share_error = RwSignal::new(String::new());
     let share_copied = RwSignal::new(false);
@@ -496,6 +497,7 @@ pub fn FileBrowser(
             share_file.set(Some(file));
             share_active.set(false);
             share_url.set(String::new());
+            share_custom_slug.set(String::new());
             share_created_at.set(String::new());
             share_error.set(String::new());
             share_copied.set(false);
@@ -516,6 +518,7 @@ pub fn FileBrowser(
                                 .map(|v| v.to_rfc3339())
                                 .unwrap_or_default(),
                         );
+                        share_custom_slug.set(status.custom_slug.unwrap_or_default());
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
                         share_created_at.set(
@@ -558,6 +561,7 @@ pub fn FileBrowser(
                         .parse::<i64>()
                         .ok()
                         .filter(|v| *v > 0),
+                    share_custom_slug.get_untracked(),
                 )
                 .await;
                 if share_sequence.try_get_untracked() != Some(sequence)
@@ -573,6 +577,7 @@ pub fn FileBrowser(
                                 .map(|v| v.to_rfc3339())
                                 .unwrap_or_default(),
                         );
+                        share_custom_slug.set(status.custom_slug.unwrap_or_default());
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
                         share_created_at.set(
@@ -734,6 +739,7 @@ pub fn FileBrowser(
         share_created_at,
         share_expires_at,
         share_expiry,
+        share_custom_slug,
         share_busy,
         share_error,
         share_copied,
@@ -1834,6 +1840,7 @@ pub fn FileBrowser(
                                     url=share_url
                                     created_at=share_created_at
                                     expires_at=share_expires_at
+                                    custom_slug=share_custom_slug
                                     expiry=share_expiry
                                     busy=share_busy
                                     error=share_error
