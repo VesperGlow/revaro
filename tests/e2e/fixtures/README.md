@@ -45,3 +45,5 @@ Set `E2E_FFMPEG` to an FFmpeg executable (or put `ffmpeg` on PATH) to run the
 generated FLAC case. `player-regressions.spec.ts` covers native-duration fallback
 and updates, mouse/touch drags and cancellation, keyboard seeks, chapter nodes,
 late history responses, and mini/full player synchronization.
+
+`galgame-index.zip` 是只含伪 XP3 字节和说明文本的合成 ZIP，用于 Galgame 分享鉴权、索引和 Range 测试；它不是可玩游戏，不验证引擎兼容性。

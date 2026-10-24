@@ -372,6 +372,14 @@ pub struct BookProgress {
 /// Public share state of a single file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_protected: Option<bool>,
     /// Custom URL suffix after `/s/`, absent for random links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_slug: Option<String>,

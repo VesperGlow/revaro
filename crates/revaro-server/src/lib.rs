@@ -46,3 +46,5 @@ pub mod web;
 
 pub use config::Config;
 pub use error::ApiResult;
+
+pub mod galgame_routes;

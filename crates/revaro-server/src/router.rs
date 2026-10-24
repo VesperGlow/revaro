@@ -28,6 +28,7 @@ pub fn build(state: Arc<AppState>) -> Router {
         // The public share table is deliberately outside `/api`: it is reached
         // with a URL-borne token and must not require a session.
         .merge(crate::file_routes::public_routes())
+        .merge(crate::galgame_routes::routes())
         .nest("/api", api())
         .fallback(web::serve)
         .with_state(state.clone())

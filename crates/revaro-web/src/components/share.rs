@@ -20,6 +20,9 @@ pub fn ShareDialog(
     expires_at: RwSignal<String>,
     expiry: RwSignal<String>,
     custom_slug: RwSignal<String>,
+    share_type: RwSignal<String>,
+    entry: RwSignal<String>,
+    password: RwSignal<String>,
     busy: RwSignal<bool>,
     error: RwSignal<String>,
     copied: RwSignal<bool>,
@@ -28,6 +31,7 @@ pub fn ShareDialog(
     on_revoke: Callback<()>,
     on_create: Callback<bool>,
 ) -> impl IntoView {
+    let is_zip = file.name.to_ascii_lowercase().ends_with(".zip");
     let file_name = file.name;
     let file_title = file_name.clone();
     let close_backdrop = on_close.clone();
@@ -52,9 +56,21 @@ pub fn ShareDialog(
                     </div>
                     <button type="button" aria-label="关闭" on:click=move |_| close_header.run(())>"×"</button>
                 </header>
+                <label class="share-description">"分享类型 "
+                    <select aria-label="分享类型" prop:value=move || share_type.get() prop:disabled=move || busy.get() on:change=move |e| share_type.set(event_target_value(&e))>
+                        <option value="file">"普通文件分享"</option>
+                        <option value="galgame" disabled=!is_zip>"Galgame 分享（完整 ZIP）"</option>
+                    </select>
+                </label>
+                <Show when=move || share_type.get() == "galgame">
+                    <label class="share-description">"游戏引擎 "<select aria-label="游戏引擎" disabled><option>"Kirikiri2"</option></select></label>
+                    <label class="share-description">"入口文件 "<input aria-label="入口文件" placeholder="data.xp3" prop:value=move || entry.get() prop:disabled=move || busy.get() on:input=move |e| entry.set(event_target_value(&e))/></label>
+                    <label class="share-description">"分享密码（可选） "<input aria-label="分享密码" type="password" autocomplete="new-password" maxlength="256" placeholder="留空保留现有密码" prop:value=move || password.get() prop:disabled=move || busy.get() on:input=move |e| password.set(event_target_value(&e))/></label>
+                    <p class="share-slug-help">"上传包含全部资源的 ZIP；入口为游戏根目录下的 XP3 相对路径。浏览器按需加载，存档保存在本机。更改分享类型后，旧类型链接将失效。"</p>
+                </Show>
                 <label class="share-slug-label" for="share-custom-slug">"自定义链接后缀（可选）"</label>
                 <div class="share-slug-field">
-                    <span>{format!("{base_url}/s/")}</span>
+                    <span>{move || format!("{base_url}/{}/", if share_type.get() == "galgame" { "g" } else { "s" })}</span>
                     <input
                         id="share-custom-slug"
                         type="text"

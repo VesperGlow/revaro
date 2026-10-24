@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="krkr2-autoload">
+<head>
+    <base href="/galgame/kirikiri2/">
+    <link rel="stylesheet" href="player.css">
+    <script src="/galgame/bootstrap.js" defer></script>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="Kirikiroid2 Web — Run Kirikiri2 visual novels directly in your browser. Load .xp3 game files or folders, no installation required. Supports save/load, WebGL rendering, and mobile devices.">
+    <meta name="keywords" content="Kirikiroid2, Kirikiri2, KirikiriZ, KrKr2, KrKrZ, visual novel, browser, WebAssembly, xp3, galgame">
+    
+    <title>Revaro Galgame</title>
+    <meta name="theme-color" content="#1a1a2e">
+    
+    
+    <!-- Google tag (gtag.js); disabled while WebDAV credentials are in memory. -->
+    
+
+    
+    
+</head>
+<body>
+    <form id="revaro-gate"><h1>Revaro Galgame</h1><p id="revaro-message">正在验证分享…</p><input id="revaro-password" aria-label="分享密码" type="password" autocomplete="current-password" maxlength="256" hidden><button id="revaro-unlock" hidden>打开游戏</button></form>
+    <noscript>
+        
+        <div style="padding:40px 20px;text-align:center;color:#e0e0e0;background:#1a1a2e;min-height:100vh;max-width:720px;margin:0 auto;line-height:1.7;">
+            <h1 style="color:#e94560;margin-bottom:16px;">Kirikiroid2 Web</h1>
+            <p style="margin-bottom:12px;">Kirikiroid2 Web is a browser port of <strong>Kirikiroid2</strong> — the Android port of the Kirikiri2 (吉里吉里2) visual novel engine that powers hundreds of Japanese ADV / galgame titles — compiled to WebAssembly via Emscripten.</p>
+            <p style="margin-bottom:12px;">Load .xp3 game archives or game folders directly in your browser. Save data persists locally in IndexedDB; nothing is uploaded.</p>
+            <p style="margin-bottom:12px;">This application requires JavaScript and WebAssembly to run. Please enable JavaScript and reload the page.</p>
+            <p><a href="https://github.com/fenghengzhi/krkr2" style="color:#e94560;">Source code on GitHub</a></p>
+        </div>
+    </noscript>
+
+    <div id="loading" class="hidden" data-nosnippet>
+        <h1>Kirikiroid2 Web</h1>
+        <div id="progress-bar">
+            <div id="progress-fill"></div>
+        </div>
+        <div id="status">Loading...</div>
+    </div>
+
+    <div id="error-overlay" data-nosnippet>
+        <div id="error-box">
+            <h2>Error</h2>
+            <p id="error-message"></p>
+            <button id="error-update-btn">重新加载播放器</button>
+        </div>
+    </div>
+
+    <div id="container">
+        <canvas id="canvas" tabindex="0"></canvas>
+    </div>
+
+    <div id="save-space-picker" data-nosnippet>
+        <div id="space-box">
+            <h1>Save Spaces</h1>
+            <p class="subtitle">Select or create a save space to persist your game data</p>
+            <div id="space-list"></div>
+            <div id="space-create">
+                <input type="text" id="space-name-input" placeholder="New space name...">
+                <button id="space-create-btn">Create</button>
+            </div>
+            <div id="space-actions">
+                <button id="space-import-btn">Import ZIP</button>
+                <button id="space-skip-btn">Skip (no saving)</button>
+            </div>
+            <div id="space-status"></div>
+        </div>
+    </div>
+    <input type="file" id="space-import-input" accept=".zip" style="display:none;">
+
+    <div id="file-picker" class="visible">
+        <div id="picker-box">
+            <h1>Kirikiroid2 Web</h1>
+            <p class="subtitle">Run Kirikiri2 visual novels in your browser — no installation required</p>
+            <div id="drop-zone">
+                <div class="icon">&#128193;</div>
+                <div class="label">Drag & drop .xp3 file here</div>
+                <div class="hint">or use the buttons below</div>
+            </div>
+            <div class="picker-buttons">
+                <button id="pick-dir-api-btn" class="primary" style="display:none">Open Game Directory</button>
+                <div id="picker-divider" class="picker-divider" style="display:none">or load a copy into memory</div>
+                <button id="pick-file-btn">Select .xp3 File</button>
+                <button id="pick-dir-btn">Upload Folder</button>
+                <button id="pick-zip-btn" style="display:none">Select .zip File</button>
+            </div>
+            <div id="picker-status"></div>
+            <div id="picker-progress"><div id="picker-progress-fill"></div></div>
+            <div id="engine-status" data-nosnippet aria-live="polite"></div>
+            <div class="feedback-link"><a href="https://github.com/fenghengzhi/krkr2/issues" target="_blank" rel="noopener">Feedback & Issues</a> &middot; <a href="#" id="force-update-btn" title="重新加载播放器">重新加载</a> &middot; <span id="build-version"></span></div>
+            <section class="about-content">
+                <h2>About Kirikiroid2 Web</h2>
+                <p>Kirikiroid2 Web is a browser port of <strong>Kirikiroid2</strong> — the Android port of the Kirikiri2 (吉里吉里2) visual novel engine, which powers hundreds of Japanese ADV / galgame titles. The Kirikiroid2 codebase is compiled to WebAssembly via Emscripten, so games run entirely client-side — your save data and game files never leave your device.</p>
+                <p>This port targets binary compatibility with the original Android <code>libkrkr2.so</code> runtime, reimplementing the same TJS2 scripting engine, XP3 archive loader, and rendering pipeline. The goal is not just functional equivalence but architectural fidelity to the upstream binary.</p>
+
+                <h3>Features</h3>
+                <ul>
+                    <li>Load <code>.xp3</code> game archives via drag &amp; drop, file picker, or folder upload</li>
+                    <li>Extract and run games packaged as <code>.zip</code> archives</li>
+                    <li>Load game directories from authenticated WebDAV storage</li>
+                    <li>Direct directory access on Chromium browsers via the File System Access API</li>
+                    <li>Persistent save data in named save spaces, backed by IndexedDB</li>
+                    <li>Export and import save data as <code>.zip</code> for backup or device transfer</li>
+                    <li>WebGL hardware-accelerated rendering with mobile shader compatibility</li>
+                    <li>Full TJS2 scripting engine — runs original game scripts unmodified</li>
+                </ul>
+
+                <h3>How to use</h3>
+                <ol>
+                    <li>Obtain an <code>.xp3</code> archive or game folder for a Kirikiri2 game you own.</li>
+                    <li>Drag the file onto the drop zone above, or use one of the buttons.</li>
+                    <li>Choose or create a save space when prompted — your saves persist between sessions in the browser.</li>
+                </ol>
+                <p>You can also auto-load a game via URL parameters: <code>?xp3=&lt;url&gt;</code> loads a single archive, and <code>?game=&lt;url&gt;</code> loads a ZIP-packaged game directory. Use <code>loadMode=eager</code> (default) to download and prepare remote resources up front, or <code>loadMode=lazy</code> to fetch them on first access when the server supports HTTP Range.</p>
+                <p>For WebDAV, use <code>?webdavUrl=&lt;collection-url&gt;&amp;webdavUsername=&lt;user&gt;&amp;webdavPassword=&lt;password&gt;</code>. Add <code>webdavWrite=1</code> to upload save files back to WebDAV; writing is disabled by default. Credentials use HTTP Basic authentication and are removed from the address bar immediately, but the initial page request can still be recorded by HTTP infrastructure.</p>
+
+                <h3>Browser requirements</h3>
+                <p>A modern browser with WebAssembly and WebGL support is required. The site is served with <code>Cross-Origin-Opener-Policy</code> and <code>Cross-Origin-Embedder-Policy</code> headers to enable <code>SharedArrayBuffer</code> and multi-threading. Tested on recent Chrome, Edge, Firefox, and Safari (desktop and mobile).</p>
+
+                <h3>Open source</h3>
+                <p>Kirikiroid2 Web is open source. The full source code, build instructions, and issue tracker are on GitHub: <a href="https://github.com/fenghengzhi/krkr2" target="_blank" rel="noopener">github.com/fenghengzhi/krkr2</a>.</p>
+            </section>
+        </div>
+    </div>
+    <div id="xp3-selector" data-nosnippet>
+        <div id="selector-box">
+            <h2>Select Game Archive</h2>
+            <p class="subtitle">Multiple .xp3 files found. Choose one to start:</p>
+            <div id="xp3-list"></div>
+        </div>
+    </div>
+
+    <input type="file" id="file-input" style="display:none;">
+    <input type="file" id="dir-input" webkitdirectory style="display:none;">
+    <input type="file" id="zip-input" accept=".zip,application/zip,application/x-zip-compressed" style="display:none;">
+
+    <!-- JSZip 仅用于存档空间导入/导出；游戏加载已改为 VLFS 懒加载（vlfs.js） -->
+    
+    
+    
+    
+
+    
+</body>
+</html>

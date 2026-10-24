@@ -33,6 +33,7 @@ pub use extract::AuthUser;
 pub use limiter::{LoginLimiter, RETRY_AFTER_BLOCKED, RETRY_AFTER_BUSY};
 pub use password::{DEFAULT_PARAMS, Params, hash_password, verify_password};
 pub use revaro_core::api::auth::TotpStatus;
+pub(crate) use service::with_kdf;
 pub use service::{AuthService, Clock, InitialCredentials, MAX_LOGIN_CONCURRENCY};
 pub use session::{SESSION_COOKIE, SESSION_LIFETIME_MILLIS, token_hash};
 pub use totp::{TOTP_ISSUER, TotpSetup};

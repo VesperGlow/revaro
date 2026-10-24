@@ -42,7 +42,7 @@ static KDF_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_LOGI
 ///
 /// The permit is released when the blocking closure returns, so a panic in the
 /// derivation cannot leak a slot.
-pub(super) async fn with_kdf<T, F>(operation: F) -> Result<T, AuthError>
+pub(crate) async fn with_kdf<T, F>(operation: F) -> Result<T, AuthError>
 where
     F: FnOnce() -> Result<T, AuthError> + Send + 'static,
     T: Send + 'static,

@@ -1276,7 +1276,7 @@ async fn public_share(
             let file = connection
                 .query_row(
                     &format!(
-                        "SELECT {FILE_COLUMNS} FROM files WHERE id = (SELECT file_id FROM shares WHERE token = ?1 AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))) AND kind = 'file' AND status = 'ready' AND deleted_at IS NULL"
+                        "SELECT {FILE_COLUMNS} FROM files WHERE id = (SELECT file_id FROM shares WHERE token = ?1 AND share_type='file' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))) AND kind = 'file' AND status = 'ready' AND deleted_at IS NULL"
                     ),
                     [&lookup],
                     scan_file,

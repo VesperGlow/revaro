@@ -137,6 +137,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "017_custom_share_links.sql",
         sql: include_str!("../migrations/017_custom_share_links.sql"),
     },
+    Migration {
+        version: 18,
+        name: "018_galgame_shares.sql",
+        sql: include_str!("../migrations/018_galgame_shares.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.
