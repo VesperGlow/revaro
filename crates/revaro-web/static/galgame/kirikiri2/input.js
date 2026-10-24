@@ -239,11 +239,14 @@
         return event.target === canvas || modal.contains(event.target) || (event.target === document.body && document.activeElement === canvas);
     }
     for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
-        if (generated.has(event) || !nativeState()) return;
+        if (generated.has(event)) return;
         // Browser shortcuts retain their default action, and never reach the game.
-        if (event.metaKey || event.altKey || (event.ctrlKey && event.code !== 'ControlLeft' && event.code !== 'ControlRight') || event.code === 'F11') {
+        // Protect them during startup too: SDL registers before the first game window.
+        if (event.metaKey || event.altKey || (event.ctrlKey && event.code !== 'ControlLeft' && event.code !== 'ControlRight') ||
+            ['F11', 'F12'].includes(event.code) || ['F11', 'F12'].includes(event.key)) {
             event.stopImmediatePropagation(); return;
         }
+        if (!nativeState()) return;
         if (!ownsKeys(event)) { event.stopImmediatePropagation(); return; }
         if (mapped.has(event.code)) event.preventDefault();
         if (type === 'keydown') {
