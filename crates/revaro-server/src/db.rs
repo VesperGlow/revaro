@@ -142,6 +142,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "018_galgame_shares.sql",
         sql: include_str!("../migrations/018_galgame_shares.sql"),
     },
+    Migration {
+        version: 19,
+        name: "019_remove_game_passwords.sql",
+        sql: include_str!("../migrations/019_remove_game_passwords.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

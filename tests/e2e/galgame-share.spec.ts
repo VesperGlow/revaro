@@ -15,7 +15,7 @@ async function search(page: Page, name: string) {
   await expect(page.locator('.file-card')).toHaveCount(1)
 }
 
-test('ZIP can create a password protected /g/ share in the file dialog', async ({ page, browser }) => {
+test('ZIP entry choices create a directly playable /g/ share in the file dialog', async ({ page, browser }) => {
   await login(page)
   const name = `galgame-${Date.now()}.zip`
   const file = await uploadFixture(page, root, name, 'application/zip', archive)
@@ -26,8 +26,11 @@ test('ZIP can create a password protected /g/ share in the file dialog', async (
   await page.locator('.selection-toolbar').getByRole('button', { name: '分享', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '分享文件' })
   await dialog.getByLabel('分享类型', { exact: true }).selectOption('galgame')
-  await dialog.getByLabel('入口文件', { exact: true }).fill('data.xp3')
-  await dialog.getByLabel('分享密码', { exact: true }).fill('galgame-test-password')
+  const entryPicker = dialog.getByLabel('入口文件', { exact: true })
+  await expect(entryPicker).toHaveAttribute('aria-disabled', 'false')
+  await entryPicker.click()
+  await dialog.getByRole('option', { name: 'data.xp3', exact: true }).click()
+  await expect(dialog.getByRole('listbox', { name: '游戏入口列表' })).toBeHidden()
   await dialog.getByRole('button', { name: '创建公开链接' }).click()
   const link = dialog.getByLabel('分享链接', { exact: true })
   await expect(link).toHaveValue(/\/g\/[A-Za-z0-9_-]+$/)
@@ -39,14 +42,9 @@ test('ZIP can create a password protected /g/ share in the file dialog', async (
     game.on('request', req => { if (req.url().endsWith('/archive')) requested.push({ method: req.method(), range: req.headers()['range'] }) })
     // Do not run the engine on the synthetic fixture. Real runtime is exercised separately with a real game.
     await game.route('**/galgame/kirikiri2/index.js', route => route.fulfill({ contentType: 'text/javascript', body: '' }))
-    await game.goto(url)
-    await expect(game.getByLabel('分享密码', { exact: true })).toBeVisible()
-    expect(requested).toEqual([])
-    expect((await visitor.request.head(`${url}/archive`)).status()).toBe(401)
-    expect((await visitor.request.get(`${url}/manifest`)).status()).toBe(401)
     const range = game.waitForResponse(res => res.url().endsWith('/archive') && res.status() === 206)
-    await game.getByLabel('分享密码', { exact: true }).fill('galgame-test-password')
-    await game.getByRole('button', { name: '打开游戏', exact: true }).click()
+    await game.goto(url)
+    await expect(game.getByLabel('分享密码', { exact: true })).toHaveCount(0)
     await range
     const manifest = await visitor.request.get(`${url}/manifest`)
     expect(manifest.status()).toBe(200)

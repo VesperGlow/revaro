@@ -230,8 +230,7 @@ pub fn FileBrowser(
     let share_expiry = RwSignal::new("604800".to_owned());
     let share_custom_slug = RwSignal::new(String::new());
     let share_type = RwSignal::new("file".to_owned());
-    let share_entry = RwSignal::new("data.xp3".to_owned());
-    let share_password = RwSignal::new(String::new());
+    let share_entry = RwSignal::new(String::new());
     let share_busy = RwSignal::new(false);
     let share_error = RwSignal::new(String::new());
     let share_copied = RwSignal::new(false);
@@ -502,8 +501,7 @@ pub fn FileBrowser(
             share_url.set(String::new());
             share_custom_slug.set(String::new());
             share_type.set("file".to_owned());
-            share_entry.set("data.xp3".to_owned());
-            share_password.set(String::new());
+            share_entry.set(String::new());
             share_created_at.set(String::new());
             share_error.set(String::new());
             share_copied.set(false);
@@ -525,8 +523,7 @@ pub fn FileBrowser(
                                 .unwrap_or_default(),
                         );
                         share_type.set(status.share_type.unwrap_or_else(|| "file".to_owned()));
-                        share_entry.set(status.entry.unwrap_or_else(|| "data.xp3".to_owned()));
-                        share_password.set(String::new());
+                        share_entry.set(status.entry.unwrap_or_default());
                         share_custom_slug.set(status.custom_slug.unwrap_or_default());
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
@@ -573,7 +570,6 @@ pub fn FileBrowser(
                     share_custom_slug.get_untracked(),
                     share_type.get_untracked(),
                     share_entry.get_untracked(),
-                    share_password.get_untracked(),
                 )
                 .await;
                 if share_sequence.try_get_untracked() != Some(sequence)
@@ -590,8 +586,7 @@ pub fn FileBrowser(
                                 .unwrap_or_default(),
                         );
                         share_type.set(status.share_type.unwrap_or_else(|| "file".to_owned()));
-                        share_entry.set(status.entry.unwrap_or_else(|| "data.xp3".to_owned()));
-                        share_password.set(String::new());
+                        share_entry.set(status.entry.unwrap_or_default());
                         share_custom_slug.set(status.custom_slug.unwrap_or_default());
                         share_active.set(status.active);
                         share_url.set(status.url.unwrap_or_default());
@@ -757,7 +752,6 @@ pub fn FileBrowser(
         share_custom_slug,
         share_type,
         share_entry,
-        share_password,
         share_busy,
         share_error,
         share_copied,
@@ -1861,7 +1855,6 @@ pub fn FileBrowser(
                                     custom_slug=share_custom_slug
                                     share_type=share_type
                                     entry=share_entry
-                                    password=share_password
                                     expiry=share_expiry
                                     busy=share_busy
                                     error=share_error

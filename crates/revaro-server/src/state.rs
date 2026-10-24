@@ -213,7 +213,6 @@ pub struct AppState {
     pub batch_download: crate::batch_download::BatchDownloadRuntime,
     /// Admission budgets held for the entire transfer or ZIP generation.
     pub share_slots: Arc<tokio::sync::Semaphore>,
-    pub galgame_limiter: crate::auth::LoginLimiter,
     pub zip_slots: Arc<tokio::sync::Semaphore>,
     /// Parsed books and serialized reader-flow builders.
     pub reader: ReaderRuntime,
@@ -280,7 +279,6 @@ impl AppState {
             media: crate::media_runtime::MediaRuntime::new(),
             batch_download: crate::batch_download::BatchDownloadRuntime::new(),
             share_slots: Arc::new(tokio::sync::Semaphore::new(8)),
-            galgame_limiter: crate::auth::LoginLimiter::new(),
             zip_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             reader,
             uploads,

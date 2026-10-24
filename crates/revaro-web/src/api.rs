@@ -423,6 +423,13 @@ pub async fn fetch_share(id: &str) -> Result<ShareStatus, RequestError> {
     get_json(&format!("/api/files/{id}/share")).await
 }
 
+/// Read entry choices without downloading or extracting the game.
+pub async fn fetch_game_entries(
+    id: &str,
+) -> Result<revaro_core::features::GameEntries, RequestError> {
+    get_json(&format!("/api/files/{id}/game-entries")).await
+}
+
 /// Create or replace a public-share link.
 pub async fn create_share(
     id: &str,
@@ -430,7 +437,6 @@ pub async fn create_share(
     custom_slug: String,
     share_type: String,
     entry: String,
-    password: String,
 ) -> Result<ShareStatus, RequestError> {
     let request = api_request(Request::post(&format!("/api/files/{id}/share")))
         .json(&revaro_core::features::ShareRequest {
@@ -438,7 +444,6 @@ pub async fn create_share(
             custom_slug: (!custom_slug.is_empty()).then_some(custom_slug),
             engine: (share_type == "galgame").then(|| "kirikiri2".to_owned()),
             entry: (share_type == "galgame").then_some(entry),
-            password: (share_type == "galgame" && !password.is_empty()).then_some(password),
             share_type: (share_type == "galgame").then_some(share_type),
         })
         .map_err(|e| request_transport(e.to_string()))?;

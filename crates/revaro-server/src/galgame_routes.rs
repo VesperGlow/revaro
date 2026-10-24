@@ -4,25 +4,19 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Path, State},
-    response::{IntoResponse, Response},
-    routing::{get, post},
+    response::Response,
+    routing::get,
 };
-use hmac::{Hmac, Mac};
 use http::{HeaderMap, Method, StatusCode, header};
-use revaro_core::{ApiError, Timestamp, model::File};
+use revaro_core::{ApiError, model::File};
 use rusqlite::OptionalExtension;
-use sha2::Sha256;
 use std::sync::Arc;
-
-const COOKIE: &str = "revaro_game";
-const GRANT_SECONDS: i64 = 12 * 3600;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/g/{token}", get(player))
         .route("/g/{token}/", get(player))
         .route("/g/{token}/manifest", get(manifest))
-        .route("/g/{token}/unlock", post(unlock))
         .route("/g/{token}/archive", get(archive))
         .route(
             "/g/{token}/{*unknown}",
@@ -51,7 +45,6 @@ pub(crate) fn validate_entry(entry: &str) -> Result<(), ApiError> {
 struct Game {
     file: File,
     entry: String,
-    password_hash: Option<String>,
 }
 
 async fn lookup(state: &AppState, token: &str) -> Result<Game, ApiError> {
@@ -60,58 +53,17 @@ async fn lookup(state: &AppState, token: &str) -> Result<Game, ApiError> {
     }
     let token = token.to_owned();
     state.db.call_api(move |c| {
-        let row: Option<(String, String, Option<String>)> = c.query_row(
-            "SELECT file_id,entry,password_hash FROM shares WHERE token=?1 AND share_type='galgame' AND engine='kirikiri2' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))",
-            [token], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()
+        let row: Option<(String, String)> = c.query_row(
+            "SELECT file_id,entry FROM shares WHERE token=?1 AND share_type='galgame' AND engine='kirikiri2' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))",
+            [token], |r| Ok((r.get(0)?, r.get(1)?))).optional()
             .map_err(|_| ApiError::internal("game share query failed"))?;
-        let (id, entry, password_hash) = row.ok_or_else(|| ApiError::not_found("game share not found"))?;
+        let (id, entry) = row.ok_or_else(|| ApiError::not_found("game share not found"))?;
         let file = crate::file_routes::lookup_file(c, &id).map_err(|_| ApiError::not_found("game share not found"))?;
         if file.kind != revaro_core::model::FileKind::File || file.status != revaro_core::model::FileStatus::Ready {
             return Err(ApiError::not_found("game share not found"));
         }
-        Ok(Game { file, entry, password_hash })
+        Ok(Game { file, entry })
     }).await
-}
-
-fn grant_mac(hash: &str, token: &str, deadline: i64) -> Hmac<Sha256> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(hash.as_bytes()).expect("HMAC accepts any key");
-    mac.update(format!("revaro-galgame-v1:{token}:{deadline}").as_bytes());
-    mac
-}
-
-fn authorize(game: &Game, token: &str, headers: &HeaderMap) -> Result<(), ApiError> {
-    let Some(hash) = &game.password_hash else {
-        return Ok(());
-    };
-    let valid = headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(|v| v.trim().strip_prefix("revaro_game="))
-        .any(|value| {
-            let Some((deadline, signature)) = value.split_once('.') else {
-                return false;
-            };
-            let Ok(deadline) = deadline.parse::<i64>() else {
-                return false;
-            };
-            let now = Timestamp::now().unix_millis() / 1000;
-            if deadline <= now || deadline > now + GRANT_SECONDS {
-                return false;
-            }
-            let Ok(signature) = hex::decode(signature) else {
-                return false;
-            };
-            grant_mac(hash, token, deadline)
-                .verify_slice(&signature)
-                .is_ok()
-        });
-    if valid {
-        Ok(())
-    } else {
-        Err(ApiError::unauthorized("请输入分享密码"))
-    }
 }
 
 async fn player(
@@ -127,10 +79,8 @@ async fn player(
 async fn manifest(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let game = lookup(&state, &token).await?;
-    authorize(&game, &token, &headers)?;
     // File identity survives link rotation; a replacement object gets separate saves.
     let space = revaro_core::keys::sha256_hex(
         format!("{}:{}", game.file.id, game.file.object_key).as_bytes(),
@@ -141,60 +91,6 @@ async fn manifest(
     })))
 }
 
-#[derive(serde::Deserialize)]
-struct Password {
-    password: String,
-}
-
-async fn unlock(
-    State(state): State<Arc<AppState>>,
-    Path(token): Path<String>,
-    axum::Extension(context): axum::Extension<crate::proxy::RequestContext>,
-    Json(input): Json<Password>,
-) -> Result<Response, ApiError> {
-    let game = lookup(&state, &token).await?;
-    let Some(hash) = game.password_hash else {
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    };
-    if input.password.len() > 256 {
-        return Err(ApiError::bad_request("share password is too long"));
-    }
-    let limiter = &state.galgame_limiter;
-    if !limiter.allow(&context.client_ip) {
-        return Err(ApiError::too_many_requests("too many password attempts"));
-    }
-    let permit = limiter
-        .acquire()
-        .ok_or_else(|| ApiError::too_many_requests("password verification busy"))?;
-    let verify_hash = hash.clone();
-    let valid = crate::auth::with_kdf(move || {
-        let _permit = permit;
-        crate::auth::verify_password(&input.password, &verify_hash)
-    })
-    .await
-    .map_err(|_| ApiError::internal("share password verification failed"))?;
-    if !valid {
-        limiter.fail(&context.client_ip);
-        return Err(ApiError::unauthorized("分享密码错误"));
-    }
-    limiter.success(&context.client_ip);
-    let deadline = Timestamp::now().unix_millis() / 1000 + GRANT_SECONDS;
-    let signature = hex::encode(grant_mac(&hash, &token, deadline).finalize().into_bytes());
-    let secure = if state.config.cookie_secure {
-        "; Secure"
-    } else {
-        ""
-    };
-    let cookie = format!(
-        "{COOKIE}={deadline}.{signature}; Path=/g/{token}/; HttpOnly; SameSite=Strict; Max-Age={GRANT_SECONDS}{secure}"
-    );
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response
-        .headers_mut()
-        .insert(header::SET_COOKIE, cookie.parse().expect("safe cookie"));
-    Ok(response)
-}
-
 async fn archive(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
@@ -202,7 +98,6 @@ async fn archive(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let game = lookup(&state, &token).await?;
-    authorize(&game, &token, &headers)?;
     if method != Method::HEAD && !headers.contains_key(header::RANGE) {
         return Err(ApiError::bad_request("game resources require HTTP Range"));
     }
@@ -356,16 +251,8 @@ mod tests {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
     }
 
-    async fn create(
-        state: &Arc<AppState>,
-        id: &str,
-        slug: &str,
-        password: Option<&str>,
-    ) -> serde_json::Value {
-        let mut input = serde_json::json!({"share_type":"galgame","engine":"kirikiri2","entry":"dtcn.xp3","custom_slug":slug});
-        if let Some(password) = password {
-            input["password"] = password.into();
-        }
+    async fn create(state: &Arc<AppState>, id: &str, slug: &str) -> serde_json::Value {
+        let input = serde_json::json!({"share_type":"galgame","engine":"kirikiri2","entry":"dtcn.xp3","custom_slug":slug});
         let response = request(
             state,
             "POST",
@@ -382,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn ranges_head_expiry_revocation_and_normal_share_remain_separate() {
         let state = setup().await;
-        let status = create(&state, "game1", "play", None).await;
+        let status = create(&state, "game1", "play").await;
         assert_eq!(status["url"], "http://localhost:8080/g/play");
         assert_eq!(status["engine"], "kirikiri2");
         let manifest = request(&state, "GET", "/g/play/manifest", None, None, None).await;
@@ -501,7 +388,7 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
-        create(&state, "game1", "renewed", None).await;
+        create(&state, "game1", "renewed").await;
         assert_eq!(
             request(&state, "HEAD", "/g/play/archive", None, None, None)
                 .await
@@ -512,7 +399,7 @@ mod tests {
             json(request(&state, "GET", "/g/renewed/manifest", None, None, None).await).await["save_space"],
             save_space
         );
-        create(&state, "game2", "other", None).await;
+        create(&state, "game2", "other").await;
         assert_ne!(
             json(request(&state, "GET", "/g/other/manifest", None, None, None).await).await["save_space"],
             save_space
@@ -556,126 +443,6 @@ mod tests {
                 .await
                 .headers()
                 .contains_key("cross-origin-opener-policy")
-        );
-    }
-
-    #[tokio::test]
-    async fn passwords_protect_every_resource_and_cannot_be_replayed_across_shares() {
-        let state = setup().await;
-        let status = create(&state, "game1", "secret", Some("test-password")).await;
-        assert_eq!(status["password_protected"], true);
-        assert!(!status.to_string().contains("test-password"));
-        for (method, path) in [("GET", "manifest"), ("HEAD", "archive"), ("GET", "archive")] {
-            assert_eq!(
-                request(
-                    &state,
-                    method,
-                    &format!("/g/secret/{path}"),
-                    None,
-                    None,
-                    Some("bytes=0-2")
-                )
-                .await
-                .status(),
-                StatusCode::UNAUTHORIZED
-            );
-        }
-        assert_eq!(
-            request(
-                &state,
-                "POST",
-                "/g/secret/unlock",
-                Some(serde_json::json!({"password":"wrong"})),
-                None,
-                None
-            )
-            .await
-            .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        let unlocked = request(
-            &state,
-            "POST",
-            "/g/secret/unlock",
-            Some(serde_json::json!({"password":"test-password"})),
-            None,
-            None,
-        )
-        .await;
-        assert_eq!(unlocked.status(), StatusCode::NO_CONTENT);
-        let cookie = unlocked.headers()[header::SET_COOKIE].to_str().unwrap();
-        assert!(cookie.contains("HttpOnly; SameSite=Strict"));
-        let cookie = cookie.split(';').next().unwrap().to_owned();
-        assert_eq!(
-            request(
-                &state,
-                "GET",
-                "/g/secret/archive",
-                None,
-                Some(&cookie),
-                Some("bytes=0-2")
-            )
-            .await
-            .status(),
-            StatusCode::PARTIAL_CONTENT
-        );
-        create(&state, "game2", "second", Some("test-password")).await;
-        assert_eq!(
-            request(
-                &state,
-                "HEAD",
-                "/g/second/archive",
-                None,
-                Some(&cookie),
-                None
-            )
-            .await
-            .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        create(&state, "game1", "secret", None).await; // Blank UI password preserves protection.
-        assert_eq!(
-            request(&state, "HEAD", "/g/secret/archive", None, None, None)
-                .await
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        create(&state, "game1", "secret", Some("new-password")).await;
-        assert_eq!(
-            request(
-                &state,
-                "HEAD",
-                "/g/secret/archive",
-                None,
-                Some(&cookie),
-                None
-            )
-            .await
-            .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        let revoked = request(
-            &state,
-            "DELETE",
-            "/api/files/game1/share",
-            None,
-            Some("revaro_session=game-test-session"),
-            None,
-        )
-        .await;
-        assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            request(
-                &state,
-                "HEAD",
-                "/g/secret/archive",
-                None,
-                Some(&cookie),
-                None
-            )
-            .await
-            .status(),
-            StatusCode::NOT_FOUND
         );
     }
 

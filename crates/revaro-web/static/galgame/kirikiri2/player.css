@@ -567,8 +567,6 @@
             html, body { overflow: auto !important; }
         
 #file-picker, #save-space-picker, #xp3-selector { display: none !important; }
-#revaro-gate { position:fixed;inset:0;z-index:10000;background:#151522;color:white;display:grid;place-content:center;gap:16px;padding:24px;font:16px system-ui; }
-#revaro-gate[hidden] { display:none; }
 
 #container { position: relative; overflow: hidden; }
 /* Engine canvas geometry stays fixed; only the modal's presentation is composited. */

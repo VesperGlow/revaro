@@ -48,3 +48,4 @@ pub use config::Config;
 pub use error::ApiResult;
 
 pub mod galgame_routes;
+mod game_entries;

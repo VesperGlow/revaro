@@ -1,99 +1,52 @@
 # Galgame 网页分享（Kirikiri2）
 
-上传完整游戏 ZIP，在文件的「分享」对话框选择「Galgame 分享」，引擎为 Kirikiri2，填写入口 XP3（例如 `data.xp3`，本机《纸上魔法使》汉化入口为 `dtcn.xp3`），创建链接后直接访问 `/g/{token}`。游戏由当前 Revaro 进程提供，浏览器执行 WASM；不解包、不复制分享文件，不需要额外游戏服务器或游戏域名。
+上传包含全部游戏资源的 ZIP，在文件的「分享」中选择「Galgame 分享（完整 ZIP）」。程序读取 ZIP 目录并列出 XP3，用户点击入口展开选项，选中后自动收起，不必输入或猜文件名。只有一个候选时自动选中；多个候选时等待用户选择，已有分享保留原入口。XP3 列表不代表每个资源包都能独立启动，也不自动判断汉化、原版或补丁版本。本机《纸上魔法使》的汉化入口为 `dtcn.xp3`。
 
-普通分享仍使用 `/s/`，接口参数和旧链接行为保持兼容。每个文件仍只有一条分享记录，切换分享类型或重新生成随机链接会让原链接失效。自定义后缀继续全局唯一。
+自定义地址显示为固定的站点前缀与独立后缀输入框；只有后缀带输入边框，留空生成随机链接。后缀支持 1–64 位英文字母、数字、`-`、`_`，区分大小写。
 
-## 部署
+打开 `/g/{token}` 直接加载游戏，无密码、验证页面或浏览器能力预检。实际加载失败仍显示错误与重新加载按钮。普通 `/s/` 分享保持原行为；每个文件仍只有一条分享记录，切换类型、更换后缀或重新生成会使旧链接失效。有效期、撤销、文件删除/回收站与 ready 状态仍由服务器逐请求处理。
 
-本机构建需要匹配的 `wasm-bindgen-cli 0.2.128`（原 Dockerfile 已安装）。按原流程执行 `cargo xtask web-build` 和 `cargo build -p revaro-server --release`。播放器已随 `crates/revaro-web/static/galgame/` 一起打包，无 CDN 或运行时下载步骤；原 Docker 构建的静态资源复制步骤会包含这些文件。确保部署完整 `dist/web/galgame/`，并将 `APP_WEB_DIR` 指向构建后的目录。服务启动自动执行数据库迁移 018；部署前按原运维流程备份 SQLite 数据库。
+## 部署与迁移
 
-浏览器必须访问可信 HTTPS，开发时可以使用 `http://localhost:端口`。`APP_BASE_URL` 必须与浏览器地址的源一致，供密码解锁 POST 的 Origin 检查使用；HTTPS 部署使用安全 Cookie。反向代理应原样转发 Range、If-Range、HEAD 及 206/416，禁用 `/g/` 的代理缓存和响应缓冲，不压缩 ZIP，也不要覆盖应用的 COOP/COEP/CORP/CSP。若使用流量防护，避免将正常的频繁小 Range 当作下载攻击。
+执行 `cargo xtask web-build`、`cargo build -p revaro-server --release`，部署完整 `dist/web/galgame/`，将 `APP_WEB_DIR` 指向构建后的目录。需要匹配的 `wasm-bindgen-cli 0.2.128`。播放器、WASM、字体和 JSZip 随 Revaro 发布，不依赖 CDN、独立游戏服务器或每游戏域名。
 
-`/g/`、`/galgame/` 单独设置 `COOP: same-origin`、`COEP: require-corp`、`CORP: same-origin`，其余页面的隔离策略保持不变。播放器脚本是同源外部文件，沿用全站 CSP，无内联脚本、`unsafe-eval`、第三方分析或 PWA 注册。缺少静态资源时返回错误，绝不以 SPA HTML 代替 WASM/JS。
+启动自动执行迁移 019，移除原 Galgame 密码字段；原有游戏分享也改为直接访问。管理员管理文件与分享仍需原网盘登录。按原部署流程备份 SQLite 数据库。
 
-## 访问与存储
+浏览器仍需可信 HTTPS（开发可用 localhost）、JSPI、共享 WASM 内存、SIMD、WASM exceptions 与可用 WebGL。网页移除预检并不改变引擎的运行条件；虚拟桌面没有可用 GPU 时需配置软件渲染。本机 Downloads 中的独立游戏浏览器启动入口使用 SwiftShader，不修改原浏览器设置，两个浏览器配置的存档互相独立。
 
-- 创建、读取管理状态、撤销分享仍要求管理员登录，并沿用原有效期、文件 ready/回收站校验。
-- 当前原系统并没有分享密码功能；本次仅对 Galgame 新增可选密码，复用现有 Argon2id、KDF 并发控制、Origin 检查和登录限速实现，使用独立的游戏密码限速计数。普通分享的公开访问方式未更改。
-- 密码授权 Cookie 为 HttpOnly、SameSite=Strict，路径限定到单个分享，12 小时有效，服务端每次资源请求重新检查密码授权、分享状态、有效期和文件状态。更新密码或更换令牌后原授权失效。已传到浏览器的游戏字节无法远程撤回。
-- ZIP 通过 `GET|HEAD /g/{token}/archive` 从现有 `FileAccess` 层流式读取；复用强 ETag、Range、206/416。GET 必须带有效 Range，忽略 Range 或过期 If-Range 不会触发整包下载。单个请求占用原有公共分享并发槽直到传输完成或取消。
-- 播放器仅从已授权的 `/g/{token}/manifest` 获取入口、资源地址和存档标识，URL 查询参数不能替换游戏资源或存档空间。不能借 `/s/{game_token}` 绕过游戏密码访问 ZIP。
-- IndexedDB 存档按文件 ID + 原存储对象标识隔离，重新生成分享链接仍可复用该游戏的存档；不同上传文件有独立存档。不会访问 ZIP 之外的 Windows savedata，也不把存档写回 Revaro；若上传 ZIP 本身含有存档，首次运行时引擎仍可能读取归档中的存档。浏览器尽力申请持久化，用户仍可能拒绝或清理数据。
-- 页面没有注册游戏 Service Worker，现有 Revaro 传输 Worker 对 `/g/` 不做缓存或重试。远程 ZIP 不回退到整包 Blob。压缩条目的临时解压发生在浏览器 OPFS，服务器不做解包和游戏缓存。
+`/g/` 与 `/galgame/` 单独使用 `COOP: same-origin`、`COEP: require-corp`、`CORP: same-origin`，其余页面不变。反向代理须原样转发 Range、If-Range、HEAD、206/416，禁用游戏 ZIP 压缩、代理缓存与响应缓冲，不覆盖隔离头和 CSP。页面不使用内联脚本、第三方统计或游戏 Service Worker；静态资源缺失不会回退到 SPA HTML。
 
-## ZIP 与引擎限制
+## 资源、入口与存档
 
-推荐 ZIP_STORED（仅存储、不再压缩）打包全部资源，XP3 本身通常已压缩。ZIP deflate 条目第一次读取时仍需要把**整个该条目**下载、流式解压到浏览器 OPFS，之后才能随机读；一个数 GB 的 deflate XP3 不具有细粒度网络按需加载效果。本集成没有宣称普通压缩 ZIP 的任意内部偏移都可直接 Range 解压。
-
-播放器沿用上游 ZIP/ZIP64 解析器。入口为去掉共同顶层目录后的相对 XP3 路径；必须存在且完整匹配。加密 ZIP、不支持的压缩方法、分卷、奇异文件名编码、损坏归档和非 Kirikiri2 引擎不在已验证范围内。创建接口校验 ready ZIP 文件、引擎和入口路径的格式，归档实际内容与入口是否存在由浏览器读取索引后验证，创建成功不代表游戏兼容。
-
-上游主要面向 Chromium 137+，实际还要求 JSPI（`WebAssembly.Suspending/promising`）、SIMD、原生 WASM exceptions、共享内存、WebGL；ZIP deflate 需要 OPFS 和 `DecompressionStream('deflate-raw')`。Firefox/Safari、移动实机、低内存设备尚未验证；Chromium 横屏触控仿真与 DPR 2 已检查。不能仅凭支持 WebAssembly 推断可以运行。音频自动播放可能需要一次用户交互。
-
-沿用上游同源引擎单例锁，同一站点一次只运行一个游戏标签页。即使浏览器存档已隔离，也没有扩展为多引擎并发执行。
-
-原生 DLL、特殊插件、加密 XP3、视频格式、汉化修改、多窗口界面等兼容性取决于上游实现；本次不运行 Windows EXE，也没有把本机现成的游戏专用脚本补丁塞进通用播放器。实际验证结果记录在本次测试说明中，未通关验证。
-
-上游来源、版本、改动和许可证见 `static/galgame/kirikiri2/SOURCE.md`、`ENGINE-LICENSE.txt` 与 `SHA256SUMS.json`。
+- 管理端 `GET /api/files/{id}/game-entries` 经原存储读取器获取 ZIP 目录，不解压、复制或整包读取游戏；使用阻塞工作线程桥接异步 seek/read，目录累计读取预算 8 MiB、最多 65,536 个条目并沿用 ZIP 并发槽。支持 ZIP64。返回路径与 VLFS 一样去掉唯一共同顶层目录，不读取 XP3 内部脚本。
+- 资源从 `/g/{token}/archive` 经原 `FileAccess` 流式读取。GET 必须带有效 Range，HEAD 返回元数据；未被接受的 Range 或过期 If-Range 不触发整包下载。分享失效立即停止后续资源访问，不会把游戏缓存在服务器内存。
+- 推荐 ZIP_STORED（仅存储）打包，XP3 通常已有压缩。deflate XP3 首次读取仍须下载整个该条目，并在浏览器 OPFS 解压；服务器不解包。
+- 游戏和入口由服务器 manifest 指定，查询参数不能替换资源或存档空间。Galgame 令牌不能通过普通 `/s/` 下载接口读取。
+- IndexedDB 存档按文件 ID 与原对象标识隔离；更换分享链接可继续使用同一浏览器的存档。重新上传是不同文件身份。不会访问 Windows savedata 或写回上传 ZIP。页面不清理 Revaro 的其他缓存、Worker 或存档。
+- 同源引擎使用 Web Lock，一次运行一个游戏标签页。
 
 ## API
+
+```http
+GET /api/files/{file_id}/game-entries
+```
+
+管理员登录后返回 `{"entries":["data.xp3","dtcn.xp3","sys/bgm.xp3"]}`，仅表示可供选择的 XP3 路径。不会从名称推断哪个版本正确。
 
 ```http
 POST /api/files/{file_id}/share
 Origin: https://revaro.example
 Content-Type: application/json
 
-{"share_type":"galgame","engine":"kirikiri2","entry":"data.xp3","expires_in_seconds":604800,"password":"optional-password"}
+{"share_type":"galgame","engine":"kirikiri2","entry":"dtcn.xp3","expires_in_seconds":604800,"custom_slug":"my-game"}
 ```
 
-`password` 省略保留当前游戏密码，空字符串移除密码；UI 留空表示保留。返回 `url: https://revaro.example/g/{token}`。管理 GET、DELETE 和 `/api/shares` 仍沿用原接口。普通分享省略新增字段即可。
+返回 `/g/my-game`。管理 GET、DELETE 与 `/api/shares` 沿用原接口，普通分享省略新增字段。已移除密码参数、密码授权 Cookie 与 `/unlock` 流程。
 
-```http
-POST /g/{token}/unlock
-Origin: https://revaro.example
-Content-Type: application/json
+## 输入及兼容性
 
-{"password":"optional-password"}
-```
+输入适配仅作用于播放器：普通场景右键、滚轮、方向键、Esc、Enter 与 Space 交给原游戏处理；原生模态窗右键发送一次 Esc，失焦释放按键。原生确认窗按比例居中放大，点击和触控用同一矩形做逆映射，不全局缩放页面。触控提供单击、长按返回、拖动日志和快捷按钮。
 
-成功设置分享专用 Cookie；未经授权的 manifest 和资源 HEAD/GET 均返回 401，失效或被撤销的分享返回 404。密码不进入 URL。
+固定 WASM 仅导出既有滚轮/释放函数并修正 Enter 查找表字节，未改写函数体。来源、许可证、ABI 与重建方法见播放器 `SOURCE.md`、`ENGINE-LICENSE.txt` 和 `SHA256SUMS.json`。升级引擎需同步适配 ABI。
 
-## 本次验证记录（2026-10-24）
-
-- `cargo test -p revaro-server -p revaro-core`：402 项通过；最终资源响应头调整后重新运行 3 项 Galgame 路由测试通过（包含单/多 Range、HEAD、416、过期 If-Range、密码、到期/删除/撤销、存档命名空间）。
-- `node --test tests/transport/*.test.mjs`：50 项通过。
-- Chromium 浏览器：新增 3 项 Galgame 分享测试通过，涵盖 ZIP 原上传接口、分享对话框、密码门禁、受控 Range、缺少 Range/入口时报错且不整包回退；另有原普通分享有效期与撤销测试通过。合成 ZIP 只用于接口/索引测试，不是可玩游戏兼容性测试。
-- `cargo xtask web-check`、`cargo xtask web-build`、`cargo fmt --all -- --check`、后端/共享类型 `cargo clippy --all-targets -- -D warnings` 通过。额外执行的 WASM 目标前端 Clippy 因现有代码中的 330 个诊断未通过，例如 `app.rs` 的 redundant_locals；诊断位置未落在本次新增行上。本次没有顺带重构这些代码。
-- 使用原 multipart 上传接口导入本机现有《纸上魔法使》ZIP（3,071,473,515 字节），入口 `dtcn.xp3`，在 Chromium 155 中实际启动中文标题、选择读者预览、进入第一章并显示中文正文。启动测量 67 个游戏资源 GET 均为 206，传输 21,816,022 字节（约 20.8 MiB），另有 HEAD 请求；未整包下载，未请求外部域名，未记录页面脚本异常。
-- 实际执行游戏内 SAVE，确认 IndexedDB 写入；刷新页面后在 LOAD 中选回第一槽，恢复到保存时相同的书房背景、夜子对白「现实，铅字织成的纸香世界。」。测试截图和存档清单位于本机 `data/galgame-local/`，不纳入源码分发。
-- 本机预览使用隔离的 `data/galgame-local/` 数据库、对象目录及专用浏览器配置，不修改原游戏目录或原 Revaro 数据目录。静态播放器不包含该游戏、汉化脚本或个人存档。
-
-这不是通关或全插件兼容性结论。音频输出、全部视频、后续分支、移动端没有在此次集成验证中验收。原生窗口式确认框和滚轮现在由下述通用输入适配处理；没有移植本机独立播放器中的游戏专用脚本补丁。游戏自己绘制的图层式弹窗、复杂嵌套窗口仍需逐游戏验证。
-
-
-## 输入与弹窗适配（2026-10-24）
-
-播放器的 `input.js` 只在游戏画布、原生确认窗的显示画布和触控快捷按钮内处理输入。普通 `/s/` 和 Revaro 管理页面不加载这段代码。
-
-- 右键：引擎原生模态窗存在时发送一次 Esc，普通剧情、历史、设置和存读档界面交给原生右键处理。不调用浏览器 history，不打开画布右键菜单。
-- 滚轮：通过已有原生 `TVPWindowLayer::onMouseScroll` 入口同时送到 Window 和 DrawDevice/Layer，保留游戏自己的打开日志、翻阅和到底返回规则。队列有上限，窗口切换后丢弃过期事件；不会同时滚动网页。Ctrl/Meta+滚轮保留浏览器缩放。
-- 键盘：原生 Esc、方向键、Space 映射不变，Enter 的 Cocos→VK_RETURN 丢失映射已修复。Esc/Enter/Space 不重复发送按住自动重复事件；失焦时释放按键及鼠标状态，并通过原生释放入口立即清除按下标记，避免后台 SDL 队列延后导致按键卡住。F11 和浏览器组合快捷键不进入游戏。
-- 弹窗：从引擎读取真实模态标记及画布逻辑尺寸，在最后一帧父窗口上居中显示原确认窗，按比例放大至原逻辑尺寸的至多 1.5 倍，并受可视区域限制。鼠标与触控使用同一裁剪矩形的逆映射；不改变引擎画布尺寸、全局页面缩放或游戏资源。
-
-这份固定版本的 WASM 只增加既有滚轮/按键释放函数的导出，并修正一个键码查找表字节，没有改写函数体。重建工具严格校验原版本；升级引擎必须同步验证 ABI，不能把这些布局偏移套到其他版本。详细来源及 ABI 见播放器的 SOURCE.md。运行 `python3 -m unittest discover -s tests/galgame -v` 可审计重建结果与原模块的一致性。
-
-真实游戏测试可指定 `E2E_GALGAME_URL=http://localhost:18080/g/kamimaho-local`，运行 `tests/e2e/galgame-input-real.spec.ts`。该测试的菜单坐标属于本机《纸上魔法使》验证样本，播放器实现不含这些坐标或游戏名。没有提供真实游戏时测试会明确跳过。
-
-Enter、方向键最终行为仍取决于游戏本身；例如本次样本的确认窗没有实现 Enter 自动确认，修复后按键能够到达 VK_RETURN，但仍需点击原生确认按钮。不会用截图识别或固定坐标替游戏执行确认。
-
-
-本轮实际验证结果：
-
-- Chromium 155 的真实游戏场景：设置与 LOAD 菜单右键返回；SAVE/LOAD、返回标题及退出确认窗右键和 Esc 取消；弹窗背景点击不穿透；确认/取消按钮的逆映射点击；保存第一槽、刷新后 LOAD 恢复正文。原确认窗逻辑尺寸 574×175，在 1280×720 中居中显示为 861×262.5。
-- 推进约 20 次正文后，上滚打开长日志，继续上滚到较旧记录，下滚到底由游戏关闭日志并回到正文；实际累计 32 个原生滚轮事件，无页面脚本异常。没有用键盘替代滚轮。
-- 900×500 与 400×800 改变视口后检查居中、比例和边界；窄屏仍受游戏原图文字大小限制，横屏更适合阅读。
-- Chromium 触控仿真：844×390、DPR 2，原生画布 1688×780；确认窗 776.47×236.72，中心正确；单点进入菜单、长按右键取消、点击原取消按钮、触控返回/日志按钮通过，无页面异常。修复了合成触摸按钮缺少先行 mousemove 导致 SDL 使用旧指针位置的问题。该结果不等同于 Android/iOS 实机验收。
-- Enter、Space、四个方向键检查原生键状态；按住 Esc 的重复 keydown 不穿透关闭第二层界面，失焦释放按键。游戏未实现的键盘动作继续保持原样。
-- 3 项固定版本 WASM/JS 适配审计、3 项分享路由测试、4 项普通/Galgame 分享浏览器回归测试通过；桌面真实游戏存读档/输入用例与 DPR 2 触控用例共 2 项通过。后端 Clippy、格式检查和播放器 JS 语法检查通过。
-
-使用这个适配器升级 WASM 时必须同步验证导出入口和原生布局元数据。它不接受任意版本 WASM，也没有宣称适配所有游戏的自定义 UI、嵌套弹窗、视频覆盖或特殊插件。
+自定义图层弹窗、复杂嵌套窗口、插件、加密资源及全部音视频兼容性取决于上游。窄屏受游戏原始文字大小限制；移动实机、其他浏览器和完整通关未验收。此前的 Chromium 实际游玩记录不代表所有游戏兼容。本轮按要求仅完成构建，不执行测试或实际游戏验证。

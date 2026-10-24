@@ -64,7 +64,7 @@ var gameFileReady = false;
         }
 
         // Revaro only reloads this player; application caches and workers are retained.
-        var BUILD_VERSION = 'revaro-2028cbcc-v2-input';
+        var BUILD_VERSION = 'revaro-2028cbcc-v3-direct';
         if (!BUILD_VERSION || BUILD_VERSION.charAt(0) === '@') BUILD_VERSION = 'dev';
         document.getElementById('build-version').textContent = 'Build ' + BUILD_VERSION;
         function forceUpdate() { window.location.reload(); }
@@ -72,47 +72,6 @@ var gameFileReady = false;
             e.preventDefault();
             if (confirm('重新加载播放器？浏览器存档将保留。')) forceUpdate();
         });
-        document.getElementById('error-update-btn').addEventListener('click', function () {
-            forceUpdate();
-        });
-
-        // --- JSPI 能力检测：主线程文件读依赖 WebAssembly JSPI（VirtualLazyFS），
-        // 缺失时引擎会死在 glue 的 "JSPI not supported" 断言上，用户只能看到
-        // 天书。这里提前检测并按浏览器给出明确的升级/换浏览器指引。---
-        var jspiUnsupported = !(typeof WebAssembly !== 'undefined' &&
-            typeof WebAssembly.Suspending === 'function' &&
-            typeof WebAssembly.promising === 'function');
-        if (jspiUnsupported) {
-            (function () {
-                var ua = navigator.userAgent;
-                // iOS 上所有浏览器（含 Chrome 的 CriOS / Firefox 的 FxiOS）都被
-                // 强制使用 WebKit 内核，一律按 Safari 处理；iPadOS 13+ 默认伪装
-                // 桌面 Mac UA，用触点数辨别
-                var isIOS = /iPhone|iPad|iPod/.test(ua) ||
-                    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-                var isFirefox = /Firefox\//.test(ua);
-                var isChromium = /Chrome\/|Chromium\/|Edg\/|OPR\//.test(ua);
-                var isSafari = /Safari\//.test(ua) && !isChromium && !isFirefox;
-                var advice;
-                if (isIOS || isSafari) {
-                    advice = '请升级到 Safari 27（iOS 27）或以上版本。\nPlease upgrade to Safari 27 (iOS 27) or later.';
-                } else if (isFirefox) {
-                    advice = '请改用最新版 Chrome 浏览器。\nPlease use the latest version of Google Chrome instead.';
-                } else if (isChromium) {
-                    advice = '请将浏览器升级到最新版本（需要 Chrome 137 或以上）。\nPlease update your browser to the latest version (Chrome 137 or later).';
-                } else {
-                    advice = '请使用最新版 Chrome 浏览器。\nPlease use the latest version of Google Chrome.';
-                }
-                document.querySelector('#error-box h2').textContent = 'Browser Not Supported';
-                document.getElementById('error-message').textContent =
-                    '当前浏览器缺少引擎所需的 WebAssembly JSPI 能力。\n' +
-                    'This browser lacks WebAssembly JSPI, which the engine requires.\n\n' + advice;
-                // 强制更新解决不了能力缺失，隐藏避免误导
-                document.getElementById('error-update-btn').style.display = 'none';
-                document.getElementById('error-overlay').classList.add('visible');
-            })();
-        }
-
         // --- File System Access API state ---
         var hostDirHandle = null;
         var webdavWriteChain = Promise.resolve();
@@ -237,7 +196,7 @@ var gameFileReady = false;
         // （cocos CCFileUtils 经 krkr2_vlfs_read_all 桥访问），不驻留内存。
         var assetsLoaded = (async function() {
             await vlfsReady;
-            var resp = await fetch('assets.zip?v=revaro-2028cbcc-v2-input');
+            var resp = await fetch('assets.zip?v=revaro-2028cbcc-v3-direct');
             if (!resp.ok) throw new Error('assets.zip HTTP ' + resp.status);
             var blob = await resp.blob();
             var r = await VLFS.registerZipBlob(blob, { stripPrefix: '' });
@@ -272,7 +231,7 @@ var gameFileReady = false;
                     break;
                 } catch (e) { /* 尝试下一档 */ }
             }
-            if (!preallocWasmMemory && !jspiUnsupported) {
+            if (!preallocWasmMemory) {
                 document.querySelector('#error-box h2').textContent = 'Out of Memory';
                 document.getElementById('error-message').textContent =
                     '无法分配引擎所需的共享内存，请关闭其他标签页/应用后刷新重试。\n' +
@@ -285,9 +244,9 @@ var gameFileReady = false;
             wasmMemory: preallocWasmMemory || undefined,
             locateFile: function(path, prefix) {
                 if (path === 'index.wasm')
-                    return prefix + 'index.wasm?v=revaro-2028cbcc-v2-input';
+                    return prefix + 'index.wasm?v=revaro-2028cbcc-v3-direct';
                 if (path === 'index.worker.js')
-                    return prefix + 'index.worker.js?v=revaro-2028cbcc-v2-input';
+                    return prefix + 'index.worker.js?v=revaro-2028cbcc-v3-direct';
                 return prefix + path;
             },
             preRun: [function() {
@@ -340,8 +299,6 @@ var gameFileReady = false;
                 }
             },
             onAbort: function(what) {
-                // JSPI 缺失的指引浮层已在显示，引擎随后的断言 abort 不要覆盖它
-                if (jspiUnsupported) return;
                 document.getElementById('error-message').textContent =
                     'The application has aborted. ' + what;
                 document.getElementById('error-overlay').classList.add('visible');

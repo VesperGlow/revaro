@@ -192,4 +192,4 @@ Rust 本地编译需要 FFmpeg 开发库、clang 和 cmake；Dockerfile 包含�
 
 ### Galgame 网页分享
 
-支持上传完整 Kirikiri2 游戏 ZIP，创建 `/g/` 链接后在当前域名的内置 WASM 播放器中游玩。使用同源 Range 读取和浏览器本地存档；普通 `/s/` 分享保持原行为。部署要求、ZIP 压缩方式、密码规则和兼容性边界见 [Galgame 分享说明](docs/galgame-sharing.md)。
+支持上传完整 Kirikiri2 游戏 ZIP，创建 `/g/` 链接后在当前域名的内置 WASM 播放器中游玩。使用同源 Range 读取和浏览器本地存档；普通 `/s/` 分享保持原行为。部署要求、ZIP 压缩方式、入口选择和兼容性边界见 [Galgame 分享说明](docs/galgame-sharing.md)。

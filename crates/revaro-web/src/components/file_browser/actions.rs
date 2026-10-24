@@ -27,7 +27,6 @@ pub(super) struct FileActionContext {
     pub share_custom_slug: RwSignal<String>,
     pub share_type: RwSignal<String>,
     pub share_entry: RwSignal<String>,
-    pub share_password: RwSignal<String>,
     pub share_busy: RwSignal<bool>,
     pub share_error: RwSignal<String>,
     pub share_copied: RwSignal<bool>,
@@ -63,7 +62,6 @@ impl FileActionContext {
             share_custom_slug,
             share_type,
             share_entry,
-            share_password,
             share_busy,
             share_error,
             share_copied,
@@ -164,7 +162,6 @@ impl FileActionContext {
                                     share_custom_slug.get_untracked(),
                                     share_type.get_untracked(),
                                     share_entry.get_untracked(),
-                                    share_password.get_untracked(),
                                 )
                                 .await;
                                 if !share_is_current() {
@@ -181,10 +178,7 @@ impl FileActionContext {
                                         share_type.set(
                                             status.share_type.unwrap_or_else(|| "file".to_owned()),
                                         );
-                                        share_entry.set(
-                                            status.entry.unwrap_or_else(|| "data.xp3".to_owned()),
-                                        );
-                                        share_password.set(String::new());
+                                        share_entry.set(status.entry.unwrap_or_default());
                                         share_custom_slug
                                             .set(status.custom_slug.unwrap_or_default());
                                         share_active.set(status.active);

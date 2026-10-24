@@ -13,12 +13,16 @@ pub struct ShareRequest {
     pub engine: Option<String>,
     /// XP3 path relative to the game root (after a common ZIP directory is stripped).
     pub entry: Option<String>,
-    /// Galgame only. Omitted preserves an existing password; empty removes it.
-    pub password: Option<String>,
     /// None creates a permanent link; otherwise seconds from issuance (1..=365 days).
     pub expires_in_seconds: Option<i64>,
     /// Optional URL suffix after `/s/`; an empty value creates a random link.
     pub custom_slug: Option<String>,
+}
+
+/// XP3 paths read from the uploaded ZIP directory, relative to the player root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameEntries {
+    pub entries: Vec<String>,
 }
 
 /// Validate a share suffix, excluding reserved application route names.
