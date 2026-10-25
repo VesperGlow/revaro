@@ -64,7 +64,7 @@ var gameFileReady = false;
         }
 
         // Revaro only reloads this player; application caches and workers are retained.
-        var BUILD_VERSION = 'revaro-2028cbcc-v3-direct';
+        var BUILD_VERSION = 'revaro-2028cbcc-v4-text';
         if (!BUILD_VERSION || BUILD_VERSION.charAt(0) === '@') BUILD_VERSION = 'dev';
         document.getElementById('build-version').textContent = 'Build ' + BUILD_VERSION;
         function forceUpdate() { window.location.reload(); }
@@ -196,7 +196,7 @@ var gameFileReady = false;
         // （cocos CCFileUtils 经 krkr2_vlfs_read_all 桥访问），不驻留内存。
         var assetsLoaded = (async function() {
             await vlfsReady;
-            var resp = await fetch('assets.zip?v=revaro-2028cbcc-v3-direct');
+            var resp = await fetch('assets.zip?v=revaro-2028cbcc-v4-text');
             if (!resp.ok) throw new Error('assets.zip HTTP ' + resp.status);
             var blob = await resp.blob();
             var r = await VLFS.registerZipBlob(blob, { stripPrefix: '' });
@@ -244,9 +244,9 @@ var gameFileReady = false;
             wasmMemory: preallocWasmMemory || undefined,
             locateFile: function(path, prefix) {
                 if (path === 'index.wasm')
-                    return prefix + 'index.wasm?v=revaro-2028cbcc-v3-direct';
+                    return prefix + 'index.wasm?v=revaro-2028cbcc-v4-text';
                 if (path === 'index.worker.js')
-                    return prefix + 'index.worker.js?v=revaro-2028cbcc-v3-direct';
+                    return prefix + 'index.worker.js?v=revaro-2028cbcc-v4-text';
                 return prefix + path;
             },
             preRun: [function() {

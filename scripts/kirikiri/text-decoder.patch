@@ -1,0 +1,15 @@
+diff --git a/cpp/core/base/TextStream.cpp b/cpp/core/base/TextStream.cpp
+--- a/cpp/core/base/TextStream.cpp
++++ b/cpp/core/base/TextStream.cpp
+@@ -86,11 +86,9 @@ static void TVPDecodeNarrowText(const std::vector<std::uint8_t> &raw,
+     if(TVPDecodeNarrowText(raw, sjis_mbtowc, decoded))
+         return;
+     if(TVPDecodeNarrowText(raw, TVPUtf8MbToWc, decoded)) {
+-        G_DefaultReadConverter = TVPUtf8MbToWc;
+         return;
+     }
+     if(TVPDecodeNarrowText(raw, gbk_mbtowc, decoded)) {
+-        G_DefaultReadConverter = gbk_mbtowc;
+         return;
+     }
+     TVPThrowExceptionMessage(TJSNarrowToWideConversionError);

@@ -1,0 +1,1001 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 6eca568..7f69c70 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2969,6 +2969,7 @@ dependencies = [
+  "eluna_rs",
+  "encoding_rs",
+  "env_logger 0.11.9",
++ "game_fs",
+  "getrandom 0.2.17",
+  "getrandom 0.3.4",
+  "image",
+diff --git a/crates/siglus_scene_vm/Cargo.toml b/crates/siglus_scene_vm/Cargo.toml
+index 24af58e..1e72314 100644
+--- a/crates/siglus_scene_vm/Cargo.toml
++++ b/crates/siglus_scene_vm/Cargo.toml
+@@ -71,6 +71,8 @@ android_logger = "0.14"
+ winit = { workspace = true, features = ["android-game-activity"] }
+ 
+ [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
++serde_json = "1"
++game_fs = { path = "../game_fs" }
+ wgpu = { workspace = true, features = ["webgl"] }
+ js-sys = "0.3"
+ wasm-bindgen = "0.2"
+diff --git a/crates/siglus_scene_vm/src/audio/sfx_engine.rs b/crates/siglus_scene_vm/src/audio/sfx_engine.rs
+index f2e34f8..0defa23 100644
+--- a/crates/siglus_scene_vm/src/audio/sfx_engine.rs
++++ b/crates/siglus_scene_vm/src/audio/sfx_engine.rs
+@@ -1266,12 +1266,18 @@ impl KoeEngine {
+         let project_dir = self.inner.project_dir.clone();
+         let append_dir = current_append_dir.to_string();
+         let (tx, rx) = std::sync::mpsc::channel();
+-        std::thread::spawn(move || {
++        let decode = move || {
+             let result = decode_koe_no_for_project(&project_dir, koe_no)
+                 .and_then(|wav| crate::audio::jitan::convert_koe_wav(wav, jitan_rate))
+                 .map_err(|err| format!("{err:#}"));
+             let _ = tx.send(result);
+-        });
++        };
++        // The wasm32-unknown-unknown host has no native threads. Keep the
++        // same completion channel and decoder; native hosts retain workers.
++        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++        decode();
++        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++        std::thread::spawn(decode);
+         self.pending_decode = Some((cache_key, append_dir, rx));
+         Ok(())
+     }
+diff --git a/crates/siglus_scene_vm/src/host.rs b/crates/siglus_scene_vm/src/host.rs
+index e4c8e09..deaa7cf 100644
+--- a/crates/siglus_scene_vm/src/host.rs
++++ b/crates/siglus_scene_vm/src/host.rs
+@@ -380,6 +380,31 @@ impl SiglusHost {
+         )
+     }
+ 
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    pub fn compatibility_ui_state(&self) -> String {
++        serde_json::json!({
++            "status": format!("scene={:?} line={} movie_playing={} movie_file={:?} movie_timer={} movie_frame={:?}",
++                self.vm.current_scene_name(), self.vm.current_line_no(),
++                self.vm.ctx.globals.mov.playing, self.vm.ctx.globals.mov.file_name,
++                self.vm.ctx.globals.mov.timer_ms, self.vm.ctx.globals.mov.last_frame_idx),
++            "backlog": self.vm.ctx.globals.syscom.msg_back_open,
++            "hidden": self.vm.ctx.globals.syscom.hide_mwnd.onoff,
++            "script_hidden": self.vm.ctx.globals.script.mwnd_disp_off_flag,
++            "text": self.vm.ctx.ui.message_text().unwrap_or(""),
++            "waiting": self.vm.ctx.ui.message_waiting(),
++            "redraws": self.redraw_count,
++            "paused": self.paused,
++            "needs_pump": self.script_needs_pump,
++            "resume_after_redraw": self.script_resume_after_redraw,
++            "runtime_poll": self.vm.ctx.wait.needs_runtime_poll(),
++            "control_held": self.vm.ctx.input.vk_is_down(0x11),
++            "left_held": self.vm.ctx.input.vk_is_down(0x01),
++            "movie_video_bytes": self.movie_memory_stats().video_bytes,
++            "movie_video_frames": self.movie_memory_stats().video_frames,
++            "movie_audio_bytes": self.movie_memory_stats().audio_pcm_bytes,
++        }).to_string()
++    }
++
+     fn native_messagebox_pending(&self) -> bool {
+         self.vm
+             .ctx
+@@ -409,6 +434,11 @@ impl SiglusHost {
+         Ok(self.pending_exit || (self.vm.is_halted() && self.flow.stack.is_empty()))
+     }
+ 
++    pub fn cancel_platform_input(&mut self) {
++        self.vm.ctx.cancel_platform_input();
++        self.script_needs_pump = true;
++    }
++
+     pub fn mouse_move(&mut self, x: f64, y: f64) {
+         if self.native_messagebox_pending() {
+             return;
+diff --git a/crates/siglus_scene_vm/src/movie/mod.rs b/crates/siglus_scene_vm/src/movie/mod.rs
+index a7e1a9f..42d00e9 100644
+--- a/crates/siglus_scene_vm/src/movie/mod.rs
++++ b/crates/siglus_scene_vm/src/movie/mod.rs
+@@ -1,3 +1,6 @@
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++mod browser;
++
+ use crate::platform_time::Duration;
+ use std::collections::{HashMap, HashSet, VecDeque};
+ use std::fs;
+@@ -382,6 +385,10 @@ pub struct MovieManager {
+     /// movie poll re-resolves the path on every frame, and on Android this
+     /// translates into slow FUSE directory scans.
+     path_cache: HashMap<(String, String), PathBuf>,
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    browser_movies: HashMap<PathBuf, browser::BrowserMovie>,
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    browser_tick: u64,
+ }
+ 
+ impl std::fmt::Debug for MovieManager {
+@@ -534,6 +541,14 @@ impl MovieManager {
+         for audio in self.wmv_audio_cache.values().flatten() {
+             add_audio(&mut seen_audio, &mut stats, audio);
+         }
++        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++        for movie in self.browser_movies.values() {
++            let (frames, bytes, pcm) = movie.retained_memory();
++            stats.video_frames += frames;
++            stats.video_bytes += bytes;
++            stats.audio_pcm_bytes += pcm;
++            stats.active_streams += 1;
++        }
+         stats
+     }
+ 
+@@ -555,6 +570,10 @@ impl MovieManager {
+             playbacks: HashMap::new(),
+             next_playback_id: 1,
+             path_cache: HashMap::new(),
++            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++            browser_movies: HashMap::new(),
++            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++            browser_tick: 0,
+         }
+     }
+ 
+@@ -583,6 +602,12 @@ impl MovieManager {
+         self.wmv_streams.clear();
+         self.wmv_audio_tasks.clear();
+         self.omv_streams.clear();
++        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++        {
++            self.browser_movies.clear();
++            self.cache.clear();
++            self.preview_cache.clear();
++        }
+         #[cfg(target_os = "vita")]
+         {
+             // The desktop cache favors replay latency. On Vita, retaining
+@@ -839,6 +864,10 @@ impl MovieManager {
+         timer_ms: u64,
+         loop_flag: bool,
+     ) -> Result<Option<MovieStreamFrame>> {
++        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++        if !is_wmv_extension(&path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase()) {
++            return self.poll_browser_movie(path, timer_ms, loop_flag);
++        }
+         let (asset, decoded_now) = match self.poll_asset_for_path(path)? {
+             Some(v) => v,
+             None => return Ok(None),
+diff --git a/crates/siglus_scene_vm/src/original_save.rs b/crates/siglus_scene_vm/src/original_save.rs
+index 261b0cd..a0ed047 100644
+--- a/crates/siglus_scene_vm/src/original_save.rs
++++ b/crates/siglus_scene_vm/src/original_save.rs
+@@ -1,5 +1,8 @@
+ use anyhow::{Context, Result, anyhow, bail};
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+ use std::fs;
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++use game_fs as fs;
+ #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+ use std::io::{Read, Write};
+ use std::path::{Path, PathBuf};
+diff --git a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs b/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
+index d3726dc..989082d 100644
+--- a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
++++ b/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
+@@ -7,7 +7,10 @@ use crate::runtime::globals::{
+     SyscomPendingProcKind, SystemMessageBoxButton, ToggleFeatureState, ValueFeatureState,
+ };
+ use crate::runtime::{CommandContext, RuntimeSaveKind, Value};
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+ use std::fs;
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++use game_fs as fs;
+ use std::path::{Path, PathBuf};
+ 
+ use crate::assets::RgbaImage;
+@@ -2549,7 +2552,7 @@ fn write_msg_back(ctx: &CommandContext) {
+         }
+         out.push('\n');
+     }
+-    if std::fs::write(&path, out).is_ok() {
++    if fs::write(&path, out).is_ok() {
+         mark_game_file_written(&path);
+     }
+ }
+@@ -4039,12 +4042,24 @@ fn remove_game_file(path: &Path) {
+ }
+ 
+ fn copy_game_file(src: &Path, dst: &Path) {
++    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+     let _ = fs::copy(src, dst);
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    if let Ok(data) = fs::read(src) {
++        let _ = fs::write(dst, data);
++    }
+     crate::resource::invalidate_game_path_cache(dst);
+ }
+ 
+ fn rename_game_file(src: &Path, dst: &Path) {
++    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+     let _ = fs::rename(src, dst);
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    if let Ok(data) = fs::read(src) {
++        if fs::write(dst, data).is_ok() {
++            let _ = fs::remove_file(src);
++        }
++    }
+     crate::resource::invalidate_game_path_cache(src);
+     crate::resource::invalidate_game_path_cache(dst);
+ }
+@@ -4074,7 +4089,15 @@ fn write_rgba_png(path: &Path, img: &RgbaImage) -> Result<()> {
+     let Some(buf) = image::RgbaImage::from_raw(img.width, img.height, img.rgba.clone()) else {
+         anyhow::bail!("invalid rgba buffer for {}x{} image", img.width, img.height);
+     };
++    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+     buf.save(path)?;
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    {
++        let mut bytes = std::io::Cursor::new(Vec::new());
++        image::DynamicImage::ImageRgba8(buf)
++            .write_to(&mut bytes, image::ImageOutputFormat::Png)?;
++        fs::write(path, bytes.into_inner())?;
++    }
+     mark_game_file_written(path);
+     Ok(())
+ }
+@@ -4281,7 +4304,7 @@ fn font_exists(project_dir: &Path, name: &str) -> bool {
+         };
+         for entry in entries.flatten() {
+             let path = entry.path();
+-            if !path.is_file() {
++            if !crate::resource::game_file_exists(&path) {
+                 continue;
+             }
+             let ext = path
+diff --git a/crates/siglus_scene_vm/src/runtime/mod.rs b/crates/siglus_scene_vm/src/runtime/mod.rs
+index 436cca9..e26e167 100644
+--- a/crates/siglus_scene_vm/src/runtime/mod.rs
++++ b/crates/siglus_scene_vm/src/runtime/mod.rs
+@@ -571,6 +571,9 @@ pub struct CommandContext {
+     frame_clock_sub_ms_ns: u32,
+     last_button_hover_sound_pos: Option<(i32, i32)>,
+     suppress_next_right_syscom_open: bool,
++    /// A modal owns both edges, including releases after it has closed.
++    modal_mouse_releases: Vec<input::VmMouseButton>,
++    modal_key_releases: Vec<input::VmKey>,
+ }
+ 
+ /// Convert a high-resolution wall-clock interval into the integer-millisecond
+@@ -833,6 +836,11 @@ impl CommandContext {
+         self.globals.syscom.fallback_origin = None;
+         self.globals.syscom.msg_back_open = false;
+         self.globals.syscom.msg_back_proc_initialized = false;
++        // C++ local saves serialize this feature's exist/enable flags, not its
++        // temporary onoff value. Do not inherit the load menu's hidden window.
++        // Script-owned visibility is restored separately from the save stream.
++        self.globals.syscom.hide_mwnd.onoff = false;
++        self.cancel_platform_input();
+         self.globals.system.messagebox_modal = None;
+         self.globals.system.messagebox_modal_result = None;
+         self.globals.finish_wipe();
+@@ -1589,6 +1597,8 @@ impl CommandContext {
+             frame_clock_sub_ms_ns: 0,
+             last_button_hover_sound_pos: None,
+             suppress_next_right_syscom_open: false,
++            modal_mouse_releases: Vec::new(),
++            modal_key_releases: Vec::new(),
+         };
+         ctx.set_active_append(initial_append.dir, initial_append.name);
+         ctx.apply_gameexe_runtime_defaults();
+@@ -3594,6 +3604,20 @@ impl CommandContext {
+     // Input bridge (platform event -> VM state)
+     // ------------------------------------------------------------------
+ 
++    /// Focus loss cancels held input without generating an in-game release action.
++    pub fn cancel_platform_input(&mut self) {
++        self.input.clear_all();
++        self.script_input.clear_all();
++        self.modal_mouse_releases.clear();
++        self.modal_key_releases.clear();
++        self.suppress_next_right_syscom_open = false;
++        self.globals.syscom.msg_back_slider_dragging = false;
++        self.globals.syscom.msg_back_content_dragging = false;
++        for list in self.globals.editbox_lists.values_mut() {
++            for editbox in &mut list.boxes { editbox.mouse_selecting = false; }
++        }
++    }
++
+     pub fn platform_shortcuts_blocked(&self) -> bool {
+         self.globals.system.messagebox_modal.is_some()
+             || self.globals.syscom.menu_open
+@@ -3610,10 +3634,14 @@ impl CommandContext {
+     }
+ 
+     pub fn on_key_down(&mut self, k: input::VmKey) {
++        if self.modal_key_releases.contains(&k) { return; }
+         if self.handle_system_messagebox_key(k) {
+             return;
+         }
+         if self.handle_msg_back_key(k) {
++            if !self.modal_key_releases.contains(&k) {
++                self.modal_key_releases.push(k);
++            }
+             return;
+         }
+         self.cancel_pending_editbox_composition();
+@@ -3722,6 +3750,14 @@ impl CommandContext {
+     }
+ 
+     pub fn on_key_up(&mut self, k: input::VmKey) {
++        if let Some(index) = self.modal_key_releases.iter().position(|key| *key == k) {
++            self.modal_key_releases.swap_remove(index);
++            self.input.on_key_up(k);
++            if let Some(vk) = input::vmkey_to_vk_code(k) {
++                self.input.use_vk_up_stock(vk);
++            }
++            return;
++        }
+         self.cancel_pending_editbox_composition();
+         if self.is_vm_key_disabled(k) {
+             return;
+@@ -3739,6 +3775,9 @@ impl CommandContext {
+             )
+         {
+             self.globals.syscom.hide_mwnd.onoff = false;
++            if let Some(vk) = input::vmkey_to_vk_code(k) {
++                self.input.use_vk_down_up_stock(vk);
++            }
+             return;
+         }
+         if let Some(vk) = input::vmkey_to_vk_code(k) {
+@@ -3944,6 +3983,16 @@ impl CommandContext {
+         if self.globals.syscom.msg_back_open {
+             self.input.on_mouse_down(b);
+             self.handle_msg_back_mouse_down(b);
++            if !self.modal_mouse_releases.contains(&b) {
++                self.modal_mouse_releases.push(b);
++            }
++            let vk = match b {
++                input::VmMouseButton::Left => Some(0x01),
++                input::VmMouseButton::Right => Some(0x02),
++                input::VmMouseButton::Middle => Some(0x04),
++                input::VmMouseButton::Other(_) => None,
++            };
++            if let Some(vk) = vk { self.input.use_vk_down_stock(vk); }
+             return;
+         }
+         self.cancel_pending_editbox_composition();
+@@ -4059,12 +4108,37 @@ impl CommandContext {
+             );
+         }
+         self.input.on_mouse_up(b);
++        if let Some(index) = self.modal_mouse_releases.iter().position(|button| *button == b) {
++            self.modal_mouse_releases.swap_remove(index);
++            self.handle_msg_back_mouse_up(b);
++            let vk = match b {
++                input::VmMouseButton::Left => 0x01,
++                input::VmMouseButton::Right => 0x02,
++                input::VmMouseButton::Middle => 0x04,
++                input::VmMouseButton::Other(_) => return,
++            };
++            self.input.use_vk_up_stock(vk);
++            return;
++        }
+         if self.finish_editbox_mouse_up(b) {
+             return;
+         }
+         if self.handle_msg_back_mouse_up(b) {
+             return;
+         }
++        if self.globals.syscom.hide_mwnd.onoff {
++            let restore_vk = match b {
++                input::VmMouseButton::Left => Some(0x01),
++                input::VmMouseButton::Right => Some(0x02),
++                _ => None,
++            };
++            if let Some(vk) = restore_vk {
++                if self.input.use_vk_down_up_stock(vk) {
++                    self.globals.syscom.hide_mwnd.onoff = false;
++                    return;
++                }
++            }
++        }
+         if self.handle_selbtn_mouse_up(b) {
+             return;
+         }
+diff --git a/crates/siglus_scene_vm/src/wasm_entry.rs b/crates/siglus_scene_vm/src/wasm_entry.rs
+index bf33475..311d2de 100644
+--- a/crates/siglus_scene_vm/src/wasm_entry.rs
++++ b/crates/siglus_scene_vm/src/wasm_entry.rs
+@@ -7,6 +7,7 @@
+ //! same host/renderer/VM pipeline used by native platforms.
+ 
+ use std::cell::RefCell;
++use std::collections::VecDeque;
+ use std::path::PathBuf;
+ use std::rc::Rc;
+ 
+@@ -75,6 +76,9 @@ struct WasmApp {
+     init_started: bool,
+     init_error: Option<String>,
+     exit_requested: bool,
++    logical_size: (u32, u32),
++    viewport: (u32, u32, u32, u32),
++    mouse_queue: VecDeque<(ElementState, VmMouseButton, f64, f64)>,
+ }
+ 
+ impl WasmApp {
+@@ -89,6 +93,9 @@ impl WasmApp {
+             init_started: false,
+             init_error: None,
+             exit_requested: false,
++            logical_size: (1280, 720),
++            viewport: (0, 0, 1280, 720),
++            mouse_queue: VecDeque::new(),
+         }
+     }
+ 
+@@ -152,8 +159,8 @@ impl WasmApp {
+                     .await
+                     .map_err(|e| format!("renderer init: {e:#}"))?;
+                 let mut config = SiglusHostConfig::new(PathBuf::from("."));
+-                config.width = Some(1280);
+-                config.height = Some(720);
++                // Preserve the game resolution from Gameexe; fit its output
++                // to the browser surface instead of changing game coordinates.
+                 let host = SiglusHost::new_with_renderer(config, renderer)
+                     .await
+                     .map_err(|e| format!("host init: {e:#}"))?;
+@@ -176,7 +183,8 @@ impl WasmApp {
+             }
+             WindowEvent::SurfaceResized(size) => {
+                 let sf = self.window.map(|w| w.scale_factor() as f32).unwrap_or(1.0);
+-                host.resize(size.width.max(1), size.height.max(1), sf);
++                self.viewport =
++                    fit_host_viewport(host, size.width, size.height, sf, self.logical_size);
+             }
+             WindowEvent::KeyboardInput {
+                 event:
+@@ -226,12 +234,8 @@ impl WasmApp {
+                 primary: true,
+                 ..
+             } => {
+-                let (x, y) = if let Some(w) = self.window {
+-                    let p = position.to_logical::<f64>(w.scale_factor());
+-                    (p.x, p.y)
+-                } else {
+-                    (position.x, position.y)
+-                };
++                let (x, y) =
++                    map_game_point(position.x, position.y, self.viewport, self.logical_size);
+                 host.mouse_move(x, y);
+             }
+             WindowEvent::PointerButton {
+@@ -244,24 +248,24 @@ impl WasmApp {
+                 let Some(button) = button.mouse_button() else {
+                     return;
+                 };
+-                let point = position
+-                    .to_logical::<f64>(self.window.map(|w| w.scale_factor()).unwrap_or(1.0));
+-                host.mouse_move(point.x, point.y);
++                let (x, y) =
++                    map_game_point(position.x, position.y, self.viewport, self.logical_size);
++                host.mouse_move(x, y);
+                 if let Some(b) = map_mouse_button(button) {
+-                    match (state, b) {
+-                        (ElementState::Pressed, VmMouseButton::Left) => {
+-                            let (x, y) = current_mouse_pos(host);
+-                            host.touch(0, x, y);
+-                        }
+-                        (ElementState::Released, VmMouseButton::Left) => {
+-                            let (x, y) = current_mouse_pos(host);
+-                            host.touch(2, x, y);
+-                        }
+-                        (ElementState::Pressed, b) => host.mouse_down(b),
+-                        (ElementState::Released, b) => host.mouse_up(b),
++                    // Preserve a frame between press and release. Script buttons
++                    // poll held mouse state; short browser clicks must survive
++                    // an expensive frame or synchronous resource decode.
++                    if self.mouse_queue.len() >= 64 {
++                        self.mouse_queue.clear();
++                        host.cancel_platform_input();
+                     }
++                    self.mouse_queue.push_back((state, b, x, y));
+                 }
+             }
++            WindowEvent::Focused(false) => {
++                self.mouse_queue.clear();
++                host.cancel_platform_input();
++            }
+             WindowEvent::MouseWheel { delta, .. } => {
+                 let dy = match delta {
+                     MouseScrollDelta::LineDelta(_, y) => (y * 120.0) as i32,
+@@ -271,11 +275,41 @@ impl WasmApp {
+                 host.mouse_wheel(dy);
+             }
+             WindowEvent::RedrawRequested => {
++                if let Some((state, button, x, y)) = self.mouse_queue.pop_front() {
++                    host.mouse_move(x, y);
++                    match (state, button) {
++                        (ElementState::Pressed, VmMouseButton::Left) => host.touch(0, x, y),
++                        (ElementState::Released, VmMouseButton::Left) => host.touch(2, x, y),
++                        (ElementState::Pressed, button) => host.mouse_down(button),
++                        (ElementState::Released, button) => host.mouse_up(button),
++                    }
++                }
+                 if let Some(window) = self.window {
+                     apply_ime_window_state(window, host);
+                 }
++                if js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("__siglusProbeUi"))
++                    .ok()
++                    .and_then(|value| value.as_bool())
++                    .unwrap_or(false)
++                {
++                    let state = host.compatibility_ui_state();
++                    let _ = js_sys::Reflect::set(
++                        &js_sys::global(),
++                        &JsValue::from_str("__siglusUi"),
++                        &JsValue::from_str(&state),
++                    );
++                }
+                 match host.step(16) {
+                     Ok(true) => {
++                        let summary = host.debug_status_summary();
++                        let _ = js_sys::Reflect::set(
++                            &js_sys::global(),
++                            &JsValue::from_str("__siglusEnded"),
++                            &JsValue::from_str(&summary),
++                        );
++                        web_sys::console::log_1(&JsValue::from_str(&format!(
++                            "siglus host ended: {summary}"
++                        )));
+                         self.exit_requested = true;
+                         elwt.exit();
+                     }
+@@ -305,7 +339,18 @@ impl ApplicationHandler for WasmApp {
+             return;
+         };
+         match result {
+-            Ok(host) => {
++            Ok(mut host) => {
++                self.logical_size = host.logical_size();
++                if let Some(w) = self.window {
++                    let size = w.surface_size();
++                    self.viewport = fit_host_viewport(
++                        &mut host,
++                        size.width,
++                        size.height,
++                        w.scale_factor() as f32,
++                        self.logical_size,
++                    );
++                }
+                 self.host = Some(host);
+                 if let Some(w) = self.window {
+                     w.request_redraw();
+@@ -338,7 +383,8 @@ impl ApplicationHandler for WasmApp {
+         if let Some(w) = self.window {
+             w.request_redraw();
+         }
+-        elwt.set_control_flow(ControlFlow::Poll);
++        // request_redraw already schedules the next browser animation frame.
++        elwt.set_control_flow(ControlFlow::Wait);
+     }
+ }
+ 
+@@ -454,3 +500,45 @@ fn map_keycode(code: KeyCode) -> Option<VmKey> {
+         _ => None,
+     }
+ }
++
++// Use physical surface coordinates for both rendering and pointer inversion.
++// Browser size and DPR never change the game's logical screen size.
++fn fit_host_viewport(
++    host: &mut SiglusHost,
++    width: u32,
++    height: u32,
++    scale_factor: f32,
++    logical: (u32, u32),
++) -> (u32, u32, u32, u32) {
++    let width = width.max(1);
++    let height = height.max(1);
++    let scale = (width as f64 / logical.0 as f64).min(height as f64 / logical.1 as f64);
++    let w = (logical.0 as f64 * scale).round().max(1.0) as u32;
++    let h = (logical.1 as f64 * scale).round().max(1.0) as u32;
++    let x = width.saturating_sub(w) / 2;
++    let y = height.saturating_sub(h) / 2;
++    host.resize_with_logical_viewport(
++        width,
++        height,
++        scale_factor,
++        logical.0,
++        logical.1,
++        x,
++        y,
++        w,
++        h,
++    );
++    (x, y, w, h)
++}
++
++fn map_game_point(
++    x: f64,
++    y: f64,
++    viewport: (u32, u32, u32, u32),
++    logical: (u32, u32),
++) -> (f64, f64) {
++    (
++        (x - viewport.0 as f64) * logical.0 as f64 / viewport.2.max(1) as f64,
++        (y - viewport.1 as f64) * logical.1 as f64 / viewport.3.max(1) as f64,
++    )
++}
+diff --git a/crates/siglus_scene_vm/src/movie/browser.rs b/crates/siglus_scene_vm/src/movie/browser.rs
+new file mode 100644
+index 0000000..ebc19d5
+--- /dev/null
++++ b/crates/siglus_scene_vm/src/movie/browser.rs
+@@ -0,0 +1,362 @@
++//! Browser movie decoder: retain a current frame and one look-ahead frame.
++//! Compressed resource and PCM still use the existing VFS/Kira interfaces.
++use super::*;
++
++type Decoded = (Arc<RgbaImage>, u64);
++
++enum Decoder {
++    Mpeg {
++        bytes: Vec<u8>,
++        offset: usize,
++        pipeline: na_mpeg2_decoder::MpegAvPipeline,
++        queued: VecDeque<Decoded>,
++        flushed: bool,
++        index: usize,
++        frame_ms: f64,
++    },
++    Omv {
++        decoder: siglus_omv_decoder::TheoraFile,
++        info: siglus_omv_decoder::VideoInfo,
++        packed: Vec<u8>,
++        width: i32,
++        height: i32,
++        kind: u32,
++        index: usize,
++        frame_ms: f64,
++    },
++}
++
++pub(super) struct BrowserMovie {
++    decoder: Decoder,
++    current: Option<Decoded>,
++    next: Option<Decoded>,
++    index: usize,
++    eof: bool,
++    audio: Option<MovieAudio>,
++    fps: Option<f32>,
++    total_ms: Option<u64>,
++    last_timer: u64,
++    last_used: u64,
++}
++
++impl BrowserMovie {
++    fn open(path: &Path, tick: u64) -> Result<Self> {
++        let bytes = read_movie_bytes(path)?;
++        let ext = path
++            .extension()
++            .and_then(|s| s.to_str())
++            .unwrap_or("")
++            .to_ascii_lowercase();
++        let (decoder, fps, audio) = if ext == "omv" {
++            let header = read_omv_header_from_bytes(&bytes).ok();
++            let mut decoder =
++                siglus_omv_decoder::TheoraFile::open_from_memory(extract_ogg_from_bytes(&bytes)?)?;
++            let info = decoder.info();
++            let width = header
++                .as_ref()
++                .map(|h| h.display_width as i32)
++                .unwrap_or(info.width);
++            let height = header
++                .as_ref()
++                .map(|h| h.display_height as i32)
++                .unwrap_or(info.height);
++            let fps = header
++                .as_ref()
++                .filter(|h| h.frame_time_us != 0)
++                .map(|h| 1_000_000.0 / h.frame_time_us as f32)
++                .or_else(|| (info.fps > 0.0).then_some(info.fps as f32));
++            let frame_ms = omv_frame_duration_ms(header.as_ref(), fps).unwrap_or(1000.0 / 30.0);
++            let kind = header
++                .as_ref()
++                .map(|h| h.theora_type)
++                .unwrap_or(siglus_assets::omv::OMV_THEORA_TYPE_YUV);
++            let (_, _, y, u, v) = omv_plane_layout(info.frame_width, info.frame_height, info.fmt);
++            let audio = decode_omv_audio(&mut decoder)?;
++            (
++                Decoder::Omv {
++                    decoder,
++                    info,
++                    packed: vec![0; y + u + v],
++                    width,
++                    height,
++                    kind,
++                    index: 0,
++                    frame_ms,
++                },
++                fps,
++                audio,
++            )
++        } else {
++            let fps = siglus_assets::mpeg2::find_sequence_header(
++                &bytes[..bytes.len().min(MPEG2_HEADER_PROBE_BYTES)],
++            )
++            .and_then(|h| siglus_assets::mpeg2::fps_from_frame_rate_code(h.frame_rate_code));
++            let mut samples = Vec::new();
++            let mut channels = None;
++            let mut rate = None;
++            let mut dropped = 0;
++            let mut audio_decoder = na_mpeg2_decoder::MpegAudioPipeline::new();
++            audio_decoder.push_with(&bytes, None, |chunk| {
++                append_mpeg2_audio_chunk_for_asset(
++                    path,
++                    &mut channels,
++                    &mut rate,
++                    &mut samples,
++                    &mut dropped,
++                    chunk,
++                )
++            })?;
++            audio_decoder.flush_with(|chunk| {
++                append_mpeg2_audio_chunk_for_asset(
++                    path,
++                    &mut channels,
++                    &mut rate,
++                    &mut samples,
++                    &mut dropped,
++                    chunk,
++                )
++            })?;
++            let audio = build_movie_audio_from_parts(path, samples, channels, rate)?;
++            (
++                Decoder::Mpeg {
++                    bytes,
++                    offset: 0,
++                    pipeline: na_mpeg2_decoder::MpegAvPipeline::new(),
++                    queued: VecDeque::new(),
++                    flushed: false,
++                    index: 0,
++                    frame_ms: 1000.0 / fps.unwrap_or(30.0).max(1.0) as f64,
++                },
++                fps,
++                audio,
++            )
++        };
++        let total_ms = audio.as_ref().and_then(|a| a.duration_ms);
++        Ok(Self {
++            decoder,
++            current: None,
++            next: None,
++            index: 0,
++            eof: false,
++            audio,
++            fps,
++            total_ms,
++            last_timer: 0,
++            last_used: tick,
++        })
++    }
++
++    pub(super) fn retained_memory(&self) -> (usize, usize, usize) {
++        let mut frames = 0;
++        let mut bytes = 0;
++        for (frame, _) in self.current.iter().chain(self.next.iter()) {
++            frames += 1;
++            bytes += frame.rgba.len();
++        }
++        if let Decoder::Mpeg { queued, .. } = &self.decoder {
++            for (frame, _) in queued {
++                frames += 1;
++                bytes += frame.rgba.len();
++            }
++        }
++        let pcm = self
++            .audio
++            .as_ref()
++            .map(|audio| audio.samples.len() * 2)
++            .unwrap_or(0);
++        (frames, bytes, pcm)
++    }
++
++    fn rewind(&mut self) -> Result<()> {
++        match &mut self.decoder {
++            Decoder::Mpeg {
++                offset,
++                pipeline,
++                queued,
++                flushed,
++                index,
++                ..
++            } => {
++                *offset = 0;
++                *pipeline = na_mpeg2_decoder::MpegAvPipeline::new();
++                queued.clear();
++                *flushed = false;
++                *index = 0;
++            }
++            Decoder::Omv { decoder, index, .. } => {
++                decoder.reset();
++                *index = 0;
++            }
++        }
++        self.current = None;
++        self.next = None;
++        self.index = 0;
++        self.eof = false;
++        Ok(())
++    }
++
++    fn decode_next(&mut self) -> Result<Option<Decoded>> {
++        match &mut self.decoder {
++            Decoder::Mpeg {
++                bytes,
++                offset,
++                pipeline,
++                queued,
++                flushed,
++                index,
++                frame_ms,
++            } => {
++                while queued.is_empty() && !*flushed {
++                    let mut collect = |event| {
++                        if let na_mpeg2_decoder::MpegAvEvent::Video(frame) = event {
++                            let pts = (*index as f64 * *frame_ms).round() as u64;
++                            *index += 1;
++                            queued.push_back((
++                                Arc::new(RgbaImage {
++                                    width: frame.width,
++                                    height: frame.height,
++                                    center_x: 0,
++                                    center_y: 0,
++                                    rgba: frame.rgba,
++                                }),
++                                pts,
++                            ));
++                        }
++                    };
++                    if *offset < bytes.len() {
++                        let end = (*offset + 8192).min(bytes.len());
++                        pipeline.push_with(&bytes[*offset..end], None, &mut collect)?;
++                        *offset = end;
++                    } else {
++                        pipeline.flush_with(&mut collect)?;
++                        *flushed = true;
++                    }
++                }
++                Ok(queued.pop_front())
++            }
++            Decoder::Omv {
++                decoder,
++                info,
++                packed,
++                width,
++                height,
++                kind,
++                index,
++                frame_ms,
++            } => {
++                if !decoder.read_video_frame(packed)? {
++                    return Ok(None);
++                }
++                let frame = Arc::new(RgbaImage {
++                    width: (*width).max(1) as u32,
++                    height: (*height).max(1) as u32,
++                    center_x: 0,
++                    center_y: 0,
++                    rgba: convert_omv_frame(
++                        packed,
++                        info.frame_width,
++                        info.frame_height,
++                        info.fmt,
++                        *width,
++                        *height,
++                        *kind,
++                    ),
++                });
++                let pts = (*index as f64 * *frame_ms).round() as u64;
++                *index += 1;
++                Ok(Some((frame, pts)))
++            }
++        }
++    }
++
++    fn poll(&mut self, timer: u64, loop_flag: bool) -> Result<Option<MovieStreamFrame>> {
++        let effective = if loop_flag {
++            self.total_ms
++                .filter(|ms| *ms > 0)
++                .map(|ms| timer % ms)
++                .unwrap_or(timer)
++        } else {
++            timer
++        };
++        if effective < self.last_timer {
++            self.rewind()?;
++        }
++        self.last_timer = effective;
++        let mut decoded = false;
++        // Bound work per engine frame. The caller clamps its playback clock if
++        // decoding cannot keep up, instead of decoding a whole movie in one call.
++        for _ in 0..4 {
++            if self.next.is_none() && !self.eof {
++                self.next = self.decode_next()?;
++                self.eof = self.next.is_none();
++            }
++            if self.current.is_some() && self.next.as_ref().is_none_or(|(_, pts)| *pts > effective)
++            {
++                break;
++            }
++            if let Some(next) = self.next.take() {
++                if self.current.is_some() {
++                    self.index += 1;
++                }
++                self.current = Some(next);
++                decoded = true;
++            } else {
++                break;
++            }
++        }
++        let Some((frame, pts)) = &self.current else {
++            return Ok(None);
++        };
++        let frame_ms = self
++            .fps
++            .filter(|fps| *fps > 0.0)
++            .map(|fps| (1000.0 / fps) as u64)
++            .unwrap_or(34)
++            .max(1);
++        if self.eof {
++            self.total_ms = Some(self.total_ms.unwrap_or(0).max(pts.saturating_add(frame_ms)));
++        }
++        let behind = !self.eof
++            && self
++                .next
++                .as_ref()
++                .is_none_or(|(_, next_pts)| *next_pts <= effective);
++        Ok(Some(MovieStreamFrame {
++            frame: frame.clone(),
++            frame_idx: self.index,
++            fps: self.fps,
++            total_ms: self.total_ms,
++            audio: self.audio.clone(),
++            audio_ready: true,
++            decoded_now: decoded,
++            frame_idx_is_decode_order: false,
++            clamped_timer_ms: behind.then_some(*pts),
++            source_size: Some((frame.width, frame.height)),
++        }))
++    }
++}
++
++impl MovieManager {
++    pub(super) fn poll_browser_movie(
++        &mut self,
++        path: PathBuf,
++        timer: u64,
++        looping: bool,
++    ) -> Result<Option<MovieStreamFrame>> {
++        self.browser_tick = self.browser_tick.wrapping_add(1);
++        let tick = self.browser_tick;
++        // Keep object movies used by the current scene; drop old scenes' decoders.
++        self.browser_movies
++            .retain(|_, movie| tick.wrapping_sub(movie.last_used) < 600);
++        if !self.browser_movies.contains_key(&path) {
++            self.browser_movies
++                .insert(path.clone(), BrowserMovie::open(&path, tick)?);
++        }
++        let movie = self
++            .browser_movies
++            .get_mut(&path)
++            .expect("browser movie inserted");
++        movie.last_used = tick;
++        movie.poll(timer, looping)
++    }
++}

@@ -8,6 +8,9 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('bridge', ROOT / 'scripts/kirikiri/export-input-bridge.py')
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
+text_spec = importlib.util.spec_from_file_location('text_decoder', ROOT / 'scripts/kirikiri/fix-text-decoder.py')
+text_decoder = importlib.util.module_from_spec(text_spec)
+text_spec.loader.exec_module(text_decoder)
 
 def sections(data):
     pos = 8
@@ -19,7 +22,8 @@ def sections(data):
 
 class RuntimeBridge(unittest.TestCase):
     def test_packaged_runtime_only_adds_export_and_repairs_enter_map(self):
-        packaged = (ROOT / 'crates/revaro-web/static/galgame/kirikiri2/index.wasm').read_bytes()
+        packaged = text_decoder.patch(
+            (ROOT / 'crates/revaro-web/static/galgame/kirikiri2/index.wasm').read_bytes(), reverse=True)
         reconstructed = bytearray(packaged[:8])
         for kind, payload in sections(packaged):
             if kind == 7:
@@ -54,6 +58,19 @@ class RuntimeBridge(unittest.TestCase):
     def test_unknown_runtime_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'unknown ABI'):
             bridge.patch(b'not the pinned module')
+
+    def test_text_decoder_changes_only_the_two_auto_detection_stores(self):
+        packaged = (ROOT / 'crates/revaro-web/static/galgame/kirikiri2/index.wasm').read_bytes()
+        previous = text_decoder.patch(packaged, reverse=True)
+        self.assertEqual(text_decoder.patch(previous), packaged)
+        expected = set()
+        for offset, store in text_decoder.STORES:
+            self.assertEqual(previous[offset:offset + len(store)], store)
+            self.assertEqual(packaged[offset:offset + len(store)], b'\x01' * len(store))
+            expected.update(range(offset, offset + len(store)))
+        self.assertEqual({i for i, (a, b) in enumerate(zip(previous, packaged)) if a != b}, expected)
+        with self.assertRaisesRegex(ValueError, 'Unknown runtime'):
+            text_decoder.patch(b'unknown WASM')
 
 if __name__ == '__main__':
     unittest.main()
