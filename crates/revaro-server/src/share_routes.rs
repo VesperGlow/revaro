@@ -24,7 +24,7 @@ fn db(error: rusqlite::Error) -> ApiError {
     tracing::error!(%error,"share query failed");
     ApiError::internal("database error")
 }
-type GameSettings = (String, Option<String>, Option<String>);
+type GameSettings = (String, Option<String>, Option<String>, Option<String>);
 
 fn decode(
     base: &str,
@@ -32,7 +32,7 @@ fn decode(
     created: String,
     expires: Option<String>,
     custom_slug: Option<String>,
-    (kind, engine, entry): GameSettings,
+    (kind, engine, entry, key_config): GameSettings,
 ) -> Result<ShareStatus, ApiError> {
     let expires_at = expires
         .map(|s| Timestamp::parse(&s))
@@ -47,6 +47,7 @@ fn decode(
         share_type: (kind == "galgame").then_some(kind),
         engine,
         entry,
+        key_config,
         custom_slug,
         created_at: Some(
             Timestamp::parse(&created)
@@ -62,8 +63,8 @@ async fn status(
 ) -> Result<Json<ShareStatus>, ApiError> {
     let base = state.config.base_url.clone();
     state.db.call_api(move |c| {
-        let row = c.query_row("SELECT s.token,s.created_at,s.expires_at,s.custom_slug,s.share_type,s.engine,s.entry FROM shares s CROSS JOIN files f ON f.id=s.file_id WHERE s.file_id=?1 AND f.deleted_at IS NULL AND f.status='ready'", [&id],
-            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,(r.get(4)?,r.get(5)?,r.get(6)?)))).optional().map_err(db)?;
+        let row = c.query_row("SELECT s.token,s.created_at,s.expires_at,s.custom_slug,s.share_type,s.engine,s.entry,s.key_config FROM shares s CROSS JOIN files f ON f.id=s.file_id WHERE s.file_id=?1 AND f.deleted_at IS NULL AND f.status='ready'", [&id],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,(r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)))).optional().map_err(db)?;
         row.map_or_else(|| Ok(ShareStatus::default()), |(t,c,e,s,g)| decode(&base,t,c,e,s,g))
     }).await.map(Json)
 }
@@ -105,6 +106,24 @@ async fn create(
         }
         (None, None)
     };
+    if input
+        .key_config
+        .as_ref()
+        .is_some_and(|text| text.len() > 16384 || text.contains('\0'))
+    {
+        return Err(ApiError::bad_request(
+            "Siglus key.toml 配置最多 16 KiB，且不能包含空字符",
+        ));
+    }
+    if input
+        .key_config
+        .as_ref()
+        .is_some_and(|text| !text.is_empty())
+        && engine.as_deref() != Some("siglus")
+    {
+        return Err(ApiError::bad_request("key.toml 配置仅适用于 SiglusEngine"));
+    }
+    let key_config = input.key_config;
     let custom_slug = input.custom_slug.filter(|slug| !slug.is_empty());
     if custom_slug
         .as_deref()
@@ -143,10 +162,16 @@ async fn create(
         if taken {
             return Err(ApiError::conflict("这个链接后缀已被使用，请换一个"));
         }
-        tx.execute("INSERT INTO shares(file_id,token,created_at,expires_at,custom_slug,share_type,engine,entry) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(file_id) DO UPDATE SET token=excluded.token,created_at=excluded.created_at,expires_at=excluded.expires_at,custom_slug=excluded.custom_slug,share_type=excluded.share_type,engine=excluded.engine,entry=excluded.entry",
-            params![id,token,now.to_rfc3339(),expires_at.map(|t|t.to_rfc3339()),custom_slug,kind,engine,entry]).map_err(db)?;
+        let key_config = if engine.as_deref() == Some("siglus") {
+            match key_config {
+                Some(text) => (!text.trim().is_empty()).then_some(text),
+                None => tx.query_row("SELECT key_config FROM shares WHERE file_id=?1", [&id], |r| r.get::<_, Option<String>>(0)).optional().map_err(db)?.flatten(),
+            }
+        } else { None };
+        tx.execute("INSERT INTO shares(file_id,token,created_at,expires_at,custom_slug,share_type,engine,entry,key_config) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(file_id) DO UPDATE SET token=excluded.token,created_at=excluded.created_at,expires_at=excluded.expires_at,custom_slug=excluded.custom_slug,share_type=excluded.share_type,engine=excluded.engine,entry=excluded.entry,key_config=excluded.key_config",
+            params![id,token,now.to_rfc3339(),expires_at.map(|t|t.to_rfc3339()),custom_slug,kind,engine,entry,key_config]).map_err(db)?;
         tx.commit().map_err(db)?;
-        decode(&base,token,now.to_rfc3339(),expires_at.map(|t|t.to_rfc3339()),custom_slug,(kind,engine,entry))
+        decode(&base,token,now.to_rfc3339(),expires_at.map(|t|t.to_rfc3339()),custom_slug,(kind,engine,entry,key_config))
     }).await?;
     Ok((http::StatusCode::CREATED, Json(status)))
 }
@@ -180,8 +205,8 @@ async fn list(
     }
     let base = state.config.base_url.clone();
     state.db.call_api(move |c| {
-        let mut q=c.prepare("SELECT f.id,f.name,s.token,s.created_at,s.expires_at,s.custom_slug,s.share_type,s.engine,s.entry FROM shares s CROSS JOIN files f ON f.id=s.file_id WHERE f.deleted_at IS NULL AND f.status='ready' ORDER BY s.created_at DESC,s.file_id LIMIT 200 OFFSET ?1").map_err(db)?;
-        let rows=q.query_map([page.offset],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,(r.get(6)?,r.get(7)?,r.get(8)?)))).map_err(db)?;
+        let mut q=c.prepare("SELECT f.id,f.name,s.token,s.created_at,s.expires_at,s.custom_slug,s.share_type,s.engine,s.entry,s.key_config FROM shares s CROSS JOIN files f ON f.id=s.file_id WHERE f.deleted_at IS NULL AND f.status='ready' ORDER BY s.created_at DESC,s.file_id LIMIT 200 OFFSET ?1").map_err(db)?;
+        let rows=q.query_map([page.offset],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,(r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))).map_err(db)?;
         rows.map(|r| {let(id,name,t,c,e,s,g)=r.map_err(db)?; Ok(ShareEntry {file_id:id,name,status:decode(&base,t,c,e,s,g)?})}).collect::<Result<Vec<_>,ApiError>>()
     }).await.map(Json)
 }

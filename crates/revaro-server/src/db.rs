@@ -152,6 +152,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "020_siglus_engine.sql",
         sql: include_str!("../migrations/020_siglus_engine.sql"),
     },
+    Migration {
+        version: 21,
+        name: "021_siglus_key_config.sql",
+        sql: include_str!("../migrations/021_siglus_key_config.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

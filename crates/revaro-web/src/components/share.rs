@@ -24,6 +24,7 @@ pub fn ShareDialog(
     share_type: RwSignal<String>,
     engine: RwSignal<String>,
     entry: RwSignal<String>,
+    key_config: RwSignal<String>,
     busy: RwSignal<bool>,
     error: RwSignal<String>,
     copied: RwSignal<bool>,
@@ -164,6 +165,17 @@ pub fn ShareDialog(
                     </Show>
                     <Show when=move || !entries_error.get().is_empty()>
                         <p class="form-error">{move || entries_error.get()} <button type="button" on:click=move |_| load_entries.run(())>"重新读取"</button></p>
+                    </Show>
+                    <Show when=move || engine.get() == "siglus">
+                        <details class="share-description">
+                            <summary>"游戏配置（可选）"</summary>
+                            <label>"key.toml"
+                                <textarea aria-label="Siglus key.toml" rows="4" maxlength="16384"
+                                    placeholder="需要专用配置的游戏可粘贴 key.toml；ZIP 内已有则无需填写。"
+                                    prop:value=move || key_config.get() prop:disabled=move || busy.get()
+                                    on:input=move |e| key_config.set(event_target_value(&e)) />
+                            </label>
+                        </details>
                     </Show>
                     <p class="share-slug-help">"点击入口展开选项，选中后自动收起。其余资源会一同按需加载，存档保存在浏览器。"</p>
                 </Show>

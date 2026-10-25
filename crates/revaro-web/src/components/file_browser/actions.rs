@@ -28,6 +28,7 @@ pub(super) struct FileActionContext {
     pub share_type: RwSignal<String>,
     pub share_engine: RwSignal<String>,
     pub share_entry: RwSignal<String>,
+    pub share_key_config: RwSignal<String>,
     pub share_busy: RwSignal<bool>,
     pub share_error: RwSignal<String>,
     pub share_copied: RwSignal<bool>,
@@ -64,6 +65,7 @@ impl FileActionContext {
             share_type,
             share_engine,
             share_entry,
+            share_key_config,
             share_busy,
             share_error,
             share_copied,
@@ -165,6 +167,7 @@ impl FileActionContext {
                                     share_type.get_untracked(),
                                     share_engine.get_untracked(),
                                     share_entry.get_untracked(),
+                                    share_key_config.get_untracked(),
                                 )
                                 .await;
                                 if !share_is_current() {
@@ -185,6 +188,7 @@ impl FileActionContext {
                                             status.engine.unwrap_or_else(|| "kirikiri2".to_owned()),
                                         );
                                         share_entry.set(status.entry.unwrap_or_default());
+                                        share_key_config.set(status.key_config.unwrap_or_default());
                                         share_custom_slug
                                             .set(status.custom_slug.unwrap_or_default());
                                         share_active.set(status.active);

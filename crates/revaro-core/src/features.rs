@@ -13,6 +13,8 @@ pub struct ShareRequest {
     pub engine: Option<String>,
     /// XP3 path relative to the game root (after a common ZIP directory is stripped).
     pub entry: Option<String>,
+    /// Optional per-game Siglus key.toml text, provided by the administrator.
+    pub key_config: Option<String>,
     /// None creates a permanent link; otherwise seconds from issuance (1..=365 days).
     pub expires_in_seconds: Option<i64>,
     /// Optional URL suffix after `/s/`; an empty value creates a random link.

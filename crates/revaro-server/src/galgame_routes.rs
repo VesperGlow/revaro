@@ -58,6 +58,7 @@ struct Game {
     file: File,
     engine: String,
     entry: String,
+    key_config: Option<String>,
 }
 
 async fn lookup(state: &AppState, token: &str) -> Result<Game, ApiError> {
@@ -66,16 +67,16 @@ async fn lookup(state: &AppState, token: &str) -> Result<Game, ApiError> {
     }
     let token = token.to_owned();
     state.db.call_api(move |c| {
-        let row: Option<(String, String, String)> = c.query_row(
-            "SELECT file_id,engine,entry FROM shares WHERE token=?1 AND share_type='galgame' AND engine IN ('kirikiri2','siglus') AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))",
-            [token], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()
+        let row: Option<(String, String, String, Option<String>)> = c.query_row(
+            "SELECT file_id,engine,entry,key_config FROM shares WHERE token=?1 AND share_type='galgame' AND engine IN ('kirikiri2','siglus') AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))",
+            [token], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()
             .map_err(|_| ApiError::internal("game share query failed"))?;
-        let (id, engine, entry) = row.ok_or_else(|| ApiError::not_found("game share not found"))?;
+        let (id, engine, entry, key_config) = row.ok_or_else(|| ApiError::not_found("game share not found"))?;
         let file = crate::file_routes::lookup_file(c, &id).map_err(|_| ApiError::not_found("game share not found"))?;
         if file.kind != revaro_core::model::FileKind::File || file.status != revaro_core::model::FileStatus::Ready {
             return Err(ApiError::not_found("game share not found"));
         }
-        Ok(Game { file, engine, entry })
+        Ok(Game { file, engine, entry, key_config })
     }).await
 }
 
@@ -105,7 +106,7 @@ async fn manifest(
         format!("{}:{}", game.file.id, game.file.object_key).as_bytes(),
     );
     Ok(Json(serde_json::json!({
-        "engine": game.engine, "entry": game.entry, "name": game.file.name,
+        "engine": game.engine, "entry": game.entry, "name": game.file.name, "key_config": game.key_config,
         "archive": format!("/g/{token}/archive"), "save_space": format!("revaro-{space}")
     })))
 }
@@ -127,6 +128,7 @@ async fn index(
         "name": game.file.name,
         "save_space": format!("revaro-{}", revaro_core::keys::sha256_hex(format!("{}:{}", game.file.id, game.file.object_key).as_bytes())),
         "entries": entries,
+        "key_config": game.key_config,
     })))
 }
 
@@ -491,6 +493,135 @@ mod tests {
                 .await
                 .headers()
                 .contains_key("cross-origin-opener-policy")
+        );
+    }
+
+    #[tokio::test]
+    async fn siglus_config_survives_link_rotation_and_clears_explicitly() {
+        let state = setup().await;
+        let cookie = Some("revaro_session=game-test-session");
+        let configuration = "key = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]";
+        let input = serde_json::json!({"share_type":"galgame","engine":"siglus","entry":"scene.chs","custom_slug":"siglus-config","key_config":configuration});
+        let created = request(
+            &state,
+            "POST",
+            "/api/files/game1/share",
+            Some(input),
+            cookie,
+            None,
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(json(created).await["key_config"], configuration);
+        assert_eq!(
+            json(request(&state, "GET", "/g/siglus-config/manifest", None, None, None).await).await
+                ["key_config"],
+            configuration
+        );
+        assert_eq!(
+            json(request(&state, "GET", "/api/files/game1/share", None, cookie, None).await).await
+                ["key_config"],
+            configuration
+        );
+        let shares = json(request(&state, "GET", "/api/shares", None, cookie, None).await).await;
+        assert_eq!(shares[0]["key_config"], configuration);
+
+        // Older clients may rotate a link without sending the new optional field.
+        let rotate = serde_json::json!({"share_type":"galgame","engine":"siglus","entry":"scene.chs","custom_slug":"siglus-renewed"});
+        assert_eq!(
+            request(
+                &state,
+                "POST",
+                "/api/files/game1/share",
+                Some(rotate.clone()),
+                cookie,
+                None
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            request(&state, "GET", "/g/siglus-config/manifest", None, None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            json(
+                request(
+                    &state,
+                    "GET",
+                    "/g/siglus-renewed/manifest",
+                    None,
+                    None,
+                    None
+                )
+                .await
+            )
+            .await["key_config"],
+            configuration
+        );
+        let mut clear = rotate.clone();
+        clear["key_config"] = serde_json::json!("");
+        assert_eq!(
+            request(
+                &state,
+                "POST",
+                "/api/files/game1/share",
+                Some(clear),
+                cookie,
+                None
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        assert!(
+            json(
+                request(
+                    &state,
+                    "GET",
+                    "/g/siglus-renewed/manifest",
+                    None,
+                    None,
+                    None
+                )
+                .await
+            )
+            .await["key_config"]
+                .is_null()
+        );
+        for invalid in ["x".repeat(16385), "bad\0config".to_owned()] {
+            let mut input = rotate.clone();
+            input["key_config"] = serde_json::json!(invalid);
+            assert_eq!(
+                request(
+                    &state,
+                    "POST",
+                    "/api/files/game1/share",
+                    Some(input),
+                    cookie,
+                    None
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let wrong_engine = serde_json::json!({"share_type":"galgame","engine":"kirikiri2","entry":"data.xp3","key_config":configuration});
+        assert_eq!(
+            request(
+                &state,
+                "POST",
+                "/api/files/game1/share",
+                Some(wrong_engine),
+                cookie,
+                None
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
         );
     }
 

@@ -378,6 +378,8 @@ pub struct ShareStatus {
     pub engine: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_config: Option<String>,
     /// Custom URL suffix after `/s/`, absent for random links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_slug: Option<String>,
