@@ -69,6 +69,8 @@ test('the first canvas gesture resumes autoplay-blocked audio without a launch t
     class FakeAudioContext extends EventTarget {
       state = 'suspended'
       async resume() { this.state = 'running'; this.dispatchEvent(new Event('statechange')) }
+      async suspend() { this.state = 'suspended'; this.dispatchEvent(new Event('statechange')) }
+      async close() { this.state = 'closed'; this.dispatchEvent(new Event('statechange')) }
     }
     Object.defineProperty(window, 'AudioContext', { writable: true, configurable: true, value: FakeAudioContext })
   })
@@ -82,4 +84,54 @@ test('the first canvas gesture resumes autoplay-blocked audio without a launch t
   await expect(page.locator('#audio-hint')).toBeHidden()
   expect(await page.evaluate(() => (window as any).__context.state)).toBe('running')
   await expect(page.locator('#bar, #start')).toHaveCount(0)
+})
+
+test('retired audio contexts do not cover a playing game with a failure overlay', async ({ page }) => {
+  await page.addInitScript(() => {
+    class StrictAudioContext extends EventTarget {
+      state = 'running'
+      resume() { return this.state === 'closed' ? Promise.reject(new DOMException('AudioContext is closed.', 'InvalidStateError')) : Promise.resolve() }
+      suspend() { return this.resume() }
+      close() {
+        if (this.state === 'closed') return Promise.reject(new DOMException('AudioContext is closed.', 'InvalidStateError'))
+        this.state = 'closed'
+        this.dispatchEvent(new Event('statechange'))
+        return Promise.resolve()
+      }
+    }
+    Object.defineProperty(window, 'AudioContext', { writable: true, configurable: true, value: StrictAudioContext })
+  })
+  await player(page, { engine: `
+    export default async function init() {}
+    export async function start_siglus_from_directory() {
+      const probe = new AudioContext();
+      await probe.close();
+      await probe.close();
+      await probe.resume();
+      window.__liveAudio = new AudioContext();
+      const ctx = document.getElementById('siglus-canvas').getContext('2d');
+      ctx.fillStyle = 'green'; ctx.fillRect(0, 0, 100, 100);
+      // Model a late event from a stream that was retired by CPAL.
+      setTimeout(() => Promise.reject(new DOMException('AudioContext is closed.', 'InvalidStateError')), 0);
+      window.__siglusStarted = true;
+    }
+  ` })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/g/siglus-check?profile=original')
+  await expect.poll(() => page.evaluate(() => (window as any).__siglusStarted)).toBe(true)
+  await expect.poll(() => page.evaluate(() => (window as any).siglusProbe.phase)).toBe('running')
+  await page.waitForTimeout(100)
+  await expect(page.getByRole('alert')).toBeHidden()
+  expect(await page.evaluate(() => (window as any).__liveAudio.state)).toBe('running')
+  expect(errors).toEqual([])
+  // Without a replacement stream, a closed-context error is a real failure.
+  await page.evaluate(async () => {
+    await (window as any).__liveAudio.close()
+    void Promise.reject(new DOMException('AudioContext is closed.', 'InvalidStateError'))
+  })
+  await expect(page.getByRole('alert')).toContainText('AudioContext is closed.')
+  // An unrelated runtime failure must remain visible.
+  await page.evaluate(() => { void Promise.reject(new Error('actual VM failure')) })
+  await expect(page.getByRole('alert')).toContainText('actual VM failure')
 })

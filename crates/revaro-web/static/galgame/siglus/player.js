@@ -18,11 +18,37 @@ let engineError = '';
 // Browsers suspend automatically created audio contexts until the first gesture.
 // Resume them on the game canvas; no separate launch button is needed.
 const audioContexts = new Set();
+let disposedAudioContexts = 0;
 const NativeAudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
 if (NativeAudioContext) {
     const TrackedAudioContext = new Proxy(NativeAudioContext, {
         construct(Target, args) {
             const context = Reflect.construct(Target, args);
+            // CPAL can retire probe streams with resume/close promises still
+            // pending. Closing twice and resuming a retired stream must not
+            // become unhandled rejections on stricter WebAudio implementations.
+            const nativeClose = context.close.bind(context);
+            let closing;
+            context.close = () => {
+                if (closing) return closing;
+                disposedAudioContexts++;
+                if (context.state === 'closed') return Promise.resolve();
+                closing = nativeClose().catch(reason => {
+                    if (context.state === 'closed' && isClosedAudioError(reason)) return;
+                    throw reason;
+                });
+                return closing;
+            };
+            for (const method of ['resume', 'suspend']) {
+                const original = context[method].bind(context);
+                context[method] = () => {
+                    if (closing || context.state === 'closed') return Promise.resolve();
+                    return original().catch(reason => {
+                        if ((closing || context.state === 'closed') && isClosedAudioError(reason)) return;
+                        throw reason;
+                    });
+                };
+            }
             audioContexts.add(context);
             context.addEventListener('statechange', updateAudioHint);
             updateAudioHint();
@@ -65,8 +91,24 @@ console.error = (...args) => {
         fail(message);
     }
 };
-window.addEventListener('error', event => fail(event.error || event.message));
-window.addEventListener('unhandledrejection', event => fail(event.reason));
+function isClosedAudioError(reason) {
+    const message = reason?.message || String(reason);
+    return /^(?:AudioContext is closed\.?|Cannot (?:close|resume|suspend) a closed AudioContext\.?)$/i.test(message);
+}
+function reportBrowserError(event, reason) {
+    // A retired CPAL probe can report its disposal after another stream is
+    // already playing. That lifecycle notification does not stop the VM.
+    // Actual host/panic/import failures still go through fail unconditionally.
+    if (isClosedAudioError(reason) && disposedAudioContexts > 0
+        && Array.from(audioContexts).some(context => context.state !== 'closed')) {
+        event.preventDefault();
+        console.warn('Ignored a retired audio context notification:', reason?.message || reason);
+        return;
+    }
+    fail(reason);
+}
+window.addEventListener('error', event => reportBrowserError(event, event.error || event.message));
+window.addEventListener('unhandledrejection', event => reportBrowserError(event, event.reason));
 
 function norm(path) {
     path = String(path).replaceAll('\\', '/');
