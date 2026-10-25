@@ -22,6 +22,7 @@ pub fn ShareDialog(
     expiry: RwSignal<String>,
     custom_slug: RwSignal<String>,
     share_type: RwSignal<String>,
+    engine: RwSignal<String>,
     entry: RwSignal<String>,
     busy: RwSignal<bool>,
     error: RwSignal<String>,
@@ -37,6 +38,7 @@ pub fn ShareDialog(
     let entries_loaded = RwSignal::new(false);
     let entries_busy = RwSignal::new(false);
     let entries_error = RwSignal::new(String::new());
+    let engines = RwSignal::new(Vec::<String>::new());
     let load_entries = Callback::new(move |(): ()| {
         if entries_busy.get_untracked() {
             return;
@@ -52,6 +54,16 @@ pub fn ShareDialog(
             }
             match result {
                 Ok(found) => {
+                    if !found.engines.contains(&engine.get_untracked()) {
+                        engine.set(
+                            found
+                                .engines
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "kirikiri2".to_owned()),
+                        );
+                    }
+                    engines.set(found.engines);
                     if !found.entries.contains(&entry.get_untracked()) {
                         entry.set(if found.entries.len() == 1 {
                             found.entries[0].clone()
@@ -77,6 +89,7 @@ pub fn ShareDialog(
             || (share_type.get() == "galgame"
                 && (entries_busy.get()
                     || !entries_error.get().is_empty()
+                    || engine.get().is_empty()
                     || !entries.get().contains(&entry.get())))
     };
     let file_name = file.name;
@@ -110,7 +123,17 @@ pub fn ShareDialog(
                     </select>
                 </label>
                 <Show when=move || share_type.get() == "galgame">
-                    <label class="share-description">"游戏引擎 "<select aria-label="游戏引擎" disabled><option>"Kirikiri2"</option></select></label>
+                    <label class="share-description">"游戏引擎 "
+                        <select aria-label="游戏引擎" prop:value=move || engine.get() prop:disabled=move || busy.get() on:change=move |e| {
+                            let value = event_target_value(&e);
+                            engine.set(value.clone());
+                            let valid = if value == "siglus" { matches!(entry.get_untracked().to_ascii_lowercase().as_str(), "scene.pck" | "scene.chs") } else { entry.get_untracked().to_ascii_lowercase().ends_with(".xp3") };
+                            if !valid { entry.set(entries.get_untracked().iter().find(|path| if value == "siglus" { matches!(path.to_ascii_lowercase().as_str(), "scene.pck" | "scene.chs") } else { path.to_ascii_lowercase().ends_with(".xp3") }).cloned().unwrap_or_default()); }
+                        }>
+                            <option value="kirikiri2" prop:disabled=move || !engines.get().iter().any(|v| v == "kirikiri2")>"Kirikiri2"</option>
+                            <option value="siglus" prop:disabled=move || !engines.get().iter().any(|v| v == "siglus")>"SiglusEngine"</option>
+                        </select>
+                    </label>
                     <div class="share-entry-picker">
                         <span>"入口文件"</span>
                         <ActionMenu label="入口文件".to_owned() icon=MenuIcon::Link
@@ -118,7 +141,13 @@ pub fn ShareDialog(
                             text=Signal::derive(move || if entries_busy.get() { "正在读取 ZIP 目录…".to_owned() } else if entry.get().is_empty() { "请选择启动入口".to_owned() } else { entry.get() })
                             panel_class="share-entry-options".to_owned() viewport_bound=true>
                             <div role="listbox" aria-label="游戏入口列表">
-                                {move || entries.get().into_iter().map(|path| {
+                                {move || entries.get().into_iter().filter(|path| {
+                                    if engine.get() == "siglus" {
+                                        matches!(path.to_ascii_lowercase().as_str(), "scene.pck" | "scene.chs")
+                                    } else {
+                                        path.to_ascii_lowercase().ends_with(".xp3")
+                                    }
+                                }).map(|path| {
                                     let selected_path = path.clone();
                                     let value = path.clone();
                                     view! {
@@ -131,7 +160,7 @@ pub fn ShareDialog(
                         </ActionMenu>
                     </div>
                     <Show when=move || !entries_busy.get() && entries_loaded.get() && entries.get().is_empty() && entries_error.get().is_empty()>
-                        <p class="form-error">"ZIP 中没有找到 XP3 文件，请上传完整的 Kirikiri2 游戏资源。"</p>
+                        <p class="form-error">"ZIP 中没有找到可识别的 Kirikiri2 或 SiglusEngine 游戏资源。"</p>
                     </Show>
                     <Show when=move || !entries_error.get().is_empty()>
                         <p class="form-error">{move || entries_error.get()} <button type="button" on:click=move |_| load_entries.run(())>"重新读取"</button></p>

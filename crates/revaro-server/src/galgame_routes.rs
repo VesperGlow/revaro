@@ -1,4 +1,4 @@
-//! Same-origin Kirikiri player and per-request authorized, streaming ZIP reads.
+//! Same-origin game players and per-request authorized, streaming ZIP reads.
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -17,6 +17,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/g/{token}", get(player))
         .route("/g/{token}/", get(player))
         .route("/g/{token}/manifest", get(manifest))
+        .route("/g/{token}/index", get(index))
         .route("/g/{token}/archive", get(archive))
         .route(
             "/g/{token}/{*unknown}",
@@ -26,17 +27,28 @@ pub fn routes() -> Router<Arc<AppState>> {
         .layer(axum::middleware::from_fn(isolation))
 }
 
-pub(crate) fn validate_entry(entry: &str) -> Result<(), ApiError> {
+#[cfg(test)]
+fn validate_entry(entry: &str) -> Result<(), ApiError> {
+    validate_entry_for_engine("kirikiri2", entry)
+}
+
+pub(crate) fn validate_entry_for_engine(engine: &str, entry: &str) -> Result<(), ApiError> {
     if entry.len() > 512
         || entry.contains(['\\', ':', '\0', '?', '#'])
         || entry.chars().any(char::is_control)
         || entry
             .split('/')
             .any(|s| s.is_empty() || s == "." || s == "..")
-        || !entry.to_ascii_lowercase().ends_with(".xp3")
+        || (engine == "kirikiri2" && !entry.to_ascii_lowercase().ends_with(".xp3"))
+        || (engine == "siglus"
+            && !matches!(
+                entry.to_ascii_lowercase().as_str(),
+                "scene.pck" | "scene.chs"
+            ))
+        || !matches!(engine, "kirikiri2" | "siglus")
     {
         return Err(ApiError::bad_request(
-            "entry must be a relative XP3 path inside the game ZIP",
+            "entry must be a valid relative game path inside the game ZIP",
         ));
     }
     Ok(())
@@ -44,6 +56,7 @@ pub(crate) fn validate_entry(entry: &str) -> Result<(), ApiError> {
 
 struct Game {
     file: File,
+    engine: String,
     entry: String,
 }
 
@@ -53,16 +66,16 @@ async fn lookup(state: &AppState, token: &str) -> Result<Game, ApiError> {
     }
     let token = token.to_owned();
     state.db.call_api(move |c| {
-        let row: Option<(String, String)> = c.query_row(
-            "SELECT file_id,entry FROM shares WHERE token=?1 AND share_type='galgame' AND engine='kirikiri2' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))",
-            [token], |r| Ok((r.get(0)?, r.get(1)?))).optional()
+        let row: Option<(String, String, String)> = c.query_row(
+            "SELECT file_id,engine,entry FROM shares WHERE token=?1 AND share_type='galgame' AND engine IN ('kirikiri2','siglus') AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))",
+            [token], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()
             .map_err(|_| ApiError::internal("game share query failed"))?;
-        let (id, entry) = row.ok_or_else(|| ApiError::not_found("game share not found"))?;
+        let (id, engine, entry) = row.ok_or_else(|| ApiError::not_found("game share not found"))?;
         let file = crate::file_routes::lookup_file(c, &id).map_err(|_| ApiError::not_found("game share not found"))?;
         if file.kind != revaro_core::model::FileKind::File || file.status != revaro_core::model::FileStatus::Ready {
             return Err(ApiError::not_found("game share not found"));
         }
-        Ok(Game { file, entry })
+        Ok(Game { file, engine, entry })
     }).await
 }
 
@@ -72,8 +85,14 @@ async fn player(
     method: Method,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    lookup(&state, &token).await?;
-    static_response(state, "kirikiri2/index.html", method, headers).await
+    let game = lookup(&state, &token).await?;
+    static_response(
+        state,
+        &format!("{}/index.html", game.engine),
+        method,
+        headers,
+    )
+    .await
 }
 
 async fn manifest(
@@ -86,8 +105,28 @@ async fn manifest(
         format!("{}:{}", game.file.id, game.file.object_key).as_bytes(),
     );
     Ok(Json(serde_json::json!({
-        "engine": "kirikiri2", "entry": game.entry, "name": game.file.name,
+        "engine": game.engine, "entry": game.entry, "name": game.file.name,
         "archive": format!("/g/{token}/archive"), "save_space": format!("revaro-{space}")
+    })))
+}
+
+async fn index(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let game = lookup(&state, &token).await?;
+    if game.engine != "siglus" {
+        return Err(ApiError::not_found(
+            "game index is only available for Siglus shares",
+        ));
+    }
+    let entries = crate::game_entries::archive_index(&state, &game.file).await?;
+    Ok(Json(serde_json::json!({
+        "engine": game.engine,
+        "entry": game.entry,
+        "name": game.file.name,
+        "save_space": format!("revaro-{}", revaro_core::keys::sha256_hex(format!("{}:{}", game.file.id, game.file.object_key).as_bytes())),
+        "entries": entries,
     })))
 }
 
@@ -161,13 +200,22 @@ async fn static_response(
             | "kirikiri2/jszip.min.js"
             | "kirikiri2/ENGINE-LICENSE.txt"
             | "kirikiri2/SOURCE.md"
+            | "siglus/index.html"
+            | "siglus/player.js"
+            | "siglus/fflate.js"
+            | "siglus/FFLATE-LICENSE.txt"
+            | "siglus/ENGINE-LICENSE.txt"
+            | "siglus/pkg/game_launcher.js"
+            | "siglus/pkg/game_launcher_bg.wasm"
+            | "siglus/pkg/SOURCE_REVISION"
+            | "siglus/pkg/SHA256SUMS"
     ) {
         return Err(ApiError::not_found("player asset not found"));
     }
     let path = state.config.web_dir.join("galgame").join(asset);
     if !tokio::fs::metadata(path).await.is_ok_and(|m| m.is_file()) {
         return Err(ApiError::unavailable(
-            "Kirikiri player unavailable; install the player assets and rebuild web",
+            "Galgame player unavailable; install the player assets and rebuild web",
         ));
     }
     let uri = format!("/galgame/{asset}")
@@ -480,6 +528,21 @@ mod tests {
                 StatusCode::BAD_REQUEST
             );
         }
+        let siglus = request(
+            &state,
+            "POST",
+            "/api/files/game1/share",
+            Some(serde_json::json!({"share_type":"galgame","engine":"siglus","entry":"Scene.pck","custom_slug":"siglus"})),
+            Some("revaro_session=game-test-session"),
+            None,
+        ).await;
+        assert_eq!(siglus.status(), StatusCode::CREATED);
+        let siglus_status = json(siglus).await;
+        assert_eq!(siglus_status["engine"], "siglus");
+        assert_eq!(
+            json(request(&state, "GET", "/g/siglus/manifest", None, None, None).await).await["engine"],
+            "siglus"
+        );
         assert_eq!(request(&state,"POST","/api/files/game1/share",Some(serde_json::json!({"share_type":"galgame","engine":"kirikiri2","entry":"data.xp3"})),None,None).await.status(),StatusCode::UNAUTHORIZED);
         assert_eq!(
             request(

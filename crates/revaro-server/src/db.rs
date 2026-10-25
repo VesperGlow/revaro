@@ -147,6 +147,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "019_remove_game_passwords.sql",
         sql: include_str!("../migrations/019_remove_game_passwords.sql"),
     },
+    Migration {
+        version: 20,
+        name: "020_siglus_engine.sql",
+        sql: include_str!("../migrations/020_siglus_engine.sql"),
+    },
 ];
 
 /// Failure modes of opening, migrating or querying the database.

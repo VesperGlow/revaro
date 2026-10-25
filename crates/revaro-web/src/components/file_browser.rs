@@ -230,6 +230,7 @@ pub fn FileBrowser(
     let share_expiry = RwSignal::new("604800".to_owned());
     let share_custom_slug = RwSignal::new(String::new());
     let share_type = RwSignal::new("file".to_owned());
+    let share_engine = RwSignal::new("kirikiri2".to_owned());
     let share_entry = RwSignal::new(String::new());
     let share_busy = RwSignal::new(false);
     let share_error = RwSignal::new(String::new());
@@ -501,6 +502,7 @@ pub fn FileBrowser(
             share_url.set(String::new());
             share_custom_slug.set(String::new());
             share_type.set("file".to_owned());
+            share_engine.set("kirikiri2".to_owned());
             share_entry.set(String::new());
             share_created_at.set(String::new());
             share_error.set(String::new());
@@ -569,6 +571,7 @@ pub fn FileBrowser(
                         .filter(|v| *v > 0),
                     share_custom_slug.get_untracked(),
                     share_type.get_untracked(),
+                    share_engine.get_untracked(),
                     share_entry.get_untracked(),
                 )
                 .await;
@@ -586,6 +589,7 @@ pub fn FileBrowser(
                                 .unwrap_or_default(),
                         );
                         share_type.set(status.share_type.unwrap_or_else(|| "file".to_owned()));
+                        share_engine.set(status.engine.unwrap_or_else(|| "kirikiri2".to_owned()));
                         share_entry.set(status.entry.unwrap_or_default());
                         share_custom_slug.set(status.custom_slug.unwrap_or_default());
                         share_active.set(status.active);
@@ -751,6 +755,7 @@ pub fn FileBrowser(
         share_expiry,
         share_custom_slug,
         share_type,
+        share_engine,
         share_entry,
         share_busy,
         share_error,
@@ -1854,6 +1859,7 @@ pub fn FileBrowser(
                                     expires_at=share_expires_at
                                     custom_slug=share_custom_slug
                                     share_type=share_type
+                                    engine=share_engine
                                     entry=share_entry
                                     expiry=share_expiry
                                     busy=share_busy

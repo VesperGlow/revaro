@@ -19,10 +19,12 @@ pub struct ShareRequest {
     pub custom_slug: Option<String>,
 }
 
-/// XP3 paths read from the uploaded ZIP directory, relative to the player root.
+/// Startable paths and detected engines read from an uploaded game ZIP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameEntries {
     pub entries: Vec<String>,
+    #[serde(default)]
+    pub engines: Vec<String>,
 }
 
 /// Validate a share suffix, excluding reserved application route names.

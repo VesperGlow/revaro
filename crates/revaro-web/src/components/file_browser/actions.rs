@@ -26,6 +26,7 @@ pub(super) struct FileActionContext {
     pub share_expiry: RwSignal<String>,
     pub share_custom_slug: RwSignal<String>,
     pub share_type: RwSignal<String>,
+    pub share_engine: RwSignal<String>,
     pub share_entry: RwSignal<String>,
     pub share_busy: RwSignal<bool>,
     pub share_error: RwSignal<String>,
@@ -61,6 +62,7 @@ impl FileActionContext {
             share_expiry,
             share_custom_slug,
             share_type,
+            share_engine,
             share_entry,
             share_busy,
             share_error,
@@ -161,6 +163,7 @@ impl FileActionContext {
                                         .filter(|v| *v > 0),
                                     share_custom_slug.get_untracked(),
                                     share_type.get_untracked(),
+                                    share_engine.get_untracked(),
                                     share_entry.get_untracked(),
                                 )
                                 .await;
@@ -177,6 +180,9 @@ impl FileActionContext {
                                         );
                                         share_type.set(
                                             status.share_type.unwrap_or_else(|| "file".to_owned()),
+                                        );
+                                        share_engine.set(
+                                            status.engine.unwrap_or_else(|| "kirikiri2".to_owned()),
                                         );
                                         share_entry.set(status.entry.unwrap_or_default());
                                         share_custom_slug

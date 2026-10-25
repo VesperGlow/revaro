@@ -86,15 +86,17 @@ async fn create(
     }
     let is_game = kind == "galgame";
     let (engine, entry) = if is_game {
-        if input.engine.as_deref() != Some("kirikiri2") {
-            return Err(ApiError::bad_request("only kirikiri2 is supported"));
-        }
+        let engine = input
+            .engine
+            .as_deref()
+            .filter(|engine| matches!(*engine, "kirikiri2" | "siglus"))
+            .ok_or_else(|| ApiError::bad_request("unsupported Galgame engine"))?;
         let entry = input
             .entry
             .filter(|v| !v.is_empty())
             .ok_or_else(|| ApiError::bad_request("XP3 entry is required"))?;
-        crate::galgame_routes::validate_entry(&entry)?;
-        (Some("kirikiri2".to_owned()), Some(entry))
+        crate::galgame_routes::validate_entry_for_engine(engine, &entry)?;
+        (Some(engine.to_owned()), Some(entry))
     } else {
         if input.engine.is_some() || input.entry.is_some() {
             return Err(ApiError::bad_request(

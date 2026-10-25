@@ -1,6 +1,6 @@
 # Siglus 本地兼容性适配
 
-这是 `/g/` 接入前的独立浏览器原型，尚未加入 Revaro 的引擎选项，也未部署到线上。现有 Kirikiri 播放器和普通分享没有使用这里的补丁。
+这是最初用于验证兼容性的独立浏览器原型；运行时已整理进 Revaro 的 SiglusEngine `/g/` 播放器，生产分享通过同源 ZIP Range 和 manifest 复用这里的 VFS 适配。原型中的本地文件夹导入界面仍不属于生产流程。
 
 上游为 [xmoezzz/siglus_rs](https://github.com/xmoezzz/siglus_rs)，固定版本 `5f358ef1360b0439e92aed2b749e8f25d8721954`，许可证为 MPL-2.0。修改保存在 [web-compat.patch](../scripts/siglus/web-compat.patch)，没有包含游戏资源或游戏密钥。
 
@@ -43,7 +43,7 @@ python3 scripts/siglus/serve-preview.py \
 
 ## 原型与限制
 
-本地地址为 `http://localhost:18081/?profile=chinese`。实测资源来自 Downloads 中的 `金色Loveriche.zip`。资源只读；汉化的 `scene.chs`、`gameexe.chs` 和 `.g01` 在浏览器中映射到引擎读取路径，没有重命名或修改 ZIP 内容。该原型配置不能推广为所有汉化补丁的自动识别规则。
+本地原型地址为 `http://localhost:18081/?profile=chinese`。实测资源来自 Downloads 中的 `金色Loveriche.zip`。生产 `/g/` 分享使用同样的 `scene.chs`、`gameexe.chs` 和 `.g01` 路径映射，资源只读，不重命名或修改 ZIP 内容。该配置不能推广为所有汉化补丁的自动识别规则。
 
 ZIP 服务使用受控 HEAD、Range/206 文件读取，不在服务器解压或缓存游戏。浏览器按 ZIP 条目读取、解压并检查 CRC，资源 LRU 上限为 64 MiB；存档沿用原型既有的游戏与语言配置命名空间，排除 ZIP 内携带的 Windows 存档。
 

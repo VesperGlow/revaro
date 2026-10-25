@@ -1,6 +1,6 @@
-# Galgame 网页分享（Kirikiri2）
+# Galgame 网页分享（Kirikiri2 / SiglusEngine）
 
-上传包含全部游戏资源的 ZIP，在文件的「分享」中选择「Galgame 分享（完整 ZIP）」。程序读取 ZIP 目录并列出 XP3，用户点击入口展开选项，选中后自动收起，不必输入或猜文件名。只有一个候选时自动选中；多个候选时等待用户选择，已有分享保留原入口。XP3 列表不代表每个资源包都能独立启动，也不自动判断汉化、原版或补丁版本。本机《纸上魔法使》的汉化入口为 `dtcn.xp3`。
+上传包含全部游戏资源的 ZIP，在文件的「分享」中选择「Galgame 分享（完整 ZIP）」。程序读取 ZIP 目录并检测 Kirikiri2 的 XP3 或 SiglusEngine 的 `Scene.pck` / `scene.chs` 入口，用户点击入口展开选项，选中后自动收起，不必输入或猜文件名。只有一个候选时自动选中；多个候选时等待用户选择，已有分享保留原入口。入口列表不代表每个资源包都能独立启动，也不自动判断汉化、原版或补丁版本。本机《纸上魔法使》的汉化入口为 `dtcn.xp3`；SiglusEngine 汉化包通常选择 `scene.chs`。
 
 自定义地址显示为固定的站点前缀与独立后缀输入框；只有后缀带输入边框，留空生成随机链接。后缀支持 1–64 位英文字母、数字、`-`、`_`，区分大小写。
 
@@ -8,7 +8,7 @@
 
 ## 部署与迁移
 
-执行 `cargo xtask web-build`、`cargo build -p revaro-server --release`，部署完整 `dist/web/galgame/`，将 `APP_WEB_DIR` 指向构建后的目录。需要匹配的 `wasm-bindgen-cli 0.2.128`。播放器、WASM、字体和 JSZip 随 Revaro 发布，不依赖 CDN、独立游戏服务器或每游戏域名。
+执行 `cargo xtask web-build`、`cargo build -p revaro-server --release`，部署完整 `dist/web/galgame/`，将 `APP_WEB_DIR` 指向构建后的目录。需要匹配的 `wasm-bindgen-cli 0.2.128`。Kirikiri2 和 SiglusEngine 播放器、WASM、字体和 JSZip 随 Revaro 发布，不依赖 CDN、独立游戏服务器或每游戏域名。
 
 启动自动执行迁移 019，移除原 Galgame 密码字段；原有游戏分享也改为直接访问。管理员管理文件与分享仍需原网盘登录。按原部署流程备份 SQLite 数据库。
 
@@ -31,7 +31,7 @@
 GET /api/files/{file_id}/game-entries
 ```
 
-管理员登录后返回 `{"entries":["data.xp3","dtcn.xp3","sys/bgm.xp3"]}`，仅表示可供选择的 XP3 路径。不会从名称推断哪个版本正确。
+管理员登录后返回 `{"entries":["data.xp3","dtcn.xp3"],"engines":["kirikiri2"]}`，或包含 SiglusEngine 入口及 `siglus`。仅表示可供选择的路径，不会从名称推断哪个版本正确。
 
 ```http
 POST /api/files/{file_id}/share
@@ -49,6 +49,6 @@ Content-Type: application/json
 
 固定 WASM 导出既有滚轮/释放函数、修正 Enter 查找表字节，并移除自动识别文本编码时的两处全局缓存写入。BOM、编码探测顺序和游戏主动指定编码的行为保留，使 GBK 与 Shift-JIS 混用的脚本可逐文件识别。来源、C++ 补丁、许可证、ABI 与可复现适配方法见播放器 `SOURCE.md`、`ENGINE-LICENSE.txt`、`SHA256SUMS.json` 和 `scripts/kirikiri/`。升级引擎需同步适配 ABI。
 
-自定义图层弹窗、复杂嵌套窗口、插件、加密资源及全部音视频兼容性取决于上游。窄屏受游戏原始文字大小限制；移动实机、其他浏览器和完整通关未验收。此前的 Chromium 实际游玩记录不代表所有游戏兼容。
+自定义图层弹窗、复杂嵌套窗口、插件、加密资源及全部音视频兼容性取决于上游。SiglusEngine 使用独立的 `siglus_rs` WASM 播放器，并按 ZIP 条目 Range 读取；汉化资源通过 `scene.chs`、`gameexe.chs` 与 `.g01` 覆盖文件映射到引擎路径。窄屏受游戏原始文字大小限制；移动实机、其他浏览器和完整通关未验收。此前的 Chromium 实际游玩记录不代表所有游戏兼容。
 
 《车轮之国 向日葵的少女》本机所供汉化版本入口为 `akcn.xp3`。实测编码修复后通过原先 `HistoryLayer.tjs` 的字符转换错误，但仍停在游戏自身的光盘检查。Web 引擎尚无光驱卷标查找能力，当前 ZIP 不能认定可玩；未验证其标题、中文剧情、存读档或音视频。

@@ -436,13 +436,14 @@ pub async fn create_share(
     expiry: Option<i64>,
     custom_slug: String,
     share_type: String,
+    engine: String,
     entry: String,
 ) -> Result<ShareStatus, RequestError> {
     let request = api_request(Request::post(&format!("/api/files/{id}/share")))
         .json(&revaro_core::features::ShareRequest {
             expires_in_seconds: expiry,
             custom_slug: (!custom_slug.is_empty()).then_some(custom_slug),
-            engine: (share_type == "galgame").then(|| "kirikiri2".to_owned()),
+            engine: (share_type == "galgame").then_some(engine),
             entry: (share_type == "galgame").then_some(entry),
             share_type: (share_type == "galgame").then_some(share_type),
         })

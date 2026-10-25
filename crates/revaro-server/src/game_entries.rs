@@ -9,6 +9,7 @@ use revaro_core::{
     features::GameEntries,
     model::{FileKind, FileStatus},
 };
+use serde::Serialize;
 use std::{
     io::{Read, Seek, SeekFrom},
     sync::Arc,
@@ -20,6 +21,16 @@ struct DirectoryReader {
     reader: Box<dyn crate::file_access::ReadSeek>,
     runtime: tokio::runtime::Handle,
     remaining: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArchiveEntry {
+    pub path: String,
+    pub size: u64,
+    pub packed: u64,
+    pub offset: u64,
+    pub method: u8,
+    pub crc: u32,
 }
 impl Read for DirectoryReader {
     fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
@@ -160,7 +171,10 @@ pub async fn list(
                 Some(prefix) => name[prefix.len()..].to_owned(),
                 None => name,
             })
-            .filter(|name| crate::galgame_routes::validate_entry(name).is_ok())
+            .filter(|name| {
+                crate::galgame_routes::validate_entry_for_engine("kirikiri2", name).is_ok()
+                    || crate::galgame_routes::validate_entry_for_engine("siglus", name).is_ok()
+            })
             .collect();
         entries.sort_by(|a, b| {
             a.matches('/')
@@ -169,9 +183,114 @@ pub async fn list(
                 .then_with(|| a.cmp(b))
         });
         entries.dedup();
-        Ok::<_, ApiError>(entries)
+        let engines = entries
+            .iter()
+            .flat_map(|entry| {
+                ["kirikiri2", "siglus"].into_iter().filter(move |engine| {
+                    crate::galgame_routes::validate_entry_for_engine(engine, entry).is_ok()
+                })
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        Ok::<_, ApiError>((entries, engines))
     })
     .await
     .map_err(|_| ApiError::internal("读取 ZIP 目录失败"))??;
-    Ok(Json(GameEntries { entries }))
+    Ok(Json(GameEntries {
+        entries: entries.0,
+        engines: entries.1,
+    }))
+}
+
+/// Return the seek metadata needed by the browser Siglus VFS. The archive is
+/// never extracted; each resource is fetched later with one authorized Range.
+pub async fn archive_index(
+    state: &Arc<AppState>,
+    file: &revaro_core::model::File,
+) -> Result<Vec<ArchiveEntry>, ApiError> {
+    let permit = state
+        .zip_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::too_many_requests("正在读取其他 ZIP 目录，请稍后重试"))?;
+    let object = state
+        .files
+        .open(&file.object_key)
+        .await
+        .map_err(|_| ApiError::new(502, "无法读取游戏 ZIP"))?;
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut reader = DirectoryReader {
+            reader: object.reader,
+            runtime,
+            remaining: 8 << 20,
+        };
+        bounded_directory(&mut reader)
+            .map_err(|_| ApiError::bad_request("无法读取 ZIP 目录，归档可能已损坏或目录过大"))?;
+        let mut zip = zip::ZipArchive::new(reader)
+            .map_err(|_| ApiError::bad_request("无法读取 ZIP 目录，归档可能已损坏或目录过大"))?;
+        if zip.len() > 65_536 {
+            return Err(ApiError::bad_request("ZIP 目录条目过多"));
+        }
+        let mut raw = Vec::with_capacity(zip.len());
+        for i in 0..zip.len() {
+            let entry = zip
+                .by_index(i)
+                .map_err(|_| ApiError::bad_request("无法读取 ZIP 文件信息"))?;
+            if entry.is_dir() || entry.is_symlink() {
+                continue;
+            }
+            let name = entry
+                .name()
+                .map_err(|_| ApiError::bad_request("无法读取 ZIP 文件名"))?
+                .replace('\\', "/");
+            if name
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            {
+                return Err(ApiError::bad_request("ZIP 包含非法游戏路径"));
+            }
+            let method = match entry.compression() {
+                zip::CompressionMethod::Stored => 0,
+                zip::CompressionMethod::Deflated => 8,
+                _ => continue,
+            };
+            raw.push((
+                name,
+                ArchiveEntry {
+                    path: String::new(),
+                    size: entry.size(),
+                    packed: entry.compressed_size(),
+                    offset: entry
+                        .data_start()
+                        .ok_or_else(|| ApiError::bad_request("无法读取 ZIP 数据偏移"))?,
+                    method,
+                    crc: entry.crc32(),
+                },
+            ));
+        }
+        let prefix = raw
+            .first()
+            .and_then(|(name, _)| name.split_once('/'))
+            .map(|(top, _)| format!("{top}/"))
+            .filter(|prefix| raw.iter().all(|(name, _)| name.starts_with(prefix)));
+        let mut out = raw
+            .into_iter()
+            .map(|(name, mut entry)| {
+                entry.path = prefix
+                    .as_deref()
+                    .and_then(|p| name.strip_prefix(p))
+                    .unwrap_or(&name)
+                    .to_owned();
+                entry
+            })
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
+    })
+    .await
+    .map_err(|_| ApiError::internal("读取 ZIP 目录失败"))?
 }
