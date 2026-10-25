@@ -23,5 +23,3 @@ setStatus('正在启动 Siglus WASM…');await init();canvas.focus();await start
 start();canvas.addEventListener('contextmenu',e=>e.preventDefault());canvas.addEventListener('wheel',e=>e.preventDefault(),{passive:false});
 
 for(const type of ['keydown','keyup'])canvas.addEventListener(type,e=>{if(e.code==='F11'||e.code==='F12'||e.key==='F11'||e.key==='F12'||((e.ctrlKey||e.metaKey||e.altKey)&&!['Control','Alt','Meta','Shift'].includes(e.key)))e.stopImmediatePropagation()},{capture:true});
-
-setInterval(()=>{if(globalThis.__siglusEnded)setStatus("游戏运行已结束（详情见兼容性记录）"},500);
