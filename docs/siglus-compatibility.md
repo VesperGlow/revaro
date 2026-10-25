@@ -15,6 +15,7 @@
 - 存档、缩略图和文件操作复用上游 `game_fs` 接口，原型写入 IndexedDB，不写回游戏 ZIP。
 - MPEG、OMV 改为随播放解码，保留当前帧、预读帧及解码器的小队列，退出视频时释放缓存。WMV 保留上游路径。
 - 将 CPAL 的固定 AudioContext 检测表达式替换为直接检测；遇到其他动态表达式会报错，不放宽 CSP 来允许 `eval`。
+- 固定 CPAL 0.15.3 的 WebAudio 流生命周期：销毁前标记流已退出，已排队的定时器和 `onended` 回调直接返回，避免继续操作关闭的 AudioContext 并触发 WASM `unreachable`。构建脚本校验原始 crate 的 SHA-256，再应用独立补丁，不修改全局 Cargo 缓存。
 - 可选诊断接口仅在 `__siglusProbeUi === true` 时输出状态，采用 `&self` 读取，不调用会消费等待事件的 `SceneVm::is_blocked()`。
 
 原型页面另外约束画布的 CSS 尺寸，防止 winit 写入的内联固定尺寸在窗口缩小、开发者工具打开时造成页面溢出；不使用全局缩放。
@@ -29,6 +30,8 @@ SIGLUS_WASM_BINDGEN=/path/to/wasm-bindgen \
 ```
 
 脚本检查上游版本，应用补丁，构建 WASM，适配 glue，并输出许可证、来源版本和 SHA-256 清单。重复运行时会检查补丁是否已经应用。输出目录不会自动成为 Revaro 的公开资源目录。
+
+CPAL 的源码由 `prepare-cpal.py` 从本地 Cargo crate 缓存或固定下载地址取得，校验 Cargo.lock 原始校验和后解包到上游检出的 `vendor/cpal`，应用 `cpal-webaudio-lifecycle.patch`。其余平台的音频后端保持原来的实现。
 
 本地预览工具（仅绑定回环地址，不是生产用游戏服务器）：
 
@@ -85,3 +88,16 @@ HEAD 返回长度且无正文；有效 Range 返回 206，无效区间返回 416
 分享的 `entry` 决定加载 `Scene.pck` 或 `scene.chs`，URL 查询参数不能切换它。需要 `key.toml` 的游戏可以把配置放入 ZIP 根目录，或在管理端分享对话框的“游戏配置”中填写。后一种配置保存到该分享的 `key_config` 字段，并随有效的分享索引传给浏览器；它优先于 ZIP 和浏览器里自动生成的配置。配置不写入公共播放器或游戏 ZIP，也不包含在仓库中。重新生成同一文件的链接时保留配置，显式清空可以移除；撤销、过期和文件回收后无法通过旧链接读取。
 
 浏览器可能限制未交互页面的声音自动播放。游戏仍自动初始化，首次点击画面或按键会恢复该页面的音频上下文，不增加单独的启动按钮。
+
+## 关闭音频流后的启动崩溃回归
+
+`tests/e2e/siglus-real-lifecycle.spec.ts` 是可选的真实游戏测试，通过 `SIGLUS_REAL_GAME_URL` 指向本地 `/g/` 分享运行。测试保留真实 WASM、游戏资源和音频后端，仅让关闭后的 `createBufferSource()` 严格抛出 `InvalidStateError`，以复现部分浏览器的行为。
+
+2026-10-25 本地验证：旧 WASM 在启动时触发 CPAL panic，最终错误被覆盖为 `unreachable`；加入流销毁标记后，Chromium、Firefox 均通过自动启动与 30 次剧情推进，已关闭上下文访问次数为零，检测到非静音 PCM，浏览器与引擎错误为空。这不代表完整路线或用户的 Windows Edge 环境已经逐一验证。
+
+```bash
+SIGLUS_REAL_GAME_URL=http://127.0.0.1:18083/g/kinkoi \
+PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium \
+tests/e2e/node_modules/.bin/playwright test \
+  --config=tests/e2e/playwright.config.ts siglus-real-lifecycle.spec.ts
+```

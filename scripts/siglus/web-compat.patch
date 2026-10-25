@@ -1,8 +1,17 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 6eca568..7f69c70 100644
+index 6eca568..6a54c00 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -2969,6 +2969,7 @@ dependencies = [
+@@ -708,8 +708,6 @@ dependencies = [
+ [[package]]
+ name = "cpal"
+ version = "0.15.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "873dab07c8f743075e57f524c583985fbaf745602acbe916a01539364369a779"
+ dependencies = [
+  "alsa",
+  "core-foundation-sys",
+@@ -2969,6 +2967,7 @@ dependencies = [
   "eluna_rs",
   "encoding_rs",
   "env_logger 0.11.9",
@@ -10,6 +19,17 @@ index 6eca568..7f69c70 100644
   "getrandom 0.2.17",
   "getrandom 0.3.4",
   "image",
+diff --git a/Cargo.toml b/Cargo.toml
+index 726907a..ef56525 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -41,3 +41,6 @@ log = "0.4"
+ env_logger = "0.11"
+ kira = "0.9"
+ chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
++
++[patch.crates-io]
++cpal = { path = "vendor/cpal" }
 diff --git a/crates/siglus_scene_vm/Cargo.toml b/crates/siglus_scene_vm/Cargo.toml
 index 24af58e..1e72314 100644
 --- a/crates/siglus_scene_vm/Cargo.toml

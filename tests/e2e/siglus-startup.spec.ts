@@ -64,6 +64,22 @@ test('Siglus reports a failed engine import on the page', async ({ page }) => {
   await expect(page.locator('#loading')).toBeHidden()
 })
 
+test('a WASM abort preserves the Rust panic that explains the failure', async ({ page }) => {
+  await player(page, { engine: `
+    export default async function init() {}
+    export function start_siglus_from_directory() {
+      setTimeout(() => {
+        console.error('panicked at cpal: Unable to create a webaudio buffer source');
+        throw new WebAssembly.RuntimeError('unreachable');
+      }, 0);
+    }
+  ` })
+  await page.goto('/g/siglus-check?profile=original')
+  await expect(page.getByRole('alert')).toContainText('Unable to create a webaudio buffer source')
+  await expect(page.getByRole('alert')).not.toHaveText('游戏启动失败\nunreachable')
+  expect(await page.evaluate(() => (window as any).siglusProbe.phase)).toBe('failed')
+})
+
 test('the first canvas gesture resumes autoplay-blocked audio without a launch toolbar', async ({ page }) => {
   await page.addInitScript(() => {
     class FakeAudioContext extends EventTarget {

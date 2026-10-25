@@ -22,12 +22,14 @@ if ! git -C "$siglus_source_dir" apply --reverse --check "$siglus_script_dir/web
   git -C "$siglus_source_dir" apply --check "$siglus_script_dir/web-compat.patch"
   git -C "$siglus_source_dir" apply "$siglus_script_dir/web-compat.patch"
 fi
+python3 "$siglus_script_dir/prepare-cpal.py" "$siglus_source_dir"
 cd -- "$siglus_source_dir"
 CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
   CARGO_BUILD_JOBS=2 cargo +1.98.0 build --locked --release -p game_launcher --target wasm32-unknown-unknown
 "$siglus_bindgen" target/wasm32-unknown-unknown/release/game_launcher.wasm --target web --out-dir "$siglus_output_dir"
 python3 "$siglus_script_dir/adapt-glue.py" "$siglus_output_dir/game_launcher.js" > "$siglus_output_dir/glue-adaptation.json"
 cp LICENSE-MPL-2.0 "$siglus_output_dir/ENGINE-LICENSE.txt"
+cp vendor/cpal/LICENSE "$siglus_output_dir/CPAL-LICENSE.txt"
 printf '%s\n' "$siglus_revision" > "$siglus_output_dir/SOURCE_REVISION"
 cd -- "$siglus_output_dir"
 sha256sum game_launcher.js game_launcher_bg.wasm > SHA256SUMS

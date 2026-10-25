@@ -72,6 +72,9 @@ const reads = [];
 window.siglusProbe = { reads, overlayReads: [], saveWrites: [], phase: 'loading' };
 
 function fail(reason) {
+    // A Rust panic logs its cause before aborting with a generic WASM trap.
+    // Keep that cause visible instead of replacing it with "unreachable".
+    if (failed && /^(?:RuntimeError: )?unreachable$/i.test(reason?.message || String(reason))) return;
     failed = true;
     loading.hidden = true;
     audioHint.hidden = true;

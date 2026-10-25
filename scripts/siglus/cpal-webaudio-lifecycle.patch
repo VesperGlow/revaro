@@ -1,0 +1,56 @@
+--- a/src/host/webaudio/mod.rs
++++ b/src/host/webaudio/mod.rs
+@@ -15,6 +15,7 @@
+ };
+ use std::ops::DerefMut;
+ use std::sync::{Arc, Mutex, RwLock};
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::time::Duration;
+ 
+ /// Content is false if the iterator is empty.
+@@ -26,6 +27,7 @@
+ pub struct Host;
+ 
+ pub struct Stream {
++    retired: Arc<AtomicBool>,
+     ctx: Arc<AudioContext>,
+     on_ended_closures: Vec<Arc<RwLock<Option<Closure<dyn FnMut()>>>>>,
+     config: StreamConfig,
+@@ -248,7 +250,9 @@
+         // Create a set of closures / callbacks which will continuously fetch and schedule sample
+         // playback. Starting with two workers, e.g. a front and back buffer so that audio frames
+         // can be fetched in the background.
++        let retired = Arc::new(AtomicBool::new(false));
+         for _i in 0..2 {
++            let callback_retired = retired.clone();
+             let data_callback_handle = data_callback.clone();
+             let ctx_handle = ctx.clone();
+             let time_handle = time.clone();
+@@ -289,6 +293,11 @@
+                 .write()
+                 .unwrap()
+                 .replace(Closure::wrap(Box::new(move || {
++                    // A timeout or onended event may already be queued at drop.
++                    // Do not touch the mixer or closed AudioContext afterward.
++                    if callback_retired.load(Ordering::Acquire) {
++                        return;
++                    }
+                     let now = ctx_handle.current_time();
+                     let time_at_start_of_buffer = {
+                         let time_at_start_of_buffer = time_handle
+@@ -386,6 +395,7 @@
+         }
+ 
+         Ok(Stream {
++            retired,
+             ctx,
+             on_ended_closures,
+             config: config.clone(),
+@@ -452,6 +462,7 @@
+ 
+ impl Drop for Stream {
+     fn drop(&mut self) {
++        self.retired.store(true, Ordering::Release);
+         let _ = self.ctx.close();
+     }
+ }
