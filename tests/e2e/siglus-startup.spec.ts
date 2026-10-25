@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 
-// The packaged player is evaluated by Chromium, with a synthetic VFS/engine.
+// The packaged player is evaluated in real browsers, with a synthetic VFS/engine.
 // This catches module syntax, automatic launch and silent host initialization
 // failures without requiring copyrighted game resources in CI.
 async function player(page: Page, options: { entry?: string, engine?: string, key?: string } = {}) {
@@ -112,19 +112,23 @@ test('retired audio contexts do not cover a playing game with a failure overlay'
       const ctx = document.getElementById('siglus-canvas').getContext('2d');
       ctx.fillStyle = 'green'; ctx.fillRect(0, 0, 100, 100);
       // Model a late event from a stream that was retired by CPAL.
+      window.addEventListener('unhandledrejection', event => {
+        window.__retiredAudioNotice = { message: event.reason.message, handled: event.defaultPrevented };
+      }, { once: true });
       setTimeout(() => Promise.reject(new DOMException('AudioContext is closed.', 'InvalidStateError')), 0);
       window.__siglusStarted = true;
     }
   ` })
-  const errors: string[] = []
-  page.on('pageerror', error => errors.push(error.message))
   await page.goto('/g/siglus-check?profile=original')
   await expect.poll(() => page.evaluate(() => (window as any).__siglusStarted)).toBe(true)
   await expect.poll(() => page.evaluate(() => (window as any).siglusProbe.phase)).toBe('running')
-  await page.waitForTimeout(100)
+  // Firefox also emits protocol pageerror for a canceled rejection. Check the
+  // browser event directly so this verifies the player's handling on every engine.
+  await expect.poll(() => page.evaluate(() => (window as any).__retiredAudioNotice)).toEqual({
+    message: 'AudioContext is closed.', handled: true,
+  })
   await expect(page.getByRole('alert')).toBeHidden()
   expect(await page.evaluate(() => (window as any).__liveAudio.state)).toBe('running')
-  expect(errors).toEqual([])
   // Without a replacement stream, a closed-context error is a real failure.
   await page.evaluate(async () => {
     await (window as any).__liveAudio.close()
