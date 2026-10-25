@@ -1,5 +1,6 @@
 import init,{start_siglus_from_directory} from '/galgame/siglus/pkg/game_launcher.js';
-const status=document.getElementById('status'),error=document.getElementById('error'),canvas=document.getElementById('siglus-canvas');
+const error=document.getElementById('error'),canvas=document.getElementById('siglus-canvas');
+const setStatus=()=>{};
 const token=location.pathname.split('/').filter(Boolean)[1];
 const archiveUrl=`/g/${encodeURIComponent(token)}/archive`;
 const profile=new URL(location.href).searchParams.get('profile')||'chinese';
@@ -15,12 +16,12 @@ function read(path){const n=norm(path);if(overlay.has(n)){siglusProbe.overlayRea
 globalThis.siglusFileExists=p=>overlay.has(norm(p))||files.has(norm(p));globalThis.siglusKnownFileCount=()=>files.size+overlay.size;globalThis.siglusListDir=p=>Array.from(children.get(norm(p))||[]);globalThis.siglusReadFile=read;
 globalThis.gameFsWrite=(p,b)=>{const n=norm(p),v=new Uint8Array(b);overlay.set(n,v);indexChildren(n);const t=db.transaction('files','readwrite');t.objectStore('files').put(v,n);t.oncomplete=()=>siglusProbe.saveWrites.push({path:n,size:v.length});console.log('[save]',n,v.length)};globalThis.gameFsRemove=p=>{const n=norm(p);overlay.delete(n);const t=db.transaction('files','readwrite');t.objectStore('files').delete(n)};
 function openDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(meta.save_space+'-v2-'+profile,1);r.onupgradeneeded=()=>r.result.createObjectStore('files');r.onerror=()=>reject(r.error);r.onsuccess=()=>resolve(r.result)})}
-async function start(){document.getElementById('start').disabled=true;try{status.textContent='正在读取 ZIP 目录…';const r=await fetch(`/g/${encodeURIComponent(token)}/index`);if(!r.ok)throw Error('Game index unavailable');meta=await r.json();for(const f of meta.entries){if(!/^(savedata|save)\//i.test(f.path))index(f.path,f);}
+async function start(){try{setStatus('正在读取 ZIP 目录…');const r=await fetch(`/g/${encodeURIComponent(token)}/index`);if(!r.ok)throw Error('Game index unavailable');meta=await r.json();for(const f of meta.entries){if(!/^(savedata|save)\//i.test(f.path))index(f.path,f);}
 if(profile==='chinese'){for(const [from,to] of [['scene.chs','Scene.pck'],['gameexe.chs','Gameexe.dat']]){const f=files.get(norm(from));if(!f)throw Error('Selected Chinese resource missing: '+from);index(to,f)}for(const f of meta.entries){if(f.path.toLowerCase().startsWith('g00/')&&f.path.toLowerCase().endsWith('.g01'))index(f.path.slice(0,-1)+'0',f)}}
 db=await openDb();await new Promise((resolve,reject)=>{const q=db.transaction('files').objectStore('files').openCursor();q.onsuccess=()=>{const c=q.result;if(c){overlay.set(c.key,new Uint8Array(c.value));indexChildren(c.key);c.continue()}else resolve()};q.onerror=()=>reject(q.error)});
-status.textContent='正在启动 Siglus WASM…';await init();canvas.focus();await start_siglus_from_directory('siglus-canvas',JSON.stringify(meta.entries.map(f=>({path:f.path,size:f.size,lastModified:0}))));status.textContent='运行中（SiglusEngine）';}catch(e){fail(e);status.textContent='启动失败'}}
-document.getElementById('start').onclick=start;canvas.addEventListener('contextmenu',e=>e.preventDefault());canvas.addEventListener('wheel',e=>e.preventDefault(),{passive:false});
+setStatus('正在启动 Siglus WASM…');await init();canvas.focus();await start_siglus_from_directory('siglus-canvas',JSON.stringify(meta.entries.map(f=>({path:f.path,size:f.size,lastModified:0}))));setStatus('运行中（SiglusEngine）');}catch(e){fail(e);setStatus('启动失败')}}
+start();canvas.addEventListener('contextmenu',e=>e.preventDefault());canvas.addEventListener('wheel',e=>e.preventDefault(),{passive:false});
 
 for(const type of ['keydown','keyup'])canvas.addEventListener(type,e=>{if(e.code==='F11'||e.code==='F12'||e.key==='F11'||e.key==='F12'||((e.ctrlKey||e.metaKey||e.altKey)&&!['Control','Alt','Meta','Shift'].includes(e.key)))e.stopImmediatePropagation()},{capture:true});
 
-setInterval(()=>{if(globalThis.__siglusEnded)status.textContent="游戏运行已结束（详情见兼容性记录）"},500);
+setInterval(()=>{if(globalThis.__siglusEnded)setStatus("游戏运行已结束（详情见兼容性记录）"},500);
