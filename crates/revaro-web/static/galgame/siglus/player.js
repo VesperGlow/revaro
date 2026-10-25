@@ -1,6 +1,7 @@
 const error = document.getElementById('error');
 const canvas = document.getElementById('siglus-canvas');
 const loading = document.getElementById('loading');
+const audioHint = document.getElementById('audio-hint');
 const token = location.pathname.split('/').filter(Boolean)[1];
 const archiveUrl = `/g/${encodeURIComponent(token)}/archive`;
 const files = new Map();
@@ -23,11 +24,16 @@ if (NativeAudioContext) {
         construct(Target, args) {
             const context = Reflect.construct(Target, args);
             audioContexts.add(context);
+            context.addEventListener('statechange', updateAudioHint);
+            updateAudioHint();
             return context;
         },
     });
     if (globalThis.AudioContext) globalThis.AudioContext = TrackedAudioContext;
     else globalThis.webkitAudioContext = TrackedAudioContext;
+}
+function updateAudioHint() {
+    audioHint.hidden = failed || !Array.from(audioContexts).some(context => context.state === 'suspended');
 }
 function resumeAudio() {
     for (const context of audioContexts) {
@@ -42,6 +48,7 @@ window.siglusProbe = { reads, overlayReads: [], saveWrites: [], phase: 'loading'
 function fail(reason) {
     failed = true;
     loading.hidden = true;
+    audioHint.hidden = true;
     error.hidden = false;
     error.textContent = `游戏启动失败\n${reason?.message || String(reason)}`;
     window.siglusProbe.phase = 'failed';

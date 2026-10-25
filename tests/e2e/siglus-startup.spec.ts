@@ -63,3 +63,23 @@ test('Siglus reports a failed engine import on the page', async ({ page }) => {
   await expect(page.getByRole('alert')).toContainText('游戏启动失败')
   await expect(page.locator('#loading')).toBeHidden()
 })
+
+test('the first canvas gesture resumes autoplay-blocked audio without a launch toolbar', async ({ page }) => {
+  await page.addInitScript(() => {
+    class FakeAudioContext extends EventTarget {
+      state = 'suspended'
+      async resume() { this.state = 'running'; this.dispatchEvent(new Event('statechange')) }
+    }
+    Object.defineProperty(window, 'AudioContext', { writable: true, configurable: true, value: FakeAudioContext })
+  })
+  await player(page, { engine: `
+    export default async function init() {}
+    export function start_siglus_from_directory() { window.__context = new AudioContext() }
+  ` })
+  await page.goto('/g/siglus-check?profile=original')
+  await expect(page.locator('#audio-hint')).toBeVisible()
+  await page.locator('canvas').click()
+  await expect(page.locator('#audio-hint')).toBeHidden()
+  expect(await page.evaluate(() => (window as any).__context.state)).toBe('running')
+  await expect(page.locator('#bar, #start')).toHaveCount(0)
+})
