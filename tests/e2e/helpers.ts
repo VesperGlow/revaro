@@ -201,7 +201,9 @@ export async function navigate(page: Page, name: string, preserveScroll = false)
   const nav = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
   if (['书籍', '音乐', '图片', '视频'].includes(name)) {
     const trigger = nav.getByLabel('内容库', { exact: true })
-    if (await trigger.getAttribute('aria-expanded') === 'false') await click(trigger)
+    // Native details.open changes before the asynchronous toggle/ARIA update.
+    // Reading stale ARIA here can close an open menu or click a hidden link.
+    if (!await trigger.evaluate(element => element.closest('details')?.open)) await click(trigger)
   }
   const link = nav.getByRole('link', { name: name === '图片' ? '图库' : name, exact: true, includeHidden: true })
   await click(link)
