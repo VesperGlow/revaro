@@ -10,8 +10,13 @@ const files = new Map();
 const overlay = new Map();
 const children = new Map();
 const cache = new Map();
+const startupPins = new Set();
 const cacheLimit = 64 * 1024 * 1024;
 let cacheBytes = 0;
+// One current voice archive, independent of the small-resource LRU. Total
+// retained resource bytes stay bounded by 64 MiB + 64 MiB.
+let voicePack;
+const voicePackLimit = 64 * 1024 * 1024;
 let meta;
 let db;
 let profile;
@@ -72,7 +77,7 @@ function resumeAudio() {
 function startSoftwareCanvas() {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw Error('无法创建 Canvas2D 软件画布。');
-    let image;
+    let image, paintedBytes, paintedRevision, paintedWidth, paintedHeight;
     const backing = document.createElement('canvas');
     const backingContext = backing.getContext('2d', { alpha: false });
     const resize = () => {
@@ -90,16 +95,26 @@ function startSoftwareCanvas() {
         const size = globalThis.__siglusSoftwareSize;
         if (bytes && size?.length === 2) {
             const width = Number(size[0]), height = Number(size[1]);
-            if (!image || image.width !== width || image.height !== height) image = new ImageData(width, height);
-            image.data.set(bytes);
+            const revision = globalThis.__siglusSoftwareFrameRevision;
+            if (bytes === paintedBytes && revision === paintedRevision && canvas.width === paintedWidth && canvas.height === paintedHeight) {
+                requestAnimationFrame(paint);
+                return;
+            }
+            // The published frame is already a JS-owned snapshot. Share that
+            // buffer with ImageData instead of copying another 8 MB per frame.
+            if (!image || image.data.buffer !== bytes.buffer || image.data.byteOffset !== bytes.byteOffset
+                || image.width !== width || image.height !== height) {
+                image = new ImageData(new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.byteLength), width, height);
+            }
             if (backing.width !== width || backing.height !== height) { backing.width = width; backing.height = height; }
             backingContext.putImageData(image, 0, 0);
             context.imageSmoothingEnabled = false;
-            context.clearRect(0, 0, canvas.width, canvas.height);
             // Canvas2D fallback fills the CSS canvas. GPU mode keeps the
             // engine's aspect-ratio viewport; software mode avoids large
             // black bars on ultrawide displays where no GPU viewport exists.
             context.drawImage(backing, 0, 0, canvas.width, canvas.height);
+            paintedBytes = bytes; paintedRevision = revision;
+            paintedWidth = canvas.width; paintedHeight = canvas.height;
         }
         requestAnimationFrame(paint);
     };
@@ -107,7 +122,7 @@ function startSoftwareCanvas() {
 }
 for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, resumeAudio, { capture: true });
 const reads = [];
-window.siglusProbe = { reads, overlayReads: [], saveWrites: [], phase: 'loading' };
+window.siglusProbe = { reads, voiceReads: [], overlayReads: [], saveWrites: [], phase: 'loading' };
 
 function fail(reason) {
     // A Rust panic logs its cause before aborting with a generic WASM trap.
@@ -175,14 +190,68 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
 });
 function crc32(bytes) {
     let crc = -1;
-    for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255];
+    for (let i = 0; i < bytes.length; i++) crc = (crc >>> 8) ^ crcTable[(crc ^ bytes[i]) & 255];
     return (crc ^ -1) >>> 0;
 }
 function record(list, value) {
     if (list.length === 128) list.shift();
     list.push(value);
 }
-function read(path) {
+function cacheResource(file, data) {
+    if (data.length > cacheLimit || cache.has(file.path)) return;
+    while (cacheBytes + data.length > cacheLimit && cache.size) {
+        const oldest = Array.from(cache.keys()).find(key => !startupPins.has(key));
+        if (oldest === undefined) return;
+        cacheBytes -= cache.get(oldest).length;
+        cache.delete(oldest);
+    }
+    cache.set(file.path, data);
+    cacheBytes += data.length;
+}
+async function warmStartupResources() {
+    const candidates = new Map();
+    for (const path of ['Gameexe.dat', 'Scene.pck']) {
+        const file = files.get(norm(path));
+        if (file) candidates.set(file.path, file);
+    }
+    for (const file of files.values()) {
+        if (/(^|\/)(font[^/]*\.(?:otf|ttf|ttc))$/i.test(file.path)) candidates.set(file.path, file);
+    }
+    let budget = 48 * 1024 * 1024;
+    const tasks = Array.from(candidates.values()).filter(file => {
+        if (file.size <= 0 || file.size > 32 * 1024 * 1024 || file.packed <= 0
+            || file.packed > 32 * 1024 * 1024 || file.size > budget) return false;
+        budget -= file.size;
+        return true;
+    });
+    if (!tasks.length || !globalThis.Worker) return;
+    let worker;
+    try {
+        worker = new Worker(new URL('./resource-worker.js', import.meta.url));
+        for (let id = 0; id < tasks.length; id++) {
+            const file = tasks[id];
+            const bytes = await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(Error('Resource prefetch timed out')), 30000);
+                worker.onmessage = ({ data }) => {
+                    if (data.id !== id) return;
+                    clearTimeout(timeout);
+                    data.error ? reject(Error(data.error)) : resolve(data.bytes);
+                };
+                worker.onerror = event => { event.preventDefault(); clearTimeout(timeout); reject(Error('Resource prefetch worker failed')); };
+                worker.postMessage({ id, url: new URL(archiveUrl, location.href).href,
+                    offset: file.offset, packed: file.packed, size: file.size, method: file.method, crc: file.crc });
+            });
+            cacheResource(file, bytes);
+            if (/\.(?:otf|ttf|ttc)$/i.test(file.path) && cache.has(file.path)) startupPins.add(file.path);
+            record(reads, { path: file.path, source: file.path, bytes: file.packed, status: 206, prefetch: true });
+        }
+    } catch (error) {
+        // Optional warmup: unsupported workers/offline requests keep the VM's
+        // validated read fallback and any already-warmed resources.
+        console.warn('Resource prefetch unavailable:', error.message);
+    } finally { worker?.terminate(); }
+}
+function read(path, retain = true) {
     const key = norm(path);
     if (overlay.has(key)) {
         record(siglusProbe.overlayReads, key);
@@ -190,6 +259,7 @@ function read(path) {
     }
     const file = files.get(key);
     if (!file) throw Error(`Missing game resource: ${path}`);
+    if (voicePack?.path === file.path && voicePack.source === file) return voicePack.bytes;
     if (cache.has(file.path)) {
         const hit = cache.get(file.path);
         cache.delete(file.path);
@@ -209,21 +279,40 @@ function read(path) {
     xhr.send();
     if (xhr.status !== 206) throw Error(`Range read failed (${xhr.status}): ${path}`);
     const text = xhr.responseText;
-    const packed = Uint8Array.from(text, character => character.charCodeAt(0) & 255);
+    const packed = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) packed[i] = text.charCodeAt(i) & 255;
     const data = file.method === 0 ? packed : fflate.inflateSync(packed, { out: new Uint8Array(file.size) });
     if (data.length !== file.size || crc32(data) !== file.crc) throw Error(`Resource size/CRC mismatch: ${path}`);
-    if (data.length <= cacheLimit) {
-        while (cacheBytes + data.length > cacheLimit && cache.size) {
-            const oldest = cache.keys().next().value;
-            cacheBytes -= cache.get(oldest).length;
-            cache.delete(oldest);
-        }
-        cache.set(file.path, data);
-        cacheBytes += data.length;
-    }
+    if (retain) cacheResource(file, data);
     record(reads, { path, source: file.path, bytes: packed.length, status: xhr.status });
     return data;
 }
+globalThis.siglusReadOvkEntry = (path, number) => {
+    const key = norm(path), file = files.get(key);
+    const identity = file?.path || key;
+    const source = overlay.get(key) || file;
+    let pack = voicePack?.path === identity && voicePack.source === source ? voicePack : null;
+    if (!pack) {
+        const bytes = read(path, false);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        if (bytes.length < 4) throw Error('OVK header truncated');
+        const count = view.getUint32(0, true);
+        if (!count || count > Math.floor((bytes.length - 4) / 16)) throw Error('OVK entry table truncated');
+        const entries = new Map();
+        for (let i = 0; i < count; i++) {
+            const at = 4 + i * 16, size = view.getUint32(at, true);
+            const offset = view.getUint32(at + 4, true), no = view.getUint32(at + 8, true);
+            if (size && offset + size > bytes.length) throw Error('OVK entry out of range');
+            if (!entries.has(no)) entries.set(no, { offset, size });
+        }
+        pack = { path: identity, source, bytes, entries };
+        voicePack = bytes.length <= voicePackLimit ? pack : undefined;
+    }
+    const entry = pack.entries.get(number);
+    if (!entry?.size) throw Error(`OVK voice not found: ${number}`);
+    record(siglusProbe.voiceReads, { path, number, bytes: entry.size });
+    return pack.bytes.subarray(entry.offset, entry.offset + entry.size);
+};
 globalThis.siglusFileExists = path => overlay.has(norm(path)) || files.has(norm(path));
 globalThis.siglusKnownFileCount = () => files.size + overlay.size;
 globalThis.siglusListDir = path => Array.from(children.get(norm(path)) || []);
@@ -277,6 +366,7 @@ async function start() {
                 if (/^g00\/.*\.g01$/i.test(file.path)) index(file.path.slice(0, -1) + '0', file);
             }
         }
+        await warmStartupResources();
         db = await openDb();
         await new Promise((resolve, reject) => {
             const request = db.transaction('files').objectStore('files').openCursor();

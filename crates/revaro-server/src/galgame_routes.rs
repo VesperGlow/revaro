@@ -205,6 +205,7 @@ async fn static_response(
             | "siglus/index.html"
             | "siglus/player.js"
             | "siglus/renderer.js"
+            | "siglus/resource-worker.js"
             | "siglus/fflate.js"
             | "siglus/FFLATE-LICENSE.txt"
             | "siglus/ENGINE-LICENSE.txt"
@@ -693,6 +694,7 @@ mod tests {
         for asset in [
             "/galgame/kirikiri2/index.wasm",
             "/galgame/siglus/renderer.js",
+            "/galgame/siglus/resource-worker.js",
             "/galgame/siglus/CPAL-LICENSE.txt",
         ] {
             // Known assets pass the allowlist even when the bundle is absent.

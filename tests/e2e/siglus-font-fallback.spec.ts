@@ -21,10 +21,16 @@ test('packaged CJK font supplies missing simplified glyphs in software playback'
   await page.goto(gameUrl!, { waitUntil: 'domcontentloaded' })
   await page.waitForFunction(() => (window as any).__siglusUi || (window as any).siglusProbe?.phase === 'failed', {}, { timeout: 60_000 })
   await expect(page.getByRole('alert')).toBeHidden()
+  const frameBuffer = await page.evaluateHandle(() => (window as any).__siglusSoftwareFrame)
+  const revision = await page.evaluate(() => (window as any).__siglusSoftwareFrameRevision)
   const coverage = await page.evaluate(async () => {
     const engine = await import(/* @vite-ignore */ '/galgame/siglus/pkg/game_launcher.js')
     return JSON.parse(engine.siglus_wasm_font_probe('谢这让们够见灿烂辉欢纯简贯彻金あA「'))
   })
+  await page.waitForTimeout(250)
+  expect(await page.evaluate(buffer => buffer === (window as any).__siglusSoftwareFrame, frameBuffer)).toBe(true)
+  expect(await page.evaluate(() => (window as any).__siglusSoftwareFrameRevision)).toBeGreaterThan(revision)
+  await frameBuffer.dispose()
   const fallback = coverage.glyphs.filter((glyph: any) => glyph.primary_glyph === 0)
   expect(fallback.length).toBeGreaterThan(10)
   for (const glyph of fallback) {
@@ -51,9 +57,13 @@ test('packaged CJK font supplies missing simplified glyphs in software playback'
     phase: (window as any).siglusProbe.phase,
     ui: JSON.parse((window as any).__siglusUi || '{}'),
     reads: (window as any).siglusProbe.reads.map((entry: any) => entry.path),
+    prefetched: (window as any).siglusProbe.reads.filter((entry: any) => entry.prefetch).map((entry: any) => entry.path),
+    syncFontReads: (window as any).siglusProbe.reads.filter((entry: any) => !entry.prefetch && /\.(otf|ttf|ttc)$/i.test(entry.path)),
   }))
   expect(state.ui.text).toMatch(/[这谢]/)
   expect(state.reads).toContain('dat/font03.otf')
+  expect(state.prefetched).toContain('dat/font03.otf')
+  expect(state.syncFontReads).toEqual([])
   expect(state.phase).toBe('running')
   await expect(page.getByRole('alert')).toBeHidden()
   expect(errors).toEqual([])

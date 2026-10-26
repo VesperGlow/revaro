@@ -189,6 +189,7 @@
         _nextEntryId: 1,
         _blockCache: new Map(),  // `${entry.id}@${blockIdx}` → Uint8Array；Map 迭代序当 LRU 用
         _blockCacheBytes: 0,
+        _blockReads: new Map(), // in-flight source reads, shared by all file handles
         _opfsRoot: null,
         _opfsDir: null,
         _opfsSessionName: null,
@@ -1008,9 +1009,12 @@
             } else {
                 var first = Math.floor(f.pos / BLOCK_SIZE);
                 var last = Math.floor((f.pos + n - 1) / BLOCK_SIZE);
-                for (var b = first; b <= last; b++) await this._ensureBlock(e, b);
+                // Retain the blocks until this read is assembled: unrelated
+                // async reads may evict them from the bounded LRU meanwhile.
+                var blocks = [];
+                for (var b = first; b <= last; b++) blocks.push(await this._ensureBlock(e, b));
                 out = new Uint8Array(n);
-                this._assembleFromBlocks(e, f.pos, out);
+                this._assembleFromBlocks(e, f.pos, out, blocks);
             }
             f.pos += n;
             return out;
@@ -1018,14 +1022,18 @@
 
         // ---------- 内部：块缓存与数据源 ----------
 
-        _assembleFromBlocks(e, pos, out) {
+        _assembleFromBlocks(e, pos, out, retainedBlocks) {
             var done = 0;
             while (done < out.length) {
                 var b = Math.floor((pos + done) / BLOCK_SIZE);
-                var block = this._blockCache.get(e.id + '@' + b);
-                // LRU touch
-                this._blockCache.delete(e.id + '@' + b);
-                this._blockCache.set(e.id + '@' + b, block);
+                var key = e.id + '@' + b;
+                var block = retainedBlocks ? retainedBlocks[b - Math.floor(pos / BLOCK_SIZE)] : this._blockCache.get(key);
+                // Touch only resident blocks; retaining an evicted block for
+                // this read must not bypass the LRU memory budget.
+                if (this._blockCache.get(key) === block) {
+                    this._blockCache.delete(key);
+                    this._blockCache.set(key, block);
+                }
                 var off = (pos + done) - b * BLOCK_SIZE;
                 var n = Math.min(out.length - done, block.length - off);
                 out.set(block.subarray(off, off + n), done);
@@ -1035,18 +1043,24 @@
 
         async _ensureBlock(e, blockIdx) {
             var key = e.id + '@' + blockIdx;
-            if (this._blockCache.has(key)) return;
-            var off = blockIdx * BLOCK_SIZE;
-            var n = Math.min(BLOCK_SIZE, e.size - off);
-            var data = await this._readSource(e, off, n);
-            if (this._blockCache.has(key)) return; // 并发取块去重（后到丢弃）
-            this._blockCache.set(key, data);
-            this._blockCacheBytes += data.length;
-            while (this._blockCacheBytes > BLOCK_CACHE_BUDGET) {
-                var oldest = this._blockCache.keys().next().value;
-                this._blockCacheBytes -= this._blockCache.get(oldest).length;
-                this._blockCache.delete(oldest);
-            }
+            if (this._blockCache.has(key)) return this._blockCache.get(key);
+            if (this._blockReads.has(key)) return this._blockReads.get(key);
+            var request = (async () => {
+                var off = blockIdx * BLOCK_SIZE;
+                var n = Math.min(BLOCK_SIZE, e.size - off);
+                var data = await this._readSource(e, off, n);
+                this._blockCache.set(key, data);
+                this._blockCacheBytes += data.length;
+                while (this._blockCacheBytes > BLOCK_CACHE_BUDGET) {
+                    var oldest = this._blockCache.keys().next().value;
+                    this._blockCacheBytes -= this._blockCache.get(oldest).length;
+                    this._blockCache.delete(oldest);
+                }
+                return data;
+            })();
+            this._blockReads.set(key, request);
+            try { return await request; }
+            finally { if (this._blockReads.get(key) === request) this._blockReads.delete(key); }
         },
 
         async _readSource(e, pos, len) {

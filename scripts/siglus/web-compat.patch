@@ -43,6 +43,49 @@ index 24af58e..1e72314 100644
  wgpu = { workspace = true, features = ["webgl"] }
  js-sys = "0.3"
  wasm-bindgen = "0.2"
+diff --git a/crates/siglus_scene_vm/src/audio/bgm.rs b/crates/siglus_scene_vm/src/audio/bgm.rs
+index 5801d80..b8d07b4 100644
+--- a/crates/siglus_scene_vm/src/audio/bgm.rs
++++ b/crates/siglus_scene_vm/src/audio/bgm.rs
+@@ -514,19 +514,25 @@ pub fn decode_ovk_entry_by_no_to_wav_bytes(
+     let input = resolved.as_path();
+     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+     {
+-        let bytes = read_audio_container_bytes(input)?;
+-        let entries = parse_ovk_entries_from_bytes(&bytes)?;
+-        let idx = entries
+-            .iter()
+-            .position(|e| e.no == entry_no)
+-            .with_context(|| {
+-                format!(
+-                    "OVK entry not found: no={} file={}",
+-                    entry_no,
+-                    input.display()
+-                )
+-            })?;
+-        let ogg = extract_ovk_entry_from_bytes(&bytes, idx)?;
++        let ogg = if let Some(ogg) =
++            crate::wasm_vfs::read_ovk_entry(&input.to_string_lossy(), entry_no)?
++        {
++            ogg
++        } else {
++            let bytes = read_audio_container_bytes(input)?;
++            let entries = parse_ovk_entries_from_bytes(&bytes)?;
++            let idx = entries
++                .iter()
++                .position(|e| e.no == entry_no)
++                .with_context(|| {
++                    format!(
++                        "OVK entry not found: no={} file={}",
++                        entry_no,
++                        input.display()
++                    )
++                })?;
++            extract_ovk_entry_from_bytes(&bytes, idx)?
++        };
+         let wav_bytes = siglus_assets::vorbis::decode_ogg_vorbis_reader_to_wav(Cursor::new(ogg))
+             .with_context(|| format!("decode OVK(entry no={entry_no}) -> WAV"))?;
+         Ok(BgmDecoded {
 diff --git a/crates/siglus_scene_vm/src/audio/sfx_engine.rs b/crates/siglus_scene_vm/src/audio/sfx_engine.rs
 index f2e34f8..0defa23 100644
 --- a/crates/siglus_scene_vm/src/audio/sfx_engine.rs
@@ -69,7 +112,7 @@ index f2e34f8..0defa23 100644
          Ok(())
      }
 diff --git a/crates/siglus_scene_vm/src/host.rs b/crates/siglus_scene_vm/src/host.rs
-index e4c8e09..b4d0e29 100644
+index e4c8e09..0cb2b65 100644
 --- a/crates/siglus_scene_vm/src/host.rs
 +++ b/crates/siglus_scene_vm/src/host.rs
 @@ -17,7 +17,10 @@ use anyhow::{Context, Result};
@@ -102,7 +145,7 @@ index e4c8e09..b4d0e29 100644
      vm: SceneVm<'static>,
      redraw_count: u32,
      script_needs_pump: bool,
-@@ -209,6 +212,64 @@ pub struct SiglusHost {
+@@ -209,6 +212,63 @@ pub struct SiglusHost {
      last_step: Option<Instant>,
  }
 
@@ -136,7 +179,6 @@ index e4c8e09..b4d0e29 100644
 +    fn surface_viewport(&self) -> (u32,u32,u32,u32) { match self { Self::Gpu(r) => r.borrow().surface_viewport(), Self::Software(r) => r.borrow().surface_viewport() } }
 +    fn logical_size(&self) -> (u32,u32) { match self { Self::Gpu(r) => r.borrow().logical_size(), Self::Software(r) => r.borrow().logical_size() } }
 +    fn screen_viewport(&self) -> [u32;4] { let (x,y,w,h) = self.surface_viewport(); [x,y,w,h] }
-+    fn frame(&self) -> Option<Vec<u8>> { match self { Self::Gpu(_) => None, Self::Software(r) => Some(r.borrow().frame().to_vec()) } }
 +    fn dump_next_frame(&self, _path: PathBuf) {}
 +}
 +
@@ -167,7 +209,7 @@ index e4c8e09..b4d0e29 100644
  fn find_scene_pck_for_host(project_dir: &Path) -> Result<PathBuf> {
      crate::resource::find_scene_pck_path(project_dir)
  }
-@@ -255,6 +316,16 @@ impl SiglusHost {
+@@ -255,6 +315,16 @@ impl SiglusHost {
      /// Synchronous constructor for native hosts which own their event loop and
      /// do not use a desktop async executor (Horizon/libnx in particular).
      pub fn new_with_renderer_sync(config: SiglusHostConfig, renderer: Renderer) -> Result<Self> {
@@ -184,7 +226,7 @@ index e4c8e09..b4d0e29 100644
          switch_startup_marker!(b"siglus_switch: host initial-size begin\n\0");
          let initial_size = Self::resolve_initial_size(&config);
          switch_startup_marker!(b"siglus_switch: host initial-size complete\n\0");
-@@ -265,12 +336,11 @@ impl SiglusHost {
+@@ -265,12 +335,11 @@ impl SiglusHost {
          flow.push(ProcType::Script, 0);
          flow.push(ProcType::StartWarning, 0);
          let chihaya_display_adapter_name = renderer.adapter_name();
@@ -198,7 +240,7 @@ index e4c8e09..b4d0e29 100644
          vm.ctx.set_frame_capture_backend(Some(capture_backend));
          Ok(Self {
              config,
-@@ -311,9 +381,7 @@ impl SiglusHost {
+@@ -311,9 +380,7 @@ impl SiglusHost {
      }
 
      pub fn resize(&mut self, width: u32, height: u32, scale_factor: f32) {
@@ -209,7 +251,7 @@ index e4c8e09..b4d0e29 100644
          let logical_w = ((width as f32) / scale_factor.max(1.0)).max(1.0).round() as u32;
          let logical_h = ((height as f32) / scale_factor.max(1.0)).max(1.0).round() as u32;
          self.vm.ctx.set_screen_size(logical_w, logical_h);
-@@ -332,7 +400,7 @@ impl SiglusHost {
+@@ -332,7 +399,7 @@ impl SiglusHost {
          viewport_width: u32,
          viewport_height: u32,
      ) {
@@ -218,7 +260,7 @@ index e4c8e09..b4d0e29 100644
              surface_width,
              surface_height,
              scale_factor.max(1.0),
-@@ -342,7 +410,7 @@ impl SiglusHost {
+@@ -342,7 +409,7 @@ impl SiglusHost {
              viewport_y,
              viewport_width.max(1),
              viewport_height.max(1),
@@ -227,7 +269,7 @@ index e4c8e09..b4d0e29 100644
          self.vm
              .ctx
              .set_screen_size(logical_width.max(1), logical_height.max(1));
-@@ -380,6 +448,31 @@ impl SiglusHost {
+@@ -380,6 +447,31 @@ impl SiglusHost {
          )
      }
  
@@ -259,7 +301,7 @@ index e4c8e09..b4d0e29 100644
      fn native_messagebox_pending(&self) -> bool {
          self.vm
              .ctx
-@@ -409,6 +502,11 @@ impl SiglusHost {
+@@ -409,6 +501,11 @@ impl SiglusHost {
          Ok(self.pending_exit || (self.vm.is_halted() && self.flow.stack.is_empty()))
      }
  
@@ -271,7 +313,7 @@ index e4c8e09..b4d0e29 100644
      pub fn mouse_move(&mut self, x: f64, y: f64) {
          if self.native_messagebox_pending() {
              return;
-@@ -568,8 +666,8 @@ impl SiglusHost {
+@@ -568,8 +665,8 @@ impl SiglusHost {
          self.script_needs_pump = true;
      }
 
@@ -282,12 +324,16 @@ index e4c8e09..b4d0e29 100644
      }
 
      /// Writes the global save if what it keeps has changed since `last`
-@@ -586,6 +684,14 @@ impl SiglusHost {
+@@ -586,6 +683,18 @@ impl SiglusHost {
          &mut self.vm
      }
 
 +    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-+    pub fn software_frame(&self) -> Option<Vec<u8>> { self.renderer.frame() }
++    pub fn with_software_frame(&self, present: impl FnOnce(&[u8])) {
++        if let RenderBackend::Software(renderer) = &self.renderer {
++            present(renderer.borrow().frame());
++        }
++    }
 +
 +    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 +    pub fn software_stats(&self) -> Option<(u32, u32)> {
@@ -297,7 +343,7 @@ index e4c8e09..b4d0e29 100644
      fn resolve_initial_size(config: &SiglusHostConfig) -> (u32, u32) {
          let cfg_size = Self::try_load_gameexe(&config.project_dir)
              .as_ref()
-@@ -1204,7 +1310,7 @@ impl SiglusHost {
+@@ -1204,7 +1313,7 @@ impl SiglusHost {
      }
 
      fn finish_runtime_load(&mut self) {
@@ -306,7 +352,7 @@ index e4c8e09..b4d0e29 100644
          self.flow.stack.clear();
          self.flow.pending_syscom_proc = None;
          self.syscom_suspended_waits.clear();
-@@ -1234,7 +1340,7 @@ impl SiglusHost {
+@@ -1234,7 +1343,7 @@ impl SiglusHost {
          // changes, so resetting the append before restart preserves that ordering.
          self.vm.ctx.reset_active_append_to_initial();
          self.vm.restart_scene_name(&target_scene, target_z)?;
@@ -315,7 +361,7 @@ index e4c8e09..b4d0e29 100644
          if let Some(msgbk) = saved_msgbk {
              self.vm.ctx.globals.msgbk_forms = msgbk;
          }
-@@ -1262,7 +1368,7 @@ impl SiglusHost {
+@@ -1262,7 +1371,7 @@ impl SiglusHost {
          // scene without resetting the active append.
          crate::runtime::forms::syscom::write_global_save(&self.vm.ctx);
          self.vm.restart_scene_name(&target_scene, target_z)?;
@@ -324,7 +370,7 @@ index e4c8e09..b4d0e29 100644
          self.vm.ctx.globals.finish_wipe();
          self.flow.stack.clear();
          self.flow.pending_syscom_proc = None;
-@@ -1627,9 +1733,7 @@ impl SiglusHost {
+@@ -1627,9 +1736,7 @@ impl SiglusHost {
          // eng_frame.cpp applies SCRIPT.SET_VSYNC_WAIT_OFF_FLAG after script
          // processing and before the frame is presented. Keep the VM flag as the
          // script state and let Renderer perform the display-side transition.
@@ -335,7 +381,7 @@ index e4c8e09..b4d0e29 100644
          let wait_poll_needed = self.vm.ctx.wait.needs_runtime_poll();
          #[cfg(target_os = "horizon")]
          if switch_trace_enabled {
-@@ -1640,6 +1744,9 @@ impl SiglusHost {
+@@ -1640,6 +1747,9 @@ impl SiglusHost {
          }
          #[cfg(target_os = "vita")]
          let start = Instant::now();
@@ -345,17 +391,135 @@ index e4c8e09..b4d0e29 100644
          self.vm.tick_frame()?;
          #[cfg(target_os = "vita")]
          crate::render::vita_stats::phase(crate::render::vita_stats::TICK, start);
-@@ -1733,9 +1840,7 @@ impl SiglusHost {
+@@ -1733,9 +1843,39 @@ impl SiglusHost {
                      switch_trace_frame
                  ));
              }
 -            self.renderer
 -                .borrow_mut()
 -                .render_frame(&self.vm.ctx.images, &frame)?;
++            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++            if js_sys::Reflect::get(
++                &js_sys::global(),
++                &wasm_bindgen::JsValue::from_str("__siglusProbeSprites"),
++            )
++            .ok()
++            .and_then(|v| v.as_bool())
++            .unwrap_or(false)
++            {
++                let sprites: Vec<_> = frame.debug_flatten().iter().filter_map(|item| {
++                    let s = &item.sprite;
++                    let id = s.image_id.as_ref()?;
++                    let img = self.vm.ctx.images.get(id)?;
++                    let info = self.vm.ctx.images.debug_image_info(id);
++                    Some(serde_json::json!({
++                        "image": format!("{info:?}"), "size": [img.width, img.height],
++                        "image_center": [img.center_x, img.center_y],
++                        "position": [s.x, s.y], "pivot": [s.pivot_x, s.pivot_y],
++                        "texture_center": [s.texture_center_x, s.texture_center_y],
++                        "object_anchor": s.object_anchor, "scale": [s.scale_x, s.scale_y],
++                        "rotation": [s.rotate_x, s.rotate_y, s.rotate],
++                        "fit": format!("{:?}", s.fit), "size_mode": format!("{:?}", s.size_mode),
++                        "camera": s.camera_enabled, "visible": s.visible, "alpha": s.alpha,
++                        "src_clip": format!("{:?}", s.src_clip), "dst_clip": format!("{:?}", s.dst_clip),
++                    }))
++                }).collect();
++                let _ = js_sys::Reflect::set(
++                    &js_sys::global(),
++                    &wasm_bindgen::JsValue::from_str("__siglusSprites"),
++                    &wasm_bindgen::JsValue::from_str(&serde_json::to_string(&sprites).unwrap()),
++                );
++            }
 +            self.renderer.render_frame(&self.vm.ctx.images, &frame)?;
              #[cfg(target_os = "horizon")]
              if switch_trace_enabled {
                  crate::switch_host::report_switch_diagnostic(&format!(
+diff --git a/crates/siglus_scene_vm/src/image_manager.rs b/crates/siglus_scene_vm/src/image_manager.rs
+index 808cee9..89a2c67 100644
+--- a/crates/siglus_scene_vm/src/image_manager.rs
++++ b/crates/siglus_scene_vm/src/image_manager.rs
+@@ -629,7 +629,10 @@ impl ImageManager {
+         Ok(id)
+     }
+
+-    fn decode_composed_g00_part(&mut self, part: &G00ComposePart) -> Result<RgbaImage> {
++    fn decode_composed_g00_part(
++        &mut self,
++        part: &G00ComposePart,
++    ) -> Result<(RgbaImage, (u32, u32))> {
+         let (path, ty) = crate::resource::find_g00_image_with_append_dir(
+             &self.project_dir,
+             &self.current_append_dir,
+@@ -664,9 +667,13 @@ impl ImageManager {
+             - 1;
+         let cut_no = part.cut_no.clamp(0, max_index as i32) as usize;
+         let id = ImageHandle::new(album, cut_no);
+-        self.get(&id)
+-            .map(|img| (*img).clone())
+-            .with_context(|| format!("missing cached composed g00 image id={}", id.index()))
++        let img = self
++            .get(&id)
++            .with_context(|| format!("missing cached composed g00 image id={}", id.index()))?;
++        let size = self
++            .original_size(&id)
++            .context("missing composed base canvas size")?;
++        Ok(((*img).clone(), size))
+     }
+
+     /// Load Siglus/Tona3's composed-G00 descriptor syntax:
+@@ -688,7 +695,7 @@ impl ImageManager {
+
+         let parts = parse_g00_composite_descriptor(&normalized)?;
+         let first = parts.first().context("composed g00 has no first entry")?;
+-        let mut composed = if first.file_name.is_empty() {
++        let (mut composed, original_size) = if first.file_name.is_empty() {
+             if first.x <= 0 || first.y <= 0 {
+                 bail!("blank composed g00 base requires positive width,height");
+             }
+@@ -696,13 +703,16 @@ impl ImageManager {
+                 .checked_mul(first.y as usize)
+                 .and_then(|len| len.checked_mul(4))
+                 .context("blank composed g00 size overflow")?;
+-            RgbaImage {
+-                width: first.x as u32,
+-                height: first.y as u32,
+-                center_x: 0,
+-                center_y: 0,
+-                rgba: vec![0; pixel_len],
+-            }
++            (
++                RgbaImage {
++                    width: first.x as u32,
++                    height: first.y as u32,
++                    center_x: 0,
++                    center_y: 0,
++                    rgba: vec![0; pixel_len],
++                },
++                (first.x as u32, first.y as u32),
++            )
+         } else {
+             self.decode_composed_g00_part(first)?
+         };
+@@ -710,7 +720,7 @@ impl ImageManager {
+         let base_center_x = composed.center_x;
+         let base_center_y = composed.center_y;
+         for part in parts.iter().skip(1) {
+-            let overlay = self.decode_composed_g00_part(part)?;
++            let (overlay, _) = self.decode_composed_g00_part(part)?;
+             let dst_x = part
+                 .x
+                 .saturating_add(base_center_x)
+@@ -723,6 +733,10 @@ impl ImageManager {
+         }
+
+         let id = self.insert_image(composed);
++        // Composition keeps the first cut's script-visible canvas dimensions;
++        // its cropped texture bounds are only for drawing and UVs.
++        id.album.frames.write().expect("image album lock poisoned")[id.cut].original_size =
++            original_size;
+         self.composite_to_id.insert(cache_key, id.downgrade());
+         Ok(id)
+     }
 diff --git a/crates/siglus_scene_vm/src/movie/mod.rs b/crates/siglus_scene_vm/src/movie/mod.rs
 index a7e1a9f..42d00e9 100644
 --- a/crates/siglus_scene_vm/src/movie/mod.rs
@@ -544,6 +708,27 @@ index 7948872..a4776be 100644
          self.surface_viewport = SurfaceViewport { x, y, w, h };
      }
 
+diff --git a/crates/siglus_scene_vm/src/runtime/forms/stage.rs b/crates/siglus_scene_vm/src/runtime/forms/stage.rs
+index 469bbc9..6c9f1be 100644
+--- a/crates/siglus_scene_vm/src/runtime/forms/stage.rs
++++ b/crates/siglus_scene_vm/src/runtime/forms/stage.rs
+@@ -11504,12 +11504,10 @@ fn dispatch_object_state_op(
+                             }
+                         }
+                     } else if let Some(name) = obj.file_name.as_deref()
+-                        && let Ok((path, _pct)) = crate::resource::find_g00_image_with_append_dir(
+-                            ctx.images.project_dir(),
+-                            &ctx.globals.append_dir,
+-                            name,
+-                        )
+-                        && let Ok(id) = ctx.images.load_file(&path, pat)
++                        // The image loader understands composed descriptors as well
++                        // as ordinary paths. Resolving the whole descriptor as a
++                        // filename returned 0, breaking script portrait positioning.
++                        && let Ok(id) = ctx.images.load_g00(name, pat as u32)
+                         && let Some((width, height)) = ctx.images.original_size(&id)
+                     {
+                         sx = width as i64;
 diff --git a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs b/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
 index d3726dc..989082d 100644
 --- a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
@@ -996,7 +1181,7 @@ index 9e7be41..b7da993 100644
          && let Some(exe_dir) = exe.parent()
      {
 diff --git a/crates/siglus_scene_vm/src/wasm_entry.rs b/crates/siglus_scene_vm/src/wasm_entry.rs
-index bf33475..5c9af34 100644
+index bf33475..4b0cd53 100644
 --- a/crates/siglus_scene_vm/src/wasm_entry.rs
 +++ b/crates/siglus_scene_vm/src/wasm_entry.rs
 @@ -7,6 +7,7 @@
@@ -1147,7 +1332,7 @@ index bf33475..5c9af34 100644
              WindowEvent::MouseWheel { delta, .. } => {
                  let dy = match delta {
                      MouseScrollDelta::LineDelta(_, y) => (y * 120.0) as i32,
-@@ -271,15 +281,60 @@ impl WasmApp {
+@@ -271,15 +281,72 @@ impl WasmApp {
                  host.mouse_wheel(dy);
              }
              WindowEvent::RedrawRequested => {
@@ -1190,25 +1375,37 @@ index bf33475..5c9af34 100644
                          elwt.exit();
                      }
                      Ok(false) => {
-+                        if let Some(frame) = host.software_frame() {
-+                            let array = js_sys::Uint8Array::from(frame.as_slice());
-+                            let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__siglusSoftwareFrame"), &array);
-+                            let (width, height) = host.renderer_mut().logical_size();
++                        let (width, height) = host.renderer_mut().logical_size();
++                        let software_stats = host.software_stats();
++                        host.with_software_frame(|frame| {
++                            // Keep one JS-owned buffer instead of allocating an
++                            // 8 MB snapshot on every frame. No borrowed WASM view
++                            // escapes this call, so memory.grow cannot detach it.
++                            let global = js_sys::global();
++                            let array = js_sys::Reflect::get(&global, &JsValue::from_str("__siglusSoftwareFrame"))
++                                .ok().and_then(|value| value.dyn_into::<js_sys::Uint8Array>().ok())
++                                .filter(|array| array.length() as usize == frame.len())
++                                .unwrap_or_else(|| js_sys::Uint8Array::new_with_length(frame.len() as u32));
++                            array.copy_from(frame);
++                            let revision = js_sys::Reflect::get(&global, &JsValue::from_str("__siglusSoftwareFrameRevision"))
++                                .ok().and_then(|value| value.as_f64()).unwrap_or(0.0) + 1.0;
++                            let _ = js_sys::Reflect::set(&global, &JsValue::from_str("__siglusSoftwareFrameRevision"), &JsValue::from_f64(revision));
++                            let _ = js_sys::Reflect::set(&global, &JsValue::from_str("__siglusSoftwareFrame"), &array);
 +                            let size = js_sys::Array::new();
 +                            size.push(&JsValue::from(width));
 +                            size.push(&JsValue::from(height));
 +                            let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__siglusSoftwareSize"), &size);
-+                            if let Some((drawn, missing)) = host.software_stats() {
++                            if let Some((drawn, missing)) = software_stats {
 +                                let stats = js_sys::Array::new();
 +                                stats.push(&JsValue::from(drawn));
 +                                stats.push(&JsValue::from(missing));
 +                                let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__siglusSoftwareStats"), &stats);
 +                            }
-+                        }
++                        });
                          if let Some(w) = self.window {
                              w.request_redraw();
                          }
-@@ -305,7 +360,16 @@ impl ApplicationHandler for WasmApp {
+@@ -305,7 +372,16 @@ impl ApplicationHandler for WasmApp {
              return;
          };
          match result {
@@ -1226,7 +1423,7 @@ index bf33475..5c9af34 100644
                  self.host = Some(host);
                  if let Some(w) = self.window {
                      w.request_redraw();
-@@ -338,7 +402,8 @@ impl ApplicationHandler for WasmApp {
+@@ -338,7 +414,8 @@ impl ApplicationHandler for WasmApp {
          if let Some(w) = self.window {
              w.request_redraw();
          }
@@ -1236,7 +1433,7 @@ index bf33475..5c9af34 100644
      }
  }
  
-@@ -454,3 +519,67 @@ fn map_keycode(code: KeyCode) -> Option<VmKey> {
+@@ -454,3 +531,67 @@ fn map_keycode(code: KeyCode) -> Option<VmKey> {
          _ => None,
      }
  }
@@ -1304,6 +1501,46 @@ index bf33475..5c9af34 100644
 +        (y - viewport.1 as f64) * logical.1 as f64 / viewport.3.max(1) as f64,
 +    )
 +}
+diff --git a/crates/siglus_scene_vm/src/wasm_vfs.rs b/crates/siglus_scene_vm/src/wasm_vfs.rs
+index 1cbe2a5..8080461 100644
+--- a/crates/siglus_scene_vm/src/wasm_vfs.rs
++++ b/crates/siglus_scene_vm/src/wasm_vfs.rs
+@@ -14,6 +14,7 @@
+
+ use anyhow::{Context, Result, anyhow, bail};
+ use js_sys::{Array, Uint8Array};
++use wasm_bindgen::JsCast;
+ use wasm_bindgen::prelude::*;
+
+ #[wasm_bindgen]
+@@ -31,6 +32,27 @@ extern "C" {
+     fn siglus_known_file_count() -> u32;
+ }
+
++/// Optional bounded voice-archive bridge. Legacy directory launchers keep the
++/// whole-file fallback; Revaro supplies just the requested encoded Ogg segment.
++pub fn read_ovk_entry(path: &str, entry_no: u32) -> Result<Option<Vec<u8>>> {
++    let value = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("siglusReadOvkEntry"))
++        .unwrap_or(JsValue::UNDEFINED);
++    let Ok(function) = value.dyn_into::<js_sys::Function>() else {
++        return Ok(None);
++    };
++    let result = function
++        .call2(
++            &JsValue::UNDEFINED,
++            &JsValue::from_str(&normalize_siglus_path(path)),
++            &JsValue::from_f64(f64::from(entry_no)),
++        )
++        .map_err(|error| anyhow!("read OVK segment: {error:?}"))?;
++    let bytes = result
++        .dyn_into::<Uint8Array>()
++        .map_err(|_| anyhow!("OVK bridge returned non-binary data"))?;
++    Ok(Some(bytes.to_vec()))
++}
++
+ /// Path-based filesystem surface used by the wasm port.
+ ///
+ /// The first wasm implementation deliberately supports whole-file reads only.
 diff --git a/crates/siglus_scene_vm/src/movie/browser.rs b/crates/siglus_scene_vm/src/movie/browser.rs
 new file mode 100644
 index 0000000..ebc19d5
@@ -1674,10 +1911,10 @@ index 0000000..ebc19d5
 +}
 diff --git a/crates/siglus_scene_vm/src/render/software.rs b/crates/siglus_scene_vm/src/render/software.rs
 new file mode 100644
-index 0000000..3e84567
+index 0000000..fbe4171
 --- /dev/null
 +++ b/crates/siglus_scene_vm/src/render/software.rs
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,587 @@
 +//! Small CPU compositor used by browsers that expose neither WebGL2 nor WebGPU.
 +//!
 +//! It intentionally implements the common 2D Siglus path first. Meshes and
@@ -1686,6 +1923,7 @@ index 0000000..3e84567
 +//! an RGBA framebuffer which the wasm shell presents with Canvas2D.
 +
 +use anyhow::Result;
++use std::sync::{Arc, Weak};
 +
 +use crate::assets::RgbaImage;
 +use crate::image_manager::ImageManager;
@@ -1693,6 +1931,13 @@ index 0000000..3e84567
 +use crate::render_math::sprite_quad_geometry_rect;
 +use crate::render_plan::{src_clip_rect, tona_src_clip_local_rect};
 +use crate::runtime::FrameCaptureBackend;
++
++struct BaseFrameCache {
++    image: Weak<RgbaImage>,
++    version: u64,
++    signature: String,
++    pixels: Vec<u8>,
++}
 +
 +pub struct SoftwareRenderer {
 +    logical_width: u32,
@@ -1702,6 +1947,7 @@ index 0000000..3e84567
 +    scale_factor: f32,
 +    viewport: (u32, u32, u32, u32),
 +    frame: Vec<u8>,
++    base_cache: Option<BaseFrameCache>,
 +    pub drawn_sprites: u32,
 +    pub missing_images: u32,
 +}
@@ -1718,6 +1964,7 @@ index 0000000..3e84567
 +            scale_factor: 1.0,
 +            viewport: (0, 0, width, height),
 +            frame: vec![0; (width as usize) * (height as usize) * 4],
++            base_cache: None,
 +            drawn_sprites: 0,
 +            missing_images: 0,
 +        }
@@ -1778,6 +2025,7 @@ index 0000000..3e84567
 +        let expected = (self.logical_width as usize) * (self.logical_height as usize) * 4;
 +        if self.frame.len() != expected {
 +            self.frame.resize(expected, 0);
++            self.base_cache = None;
 +        }
 +    }
 +
@@ -1786,8 +2034,53 @@ index 0000000..3e84567
 +        self.drawn_sprites = 0;
 +        self.missing_images = 0;
 +        let sprites = frame.debug_flatten();
-+        for item in sprites.iter().filter(|item| item.sprite.visible) {
-+            self.draw_sprite(images, item);
++        let mut visible = sprites.iter().filter(|item| item.sprite.visible);
++        if let Some(first) = visible.next() {
++            let entry = first
++                .sprite
++                .image_id
++                .as_ref()
++                .and_then(|id| images.get_entry(id));
++            if let Some((image, version)) = entry.filter(|(image, _)| {
++                image.width >= self.logical_width / 2 && image.height >= self.logical_height / 2
++            }) {
++                // Cache only the first layer, including its clear pixels. The
++                // complete sprite state and image generation invalidate it.
++                let signature = format!(
++                    "{}x{}:{:?}",
++                    self.logical_width, self.logical_height, first.sprite
++                );
++                let hit = self.base_cache.as_ref().is_some_and(|cache| {
++                    cache.version == version
++                        && cache.signature == signature
++                        && cache.image.ptr_eq(&Arc::downgrade(&image))
++                        && cache.pixels.len() == self.frame.len()
++                });
++                if hit {
++                    self.frame
++                        .copy_from_slice(&self.base_cache.as_ref().unwrap().pixels);
++                    self.drawn_sprites += 1;
++                } else {
++                    self.draw_sprite_inner(images, first, true);
++                    let cache = self.base_cache.get_or_insert_with(|| BaseFrameCache {
++                        image: Weak::new(),
++                        version: 0,
++                        signature: String::new(),
++                        pixels: Vec::new(),
++                    });
++                    cache.image = Arc::downgrade(&image);
++                    cache.version = version;
++                    cache.signature = signature;
++                    cache.pixels.resize(self.frame.len(), 0);
++                    cache.pixels.copy_from_slice(&self.frame);
++                }
++            } else {
++                self.base_cache = None;
++                self.draw_sprite_inner(images, first, true);
++            }
++        }
++        for item in visible {
++            self.draw_sprite_inner(images, item, true);
 +        }
 +        Ok(())
 +    }
@@ -1796,10 +2089,12 @@ index 0000000..3e84567
 +        &self.frame
 +    }
 +
-+    pub fn clear_runtime_image_textures(&mut self) {}
++    pub fn clear_runtime_image_textures(&mut self) {
++        self.base_cache = None;
++    }
 +    pub fn dump_next_frame(&mut self, _path: std::path::PathBuf) {}
 +
-+    fn draw_sprite(&mut self, images: &ImageManager, item: &RenderSprite) {
++    fn draw_sprite_inner(&mut self, images: &ImageManager, item: &RenderSprite, fast: bool) {
 +        let sprite = &item.sprite;
 +        let Some(image_id) = sprite.image_id.as_ref() else {
 +            return;
@@ -1915,6 +2210,62 @@ index 0000000..3e84567
 +        if alpha == 0 {
 +            return;
 +        }
++        // Most VN layers are axis-aligned. Invert their transform once per
++        // column/row rather than repeat floating-point divisions for every pixel.
++        // Keep exactly the reference sampler's arithmetic and nearest filtering.
++        if fast && ay == 0.0 && bx == 0.0 {
++            let xs: Vec<Option<usize>> = (x0..x1)
++                .map(|px| {
++                    let a = ((px as f32 + 0.5 - origin.x) * by) / determinant;
++                    if !(0.0..1.0).contains(&a) {
++                        return None;
++                    }
++                    let u = (u0 + a * (u1 - u0)).clamp(0.0, 1.0);
++                    Some(((u * image.width as f32).floor() as u32).min(image.width - 1) as usize)
++                })
++                .collect();
++            let identity_tone = sprite.bright == 0
++                && (sprite.color_rate == 0 || sprite.color_rate == 255)
++                && sprite.color_add_r == 0
++                && sprite.color_add_g == 0
++                && sprite.color_add_b == 0
++                && sprite.mono == 0;
++            for py in y0..y1 {
++                let b = (ax * (py as f32 + 0.5 - origin.y)) / determinant;
++                if !(0.0..1.0).contains(&b) {
++                    continue;
++                }
++                let v = (v0 + b * (v1 - v0)).clamp(0.0, 1.0);
++                let sy = ((v * image.height as f32).floor() as u32).min(image.height - 1) as usize;
++                let src_row = sy * image.width as usize * 4;
++                let dst_row = (py as usize * self.logical_width as usize + x0 as usize) * 4;
++                for (column, &sx) in xs.iter().enumerate() {
++                    let Some(sx) = sx else {
++                        continue;
++                    };
++                    let si = src_row + sx * 4;
++                    let sa = (u32::from(image.rgba[si + 3]) * alpha / 255) as u8;
++                    if sa == 0 {
++                        continue;
++                    }
++                    let di = dst_row + column * 4;
++                    let mut src = [image.rgba[si], image.rgba[si + 1], image.rgba[si + 2], sa];
++                    if !identity_tone {
++                        src[0] = tone(src[0], sprite);
++                        src[1] = tone(src[1], sprite);
++                        src[2] = tone(src[2], sprite);
++                    }
++                    if sa == 255
++                        && matches!(sprite.blend, SpriteBlend::Normal | SpriteBlend::Overlay)
++                    {
++                        self.frame[di..di + 4].copy_from_slice(&src);
++                    } else {
++                        blend_pixel(&mut self.frame[di..di + 4], src, sprite.blend);
++                    }
++                }
++            }
++            return;
++        }
 +        for py in y0..y1 {
 +            for px in x0..x1 {
 +                let dx = px as f32 + 0.5 - origin.x;
@@ -2003,4 +2354,151 @@ index 0000000..3e84567
 +            rgba: self.frame.clone(),
 +        })
 +    }
++}
++
++// Deterministic, asset-free verification of the optimized sampler against the
++// general affine sampler. The browser regression invokes the actual WASM code.
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++#[wasm_bindgen::prelude::wasm_bindgen]
++pub fn siglus_wasm_software_verify() -> String {
++    use crate::layer::{ClipRect, Sprite};
++    let mut images = ImageManager::new(std::path::PathBuf::from("."));
++    let bg = RgbaImage {
++        width: 32,
++        height: 24,
++        center_x: 0,
++        center_y: 0,
++        rgba: [17, 31, 59, 255].repeat(32 * 24),
++    };
++    let background = images.insert_image(bg.clone());
++    let mut rgba = Vec::new();
++    for i in 0..13 * 15 {
++        rgba.extend_from_slice(&[
++            (i * 31) as u8,
++            (i * 53) as u8,
++            (i * 71) as u8,
++            [0, 64, 128, 255][i % 4],
++        ]);
++    }
++    let foreground = images.insert_image(RgbaImage {
++        width: 13,
++        height: 15,
++        center_x: 3,
++        center_y: -2,
++        rgba,
++    });
++    let mut optimized = SoftwareRenderer::new(32, 24);
++    let mut reference = SoftwareRenderer::new(32, 24);
++    let mut failures = Vec::new();
++    for case in 0..80 {
++        let mut sprite = Sprite {
++            visible: true,
++            image_id: Some(foreground.clone()),
++            x: [0, -4, 9, 27][case % 4],
++            y: [-2, 0, 8, 19][case % 4],
++            ..Default::default()
++        };
++        sprite.scale_x = [1.0, 0.5, 1.7, -1.0][case / 4 % 4];
++        sprite.scale_y = [1.0, 1.3, -0.7, 2.0][case / 4 % 4];
++        sprite.alpha = [255, 128, 0, 63][case / 16 % 4];
++        sprite.blend = [
++            SpriteBlend::Normal,
++            SpriteBlend::Add,
++            SpriteBlend::Sub,
++            SpriteBlend::Mul,
++            SpriteBlend::Screen,
++        ][case / 16];
++        if case % 3 == 0 {
++            sprite.src_clip = Some(ClipRect {
++                left: 2,
++                top: 1,
++                right: 11,
++                bottom: 13,
++            });
++        }
++        if case % 5 == 0 {
++            sprite.dst_clip = Some(ClipRect {
++                left: 4,
++                top: 3,
++                right: 25,
++                bottom: 19,
++            });
++        }
++        if case % 7 == 0 {
++            sprite.rotate = 0.2;
++        }
++        if case % 11 == 0 {
++            sprite.object_anchor = true;
++            sprite.texture_center_x = 3.0;
++            sprite.texture_center_y = -2.0;
++        }
++        if case % 13 == 0 {
++            sprite.bright = 9;
++            sprite.color_rate = 173;
++            sprite.color_add_g = 7;
++        }
++        let base = Sprite {
++            visible: true,
++            image_id: Some(background.clone()),
++            ..Default::default()
++        };
++        let frame = RenderFrame::ordinary(vec![
++            RenderSprite::new(None, None, base),
++            RenderSprite::new(None, None, sprite),
++        ]);
++        for repeat in 0..2 {
++            if repeat == 1 {
++                let mut changed = bg.clone();
++                changed.rgba[0] = case as u8;
++                images.replace_image(&background, changed).unwrap();
++            }
++            optimized.render_frame(&images, &frame).unwrap();
++            reference.frame.fill(0);
++            for item in &frame.sprites {
++                reference.draw_sprite_inner(&images, item, false);
++            }
++            let differences = optimized
++                .frame
++                .iter()
++                .zip(&reference.frame)
++                .filter(|(a, b)| a != b)
++                .count();
++            if differences != 0 {
++                failures.push(
++                    serde_json::json!({"case":case,"repeat":repeat,"different_bytes":differences}),
++                );
++            }
++        }
++    }
++    // Equal-area logical resizes must also invalidate the background cache.
++    let mut gradient = bg.clone();
++    for (i, pixel) in gradient.rgba.chunks_exact_mut(4).enumerate() {
++        pixel[0] = i as u8;
++        pixel[1] = (i / 32 * 11) as u8;
++    }
++    images.replace_image(&background, gradient).unwrap();
++    let frame = RenderFrame::ordinary(vec![RenderSprite::new(
++        None,
++        None,
++        Sprite {
++            visible: true,
++            image_id: Some(background),
++            fit: SpriteFit::FullScreen,
++            ..Default::default()
++        },
++    )]);
++    optimized.render_frame(&images, &frame).unwrap();
++    for (w, h) in [(24, 32), (32, 24)] {
++        optimized.resize_with_logical_viewport(w, h, 1.0, w, h, 0, 0, w, h);
++        reference.resize_with_logical_viewport(w, h, 1.0, w, h, 0, 0, w, h);
++        optimized.render_frame(&images, &frame).unwrap();
++        reference.frame.fill(0);
++        for item in &frame.sprites {
++            reference.draw_sprite_inner(&images, item, false);
++        }
++        if optimized.frame != reference.frame {
++            failures.push(serde_json::json!({"resize":[w,h]}));
++        }
++    }
++    serde_json::json!({"comparisons":162,"failures":failures}).to_string()
 +}
