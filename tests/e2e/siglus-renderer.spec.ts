@@ -1,6 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 
 async function probe(page: Page, gpu: 'available' | 'missing' | 'rejected', gl: boolean) {
+  const renderer = await page.request.get('/galgame/siglus/renderer.js')
+  expect(renderer.status(), 'the renderer module must be served by the real server').toBe(200)
+  expect(renderer.headers()['content-type']).toContain('javascript')
   await page.addInitScript(({ gpu, gl }) => {
     const calls: string[] = []
     ;(window as any).__rendererCalls = calls
@@ -45,7 +48,7 @@ for (const gpu of ['missing', 'rejected'] as const) {
   })
 }
 
-test('unavailable graphics backends produce an actionable error', async ({ page }) => {
+test('unavailable graphics backends select the software renderer', async ({ page }) => {
   expect(await probe(page, 'missing', false)).toEqual({
     result: { backend: 'software', maxTextureDimension2D: 0, diagnostics: expect.any(String) },
     calls: ['webgl2', 'webgl2'],

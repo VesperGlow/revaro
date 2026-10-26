@@ -204,9 +204,11 @@ async fn static_response(
             | "kirikiri2/SOURCE.md"
             | "siglus/index.html"
             | "siglus/player.js"
+            | "siglus/renderer.js"
             | "siglus/fflate.js"
             | "siglus/FFLATE-LICENSE.txt"
             | "siglus/ENGINE-LICENSE.txt"
+            | "siglus/CPAL-LICENSE.txt"
             | "siglus/pkg/game_launcher.js"
             | "siglus/pkg/game_launcher_bg.wasm"
             | "siglus/pkg/SOURCE_REVISION"
@@ -688,19 +690,20 @@ mod tests {
             .status(),
             StatusCode::NOT_FOUND
         );
-        assert_eq!(
-            request(
-                &state,
-                "GET",
-                "/galgame/kirikiri2/index.wasm",
-                None,
-                None,
-                None
-            )
-            .await
-            .status(),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
+        for asset in [
+            "/galgame/kirikiri2/index.wasm",
+            "/galgame/siglus/renderer.js",
+            "/galgame/siglus/CPAL-LICENSE.txt",
+        ] {
+            // Known assets pass the allowlist even when the bundle is absent.
+            assert_eq!(
+                request(&state, "GET", asset, None, None, None)
+                    .await
+                    .status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{asset}"
+            );
+        }
         assert_eq!(
             request(&state, "GET", "/g/missing/manifest", None, None, None)
                 .await
