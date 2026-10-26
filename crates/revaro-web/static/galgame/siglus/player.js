@@ -1,3 +1,5 @@
+import { selectRenderer } from './renderer.js';
+
 const error = document.getElementById('error');
 const canvas = document.getElementById('siglus-canvas');
 const loading = document.getElementById('loading');
@@ -66,6 +68,42 @@ function resumeAudio() {
         if (context.state === 'closed') audioContexts.delete(context);
         else if (context.state === 'suspended') context.resume().catch(() => {});
     }
+}
+function startSoftwareCanvas() {
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw Error('无法创建 Canvas2D 软件画布。');
+    let image;
+    const backing = document.createElement('canvas');
+    const backingContext = backing.getContext('2d', { alpha: false });
+    const resize = () => {
+        const dpr = globalThis.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+        canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    };
+    resize();
+    const paint = () => {
+        const dpr = globalThis.devicePixelRatio || 1;
+        const canvasWidth = Math.max(1, Math.round(canvas.clientWidth * dpr));
+        const canvasHeight = Math.max(1, Math.round(canvas.clientHeight * dpr));
+        if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) resize();
+        const bytes = globalThis.__siglusSoftwareFrame;
+        const size = globalThis.__siglusSoftwareSize;
+        if (bytes && size?.length === 2) {
+            const width = Number(size[0]), height = Number(size[1]);
+            if (!image || image.width !== width || image.height !== height) image = new ImageData(width, height);
+            image.data.set(bytes);
+            if (backing.width !== width || backing.height !== height) { backing.width = width; backing.height = height; }
+            backingContext.putImageData(image, 0, 0);
+            context.imageSmoothingEnabled = false;
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            // Canvas2D fallback fills the CSS canvas. GPU mode keeps the
+            // engine's aspect-ratio viewport; software mode avoids large
+            // black bars on ultrawide displays where no GPU viewport exists.
+            context.drawImage(backing, 0, 0, canvas.width, canvas.height);
+        }
+        requestAnimationFrame(paint);
+    };
+    requestAnimationFrame(paint);
 }
 for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, resumeAudio, { capture: true });
 const reads = [];
@@ -214,6 +252,13 @@ function openDb() {
 }
 async function start() {
     try {
+        siglusProbe.renderer = await selectRenderer();
+        globalThis.siglusRendererBackend = siglusProbe.renderer.backend;
+        if (siglusProbe.renderer.backend === 'software') {
+            const dpr = globalThis.devicePixelRatio || 1;
+            canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+            canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+        }
         const response = await fetch(`/g/${encodeURIComponent(token)}/index`);
         if (!response.ok) throw Error(`无法读取游戏目录（HTTP ${response.status}）`);
         meta = await response.json();
@@ -256,6 +301,7 @@ async function start() {
         await start_siglus_from_directory('siglus-canvas', JSON.stringify(
             Array.from(files, ([path, file]) => ({ path, size: file.size, lastModified: 0 })),
         ));
+        if (siglusProbe.renderer.backend === 'software') startSoftwareCanvas();
         if (engineError) throw Error(engineError);
         if (!failed) {
             loading.hidden = true;

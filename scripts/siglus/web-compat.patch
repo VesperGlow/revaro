@@ -69,10 +69,165 @@ index f2e34f8..0defa23 100644
          Ok(())
      }
 diff --git a/crates/siglus_scene_vm/src/host.rs b/crates/siglus_scene_vm/src/host.rs
-index e4c8e09..deaa7cf 100644
+index e4c8e09..b4d0e29 100644
 --- a/crates/siglus_scene_vm/src/host.rs
 +++ b/crates/siglus_scene_vm/src/host.rs
-@@ -380,6 +380,31 @@ impl SiglusHost {
+@@ -17,7 +17,10 @@ use anyhow::{Context, Result};
+ use siglus_assets::gameexe::{GameexeConfig, GameexeDecodeOptions, decode_gameexe_dat_bytes};
+ use siglus_assets::scene_pck::{ScenePck, ScenePckDecodeOptions};
+
+-use crate::render::Renderer;
++use crate::assets::RgbaImage;
++use crate::image_manager::ImageManager;
++use crate::layer::RenderFrame;
++use crate::render::{Renderer, software::SoftwareRenderer};
+ use crate::runtime::forms::syscom as syscom_form;
+ use crate::runtime::globals::{
+     SyscomPendingProc, SyscomPendingProcKind, SystemMessageBoxButton, SystemMessageBoxModalState,
+@@ -25,7 +28,7 @@ use crate::runtime::globals::{
+ };
+ use crate::runtime::input::{VmKey, VmMouseButton};
+ use crate::runtime::wait::VmWait;
+-use crate::runtime::{CommandContext, FrameCaptureBackendRef, ProcKind, native_ui};
++use crate::runtime::{CommandContext, FrameCaptureBackend, FrameCaptureBackendRef, ProcKind, native_ui};
+ use crate::scene_stream::SceneStream;
+ use crate::vm::{SceneVm, VmConfig};
+
+@@ -197,7 +200,7 @@ pub struct SiglusHost {
+     config: SiglusHostConfig,
+     boot: BootConfig,
+     flow: ProcFlow,
+-    renderer: Rc<RefCell<Renderer>>,
++    renderer: RenderBackend,
+     vm: SceneVm<'static>,
+     redraw_count: u32,
+     script_needs_pump: bool,
+@@ -209,6 +212,64 @@ pub struct SiglusHost {
+     last_step: Option<Instant>,
+ }
+
++#[derive(Clone)]
++enum RenderBackend {
++    Gpu(Rc<RefCell<Renderer>>),
++    Software(Rc<RefCell<SoftwareRenderer>>),
++}
++
++impl RenderBackend {
++    fn adapter_name(&self) -> String {
++        match self { Self::Gpu(r) => r.borrow().adapter_name(), Self::Software(r) => r.borrow().adapter_name() }
++    }
++    fn resize_with_logical_viewport(&self, args: (u32,u32,f32,u32,u32,u32,u32,u32,u32)) {
++        match self {
++            Self::Gpu(r) => r.borrow_mut().resize_with_logical_viewport(args.0,args.1,args.2,args.3,args.4,args.5,args.6,args.7,args.8),
++            Self::Software(r) => r.borrow_mut().resize_with_logical_viewport(args.0,args.1,args.2,args.3,args.4,args.5,args.6,args.7,args.8),
++        }
++    }
++    fn resize_with_scale(&self, width: u32, height: u32, scale: f32) {
++        match self { RenderBackend::Gpu(r) => r.borrow_mut().resize_with_scale(width,height,scale), RenderBackend::Software(r) => r.borrow_mut().resize_with_logical_viewport(width,height,scale,width.max(1),height.max(1),0,0,width.max(1),height.max(1)) }
++    }
++    fn set_wait_display_vsync(&self, wait: bool) { if let RenderBackend::Gpu(r) = self { r.borrow_mut().set_wait_display_vsync(wait); } }
++    fn render_frame(&self, images: &ImageManager, frame: &RenderFrame) -> Result<()> {
++        match self { Self::Gpu(r) => r.borrow_mut().render_frame(images, frame), Self::Software(r) => r.borrow_mut().render_frame(images, frame) }
++    }
++    fn clear_runtime_image_textures(&self) {
++        match self { Self::Gpu(r) => r.borrow_mut().clear_runtime_image_textures(), Self::Software(r) => r.borrow_mut().clear_runtime_image_textures() }
++    }
++    fn scale_factor(&self) -> f32 { match self { Self::Gpu(r) => r.borrow().scale_factor(), Self::Software(r) => r.borrow().scale_factor() } }
++    fn surface_viewport(&self) -> (u32,u32,u32,u32) { match self { Self::Gpu(r) => r.borrow().surface_viewport(), Self::Software(r) => r.borrow().surface_viewport() } }
++    fn logical_size(&self) -> (u32,u32) { match self { Self::Gpu(r) => r.borrow().logical_size(), Self::Software(r) => r.borrow().logical_size() } }
++    fn screen_viewport(&self) -> [u32;4] { let (x,y,w,h) = self.surface_viewport(); [x,y,w,h] }
++    fn frame(&self) -> Option<Vec<u8>> { match self { Self::Gpu(_) => None, Self::Software(r) => Some(r.borrow().frame().to_vec()) } }
++    fn dump_next_frame(&self, _path: PathBuf) {}
++}
++
++pub struct RenderBackendRefMut<'a> { inner: &'a mut RenderBackend }
++impl RenderBackendRefMut<'_> {
++    pub fn scale_factor(&self) -> f32 { self.inner.scale_factor() }
++    pub fn logical_size(&self) -> (u32,u32) { self.inner.logical_size() }
++    pub fn surface_viewport(&self) -> (u32,u32,u32,u32) { self.inner.surface_viewport() }
++    pub fn screen_viewport(&self) -> [u32;4] { self.inner.screen_viewport() }
++    pub fn dump_next_frame(&mut self, path: PathBuf) { self.inner.dump_next_frame(path) }
++    pub fn replace_surface_from_raw_handles(&mut self, display: raw_window_handle::RawDisplayHandle, window: raw_window_handle::RawWindowHandle, width: u32, height: u32) -> Result<()> {
++        match &mut *self.inner {
++            RenderBackend::Gpu(renderer) => unsafe { renderer.borrow_mut().replace_surface_from_raw_handles(display, window, width, height) },
++            RenderBackend::Software(_) => Ok(()),
++        }
++    }
++}
++
++impl FrameCaptureBackend for RenderBackend {
++    fn capture_render_frame(&mut self, images: &ImageManager, frame: &RenderFrame, width: u32, height: u32) -> Result<RgbaImage> {
++        match self {
++            Self::Gpu(r) => r.borrow_mut().capture_render_frame(images, frame, width, height),
++            Self::Software(r) => r.borrow_mut().capture_render_frame(images, frame, width, height),
++        }
++    }
++}
++
+ fn find_scene_pck_for_host(project_dir: &Path) -> Result<PathBuf> {
+     crate::resource::find_scene_pck_path(project_dir)
+ }
+@@ -255,6 +316,16 @@ impl SiglusHost {
+     /// Synchronous constructor for native hosts which own their event loop and
+     /// do not use a desktop async executor (Horizon/libnx in particular).
+     pub fn new_with_renderer_sync(config: SiglusHostConfig, renderer: Renderer) -> Result<Self> {
++        Self::new_with_backend(config, RenderBackend::Gpu(Rc::new(RefCell::new(renderer))))
++    }
++
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    pub fn new_software(config: SiglusHostConfig) -> Result<Self> {
++        let initial_size = Self::resolve_initial_size(&config);
++        Self::new_with_backend(config, RenderBackend::Software(Rc::new(RefCell::new(SoftwareRenderer::new(initial_size.0, initial_size.1)))) )
++    }
++
++    fn new_with_backend(config: SiglusHostConfig, renderer: RenderBackend) -> Result<Self> {
+         switch_startup_marker!(b"siglus_switch: host initial-size begin\n\0");
+         let initial_size = Self::resolve_initial_size(&config);
+         switch_startup_marker!(b"siglus_switch: host initial-size complete\n\0");
+@@ -265,12 +336,11 @@ impl SiglusHost {
+         flow.push(ProcType::Script, 0);
+         flow.push(ProcType::StartWarning, 0);
+         let chihaya_display_adapter_name = renderer.adapter_name();
+-        let renderer = Rc::new(RefCell::new(renderer));
+         switch_startup_marker!(b"siglus_switch: host vm-init begin\n\0");
+         let mut vm = Self::init_vm(&config, &boot, initial_size)?;
+         switch_startup_marker!(b"siglus_switch: host vm-init complete\n\0");
+         vm.ctx.globals.system.chihaya_display_adapter_name = chihaya_display_adapter_name;
+-        let capture_backend: FrameCaptureBackendRef = renderer.clone();
++        let capture_backend: FrameCaptureBackendRef = Rc::new(RefCell::new(renderer.clone()));
+         vm.ctx.set_frame_capture_backend(Some(capture_backend));
+         Ok(Self {
+             config,
+@@ -311,9 +381,7 @@ impl SiglusHost {
+     }
+
+     pub fn resize(&mut self, width: u32, height: u32, scale_factor: f32) {
+-        self.renderer
+-            .borrow_mut()
+-            .resize_with_scale(width, height, scale_factor.max(1.0));
++        self.renderer.resize_with_scale(width, height, scale_factor.max(1.0));
+         let logical_w = ((width as f32) / scale_factor.max(1.0)).max(1.0).round() as u32;
+         let logical_h = ((height as f32) / scale_factor.max(1.0)).max(1.0).round() as u32;
+         self.vm.ctx.set_screen_size(logical_w, logical_h);
+@@ -332,7 +400,7 @@ impl SiglusHost {
+         viewport_width: u32,
+         viewport_height: u32,
+     ) {
+-        self.renderer.borrow_mut().resize_with_logical_viewport(
++        self.renderer.resize_with_logical_viewport((
+             surface_width,
+             surface_height,
+             scale_factor.max(1.0),
+@@ -342,7 +410,7 @@ impl SiglusHost {
+             viewport_y,
+             viewport_width.max(1),
+             viewport_height.max(1),
+-        );
++        ));
+         self.vm
+             .ctx
+             .set_screen_size(logical_width.max(1), logical_height.max(1));
+@@ -380,6 +448,31 @@ impl SiglusHost {
          )
      }
  
@@ -104,7 +259,7 @@ index e4c8e09..deaa7cf 100644
      fn native_messagebox_pending(&self) -> bool {
          self.vm
              .ctx
-@@ -409,6 +434,11 @@ impl SiglusHost {
+@@ -409,6 +502,11 @@ impl SiglusHost {
          Ok(self.pending_exit || (self.vm.is_halted() && self.flow.stack.is_empty()))
      }
  
@@ -116,6 +271,91 @@ index e4c8e09..deaa7cf 100644
      pub fn mouse_move(&mut self, x: f64, y: f64) {
          if self.native_messagebox_pending() {
              return;
+@@ -568,8 +666,8 @@ impl SiglusHost {
+         self.script_needs_pump = true;
+     }
+
+-    pub fn renderer_mut(&mut self) -> RefMut<'_, Renderer> {
+-        self.renderer.borrow_mut()
++    pub fn renderer_mut(&mut self) -> RenderBackendRefMut<'_> {
++        RenderBackendRefMut { inner: &mut self.renderer }
+     }
+
+     /// Writes the global save if what it keeps has changed since `last`
+@@ -586,6 +684,14 @@ impl SiglusHost {
+         &mut self.vm
+     }
+
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    pub fn software_frame(&self) -> Option<Vec<u8>> { self.renderer.frame() }
++
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    pub fn software_stats(&self) -> Option<(u32, u32)> {
++        match &self.renderer { RenderBackend::Software(r) => { let r = r.borrow(); Some((r.drawn_sprites, r.missing_images)) }, RenderBackend::Gpu(_) => None }
++    }
++
+     fn resolve_initial_size(config: &SiglusHostConfig) -> (u32, u32) {
+         let cfg_size = Self::try_load_gameexe(&config.project_dir)
+             .as_ref()
+@@ -1204,7 +1310,7 @@ impl SiglusHost {
+     }
+
+     fn finish_runtime_load(&mut self) {
+-        self.renderer.borrow_mut().clear_runtime_image_textures();
++        self.renderer.clear_runtime_image_textures();
+         self.flow.stack.clear();
+         self.flow.pending_syscom_proc = None;
+         self.syscom_suspended_waits.clear();
+@@ -1234,7 +1340,7 @@ impl SiglusHost {
+         // changes, so resetting the append before restart preserves that ordering.
+         self.vm.ctx.reset_active_append_to_initial();
+         self.vm.restart_scene_name(&target_scene, target_z)?;
+-        self.renderer.borrow_mut().clear_runtime_image_textures();
++        self.renderer.clear_runtime_image_textures();
+         if let Some(msgbk) = saved_msgbk {
+             self.vm.ctx.globals.msgbk_forms = msgbk;
+         }
+@@ -1262,7 +1368,7 @@ impl SiglusHost {
+         // scene without resetting the active append.
+         crate::runtime::forms::syscom::write_global_save(&self.vm.ctx);
+         self.vm.restart_scene_name(&target_scene, target_z)?;
+-        self.renderer.borrow_mut().clear_runtime_image_textures();
++        self.renderer.clear_runtime_image_textures();
+         self.vm.ctx.globals.finish_wipe();
+         self.flow.stack.clear();
+         self.flow.pending_syscom_proc = None;
+@@ -1627,9 +1733,7 @@ impl SiglusHost {
+         // eng_frame.cpp applies SCRIPT.SET_VSYNC_WAIT_OFF_FLAG after script
+         // processing and before the frame is presented. Keep the VM flag as the
+         // script state and let Renderer perform the display-side transition.
+-        self.renderer
+-            .borrow_mut()
+-            .set_wait_display_vsync(!self.vm.ctx.globals.script.wait_display_vsync_off_flag);
++        self.renderer.set_wait_display_vsync(!self.vm.ctx.globals.script.wait_display_vsync_off_flag);
+         let wait_poll_needed = self.vm.ctx.wait.needs_runtime_poll();
+         #[cfg(target_os = "horizon")]
+         if switch_trace_enabled {
+@@ -1640,6 +1744,9 @@ impl SiglusHost {
+         }
+         #[cfg(target_os = "vita")]
+         let start = Instant::now();
++        if matches!(&self.renderer, RenderBackend::Software(_)) {
++            self.vm.ctx.skip_movies_for_software();
++        }
+         self.vm.tick_frame()?;
+         #[cfg(target_os = "vita")]
+         crate::render::vita_stats::phase(crate::render::vita_stats::TICK, start);
+@@ -1733,9 +1840,7 @@ impl SiglusHost {
+                     switch_trace_frame
+                 ));
+             }
+-            self.renderer
+-                .borrow_mut()
+-                .render_frame(&self.vm.ctx.images, &frame)?;
++            self.renderer.render_frame(&self.vm.ctx.images, &frame)?;
+             #[cfg(target_os = "horizon")]
+             if switch_trace_enabled {
+                 crate::switch_host::report_switch_diagnostic(&format!(
 diff --git a/crates/siglus_scene_vm/src/movie/mod.rs b/crates/siglus_scene_vm/src/movie/mod.rs
 index a7e1a9f..42d00e9 100644
 --- a/crates/siglus_scene_vm/src/movie/mod.rs
@@ -201,6 +441,109 @@ index 261b0cd..a0ed047 100644
  #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
  use std::io::{Read, Write};
  use std::path::{Path, PathBuf};
+diff --git a/crates/siglus_scene_vm/src/render/mod.rs b/crates/siglus_scene_vm/src/render/mod.rs
+index 7948872..a4776be 100644
+--- a/crates/siglus_scene_vm/src/render/mod.rs
++++ b/crates/siglus_scene_vm/src/render/mod.rs
+@@ -24,6 +24,7 @@ use crate::runtime::FrameCaptureBackend;
+
+ mod emote;
+ mod mipmap;
++pub mod software;
+
+ use crate::render_plan::*;
+
+@@ -439,6 +440,19 @@ fn present_mode_for_wait_display_vsync(
+     }
+ }
+
++// CSS size and game coordinates remain unchanged when the physical drawing
++// buffer must fit the actual device limit. Never impose a fixed 2048px cap.
++fn bounded_surface_size(width: u32, height: u32, limit: u32) -> (u32, u32) {
++    let width = width.max(1);
++    let height = height.max(1);
++    let limit = limit.max(1);
++    let scale = (limit as f64 / width.max(height) as f64).min(1.0);
++    (
++        (width as f64 * scale).floor().max(1.0) as u32,
++        (height as f64 * scale).floor().max(1.0) as u32,
++    )
++}
++
+ impl Renderer {
+     /// Human-readable presentation adapter used by the VM's compatibility
+     /// variable. Platform renderers expose the same method without exposing
+@@ -452,7 +466,16 @@ impl Renderer {
+         W: std::ops::Deref<Target = dyn Window> + Into<wgpu::SurfaceTarget<'static>>,
+     {
+         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+-        let backends = wgpu::Backends::GL;
++        let backends = if js_sys::Reflect::get(&js_sys::global(), &"siglusRendererBackend".into())
++            .ok()
++            .and_then(|value| value.as_string())
++            .as_deref()
++            == Some("webgpu")
++        {
++            wgpu::Backends::BROWSER_WEBGPU
++        } else {
++            wgpu::Backends::GL
++        };
+         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+         let backends = wgpu::Backends::all();
+
+@@ -574,7 +597,8 @@ impl Renderer {
+                     label: Some("siglus-bg-device"),
+                     required_features: wgpu::Features::empty(),
+                     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+-                    required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
++                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
++                        .using_resolution(adapter.limits()),
+                     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                     required_limits: wgpu::Limits::default(),
+                 },
+@@ -605,8 +629,8 @@ impl Renderer {
+         } else {
+             1.0
+         };
+-        let width = width.max(1);
+-        let height = height.max(1);
++        let (width, height) =
++            bounded_surface_size(width, height, device.limits().max_texture_dimension_2d);
+         let logical_width = ((width as f32) / scale_factor).max(1.0);
+         let logical_height = ((height as f32) / scale_factor).max(1.0);
+         let alpha_mode = surface_caps
+@@ -1154,6 +1178,8 @@ impl Renderer {
+         if width == 0 || height == 0 {
+             return;
+         }
++        let (width, height) =
++            bounded_surface_size(width, height, self.device.limits().max_texture_dimension_2d);
+         let surface_changed = self.config.width != width || self.config.height != height;
+         let previous_logical_size = self.logical_size();
+         self.scale_factor = Self::valid_scale_factor(scale_factor);
+@@ -1192,10 +1218,18 @@ impl Renderer {
+         );
+         let max_w = self.config.width;
+         let max_h = self.config.height;
+-        let x = viewport_x.min(max_w.saturating_sub(1));
+-        let y = viewport_y.min(max_h.saturating_sub(1));
+-        let w = viewport_width.max(1).min(max_w.saturating_sub(x).max(1));
+-        let h = viewport_height.max(1).min(max_h.saturating_sub(y).max(1));
++        // The host keeps the original physical viewport for pointer inversion.
++        // Scale only the GPU viewport if a surface exceeds the device's limit.
++        let sx = max_w as f64 / surface_width.max(1) as f64;
++        let sy = max_h as f64 / surface_height.max(1) as f64;
++        let x = ((viewport_x as f64 * sx).round() as u32).min(max_w.saturating_sub(1));
++        let y = ((viewport_y as f64 * sy).round() as u32).min(max_h.saturating_sub(1));
++        let w = ((viewport_width as f64 * sx).round() as u32)
++            .max(1)
++            .min(max_w.saturating_sub(x).max(1));
++        let h = ((viewport_height as f64 * sy).round() as u32)
++            .max(1)
++            .min(max_h.saturating_sub(y).max(1));
+         self.surface_viewport = SurfaceViewport { x, y, w, h };
+     }
+
 diff --git a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs b/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
 index d3726dc..989082d 100644
 --- a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
@@ -276,7 +619,7 @@ index d3726dc..989082d 100644
              }
              let ext = path
 diff --git a/crates/siglus_scene_vm/src/runtime/mod.rs b/crates/siglus_scene_vm/src/runtime/mod.rs
-index 436cca9..e26e167 100644
+index 436cca9..ca5afee 100644
 --- a/crates/siglus_scene_vm/src/runtime/mod.rs
 +++ b/crates/siglus_scene_vm/src/runtime/mod.rs
 @@ -571,6 +571,9 @@ pub struct CommandContext {
@@ -289,7 +632,21 @@ index 436cca9..e26e167 100644
  }
  
  /// Convert a high-resolution wall-clock interval into the integer-millisecond
-@@ -833,6 +836,11 @@ impl CommandContext {
+@@ -630,6 +633,13 @@ mod frame_clock_tests {
+ }
+
+ impl CommandContext {
++    /// CPU Canvas2D fallback cannot decode the GPU movie pipeline yet. Close
++    /// active movie objects and release their waits so ordinary dialogue can
++    /// continue instead of leaving a black opening frame.
++    pub fn skip_movies_for_software(&mut self) {
++        self.close_global_movie_runtime();
++        self.finish_skipped_movie_waits();
++    }
+     pub fn sync_script_input_from_runtime(&mut self) {
+         self.script_input = self.input.clone();
+     }
+@@ -833,6 +843,11 @@ impl CommandContext {
          self.globals.syscom.fallback_origin = None;
          self.globals.syscom.msg_back_open = false;
          self.globals.syscom.msg_back_proc_initialized = false;
@@ -301,7 +658,7 @@ index 436cca9..e26e167 100644
          self.globals.system.messagebox_modal = None;
          self.globals.system.messagebox_modal_result = None;
          self.globals.finish_wipe();
-@@ -1589,6 +1597,8 @@ impl CommandContext {
+@@ -1589,6 +1604,8 @@ impl CommandContext {
              frame_clock_sub_ms_ns: 0,
              last_button_hover_sound_pos: None,
              suppress_next_right_syscom_open: false,
@@ -310,7 +667,7 @@ index 436cca9..e26e167 100644
          };
          ctx.set_active_append(initial_append.dir, initial_append.name);
          ctx.apply_gameexe_runtime_defaults();
-@@ -3594,6 +3604,20 @@ impl CommandContext {
+@@ -3594,6 +3611,20 @@ impl CommandContext {
      // Input bridge (platform event -> VM state)
      // ------------------------------------------------------------------
  
@@ -331,7 +688,7 @@ index 436cca9..e26e167 100644
      pub fn platform_shortcuts_blocked(&self) -> bool {
          self.globals.system.messagebox_modal.is_some()
              || self.globals.syscom.menu_open
-@@ -3610,10 +3634,14 @@ impl CommandContext {
+@@ -3610,10 +3641,14 @@ impl CommandContext {
      }
  
      pub fn on_key_down(&mut self, k: input::VmKey) {
@@ -346,7 +703,7 @@ index 436cca9..e26e167 100644
              return;
          }
          self.cancel_pending_editbox_composition();
-@@ -3722,6 +3750,14 @@ impl CommandContext {
+@@ -3722,6 +3757,14 @@ impl CommandContext {
      }
  
      pub fn on_key_up(&mut self, k: input::VmKey) {
@@ -361,7 +718,7 @@ index 436cca9..e26e167 100644
          self.cancel_pending_editbox_composition();
          if self.is_vm_key_disabled(k) {
              return;
-@@ -3739,6 +3775,9 @@ impl CommandContext {
+@@ -3739,6 +3782,9 @@ impl CommandContext {
              )
          {
              self.globals.syscom.hide_mwnd.onoff = false;
@@ -371,7 +728,7 @@ index 436cca9..e26e167 100644
              return;
          }
          if let Some(vk) = input::vmkey_to_vk_code(k) {
-@@ -3944,6 +3983,16 @@ impl CommandContext {
+@@ -3944,6 +3990,16 @@ impl CommandContext {
          if self.globals.syscom.msg_back_open {
              self.input.on_mouse_down(b);
              self.handle_msg_back_mouse_down(b);
@@ -388,7 +745,7 @@ index 436cca9..e26e167 100644
              return;
          }
          self.cancel_pending_editbox_composition();
-@@ -4059,12 +4108,37 @@ impl CommandContext {
+@@ -4059,12 +4115,37 @@ impl CommandContext {
              );
          }
          self.input.on_mouse_up(b);
@@ -426,8 +783,220 @@ index 436cca9..e26e167 100644
          if self.handle_selbtn_mouse_up(b) {
              return;
          }
+diff --git a/crates/siglus_scene_vm/src/text_render.rs b/crates/siglus_scene_vm/src/text_render.rs
+index 9e7be41..b7da993 100644
+--- a/crates/siglus_scene_vm/src/text_render.rs
++++ b/crates/siglus_scene_vm/src/text_render.rs
+@@ -14,6 +14,102 @@ use std::sync::{Mutex, OnceLock};
+
+ static MISSING_CONFIGURED_FONTS_LOGGED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
++// Browser games have no system font directory. Discover the game's own fonts
++// through the VFS and lazily parse them if the selected face lacks a glyph.
++// Keep the configured face for every character that it can render.
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++static BROWSER_FONT_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++static BROWSER_FALLBACK_FONTS: OnceLock<Vec<(PathBuf, FontArc)>> = OnceLock::new();
++
++fn glyph_font(font: &FontArc, ch: char) -> FontArc {
++    if font.glyph_id(ch).0 == 0 {
++        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++        if let Some(paths) = BROWSER_FONT_PATHS.get() {
++            let fallbacks = BROWSER_FALLBACK_FONTS.get_or_init(|| {
++                paths
++                    .iter()
++                    .filter_map(|path| {
++                        let (data, face) = font_file_face(path, "")?;
++                        let font = FontRef::try_from_slice_and_index(data, face).ok()?;
++                        Some((path.clone(), FontArc::from(font)))
++                    })
++                    .collect()
++            });
++            if let Some((_, fallback)) = fallbacks
++                .iter()
++                .find(|(_, candidate)| candidate.glyph_id(ch).0 != 0)
++            {
++                return fallback.clone();
++            }
++        }
++    }
++    font.clone()
++}
++
++fn glyph_advance(font: &FontArc, ch: char, font_px: f32) -> f32 {
++    let selected = glyph_font(font, ch);
++    let scaled = selected.as_scaled(PxScale::from(font_px.max(1.0)));
++    scaled.h_advance(scaled.glyph_id(ch)).max(0.0)
++}
++
++/// Browser diagnostics use the same font selection and rasterizer as dialogue.
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++#[wasm_bindgen::prelude::wasm_bindgen]
++pub fn siglus_wasm_font_probe(text: &str) -> String {
++    let mut cache = FontCache::new();
++    cache.load_for_project_named(Path::new("."), "MS PGothic");
++    let primary = cache.font.as_ref().expect("embedded default font is valid");
++    let glyphs: Vec<_> = text.chars().map(|ch| {
++        let selected = glyph_font(primary, ch);
++        let glyph = rasterize_ab_glyph(primary, ch, 40.0);
++        let source = if primary.glyph_id(ch).0 != 0 {
++            cache.loaded_from.as_ref().map(|p| p.to_string_lossy().into_owned())
++        } else {
++            BROWSER_FALLBACK_FONTS.get().and_then(|fonts| fonts.iter()
++                .find(|(_, font)| font.glyph_id(ch).0 != 0)
++                .map(|(path, _)| path.to_string_lossy().into_owned()))
++        };
++        let hash = glyph.bitmap.iter().fold(0xcbf29ce484222325_u64,
++            |hash, byte| (hash ^ *byte as u64).wrapping_mul(0x100000001b3));
++        serde_json::json!({ "character": ch.to_string(), "primary_glyph": primary.glyph_id(ch).0,
++            "resolved_glyph": selected.glyph_id(ch).0, "source": source,
++            "width": glyph.width, "height": glyph.height,
++            "ink_pixels": glyph.bitmap.iter().filter(|&&byte| byte != 0).count(),
++            "bitmap_hash": format!("{hash:016x}") })
++    }).collect();
++    serde_json::json!({ "primary": cache.loaded_from, "glyphs": glyphs }).to_string()
++}
++
++fn font_directory_files(font_dir: &Path) -> Vec<PathBuf> {
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    {
++        use crate::wasm_vfs::SiglusVfs;
++        let vfs = crate::wasm_vfs::WasmDirectoryVfs::new();
++        vfs.list_dir(&font_dir.to_string_lossy())
++            .unwrap_or_default()
++            .into_iter()
++            .map(|name| font_dir.join(name))
++            .filter(|path| is_supported_font_path(path) && crate::resource::game_file_exists(path))
++            .collect()
++    }
++    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++    {
++        let Some(dir) = crate::resource::resolve_game_path(font_dir).ok().flatten() else {
++            return Vec::new();
++        };
++        std::fs::read_dir(dir)
++            .map(|entries| {
++                entries
++                    .flatten()
++                    .map(|entry| entry.path())
++                    .filter(|path| path.is_file() && is_supported_font_path(path))
++                    .collect()
++            })
++            .unwrap_or_default()
++    }
++}
++
+ // Share one embedded font allocation between game text and desktop dialogs.
+ pub(crate) static DEFAULT_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/default.ttf");
+
+@@ -221,6 +317,16 @@ impl FontCache {
+         self.requested_name = normalized.clone();
+
+         let dirs = project_font_dirs(project_dir);
++        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++        BROWSER_FONT_PATHS.get_or_init(|| {
++            let mut paths: Vec<_> = dirs
++                .iter()
++                .flat_map(|dir| font_directory_files(dir))
++                .collect();
++            paths.sort_by_key(|path| font_path_priority(path));
++            paths.dedup();
++            paths
++        });
+
+         // A configured face is resolved before generic fallback.  Local game
+         // fonts are matched by file/family spelling, including the '@' prefix
+@@ -277,19 +383,9 @@ impl FontCache {
+     }
+
+     fn load_named_from_font_dir(&mut self, font_dir: &Path, normalized_name: &str) -> bool {
+-        let Some(font_dir) = crate::resource::resolve_game_path(font_dir).ok().flatten() else {
+-            return false;
+-        };
+-        let Ok(entries) = std::fs::read_dir(&font_dir) else {
+-            return false;
+-        };
+         let mut exact_file = Vec::new();
+         let mut other = Vec::new();
+-        for entry in entries.flatten() {
+-            let path = entry.path();
+-            if !path.is_file() || !is_supported_font_path(&path) {
+-                continue;
+-            }
++        for path in font_directory_files(font_dir) {
+             let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+             let file_key = normalize_font_name_for_match(file_name.trim_start_matches('@'));
+@@ -316,20 +412,7 @@ impl FontCache {
+         if self.font.is_some() {
+             return true;
+         }
+-        let Some(font_dir) = crate::resource::resolve_game_path(font_dir).ok().flatten() else {
+-            return false;
+-        };
+-        let Ok(entries) = std::fs::read_dir(&font_dir) else {
+-            return false;
+-        };
+-
+-        let mut files = Vec::new();
+-        for entry in entries.flatten() {
+-            let path = entry.path();
+-            if path.is_file() && is_supported_font_path(&path) {
+-                files.push(path);
+-            }
+-        }
++        let mut files = font_directory_files(font_dir);
+         files.sort_by_key(|path| font_path_priority(path));
+
+         for path in files {
+@@ -1403,6 +1486,8 @@ fn rasterize_ab_glyph_oriented(
+     font_px: f32,
+     vertical: bool,
+ ) -> RasterGlyph {
++    let selected = glyph_font(font, ch);
++    let font = &selected;
+     if !vertical {
+         return rasterize_ab_glyph(font, ch, font_px);
+     }
+@@ -1484,6 +1569,8 @@ fn rotate_raster_glyph_clockwise(src: RasterGlyph) -> RasterGlyph {
+ }
+
+ fn rasterize_ab_glyph(font: &FontArc, ch: char, font_px: f32) -> RasterGlyph {
++    let selected = glyph_font(font, ch);
++    let font = &selected;
+     let scale = PxScale::from(font_px.max(1.0));
+     let scaled = font.as_scaled(scale);
+     let glyph_id = scaled.glyph_id(ch);
+@@ -2074,7 +2161,7 @@ pub fn text_line_metrics_ab_glyph(
+             _ => {}
+         }
+
+-        let advance = scaled.h_advance(scaled.glyph_id(ch)).max(0.0);
++        let advance = glyph_advance(font, ch, font_px);
+         if x > 0.0 && x + advance > max_w as f32 {
+             x = 0.0;
+             baseline_y += line_height;
+@@ -2125,7 +2212,7 @@ fn render_text_ab_glyph_rgba(
+             _ => {}
+         }
+
+-        let advance = scaled.h_advance(scaled.glyph_id(ch)).max(0.0);
++        let advance = glyph_advance(font, ch, font_px);
+         if x > 0.0 && x + advance > max_w as f32 {
+             x = 0.0;
+             baseline_y += line_height;
+@@ -2345,6 +2432,8 @@ fn font_path_priority(path: &Path) -> (u8, u8, String) {
+
+ fn project_font_dirs(project_dir: &Path) -> Vec<PathBuf> {
+     let mut dirs = vec![project_dir.join("font"), project_dir.join("fonts")];
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    dirs.extend([project_dir.join("dat"), project_dir.to_path_buf()]);
+     if let Ok(exe) = std::env::current_exe()
+         && let Some(exe_dir) = exe.parent()
+     {
 diff --git a/crates/siglus_scene_vm/src/wasm_entry.rs b/crates/siglus_scene_vm/src/wasm_entry.rs
-index bf33475..311d2de 100644
+index bf33475..5c9af34 100644
 --- a/crates/siglus_scene_vm/src/wasm_entry.rs
 +++ b/crates/siglus_scene_vm/src/wasm_entry.rs
 @@ -7,6 +7,7 @@
@@ -438,7 +1007,13 @@ index bf33475..311d2de 100644
  use std::path::PathBuf;
  use std::rc::Rc;
  
-@@ -75,6 +76,9 @@ struct WasmApp {
+@@ -70,11 +71,15 @@ struct WasmApp {
+     proxy: EventLoopProxy,
+     pending_host: Rc<RefCell<Option<HostInitResult>>>,
+     window: Option<&'static dyn Window>,
++    canvas: Option<web_sys::HtmlCanvasElement>,
+     window_id: Option<WindowId>,
+     host: Option<Box<SiglusHost>>,
      init_started: bool,
      init_error: Option<String>,
      exit_requested: bool,
@@ -448,7 +1023,13 @@ index bf33475..311d2de 100644
  }
  
  impl WasmApp {
-@@ -89,6 +93,9 @@ impl WasmApp {
+@@ -84,11 +89,15 @@ impl WasmApp {
+             proxy,
+             pending_host: Rc::new(RefCell::new(None)),
+             window: None,
++            canvas: None,
+             window_id: None,
+             host: None,
              init_started: false,
              init_error: None,
              exit_requested: false,
@@ -458,28 +1039,61 @@ index bf33475..311d2de 100644
          }
      }
  
-@@ -152,8 +159,8 @@ impl WasmApp {
-                     .await
-                     .map_err(|e| format!("renderer init: {e:#}"))?;
+@@ -124,7 +133,7 @@ impl WasmApp {
+             .with_surface_size(LogicalSize::new(css_w as f64, css_h as f64))
+             .with_platform_attributes(Box::new(
+                 WindowAttributesWeb::default()
+-                    .with_canvas(Some(canvas))
++                    .with_canvas(Some(canvas.clone()))
+                     .with_prevent_default(true)
+                     .with_focusable(true)
+                     .with_append(false),
+@@ -141,6 +150,7 @@ impl WasmApp {
+             }
+         };
+         let window: &'static dyn Window = Box::leak(window);
++        self.canvas = Some(canvas);
+         self.window_id = Some(window.id());
+         self.window = Some(window);
+
+@@ -148,15 +158,17 @@ impl WasmApp {
+         let pending_host = self.pending_host.clone();
+         wasm_bindgen_futures::spawn_local(async move {
+             let result = async move {
+-                let renderer = Renderer::new(window)
+-                    .await
+-                    .map_err(|e| format!("renderer init: {e:#}"))?;
                  let mut config = SiglusHostConfig::new(PathBuf::from("."));
 -                config.width = Some(1280);
 -                config.height = Some(720);
+-                let host = SiglusHost::new_with_renderer(config, renderer)
+-                    .await
+-                    .map_err(|e| format!("host init: {e:#}"))?;
 +                // Preserve the game resolution from Gameexe; fit its output
 +                // to the browser surface instead of changing game coordinates.
-                 let host = SiglusHost::new_with_renderer(config, renderer)
-                     .await
-                     .map_err(|e| format!("host init: {e:#}"))?;
-@@ -176,7 +183,8 @@ impl WasmApp {
++                let backend = js_sys::Reflect::get(&js_sys::global(), &"siglusRendererBackend".into())
++                    .ok().and_then(|value| value.as_string()).unwrap_or_default();
++                let host = if backend == "software" {
++                    SiglusHost::new_software(config).map_err(|e| format!("host init: {e:#}"))?
++                } else {
++                    let renderer = Renderer::new(window).await.map_err(|e| format!("renderer init: {e:#}"))?;
++                    SiglusHost::new_with_renderer(config, renderer).await.map_err(|e| format!("host init: {e:#}"))?
++                };
+                 Ok(Box::new(host))
+             }
+             .await;
+@@ -176,7 +188,9 @@ impl WasmApp {
              }
              WindowEvent::SurfaceResized(size) => {
                  let sf = self.window.map(|w| w.scale_factor() as f32).unwrap_or(1.0);
 -                host.resize(size.width.max(1), size.height.max(1), sf);
-+                self.viewport =
-+                    fit_host_viewport(host, size.width, size.height, sf, self.logical_size);
++                let (width, height) =
++                    drawing_size(self.canvas.as_ref(), sf, size.width, size.height);
++                self.viewport = fit_host_viewport(host, width, height, sf, self.logical_size);
              }
              WindowEvent::KeyboardInput {
                  event:
-@@ -226,12 +234,8 @@ impl WasmApp {
+@@ -226,12 +240,8 @@ impl WasmApp {
                  primary: true,
                  ..
              } => {
@@ -494,7 +1108,7 @@ index bf33475..311d2de 100644
                  host.mouse_move(x, y);
              }
              WindowEvent::PointerButton {
-@@ -244,24 +248,24 @@ impl WasmApp {
+@@ -244,24 +254,24 @@ impl WasmApp {
                  let Some(button) = button.mouse_button() else {
                      return;
                  };
@@ -533,7 +1147,7 @@ index bf33475..311d2de 100644
              WindowEvent::MouseWheel { delta, .. } => {
                  let dy = match delta {
                      MouseScrollDelta::LineDelta(_, y) => (y * 120.0) as i32,
-@@ -271,11 +275,41 @@ impl WasmApp {
+@@ -271,15 +281,60 @@ impl WasmApp {
                  host.mouse_wheel(dy);
              }
              WindowEvent::RedrawRequested => {
@@ -575,7 +1189,26 @@ index bf33475..311d2de 100644
                          self.exit_requested = true;
                          elwt.exit();
                      }
-@@ -305,7 +339,18 @@ impl ApplicationHandler for WasmApp {
+                     Ok(false) => {
++                        if let Some(frame) = host.software_frame() {
++                            let array = js_sys::Uint8Array::from(frame.as_slice());
++                            let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__siglusSoftwareFrame"), &array);
++                            let (width, height) = host.renderer_mut().logical_size();
++                            let size = js_sys::Array::new();
++                            size.push(&JsValue::from(width));
++                            size.push(&JsValue::from(height));
++                            let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__siglusSoftwareSize"), &size);
++                            if let Some((drawn, missing)) = host.software_stats() {
++                                let stats = js_sys::Array::new();
++                                stats.push(&JsValue::from(drawn));
++                                stats.push(&JsValue::from(missing));
++                                let _ = js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("__siglusSoftwareStats"), &stats);
++                            }
++                        }
+                         if let Some(w) = self.window {
+                             w.request_redraw();
+                         }
+@@ -305,7 +360,16 @@ impl ApplicationHandler for WasmApp {
              return;
          };
          match result {
@@ -584,18 +1217,16 @@ index bf33475..311d2de 100644
 +                self.logical_size = host.logical_size();
 +                if let Some(w) = self.window {
 +                    let size = w.surface_size();
-+                    self.viewport = fit_host_viewport(
-+                        &mut host,
-+                        size.width,
-+                        size.height,
-+                        w.scale_factor() as f32,
-+                        self.logical_size,
-+                    );
++                    let sf = w.scale_factor() as f32;
++                    let (width, height) =
++                        drawing_size(self.canvas.as_ref(), sf, size.width, size.height);
++                    self.viewport =
++                        fit_host_viewport(&mut host, width, height, sf, self.logical_size);
 +                }
                  self.host = Some(host);
                  if let Some(w) = self.window {
                      w.request_redraw();
-@@ -338,7 +383,8 @@ impl ApplicationHandler for WasmApp {
+@@ -338,7 +402,8 @@ impl ApplicationHandler for WasmApp {
          if let Some(w) = self.window {
              w.request_redraw();
          }
@@ -605,10 +1236,32 @@ index bf33475..311d2de 100644
      }
  }
  
-@@ -454,3 +500,45 @@ fn map_keycode(code: KeyCode) -> Option<VmKey> {
+@@ -454,3 +519,67 @@ fn map_keycode(code: KeyCode) -> Option<VmKey> {
          _ => None,
      }
  }
++
++// Use the same CSS-to-physical conversion as winit pointer events. Some
++// browsers/emulation paths report a device-pixel ResizeObserver box that does
++// not track devicePixelRatio, which would otherwise offset every game click.
++fn drawing_size(
++    canvas: Option<&web_sys::HtmlCanvasElement>,
++    scale: f32,
++    fallback_w: u32,
++    fallback_h: u32,
++) -> (u32, u32) {
++    if let Some(canvas) = canvas {
++        let width = canvas.client_width();
++        let height = canvas.client_height();
++        if width > 0 && height > 0 {
++            return (
++                ((width as f64 * scale as f64).round() as u32).max(1),
++                ((height as f64 * scale as f64).round() as u32).max(1),
++            );
++        }
++    }
++    (fallback_w.max(1), fallback_h.max(1))
++}
 +
 +// Use physical surface coordinates for both rendering and pointer inversion.
 +// Browser size and DPR never change the game's logical screen size.
@@ -1017,5 +1670,337 @@ index 0000000..ebc19d5
 +            .expect("browser movie inserted");
 +        movie.last_used = tick;
 +        movie.poll(timer, looping)
++    }
++}
+diff --git a/crates/siglus_scene_vm/src/render/software.rs b/crates/siglus_scene_vm/src/render/software.rs
+new file mode 100644
+index 0000000..3e84567
+--- /dev/null
++++ b/crates/siglus_scene_vm/src/render/software.rs
+@@ -0,0 +1,326 @@
++//! Small CPU compositor used by browsers that expose neither WebGL2 nor WebGPU.
++//!
++//! It intentionally implements the common 2D Siglus path first. Meshes and
++//! advanced wipes continue to use the GPU renderer; ordinary dialogue scenes,
++//! backgrounds, portraits, alpha, tone and scaling are rendered directly into
++//! an RGBA framebuffer which the wasm shell presents with Canvas2D.
++
++use anyhow::Result;
++
++use crate::assets::RgbaImage;
++use crate::image_manager::ImageManager;
++use crate::layer::{RenderFrame, RenderSprite, SpriteBlend, SpriteFit, SpriteSizeMode};
++use crate::render_math::sprite_quad_geometry_rect;
++use crate::render_plan::{src_clip_rect, tona_src_clip_local_rect};
++use crate::runtime::FrameCaptureBackend;
++
++pub struct SoftwareRenderer {
++    logical_width: u32,
++    logical_height: u32,
++    surface_width: u32,
++    surface_height: u32,
++    scale_factor: f32,
++    viewport: (u32, u32, u32, u32),
++    frame: Vec<u8>,
++    pub drawn_sprites: u32,
++    pub missing_images: u32,
++}
++
++impl SoftwareRenderer {
++    pub fn new(width: u32, height: u32) -> Self {
++        let width = width.max(1);
++        let height = height.max(1);
++        Self {
++            logical_width: width,
++            logical_height: height,
++            surface_width: width,
++            surface_height: height,
++            scale_factor: 1.0,
++            viewport: (0, 0, width, height),
++            frame: vec![0; (width as usize) * (height as usize) * 4],
++            drawn_sprites: 0,
++            missing_images: 0,
++        }
++    }
++
++    pub fn adapter_name(&self) -> String {
++        "software Canvas2D".to_owned()
++    }
++
++    pub fn scale_factor(&self) -> f32 {
++        self.scale_factor
++    }
++
++    pub fn logical_size(&self) -> (u32, u32) {
++        (self.logical_width, self.logical_height)
++    }
++
++    pub fn surface_viewport(&self) -> (u32, u32, u32, u32) {
++        self.viewport
++    }
++
++    pub fn screen_viewport(&self) -> [u32; 4] {
++        [
++            self.viewport.0,
++            self.viewport.1,
++            self.viewport.2,
++            self.viewport.3,
++        ]
++    }
++
++    pub fn resize_with_logical_viewport(
++        &mut self,
++        surface_width: u32,
++        surface_height: u32,
++        scale_factor: f32,
++        logical_width: u32,
++        logical_height: u32,
++        viewport_x: u32,
++        viewport_y: u32,
++        viewport_width: u32,
++        viewport_height: u32,
++    ) {
++        self.surface_width = surface_width.max(1);
++        self.surface_height = surface_height.max(1);
++        self.scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
++            scale_factor
++        } else {
++            1.0
++        };
++        self.logical_width = logical_width.max(1);
++        self.logical_height = logical_height.max(1);
++        self.viewport = (
++            viewport_x,
++            viewport_y,
++            viewport_width.max(1),
++            viewport_height.max(1),
++        );
++        let expected = (self.logical_width as usize) * (self.logical_height as usize) * 4;
++        if self.frame.len() != expected {
++            self.frame.resize(expected, 0);
++        }
++    }
++
++    pub fn render_frame(&mut self, images: &ImageManager, frame: &RenderFrame) -> Result<()> {
++        self.frame.fill(0);
++        self.drawn_sprites = 0;
++        self.missing_images = 0;
++        let sprites = frame.debug_flatten();
++        for item in sprites.iter().filter(|item| item.sprite.visible) {
++            self.draw_sprite(images, item);
++        }
++        Ok(())
++    }
++
++    pub fn frame(&self) -> &[u8] {
++        &self.frame
++    }
++
++    pub fn clear_runtime_image_textures(&mut self) {}
++    pub fn dump_next_frame(&mut self, _path: std::path::PathBuf) {}
++
++    fn draw_sprite(&mut self, images: &ImageManager, item: &RenderSprite) {
++        let sprite = &item.sprite;
++        let Some(image_id) = sprite.image_id.as_ref() else {
++            return;
++        };
++        let Some(image) = images.get(image_id) else {
++            self.missing_images += 1;
++            return;
++        };
++        self.drawn_sprites += 1;
++        // Match the GPU planner's local coordinates, clipping and transform.
++        // OBJECT.X/Y is an anchor with an explicit texture center, not always
++        // the middle of the image. Subtracting another half-size here cropped
++        // origin-anchored startup backgrounds into the top-left quarter.
++        let (x, y, left, top, right, bottom, u0, v0, u1, v1) = match sprite.fit {
++            SpriteFit::FullScreen => {
++                let Ok((l, t, r, b)) = src_clip_rect(sprite.src_clip, image.width, image.height)
++                else {
++                    return;
++                };
++                (
++                    0.0,
++                    0.0,
++                    0.0,
++                    0.0,
++                    self.logical_width as f32,
++                    self.logical_height as f32,
++                    l / image.width.max(1) as f32,
++                    t / image.height.max(1) as f32,
++                    r / image.width.max(1) as f32,
++                    b / image.height.max(1) as f32,
++                )
++            }
++            SpriteFit::PixelRect => {
++                let (w, h) = match sprite.size_mode {
++                    SpriteSizeMode::Intrinsic => {
++                        (image.width.max(1) as f32, image.height.max(1) as f32)
++                    }
++                    SpriteSizeMode::Explicit { width, height } => {
++                        (width.max(1) as f32, height.max(1) as f32)
++                    }
++                };
++                let Some((l, t, r, b)) = tona_src_clip_local_rect(sprite, w, h) else {
++                    return;
++                };
++                (
++                    sprite.x as f32,
++                    sprite.y as f32,
++                    l,
++                    t,
++                    r,
++                    b,
++                    l / w,
++                    t / h,
++                    r / w,
++                    b / h,
++                )
++            }
++        };
++        let Some(quad) = sprite_quad_geometry_rect(
++            sprite,
++            x,
++            y,
++            left,
++            top,
++            right,
++            bottom,
++            self.logical_width as f32,
++            self.logical_height as f32,
++        ) else {
++            return;
++        };
++        let points = quad.projected;
++        let origin = points[0];
++        let ax = points[1].x - origin.x;
++        let ay = points[1].y - origin.y;
++        let bx = points[3].x - origin.x;
++        let by = points[3].y - origin.y;
++        let determinant = ax * by - ay * bx;
++        if !determinant.is_finite() || determinant.abs() < 1e-6 {
++            return;
++        }
++        let mut x0 = points
++            .iter()
++            .map(|p| p.x)
++            .fold(f32::INFINITY, f32::min)
++            .floor()
++            .max(0.0) as i32;
++        let mut y0 = points
++            .iter()
++            .map(|p| p.y)
++            .fold(f32::INFINITY, f32::min)
++            .floor()
++            .max(0.0) as i32;
++        let mut x1 = points
++            .iter()
++            .map(|p| p.x)
++            .fold(f32::NEG_INFINITY, f32::max)
++            .ceil()
++            .min(self.logical_width as f32) as i32;
++        let mut y1 = points
++            .iter()
++            .map(|p| p.y)
++            .fold(f32::NEG_INFINITY, f32::max)
++            .ceil()
++            .min(self.logical_height as f32) as i32;
++        if let Some(clip) = sprite.dst_clip {
++            x0 = x0.max(clip.left);
++            y0 = y0.max(clip.top);
++            x1 = x1.min(clip.right);
++            y1 = y1.min(clip.bottom);
++        }
++        let alpha = u32::from(sprite.alpha);
++        if alpha == 0 {
++            return;
++        }
++        for py in y0..y1 {
++            for px in x0..x1 {
++                let dx = px as f32 + 0.5 - origin.x;
++                let dy = py as f32 + 0.5 - origin.y;
++                let a = (dx * by - dy * bx) / determinant;
++                let b = (ax * dy - ay * dx) / determinant;
++                if !(0.0..1.0).contains(&a) || !(0.0..1.0).contains(&b) {
++                    continue;
++                }
++                let u = (u0 + a * (u1 - u0)).clamp(0.0, 1.0);
++                let v = (v0 + b * (v1 - v0)).clamp(0.0, 1.0);
++                let sx = ((u * image.width as f32).floor() as u32).min(image.width - 1);
++                let sy = ((v * image.height as f32).floor() as u32).min(image.height - 1);
++                let si = ((sy * image.width + sx) * 4) as usize;
++                let di = ((py as u32 * self.logical_width + px as u32) * 4) as usize;
++                let sa = u32::from(image.rgba[si + 3]) * alpha / 255;
++                if sa == 0 {
++                    continue;
++                }
++                let sr = tone(image.rgba[si], sprite);
++                let sg = tone(image.rgba[si + 1], sprite);
++                let sb = tone(image.rgba[si + 2], sprite);
++                blend_pixel(
++                    &mut self.frame[di..di + 4],
++                    [sr, sg, sb, sa as u8],
++                    sprite.blend,
++                );
++            }
++        }
++    }
++}
++
++fn tone(value: u8, sprite: &crate::layer::Sprite) -> u8 {
++    let mut value = u32::from(value);
++    if sprite.mono != 0 {
++        value = value.saturating_mul(77 + 150 + 29) / 256;
++    }
++    if sprite.bright != 0 {
++        value = value.saturating_add(u32::from(sprite.bright));
++    }
++    if sprite.color_rate != 0 {
++        value = value.saturating_mul(u32::from(sprite.color_rate)) / 255;
++    }
++    value
++        .saturating_add(u32::from(
++            sprite
++                .color_add_r
++                .max(sprite.color_add_g)
++                .max(sprite.color_add_b),
++        ))
++        .min(255) as u8
++}
++
++fn blend_pixel(dst: &mut [u8], src: [u8; 4], blend: SpriteBlend) {
++    let sa = u32::from(src[3]);
++    let inv = 255 - sa;
++    for channel in 0..3 {
++        let s = u32::from(src[channel]);
++        let d = u32::from(dst[channel]);
++        let value = match blend {
++            SpriteBlend::Add => (d + s * sa / 255).min(255),
++            SpriteBlend::Sub => d.saturating_sub(s * sa / 255),
++            SpriteBlend::Mul => d * (s * sa / 255 + inv) / 255,
++            SpriteBlend::Screen => 255 - (255 - d) * (255 - s * sa / 255) / 255,
++            _ => (s * sa + d * inv) / 255,
++        };
++        dst[channel] = value as u8;
++    }
++    dst[3] = (sa + u32::from(dst[3]) * inv / 255).min(255) as u8;
++}
++
++impl FrameCaptureBackend for SoftwareRenderer {
++    fn capture_render_frame(
++        &mut self,
++        images: &ImageManager,
++        frame: &RenderFrame,
++        _logical_width: u32,
++        _logical_height: u32,
++    ) -> Result<RgbaImage> {
++        self.render_frame(images, frame)?;
++        Ok(RgbaImage {
++            width: self.logical_width,
++            height: self.logical_height,
++            center_x: 0,
++            center_y: 0,
++            rgba: self.frame.clone(),
++        })
 +    }
 +}

@@ -4,6 +4,9 @@ import { test, expect, type Page } from '@playwright/test'
 // This catches module syntax, automatic launch and silent host initialization
 // failures without requiring copyrighted game resources in CI.
 async function player(page: Page, options: { entry?: string, engine?: string, key?: string } = {}) {
+  await page.route('**/galgame/siglus/renderer.js', route => route.fulfill({ contentType: 'text/javascript', body: `
+    export async function selectRenderer() { return { backend: 'gl', maxTextureDimension2D: 8192 } }
+  ` }))
   const html = await page.request.get('/galgame/siglus/index.html')
   expect(html.status()).toBe(200)
   const body = await html.body()
