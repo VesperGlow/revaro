@@ -57,6 +57,18 @@ for (const scenario of [
         expect(pixel.rgba[3], `background opacity at ${pixel.x},${pixel.y}`).toBe(255)
         expect(Math.max(...pixel.rgba.slice(0, 3)), `background color at ${pixel.x},${pixel.y}`).toBeGreaterThan(80)
       }
+      // Software presentation fills the entire CSS canvas, including at a
+      // different aspect ratio and DPR. Invert precisely that displayed area.
+      await expect.poll(() => page.evaluate(() => JSON.parse((window as any).__siglusUi || '{}').viewport))
+        .toEqual([0, 0, ...initial.canvasSize])
+      for (const [x, y] of [[.17, .33], [.83, .67]]) {
+        await page.mouse.move(scenario.width * x, scenario.height * y)
+        await expect.poll(async () => {
+          const point = await page.evaluate(() => JSON.parse((window as any).__siglusUi || '{}').mouse)
+          if (!point) return false
+          return Math.abs(point[0] - initial.frameSize[0] * x) <= 2 && Math.abs(point[1] - initial.frameSize[1] * y) <= 2
+        }).toBe(true)
+      }
       await expect(page.getByRole('alert')).toBeHidden()
       expect(errors).toEqual([])
       const output = testInfo.outputPath('first-frame.json')

@@ -112,7 +112,7 @@ index f2e34f8..0defa23 100644
          Ok(())
      }
 diff --git a/crates/siglus_scene_vm/src/host.rs b/crates/siglus_scene_vm/src/host.rs
-index e4c8e09..5b79ed9 100644
+index e4c8e09..6400e9a 100644
 --- a/crates/siglus_scene_vm/src/host.rs
 +++ b/crates/siglus_scene_vm/src/host.rs
 @@ -17,7 +17,10 @@ use anyhow::{Context, Result};
@@ -269,7 +269,7 @@ index e4c8e09..5b79ed9 100644
          self.vm
              .ctx
              .set_screen_size(logical_width.max(1), logical_height.max(1));
-@@ -380,6 +447,33 @@ impl SiglusHost {
+@@ -380,6 +447,36 @@ impl SiglusHost {
          )
      }
 
@@ -286,6 +286,9 @@ index e4c8e09..5b79ed9 100644
 +            "text": self.vm.ctx.ui.message_text().unwrap_or(""),
 +            "name": self.vm.ctx.ui.name_text().unwrap_or(""),
 +            "name_glyphs": self.vm.ctx.ui.name_glyph_text(),
++            "viewport": self.renderer.surface_viewport(),
++            "logical_size": self.renderer.logical_size(),
++            "mouse": [self.vm.ctx.input.mouse_x, self.vm.ctx.input.mouse_y],
 +            "waiting": self.vm.ctx.ui.message_waiting(),
 +            "redraws": self.redraw_count,
 +            "paused": self.paused,
@@ -303,7 +306,7 @@ index e4c8e09..5b79ed9 100644
      fn native_messagebox_pending(&self) -> bool {
          self.vm
              .ctx
-@@ -409,6 +503,11 @@ impl SiglusHost {
+@@ -409,6 +506,11 @@ impl SiglusHost {
          Ok(self.pending_exit || (self.vm.is_halted() && self.flow.stack.is_empty()))
      }
 
@@ -315,7 +318,7 @@ index e4c8e09..5b79ed9 100644
      pub fn mouse_move(&mut self, x: f64, y: f64) {
          if self.native_messagebox_pending() {
              return;
-@@ -568,8 +667,8 @@ impl SiglusHost {
+@@ -568,8 +670,8 @@ impl SiglusHost {
          self.script_needs_pump = true;
      }
 
@@ -326,7 +329,7 @@ index e4c8e09..5b79ed9 100644
      }
 
      /// Writes the global save if what it keeps has changed since `last`
-@@ -586,6 +685,18 @@ impl SiglusHost {
+@@ -586,6 +688,18 @@ impl SiglusHost {
          &mut self.vm
      }
 
@@ -345,7 +348,7 @@ index e4c8e09..5b79ed9 100644
      fn resolve_initial_size(config: &SiglusHostConfig) -> (u32, u32) {
          let cfg_size = Self::try_load_gameexe(&config.project_dir)
              .as_ref()
-@@ -1204,7 +1315,7 @@ impl SiglusHost {
+@@ -1204,7 +1318,7 @@ impl SiglusHost {
      }
 
      fn finish_runtime_load(&mut self) {
@@ -354,7 +357,7 @@ index e4c8e09..5b79ed9 100644
          self.flow.stack.clear();
          self.flow.pending_syscom_proc = None;
          self.syscom_suspended_waits.clear();
-@@ -1234,7 +1345,7 @@ impl SiglusHost {
+@@ -1234,7 +1348,7 @@ impl SiglusHost {
          // changes, so resetting the append before restart preserves that ordering.
          self.vm.ctx.reset_active_append_to_initial();
          self.vm.restart_scene_name(&target_scene, target_z)?;
@@ -363,7 +366,7 @@ index e4c8e09..5b79ed9 100644
          if let Some(msgbk) = saved_msgbk {
              self.vm.ctx.globals.msgbk_forms = msgbk;
          }
-@@ -1262,7 +1373,7 @@ impl SiglusHost {
+@@ -1262,7 +1376,7 @@ impl SiglusHost {
          // scene without resetting the active append.
          crate::runtime::forms::syscom::write_global_save(&self.vm.ctx);
          self.vm.restart_scene_name(&target_scene, target_z)?;
@@ -372,7 +375,7 @@ index e4c8e09..5b79ed9 100644
          self.vm.ctx.globals.finish_wipe();
          self.flow.stack.clear();
          self.flow.pending_syscom_proc = None;
-@@ -1627,9 +1738,7 @@ impl SiglusHost {
+@@ -1627,9 +1741,7 @@ impl SiglusHost {
          // eng_frame.cpp applies SCRIPT.SET_VSYNC_WAIT_OFF_FLAG after script
          // processing and before the frame is presented. Keep the VM flag as the
          // script state and let Renderer perform the display-side transition.
@@ -383,7 +386,7 @@ index e4c8e09..5b79ed9 100644
          let wait_poll_needed = self.vm.ctx.wait.needs_runtime_poll();
          #[cfg(target_os = "horizon")]
          if switch_trace_enabled {
-@@ -1640,6 +1749,9 @@ impl SiglusHost {
+@@ -1640,6 +1752,9 @@ impl SiglusHost {
          }
          #[cfg(target_os = "vita")]
          let start = Instant::now();
@@ -393,7 +396,7 @@ index e4c8e09..5b79ed9 100644
          self.vm.tick_frame()?;
          #[cfg(target_os = "vita")]
          crate::render::vita_stats::phase(crate::render::vita_stats::TICK, start);
-@@ -1733,9 +1845,39 @@ impl SiglusHost {
+@@ -1733,9 +1848,39 @@ impl SiglusHost {
                      switch_trace_frame
                  ));
              }
@@ -1222,17 +1225,17 @@ index 9e7be41..b7da993 100644
          && let Some(exe_dir) = exe.parent()
      {
 diff --git a/crates/siglus_scene_vm/src/wasm_entry.rs b/crates/siglus_scene_vm/src/wasm_entry.rs
-index bf33475..4b0cd53 100644
+index bf33475..e8b2e21 100644
 --- a/crates/siglus_scene_vm/src/wasm_entry.rs
 +++ b/crates/siglus_scene_vm/src/wasm_entry.rs
 @@ -7,6 +7,7 @@
  //! same host/renderer/VM pipeline used by native platforms.
- 
+
  use std::cell::RefCell;
 +use std::collections::VecDeque;
  use std::path::PathBuf;
  use std::rc::Rc;
- 
+
 @@ -70,11 +71,15 @@ struct WasmApp {
      proxy: EventLoopProxy,
      pending_host: Rc<RefCell<Option<HostInitResult>>>,
@@ -1247,7 +1250,7 @@ index bf33475..4b0cd53 100644
 +    viewport: (u32, u32, u32, u32),
 +    mouse_queue: VecDeque<(ElementState, VmMouseButton, f64, f64)>,
  }
- 
+
  impl WasmApp {
 @@ -84,11 +89,15 @@ impl WasmApp {
              proxy,
@@ -1264,7 +1267,7 @@ index bf33475..4b0cd53 100644
 +            mouse_queue: VecDeque::new(),
          }
      }
- 
+
 @@ -124,7 +133,7 @@ impl WasmApp {
              .with_surface_size(LogicalSize::new(css_w as f64, css_h as f64))
              .with_platform_attributes(Box::new(
@@ -1473,8 +1476,8 @@ index bf33475..4b0cd53 100644
 +        elwt.set_control_flow(ControlFlow::Wait);
      }
  }
- 
-@@ -454,3 +531,67 @@ fn map_keycode(code: KeyCode) -> Option<VmKey> {
+
+@@ -454,3 +531,78 @@ fn map_keycode(code: KeyCode) -> Option<VmKey> {
          _ => None,
      }
  }
@@ -1512,6 +1515,17 @@ index bf33475..4b0cd53 100644
 +) -> (u32, u32, u32, u32) {
 +    let width = width.max(1);
 +    let height = height.max(1);
++    // Canvas2D presents the logical frame across the entire canvas. Invert
++    // that same per-axis scaling for input, rather than the GPU letterbox.
++    // Otherwise visible buttons (especially small checkboxes) miss on wide
++    // or tall windows even though clicks work at the game's aspect ratio.
++    if host.software_stats().is_some() {
++        host.resize_with_logical_viewport(
++            width, height, scale_factor, logical.0, logical.1,
++            0, 0, width, height,
++        );
++        return (0, 0, width, height);
++    }
 +    let scale = (width as f64 / logical.0 as f64).min(height as f64 / logical.1 as f64);
 +    let w = (logical.0 as f64 * scale).round().max(1.0) as u32;
 +    let h = (logical.1 as f64 * scale).round().max(1.0) as u32;
