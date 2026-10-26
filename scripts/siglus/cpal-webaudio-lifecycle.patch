@@ -6,11 +6,11 @@
  use std::sync::{Arc, Mutex, RwLock};
 +use std::sync::atomic::{AtomicBool, Ordering};
  use std::time::Duration;
- 
+
  /// Content is false if the iterator is empty.
 @@ -26,6 +27,7 @@
  pub struct Host;
- 
+
  pub struct Stream {
 +    retired: Arc<AtomicBool>,
      ctx: Arc<AudioContext>,
@@ -38,16 +38,43 @@
                      let now = ctx_handle.current_time();
                      let time_at_start_of_buffer = {
                          let time_at_start_of_buffer = time_handle
-@@ -386,6 +395,7 @@
+@@ -296,7 +305,7 @@
+                             .expect("Unable to get a read lock on the time cursor");
+                         // Synchronise first buffer as necessary (eg. keep the time value
+                         // referenced to the context clock).
+-                        if *time_at_start_of_buffer > 0.001 {
++                        if *time_at_start_of_buffer >= now {
+                             *time_at_start_of_buffer
+                         } else {
+                             // 25ms of time to fetch the first sample data, increase to avoid
+@@ -374,6 +383,17 @@
+                             .unchecked_ref(),
+                     ));
+
++                    // The main thread may have stalled since the previous
++                    // buffer (or while fetching this one's samples). WebAudio
++                    // plays past-due starts immediately, so chasing the old
++                    // cursor would drain a backlog as overlapping audio.
++                    // Rebase once, then keep both workers on the same cursor.
++                    let ready = ctx_handle.current_time();
++                    let time_at_start_of_buffer = if time_at_start_of_buffer < ready {
++                        ready + 0.025
++                    } else {
++                        time_at_start_of_buffer
++                    };
+                     source
+                         .start_with_when(time_at_start_of_buffer)
+                         .expect("Unable to start the webaudio buffer source");
+@@ -386,6 +406,7 @@
          }
- 
+
          Ok(Stream {
 +            retired,
              ctx,
              on_ended_closures,
              config: config.clone(),
-@@ -452,6 +462,7 @@
- 
+@@ -452,6 +473,7 @@
+
  impl Drop for Stream {
      fn drop(&mut self) {
 +        self.retired.store(true, Ordering::Release);

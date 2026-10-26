@@ -112,7 +112,7 @@ index f2e34f8..0defa23 100644
          Ok(())
      }
 diff --git a/crates/siglus_scene_vm/src/host.rs b/crates/siglus_scene_vm/src/host.rs
-index e4c8e09..0cb2b65 100644
+index e4c8e09..5b79ed9 100644
 --- a/crates/siglus_scene_vm/src/host.rs
 +++ b/crates/siglus_scene_vm/src/host.rs
 @@ -17,7 +17,10 @@ use anyhow::{Context, Result};
@@ -269,10 +269,10 @@ index e4c8e09..0cb2b65 100644
          self.vm
              .ctx
              .set_screen_size(logical_width.max(1), logical_height.max(1));
-@@ -380,6 +447,31 @@ impl SiglusHost {
+@@ -380,6 +447,33 @@ impl SiglusHost {
          )
      }
- 
+
 +    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 +    pub fn compatibility_ui_state(&self) -> String {
 +        serde_json::json!({
@@ -284,6 +284,8 @@ index e4c8e09..0cb2b65 100644
 +            "hidden": self.vm.ctx.globals.syscom.hide_mwnd.onoff,
 +            "script_hidden": self.vm.ctx.globals.script.mwnd_disp_off_flag,
 +            "text": self.vm.ctx.ui.message_text().unwrap_or(""),
++            "name": self.vm.ctx.ui.name_text().unwrap_or(""),
++            "name_glyphs": self.vm.ctx.ui.name_glyph_text(),
 +            "waiting": self.vm.ctx.ui.message_waiting(),
 +            "redraws": self.redraw_count,
 +            "paused": self.paused,
@@ -301,10 +303,10 @@ index e4c8e09..0cb2b65 100644
      fn native_messagebox_pending(&self) -> bool {
          self.vm
              .ctx
-@@ -409,6 +501,11 @@ impl SiglusHost {
+@@ -409,6 +503,11 @@ impl SiglusHost {
          Ok(self.pending_exit || (self.vm.is_halted() && self.flow.stack.is_empty()))
      }
- 
+
 +    pub fn cancel_platform_input(&mut self) {
 +        self.vm.ctx.cancel_platform_input();
 +        self.script_needs_pump = true;
@@ -313,7 +315,7 @@ index e4c8e09..0cb2b65 100644
      pub fn mouse_move(&mut self, x: f64, y: f64) {
          if self.native_messagebox_pending() {
              return;
-@@ -568,8 +665,8 @@ impl SiglusHost {
+@@ -568,8 +667,8 @@ impl SiglusHost {
          self.script_needs_pump = true;
      }
 
@@ -324,7 +326,7 @@ index e4c8e09..0cb2b65 100644
      }
 
      /// Writes the global save if what it keeps has changed since `last`
-@@ -586,6 +683,18 @@ impl SiglusHost {
+@@ -586,6 +685,18 @@ impl SiglusHost {
          &mut self.vm
      }
 
@@ -343,7 +345,7 @@ index e4c8e09..0cb2b65 100644
      fn resolve_initial_size(config: &SiglusHostConfig) -> (u32, u32) {
          let cfg_size = Self::try_load_gameexe(&config.project_dir)
              .as_ref()
-@@ -1204,7 +1313,7 @@ impl SiglusHost {
+@@ -1204,7 +1315,7 @@ impl SiglusHost {
      }
 
      fn finish_runtime_load(&mut self) {
@@ -352,7 +354,7 @@ index e4c8e09..0cb2b65 100644
          self.flow.stack.clear();
          self.flow.pending_syscom_proc = None;
          self.syscom_suspended_waits.clear();
-@@ -1234,7 +1343,7 @@ impl SiglusHost {
+@@ -1234,7 +1345,7 @@ impl SiglusHost {
          // changes, so resetting the append before restart preserves that ordering.
          self.vm.ctx.reset_active_append_to_initial();
          self.vm.restart_scene_name(&target_scene, target_z)?;
@@ -361,7 +363,7 @@ index e4c8e09..0cb2b65 100644
          if let Some(msgbk) = saved_msgbk {
              self.vm.ctx.globals.msgbk_forms = msgbk;
          }
-@@ -1262,7 +1371,7 @@ impl SiglusHost {
+@@ -1262,7 +1373,7 @@ impl SiglusHost {
          // scene without resetting the active append.
          crate::runtime::forms::syscom::write_global_save(&self.vm.ctx);
          self.vm.restart_scene_name(&target_scene, target_z)?;
@@ -370,7 +372,7 @@ index e4c8e09..0cb2b65 100644
          self.vm.ctx.globals.finish_wipe();
          self.flow.stack.clear();
          self.flow.pending_syscom_proc = None;
-@@ -1627,9 +1736,7 @@ impl SiglusHost {
+@@ -1627,9 +1738,7 @@ impl SiglusHost {
          // eng_frame.cpp applies SCRIPT.SET_VSYNC_WAIT_OFF_FLAG after script
          // processing and before the frame is presented. Keep the VM flag as the
          // script state and let Renderer perform the display-side transition.
@@ -381,7 +383,7 @@ index e4c8e09..0cb2b65 100644
          let wait_poll_needed = self.vm.ctx.wait.needs_runtime_poll();
          #[cfg(target_os = "horizon")]
          if switch_trace_enabled {
-@@ -1640,6 +1747,9 @@ impl SiglusHost {
+@@ -1640,6 +1749,9 @@ impl SiglusHost {
          }
          #[cfg(target_os = "vita")]
          let start = Instant::now();
@@ -391,7 +393,7 @@ index e4c8e09..0cb2b65 100644
          self.vm.tick_frame()?;
          #[cfg(target_os = "vita")]
          crate::render::vita_stats::phase(crate::render::vita_stats::TICK, start);
-@@ -1733,9 +1843,39 @@ impl SiglusHost {
+@@ -1733,9 +1845,39 @@ impl SiglusHost {
                      switch_trace_frame
                  ));
              }
@@ -709,7 +711,7 @@ index 7948872..a4776be 100644
      }
 
 diff --git a/crates/siglus_scene_vm/src/runtime/forms/stage.rs b/crates/siglus_scene_vm/src/runtime/forms/stage.rs
-index 469bbc9..6c9f1be 100644
+index 469bbc9..87eb376 100644
 --- a/crates/siglus_scene_vm/src/runtime/forms/stage.rs
 +++ b/crates/siglus_scene_vm/src/runtime/forms/stage.rs
 @@ -11504,12 +11504,10 @@ fn dispatch_object_state_op(
@@ -729,6 +731,29 @@ index 469bbc9..6c9f1be 100644
                          && let Some((width, height)) = ctx.images.original_size(&id)
                      {
                          sx = width as i64;
+@@ -14283,6 +14281,9 @@ fn clear_mwnd_message_block_now(ctx: &mut CommandContext, stage_idx: i64, m: &mu
+     clear_mwnd_face_list(ctx, stage_idx, m);
+     mwnd_clear_message_layout(m);
+     m.name_text.clear();
++    // The next projection copies these glyphs back into the UI. Clear them
++    // with the logical name, including when the next block is narration.
++    m.name_glyphs.clear();
+     m.chara_color_mod = None;
+     m.chara_moji_color = None;
+     m.chara_shadow_color = None;
+@@ -15254,10 +15255,12 @@ fn dispatch_mwnd_item_op(
+         }
+         MwndOpKind::ClearName => {
+             m.name_text.clear();
++            m.name_glyphs.clear();
+             m.chara_color_mod = None;
+             m.chara_moji_color = None;
+             m.chara_shadow_color = None;
+             m.chara_fuchi_color = None;
++            ctx.ui.clear_name();
+             push_ok(ctx, ret_form);
+             true
+         }
 diff --git a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs b/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
 index d3726dc..989082d 100644
 --- a/crates/siglus_scene_vm/src/runtime/forms/syscom.rs
@@ -968,6 +993,22 @@ index 436cca9..ca5afee 100644
          if self.handle_selbtn_mouse_up(b) {
              return;
          }
+diff --git a/crates/siglus_scene_vm/src/runtime/ui.rs b/crates/siglus_scene_vm/src/runtime/ui.rs
+index 5fca0f3..29bee52 100644
+--- a/crates/siglus_scene_vm/src/runtime/ui.rs
++++ b/crates/siglus_scene_vm/src/runtime/ui.rs
+@@ -2935,6 +2935,11 @@ impl UiRuntime {
+         self.mwnd.name.text.as_deref()
+     }
+
++    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++    pub fn name_glyph_text(&self) -> String {
++        self.mwnd.name.glyphs.iter().map(|g| g.ch).collect()
++    }
++
+     pub fn auto_advance_due(
+         &self,
+         script: &ScriptRuntimeState,
 diff --git a/crates/siglus_scene_vm/src/text_render.rs b/crates/siglus_scene_vm/src/text_render.rs
 index 9e7be41..b7da993 100644
 --- a/crates/siglus_scene_vm/src/text_render.rs

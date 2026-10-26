@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the pinned CPAL source and its WebAudio stream lifetime fix."""
+"""Prepare pinned CPAL with WebAudio lifetime and underrun recovery fixes."""
 import argparse
 import hashlib
 import io
@@ -40,4 +40,4 @@ reverse = subprocess.run(["git", "apply", "--reverse", "--check", str(patch)], c
 if reverse.returncode:
     subprocess.run(["git", "apply", "--check", str(patch)], cwd=destination, check=True)
     subprocess.run(["git", "apply", str(patch)], cwd=destination, check=True)
-print(f"Prepared CPAL {VERSION} with retired-stream callback guard")
+print(f"Prepared CPAL {VERSION} with retired-stream guard and audio timeline recovery")
